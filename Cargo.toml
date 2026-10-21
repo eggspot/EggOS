@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["kernel", "hal", "drivers", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/eggspot/EggOS"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# Every `unsafe` block must carry a `// SAFETY:` comment (repo rule).
+undocumented_unsafe_blocks = "deny"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = 1

@@ -1,0 +1,71 @@
+# EggOS roadmap
+
+Status keys: **done**, **in progress**, **next**, planned (no marker).
+Updated by every build-loop run; the order is refined as we learn (reasons in `docs/decisions.md`).
+
+## Milestones
+
+| # | Milestone | Status |
+|---|-----------|--------|
+| M0 | Repo skeleton: workspace, pinned toolchain, HAL layout, CI, docs | **done** |
+| M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **next** |
+| M2 | Memory management: physical frames, paging, kernel heap | |
+| M3 | Interrupts and timers | |
+| M4 | Scheduler, processes and threads (SMP-ready) | |
+| M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
+| M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | |
+| M7 | VFS and a first file system | |
+| M8 | virtio drivers (console, block, net, rng, input) | |
+| M9 | More architectures through the HAL | |
+| M10 | Userland: init, shell, core utilities | |
+| M11 | Graphics stack (virtio-gpu first) and compositor | |
+| M12 | Desktop shell, designed from `docs/ux/` | |
+| M13 | Real hardware and vendor GPU drivers | |
+| M14 | Compatibility layers: Linux userland, then Android, Windows, macOS (order: D2, provisional) | |
+| M15 | AI-native agent interface (D3) | |
+| M16 | Editions: personal, professional, enterprise, server | |
+
+UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switcher-habit research).
+
+## Support matrix
+
+### CPU architectures (QEMU boot test in CI is the bar for "done")
+| Architecture | Status | Notes |
+|--------------|--------|-------|
+| aarch64 | next | QEMU `virt` |
+| riscv64 | next | QEMU `virt` + OpenSBI |
+| x86_64 | planned | needs a 32→64-bit boot trampoline (multiboot); right after M1 |
+| loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
+
+### GPUs
+| GPU | Status |
+|-----|--------|
+| virtio-gpu | planned (M11) |
+| Intel, AMD, NVIDIA, Apple, Arm Mali, Qualcomm Adreno | planned (M13) |
+
+### Device classes
+| Class | Status |
+|-------|--------|
+| Server, desktop, laptop (QEMU first) | planned |
+| Phone, tablet | planned |
+| Embedded | planned |
+
+### Drivers
+| Driver | Status |
+|--------|--------|
+| PL011 UART (Arm) | next (M1) |
+| NS16550 UART | next (M1) |
+| virtio (console, block, net, rng, input, gpu) | planned (M8, M11) |
+
+## Toward "better than macOS, Windows and Linux"
+
+Rough estimate: **~1%**. We have the foundations (layout, rules, CI) and no running kernel yet.
+
+| Area | Missing |
+|------|---------|
+| Kernel | everything past the skeleton: boot, memory, interrupts, scheduling, syscalls |
+| Hardware | every architecture boot, every driver |
+| Compatibility | Linux ABI, Android, Windows and macOS layers |
+| Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
+| AI-native | agent interface design and implementation |
+| Editions | packaging and policy per edition |
