@@ -8,7 +8,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | # | Milestone | Status |
 |---|-----------|--------|
 | M0 | Repo skeleton: workspace, pinned toolchain, HAL layout, CI, docs | **done** |
-| M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **in progress** — aarch64, riscv64 done; x86_64 next |
+| M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
 | M2 | Memory management: physical frames, paging, kernel heap | |
 | M3 | Interrupts and timers | |
 | M4 | Scheduler, processes and threads (SMP-ready) | |
@@ -34,7 +34,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 |--------------|--------|-------|
 | aarch64 | **done** (boots, prints, self-tests) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
 | riscv64 | **done** (boots, prints, self-tests) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **next** | needs a 32→64-bit boot trampoline (Multiboot) and port-I/O 16550 (D9) |
+| x86_64 | **done** (boots, prints, self-tests) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -54,17 +54,18 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | Driver | Status |
 |--------|--------|
 | PL011 UART (Arm), transmit | **done** |
-| NS16550 UART (MMIO, any `reg-shift`), transmit | **done** (port I/O for x86 next) |
+| ACPI tables: RSDP/RSDT/XSDT/FADT, `\_S5` from the DSDT (power-off only) | **done** (full AML interpreter: planned, M5) |
+| NS16550 UART (MMIO, any `reg-shift`, and x86 port I/O), transmit | **done** |
 | virtio (console, block, net, rng, input, gpu) | planned (M8, M11) |
 
 ## Toward "better than macOS, Windows and Linux"
 
-Rough estimate: **~1%**. The kernel boots and prints on two architectures; nothing a user can run yet.
+Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86_64, aarch64, riscv64); nothing a user can run yet.
 
 | Area | Missing |
 |------|---------|
-| Kernel | x86_64 boot, memory management, interrupts, timers, scheduling, syscalls |
-| Hardware | x86_64 and the other architectures; every driver beyond the early UARTs |
+| Kernel | memory management, interrupts, timers, scheduling, syscalls |
+| Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows and macOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
 | AI-native | agent interface design and implementation |

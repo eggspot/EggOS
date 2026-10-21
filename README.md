@@ -20,5 +20,6 @@ cargo xtask ci                   # everything CI runs, cheapest first
 cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
 cargo xtask run --arch aarch64   # boot interactively (quit: Ctrl-A then X)
 ```
-QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`) must be on `PATH` for the boot commands.
-Kernel architectures so far: aarch64, riscv64.
+QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`, `qemu-system-x86_64`) must be on `PATH` for the
+boot commands.
+Kernel architectures so far: aarch64, riscv64, x86_64.
