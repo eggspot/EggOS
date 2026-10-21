@@ -9,8 +9,18 @@ Editions: personal, professional, enterprise and server, from one codebase.
 - **Foreign apps:** Windows, macOS and Android apps run on EggOS through compatibility layers we write
   ourselves, with the same features on each.
 - **AI-native:** the OS exposes its capabilities to AI agents as a first-class interface.
+- **Hardware: we support everything.** Every CPU architecture, every GPU, every device type (desktop,
+  laptop, phone, tablet, server, embedded) and every driver, all written by us. So from day one:
+  - the kernel core is architecture-independent; architecture code lives only behind a hardware
+    abstraction layer (one module per architecture), never mixed into the core;
+  - drivers sit behind one common driver model, so adding a device never touches the core;
+  - each supported architecture boots in QEMU in automated tests (this Mac's QEMU emulates x86_64,
+    aarch64, riscv64, loongarch64, ppc64, s390x, mips64 and more).
+  Bring-up order is an engineering choice, not a scope limit: start where QEMU emulation is good and most
+  users are (e.g. x86_64, aarch64, riscv64; virtio devices and virtio-gpu first), then real hardware and
+  vendor GPUs (Intel, AMD, NVIDIA, Apple, Arm Mali, Qualcomm Adreno, ...) behind the same interfaces.
 - Record every further architecture decision as a numbered entry in docs/decisions.md (start it with the
-  three above as D1-D3).
+  decisions above and the MIT license below as D1-D5).
 
 ## Priorities
 1. Performance first: benchmark every hot path; never merge a performance regression.
@@ -39,5 +49,4 @@ them.
   not from Linux source.
 
 ## Not decided yet (ask the owner, don't assume)
-- Target CPU architectures (e.g. x86_64, aarch64) and how the kernel is run in development (e.g. QEMU).
 - Which compatibility layer comes first (Linux, Android, Windows or macOS apps).
