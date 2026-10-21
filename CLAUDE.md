@@ -16,6 +16,12 @@ Editions: personal, professional, enterprise and server, from one codebase.
 1. Performance first: benchmark every hot path; never merge a performance regression.
 2. Correctness and security: a kernel bug is a system-wide bug.
 3. Feature parity across the compatibility layers.
+4. UI/UX that feels familiar to anyone switching from macOS, Windows or Linux desktops: their habits
+   (shortcuts, window controls, file locations, settings) should just work, with polish good enough that
+   switching feels like an upgrade. Treat UX regressions like performance regressions.
+
+The long-term goal is to be better than macOS, Windows and every Linux distribution for the people who use
+them.
 
 ## Rules
 - Rust only. Write it ourselves; do not add third-party crates without the owner's OK, and list each
