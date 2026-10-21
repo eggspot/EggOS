@@ -1,0 +1,52 @@
+# One cheap Linux job, checks ordered cheapest first so a typo fails in seconds.
+# Billing rules: see ~/.claude/CLAUDE.md (CI section) and docs/decisions.md (D8).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (host)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Unit tests (host)
+        run: cargo test --workspace
