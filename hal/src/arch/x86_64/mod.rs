@@ -134,9 +134,12 @@ boot_pd:
 /// kernel below 4 GiB and passes a 32-bit address.
 static PVH_START_INFO: AtomicU32 = AtomicU32::new(0);
 
-/// `hvm_start_info` fields (start_info.h): magic at 0, `rsdp_paddr` (u64) at 16.
+/// `hvm_start_info` (start_info.h): `magic` (u32) at 0, then `version`, `flags`, `nr_modules`
+/// (u32 each), `modlist_paddr` and `cmdline_paddr` (u64 each), and `rsdp_paddr` (u64) at 32.
 const PVH_START_MAGIC: u32 = 0x336e_c578;
-const PVH_RSDP_PADDR: usize = 16;
+const PVH_RSDP_PADDR: usize = 32;
+/// Bytes of `hvm_start_info` read: up to and including `rsdp_paddr` (present since version 0).
+const PVH_START_INFO_READ_LENGTH: usize = PVH_RSDP_PADDR + 8;
 
 /// COM1's I/O ports.
 const COM1_PORT: u16 = 0x3f8;
@@ -144,6 +147,11 @@ const COM1_PORT: u16 = 0x3f8;
 /// The legacy BIOS area the ACPI spec says to search for the RSDP when the loader does not
 /// pass its address.
 const BIOS_AREA: core::ops::Range<usize> = 0xe_0000..0x10_0000;
+
+/// End of the boot identity map, which covers 0 .. 4 GiB. Page 0 is mapped too, so a null
+/// pointer dereference reads low memory instead of faulting until the kernel builds its own
+/// page tables (M2).
+const IDENTITY_MAP_END: u64 = 1 << 32;
 
 /// Upper bound on any ACPI table we map as a slice, against corrupt length fields.
 const MAX_TABLE_LENGTH: usize = 1 << 20;
@@ -191,7 +199,9 @@ struct S5Target {
 
 /// Reads the ACPI tables for the S5 sleep type and the PM1 control ports.
 fn s5_target() -> Option<S5Target> {
-    let root = rsdp().and_then(acpi::parse_rsdp)?;
+    let root = pvh_rsdp()
+        .and_then(acpi::parse_rsdp)
+        .or_else(bios_area_rsdp)?;
     let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
     let root_table = table(root_address, signature_of(root))?;
     let fadt = acpi::root_table_entries(root_table, root)
@@ -209,47 +219,61 @@ fn signature_of(root: RootTable) -> &'static [u8; 4] {
     }
 }
 
-/// The RSDP's bytes: from the PVH start info, or found in the BIOS area.
-fn rsdp() -> Option<&'static [u8]> {
-    let start_info = PVH_START_INFO.load(Ordering::Relaxed) as usize;
-    if start_info != 0 {
-        // SAFETY: the loader passed a valid `hvm_start_info` (at least 24 bytes up to and
-        // including `rsdp_paddr`) in identity-mapped memory below 4 GiB, which nothing writes.
-        let info = unsafe { physical_slice(start_info, PVH_RSDP_PADDR + 8) };
-        let magic = u32::from_le_bytes(info[..4].try_into().ok()?);
-        let rsdp = u64::from_le_bytes(info[PVH_RSDP_PADDR..].try_into().ok()?);
-        if magic == PVH_START_MAGIC && rsdp != 0 {
-            // SAFETY: the loader reports an RSDP there; `parse_rsdp` validates it, reading at
-            // most the 36 bytes of the largest RSDP.
-            return Some(unsafe { physical_slice(identity_mapped(rsdp)?, acpi::RSDP_V2_LENGTH) });
-        }
+/// The RSDP's bytes, at the address the PVH loader passed in `hvm_start_info`, if any.
+/// QEMU 10's loader passes 0 (no address), so on QEMU the BIOS-area search finds the RSDP.
+fn pvh_rsdp() -> Option<&'static [u8]> {
+    let start_info = mapped(
+        PVH_START_INFO.load(Ordering::Relaxed).into(),
+        PVH_START_INFO_READ_LENGTH,
+    )?;
+    // SAFETY: the loader passed the address of its `hvm_start_info`, which spans at least
+    // `PVH_START_INFO_READ_LENGTH` bytes; `mapped` checked they are in the identity map, and
+    // nothing writes them.
+    let info = unsafe { physical_slice(start_info, PVH_START_INFO_READ_LENGTH) };
+    let magic = u32::from_le_bytes(info[..4].try_into().ok()?);
+    let rsdp = u64::from_le_bytes(info[PVH_RSDP_PADDR..].try_into().ok()?);
+    if magic != PVH_START_MAGIC {
+        return None;
     }
-    // SAFETY: the legacy BIOS area is identity-mapped, readable ROM/RAM on PCs.
+    let rsdp = mapped(rsdp, acpi::RSDP_V2_LENGTH)?;
+    // SAFETY: the loader reports an RSDP there, inside the identity map (checked by `mapped`);
+    // `parse_rsdp` validates the bytes, so a wrong address only fails validation.
+    Some(unsafe { physical_slice(rsdp, acpi::RSDP_V2_LENGTH) })
+}
+
+/// The RSDP found by the ACPI spec's search of the legacy BIOS area.
+fn bios_area_rsdp() -> Option<RootTable> {
+    // SAFETY: the legacy BIOS area is identity-mapped, readable ROM/RAM on PCs, and nothing
+    // writes it.
     let area = unsafe { physical_slice(BIOS_AREA.start, BIOS_AREA.len()) };
     let offset = acpi::find_rsdp(area)?;
-    Some(&area[offset..])
+    acpi::parse_rsdp(&area[offset..])
 }
 
 /// The validated ACPI table with `signature` at physical `address`.
 fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
-    let address = identity_mapped(address)?;
-    // SAFETY: firmware table addresses point at ACPI memory, which is identity-mapped below
-    // 4 GiB (checked above) and never written by the kernel; the header is read first.
-    let header = unsafe { physical_slice(address, acpi::TABLE_HEADER_LENGTH) };
-    let length = acpi::table_length(header)?;
-    if !(acpi::TABLE_HEADER_LENGTH..=MAX_TABLE_LENGTH).contains(&length)
-        || identity_mapped((address + length) as u64).is_none()
-    {
+    let header_address = mapped(address, acpi::TABLE_HEADER_LENGTH)?;
+    // SAFETY: firmware table addresses point at ACPI memory, which nothing writes; `mapped`
+    // checked the header lies inside the identity map.
+    let header = unsafe { physical_slice(header_address, acpi::TABLE_HEADER_LENGTH) };
+    if &header[..4] != signature {
         return None;
     }
-    // SAFETY: as above, for the length the header declares, bounded and inside the map.
-    let table = unsafe { physical_slice(address, length) };
+    let length = acpi::table_length(header)?;
+    if !(acpi::TABLE_HEADER_LENGTH..=MAX_TABLE_LENGTH).contains(&length) {
+        return None;
+    }
+    let table_address = mapped(address, length)?;
+    // SAFETY: as above, for the bounded length the header declares, checked by `mapped`.
+    let table = unsafe { physical_slice(table_address, length) };
     acpi::table_ok(table, signature).then_some(table)
 }
 
-/// `address` as a pointer-sized value if the boot page tables map it (below 4 GiB).
-fn identity_mapped(address: u64) -> Option<usize> {
-    if address == 0 || address > u64::from(u32::MAX) {
+/// `address` as a pointer-sized value if `address..address + length` is inside the boot
+/// identity map (0 .. 4 GiB). Address 0 is rejected as "no table".
+fn mapped(address: u64, length: usize) -> Option<usize> {
+    let end = address.checked_add(u64::try_from(length).ok()?)?;
+    if address == 0 || end > IDENTITY_MAP_END {
         return None;
     }
     usize::try_from(address).ok()
@@ -263,7 +287,7 @@ unsafe fn physical_slice(address: usize, length: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(address as *const u8, length) }
 }
 
-/// Switches to ACPI mode if needed, then writes `SLP_TYP | SLP_EN` to the PM1 control
+/// Switches to ACPI mode if needed, then sets `SLP_TYP` and `SLP_EN` in the PM1 control
 /// registers (ACPI 6.5, 16.1.7). Returns only if the machine did not power off.
 fn enter_s5(target: S5Target) {
     let fadt = target.fadt;
@@ -281,7 +305,8 @@ fn enter_s5(target: S5Target) {
     // firmware's description of the ACPI fixed hardware; the kernel is powering off and
     // nothing else drives these registers.
     unsafe {
-        if port::in16(pm1a) & acpi::PM1_CONTROL_SCI_EN == 0 && smi_command != 0 {
+        let in_legacy_mode = port::in16(pm1a) & acpi::PM1_CONTROL_SCI_EN == 0;
+        if in_legacy_mode && smi_command != 0 && fadt.acpi_enable != 0 {
             port::out8(smi_command, fadt.acpi_enable);
             for _ in 0..ACPI_ENABLE_POLLS {
                 if port::in16(pm1a) & acpi::PM1_CONTROL_SCI_EN != 0 {
@@ -290,9 +315,18 @@ fn enter_s5(target: S5Target) {
                 core::hint::spin_loop();
             }
         }
-        port::out16(pm1a, acpi::pm1_control_sleep(target.sleep_type.a));
-        if pm1b != 0 {
-            port::out16(pm1b, acpi::pm1_control_sleep(target.sleep_type.b));
+        // Set SLP_TYP first, then SLP_EN in a second write, as the spec's sleep sequence
+        // does; every other bit (SCI_EN included) keeps its value.
+        let pm1a_value = acpi::pm1_control_sleep(port::in16(pm1a), target.sleep_type.a);
+        let pm1b_value =
+            (pm1b != 0).then(|| acpi::pm1_control_sleep(port::in16(pm1b), target.sleep_type.b));
+        port::out16(pm1a, pm1a_value & !acpi::PM1_CONTROL_SLP_EN);
+        if let Some(pm1b_value) = pm1b_value {
+            port::out16(pm1b, pm1b_value & !acpi::PM1_CONTROL_SLP_EN);
+        }
+        port::out16(pm1a, pm1a_value);
+        if let Some(pm1b_value) = pm1b_value {
+            port::out16(pm1b, pm1b_value);
         }
     }
 }

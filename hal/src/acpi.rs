@@ -41,12 +41,14 @@ pub fn parse_rsdp(rsdp: &[u8]) -> Option<RootTable> {
     }
     let revision = rsdp[15];
     if revision >= 2 {
-        let length = usize::try_from(read_u32(rsdp, 20)?).ok()?;
-        if length >= RSDP_V2_LENGTH && checksum_ok(rsdp.get(..length)?) {
-            let xsdt = read_u64(rsdp, 24)?;
-            if xsdt != 0 {
-                return Some(RootTable::Xsdt(xsdt));
-            }
+        // A bad extended length or checksum only rules out the XSDT; the ACPI 1.0 part is
+        // already valid, so fall back to the RSDT.
+        let extended_ok = read_u32(rsdp, 20)
+            .and_then(|length| rsdp.get(..usize::try_from(length).ok()?))
+            .is_some_and(|extended| extended.len() >= RSDP_V2_LENGTH && checksum_ok(extended));
+        let xsdt = read_u64(rsdp, 24).unwrap_or(0);
+        if extended_ok && xsdt != 0 {
+            return Some(RootTable::Xsdt(xsdt));
         }
     }
     Some(RootTable::Rsdt(read_u32(rsdp, 16)?.into()))
@@ -185,11 +187,16 @@ fn parse_s5_package(aml: &[u8]) -> Option<S5SleepType> {
 
 /// PM1 control register bits (ACPI 6.5, table 4.16).
 pub const PM1_CONTROL_SCI_EN: u16 = 1 << 0;
+const PM1_CONTROL_SLP_TYP_SHIFT: u32 = 10;
+const PM1_CONTROL_SLP_TYP_MASK: u16 = 0b111 << PM1_CONTROL_SLP_TYP_SHIFT;
 pub const PM1_CONTROL_SLP_EN: u16 = 1 << 13;
 
-/// The PM1 control register value that enters the sleep state with type `sleep_type`.
-pub const fn pm1_control_sleep(sleep_type: u8) -> u16 {
-    ((sleep_type as u16 & 0b111) << 10) | PM1_CONTROL_SLP_EN
+/// The PM1 control register value that enters the sleep state with type `sleep_type`, given
+/// the register's `current` value: `SLP_TYPx` and `SLP_EN` are set, every other bit is
+/// preserved as the spec requires.
+pub const fn pm1_control_sleep(current: u16, sleep_type: u8) -> u16 {
+    let slp_typ = ((sleep_type as u16) << PM1_CONTROL_SLP_TYP_SHIFT) & PM1_CONTROL_SLP_TYP_MASK;
+    (current & !(PM1_CONTROL_SLP_TYP_MASK | PM1_CONTROL_SLP_EN)) | slp_typ | PM1_CONTROL_SLP_EN
 }
 
 fn checksum_ok(bytes: &[u8]) -> bool {
@@ -251,6 +258,14 @@ mod tests {
             parse_rsdp(&rsdp(2, 0x1234, 0x5678)),
             Some(RootTable::Xsdt(0x5678))
         );
+    }
+
+    #[test]
+    fn rsdp_v2_with_oversized_length_falls_back_to_rsdt() {
+        let mut long = rsdp(2, 0x1234, 0x5678);
+        long[20..24].copy_from_slice(&64u32.to_le_bytes());
+        fix_checksum(&mut long[..RSDP_V1_LENGTH], 8);
+        assert_eq!(parse_rsdp(&long), Some(RootTable::Rsdt(0x1234)));
     }
 
     #[test]
@@ -387,8 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn pm1_control_value_for_sleep_type() {
-        assert_eq!(pm1_control_sleep(5), (5 << 10) | (1 << 13));
-        assert_eq!(pm1_control_sleep(0), 1 << 13);
+    fn pm1_control_value_sets_sleep_type_and_preserves_other_bits() {
+        assert_eq!(pm1_control_sleep(0, 5), (5 << 10) | (1 << 13));
+        // SCI_EN stays set; a stale SLP_TYP is replaced, not ORed.
+        assert_eq!(pm1_control_sleep(0b111 << 10 | 1, 0), (1 << 13) | 1);
+        assert_eq!(pm1_control_sleep(0, 0xff), (0b111 << 10) | (1 << 13));
     }
 }

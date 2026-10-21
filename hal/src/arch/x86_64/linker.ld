@@ -22,6 +22,8 @@ SECTIONS
 
     .data : ALIGN(4096) {
         *(.data .data.*)
+        /* Static linking leaves the GOT empty or tiny; keep it inside .data. */
+        *(.got .got.*)
     }
 
     .bss (NOLOAD) : ALIGN(4096) {

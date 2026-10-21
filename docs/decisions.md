@@ -88,7 +88,7 @@ The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS1
 `0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
 
-## D15 x86_64 boots through PVH and powers off through ACPI S5 — Decided (engineering); supersedes D9's Multiboot plan
+## D15 x86_64 boots through PVH and powers off through ACPI S5 — Decided by engineering (owner approved the port); supersedes D9's Multiboot plan
 QEMU's `-kernel` does not load ELF64 images through Multiboot, but it does through PVH (the
 boot ABI of Xen's public `start_info.h`, also used by Linux and Firecracker): an ELF note
 (`XEN_ELFNOTE_PHYS32_ENTRY`) names a 32-bit entry point, entered in protected mode with paging
