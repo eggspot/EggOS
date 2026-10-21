@@ -97,7 +97,8 @@ off and `ebx` pointing at `hvm_start_info`. The x86_64 HAL entry code identity-m
 is linked static, non-PIE at 1 MiB, because that 32-bit code uses absolute addresses. UEFI
 boot for real hardware is a later decision.
 Power-off (D11) uses ACPI sleep state S5, the standard firmware interface on PCs, not QEMU's
-`isa-debug-exit`: RSDP from `hvm_start_info.rsdp_paddr` (or the spec's BIOS-area search) →
+`isa-debug-exit`: RSDP from `hvm_start_info.rsdp_paddr`, or the spec's BIOS-area search when
+that is 0 (as QEMU 10 passes it) or invalid →
 RSDT/XSDT → FADT (PM1 control ports, ACPI-enable handshake) → `\_S5` package in the DSDT.
 `\_S5` is read as the static `Name`/`Package` firmware defines it, without an AML interpreter;
 the interpreter comes with ACPI device discovery in M5. The ACPI table code (`hal::acpi`) is
