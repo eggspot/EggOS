@@ -54,7 +54,8 @@ them.
 ## Rules
 - **Everything is written by us, in Rust.** Kernel, drivers, compatibility layers, userland, libraries,
   tools and build automation: all Rust, all our own code. No C or C++, no shell/Python/PowerShell build
-  scripts (host automation is Rust, via `cargo xtask`).
+  scripts: host automation is Rust, via `cargo xtask` (CI steps that only install tools or call cargo are
+  fine).
   - Assembly only where the CPU leaves no choice (boot entry, trap vectors, context switch), kept to the
     minimum and only inside the HAL's architecture modules.
   - No third-party crates. A rare exception needs the owner's explicit OK first, and each approved one is
