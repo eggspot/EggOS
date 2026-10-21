@@ -87,3 +87,16 @@ stays up (halts) after boot.
 The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS16550 at
 `0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
+
+## D13 Performance target: the fastest OS — Decided
+EggOS must beat macOS, Windows and Linux on boot time, latency, throughput and memory footprint on
+the same hardware, and run foreign apps at least as fast as their native OS. Every hot path gets a
+benchmark when it is written, PRs touching one report before/after numbers, and a performance
+regression blocks merge unless the owner explicitly accepts it. Release builds (LTO, one codegen
+unit) are what we measure and ship. See CLAUDE.md, "The target: the fastest OS".
+
+## D14 Everything written by us, in Rust — Decided
+All of EggOS (kernel, drivers, compatibility layers, userland, libraries, tools, build automation)
+is Rust we write ourselves. Assembly only where the CPU requires it, inside the HAL's architecture
+modules. No third-party crates; a rare exception needs the owner's explicit OK and an entry in
+docs/dependencies.md. Machine-provided firmware (UEFI, OpenSBI, QEMU loaders) is outside EggOS.
