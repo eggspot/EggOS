@@ -5,5 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+eggos-drivers = { path = "../drivers" }
+
 [lints]
 workspace = true

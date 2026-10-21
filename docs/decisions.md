@@ -52,8 +52,38 @@ and no `build-std` are needed yet. Revisit only if the kernel genuinely needs a 
 
 ## D8 CI: one cheap Linux job — Decided by the build loop (engineering, per billing rules)
 A single `ubuntu-latest` job runs fmt → clippy → build → host tests → QEMU boot tests (from M1,
-when the first architecture boots), cheapest first, with `timeout-minutes`, PR-only cancellation of superseded runs, `fetch-depth: 1` and a
-cargo cache. Docs-only changes are skipped with `paths-ignore`; if CI ever becomes a *required*
+when the first architecture boots), cheapest first, with `timeout-minutes`, PR-only
+cancellation of superseded runs, `fetch-depth: 1` and a cargo cache. Docs-only changes are skipped with `paths-ignore`; if CI ever becomes a *required*
 check, replace that with an in-job changed-files gate so docs PRs do not hang pending.
 No macOS or Windows runners without the owner's OK; the xtask commands keep those hosts
 supported locally.
+
+## D9 Bring-up order: aarch64 and riscv64 first, x86_64 next — Decided by the build loop (engineering)
+QEMU's `virt` machines for aarch64 and riscv64 load an ELF kernel directly and start it in the
+kernel's privilege level (EL1 / S-mode under OpenSBI) with a UART at a fixed address, so the
+first boot needs only a few lines of entry assembly. Together they cover phones, tablets,
+Apple-silicon-class laptops, Arm servers and the growing RISC-V embedded/server space.
+x86_64 (most desktops, laptops and servers) comes right after: QEMU's `-kernel` enters x86
+kernels through Multiboot in 32-bit protected mode, so it needs a 32→64-bit trampoline with
+early page tables — a self-contained next step through the same HAL interface.
+
+## D10 AArch64 kernel target is `aarch64-unknown-none-softfloat` — Decided by the build loop (engineering)
+The kernel does not use FP/SIMD registers, so traps and context switches never save them for
+kernel code (user FP state is saved lazily, later), and early boot works before FP is enabled.
+The target also implies `strict-align`, which is required while the MMU is off (all memory is
+Device memory). Hot paths that benefit from SIMD (e.g. memcpy, checksums, crypto) will opt in
+explicitly in a dedicated, benchmarked module.
+
+## D11 Boot tests: console verdict marker plus real power-off — Decided by the build loop (engineering)
+The kernel prints `EGGOS-SELFTEST: PASS` (or `FAIL`, also on panic) and, when built with the
+`qemu-test` feature, powers off through each architecture's standard firmware interface (PSCI
+`SYSTEM_OFF` on Arm, SBI System Reset on RISC-V) rather than a QEMU-only debug device. The
+runner (`cargo xtask qemu`) passes only on a clean QEMU exit within 30 s **and** the pass marker
+on its own line **and** no fail marker. This keeps one verdict mechanism for every architecture
+and exercises the same power-off path real hardware will use. Without `qemu-test` the kernel
+stays up (halts) after boot.
+
+## D12 Board addresses hard-coded until device-tree discovery — Provisional (engineering, until M5)
+The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS16550 at
+`0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
+tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
