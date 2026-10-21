@@ -16,5 +16,9 @@ AI-native operating system written from scratch in Rust, including its own Linux
 Requires [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.toml` installs itself.
 
 ```
-cargo xtask ci        # everything CI runs: fmt, clippy, tests
+cargo xtask ci                   # everything CI runs, cheapest first
+cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
+cargo xtask run --arch aarch64   # boot interactively (quit: Ctrl-A then X)
 ```
+QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`) must be on `PATH` for the boot commands.
+Kernel architectures so far: aarch64, riscv64.

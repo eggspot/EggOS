@@ -20,7 +20,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
@@ -48,5 +48,17 @@ jobs:
       - name: Clippy (host)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Clippy (kernel targets)
+        run: cargo xtask clippy-targets
+
       - name: Unit tests (host)
         run: cargo test --workspace
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            qemu-system-arm qemu-system-misc qemu-system-data opensbi
+
+      - name: QEMU boot tests (every architecture)
+        run: cargo xtask qemu --arch all

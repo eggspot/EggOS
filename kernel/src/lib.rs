@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod console;
+pub mod selftest;
 
 use core::fmt::Write;
 use eggos_hal::ExitStatus;
@@ -18,10 +19,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Returns how the boot went; the architecture entry point turns that into a machine exit.
 pub fn boot<W: Write>(console: &mut W, arch: &str) -> ExitStatus {
-    if writeln!(console, "EggOS {VERSION} ({arch})").is_err() {
-        return ExitStatus::Failure;
+    let report = writeln!(console, "EggOS {VERSION} ({arch})")
+        .and_then(|()| selftest::run(console, selftest::ALL));
+    match report {
+        Ok(true) => ExitStatus::Success,
+        Ok(false) | Err(_) => ExitStatus::Failure,
     }
-    ExitStatus::Success
 }
 
 #[cfg(test)]
@@ -32,6 +35,7 @@ mod tests {
     fn boot_prints_banner_with_version_and_arch() {
         let mut out = String::new();
         assert_eq!(boot(&mut out, "testarch"), ExitStatus::Success);
-        assert_eq!(out, format!("EggOS {VERSION} (testarch)\n"));
+        assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\n")));
+        assert!(out.ends_with(&format!("{}\n", selftest::PASS_MARKER)));
     }
 }
