@@ -27,6 +27,7 @@ SECTIONS
         __bss_end = .;
     }
 
+    /* Boot stack. No guard page until paging (M2): an overflow runs into .bss. */
     .stack (NOLOAD) : ALIGN(4096) {
         . += 64K;
         __stack_top = .;

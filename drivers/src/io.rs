@@ -175,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)] // the bounds check is a debug assertion
     #[should_panic(expected = "outside block")]
     fn mmio_rejects_out_of_bounds_offset_in_debug() {
         let mut block = [0u32; 1];

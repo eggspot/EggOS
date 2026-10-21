@@ -15,9 +15,12 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    // Only CPU 0 (affinity level 0) boots for now; park every other CPU.
+    // Only the CPU whose affinity (MPIDR_EL1 Aff0-Aff3) is all zero boots for now; park
+    // every other CPU, in any cluster.
     mrs     x0, mpidr_el1
-    and     x0, x0, #0xff
+    and     x1, x0, #0xffffff
+    ubfx    x2, x0, #32, #8
+    orr     x0, x1, x2
     cbnz    x0, 3f
 
     adrp    x0, __stack_top
