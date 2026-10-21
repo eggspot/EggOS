@@ -29,7 +29,7 @@ keyboards acts as Cmd) or **Ctrl** (Windows, GNOME, KDE profiles).
 | Switch apps | Cmd+Tab | Alt+Tab | Alt+Tab / Super+Tab | Alt+Tab | profile's key; the other also works |
 | Switch windows of one app | Cmd+` | — | Alt+` | — | Alt+` / Cmd+` |
 | Close window / quit app | Cmd+W / Cmd+Q | Alt+F4 / Ctrl+W | Ctrl+W / Ctrl+Q | Ctrl+W / Ctrl+Q | all honoured; quit asks only if unsaved work |
-| Show desktop | F11 / Cmd+F3 | Win+D | Super+D (set) | Ctrl+F12 | profile's key |
+| Show desktop | F11 / Cmd+F3 | Win+D | unbound by default | Meta+D (Plasma 6) | Super+D in every profile, plus F11 in macOS profile |
 | Lock screen | Ctrl+Cmd+Q | Win+L | Super+L | Super+L | Super+L in every profile, plus Ctrl+Cmd+Q in macOS profile |
 | Screenshot | Cmd+Shift+3/4/5 | Win+Shift+S, PrtScn | PrtScn | PrtScn / Meta+Shift+S | all honoured |
 | Snap window left/right | (Sequoia) Fn+Ctrl+arrows | Win+←/→ | Super+←/→ | Meta+←/→ | Super+←/→, plus drag-to-edge snapping |

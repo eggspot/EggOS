@@ -51,8 +51,8 @@ and lints. Bare-metal targets are official tier-2 targets with a prebuilt `core`
 and no `build-std` are needed yet. Revisit only if the kernel genuinely needs a nightly feature.
 
 ## D8 CI: one cheap Linux job — Decided by the build loop (engineering, per billing rules)
-A single `ubuntu-latest` job runs fmt → clippy → build → host tests → QEMU boot tests, cheapest
-first, with `timeout-minutes`, PR-only cancellation of superseded runs, `fetch-depth: 1` and a
+A single `ubuntu-latest` job runs fmt → clippy → build → host tests → QEMU boot tests (from M1,
+when the first architecture boots), cheapest first, with `timeout-minutes`, PR-only cancellation of superseded runs, `fetch-depth: 1` and a
 cargo cache. Docs-only changes are skipped with `paths-ignore`; if CI ever becomes a *required*
 check, replace that with an in-job changed-files gate so docs PRs do not hang pending.
 No macOS or Windows runners without the owner's OK; the xtask commands keep those hosts
