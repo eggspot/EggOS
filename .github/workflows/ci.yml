@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Everything in one Linux job, cheapest check first: fmt, clippy, unit tests,
+  # then kernel builds and QEMU boot tests for every architecture.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-arm qemu-system-misc opensbi
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo xtask ci
+
+  # Windows is a supported development host: check the host crates build and
+  # test there, and that the kernel images cross-compile. Runs only on pull
+  # requests into main (Windows minutes bill at 2x), after Linux passes.
+  windows:
+    needs: linux
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo test
+      - run: cargo xtask build

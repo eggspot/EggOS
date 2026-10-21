@@ -1,0 +1,20 @@
+[package]
+name = "eggos-kernel"
+description = "The bootable EggOS kernel image"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "eggos-kernel"
+test = false
+bench = false
+
+[dependencies]
+eggos-hal.workspace = true
+eggos-kernel-core.workspace = true
+
+[lints]
+workspace = true

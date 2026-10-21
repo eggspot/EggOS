@@ -1,0 +1,4 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-none", "aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf"]

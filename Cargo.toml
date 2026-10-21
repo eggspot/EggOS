@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["drivers", "hal", "kernel", "kernel-core", "xtask"]
+# `eggos-kernel` is the bootable image and only builds for bare-metal targets
+# (`cargo xtask build`), so plain `cargo build` / `cargo test` on a Windows or
+# macOS host leave it out.
+default-members = ["drivers", "hal", "kernel-core", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/eggspot/EggOS"
+
+[workspace.dependencies]
+eggos-drivers = { path = "drivers" }
+eggos-hal = { path = "hal" }
+eggos-kernel-core = { path = "kernel-core" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
