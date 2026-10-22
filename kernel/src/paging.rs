@@ -36,6 +36,8 @@ pub enum MapError {
     AlreadyMapped,
     /// No frame was left for a table.
     OutOfMemory,
+    /// The tables are active: changing them needs TLB maintenance, which comes with M4.
+    Active,
 }
 
 impl MapError {
@@ -45,6 +47,7 @@ impl MapError {
             MapError::InvalidAddress => "a virtual address is outside the address space",
             MapError::AlreadyMapped => "a page is mapped twice",
             MapError::OutOfMemory => "no free frame for a page table",
+            MapError::Active => "the page tables are active and cannot be changed yet",
         }
     }
 }
@@ -55,6 +58,8 @@ impl MapError {
 pub struct PageTables<F: Format> {
     roots: [u64; MAX_ROOTS],
     physical_memory_offset: usize,
+    /// Set once the tables are in use (see [`Self::mark_active`]).
+    active: bool,
     format: PhantomData<fn() -> F>,
 }
 
@@ -69,8 +74,14 @@ impl<F: Format> PageTables<F> {
         Ok(Self {
             roots,
             physical_memory_offset: frames.physical_memory_offset(),
+            active: false,
             format: PhantomData,
         })
+    }
+
+    /// Records that the tables are in use: [`Self::map`] refuses to change them from then on.
+    pub fn mark_active(&mut self) {
+        self.active = true;
     }
 
     /// The physical addresses of the root tables, one per [`Format::ROOTS`].
@@ -95,6 +106,9 @@ impl<F: Format> PageTables<F> {
         attributes: Attributes,
         frames: &mut FrameAllocator,
     ) -> Result<(), MapError> {
+        if self.active {
+            return Err(MapError::Active);
+        }
         if !(virt | phys | length).is_multiple_of(FRAME_SIZE) {
             return Err(MapError::Unaligned);
         }
@@ -280,6 +294,7 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     // while they are active. Only the frame allocator and the tables reach memory through the
     // physical memory offset, and both switch to the new one below.
     unsafe { P::activate_page_tables(page_tables.roots()) };
+    page_tables.mark_active();
     let offset = P::physical_memory_offset();
     frames.set_physical_memory_offset(offset);
     page_tables.set_physical_memory_offset(offset);
@@ -426,6 +441,18 @@ mod tests {
         // Nothing was allocated beyond the root.
         assert_eq!(frames.free_frames(), 15);
         assert_eq!(tables.map(0, 0, 0, rw, &mut frames), Ok(()));
+    }
+
+    #[test]
+    fn active_tables_are_not_changed() {
+        let mut frames = frames(16);
+        let mut tables = PageTables::<X86_64>::new(&mut frames).unwrap();
+        tables.mark_active();
+        assert_eq!(
+            tables.map(0, 0, K, Attributes::READ_WRITE, &mut frames),
+            Err(MapError::Active)
+        );
+        assert_eq!(tables.translate(0), None);
     }
 
     #[test]

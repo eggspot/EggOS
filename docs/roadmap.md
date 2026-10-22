@@ -30,7 +30,7 @@ leaves instead of measuring, TSC-deadline mode, and the ACPI PM timer or HPET as
 reference clocks when there is no 8254; `stimecmp` directly when RISC-V Sstc is present; GICv3; device-tree timebase and GIC
 addresses (M5).
 
-Paging follow-ups (D29): link the kernel in the high half (top 2 GiB) and drop the low identity map, before M4; a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off (real hardware, M13); RAM above 4 GiB on x86_64; 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
+Paging follow-ups (D29): link the kernel in the high half (top 2 GiB) and drop the low identity map, before M4; a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off (real hardware, M13); RAM above 4 GiB on x86_64; on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
 
 Setup follow-ups from the 2026-10-22 review (all done: exception vectors in D25, the benchmark harness
 in D27):

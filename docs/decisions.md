@@ -456,4 +456,7 @@ Second step of M2. The kernel now runs on page tables it builds itself on every 
   `no-map` reservations (they are in the direct map, never touched); on AArch64 real hardware,
   cleaning and invalidating the data cache over memory written with the MMU off before the
   caches go on (QEMU models no caches, M13); RAM above 4 GiB on x86_64 (tables are still built
-  through the boot identity map); 1 GiB pages on x86_64; Svpbmt on RISC-V.
+  through the boot identity map); on x86_64 the direct map covers reserved PVH entries as
+  cached memory because QEMU's firmware puts the ACPI tables in one (checked: power-off faults
+  without it), which on real hardware may alias device registers with the wrong memory type,
+  so the ACPI work (M5) maps firmware tables on demand and reserved ranges uncached; 1 GiB pages on x86_64; Svpbmt on RISC-V.
