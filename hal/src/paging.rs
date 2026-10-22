@@ -39,8 +39,9 @@ pub enum MemoryType {
 }
 
 /// The permissions and memory type of a mapping. A kernel mapping (`user` clear) is never
-/// accessible to user mode; a user mapping is the kernel's to read and write only inside
-/// [`crate::Platform::with_user_access`], and never the kernel's to execute.
+/// accessible to user mode; the kernel reads and writes a user mapping only inside
+/// [`crate::Platform::with_user_access`], and never executes one (AArch64 sets `PXN` on every
+/// user page and RISC-V never lets S-mode execute one; x86_64 needs SMEP, not turned on yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attributes {
     pub writable: bool,

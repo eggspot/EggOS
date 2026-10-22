@@ -1167,8 +1167,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   the kernel's `TTBR1_EL1` root itself, with one root (RISC-V, x86_64) copies of the kernel root's
   upper entries, which point to the same tables. That is sound because the kernel's tables never
   change once active (`PageTables::map` refuses), so every kernel-half table exists from boot.
-  It maps only user mappings, only in the low half (`MapError::NotUser` otherwise), unmaps whole
-  leaves (`NotMapped`, `PartOfLargePage`), and frees its low half's tables when dropped; the
+  Its tables (`PageTables::new_sharing_kernel_half`) map and unmap only user mappings, only in
+  the low half (`MapError::NotUser` otherwise), so nothing reaches the shared kernel half through
+  them; they unmap whole leaves (`NotMapped`, `PartOfLargePage`), and the address space frees its
+  low half's tables when dropped (`free_user_half`, `unsafe`, refusing the kernel's tables); the
   frames user pages map belong to whoever mapped them.
 - **The user bit.** `Attributes` gains `user`, with `USER_TEXT`, `USER_READ_ONLY` and
   `USER_READ_WRITE`. AArch64: `AP[1]` (EL0 access), not global (`nG`), and `PXN` always, so the
@@ -1189,7 +1191,9 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `sstatus.SUM` for that closure alone, so a stray kernel pointer into user space faults. PAN
   (AArch64) and SMAP/SMEP (x86_64) are not turned on yet (QEMU's `cortex-a72` and default x86 CPU
   lack them); when they are, they are lifted in the same place.
-- **Testing.** Host unit tests: every format's user encodings and round trips; a new address
+- **Testing.** Host unit tests: every format's user encodings and round trips; on every format,
+  user tables reach the kernel's mappings, refuse kernel attributes and kernel-half addresses,
+  and free exactly the frames they took, and the kernel's tables are never freed; a new address
   space shares the kernel half and maps nothing below; user-only and low-half-only mapping;
   unmapping (not mapped, part of a large page); dropping frees exactly the tables it allocated and
   none of the kernel's; `with_active` switches to the space's root and back. Boot self-test

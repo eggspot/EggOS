@@ -19,18 +19,18 @@
 
 use crate::cpu;
 use crate::memory;
-use crate::paging::{MapError, PageTables};
+use crate::paging::{MAX_ROOTS, MapError, PageTables};
 use core::marker::PhantomData;
 use core::ptr;
 use eggos_hal::Platform;
-use eggos_hal::paging::{Attributes, Format};
+use eggos_hal::paging::Attributes;
 
 /// A user address space. See the module documentation.
 #[derive(Debug)]
 pub struct AddressSpace<P: Platform> {
     tables: PageTables<P::PageTableFormat>,
     /// The kernel's tables' roots, to switch back to.
-    kernel_roots: [u64; 2],
+    kernel_roots: [u64; MAX_ROOTS],
     platform: PhantomData<fn() -> P>,
 }
 
@@ -41,7 +41,7 @@ impl<P: Platform> AddressSpace<P> {
         let mut frames = memory::FRAMES.lock();
         let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
         let tables = PageTables::new_sharing_kernel_half(kernel, frames)?;
-        let mut kernel_roots = [0; 2];
+        let mut kernel_roots = [0; MAX_ROOTS];
         kernel_roots[..kernel.roots().len()].copy_from_slice(kernel.roots());
         Ok(Self {
             tables,
@@ -51,7 +51,8 @@ impl<P: Platform> AddressSpace<P> {
     }
 
     /// Maps user `virt..virt + length` to physical `phys..phys + length` with `attributes`,
-    /// which must be a user mapping, in the low half. As [`PageTables::map`] otherwise.
+    /// which must be a user mapping, in the low half ([`MapError::NotUser`] otherwise). As
+    /// [`PageTables::map`] otherwise.
     pub fn map(
         &mut self,
         virt: u64,
@@ -59,18 +60,14 @@ impl<P: Platform> AddressSpace<P> {
         length: u64,
         attributes: Attributes,
     ) -> Result<(), MapError> {
-        if !attributes.user {
-            return Err(MapError::NotUser);
-        }
-        check_user_range::<P::PageTableFormat>(virt, length)?;
         let mut frames = memory::FRAMES.lock();
         let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
         self.tables.map(virt, phys, length, attributes, frames)
     }
 
-    /// Unmaps user `virt..virt + length`. As [`PageTables::unmap`].
+    /// Unmaps user `virt..virt + length`, in the low half ([`MapError::NotUser`] otherwise).
+    /// As [`PageTables::unmap`] otherwise.
     pub fn unmap(&mut self, virt: u64, length: u64) -> Result<(), MapError> {
-        check_user_range::<P::PageTableFormat>(virt, length)?;
         self.tables.unmap(virt, length)
     }
 
@@ -112,16 +109,11 @@ impl<P: Platform> Drop for AddressSpace<P> {
         let frames = frames
             .as_mut()
             .expect("the address space's tables came from the frame allocator");
-        // Not active anywhere: `with_active` borrows `self` while it is, and switches back.
-        self.tables.free_user_half(frames);
-    }
-}
-
-/// Whether `virt..virt + length` lies in user space.
-fn check_user_range<F: Format>(virt: u64, length: u64) -> Result<(), MapError> {
-    match virt.checked_add(length) {
-        Some(end) if end <= F::USER_END => Ok(()),
-        _ => Err(MapError::NotUser),
+        // SAFETY: the tables come from `new_sharing_kernel_half` with the kernel's frame
+        // allocator, the one locked here. They are not active anywhere: `with_active` borrows
+        // `self` while they are, and switches back before it returns. They are freed once, here,
+        // and never used again.
+        unsafe { self.tables.free_user_half(frames) };
     }
 }
 

@@ -29,7 +29,7 @@ use eggos_hal::paging::{self, Attributes, Entry, Format, KernelImage};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Most roots any [`Format`] has.
-const MAX_ROOTS: usize = 2;
+pub const MAX_ROOTS: usize = 2;
 
 /// Why a mapping could not be made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,13 +72,17 @@ impl MapError {
 }
 
 /// A translation tree in format `F`. Its tables are frames from a [`FrameAllocator`], reached
-/// at physical address + the physical memory offset; they are never freed.
+/// at physical address + the physical memory offset; the kernel's are never freed, a user
+/// address space's low half is ([`Self::free_user_half`]).
 #[derive(Debug)]
 pub struct PageTables<F: Format> {
     roots: [u64; MAX_ROOTS],
     physical_memory_offset: usize,
     /// Set once the tables are in use (see [`Self::mark_active`]).
     active: bool,
+    /// Set for a user address space's tables ([`Self::new_sharing_kernel_half`]): they map and
+    /// unmap only user mappings in the low half, and never touch the kernel half they share.
+    user_half_only: bool,
     format: PhantomData<fn() -> F>,
 }
 
@@ -94,6 +98,7 @@ impl<F: Format> PageTables<F> {
             roots,
             physical_memory_offset: frames.physical_memory_offset(),
             active: false,
+            user_half_only: false,
             format: PhantomData,
         })
     }
@@ -102,8 +107,10 @@ impl<F: Format> PageTables<F> {
     /// half of `kernel`, shared. On AArch64 that is `kernel`'s high-half root itself; with one
     /// root, the new root's kernel-half entries are copies of `kernel`'s root's, which point to
     /// the same tables. Sound only because the kernel's tables never change once active (see
-    /// [`Self::map`]): a kernel-half entry added later would be missing here. Free the low half
-    /// with [`Self::free_user_half`].
+    /// [`Self::map`]): a kernel-half entry added later would be missing here. The new tables
+    /// map and unmap only user mappings ([`Attributes::user`]) in the low half
+    /// ([`MapError::NotUser`] otherwise), so the kernel half stays the kernel's. Free the low
+    /// half with [`Self::free_user_half`].
     pub fn new_sharing_kernel_half(
         kernel: &Self,
         frames: &mut FrameAllocator,
@@ -115,6 +122,7 @@ impl<F: Format> PageTables<F> {
             roots,
             physical_memory_offset: kernel.physical_memory_offset,
             active: false,
+            user_half_only: true,
             format: PhantomData,
         };
         let top = F::LEVELS - 1;
@@ -129,8 +137,17 @@ impl<F: Format> PageTables<F> {
     /// Frees the low half's tables, the user root among them, which
     /// [`Self::new_sharing_kernel_half`] and [`Self::map`] allocated from `frames`; the kernel
     /// half's are the kernel's and stay. The frames the leaves map are not the tables' and stay
-    /// allocated. The tables must not be active on any CPU, and are unusable afterwards.
-    pub fn free_user_half(&mut self, frames: &mut FrameAllocator) {
+    /// allocated.
+    ///
+    /// # Safety
+    /// The tables must come from [`Self::new_sharing_kernel_half`] with `frames` as the
+    /// allocator, must not be active on any CPU, and must not be used again afterwards (not even
+    /// to free them again).
+    pub unsafe fn free_user_half(&mut self, frames: &mut FrameAllocator) {
+        assert!(
+            self.user_half_only,
+            "only a user address space's tables are freed"
+        );
         let user_root = F::root(0).expect("address 0 is valid on every format");
         let root = self.roots[user_root];
         let top = F::LEVELS - 1;
@@ -142,7 +159,8 @@ impl<F: Format> PageTables<F> {
             }
         }
         // SAFETY: the root came from `frames` in `new_sharing_kernel_half`, and nothing walks
-        // it any more (the caller guarantees it is not active, and `self` is not used again).
+        // it any more (the caller guarantees it is not active, and that `self` is not used
+        // again).
         unsafe { frames.free(root) };
     }
 
@@ -186,6 +204,10 @@ impl<F: Format> PageTables<F> {
         if self.active {
             return Err(MapError::Active);
         }
+        if self.user_half_only && !attributes.user {
+            return Err(MapError::NotUser);
+        }
+        self.check_user_half(virt, length)?;
         if !(virt | phys | length).is_multiple_of(FRAME_SIZE) {
             return Err(MapError::Unaligned);
         }
@@ -227,6 +249,7 @@ impl<F: Format> PageTables<F> {
         if self.active {
             return Err(MapError::Active);
         }
+        self.check_user_half(virt, length)?;
         if !(virt | length).is_multiple_of(FRAME_SIZE) {
             return Err(MapError::Unaligned);
         }
@@ -241,6 +264,15 @@ impl<F: Format> PageTables<F> {
             virt += size;
         }
         Ok(())
+    }
+
+    /// For a user address space's tables, whether `virt..virt + length` lies in the low half.
+    fn check_user_half(&self, virt: u64, length: u64) -> Result<(), MapError> {
+        match virt.checked_add(length) {
+            _ if !self.user_half_only => Ok(()),
+            Some(end) if end <= F::USER_END => Ok(()),
+            _ => Err(MapError::NotUser),
+        }
     }
 
     /// The entry of the leaf mapping `virt`, and its level.
@@ -895,6 +927,61 @@ mod tests {
             Err(MapError::Active)
         );
         assert_eq!(tables.translate(0), None);
+    }
+
+    /// On every format: the shared tables reach the kernel's mapping, never change the kernel
+    /// half, and free exactly the frames they took; the kernel's tables are never freed.
+    fn user_tables_leave_the_kernel_half_alone<F: Format>(high: u64) {
+        let mut frames = frames(32);
+        let mut kernel = PageTables::<F>::new(&mut frames).unwrap();
+        kernel
+            .map(high, 0x20_0000, K, Attributes::READ_WRITE, &mut frames)
+            .unwrap();
+        kernel.mark_active();
+        let before = frames.free_frames();
+        let mut user = PageTables::new_sharing_kernel_half(&kernel, &mut frames).unwrap();
+        assert_eq!(user.translate(high), kernel.translate(high));
+        for (virt, attributes) in [
+            (high + K, Attributes::USER_READ_WRITE),
+            (0x1000, Attributes::READ_WRITE),
+            (F::USER_END - K, Attributes::READ_WRITE),
+        ] {
+            assert_eq!(
+                user.map(virt, 0, K, attributes, &mut frames),
+                Err(MapError::NotUser),
+                "{virt:#x}"
+            );
+        }
+        assert_eq!(user.unmap(high, K), Err(MapError::NotUser));
+        user.map(
+            F::USER_END - K,
+            0,
+            K,
+            Attributes::USER_READ_WRITE,
+            &mut frames,
+        )
+        .unwrap();
+        assert_eq!(kernel.translate(F::USER_END - K), None);
+        // SAFETY: from `new_sharing_kernel_half` with `frames`, never active, not used again.
+        unsafe { user.free_user_half(&mut frames) };
+        assert_eq!(frames.free_frames(), before);
+        assert!(kernel.translate(high).is_some());
+    }
+
+    #[test]
+    fn user_tables_leave_the_kernel_half_alone_on_every_format() {
+        user_tables_leave_the_kernel_half_alone::<Aarch64>(0xffff_0000_0000_0000);
+        user_tables_leave_the_kernel_half_alone::<Riscv64Sv39>(0xffff_ffc0_0000_0000);
+        user_tables_leave_the_kernel_half_alone::<X86_64>(0xffff_8000_0000_0000);
+    }
+
+    #[test]
+    #[should_panic(expected = "only a user address space's tables are freed")]
+    fn the_kernels_tables_are_never_freed() {
+        let mut frames = frames(4);
+        let mut kernel = PageTables::<X86_64>::new(&mut frames).unwrap();
+        // SAFETY: deliberately breaks the contract; the assertion stops it before any free.
+        unsafe { kernel.free_user_half(&mut frames) };
     }
 
     #[test]

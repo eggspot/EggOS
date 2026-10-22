@@ -453,8 +453,8 @@ impl Platform for Aarch64 {
         // half meanwhile. The first barrier completes the table writes before any walk; every
         // translation runs with ASID 0 (`TCR_EL1.A1` = 0, ASID 0 in `TTBR0_EL1`), user ones
         // tagged with it as not global, so `TLBI ASIDE1` with ASID 0 drops the old low half's
-        // and keeps the kernel's global ones. Local: no other CPU ran this address space. No
-        // `nomem`: memory accesses must not move across the switch.
+        // and keeps the kernel's global ones. Local: each CPU drops what its own TLB cached when
+        // it switches. No `nomem`: memory accesses must not move across the switch.
         unsafe {
             core::arch::asm!(
                 "dsb ish",
