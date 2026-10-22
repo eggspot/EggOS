@@ -460,3 +460,52 @@ Second step of M2. The kernel now runs on page tables it builds itself on every 
   cached memory because QEMU's firmware puts the ACPI tables in one (checked: power-off faults
   without it), which on real hardware may alias device registers with the wrong memory type,
   so the ACPI work (M5) maps firmware tables on demand and reserved ranges uncached; 1 GiB pages on x86_64; Svpbmt on RISC-V.
+
+## D30 Kernel heap: power-of-two size classes in the direct map, one frame at most until the buddy allocator — Decided by the build loop (engineering; ordering, large allocations and locking decided by research)
+Third step of M2. `alloc` (`Box`, `Vec`, `BTreeMap`, ...) works in the kernel on every
+architecture once `paging::enable` has run; before that, allocating fails.
+- **Before the high-half relink (decided by research).** D29 planned the relink first. The heap
+  does not depend on where the image is linked: it lives in the direct map, which the relink
+  does not move, and the relink's pre-MMU code cannot allocate anyway. Splitting them keeps each
+  change reviewable and benchmarked on its own. The relink is still required before M4.
+- **Design.** Size classes of 16, 32, ..., 2048 bytes. Each class carves 4 KiB frames from the
+  frame allocator into blocks of its size, reached through the direct map, so every block is
+  aligned to its size (any alignment up to 2048 is served by picking the class from
+  `max(size, align)`). A class keeps three words: the most recently freed block (freed blocks
+  are linked through their first word) and the never-used rest of the frame being carved, so a
+  block never handed out is never touched and the heap needs no other metadata. Layouts of 2049
+  bytes to one frame (alignment up to 4096) take a whole frame, given back on free. `realloc`
+  returns the same pointer when the new size stays in the same class.
+- **Nothing larger than a frame yet (decided by research).** Options: fail above one frame;
+  carve contiguous frames from the frame allocator's never-used ranges; the buddy allocator
+  now. The second was implemented first and failed on every boot: the frame self-test cycles
+  through all memory once, after which no never-used range is left, so contiguous allocation
+  would depend on history. The buddy allocator in the same change would mix two decisions and
+  risk a benchmarked regression on single-frame allocation. So larger layouts fail (null, and
+  `alloc`'s handler panics) until the buddy allocator, the next M2 step, which keeps today's
+  free stack as its order-0 cache so single-frame allocation stays as fast, and which virtio
+  DMA (M8) needs as well.
+- **Empty slabs are not returned yet**: knowing a frame's blocks are all free needs a count per
+  frame; it comes with the buddy allocator's per-frame metadata. Memory held by a class is
+  bounded by that class's peak use.
+- **Locking (decided by research).** One spin lock for the heap and one for the frame allocator,
+  which moves from boot's `Memory` into a global (`memory::FRAMES`, D28's planned global
+  instance). Lock order: heap, then frames. A block allocation or free never takes the frame
+  lock. The lock does not mask interrupts (saving and restoring the interrupt state on every
+  allocation would cost every allocation, and no handler needs to allocate), so interrupt and
+  exception handlers must not allocate. On the bare-metal targets, with one CPU so far, the
+  heap takes its lock with a try-lock and panics if it is held, which can only mean a handler
+  re-entered the heap: a clear report instead of a hang, at no cost to the handlers (counting
+  handler entries was measured at +2 to +11 instructions on the interrupt and breakpoint
+  round trips, a regression, and dropped). Per-CPU caches replace this with SMP (M4).
+- **Benchmarks.** `heap_allocate_free_small` (a 32-byte block allocated and freed through the
+  global allocator: lock, free-list pop and push, unlock): 52 instructions per pair on
+  aarch64, 95 on riscv64, 52 on x86_64, beyond the loop's own 4. Every other result unchanged.
+- **Testing.** Host unit tests for the spin lock (exclusion across threads), the size-class
+  choice, alignment, distinct blocks, LIFO reuse, frame use per class, frames given back, and
+  exhaustion and oversized layouts failing. A boot self-test on every architecture allocates
+  from every size class and as whole frames through the global heap, checks each block is
+  aligned, writable and in the direct map and that none overlap (each filled with its own
+  number), frees them and checks that exactly the whole frames came back, then grows a `Vec` to
+  a frame through `realloc`. The spin lock's guard is `Sync` only for `T: Sync` (found by the
+  independent review: without that, two threads could reach a `Cell` through one guard).

@@ -6,8 +6,10 @@
 //! so the elapsed time is an instruction count: the same on every host and every run, which
 //! is what lets CI compare it against a committed baseline (D27).
 
+use crate::HEAP;
 use crate::interrupt;
 use crate::memory::FrameAllocator;
+use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
 use eggos_hal::memory::FRAME_SIZE;
@@ -25,7 +27,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 7] {
+pub fn all<P: Platform>() -> [Benchmark; 8] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -37,6 +39,7 @@ pub fn all<P: Platform>() -> [Benchmark; 7] {
         ),
         ("frame_allocate_untouched", frame_allocate_untouched),
         ("frame_free_allocate", frame_free_allocate),
+        ("heap_allocate_free_small", heap_allocate_free_small),
     ]
 }
 
@@ -137,6 +140,22 @@ fn frame_free_allocate(n: u64) {
     black_box(&mut page);
 }
 
+/// Allocating and freeing a small block through the kernel's global heap: taking and releasing
+/// its lock around a size class's free-list pop and push, the steady state of `Box` and small
+/// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one (host
+/// tests) every allocation fails and only the failure path is timed.
+fn heap_allocate_free_small(n: u64) {
+    let layout = Layout::new::<[u64; 4]>();
+    for _ in 0..n {
+        // SAFETY: the layout has a non-zero size.
+        let pointer = unsafe { HEAP.alloc(black_box(layout)) };
+        if !pointer.is_null() {
+            // SAFETY: allocated just above with `layout` and not used.
+            unsafe { HEAP.dealloc(black_box(pointer), layout) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +238,7 @@ mod tests {
     fn frame_benchmarks_run_on_the_host() {
         frame_allocate_untouched(ITERATIONS);
         frame_free_allocate(ITERATIONS);
+        heap_allocate_free_small(ITERATIONS);
     }
 
     #[test]

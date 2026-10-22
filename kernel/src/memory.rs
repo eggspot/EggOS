@@ -9,16 +9,21 @@
 //! allocator that replaces this one; the interface stays.
 
 use crate::paging::PageTables;
+use crate::sync::SpinLock;
 use eggos_hal::memory::{FRAME_SIZE, MAX_RANGES};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
-/// The kernel's memory once its page tables are active: the frame allocator and the tables,
-/// both reaching physical memory through the direct map.
+/// The kernel's memory once its page tables are active: the tables, reaching physical memory
+/// through the direct map (the frame allocator is [`FRAMES`]).
 #[derive(Debug)]
 pub struct Memory<P: Platform> {
-    pub frames: FrameAllocator,
     pub page_tables: PageTables<P::PageTableFormat>,
 }
+
+/// The kernel's frame allocator once its page tables are active: [`crate::paging::enable`]
+/// puts it here, and the kernel heap and everything else that needs frames take them from here.
+/// Lock order: the heap's lock ([`crate::heap::KernelHeap`]) before this one, never the reverse.
+pub static FRAMES: SpinLock<Option<FrameAllocator>> = SpinLock::new(None);
 
 /// Marks the end of the free stack. Never a frame address: frames are aligned to
 /// [`FRAME_SIZE`].
