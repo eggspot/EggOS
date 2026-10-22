@@ -15,6 +15,11 @@ const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// self-tests' Linux program writes from user mode, through the `write` system call (M6).
 const USER_HELLO: &str = "EGGOS-USER: hello from user mode";
 
+/// Must match `eggos_kernel::selftest::LINUX_START_LINE`, without its newline: the line the
+/// self-tests' program started from an ELF image writes from its arguments and environment.
+const ELF_START_LINE: &str =
+    "EGGOS-USER: started from an ELF image with arguments and an environment";
+
 /// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";
 
@@ -206,12 +211,14 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         };
     }
     match (clean_exit, passed, failed) {
-        (true, true, false) if lines().any(|l| l == USER_HELLO) => {
+        (true, true, false)
+            if lines().any(|l| l == USER_HELLO) && lines().any(|l| l == ELF_START_LINE) =>
+        {
             eprintln!("xtask: {arch}: boot test passed");
             Ok(())
         }
         (true, true, false) => Err(format!(
-            "{arch}: the Linux test program's line did not reach the console"
+            "{arch}: a Linux test program's line did not reach the console"
         )),
         (_, _, true) => Err(format!(
             "{arch}: kernel reported a self-test failure or panic"
@@ -246,15 +253,18 @@ mod tests {
 
     #[test]
     fn passes_only_on_clean_exit_with_pass_marker() {
-        let ok = format!("EggOS\r\n{USER_HELLO}\r\n{PASS_MARKER}\r\n");
+        let ok = format!("EggOS\r\n{USER_HELLO}\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
         assert!(verdict("x", Expect::Pass, false, &ok).is_err());
         assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
         // The user program's line must be there, whole.
         let silent = format!("EggOS\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &silent).is_err());
-        let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{PASS_MARKER}\r\n");
+        let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &garbled).is_err());
+        // And the ELF program's.
+        let no_elf = format!("EggOS\r\n{USER_HELLO}\r\n{PASS_MARKER}\r\n");
+        assert!(verdict("x", Expect::Pass, true, &no_elf).is_err());
     }
 
     #[test]

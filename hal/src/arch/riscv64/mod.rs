@@ -454,6 +454,13 @@ impl Platform for Riscv64 {
         exception::user_test_program()
     }
 
+    fn linux_hardware_capabilities() -> [u64; 2] {
+        // One bit per single-letter extension, `1 << (letter - 'A')`: the base the kernel's
+        // target requires (RV64IMAC), without F, D or V, which trap in user mode (D49).
+        let letter = |extension: u8| 1u64 << (extension - b'A');
+        [letter(b'I') | letter(b'M') | letter(b'A') | letter(b'C'), 0]
+    }
+
     fn make_instructions_visible(_start: usize, _length: usize) {
         // SAFETY: `fence.i` orders this hart's instruction fetches after its earlier stores;
         // it changes no memory contents.

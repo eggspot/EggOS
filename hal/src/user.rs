@@ -105,7 +105,8 @@ use x86_64::Registers;
 
 /// A tiny position-independent program in the architecture's machine code, for the kernel's
 /// boot self-tests and benchmarks of user mode, run from one page mapped
-/// [`crate::paging::Attributes::USER_TEXT`]. It needs no stack and no data. Offsets are from
+/// [`crate::paging::Attributes::USER_TEXT`]. It needs no data, and no stack but the one
+/// [`Self::linux_start`] reads. Offsets are from
 /// the start of [`TestProgram::code`].
 #[derive(Debug, Clone, Copy)]
 pub struct TestProgram {
@@ -128,6 +129,11 @@ pub struct TestProgram {
     /// calls `exit_group(0)` if each returned what Linux returns, `exit_group(1)` if not. In
     /// Linux's numbers for the architecture.
     pub linux_hello: usize,
+    /// A Linux program started as Linux starts one (D51): its stack pointer at `argc`, then
+    /// the `argv` and `envp` pointer arrays, each ended by a null pointer. Writes each argument
+    /// string, then each environment string, to standard output, then calls
+    /// `exit_group(argc)`; `exit_group(255)` if the stack pointer is not 16-byte aligned.
+    pub linux_start: usize,
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.
     pub linux_unknown_syscalls: usize,

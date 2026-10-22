@@ -675,6 +675,16 @@ impl Platform for X86_64 {
         exception::user_test_program()
     }
 
+    fn linux_hardware_capabilities() -> [u64; 2] {
+        /// `CPUID.1:EDX` bits user mode cannot use while FP/SIMD traps (D49): FPU, MMX, FXSR,
+        /// SSE, SSE2.
+        const FLOATING_POINT: u32 = 1 | 1 << 23 | 1 << 24 | 1 << 25 | 1 << 26;
+        let features = core::arch::x86_64::__cpuid(1).edx;
+        // `AT_HWCAP2` stays 0: its `FSGSBASE` bit would tell programs they may set their GS
+        // base, which needs D49's SWAPGS fence first.
+        [u64::from(features & !FLOATING_POINT), 0]
+    }
+
     fn make_instructions_visible(_start: usize, _length: usize) {
         // x86 keeps instruction fetch coherent with stores to the same memory, and a program
         // is first entered through `iretq`, which serializes: nothing to do.

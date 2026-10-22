@@ -364,6 +364,35 @@ riscv64_user_test_linux_hello:
 4:  j       4b
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .balign 4
+    .global riscv64_user_test_linux_start
+riscv64_user_test_linux_start:
+    // Linux's generic numbers: write 64, exit_group 94. s1 is argc, s2 walks argv and envp,
+    // s3 counts the two lists.
+    andi    t0, sp, 15
+    li      a0, 255
+    bnez    t0, 9f
+    ld      s1, 0(sp)
+    addi    s2, sp, 8
+    li      s3, 2
+6:  ld      a1, 0(s2)
+    addi    s2, s2, 8
+    beqz    a1, 8f
+    li      a2, 0
+7:  add     t0, a1, a2
+    lbu     t1, 0(t0)
+    beqz    t1, 5f
+    addi    a2, a2, 1
+    j       7b
+5:  li      a0, 1
+    li      a7, 64
+    ecall
+    j       6b
+8:  addi    s3, s3, -1
+    bnez    s3, 6b
+    mv      a0, s1
+9:  li      a7, 94
+    ecall
+4:  j       4b
     .global riscv64_user_test_linux_unknown_syscalls
 riscv64_user_test_linux_unknown_syscalls:
     li      a7, {unknown_syscall}
@@ -464,6 +493,7 @@ unsafe extern "C" {
     static riscv64_user_test_null_syscalls: u8;
     static riscv64_user_test_spin: u8;
     static riscv64_user_test_linux_hello: u8;
+    static riscv64_user_test_linux_start: u8;
     static riscv64_user_test_linux_unknown_syscalls: u8;
     static riscv64_user_test_end: u8;
 }
@@ -510,6 +540,7 @@ pub(super) fn user_test_program() -> TestProgram {
         null_syscalls: (&raw const riscv64_user_test_null_syscalls) as usize - start,
         spin: (&raw const riscv64_user_test_spin) as usize - start,
         linux_hello: (&raw const riscv64_user_test_linux_hello) as usize - start,
+        linux_start: (&raw const riscv64_user_test_linux_start) as usize - start,
         linux_unknown_syscalls: (&raw const riscv64_user_test_linux_unknown_syscalls) as usize
             - start,
     }

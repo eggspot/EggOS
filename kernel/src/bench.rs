@@ -7,9 +7,10 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
+use crate::linux::exec;
 use crate::memory::{FRAMES, FrameAllocator, Memory};
 use crate::process::{self, Process};
-use crate::{cpu, linux, thread};
+use crate::{cpu, linux, selftest, thread};
 use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -33,7 +34,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 17] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 18] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -73,6 +74,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 17] {
         ),
         ("process_switch_round_trip", process_switch_round_trip::<P>),
         ("linux_syscall_round_trip", linux_syscall_round_trip::<P>),
+        ("linux_exec_load", linux_exec_load::<P>),
     ]
 }
 
@@ -356,6 +358,25 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
+/// Starting a Linux program from its ELF image (D51): a new process, the self-test's image
+/// loaded into it with the self-test's arguments and environment (its code, data and `.bss`
+/// mapped, its stack mapped and laid out), then the process freed. Each page is a frame of its
+/// own, zeroed: 33 of them for the stack (`exec::STACK_SIZE` and the arguments' page), 6 for
+/// the program, and the tables, so the frames dominate.
+fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    let image = selftest::linux_start_image::<P>();
+    let arguments = selftest::LINUX_START_ARGUMENTS.map(str::as_bytes);
+    let environment = selftest::LINUX_START_ENVIRONMENT.map(str::as_bytes);
+    for _ in 0..n {
+        // SAFETY: as in `process_syscall_round_trip`.
+        let mut process = unsafe { Process::<P>::new(&memory.page_tables) }
+            .expect("there is memory for a process");
+        let context = exec::load(&mut process, &image, b"/bench", &arguments, &environment)
+            .expect("the self-test's image loads");
+        black_box(context);
+    }
+}
+
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
 /// (D48): per iteration two system calls, two thread switches and two address-space switches,
 /// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
@@ -465,8 +486,12 @@ mod tests {
                 null_syscalls: 0,
                 spin: 0,
                 linux_hello: 0,
+                linux_start: 0,
                 linux_unknown_syscalls: 0,
             }
+        }
+        fn linux_hardware_capabilities() -> [u64; 2] {
+            [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
@@ -522,18 +547,26 @@ mod tests {
                 (process_syscall, _),
                 (process_switch, _),
                 (linux_syscall, _),
+                (linux_exec, _),
             ],
-        ) = all.split_at(all.len() - 4)
+        ) = all.split_at(all.len() - 5)
         else {
             unreachable!()
         };
         assert_eq!(
-            [*syscall, *process_syscall, *process_switch, *linux_syscall],
+            [
+                *syscall,
+                *process_syscall,
+                *process_switch,
+                *linux_syscall,
+                *linux_exec
+            ],
             [
                 "syscall_round_trip",
                 "process_syscall_round_trip",
                 "process_switch_round_trip",
-                "linux_syscall_round_trip"
+                "linux_syscall_round_trip",
+                "linux_exec_load"
             ]
         );
         assert_eq!(
@@ -589,6 +622,8 @@ mod tests {
         process_switch_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         linux_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_exec_load::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
     }
 

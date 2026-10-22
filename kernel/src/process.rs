@@ -17,8 +17,9 @@
 //! with [`Process::with_user_memory`], which loads it first, so a handler that blocked and
 //! resumed after another process ran on its CPU still reaches its own.
 //!
-//! For now the only program is the HAL's test program ([`Process::with_test_program`]), for the
-//! boot self-tests and benchmarks; loading programs from files comes with the file system (M7).
+//! A Linux program is mapped from its ELF image by [`crate::linux::exec::load`] (D51); the
+//! HAL's test program ([`Process::with_test_program`]) serves the boot self-tests and
+//! benchmarks. Reading images from files comes with the file system (M7).
 
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
@@ -133,11 +134,17 @@ impl<P: Platform> Process<P> {
             let frame = frames.allocate().ok_or("no frame for a user page")?;
             let page = (frame as usize).wrapping_add(frames.physical_memory_offset()) as *mut u8;
             // SAFETY: the frame was just allocated, so this code owns it, and the allocator
-            // reaches it through its offset.
-            unsafe { core::ptr::write_bytes(page, 0, FRAME_SIZE as usize) };
-            // SAFETY: as above; `contents` fit in the frame (checked above) and are not in it,
-            // so the two do not overlap.
+            // reaches it through its offset. `contents` fit in the frame (checked above) and
+            // are not in it, so the two do not overlap.
             unsafe { core::ptr::copy_nonoverlapping(contents.as_ptr(), page, contents.len()) };
+            // SAFETY: as above: the rest of the frame, after the contents.
+            unsafe {
+                core::ptr::write_bytes(
+                    page.wrapping_add(contents.len()),
+                    0,
+                    FRAME_SIZE as usize - contents.len(),
+                )
+            };
             if attributes.executable {
                 // The whole page: its zeroed rest too, or instruction fetch past the contents
                 // could see the frame's old data.

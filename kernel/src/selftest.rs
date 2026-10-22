@@ -4,6 +4,8 @@
 
 use crate::HEAP;
 use crate::address_space::AddressSpace;
+use crate::elf::{self, ProgramHeader, segment};
+use crate::linux::exec;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::process::{self, Process, ProcessExit};
 use crate::sync::SpinLock;
@@ -46,7 +48,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 20] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 21] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -92,6 +94,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 20] {
         (
             "linux_programs_write_and_exit",
             linux_programs_write_and_exit::<P>,
+        ),
+        (
+            "linux_programs_start_from_elf_images",
+            linux_programs_start_from_elf_images::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -879,6 +885,144 @@ fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<
     Ok(())
 }
 
+/// What [`linux_start_image`]'s program is started with: the strings it writes, in order,
+/// arguments first. Together they are [`LINUX_START_LINE`].
+pub const LINUX_START_ARGUMENTS: [&str; 2] =
+    ["EGGOS-USER: started from an ELF image", " with arguments"];
+pub const LINUX_START_ENVIRONMENT: [&str; 1] = [" and an environment\n"];
+/// The line [`linux_start_image`]'s program writes. The QEMU runner requires it on the
+/// console: it must match `ELF_START_LINE` in `xtask`.
+pub const LINUX_START_LINE: &str =
+    "EGGOS-USER: started from an ELF image with arguments and an environment\n";
+/// Where [`linux_start_image`] puts its data: an address that is not page-aligned, as linkers
+/// place data after code.
+pub const LINUX_START_DATA: u64 = 0x60_0123;
+/// [`linux_start_image`]'s initialized data; zero follows, up to [`LINUX_START_DATA_SIZE`].
+pub const LINUX_START_DATA_BYTES: &[u8; 16] = b"EGGOS data bytes";
+/// [`linux_start_image`]'s data and `.bss`: across three pages.
+pub const LINUX_START_DATA_SIZE: u64 = 0x2100;
+
+/// An ELF executable around the HAL's test program, as a linker lays one out: a read-only,
+/// executable segment from the start of the file, its first page the file and program
+/// headers (`PHDR` names them), its second the test program's code at
+/// [`process::TEST_PROGRAM_ADDRESS`], entered at its `linux_start`; then a writable data
+/// segment at [`LINUX_START_DATA`] with initialized data and `.bss`; and a non-executable
+/// stack. There is no file system to load one from yet (M7).
+pub fn linux_start_image<P: Platform>() -> Vec<u8> {
+    let program = P::user_test_program();
+    let text = process::TEST_PROGRAM_ADDRESS - FRAME_SIZE;
+    let text_size = FRAME_SIZE + program.code.len() as u64;
+    let data_offset = 2 * FRAME_SIZE + LINUX_START_DATA % FRAME_SIZE;
+    let headers = 4;
+    let header = |kind, flags, offset, virt, file_size, memory_size| ProgramHeader {
+        kind,
+        flags,
+        offset,
+        virt,
+        file_size,
+        memory_size,
+        align: FRAME_SIZE,
+    };
+    let table = (headers * elf::PROGRAM_HEADER_SIZE) as u64;
+    let header_at = elf::HEADER_SIZE as u64;
+    elf::build::image(
+        2,
+        elf::machine::NATIVE,
+        process::TEST_PROGRAM_ADDRESS + program.linux_start as u64,
+        &[
+            header(
+                segment::PHDR,
+                segment::READ,
+                header_at,
+                text + header_at,
+                table,
+                table,
+            ),
+            header(
+                segment::LOAD,
+                segment::READ | segment::EXECUTE,
+                0,
+                text,
+                text_size,
+                text_size,
+            ),
+            header(
+                segment::LOAD,
+                segment::READ | segment::WRITE,
+                data_offset,
+                LINUX_START_DATA,
+                LINUX_START_DATA_BYTES.len() as u64,
+                LINUX_START_DATA_SIZE,
+            ),
+            header(
+                segment::GNU_STACK,
+                segment::READ | segment::WRITE,
+                0,
+                0,
+                0,
+                0,
+            ),
+        ],
+        &[
+            (FRAME_SIZE as usize, program.code),
+            (data_offset as usize, LINUX_START_DATA_BYTES),
+        ],
+    )
+}
+
+/// A Linux program started from an ELF image (M6, D51) must find its arguments and its
+/// environment on its stack, as Linux lays them out, and write them ([`LINUX_START_LINE`],
+/// which the QEMU runner checks reached the console), then end with `exit_group(argc)`. Its
+/// initialized data must be in place and its `.bss` zero, though the frames held other data
+/// before. Everything it took must be freed.
+fn linux_programs_start_from_elf_images<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let joined: Vec<u8> = LINUX_START_ARGUMENTS
+        .iter()
+        .chain(&LINUX_START_ENVIRONMENT)
+        .flat_map(|string| string.bytes())
+        .collect();
+    if joined != LINUX_START_LINE.as_bytes() {
+        return Err("the program's strings are not the line it is checked against");
+    }
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    {
+        let image = linux_start_image::<P>();
+        let arguments = LINUX_START_ARGUMENTS.map(str::as_bytes);
+        let environment = LINUX_START_ENVIRONMENT.map(str::as_bytes);
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::new(&memory.page_tables) }?;
+        let context = exec::load(&mut process, &image, b"/selftest", &arguments, &environment)
+            .map_err(|_| "the loader refused a valid ELF image")?;
+        let mut data = alloc::vec![0xffu8; LINUX_START_DATA_SIZE as usize];
+        process
+            .read_user_memory(LINUX_START_DATA, &mut data)
+            .map_err(|_| "the program's data is not mapped")?;
+        let (initialized, bss) = data.split_at(LINUX_START_DATA_BYTES.len());
+        if initialized != LINUX_START_DATA_BYTES || bss.iter().any(|&byte| byte != 0) {
+            return Err("the program's data is not its image's, or its .bss is not zero");
+        }
+        let process = Arc::new(process);
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        match process.exit_status() {
+            Some(ProcessExit::Exited(2)) => {}
+            Some(ProcessExit::Exited(255)) => {
+                return Err("the program's stack pointer is not 16-byte aligned");
+            }
+            Some(_) => return Err("the program did not find its two arguments"),
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+    }
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the ELF program's frames and tables were not all freed");
+    }
+    Ok(())
+}
+
 /// [`processes_keep_their_own_memory`] on every CPU: first one process whose threads, one per
 /// CPU (up to 16), run on different CPUs at once, so several CPUs keep its address space loaded
 /// when it ends and must all let it go; then a process per CPU with two threads each, so they
@@ -1515,6 +1659,9 @@ mod tests {
         fn user_test_program() -> eggos_hal::user::TestProgram {
             unreachable!()
         }
+        fn linux_hardware_capabilities() -> [u64; 2] {
+            [0, 0]
+        }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
@@ -1622,6 +1769,9 @@ mod tests {
         }
         fn user_test_program() -> eggos_hal::user::TestProgram {
             unreachable!()
+        }
+        fn linux_hardware_capabilities() -> [u64; 2] {
+            [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(

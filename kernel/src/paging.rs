@@ -195,6 +195,22 @@ impl<F: Format> PageTables<F> {
         &self.roots[..F::ROOTS]
     }
 
+    /// Host tests only: the tables with the one root `root`, active (so frozen), to look up
+    /// what they map, as a test platform playing a program's part reads its memory.
+    #[cfg(test)]
+    pub(crate) fn view_for_test(root: u64, physical_memory_offset: usize) -> Self {
+        assert_eq!(F::ROOTS, 1);
+        let mut roots = [0; MAX_ROOTS];
+        roots[0] = root;
+        Self {
+            roots,
+            physical_memory_offset,
+            active: true,
+            user_half_only: true,
+            format: PhantomData,
+        }
+    }
+
     /// Maps virtual `virt..virt + length` to physical `phys..phys + length` with `attributes`,
     /// using the largest leaves that fit. Everything must be 4 KiB-aligned and nothing in the
     /// range mapped yet. On an error, part of the range may have been mapped.

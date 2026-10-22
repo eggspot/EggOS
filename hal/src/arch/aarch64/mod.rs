@@ -491,6 +491,11 @@ impl Platform for Aarch64 {
         exception::user_test_program()
     }
 
+    fn linux_hardware_capabilities() -> [u64; 2] {
+        // FP/SIMD traps in user mode (D49), so not even `HWCAP_FP` or `HWCAP_ASIMD`.
+        [0, 0]
+    }
+
     fn make_instructions_visible(start: usize, length: usize) {
         let ctr: u64;
         // SAFETY: reading the cache type register has no side effects.
