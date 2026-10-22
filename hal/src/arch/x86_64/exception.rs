@@ -12,7 +12,8 @@
 //! into the running program's `UserContext`: the entry saves every register there, switches
 //! back to the kernel's GS base and returns from [`run_user`]; `syscall` builds the same frame
 //! and joins it. The kernel target uses no SSE/x87 registers (`x86_64-unknown-none` is
-//! soft-float), so they are not saved.
+//! soft-float), so they are not saved, and programs may not use them either: `CR0.TS` traps
+//! them (D49).
 //!
 //! All exceptions run on the current stack: there is no IST stack yet, so a stack overflow
 //! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
