@@ -1,0 +1,21 @@
+# EggOS boot-time benchmark baseline, written by `cargo xtask bench --arch all --update-baseline`.
+# One line per result: <arch> <benchmark> <ns per iteration>. The kernel runs under QEMU
+# `-icount shift=0` (1 ns per instruction), so each number is instructions per iteration.
+# `cargo xtask bench` (and CI) fails when a result is slower than its line here by more than
+# 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
+# slower, and say why in the PR (CLAUDE.md, "Never merge a performance regression").
+aarch64 breakpoint_round_trip 106.00
+aarch64 clock_read 5.00
+aarch64 empty_loop 4.00
+aarch64 timer_arm 6.00
+aarch64 timer_interrupt_round_trip 97.00
+riscv64 breakpoint_round_trip 159.00
+riscv64 clock_read 4.00
+riscv64 empty_loop 4.00
+riscv64 timer_arm 286.00
+riscv64 timer_interrupt_round_trip 680.00
+x86_64 breakpoint_round_trip 85.00
+x86_64 clock_read 8.00
+x86_64 empty_loop 4.00
+x86_64 timer_arm 65.00
+x86_64 timer_interrupt_round_trip 95.00

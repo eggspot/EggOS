@@ -30,10 +30,12 @@ leaves instead of measuring, TSC-deadline mode, and the ACPI PM timer or HPET as
 reference clocks when there is no 8254; `stimecmp` directly when RISC-V Sstc is present; GICv3; device-tree timebase and GIC
 addresses (M5).
 
-Setup follow-ups from the 2026-10-22 review (not yet done; exception vectors done in D25):
-- **Benchmarks** (`cargo xtask bench`, before M2 lands): host microbenchmarks plus instruction counts
-  in QEMU (`-icount`), compared against a committed baseline, so "never merge a regression" can be
-  checked.
+Setup follow-ups from the 2026-10-22 review (exception vectors done in D25, the benchmark harness
+in D27):
+- **Benchmarks: done** (D27). `cargo xtask bench` boots each architecture under QEMU `-icount`
+  and fails on a regression against `benchmarks/baseline.txt`; CI runs it. Every new hot path
+  (frame allocator, page faults, scheduler, syscalls) adds its benchmark there. Cycle-accurate
+  numbers on real hardware come with M13.
 - **A BSS self-test that can fail:** QEMU hands over zeroed RAM, so fill `.bss` with a pattern
   before boot (QEMU's `loader` device) to prove the zeroing loop works.
 

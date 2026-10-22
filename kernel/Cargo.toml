@@ -17,3 +17,6 @@ qemu-test = []
 # Also execute an illegal instruction after the self-tests pass, to test that a fatal exception
 # is reported with the fail marker (the QEMU runner then expects that failure).
 qemu-test-fatal-exception = ["qemu-test"]
+# After the self-tests pass, run the boot-time benchmarks and print their results (read by
+# `cargo xtask bench`, which boots with `-icount shift=0`).
+qemu-bench = ["qemu-test"]

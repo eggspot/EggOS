@@ -33,12 +33,19 @@ const BANNER_PREFIX: &str = "EggOS ";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1"];
 
-/// Boots `kernel` headless and passes only if QEMU powers off cleanly within the timeout and
-/// the console shows what `expect` asks for (see [`verdict`]).
-pub fn boot_test(arch: &Arch, kernel: &Path, expect: Expect) -> Result<(), String> {
+/// Boots `kernel` headless with `extra_args` added to QEMU's and passes only if QEMU powers
+/// off cleanly within the timeout and the console shows what `expect` asks for (see
+/// [`verdict`]). Returns the console output.
+pub fn boot_test(
+    arch: &Arch,
+    kernel: &Path,
+    expect: Expect,
+    extra_args: &[&str],
+) -> Result<String, String> {
     eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
+        .args(extra_args)
         // No `-no-reboot` here: with it, an x86 triple fault (e.g. in the power-off path) ends
         // QEMU with exit code 0 and would look like a clean power-off. Without it the machine
         // resets and prints the banner again, which fails the test below.
@@ -93,12 +100,9 @@ pub fn boot_test(arch: &Arch, kernel: &Path, expect: Expect) -> Result<(), Strin
 
     // The reader thread ends when QEMU closes stdout; collect the rest of what it saw.
     console.extend(rx.iter().flatten());
-    verdict(
-        arch.name,
-        expect,
-        status.success(),
-        &String::from_utf8_lossy(&console),
-    )
+    let console = String::from_utf8_lossy(&console).into_owned();
+    verdict(arch.name, expect, status.success(), &console)?;
+    Ok(console)
 }
 
 /// How many times the kernel's boot banner appears on the console.
