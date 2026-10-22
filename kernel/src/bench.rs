@@ -12,6 +12,7 @@ use crate::{interrupt, thread};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
@@ -27,7 +28,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 11] {
+pub fn all<P: Platform>() -> [Benchmark; 13] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -46,6 +47,11 @@ pub fn all<P: Platform>() -> [Benchmark; 11] {
         ("heap_allocate_free_small", heap_allocate_free_small),
         ("thread_yield_round_trip", thread_yield_round_trip::<P>),
         ("preemption_point_idle", preemption_point_idle::<P>),
+        ("wait_queue_wake_empty", wait_queue_wake_empty::<P>),
+        (
+            "thread_wait_wake_round_trip",
+            thread_wait_wake_round_trip::<P>,
+        ),
     ]
 }
 
@@ -207,6 +213,41 @@ fn preemption_point_idle<P: Platform>(n: u64) {
     for _ in 0..n {
         thread::preemption_point::<P>();
     }
+}
+
+/// Waking a wait queue nobody waits in: what code that changes a condition pays when no
+/// thread waits for it (D39).
+fn wait_queue_wake_empty<P: Platform>(n: u64) {
+    static QUEUE: thread::WaitQueue = thread::WaitQueue::new();
+    for _ in 0..n {
+        black_box(black_box(&QUEUE).wake_one::<P>());
+    }
+}
+
+/// The boot thread and one other handing a turn back and forth through two wait queues: per
+/// iteration each thread wakes the other and blocks until its turn comes, so two wakes, two
+/// condition checks that fail and two that hold, and two switches (D39). Includes starting and
+/// joining the thread once per run, as in `thread_yield_round_trip`.
+fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
+    static TURN: AtomicU64 = AtomicU64::new(0);
+    static BOOT: thread::WaitQueue = thread::WaitQueue::new();
+    static OTHER: thread::WaitQueue = thread::WaitQueue::new();
+    TURN.store(0, Ordering::Relaxed);
+    let Ok(other) = thread::spawn::<P, _>(move || {
+        for turn in 0..n {
+            OTHER.wait_until::<P>(|| TURN.load(Ordering::Relaxed) == 2 * turn + 1);
+            TURN.store(2 * turn + 2, Ordering::Relaxed);
+            BOOT.wake_one::<P>();
+        }
+    }) else {
+        return;
+    };
+    for turn in 0..n {
+        TURN.store(2 * turn + 1, Ordering::Relaxed);
+        OTHER.wake_one::<P>();
+        BOOT.wait_until::<P>(|| TURN.load(Ordering::Relaxed) == 2 * turn + 2);
+    }
+    other.join::<P>();
 }
 
 #[cfg(test)]

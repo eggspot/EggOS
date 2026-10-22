@@ -99,6 +99,11 @@ pub(crate) mod tests {
     static CLOCK: AtomicU64 = AtomicU64::new(0);
     static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
 
+    /// The test platform's armed timer deadline; `u64::MAX` if none.
+    pub(crate) fn timer_deadline() -> u64 {
+        DEADLINE.load(Ordering::Relaxed)
+    }
+
     /// Physical address of the test platform's RAM.
     const RAM_BASE: u64 = 0x10_0000;
     const RAM_FRAMES: u64 = 128;
