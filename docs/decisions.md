@@ -1546,7 +1546,9 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
     page and file bytes within the image (`ENOEXEC`; a segment without file bytes is zero
     pages alone and its offset is not checked, as on Linux), no more file bytes than memory,
     and within user space below the stack's reserve, before the PIE move as well as after, so
-    the move cannot wrap around (`EINVAL`, as Linux).
+    the move cannot wrap around (`EINVAL`, as Linux); so must the entry point. **Trigger to
+    revisit** the shared-page rule (Linux allows two segments on one page): a real binary
+    built with a small maximum page size or a hand-written linker script needs it.
   - **`AT_PHDR`** is where the `LOAD` segment whose file bytes hold the whole program header
     table maps it, as Linux computes it; stricter than Linux, a table in no segment is refused
     (musl reads `AT_PHDR` unchecked), and so is a `PT_PHDR` that names another address (static
@@ -1564,7 +1566,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   - **The auxiliary vector**, in Linux's order: `AT_HWCAP`, `AT_PAGESZ`, `AT_CLKTCK` (100),
     `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE` (0), `AT_FLAGS` (0), `AT_ENTRY`, `AT_UID`,
     `AT_EUID`, `AT_GID`, `AT_EGID` (all 0, equal, with `AT_SECURE` 0, or C libraries treat the
-    program as privileged), `AT_SECURE`, `AT_HWCAP2`, `AT_RANDOM`, `AT_EXECFN`. Left out until
+    program as privileged), `AT_SECURE`, `AT_RANDOM`, `AT_HWCAP2`, `AT_EXECFN`. Left out until
     they mean something: `AT_SYSINFO_EHDR` (no vDSO; C libraries fall back to system calls),
     `AT_MINSIGSTKSZ` (comes with signal frames), `AT_PLATFORM` (only the dynamic loader uses
     it). `AT_HWCAP`/`AT_HWCAP2` come from the new HAL call
@@ -1585,7 +1587,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `getrandom` (Rust's std calls it on first `HashMap` use) and layout randomization.
 - **Cost (D24).** New benchmark `linux_exec_load`: a new process, the self-test's image (code,
   data and `.bss` across six pages, two arguments and an environment string) loaded, then
-  freed: 112,746 (aarch64), 96,505 (riscv64), 60,447 (x86_64) instructions. Zeroing frames
+  freed: 112,859 (aarch64), 96,571 (riscv64), 60,529 (x86_64) instructions. Zeroing frames
   dominates: 33 for the stack, 6 for the program and the page tables. `map_new_page` now zeroes
   only the part of a frame its contents do not fill. Follow-ups that cut it: demand paging (the
   stack's pages only when touched), a faster `memset` on the kernel's targets, and frames
@@ -1607,6 +1609,11 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   it; a static PIE moved to the PIE base; the PIE base on all three formats; each refusal with
   its Linux error and nothing mapped; `E2BIG` for a long string and for too many; every frame
   freed.
+- **From the independent review (non-blocking, on the roadmap's exec follow-ups).** Before
+  `execve` takes outside input: a cap on a program's eagerly mapped pages (a hostile image's
+  huge `p_memsz` would zero frames until memory runs out), and the initial stack written
+  straight into its frames instead of through an infallible 2 MiB heap buffer; `CPUID` for
+  `AT_HWCAP` read once at boot rather than per exec (a VM exit under virtualization).
 - **Next (roadmap).** `brk`, `mmap`, `munmap`, `mprotect` (and with them D50's trigger to copy
   user memory with fault fixups), `uname`, `writev`, `set_tid_address`, `arch_prctl`, then what
   Rust's std calls at startup (`poll`/`ppoll` on descriptors 0–2, `rt_sigaction` for

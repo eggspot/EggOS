@@ -15,7 +15,7 @@ aarch64 frame_allocate_untouched 17.15
 aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
 aarch64 heap_allocate_free_small 50.00
-aarch64 linux_exec_load 112746.45
+aarch64 linux_exec_load 112859.45
 aarch64 linux_syscall_round_trip 134.34
 aarch64 preemption_point_idle 8.00
 aarch64 process_switch_round_trip 482.55
@@ -33,7 +33,7 @@ riscv64 frame_allocate_untouched 16.16
 riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
 riscv64 heap_allocate_free_small 57.00
-riscv64 linux_exec_load 96505.48
+riscv64 linux_exec_load 96571.48
 riscv64 linux_syscall_round_trip 171.47
 riscv64 preemption_point_idle 6.00
 riscv64 process_switch_round_trip 590.84
@@ -51,7 +51,7 @@ x86_64 frame_allocate_untouched 14.06
 x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06
 x86_64 heap_allocate_free_small 48.00
-x86_64 linux_exec_load 60446.83
+x86_64 linux_exec_load 60528.83
 x86_64 linux_syscall_round_trip 137.56
 x86_64 preemption_point_idle 8.00
 x86_64 process_switch_round_trip 443.06

@@ -80,7 +80,8 @@ pub enum ExecError {
     InvalidProgram(&'static str),
     /// The program names an interpreter, and there is none to load: `ENOENT`.
     NoInterpreter,
-    /// A segment is not within user space, or has more file bytes than memory: `EINVAL`.
+    /// A segment or the entry point is not within user space, or a segment has more file
+    /// bytes than memory: `EINVAL`.
     InvalidSegment(&'static str),
     /// A segment starts below [`MINIMUM_ADDRESS`]: `EPERM`.
     BelowMinimumAddress,
@@ -187,6 +188,11 @@ pub fn load<P: Platform>(
     }
 
     let entry = elf.entry().wrapping_add(bias);
+    if elf.entry() >= user_end || entry >= user_end {
+        return Err(ExecError::InvalidSegment(
+            "an entry point outside user space",
+        ));
+    }
     let [hwcap, hwcap2] = P::linux_hardware_capabilities();
     // Linux's order, so a dump of a program's vector compares line by line with Linux's.
     let auxiliary = [
@@ -208,7 +214,10 @@ pub fn load<P: Platform>(
         (auxv::GID, 0),
         (auxv::EGID, 0),
         (auxv::SECURE, 0),
+        // Filled in with the stack's layout: both point into it.
+        (auxv::RANDOM, 0),
         (auxv::HWCAP2, hwcap2),
+        (auxv::EXECFN, 0),
     ];
     let stack = InitialStack::new(
         user_end,
@@ -395,8 +404,9 @@ struct InitialStack {
 }
 
 impl InitialStack {
-    /// The stack for a program whose stack ends at `top` (page-aligned). `auxiliary` gets
-    /// `AT_RANDOM` and `AT_EXECFN`, which point into the stack, and `AT_NULL` added.
+    /// The stack for a program whose stack ends at `top` (page-aligned). `auxiliary`'s
+    /// `AT_RANDOM` and `AT_EXECFN` entries get their values here, since they point into the
+    /// stack, and `AT_NULL` ends it.
     fn new(
         top: u64,
         path: &[u8],
@@ -417,10 +427,9 @@ impl InitialStack {
         };
         let argument_bytes = strings(arguments);
         let environment_bytes = strings(environment);
-        // argc, argv and its null, envp and its null, the vector, `AT_RANDOM`, `AT_EXECFN`
-        // and `AT_NULL`.
+        // argc, argv and its null, envp and its null, the vector and `AT_NULL`.
         let words = (arguments.len() as u64 + environment.len() as u64)
-            .saturating_add(3 + 2 * (auxiliary.len() as u64 + 3));
+            .saturating_add(3 + 2 * (auxiliary.len() as u64 + 1));
         // The 8-byte end marker, the strings, then (each 16-byte aligned) the random bytes
         // and the pointers: at most 15 bytes of padding each.
         let most = [
@@ -458,12 +467,12 @@ impl InitialStack {
             }
             pointers.push(0);
         }
-        let added = [
-            (auxv::RANDOM, random_at),
-            (auxv::EXECFN, path_at),
-            (auxv::NULL, 0),
-        ];
-        for &(kind, value) in auxiliary.iter().chain(&added) {
+        for &(kind, value) in auxiliary.iter().chain(&[(auxv::NULL, 0)]) {
+            let value = match kind {
+                auxv::RANDOM => random_at,
+                auxv::EXECFN => path_at,
+                _ => value,
+            };
             pointers.extend([kind, value]);
         }
         for (index, word) in pointers.iter().enumerate() {
@@ -638,7 +647,7 @@ mod tests {
                 environment,
                 LINUX_START_ENVIRONMENT.map(|s| s.as_bytes().to_vec())
             );
-            // Linux's order, then the two that point into the stack.
+            // Linux's order.
             let kinds: Vec<_> = auxiliary.iter().map(|(kind, _)| *kind).collect();
             assert_eq!(
                 kinds,
@@ -657,8 +666,8 @@ mod tests {
                     auxv::GID,
                     auxv::EGID,
                     auxv::SECURE,
-                    auxv::HWCAP2,
                     auxv::RANDOM,
+                    auxv::HWCAP2,
                     auxv::EXECFN,
                 ]
             );
@@ -832,6 +841,16 @@ mod tests {
         pie[16..18].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(
             load_image(&kernel, &pie)
+                .1
+                .map_err(ExecError::errno)
+                .map(|_| ()),
+            Err(Errno::EINVAL)
+        );
+        // An entry point past the end of user space.
+        let mut far = good.clone();
+        far[24..32].copy_from_slice(&USER_END.to_le_bytes());
+        assert_eq!(
+            load_image(&kernel, &far)
                 .1
                 .map_err(ExecError::errno)
                 .map(|_| ()),

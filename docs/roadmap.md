@@ -81,7 +81,10 @@ a file (M7) and the process's old address space replaced; dynamically linked pro
 the interpreter loaded at its own base and `AT_BASE` set (M7); `AT_SYSINFO_EHDR` with a vDSO
 (fast clock reads), `AT_MINSIGSTKSZ` with signal frames; `AT_HWCAP` recomputed when FP/SIMD
 state is saved per thread; RWX segments or a JIT path only if a real binary needs one; a
-faster `memset` and pre-zeroed frames (zeroing dominates `linux_exec_load`).
+faster `memset` and pre-zeroed frames (zeroing dominates `linux_exec_load`); before `execve`
+takes outside input, a cap on a program's eagerly mapped pages and the initial stack written
+straight into its frames (no 2 MiB heap buffer); `CPUID` for `AT_HWCAP` read once at boot;
+two segments on one page if a real binary needs it.
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to
