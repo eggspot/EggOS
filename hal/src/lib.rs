@@ -13,6 +13,7 @@ mod exception;
 pub mod fdt;
 mod interrupt;
 pub mod memory;
+pub mod paging;
 pub mod time;
 
 pub use exception::{Exception, ExceptionKind};
@@ -81,6 +82,41 @@ pub trait Platform {
 
     /// Where the kernel reaches physical memory: free RAM at physical address `p` (from
     /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. Zero
-    /// while the kernel runs with the MMU off or on an identity map.
+    /// while the kernel runs with the MMU off or on the boot identity map; once the kernel's
+    /// page tables are active ([`Self::activate_page_tables`]), [`Self::direct_map_offset`].
     fn physical_memory_offset() -> usize;
+
+    /// This architecture's page-table format.
+    type PageTableFormat: paging::Format;
+
+    /// Where the kernel's page tables put the direct map: physical address `p` at virtual
+    /// address `p + offset`, in the high half of the address space (D29).
+    fn direct_map_offset() -> usize;
+
+    /// Where the parts of the kernel image are, from the linker script.
+    fn kernel_image() -> paging::KernelImage;
+
+    /// All the physical memory the direct map covers: every range of RAM, whether free or
+    /// reserved, and the firmware tables the HAL reads (such as ACPI's on x86_64). Device
+    /// registers are not part of it. Built from the firmware's description on each call.
+    fn physical_memory() -> MemoryMap;
+
+    /// Calls `region` for each block of device registers the HAL itself uses before the driver
+    /// model exists (the early console, the interrupt controller, the timer), which the
+    /// kernel's page tables map as device memory at its physical address. Call it after boot
+    /// set up the timer (as `kernel_main` runs).
+    fn early_device_regions(region: &mut dyn FnMut(PhysicalRange));
+
+    /// Switches this CPU to the page tables at physical addresses `roots` (one per
+    /// [`paging::Format::ROOTS`]), then reports [`Self::direct_map_offset`] as the physical
+    /// memory offset.
+    ///
+    /// # Safety
+    /// The tables must be in [`Self::PageTableFormat`], stay unchanged and allocated for as long
+    /// as they are active, and map at least: the kernel image at its physical address (code
+    /// executable, data and stack writable), every range of [`Self::physical_memory`] at
+    /// [`Self::direct_map_offset`], and every [`Self::early_device_regions`] region at its
+    /// physical address as device memory. Nothing may hold a pointer derived from the old
+    /// physical memory offset into memory outside the kernel image.
+    unsafe fn activate_page_tables(roots: &[u64]);
 }

@@ -2,35 +2,49 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
-use crate::memory::FrameAllocator;
+use crate::memory::{FrameAllocator, Memory};
 use crate::{exception, interrupt};
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
 use eggos_hal::Platform;
+use eggos_hal::paging::{Attributes, Format, MemoryType};
 
 /// Printed when every self-test passed. The QEMU runner requires this exact line.
 pub const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 /// Printed when a self-test failed or the kernel panicked.
 pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
+/// Printed, followed by the address, before the `qemu-test-fatal-exception` kernel writes its
+/// read-only data. The QEMU runner requires the fault report to name that address.
+pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
 
-/// A self-test: a name and a check returning `Err(reason)` on failure.
-pub type SelfTest = (&'static str, fn() -> Result<(), &'static str>);
+/// A self-test: a name and a check of `context` (for the boot self-tests, the kernel's
+/// [`Memory`]) returning `Err(reason)` on failure.
+pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest; 4] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 5] {
     [
-        ("bss_is_zeroed", bss_is_zeroed),
-        ("breakpoint_resumes", breakpoint_resumes::<P>),
-        ("timer_interrupt_fires", timer_interrupt_fires::<P>),
+        ("bss_is_zeroed", |_| bss_is_zeroed()),
+        ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
+        ("timer_interrupt_fires", |_| timer_interrupt_fires::<P>()),
         ("frames_are_usable_ram", frames_are_usable_ram::<P>),
+        (
+            "page_tables_protect_the_kernel",
+            page_tables_protect_the_kernel::<P>,
+        ),
     ]
 }
 
-/// Runs `tests`, reporting each and then the verdict marker. Returns whether all passed.
-pub fn run<W: Write>(console: &mut W, tests: &[SelfTest]) -> Result<bool, core::fmt::Error> {
+/// Runs `tests` on `context`, reporting each and then the verdict marker. Returns whether all
+/// passed.
+pub fn run<W: Write, C>(
+    console: &mut W,
+    tests: &[SelfTest<C>],
+    context: &mut C,
+) -> Result<bool, core::fmt::Error> {
     let mut all_passed = true;
     for (name, test) in tests {
-        match test() {
+        match test(context) {
             Ok(()) => writeln!(console, "selftest {name} ... ok")?,
             Err(reason) => {
                 all_passed = false;
@@ -117,19 +131,23 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
 /// Frames written in [`frames_are_usable_ram`].
 const FRAMES_WRITTEN: usize = 64;
 
+/// Where the kernel reaches the first word of `frame` (through the allocator's offset).
+fn first_word(frames: &FrameAllocator, frame: u64) -> *mut u64 {
+    (frame as usize).wrapping_add(frames.physical_memory_offset()) as *mut u64
+}
+
 /// The boot memory map must offer memory, and its frames must be RAM the kernel can write and
-/// read back, handed out once each: write a pattern to the first frames allocated, check them
-/// all, free them, see them come back in reverse order, then count every frame up to the end
-/// of memory. A frame overlapping the kernel image or its stack would most likely crash the
-/// kernel here instead of passing.
-fn frames_are_usable_ram<P: Platform>() -> Result<(), &'static str> {
-    let map = P::memory_map();
-    if map.total() == 0 {
+/// read back through the direct map, handed out once each: write a pattern to the first frames
+/// allocated, check them all, free them, see them come back in reverse order, then take every
+/// other frame up to the end of memory, writing each, and give them all back. A frame
+/// overlapping the kernel image, its stack or a page table would most likely crash the kernel
+/// here instead of passing.
+fn frames_are_usable_ram<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
+    let frames = &mut memory.frames;
+    let total = frames.free_frames();
+    if total == 0 {
         return Err("the boot memory map has no free memory");
     }
-    let offset = P::physical_memory_offset();
-    let mut frames = FrameAllocator::new(&map, offset);
-    let total = frames.free_frames();
     let mut taken = [0u64; FRAMES_WRITTEN];
     let mut count = 0;
     for slot in &mut taken {
@@ -140,21 +158,21 @@ fn frames_are_usable_ram<P: Platform>() -> Result<(), &'static str> {
         count += 1;
     }
     let taken = &taken[..count];
-    let words = |frame: u64| {
-        let start = (frame as usize).wrapping_add(offset) as *mut u64;
+    let words = |frames: &FrameAllocator, frame: u64| {
+        let start = first_word(frames, frame);
         let length = eggos_hal::memory::FRAME_SIZE as usize / 8;
         (0..length).map(move |i| (start.wrapping_add(i), frame ^ i as u64))
     };
     for &frame in taken {
-        for (word, value) in words(frame) {
-            // SAFETY: `frame` was just allocated, so the kernel owns it, and the platform says
-            // free RAM is reachable at physical address + offset; `word` is inside the frame
+        for (word, value) in words(frames, frame) {
+            // SAFETY: `frame` was just allocated, so the kernel owns it, and the allocator
+            // reaches free RAM at physical address + its offset; `word` is inside the frame
             // and aligned.
             unsafe { word.write_volatile(value) };
         }
     }
     for &frame in taken {
-        for (word, value) in words(frame) {
+        for (word, value) in words(frames, frame) {
             // SAFETY: as above; the frame is still owned and was written in full.
             if unsafe { word.read_volatile() } != value {
                 return Err("a frame did not read back what was written (not RAM, or shared)");
@@ -172,12 +190,78 @@ fn frames_are_usable_ram<P: Platform>() -> Result<(), &'static str> {
     {
         return Err("freed frames did not come back last in, first out");
     }
+    // Every other frame, chained through its first word so they can all be given back.
     let mut handed_out = taken.len() as u64;
-    while frames.allocate().is_some() {
+    let mut chain = None;
+    while let Some(frame) = frames.allocate() {
+        // SAFETY: as above, for the frame just allocated.
+        unsafe { first_word(frames, frame).write_volatile(chain.unwrap_or(u64::MAX)) };
+        chain = Some(frame);
         handed_out += 1;
     }
-    if handed_out != total {
+    while let Some(frame) = chain {
+        // SAFETY: the frame is still owned; its first word holds the next link.
+        let next = unsafe { first_word(frames, frame).read_volatile() };
+        chain = (next != u64::MAX).then_some(next);
+        // SAFETY: `frame` came from `frames` and, its link read, is no longer used.
+        unsafe { frames.free(frame) };
+    }
+    for &frame in taken {
+        // SAFETY: each frame came from `frames` and is no longer used.
+        unsafe { frames.free(frame) };
+    }
+    if handed_out != total || frames.free_frames() != total {
         return Err("the allocator handed out a different number of frames than the map holds");
+    }
+    Ok(())
+}
+
+/// The kernel's page tables must give each part of the kernel image only the access it needs,
+/// leave the stack guard page unmapped, map the early devices as device memory, and put the
+/// direct map where the platform says, in use: a frame written through the direct map is
+/// where the tables say.
+fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
+    let tables = &memory.page_tables;
+    let image = P::kernel_image();
+    for (part, attributes) in image.mapped_parts() {
+        for address in [part.start, part.end.wrapping_sub(1)] {
+            if !part.is_empty() && tables.translate(address) != Some((address, attributes)) {
+                return Err("a part of the kernel image is not mapped with exactly its access");
+            }
+        }
+    }
+    let guard = image.stack_guard();
+    if guard.is_empty() || tables.translate(guard.start).is_some() {
+        return Err("the boot stack has no unmapped guard page below it");
+    }
+    let mut devices_ok = true;
+    P::early_device_regions(&mut |device| match tables.translate(device.start) {
+        Some((phys, attributes)) => {
+            devices_ok &= phys == device.start && attributes.writable && !attributes.executable;
+            devices_ok &= !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE
+                || attributes.memory_type == MemoryType::Device;
+        }
+        None => devices_ok = false,
+    });
+    if !devices_ok {
+        return Err("an early device is not mapped as device memory at its physical address");
+    }
+    if P::physical_memory_offset() != P::direct_map_offset() {
+        return Err("the platform does not reach physical memory through the direct map");
+    }
+    let frames = &mut memory.frames;
+    let frame = frames.allocate().ok_or("no free frame")?;
+    let word = first_word(frames, frame);
+    // SAFETY: the frame was just allocated, so the kernel owns it; the allocator reaches it at
+    // physical address + offset.
+    unsafe { word.write_volatile(0x5eed_f00d) };
+    let translated = tables.translate(word as u64);
+    // SAFETY: as above.
+    let read_back = unsafe { word.read_volatile() };
+    // SAFETY: the frame came from `frames` and is no longer used.
+    unsafe { frames.free(frame) };
+    if translated != Some((frame, Attributes::READ_WRITE)) || read_back != 0x5eed_f00d {
+        return Err("the direct map does not translate to the frame written through it");
     }
     Ok(())
 }
@@ -186,17 +270,20 @@ fn frames_are_usable_ram<P: Platform>() -> Result<(), &'static str> {
 mod tests {
     use super::*;
 
-    fn passes() -> Result<(), &'static str> {
+    fn passes(_: &mut ()) -> Result<(), &'static str> {
         Ok(())
     }
-    fn fails() -> Result<(), &'static str> {
+    fn fails(_: &mut ()) -> Result<(), &'static str> {
         Err("broken")
     }
 
     #[test]
     fn all_passing_prints_each_result_and_pass_marker() {
         let mut out = String::new();
-        assert_eq!(run(&mut out, &[("a", passes), ("b", passes)]), Ok(true));
+        assert_eq!(
+            run(&mut out, &[("a", passes), ("b", passes)], &mut ()),
+            Ok(true)
+        );
         assert_eq!(
             out,
             format!("selftest a ... ok\nselftest b ... ok\n{PASS_MARKER}\n")
@@ -206,7 +293,10 @@ mod tests {
     #[test]
     fn one_failure_runs_the_rest_and_prints_fail_marker() {
         let mut out = String::new();
-        assert_eq!(run(&mut out, &[("a", fails), ("b", passes)]), Ok(false));
+        assert_eq!(
+            run(&mut out, &[("a", fails), ("b", passes)], &mut ()),
+            Ok(false)
+        );
         assert_eq!(
             out,
             format!("selftest a ... FAILED: broken\nselftest b ... ok\n{FAIL_MARKER}\n")
@@ -242,6 +332,20 @@ mod tests {
         }
         fn physical_memory_offset() -> usize {
             0
+        }
+        type PageTableFormat = eggos_hal::paging::x86_64::X86_64;
+        fn direct_map_offset() -> usize {
+            0
+        }
+        fn kernel_image() -> eggos_hal::paging::KernelImage {
+            unreachable!("not used in tests")
+        }
+        fn physical_memory() -> eggos_hal::MemoryMap {
+            eggos_hal::MemoryMap::new()
+        }
+        fn early_device_regions(_region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {}
+        unsafe fn activate_page_tables(_roots: &[u64]) {
+            unreachable!("not used in tests")
         }
     }
 
@@ -290,6 +394,20 @@ mod tests {
         fn physical_memory_offset() -> usize {
             0
         }
+        type PageTableFormat = eggos_hal::paging::x86_64::X86_64;
+        fn direct_map_offset() -> usize {
+            0
+        }
+        fn kernel_image() -> eggos_hal::paging::KernelImage {
+            unreachable!("not used in tests")
+        }
+        fn physical_memory() -> eggos_hal::MemoryMap {
+            eggos_hal::MemoryMap::new()
+        }
+        fn early_device_regions(_region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {}
+        unsafe fn activate_page_tables(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]
@@ -303,8 +421,19 @@ mod tests {
 
     #[test]
     fn no_free_memory_fails() {
+        // One frame of RAM, which the page tables' root takes.
+        let memory = vec![0u8; 2 * 4096].leak();
+        let start = (memory.as_mut_ptr() as usize).next_multiple_of(4096);
+        let mut map = eggos_hal::MemoryMap::new();
+        map.add_ram(eggos_hal::PhysicalRange::from_start_length(0x1000, 0x1000));
+        let mut frames = FrameAllocator::new(&map, start - 0x1000);
+        let page_tables = crate::paging::PageTables::new(&mut frames).unwrap();
+        let mut memory = Memory::<LostBreakpoints> {
+            frames,
+            page_tables,
+        };
         assert_eq!(
-            frames_are_usable_ram::<LostBreakpoints>(),
+            frames_are_usable_ram(&mut memory),
             Err("the boot memory map has no free memory")
         );
     }

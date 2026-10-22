@@ -14,6 +14,9 @@ const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";
 
+/// Must match `eggos_kernel::selftest::WRITE_PROTECT_PROBE`.
+const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
+
 /// What a boot test expects the kernel to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {
@@ -151,8 +154,9 @@ fn banner_count(console: &str) -> usize {
 }
 
 /// [`Expect::Pass`]: a clean exit, the pass marker and no fail marker.
-/// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), then an
-/// exception report followed by the fail marker.
+/// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), the address
+/// of the read-only data the kernel writes, then a report of an exception at that address
+/// followed by the fail marker.
 /// Either way, a second boot banner (a reset) fails.
 fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Result<(), String> {
     let lines = || console.lines().map(str::trim_end);
@@ -164,8 +168,15 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         ));
     }
     if expect == Expect::FatalException {
+        let target = lines().find_map(|l| l.strip_prefix(WRITE_PROTECT_PROBE));
+        let fault = target.map(|target| format!(", address {target}"));
         let reported = lines()
-            .skip_while(|l| !l.starts_with(EXCEPTION_PREFIX))
+            .skip_while(|l| {
+                !(l.starts_with(EXCEPTION_PREFIX)
+                    && fault
+                        .as_ref()
+                        .is_some_and(|fault| l.ends_with(fault.as_str())))
+            })
             .skip(1)
             .any(|l| l == FAIL_MARKER);
         return match (clean_exit, passed, reported) {
@@ -178,7 +189,7 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 "{arch}: the self-tests did not pass before the fatal exception test"
             )),
             (true, true, false) => Err(format!(
-                "{arch}: the illegal instruction was not reported as a fatal exception"
+                "{arch}: the write to read-only data was not reported as a fatal exception at its address"
             )),
         };
     }
@@ -239,7 +250,8 @@ mod tests {
     #[test]
     fn fatal_exception_needs_the_report_then_the_fail_marker() {
         let reported = format!(
-            "{PASS_MARKER}\n\n{EXCEPTION_PREFIX}#UD invalid opcode (code 0x0) at pc 0x1000\n{FAIL_MARKER}\n"
+            "{PASS_MARKER}\n{WRITE_PROTECT_PROBE}0x5000\n\n\
+             {EXCEPTION_PREFIX}#PF page fault (code 0x3) at pc 0x1000, address 0x5000\n{FAIL_MARKER}\n"
         );
         assert!(verdict("x", Expect::FatalException, true, &reported).is_ok());
         assert!(verdict("x", Expect::FatalException, false, &reported).is_err());
@@ -253,6 +265,15 @@ mod tests {
         // Without the self-tests passing first, the run proves nothing about the vectors.
         let no_pass = format!("{EXCEPTION_PREFIX}x\n{FAIL_MARKER}\n");
         assert!(verdict("x", Expect::FatalException, true, &no_pass).is_err());
+        // A fault elsewhere, or none (write protection broken, so the illegal instruction
+        // after the write ends the run), is not the write being caught.
+        let elsewhere = reported.replace("address 0x5000", "address 0x6000");
+        assert!(verdict("x", Expect::FatalException, true, &elsewhere).is_err());
+        let unprotected = format!(
+            "{PASS_MARKER}\n{WRITE_PROTECT_PROBE}0x5000\n\n\
+             {EXCEPTION_PREFIX}#UD invalid opcode (code 0x0) at pc 0x1000\n{FAIL_MARKER}\n"
+        );
+        assert!(verdict("x", Expect::FatalException, true, &unprotected).is_err());
         // And the fatal exception run is a failure when a pass is expected.
         assert!(verdict("x", Expect::Pass, true, &reported).is_err());
     }

@@ -178,6 +178,20 @@ mod tests {
         fn physical_memory_offset() -> usize {
             0
         }
+        type PageTableFormat = eggos_hal::paging::x86_64::X86_64;
+        fn direct_map_offset() -> usize {
+            0
+        }
+        fn kernel_image() -> eggos_hal::paging::KernelImage {
+            unreachable!("not used in tests")
+        }
+        fn physical_memory() -> eggos_hal::MemoryMap {
+            eggos_hal::MemoryMap::new()
+        }
+        fn early_device_regions(_region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {}
+        unsafe fn activate_page_tables(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]

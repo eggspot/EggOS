@@ -10,6 +10,8 @@ mod exception;
 mod timer;
 
 use crate::arch::boot_memory;
+use crate::memory::PhysicalRange;
+use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, MemoryMap, Platform};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
@@ -63,6 +65,26 @@ const RAM_BASE: usize = 0x4000_0000;
 
 /// QEMU `virt`: PL011 UART0.
 const UART0_BASE: usize = 0x0900_0000;
+
+/// The direct map: the start of the high half, translated through `TTBR1_EL1` (D29).
+const DIRECT_MAP_OFFSET: usize = 0xffff_0000_0000_0000;
+
+/// `TCR_EL1` (Arm ARM D19.2.139) for 48-bit halves with the 4 KiB granule, walks through
+/// inner shareable, write-back cached memory; `IPS` (the physical address size) is added from
+/// `ID_AA64MMFR0_EL1` at run time.
+const TCR: u64 = {
+    let t0sz = 64 - 48;
+    let t1sz = (64 - 48) << 16;
+    let walks0 = (0b01 << 8) | (0b01 << 10) | (0b11 << 12); // IRGN0, ORGN0 write-back; SH0 inner
+    let walks1 = (0b01 << 24) | (0b01 << 26) | (0b11 << 28); // likewise for TTBR1
+    let granule1 = 0b10 << 30; // TG1: 4 KiB (TG0 = 0b00 is 4 KiB too)
+    t0sz | t1sz | walks0 | walks1 | granule1
+};
+const TCR_IPS_SHIFT: u32 = 32;
+/// The largest `IPS` the 4 KiB granule takes without FEAT_LPA2: 48 bits.
+const TCR_IPS_MAX: u64 = 0b101;
+/// `SCTLR_EL1`: M (MMU on), C (data cache), I (instruction cache).
+const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
 
 /// PSCI 0.2+ `SYSTEM_OFF` function ID (Arm DEN 0022).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
@@ -145,14 +167,85 @@ impl Platform for Aarch64 {
     }
 
     fn memory_map() -> MemoryMap {
-        // SAFETY: on QEMU `virt` the start of RAM is readable with the MMU off and holds the
-        // device tree QEMU loaded there, which nothing writes; if QEMU loaded none, the header
-        // check fails and the map is empty.
+        // SAFETY: on QEMU `virt` the start of RAM holds the device tree QEMU loaded there,
+        // which nothing writes; RAM is reachable through the physical memory offset (the MMU is
+        // off, or the direct map covers it). If QEMU loaded none, the header check fails and
+        // the map is empty.
         unsafe { boot_memory::device_tree_memory_map(RAM_BASE) }
     }
 
     #[inline]
     fn physical_memory_offset() -> usize {
-        0
+        boot_memory::physical_memory_offset()
+    }
+
+    type PageTableFormat = paging::aarch64::Aarch64;
+
+    fn direct_map_offset() -> usize {
+        DIRECT_MAP_OFFSET
+    }
+
+    fn kernel_image() -> KernelImage {
+        boot_memory::kernel_image_parts()
+    }
+
+    fn physical_memory() -> MemoryMap {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_ram(RAM_BASE) }
+    }
+
+    fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
+        region(PhysicalRange::from_start_length(
+            UART0_BASE as u64,
+            pl011::REGISTER_BLOCK_SIZE as u64,
+        ));
+        timer::DEVICE_REGIONS.into_iter().for_each(region);
+    }
+
+    unsafe fn activate_page_tables(roots: &[u64]) {
+        let [low, high] = roots else {
+            panic!("AArch64 page tables have two roots");
+        };
+        let physical_address_size: u64;
+        // SAFETY: reading an ID register has no side effects.
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, id_aa64mmfr0_el1",
+                out(reg) physical_address_size,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        let tcr = TCR | (physical_address_size & 0xf).min(TCR_IPS_MAX) << TCR_IPS_SHIFT;
+        // SAFETY: the caller guarantees the tables map everything this CPU uses from here on
+        // at the addresses it uses now: the code runs on at its physical address, the stack and
+        // data likewise, and the devices too. `MAIR` matches the attribute indexes the format
+        // encodes. The barriers complete the table writes before the walker reads them, the
+        // TLB is invalidated before the MMU is turned on, and `isb` makes each change take
+        // effect before the next instruction. No `nomem`: memory accesses must not move across
+        // the switch.
+        unsafe {
+            core::arch::asm!(
+                "msr mair_el1, {mair}",
+                "msr tcr_el1, {tcr}",
+                "msr ttbr0_el1, {low}",
+                "msr ttbr1_el1, {high}",
+                "dsb ishst",
+                "tlbi vmalle1",
+                "dsb ish",
+                "isb",
+                "mrs {sctlr}, sctlr_el1",
+                "orr {sctlr}, {sctlr}, {enable}",
+                "msr sctlr_el1, {sctlr}",
+                "isb",
+                mair = in(reg) paging::aarch64::MAIR,
+                tcr = in(reg) tcr,
+                low = in(reg) *low,
+                high = in(reg) *high,
+                enable = in(reg) SCTLR_MMU_AND_CACHES,
+                sctlr = out(reg) _,
+                options(nostack, preserves_flags),
+            );
+        }
+        boot_memory::set_physical_memory_offset(DIRECT_MAP_OFFSET);
     }
 }

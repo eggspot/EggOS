@@ -27,13 +27,22 @@ SECTIONS
         __bss_end = .;
     }
 
-    /* Boot stack. No guard page until paging (M2): an overflow runs into .bss. */
+    /* Boot stack, above a guard page the kernel leaves unmapped (D29), so an overflow faults
+       instead of running into .bss. */
     .stack (NOLOAD) : ALIGN(4096) {
+        __stack_guard = .;
+        . += 4K;
+        __stack_bottom = .;
         . += 64K;
         __stack_top = .;
     }
 
     __kernel_end = .;
+
+    /* Where each part of the image starts, for the kernel page tables' permissions (D29). */
+    __text_start = ADDR(.text);
+    __rodata_start = ADDR(.rodata);
+    __data_start = ADDR(.data);
 
     /DISCARD/ : {
         *(.eh_frame .eh_frame_hdr .comment .note .note.*)

@@ -19,7 +19,8 @@ commands:
   clippy-targets         clippy -D warnings on the kernel crates for every kernel target
   build --arch <arch>    build the kernel image for <arch>
   qemu  --arch <arch>    boot the kernel in QEMU headless and check its self-test verdict,
-                         then boot it again to check that a fatal exception is reported
+                         then boot it again to check that writing read-only data faults
+                         and the fatal exception is reported
                          (<arch> may be `all`)
   run   --arch <arch>    boot the kernel in QEMU interactively (quit: Ctrl-A then X)
   bench --arch <arch> [--update-baseline]
@@ -153,7 +154,8 @@ fn ci() -> Result<(), String> {
 }
 
 /// Boots `arch`'s kernel twice: once to pass its self-tests, once to check that the
-/// exception vectors report a fatal exception (an illegal instruction after the self-tests).
+/// exception vectors report a fatal exception (a write to read-only data after the
+/// self-tests, which must fault: D29).
 /// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [

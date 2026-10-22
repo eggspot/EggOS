@@ -8,8 +8,17 @@
 //! memory offset. Contiguous multi-frame allocation (DMA, huge pages) comes with the buddy
 //! allocator that replaces this one; the interface stays.
 
+use crate::paging::PageTables;
 use eggos_hal::memory::{FRAME_SIZE, MAX_RANGES};
-use eggos_hal::{MemoryMap, PhysicalRange};
+use eggos_hal::{MemoryMap, PhysicalRange, Platform};
+
+/// The kernel's memory once its page tables are active: the frame allocator and the tables,
+/// both reaching physical memory through the direct map.
+#[derive(Debug)]
+pub struct Memory<P: Platform> {
+    pub frames: FrameAllocator,
+    pub page_tables: PageTables<P::PageTableFormat>,
+}
 
 /// Marks the end of the free stack. Never a frame address: frames are aligned to
 /// [`FRAME_SIZE`].
@@ -50,6 +59,18 @@ impl FrameAllocator {
             free_frames: map.total() / FRAME_SIZE,
             physical_memory_offset,
         }
+    }
+
+    /// Where this allocator reaches physical memory: frame `p` at virtual `p + offset`.
+    pub fn physical_memory_offset(&self) -> usize {
+        self.physical_memory_offset
+    }
+
+    /// Reaches physical memory at `offset` from now on, as when the kernel switches to its own
+    /// page tables: the free stack links hold physical addresses, so they stay valid as long as
+    /// the new offset reaches the same memory.
+    pub fn set_physical_memory_offset(&mut self, offset: usize) {
+        self.physical_memory_offset = offset;
     }
 
     /// Frames that [`Self::allocate`] can still return.
