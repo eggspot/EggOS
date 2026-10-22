@@ -1,0 +1,7 @@
+# Shows the "Sponsor" button on the repository page.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+github: [eggspot]                # https://github.com/sponsors/eggspot
+# Add more platforms here once their accounts exist (each takes the account name, not a URL):
+# open_collective: eggos
+# liberapay: eggos
+# custom: ["https://www.eggspot.app/"]
