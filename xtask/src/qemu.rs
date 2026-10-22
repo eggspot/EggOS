@@ -42,8 +42,10 @@ const BSS_PROBE_SYMBOL: &str = "eggos_selftest_bss_probe";
 const BSS_POISON: u64 = 0xa5a5_a5a5_a5a5_a5a5;
 
 /// QEMU arguments that fill the kernel's `.bss` probe with [`BSS_POISON`] before the first
-/// instruction runs (one `loader` device per 8-byte word; QEMU applies them at reset, after
-/// loading the kernel image and before any firmware). QEMU itself hands over zeroed RAM, so
+/// instruction runs (one `loader` device per 8-byte word). QEMU applies them at reset after
+/// placing the kernel image and before any firmware runs: observed on QEMU 10 for all three
+/// architectures (a kernel without its zeroing loop fails), not a documented guarantee, so a
+/// QEMU upgrade that changes it shows up as `.bss` failing here. QEMU hands over zeroed RAM, so
 /// without this the `bss_is_zeroed` self-test would pass even if the entry point never
 /// cleared `.bss`.
 pub fn bss_poison_args(kernel: &Path) -> Result<Vec<String>, String> {
