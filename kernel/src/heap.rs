@@ -290,9 +290,10 @@ impl KernelHeap {
 // SAFETY: `alloc` returns memory from `Heap::allocate`, which is at least `layout.size()`
 // bytes aligned to `layout.align()` (a block of a size class at least that large, aligned to
 // its size; or 2^order frames aligned to their size, at least `max(size, align)`, through a
-// direct map aligned to more than that), owned by the caller until `dealloc`, or null. `dealloc` gives it back with the same layout, as `GlobalAlloc` callers
-// guarantee. The lock serialises every use of the heap state, and the heap only ever takes
-// frames from the global frame allocator, under its lock.
+// direct map aligned to more than that), owned by the caller until `dealloc`, or null.
+// `dealloc` gives it back with the same layout, as `GlobalAlloc` callers guarantee. The lock
+// serialises every use of the heap state, and the heap only ever takes frames from the global
+// frame allocator, under its lock.
 unsafe impl GlobalAlloc for KernelHeap {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
