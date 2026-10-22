@@ -1118,7 +1118,9 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **Push.** A CPU whose slice ends at a timer event with threads ready (the only time its tick
   is armed, D39) sends the wake-up interrupt to the lowest-numbered idle CPU not already sent one
   since it last looked (`wakeup_sent`, D43), with the lock held as `wake_all` does; that CPU then
-  pulls. So with preemption on, a thread waits at most about one slice (10 ms) while a CPU is idle.
+  pulls. So with preemption on, a thread waits a slice (10 ms) or a few while a CPU is idle: the
+  woken CPU takes from the next busy CPU after it, not necessarily the one whose slice ended, so
+  that one may need another slice end. This also happens when a slice ends at a yield or block.
   With preemption off, only the pull at an idle CPU's next look applies.
 - **Pinned: the boot thread.** It is never moved: it runs the boot CPU's setup and the boot
   self-tests, which expect the boot CPU. A CPU whose first ready thread is the boot thread is

@@ -18,8 +18,9 @@
 //!
 //! Balancing (D44): an idle CPU with nothing ready takes a ready thread from a busy CPU, one
 //! running another thread, and the thread stays on its new CPU. A busy CPU whose slice ends with
-//! threads ready sends an idle CPU the wake-up interrupt, so that it takes one: a thread waits at
-//! most about a slice while a CPU is idle. Both happen off the hot paths (in the idle thread and
+//! threads ready sends an idle CPU the wake-up interrupt, so that it takes one: a thread waits a
+//! slice or a few while a CPU is idle (the woken CPU takes from the next busy CPU after it, not
+//! necessarily the one whose slice ended). Both happen off the hot paths (in the idle thread and
 //! when a slice ends), so a switch, a wait and a wake cost what they did.
 //!
 //! Preemption is voluntary inside the kernel (D37): kernel code runs with interrupts masked,
@@ -847,9 +848,10 @@ impl Scheduler {
 }
 
 /// If the timer has fired, or another CPU asked, since this CPU's scheduler last looked: wakes
-/// the sleepers whose time has come and arms the timer for what is needed next. Returns whether
-/// the running thread's slice is over; the next slice has then started, for the thread the
-/// caller must switch to (another is ready, or no slice would have ended). A load and a branch
+/// the sleepers whose time has come and arms the timer for what is needed next; a slice that
+/// ended with threads ready wakes an idle CPU to take one (D44). Returns whether the running
+/// thread's slice is over; the next slice has then started, for the thread the caller must
+/// switch to (another is ready, or no slice would have ended). A load and a branch
 /// when neither happened. The slow path finds its CPU itself, so no caller keeps one in a
 /// register across the call.
 #[inline]
