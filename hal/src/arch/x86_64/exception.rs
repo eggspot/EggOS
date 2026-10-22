@@ -234,6 +234,12 @@ static IDT: InterruptDescriptorTable =
 
 /// Fills the IDT and loads it. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn install() {
+    fill();
+    load();
+}
+
+/// Fills the IDT, before any CPU loads it.
+fn fill() {
     let stubs = exception_stubs as *const () as u64;
     let gates = IDT.0.get();
     let stub_gates = (0..CONTIGUOUS_STUBS)
@@ -244,16 +250,22 @@ pub(super) extern "C" fn install() {
         )]);
     // Vectors without a stub keep a not-present gate: delivering one raises #NP (reported).
     for (vector, stub) in stub_gates {
-        // SAFETY: `install` is the only writer and runs before the IDT is loaded, so nothing
-        // else accesses the table; `vector` is below 256, in bounds.
+        // SAFETY: `fill` is the only writer and runs once, from `install`, before any CPU loads
+        // the IDT, so nothing else accesses the table; `vector` is below 256, in bounds.
         unsafe { (*gates)[vector] = GateDescriptor::interrupt_gate(stub) };
     }
+}
+
+/// Loads the IDT on this CPU: the boot CPU's entry code once `fill` has run, and each secondary
+/// CPU's (D40).
+pub(super) extern "C" fn load() {
+    let gates = IDT.0.get();
     let pointer = DescriptorTablePointer {
         limit: (core::mem::size_of::<[GateDescriptor; VECTORS]>() - 1) as u16,
         base: gates as u64,
     };
-    // SAFETY: the IDT is a static, fully initialised above, whose gates point at the stubs in
-    // this module with the boot GDT's code selector.
+    // SAFETY: the IDT is a static, filled by `fill` before any CPU loads it, whose gates point
+    // at the stubs in this module with the boot GDT's code selector.
     unsafe {
         core::arch::asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
     }

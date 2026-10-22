@@ -165,7 +165,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         let kernel = build_kernel(arch, Some(feature))?;
         let poison = qemu::bss_poison_args(&kernel)?;
         let poison: Vec<&str> = poison.iter().map(String::as_str).collect();
-        qemu::boot_test(arch, &kernel, expect, &poison)?;
+        qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, &poison)?;
     }
     Ok(())
 }

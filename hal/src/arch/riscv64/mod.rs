@@ -11,10 +11,11 @@ mod thread;
 mod timer;
 
 use crate::arch::boot_memory;
+use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
 use crate::{ExitStatus, MemoryMap, Platform};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Ns16550, Uart};
 
@@ -34,9 +35,12 @@ _start:
     addi    t0, t0, 8
     j       1b
 
-    // Keep the device-tree address (after zeroing .bss, where it is stored).
+    // Keep the device-tree address and this hart's id (after zeroing .bss, where they are
+    // stored).
 2:  lla     t0, {device_tree}
     sd      a1, 0(t0)
+    lla     t0, {boot_hart}
+    sd      a0, 0(t0)
 
     // The boot page table (D33), one Sv39 root of 1 GiB leaves: the gigabyte holding the
     // kernel, read, write and execute, at its physical address (only for the jump below) and
@@ -70,12 +74,7 @@ _start:
     bnez    t4, 3b
 
     // Turn on translation, then continue at the kernel's virtual address.
-    srli    t0, t0, 12
-    li      t1, {satp_mode}
-    or      t0, t0, t1
-    sfence.vma
-    csrw    satp, t0
-    sfence.vma
+    call    boot_translation_on
     lla     t0, 9f
     ld      t0, 0(t0)
     jr      t0
@@ -98,7 +97,45 @@ _start:
     call    kernel_main
 5:  wfi
     j       5b
+
+    // Turns translation on with the boot page table, from code running at its physical
+    // address: the identity gigabyte keeps the return address mapped. Clobbers t0 and t1.
+boot_translation_on:
+    lla     t0, {boot_root}
+    srli    t0, t0, 12
+    li      t1, {satp_mode}
+    or      t0, t0, t1
+    sfence.vma
+    csrw    satp, t0
+    sfence.vma
+    ret
+
+    // A secondary hart, started by SBI HSM `hart_start` (D40): S-mode, translation off,
+    // interrupts masked, a0 = its hart id, a1 = the opaque value, the kernel virtual address
+    // of the `CpuStart`. The boot page table is still in .bss and maps the `CpuStart` and its
+    // stack (the kernel image and the direct map).
+    .global eggos_secondary_start
+eggos_secondary_start:
+    mv      s1, a1
+    call    boot_translation_on
+    lla     t0, 10f
+    ld      t0, 0(t0)
+    jr      t0
+    .balign 8
+10: .dword  11f
+11: ld      sp, {start_stack_top}(s1)
+    li      t0, 3 << 13
+    csrc    sstatus, t0
+    lla     t0, exception_entry
+    csrw    stvec, t0
+    mv      a0, s1
+    call    {secondary_main}
+12: wfi
+    j       12b
 "#,
+    boot_hart = sym BOOT_HART,
+    secondary_main = sym secondary_main,
+    start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
     init_timer = sym timer::init,
     device_tree = sym DEVICE_TREE,
     boot_root = sym BOOT_ROOT,
@@ -132,13 +169,59 @@ const BOOT_KERNEL: Attributes = Attributes {
 #[repr(C, align(4096))]
 struct BootTable([u64; paging::ENTRIES]);
 
-/// Built by `_start` before any Rust code runs; never used again once the kernel's own page
-/// tables are active.
+/// Built by `_start` before any Rust code runs. Once the kernel's own page tables are active,
+/// only secondary harts use it, to turn translation on (D40); nothing writes it again.
 static mut BOOT_ROOT: BootTable = BootTable([0; paging::ENTRIES]);
 
 /// Physical address of the device tree, passed by the SBI firmware in `a1` and stored by the
 /// entry code.
 static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
+
+/// The boot hart's id, passed by the SBI firmware in `a0` and stored by the entry code. Any
+/// hart may boot: OpenSBI picks one.
+static BOOT_HART: AtomicU64 = AtomicU64::new(0);
+
+/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
+/// with the boot page table: switches to the kernel's page tables, then calls the entry.
+extern "C" fn secondary_main(start: &CpuStart) -> ! {
+    // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
+    // everything this hart uses at the addresses it uses now, as they did for the boot hart;
+    // interrupts are masked (HSM starts the hart with `sstatus.SIE` clear).
+    unsafe { Riscv64::activate_page_tables(&start.page_table_roots[..1]) };
+    (start.entry)(start.argument)
+}
+
+/// An SBI call (SBI spec v2.0, chapter 3): returns the error (`a0`) and value (`a1`).
+///
+/// # Safety
+/// The call must touch none of the kernel's memory, other than as the caller allows.
+unsafe fn sbi_call(extension: usize, function: usize, arguments: [usize; 3]) -> (isize, usize) {
+    let (error, value);
+    // SAFETY: an SBI call per the SBI calling convention: a7 = extension, a6 = function,
+    // a0-a2 = arguments, a0/a1 = returned error/value; the caller guarantees the rest.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inout("a0") arguments[0] => error,
+            inout("a1") arguments[1] => value,
+            in("a2") arguments[2],
+            in("a6") function,
+            in("a7") extension,
+            options(nostack),
+        );
+    }
+    (error, value)
+}
+
+/// SBI Base extension `sbi_probe_extension` (SBI spec v2.0, 4.8) and Hart State Management
+/// `sbi_hart_start` (9.1), with the errors `hart_start` gives (3.2).
+const SBI_EXT_BASE: usize = 0x10;
+const SBI_BASE_PROBE_EXTENSION: usize = 3;
+const SBI_EXT_HSM: usize = 0x48_534d;
+const SBI_HSM_HART_START: usize = 0;
+const SBI_SUCCESS: isize = 0;
+const SBI_ERR_INVALID_PARAM: isize = -3;
+const SBI_ERR_ALREADY_AVAILABLE: isize = -6;
 
 /// The device tree's physical address, or 0 (no tree) if the largest tree read there would
 /// reach beyond the boot direct map (the kernel reads it before its own page tables exist).
@@ -341,5 +424,59 @@ impl Platform for Riscv64 {
         // calling convention requires a call to preserve, so to each thread the call is an
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    fn cpus(cpu: &mut dyn FnMut(u64)) {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_cpus(device_tree(), cpu) };
+    }
+
+    fn boot_cpu() -> u64 {
+        BOOT_HART.load(Ordering::Relaxed)
+    }
+
+    unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
+        unsafe extern "C" {
+            /// The secondary entry point in the boot code above.
+            fn eggos_secondary_start();
+        }
+        // SAFETY: probing an extension touches no memory.
+        let (_, hsm) =
+            unsafe { sbi_call(SBI_EXT_BASE, SBI_BASE_PROBE_EXTENSION, [SBI_EXT_HSM, 0, 0]) };
+        if hsm == 0 {
+            return Err(StartCpuError::Refused(0));
+        }
+        let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET);
+        let opaque = core::ptr::from_ref(start) as usize;
+        // SAFETY: `hart_start` starts hart `cpu` at the physical address `entry`, the secondary
+        // entry code, with `opaque` in a1; the caller guarantees what that code relies on (the
+        // kernel's tables, `start` and its stack). The call itself touches none of our memory.
+        let (error, _) = unsafe {
+            sbi_call(
+                SBI_EXT_HSM,
+                SBI_HSM_HART_START,
+                [cpu as usize, entry as usize, opaque],
+            )
+        };
+        match error {
+            SBI_SUCCESS => Ok(()),
+            SBI_ERR_INVALID_PARAM => Err(StartCpuError::InvalidCpu),
+            SBI_ERR_ALREADY_AVAILABLE => Err(StartCpuError::AlreadyRunning),
+            error => Err(StartCpuError::Refused(error as i64)),
+        }
+    }
+
+    unsafe fn set_cpu_local(block: usize) {
+        // SAFETY: the kernel never uses thread-local storage, so nothing else reads or writes
+        // `tp` while in the kernel (D40); the trap entry neither saves nor changes it.
+        unsafe { core::arch::asm!("mv tp, {}", in(reg) block, options(nomem, nostack)) };
+    }
+
+    #[inline]
+    fn cpu_local() -> usize {
+        let block: usize;
+        // SAFETY: reading `tp` has no side effects.
+        unsafe { core::arch::asm!("mv {}, tp", out(reg) block, options(nomem, nostack)) };
+        block
     }
 }

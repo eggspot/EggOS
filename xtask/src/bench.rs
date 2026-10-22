@@ -19,6 +19,10 @@ const MARKER: &str = "EGGOS-BENCH:";
 /// an idle CPU skips straight to its next timer deadline instead of waiting in real time.
 pub const ICOUNT_ARGS: &[&str] = &["-icount", "shift=0,sleep=off"];
 
+/// Benchmarks run on one CPU: with `-icount`, QEMU runs every CPU in one thread in turn, so
+/// other CPUs' instructions would count against the measured ones (D40).
+const BENCH_CPUS: u32 = 1;
+
 /// How much slower than its baseline a result may be before it fails: relative, plus an
 /// absolute allowance so results of a few instructions are not failed by one instruction.
 const TOLERANCE_RELATIVE: f64 = 0.01;
@@ -67,7 +71,7 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
     let mut measured = Measurements::default();
     for arch in arches {
         let kernel = crate::build_kernel(arch, Some("qemu-bench"))?;
-        let console = qemu::boot_test(arch, &kernel, qemu::Expect::Pass, ICOUNT_ARGS)?;
+        let console = qemu::boot_test(arch, &kernel, qemu::Expect::Pass, BENCH_CPUS, ICOUNT_ARGS)?;
         let results = parse_console(&console)?;
         if results.is_empty() {
             return Err(format!(

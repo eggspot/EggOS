@@ -34,7 +34,11 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Seeing it twice means the machine reset and booted again.
 const BANNER_PREFIX: &str = "EggOS ";
 
-const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1"];
+const COMMON_ARGS: &[&str] = &["-m", "128M"];
+
+/// CPUs in the boot tests and interactive runs, so every boot starts the secondary CPUs
+/// (D40). Must match `eggos_kernel::selftest::QEMU_CPUS`.
+pub const TEST_CPUS: u32 = 4;
 
 /// Symbol name of the kernel's `.bss` self-test probe (`BSS_PROBE` in
 /// `eggos_kernel::selftest`).
@@ -73,13 +77,14 @@ pub fn bss_poison_args(kernel: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Boots `kernel` headless with `extra_args` added to QEMU's and passes only if QEMU powers
-/// off cleanly within the timeout and the console shows what `expect` asks for (see
-/// [`verdict`]). Returns the console output.
+/// Boots `kernel` headless on `cpus` CPUs with `extra_args` added to QEMU's and passes only if
+/// QEMU powers off cleanly within the timeout and the console shows what `expect` asks for
+/// (see [`verdict`]). Returns the console output.
 pub fn boot_test(
     arch: &Arch,
     kernel: &Path,
     expect: Expect,
+    cpus: u32,
     extra_args: &[&str],
 ) -> Result<String, String> {
     eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
@@ -89,6 +94,8 @@ pub fn boot_test(
         // QEMU with exit code 0 and would look like a clean power-off. Without it the machine
         // resets and prints the banner again, which fails the test below.
         .args(COMMON_ARGS)
+        .arg("-smp")
+        .arg(cpus.to_string())
         .args(extra_args)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
@@ -211,6 +218,8 @@ pub fn run_interactive(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let status = Command::new(arch.qemu)
         .args(arch.machine_args)
         .args(COMMON_ARGS)
+        .arg("-smp")
+        .arg(TEST_CPUS.to_string())
         .args(["-no-reboot", "-nographic"])
         .arg("-kernel")
         .arg(kernel)

@@ -5,7 +5,7 @@
 use crate::HEAP;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::sync::SpinLock;
-use crate::{exception, interrupt, thread};
+use crate::{cpu, exception, interrupt, thread};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -22,12 +22,20 @@ pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// read-only data. The QEMU runner requires the fault report to name that address.
 pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
 
+/// CPUs the QEMU boot tests run with (`-smp`). Must match `TEST_CPUS` in `xtask`. The
+/// benchmarks run on one.
+#[cfg(all(feature = "qemu-test", not(feature = "qemu-bench")))]
+const QEMU_CPUS: usize = 4;
+
+/// How long the started CPUs have to report in.
+const CPU_START_TIMEOUT_MS: u64 = 1000;
+
 /// A self-test: a name and a check of `context` (for the boot self-tests, the kernel's
 /// [`Memory`]) returning `Err(reason)` on failure.
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 10] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 11] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -54,6 +62,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 10] {
         ("threads_sleep_wait_and_run_tickless", |_| {
             threads_sleep_wait_and_run_tickless::<P>()
         }),
+        (
+            "secondary_cpus_start_and_report_in",
+            secondary_cpus_start_and_report_in::<P>,
+        ),
     ]
 }
 
@@ -629,6 +641,43 @@ fn threads_sleep_wait_and_run_tickless<P: Platform>() -> Result<(), &'static str
     Ok(())
 }
 
+/// The boot CPU is CPU 0, and every other CPU the firmware lists starts on the kernel's page
+/// tables and reports in through its own per-CPU block, which only works if its per-CPU
+/// register points at that block (D40). In the QEMU boot tests the firmware must list every CPU
+/// QEMU runs. A CPU that never reports in fails after the timeout.
+fn secondary_cpus_start_and_report_in<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    if cpu::current::<P>().index() != 0 {
+        return Err("the boot CPU's per-CPU block is not CPU 0's");
+    }
+    // SAFETY: these are the kernel's page tables, active since `paging::enable`, whose frames
+    // are never freed; nothing changes them from here on.
+    let started = unsafe { cpu::start_secondaries::<P>(memory.page_tables.roots()) }
+        .map_err(|_| "a CPU could not be started")?;
+    let expected = started.started + 1;
+    let deadline = P::clock_ticks() + CPU_START_TIMEOUT_MS * (P::clock_frequency() / 1000);
+    while cpu::CPUS.online() < expected && P::clock_ticks() < deadline {
+        core::hint::spin_loop();
+    }
+    let cpus = cpu::CPUS.all();
+    if cpu::CPUS.online() != expected || !cpus.iter().all(|cpu| cpu.is_online()) {
+        return Err("a started CPU did not report in");
+    }
+    if cpus
+        .iter()
+        .enumerate()
+        .any(|(index, cpu)| cpu.index() != index)
+    {
+        return Err("the CPUs are not numbered in order");
+    }
+    #[cfg(all(feature = "qemu-test", not(feature = "qemu-bench")))]
+    if cpus.len() != QEMU_CPUS {
+        return Err("the firmware does not list every CPU QEMU runs");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +770,24 @@ mod tests {
         unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
             unreachable!("not used in tests")
         }
+        fn cpus(_cpu: &mut dyn FnMut(u64)) {
+            unreachable!("not used in tests")
+        }
+        fn boot_cpu() -> u64 {
+            unreachable!("not used in tests")
+        }
+        unsafe fn start_cpu(
+            _cpu: u64,
+            _start: &eggos_hal::cpu::CpuStart,
+        ) -> Result<(), eggos_hal::cpu::StartCpuError> {
+            unreachable!("not used in tests")
+        }
+        unsafe fn set_cpu_local(_block: usize) {
+            unreachable!("not used in tests")
+        }
+        fn cpu_local() -> usize {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]
@@ -791,6 +858,24 @@ mod tests {
             unreachable!("not used in tests")
         }
         unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
+            unreachable!("not used in tests")
+        }
+        fn cpus(_cpu: &mut dyn FnMut(u64)) {
+            unreachable!("not used in tests")
+        }
+        fn boot_cpu() -> u64 {
+            unreachable!("not used in tests")
+        }
+        unsafe fn start_cpu(
+            _cpu: u64,
+            _start: &eggos_hal::cpu::CpuStart,
+        ) -> Result<(), eggos_hal::cpu::StartCpuError> {
+            unreachable!("not used in tests")
+        }
+        unsafe fn set_cpu_local(_block: usize) {
+            unreachable!("not used in tests")
+        }
+        fn cpu_local() -> usize {
             unreachable!("not used in tests")
         }
     }

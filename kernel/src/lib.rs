@@ -11,6 +11,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod console;
+pub mod cpu;
 pub mod exception;
 pub mod heap;
 pub mod interrupt;
@@ -37,6 +38,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Returns how the boot went; the architecture entry point turns that into a machine exit.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
+    cpu::init_boot_cpu::<P>();
     let free_memory = P::memory_map();
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
         .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
@@ -229,6 +231,29 @@ pub(crate) mod tests {
             // SAFETY: the caller's guarantees are the host switch's.
             unsafe { thread::host::switch_thread(save, resume) }
         }
+        fn cpus(cpu: &mut dyn FnMut(u64)) {
+            cpu(0);
+        }
+        fn boot_cpu() -> u64 {
+            0
+        }
+        unsafe fn start_cpu(
+            _cpu: u64,
+            _start: &eggos_hal::cpu::CpuStart,
+        ) -> Result<(), eggos_hal::cpu::StartCpuError> {
+            unreachable!("the test platform has one CPU")
+        }
+        unsafe fn set_cpu_local(block: usize) {
+            CPU_LOCAL.set(block);
+        }
+        fn cpu_local() -> usize {
+            CPU_LOCAL.get()
+        }
+    }
+
+    std::thread_local! {
+        /// The test platform's per-CPU register: one per host thread, each test's "CPU".
+        static CPU_LOCAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     #[test]
