@@ -33,10 +33,10 @@ use crate::sync::SpinLock;
 use crate::thread::{self, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
+use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
-use eggos_hal::paging::{Attributes, Format, MemoryType};
+use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
-use eggos_hal::{ExceptionKind, Platform};
 
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
@@ -64,19 +64,6 @@ pub enum UnresolvedFault {
     NotAllowed,
     /// There was no frame for the page (Linux's out-of-memory killer sends `SIGKILL`).
     OutOfMemory,
-}
-
-/// The access a program's exception of `kind` with raw cause `code`
-/// ([`eggos_hal::Exception::code`]) made, if it is a page fault: what
-/// [`Process::resolve_page_fault`] needs.
-#[inline]
-pub fn page_fault_access<P: Platform>(kind: ExceptionKind, code: u64) -> Option<Access> {
-    match kind {
-        ExceptionKind::DataFault if P::data_fault_writes(code) => Some(Access::Write),
-        ExceptionKind::DataFault => Some(Access::Read),
-        ExceptionKind::InstructionFault => Some(Access::Execute),
-        _ => None,
-    }
 }
 
 /// A user address space, the frames its pages map and its regions. See the module
@@ -228,17 +215,22 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// Resolves a page fault the process's program took at user address `address`, for
-    /// `access` ([`page_fault_access`]): if the address is in a region that allows the access,
-    /// maps the page if it is not mapped yet (demand paging), and drops this CPU's cached
-    /// translation of it, so the program can run the access again. A fault on a page already
-    /// mapped for the access is a stale translation (a RISC-V hart may cache an invalid
-    /// entry): dropping it is the whole fix. Call it from a thread of the process, on the CPU
-    /// the program faulted on.
-    pub fn resolve_page_fault(&self, address: u64, access: Access) -> Result<(), UnresolvedFault> {
+    /// Resolves `fault`, a page fault the process's program took at user address `address`
+    /// ([`Platform::page_fault`] classifies it): if the address is in a region that allows the
+    /// access, maps the page if it is not mapped yet (demand paging), and drops this CPU's
+    /// cached translation of it, so the program can run the access again. A fault that may be
+    /// stale on a page already mapped for the access (a RISC-V hart may cache an invalid
+    /// entry) is cured by that drop alone; a permission fault on one is not retried, as the
+    /// entry the CPU used raised it. Call it from a thread of the process, on the CPU the
+    /// program faulted on.
+    pub fn resolve_page_fault(
+        &self,
+        address: u64,
+        fault: PageFault,
+    ) -> Result<(), UnresolvedFault> {
         let page = address & !(FRAME_SIZE - 1);
         let regions = self.regions.lock();
-        self.populate(&regions, page, access)?;
+        self.populate(&regions, page, fault.access, fault.may_be_stale)?;
         drop(regions);
         P::drop_user_translations(page, FRAME_SIZE);
         Ok(())
@@ -246,19 +238,23 @@ impl<P: Platform> Process<P> {
 
     /// Makes user page `page` ready for `access`, with the regions' lock held (`regions`):
     /// maps a zeroed frame there if its region allows the access and it is not mapped yet.
-    /// Returns the frame and the mapping's attributes.
+    /// A page already mapped for the access is ready only if `mapped_is_ready` (a fault that
+    /// may be stale, or a kernel copy). Returns the frame and the mapping's attributes.
     fn populate(
         &self,
         regions: &Regions,
         page: u64,
         access: Access,
+        mapped_is_ready: bool,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
         let region = regions.find(page).ok_or(UnresolvedFault::NotAllowed)?;
         if !access.allowed_by(region.attributes) {
             return Err(UnresolvedFault::NotAllowed);
         }
         match self.space.translate(page) {
-            Some((frame, attributes)) if access.allowed_by(attributes) => Ok((frame, attributes)),
+            Some((frame, attributes)) if mapped_is_ready && access.allowed_by(attributes) => {
+                Ok((frame, attributes))
+            }
             Some(_) => Err(UnresolvedFault::NotAllowed),
             None => {
                 let frame = self.map_frame(page, region.attributes, &[])?;
@@ -372,7 +368,7 @@ impl<P: Platform> Process<P> {
             let (frame, attributes) = match self.space.translate(page) {
                 Some(mapped) => mapped,
                 None => self
-                    .populate(&regions, page, access)
+                    .populate(&regions, page, access, true)
                     .map_err(|_| InvalidUserAddress)?,
             };
             let phys = frame + virt % FRAME_SIZE;
@@ -474,7 +470,7 @@ mod tests {
     use crate::tests::{TestPlatform as P, active_root, dropped_translations, set_active_root};
     use crate::thread::host::frames_for_test;
     use core::sync::atomic::{AtomicU64, Ordering};
-    use eggos_hal::Exception;
+    use eggos_hal::{Exception, ExceptionKind};
 
     /// Kernel tables, active (frozen) as the kernel's are.
     fn kernel_tables() -> PageTables<<P as Platform>::PageTableFormat> {
@@ -590,9 +586,11 @@ mod tests {
 
     /// What a thread's handler does with `exception`: resolves it if it is a page fault.
     fn resolve(process: &Process<P>, exception: &Exception) -> Result<(), UnresolvedFault> {
-        let access = page_fault_access::<P>(exception.kind, exception.code);
-        match (access, exception.address) {
-            (Some(access), Some(address)) => process.resolve_page_fault(address, access),
+        match (
+            P::page_fault(exception.kind, exception.code),
+            exception.address,
+        ) {
+            (Some(fault), Some(address)) => process.resolve_page_fault(address, fault),
             _ => Err(UnresolvedFault::NotAllowed),
         }
     }
@@ -707,6 +705,21 @@ mod tests {
         );
         let read = fault(ExceptionKind::DataFault, Some(DATA + 8), false);
         assert_eq!(resolve(&process, &read), Ok(()));
+        // On that mapped, readable page: a read that is not a page fault (say, an alignment
+        // fault reported as a data abort), and a permission fault the entry raised, are never
+        // retried; retrying would fault again for ever.
+        for code in [
+            crate::tests::NOT_A_PAGE_FAULT,
+            crate::tests::FAULT_PERMISSION,
+        ] {
+            let mut again = read;
+            again.code = code;
+            assert_eq!(
+                resolve(&process, &again),
+                Err(UnresolvedFault::NotAllowed),
+                "{code:#x}"
+            );
+        }
         // Mapped read-only, a write still faults and is not resolved.
         let write = fault(ExceptionKind::DataFault, Some(DATA + 8), true);
         assert_eq!(resolve(&process, &write), Err(UnresolvedFault::NotAllowed));

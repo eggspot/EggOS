@@ -212,12 +212,13 @@ pub trait Platform: 'static {
     /// tags them apart. Other CPUs are not told: the kernel sees to them.
     fn drop_user_translations(start: u64, length: u64);
 
-    /// Whether an [`ExceptionKind::DataFault`] this architecture reported with raw cause `code`
-    /// ([`Exception::code`]) was an access that writes memory (a store, or an atomic
-    /// read-modify-write). The kernel asks only when it resolves a page fault in a program
-    /// (demand paging, D52), so the trap path decodes nothing more. Meaningless for any other
-    /// kind.
-    fn data_fault_writes(code: u64) -> bool;
+    /// Whether an exception of `kind` with raw cause `code` ([`Exception::code`]) that a
+    /// program took is a page fault, a translation the tables did not give (no valid entry, or
+    /// one that does not allow the access), and if so which access made it. Alignment faults,
+    /// external aborts, access faults (RISC-V PMP) and the like are not: retrying them would
+    /// fault again. The kernel asks only when a program faults (demand paging, D52), so the
+    /// trap path decodes nothing more.
+    fn page_fault(kind: ExceptionKind, code: u64) -> Option<paging::PageFault>;
 
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls

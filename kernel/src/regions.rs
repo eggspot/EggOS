@@ -13,26 +13,8 @@
 
 use alloc::vec::Vec;
 use eggos_hal::memory::FRAME_SIZE;
+pub use eggos_hal::paging::Access;
 use eggos_hal::paging::Attributes;
-
-/// What the program does to a page: what a fault reports, and what a region allows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Access {
-    Read,
-    Write,
-    Execute,
-}
-
-impl Access {
-    /// Whether a mapping with `attributes` allows this access (every user mapping is readable).
-    pub fn allowed_by(self, attributes: Attributes) -> bool {
-        match self {
-            Self::Read => true,
-            Self::Write => attributes.writable,
-            Self::Execute => attributes.executable,
-        }
-    }
-}
 
 /// One region: user addresses `start..end`, page-aligned, whose pages are mapped with
 /// `attributes`.

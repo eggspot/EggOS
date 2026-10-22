@@ -128,11 +128,10 @@ fn user_exception<P: Platform>(
     code: u64,
     address: Option<u64>,
 ) -> ControlFlow<()> {
-    let (Some(access), Some(address)) = (process::page_fault_access::<P>(kind, code), address)
-    else {
+    let (Some(fault), Some(address)) = (P::page_fault(kind, code), address) else {
         return kill(process, kind);
     };
-    match process.resolve_page_fault(address, access) {
+    match process.resolve_page_fault(address, fault) {
         Ok(()) => ControlFlow::Continue(()),
         Err(UnresolvedFault::NotAllowed) => kill(process, kind),
         Err(UnresolvedFault::OutOfMemory) => {

@@ -34,6 +34,37 @@ pub const fn index(virt: u64, level: usize) -> usize {
     ((virt >> (12 + 9 * level)) as usize) % ENTRIES
 }
 
+/// What a program does to a page: what a page fault reports, and what a mapping allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+    Execute,
+}
+
+impl Access {
+    /// Whether a mapping with `attributes` allows this access (every mapping is readable).
+    pub fn allowed_by(self, attributes: Attributes) -> bool {
+        match self {
+            Self::Read => true,
+            Self::Write => attributes.writable,
+            Self::Execute => attributes.executable,
+        }
+    }
+}
+
+/// A page fault, as [`crate::Platform::page_fault`] classifies one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageFault {
+    /// What the faulting access did.
+    pub access: Access,
+    /// Whether the fault can be a stale translation: the CPU found no valid entry (or may
+    /// have cached an invalid one), so if the tables now hold an entry that allows the access,
+    /// dropping this CPU's translation and running the access again cures it. False for a
+    /// permission fault, which the entry the CPU used really raised.
+    pub may_be_stale: bool,
+}
+
 /// What a mapping is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryType {

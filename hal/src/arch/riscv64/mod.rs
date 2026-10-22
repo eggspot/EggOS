@@ -467,9 +467,21 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
-    fn data_fault_writes(code: u64) -> bool {
-        // `scause` of a store/AMO access or page fault.
-        matches!(code, 7 | 15)
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        use crate::paging::{Access, PageFault};
+        // `scause` of the instruction, load and store/AMO page faults; access faults (PMP)
+        // are not page faults. The cause does not say whether an entry was valid, and a hart
+        // without Svvptc may cache an invalid one: any of them can be stale.
+        let access = match code {
+            12 => Access::Execute,
+            13 => Access::Read,
+            15 => Access::Write,
+            _ => return None,
+        };
+        Some(PageFault {
+            access,
+            may_be_stale: true,
+        })
     }
 
     fn drop_user_translations(start: u64, length: u64) {

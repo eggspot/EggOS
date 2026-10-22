@@ -119,9 +119,14 @@ impl<P: Platform> AddressSpace<P> {
     }
 
     /// Unmaps user `virt..virt + length`, in the low half ([`MapError::NotUser`] otherwise).
-    /// As [`PageTables::unmap`] otherwise. The frames stay the caller's, even if the address
-    /// space owns frames.
+    /// As [`PageTables::unmap`] otherwise. Not for an address space that owns its frames
+    /// ([`Self::new_owning_frames`]): an unmapped frame would leak (its owner frees the pages it
+    /// unmaps, with the memory calls, M6).
     pub fn unmap(&mut self, virt: u64, length: u64) -> Result<(), MapError> {
+        assert!(
+            !self.owns_frames,
+            "an address space that owns its frames is unmapped through its owner"
+        );
         self.tables.get_mut().unmap(virt, length)
     }
 

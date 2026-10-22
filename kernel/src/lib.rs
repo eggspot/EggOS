@@ -120,6 +120,31 @@ pub(crate) mod tests {
     /// The test platforms' page faults that wrote have this bit in their code (as x86's error
     /// code does).
     pub(crate) const FAULT_WRITE: u64 = 1 << 1;
+    /// The test platforms' faults with this bit in their code are not page faults (say, an
+    /// alignment fault reported as a data fault).
+    pub(crate) const NOT_A_PAGE_FAULT: u64 = 1 << 3;
+    /// The test platforms' faults with this bit in their code are permission faults: the
+    /// entry the CPU used raised them, so they are never stale (x86's present bit).
+    pub(crate) const FAULT_PERMISSION: u64 = 1 << 0;
+
+    /// The test platforms' `page_fault`: x86's encoding, as above.
+    pub(crate) fn page_fault(
+        kind: ExceptionKind,
+        code: u64,
+    ) -> Option<eggos_hal::paging::PageFault> {
+        use eggos_hal::paging::{Access, PageFault};
+        let access = match kind {
+            _ if code & NOT_A_PAGE_FAULT != 0 => return None,
+            ExceptionKind::InstructionFault => Access::Execute,
+            ExceptionKind::DataFault if code & FAULT_WRITE != 0 => Access::Write,
+            ExceptionKind::DataFault => Access::Read,
+            _ => return None,
+        };
+        Some(PageFault {
+            access,
+            may_be_stale: code & FAULT_PERMISSION == 0,
+        })
+    }
 
     /// The ranges `drop_user_translations` was called with, in order.
     static DROPPED_TRANSLATIONS: std::sync::Mutex<Vec<(u64, u64)>> =
@@ -405,8 +430,11 @@ pub(crate) mod tests {
         fn drop_user_translations(start: u64, length: u64) {
             DROPPED_TRANSLATIONS.lock().unwrap().push((start, length));
         }
-        fn data_fault_writes(code: u64) -> bool {
-            code & FAULT_WRITE != 0
+        fn page_fault(
+            kind: eggos_hal::ExceptionKind,
+            code: u64,
+        ) -> Option<eggos_hal::paging::PageFault> {
+            crate::tests::page_fault(kind, code)
         }
         unsafe fn prepare_thread(
             _stack_top: usize,

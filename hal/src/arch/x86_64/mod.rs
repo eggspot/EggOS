@@ -690,8 +690,8 @@ impl Platform for X86_64 {
         // is first entered through `iretq`, which serializes: nothing to do.
     }
 
-    fn data_fault_writes(code: u64) -> bool {
-        exception::page_fault_writes(code)
+    fn page_fault(kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        exception::page_fault(kind, code)
     }
 
     fn drop_user_translations(start: u64, length: u64) {

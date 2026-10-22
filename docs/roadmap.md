@@ -39,7 +39,9 @@ mappings added while active: done, D52); cross-CPU TLB maintenance once mappings
 or reduced while active (the memory calls, M6: CPUs that keep the address space loaded drop
 it before running it again; IPIs once `clone` runs a process on several CPUs at once); fault-around
 and large pages for demand-zero regions after measuring; a region tree that tracks gap sizes past
-about a thousand regions (D52); PAN, SMAP and SMEP; (user faults that end the process: done, D50).
+about a thousand regions (D52); from PR #44's review: table entries written with an atomic
+release store, kernel copies that drop the regions lock between pages once `clone` exists, a
+shared zero page for kernel reads of untouched memory, a region for the HAL test program's code; PAN, SMAP and SMEP; (user faults that end the process: done, D50).
 
 User-mode follow-ups (D47): (processes whose threads run their program in a loop over `run_user`,
 preempted on return to user mode: done, D48); on x86_64, IST stacks for NMI, double fault, machine check and debug exceptions before any

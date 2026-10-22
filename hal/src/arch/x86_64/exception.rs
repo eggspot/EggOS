@@ -405,8 +405,12 @@ const KERNEL_CODE_SELECTOR: u16 = 0x08;
 /// Present, DPL 0, 64-bit interrupt gate (interrupts stay masked in the handler).
 const INTERRUPT_GATE: u8 = 0x8e;
 
+/// Page-fault error code bit 0: the entry was present (a protection violation).
+const PAGE_FAULT_PRESENT: u64 = 1 << 0;
 /// Page-fault error code bit 1: the access wrote memory.
 const PAGE_FAULT_WRITE: u64 = 1 << 1;
+/// Page-fault error code bit 3: a reserved bit was set in an entry.
+const PAGE_FAULT_RESERVED_BIT: u64 = 1 << 3;
 /// Page-fault error code bit 4: the fault was an instruction fetch.
 const PAGE_FAULT_INSTRUCTION_FETCH: u64 = 1 << 4;
 
@@ -566,9 +570,26 @@ fn interrupt(vector: u64) -> bool {
     }
 }
 
-/// [`crate::Platform::data_fault_writes`]: the page fault's error code says the access wrote.
-pub(super) fn page_fault_writes(error_code: u64) -> bool {
-    error_code & PAGE_FAULT_WRITE != 0
+/// [`crate::Platform::page_fault`]: a `#PF` (the only exception decoded as a data or
+/// instruction fault with an error code), unless a reserved bit was set in an entry, which is
+/// the kernel's bug and would fault again. Error-code bit 0 clear means no present entry: the
+/// only kind that can be stale (x86 caches no not-present entry, but another CPU may have
+/// just made one present).
+pub(super) fn page_fault(kind: ExceptionKind, error_code: u64) -> Option<crate::paging::PageFault> {
+    use crate::paging::{Access, PageFault};
+    if error_code & PAGE_FAULT_RESERVED_BIT != 0 {
+        return None;
+    }
+    let access = match kind {
+        ExceptionKind::InstructionFault => Access::Execute,
+        ExceptionKind::DataFault if error_code & PAGE_FAULT_WRITE != 0 => Access::Write,
+        ExceptionKind::DataFault => Access::Read,
+        _ => return None,
+    };
+    Some(PageFault {
+        access,
+        may_be_stale: error_code & PAGE_FAULT_PRESENT == 0,
+    })
 }
 
 /// Describes the exception or unexpected interrupt `vector`, with the faulting address for a

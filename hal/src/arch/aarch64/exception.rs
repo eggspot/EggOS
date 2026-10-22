@@ -508,10 +508,37 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     }
 }
 
-/// [`crate::Platform::data_fault_writes`]: `ESR_EL1.ISS.WnR` of a data abort, unless a cache
-/// maintenance instruction faulted (it reports `WnR` set though it writes nothing).
-pub(super) fn data_abort_writes(esr: u64) -> bool {
-    esr & (ISS_WRITE_NOT_READ | ISS_CACHE_MAINTENANCE) == ISS_WRITE_NOT_READ
+/// [`crate::Platform::page_fault`]: an instruction or data abort whose fault status code is a
+/// translation fault (`0b0001LL`, no valid entry at level `LL`), an access flag fault
+/// (`0b0010LL`) or a permission fault (`0b0011LL`); alignment faults, external aborts, TLB
+/// conflicts and unsupported atomics are not page faults. A data abort writes if `WnR` is set,
+/// unless a cache maintenance instruction faulted (it reports `WnR` though it writes nothing).
+/// AArch64 never caches an invalid entry, but a translation fault on an entry another CPU
+/// has just made valid can still race with it, so only permission faults are never stale.
+pub(super) fn page_fault(esr: u64) -> Option<crate::paging::PageFault> {
+    use crate::paging::{Access, PageFault};
+    /// Fault status codes: translation faults are `0b0001LL`, access flag faults `0b0010LL`,
+    /// permission faults `0b0011LL`.
+    const TRANSLATION_FAULT: u64 = 0b00_0100;
+    const PERMISSION_FAULT: u64 = 0b00_1100;
+    let status = esr & 0x3f;
+    if !(TRANSLATION_FAULT..=PERMISSION_FAULT | 0b11).contains(&status) {
+        return None;
+    }
+    let access = match esr >> 26 & 0x3f {
+        EC_INSTRUCTION_ABORT_LOWER | EC_INSTRUCTION_ABORT => Access::Execute,
+        EC_DATA_ABORT_LOWER | EC_DATA_ABORT
+            if esr & (ISS_WRITE_NOT_READ | ISS_CACHE_MAINTENANCE) == ISS_WRITE_NOT_READ =>
+        {
+            Access::Write
+        }
+        EC_DATA_ABORT_LOWER | EC_DATA_ABORT => Access::Read,
+        _ => return None,
+    };
+    Some(PageFault {
+        access,
+        may_be_stale: status < PERMISSION_FAULT,
+    })
 }
 
 fn synchronous_kind(class: u64) -> (ExceptionKind, &'static str) {

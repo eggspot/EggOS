@@ -1640,15 +1640,25 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   if the address is in a region that allows the access, the page is mapped with a zeroed frame
   of its own (made visible to instruction fetch if executable) and the program runs the access
   again; anywhere else the Linux layer ends the process with `SIGSEGV`, and with `SIGKILL` when
-  there was no frame (as Linux's out-of-memory killer would). The access comes from the new HAL
-  call `Platform::data_fault_writes(code)`, which decodes the raw cause only when the kernel asks
-  (`ESR_EL1.ISS.WnR` without `CM`, `scause` 7 or 15, x86 error-code bit 1), so the trap path
-  decodes nothing more (a field filled at every trap cost the kernel's breakpoint round trip an
-  instruction).
-- **Spurious faults.** A fault on a page already mapped for the access is a stale translation:
-  a RISC-V hart without Svvptc may cache an invalid entry, and later permission increases will
-  leave stale entries on every architecture. Dropping this CPU's translation of the page
-  (`Platform::drop_user_translations`, new) and running the access again is the whole fix.
+  there was no frame (as Linux's out-of-memory killer would). Whether an exception is a page
+  fault at all, and which access made it, comes from the new HAL call
+  `Platform::page_fault(kind, code)`, which decodes the raw cause only when the kernel asks, so
+  the trap path decodes nothing more (a field filled at every trap cost the kernel's breakpoint
+  round trip an instruction): on AArch64 only translation, access-flag and permission faults
+  (fault status `0b0001LL`–`0b0011LL`), with `WnR` without `CM` for a write; on RISC-V only
+  `scause` 12, 13, 15 (access faults are PMP's, not page faults); on x86_64 `#PF` without the
+  reserved-bit flag. Alignment faults, external aborts, TLB conflicts, unsupported atomics and
+  access faults are not page faults and end the process as before (`SIGSEGV`; `SIGBUS` for
+  some comes with signals).
+- **Spurious faults.** A fault that may be stale (AArch64 translation and access-flag faults,
+  every RISC-V page fault, x86 faults with no present entry) on a page already mapped for the
+  access is a stale translation: a RISC-V hart without Svvptc may cache an invalid entry.
+  Dropping this CPU's translation of the page (`Platform::drop_user_translations`, new) and
+  running the access again is the whole fix. A permission fault on such a page is never
+  retried: the entry the CPU used raised it, and retrying would fault for ever (from the
+  independent review, which blocked an earlier version that retried every data abort,
+  alignment faults included). The memory calls will make other CPUs drop an address space whose
+  mappings changed in any way, so a permission increase never leaves a stale entry behind.
 - **The stack** is now one region: `exec::STACK_RESERVE` (8 MiB) below the end of user space,
   with only the pages holding the arguments mapped at `execve` (written through the kernel's
   copy, which maps them); the rest is mapped as the program grows into it, and the guard gap
@@ -1678,7 +1688,8 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   user pages, one page at a time up to `paging::USER_PAGES_DROPPED_ONE_BY_ONE` (32; Linux draws
   the line at 33 on x86) and all user translations beyond: `dsb ishst; tlbi vae1; dsb nsh; isb`
   or `tlbi aside1` on AArch64, `sfence.vma va, zero` or `sfence.vma` on RISC-V, `invlpg` or a
-  CR3 reload on x86_64. `Platform::data_fault_writes(code)` as above. The test program gains
+  CR3 reload on x86_64. `Platform::page_fault(kind, code)` as above, with `paging::Access` and
+  `paging::PageFault` in the HAL. The test program gains
   `stack_growth`: from its stack pointer's page down, it stores each page's address in the
   page, until it runs off the stack.
 - **Cost (D24).** New benchmark `linux_page_fault`: a store to a page touched for the first
@@ -1711,4 +1722,11 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   the first break at the page-aligned end of the highest segment), with them TLB maintenance
   for other CPUs when a mapping is removed or reduced (CPUs that keep the address space loaded
   told to drop it before they run it again) and fault-around or large pages only after
-  measuring.
+  measuring. From the independent review, non-blocking: `AddressSpace::unmap` now refuses an
+  address space that owns its frames (the frame would leak; the owner unmaps, M6); table entries
+  written with an atomic release store instead of a fence and a volatile write (same code, says
+  what is meant); kernel copies over untouched memory hold the regions lock for the whole copy
+  (chunk it, or drop the lock between pages, once `clone` gives a process threads that fault
+  meanwhile); kernel reads of untouched pages allocate zeroed frames where Linux maps its shared
+  zero page; the HAL test program's code page has no region yet (a stale fault there on RISC-V
+  would end the test).

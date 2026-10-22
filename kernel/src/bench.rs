@@ -545,8 +545,11 @@ mod tests {
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
-        fn data_fault_writes(code: u64) -> bool {
-            code & crate::tests::FAULT_WRITE != 0
+        fn page_fault(
+            kind: eggos_hal::ExceptionKind,
+            code: u64,
+        ) -> Option<eggos_hal::paging::PageFault> {
+            crate::tests::page_fault(kind, code)
         }
         unsafe fn prepare_thread(
             _stack_top: usize,

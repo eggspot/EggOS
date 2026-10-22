@@ -517,8 +517,8 @@ impl Platform for Aarch64 {
         unsafe { core::arch::asm!("dsb ish", "ic ialluis", "dsb ish", "isb", options(nostack)) };
     }
 
-    fn data_fault_writes(code: u64) -> bool {
-        exception::data_abort_writes(code)
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        exception::page_fault(code)
     }
 
     fn drop_user_translations(start: u64, length: u64) {
