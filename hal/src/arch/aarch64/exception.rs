@@ -7,6 +7,8 @@
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
 //! The kernel uses no FP/SIMD registers (D10), so they are not saved.
 
+use super::timer;
+use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
 
 core::arch::global_asm!(
@@ -128,6 +130,10 @@ const INSTRUCTION_SIZE: u64 = 4;
 
 /// Called by the entry code with the saved registers and the vector entry's index (0-15).
 extern "C" fn aarch64_exception(frame: &mut TrapFrame, index: u64) {
+    if index % 4 == TYPE_IRQ {
+        irq(frame.elr);
+        return;
+    }
     let esr: u64;
     let far: u64;
     // SAFETY: reading the syndrome register at EL1 has no side effects.
@@ -139,6 +145,31 @@ extern "C" fn aarch64_exception(frame: &mut TrapFrame, index: u64) {
     deliver(&exception);
     if exception.kind == ExceptionKind::Breakpoint {
         frame.elr += INSTRUCTION_SIZE;
+    }
+}
+
+/// Takes the pending interrupt from the GIC and handles it.
+fn irq(pc: u64) {
+    let Some(interrupt) = timer::acknowledge() else {
+        return; // Spurious: the interrupt went away before it was acknowledged.
+    };
+    // End the interrupt before handing it on: the kernel may not return here soon (later, a
+    // context switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile.
+    let id = interrupt.id();
+    if id == timer::VIRTUAL_TIMER_INTERRUPT {
+        timer::disarm();
+    }
+    timer::end_of_interrupt(interrupt);
+    if id == timer::VIRTUAL_TIMER_INTERRUPT {
+        crate::interrupt::deliver(Interrupt::Timer);
+    } else {
+        deliver(&Exception {
+            kind: ExceptionKind::Interrupt,
+            name: "unexpected IRQ",
+            code: id.into(),
+            pc,
+            address: None,
+        });
     }
 }
 

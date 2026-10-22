@@ -62,6 +62,18 @@ mod tests {
         fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
+        fn clock_ticks() -> u64 {
+            unreachable!("not used in tests")
+        }
+        fn clock_frequency() -> u64 {
+            unreachable!("not used in tests")
+        }
+        fn set_timer_deadline(_deadline: u64) {
+            unreachable!("not used in tests")
+        }
+        fn wait_for_interrupt() {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]

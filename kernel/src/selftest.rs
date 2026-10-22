@@ -2,7 +2,7 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
-use crate::exception;
+use crate::{exception, interrupt};
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
 use eggos_hal::Platform;
@@ -16,10 +16,11 @@ pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 pub type SelfTest = (&'static str, fn() -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest; 2] {
+pub fn all<P: Platform>() -> [SelfTest; 3] {
     [
         ("bss_is_zeroed", bss_is_zeroed),
         ("breakpoint_resumes", breakpoint_resumes::<P>),
+        ("timer_interrupt_fires", timer_interrupt_fires::<P>),
     ]
 }
 
@@ -81,6 +82,32 @@ fn breakpoint_resumes<P: Platform>() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// A timer deadlined 1 ms ahead must interrupt the CPU, not before the deadline, and the
+/// clock must move forward. Gives up after 1 s of clock time; a timer that never fires while
+/// the clock also stops leaves the CPU asleep, which the QEMU runner's timeout reports.
+fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
+    let frequency = P::clock_frequency();
+    if frequency < 1000 {
+        return Err("the clock runs slower than 1 kHz");
+    }
+    let before = interrupt::timer_interrupts();
+    let start = P::clock_ticks();
+    let deadline = start + frequency / 1000;
+    let give_up = start + frequency;
+    P::set_timer_deadline(deadline);
+    // Greater rather than exactly one more, as in `breakpoint_resumes`.
+    while interrupt::timer_interrupts() <= before {
+        if P::clock_ticks() > give_up {
+            return Err("no timer interrupt within 1 s of its deadline");
+        }
+        P::wait_for_interrupt();
+    }
+    if P::clock_ticks() < deadline {
+        return Err("the timer interrupt came before its deadline");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,11 +155,63 @@ mod tests {
         fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
+        fn clock_ticks() -> u64 {
+            0
+        }
+        fn clock_frequency() -> u64 {
+            1
+        }
+        fn set_timer_deadline(_deadline: u64) {}
+        fn wait_for_interrupt() {}
     }
 
     #[test]
     fn breakpoint_that_never_reaches_the_handler_fails() {
         assert!(breakpoint_resumes::<LostBreakpoints>().is_err());
+    }
+
+    #[test]
+    fn clock_too_slow_to_time_a_millisecond_fails() {
+        assert_eq!(
+            timer_interrupt_fires::<LostBreakpoints>(),
+            Err("the clock runs slower than 1 kHz")
+        );
+    }
+
+    /// A platform whose clock runs (100 ms per read) but whose timer never interrupts.
+    struct DeadTimer;
+
+    static DEAD_TIMER_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+    impl Platform for DeadTimer {
+        const ARCH: &'static str = "dead-timer";
+        fn console_write(_bytes: &[u8]) {}
+        fn exit(_status: eggos_hal::ExitStatus) -> ! {
+            unreachable!("not used in tests")
+        }
+        fn halt() -> ! {
+            unreachable!("not used in tests")
+        }
+        fn breakpoint() {}
+        fn execute_illegal_instruction() -> ! {
+            unreachable!("not used in tests")
+        }
+        fn clock_ticks() -> u64 {
+            DEAD_TIMER_CLOCK.fetch_add(100, core::sync::atomic::Ordering::Relaxed)
+        }
+        fn clock_frequency() -> u64 {
+            1000
+        }
+        fn set_timer_deadline(_deadline: u64) {}
+        fn wait_for_interrupt() {}
+    }
+
+    #[test]
+    fn timer_that_never_fires_fails_after_a_second() {
+        assert_eq!(
+            timer_interrupt_fires::<DeadTimer>(),
+            Err("no timer interrupt within 1 s of its deadline")
+        );
     }
 
     #[test]

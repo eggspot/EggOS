@@ -11,7 +11,7 @@ mod bare_metal {
     use core::fmt::Write;
     use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_hal::arch::CurrentPlatform;
-    use eggos_hal::{Exception, ExitStatus, Platform};
+    use eggos_hal::{Exception, ExitStatus, Interrupt, Platform};
     use eggos_kernel::console::PlatformConsole;
     use eggos_kernel::exception::{self, Outcome};
 
@@ -49,6 +49,13 @@ mod bare_metal {
         let _ = exception::report(&mut console, exception);
         let _ = writeln!(console, "{}", eggos_kernel::selftest::FAIL_MARKER);
         finish(ExitStatus::Failure)
+    }
+
+    /// Called by the HAL's interrupt handling (declared in `eggos_hal`). Returning resumes the
+    /// interrupted code.
+    #[unsafe(no_mangle)]
+    fn kernel_interrupt(interrupt: Interrupt) {
+        eggos_kernel::interrupt::handle(interrupt);
     }
 
     /// With `qemu-test`, power off so the test runner sees the result; otherwise stay up.

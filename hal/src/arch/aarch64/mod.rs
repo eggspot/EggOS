@@ -7,6 +7,7 @@
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
 mod exception;
+mod timer;
 
 use crate::{ExitStatus, Platform};
 use eggos_drivers::io::Mmio;
@@ -41,15 +42,17 @@ _start:
     str     xzr, [x0], #8
     b       1b
 
-    // Exception vectors, before any Rust code runs.
+    // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
 2:  adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0
     isb
+    bl      {init_timer}
     bl      kernel_main
 3:  wfe
     b       3b
-"#
+"#,
+    init_timer = sym timer::init,
 );
 
 /// QEMU `virt`: PL011 UART0.
@@ -111,5 +114,27 @@ impl Platform for Aarch64 {
         // SAFETY: `udf` is permanently undefined; it traps to the exception vectors installed
         // at boot, and the kernel never resumes from that exception.
         unsafe { core::arch::asm!("udf #0", options(noreturn)) }
+    }
+
+    #[inline]
+    fn clock_ticks() -> u64 {
+        timer::now()
+    }
+
+    #[inline]
+    fn clock_frequency() -> u64 {
+        timer::frequency()
+    }
+
+    fn set_timer_deadline(deadline: u64) {
+        timer::set_deadline(deadline);
+    }
+
+    fn wait_for_interrupt() {
+        // SAFETY: `wfi` wakes once an interrupt is pending, even with `PSTATE.I` set; clearing
+        // I then takes it through the vectors installed at boot, which restore every register,
+        // and setting I masks interrupts again. No `nomem`/`nostack`: the kernel's handler may
+        // read and write any memory, and the exception frame is pushed below the stack pointer.
+        unsafe { core::arch::asm!("wfi", "msr daifclr, #2", "isb", "msr daifset, #2") };
     }
 }

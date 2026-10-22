@@ -6,6 +6,7 @@
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
 mod exception;
+mod timer;
 
 use crate::{ExitStatus, Platform};
 use eggos_drivers::io::Mmio;
@@ -28,15 +29,18 @@ _start:
     j       1b
 
     // FPU off: the kernel uses no FP registers and the trap entry does not save them, so any
-    // FP instruction traps as illegal. Then the trap vector, before any Rust code runs.
+    // FP instruction traps as illegal. Then the trap vector, before any Rust code runs, and
+    // the timer.
 2:  li      t0, 3 << 13
     csrc    sstatus, t0
     la      t0, exception_entry
     csrw    stvec, t0
+    call    {init_timer}
     call    kernel_main
 3:  wfi
     j       3b
-"#
+"#,
+    init_timer = sym timer::init,
 );
 
 /// QEMU `virt`: NS16550A UART0, registers 1 byte apart.
@@ -108,5 +112,28 @@ impl Platform for Riscv64 {
         // SAFETY: `unimp` is defined to be illegal; it traps to the vector installed at boot,
         // and the kernel never resumes from that exception.
         unsafe { core::arch::asm!("unimp", options(noreturn)) }
+    }
+
+    #[inline]
+    fn clock_ticks() -> u64 {
+        timer::now()
+    }
+
+    #[inline]
+    fn clock_frequency() -> u64 {
+        timer::TIMEBASE_FREQUENCY
+    }
+
+    fn set_timer_deadline(deadline: u64) {
+        timer::set_deadline(deadline);
+    }
+
+    fn wait_for_interrupt() {
+        // SAFETY: `wfi` wakes once an interrupt enabled in `sie` is pending, even with
+        // `sstatus.SIE` clear; setting SIE then takes it through the trap vector installed at
+        // boot, which restores every register, and clearing SIE masks interrupts again.
+        // No `nomem`/`nostack`: the kernel's handler may read and write any memory, and the
+        // trap frame is pushed below the stack pointer.
+        unsafe { core::arch::asm!("wfi", "csrsi sstatus, 2", "csrci sstatus, 2") };
     }
 }

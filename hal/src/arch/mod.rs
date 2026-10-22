@@ -2,9 +2,10 @@
 //! (`target_os = "none"`), so host builds and tests never see architecture code.
 //!
 //! An architecture module provides the boot entry point (`_start`, or `_start32` on x86_64,
-//! which sets up a stack, zeroes `.bss`, installs the exception vectors and calls the kernel's
-//! `kernel_main`), the exception vectors (which hand every exception to the kernel's
-//! `kernel_exception`, see [`crate::Exception`]), its linker script (`linker.ld`, used by the
+//! which sets up a stack, zeroes `.bss`, installs the exception vectors, sets up the timer and
+//! its interrupt controller, and calls the kernel's `kernel_main`), the exception vectors (which
+//! hand every exception to the kernel's `kernel_exception`, see [`crate::Exception`], and every
+//! timer interrupt to its `kernel_interrupt`, see [`crate::Interrupt`]), its linker script (`linker.ld`, used by the
 //! kernel's build script) and a type implementing [`crate::Platform`], re-exported here as
 //! `CurrentPlatform`.
 

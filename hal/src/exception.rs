@@ -32,7 +32,9 @@ pub struct Exception {
     /// The architecture's own name for it, e.g. `"data abort"` or `"#GP general protection"`.
     pub name: &'static str,
     /// The architecture's raw cause value: `ESR_EL1` on AArch64, `scause` on RISC-V, the
-    /// error code pushed by the CPU on x86_64 (0 when it pushes none).
+    /// error code pushed by the CPU on x86_64 (0 when it pushes none). For an unexpected
+    /// interrupt from an interrupt controller: its number there (GIC interrupt ID, x86
+    /// vector).
     pub code: u64,
     /// Address of the instruction that was interrupted or faulted.
     pub pc: u64,

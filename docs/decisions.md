@@ -269,3 +269,47 @@ there without touching the HAL.
   runner requires the exception report followed by the fail marker and a clean power-off.
 - Not benchmarked yet: exception entry becomes a hot path with syscalls and page faults (M3, M6);
   its benchmark comes with the benchmark harness (roadmap follow-up) before that.
+
+## D26 Clock and timer interrupts: one monotonic clock and one one-shot timer per CPU — Decided by the build loop (engineering)
+The HAL gives the kernel a per-CPU monotonic clock (`clock_ticks`, `clock_frequency`) and a
+one-shot timer (`set_timer_deadline`, in clock ticks), and delivers its expiry as
+`eggos_hal::Interrupt::Timer` to the kernel binary's `kernel_interrupt`, the same way exceptions
+reach `kernel_exception` (D25). The contract is "never early, once per arming": the kernel builds
+periodic ticks, tickless idle and preemption (M4) on top, so the HAL stays policy-free. A
+deadline (not a period or a relative delay) is what every architecture's hardware compares
+against, so arming costs one register write on Arm and RISC-V and no drift accumulates.
+`wait_for_interrupt` sleeps with interrupts masked and takes the pending interrupt on wake-up,
+which is race-free on every architecture (the condition check and the sleep cannot miss the
+interrupt that changes it). The HAL acknowledges the interrupt and quiets the source before
+the kernel runs, so the kernel may later switch context from the handler without returning.
+
+Per architecture:
+- **AArch64:** `CNTVCT_EL0` (with an `isb` so a read is not performed early) and the EL1
+  virtual timer, PPI 27, through a GICv2 (QEMU `virt` with `gic-version=2`, set explicitly by
+  the runner). GICv3 and device-tree discovery of the GIC come with M5.
+- **RISC-V:** `time` and the SBI Timer extension (works with and without Sstc; using
+  `stimecmp` directly when Sstc is present is a later optimisation). The 10 MHz timebase is QEMU
+  `virt`'s, read from the device tree in M5.
+- **x86_64:** the TSC (read after `lfence`) and the local APIC timer in one-shot mode. Both
+  frequencies are measured at boot against the 8254 PIT over 2 ms (boot-time cost justified:
+  without it there is no timer at all); the APIC timer is armed rounded up and re-armed if it
+  still fires before the TSC deadline, so measurement error never makes a deadline early. The
+  measurement gives up after about 2 s of TSC time and the kernel panics with a clear message,
+  because some machines and hypervisors have no working 8254 (decided by research: keep the
+  2 ms PIT measurement now, bounded; read the frequencies from CPUID 0x15, hypervisor leaves
+  0x40000010 / Hyper-V MSRs, and use TSC-deadline mode where available, with the ACPI PM timer
+  or HPET as fallback reference clocks, as follow-ups). The legacy 8259s are remapped to
+  0x20-0x2f and masked, because the firmware leaves the PC timer on vector 8 (the double-fault
+  vector); their spurious interrupts are dropped. Vectors: 0x30
+  APIC timer, 0xff APIC spurious; all other unused vectors have not-present gates, so a stray
+  interrupt is reported as a fault instead of running random code.
+- Unexpected interrupts (any source the kernel did not ask for) are reported as an
+  `Exception` of kind `Interrupt` and are fatal, like other unhandled exceptions; spurious
+  ones are dropped in the HAL.
+- Per-CPU timer state is in statics while only the boot CPU runs; it moves to per-CPU data
+  with SMP (M4).
+- Testing: a boot self-test arms a 1 ms deadline and sleeps in `wait_for_interrupt` until the
+  kernel counts the timer interrupt, checks it did not come early, and gives up after 1 s;
+  drivers (GICv2, local APIC, 8259, 8254) are unit-tested on the host against fake registers.
+- Not benchmarked yet (as D25): interrupt entry and timer arming join the benchmark harness
+  (roadmap follow-up) before M4 uses them for preemption.
