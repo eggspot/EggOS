@@ -5,8 +5,9 @@
 //! [`arch`], compiled only for that architecture's bare-metal target, so adding an
 //! architecture never touches the core (decision D4 / D6 in `docs/decisions.md`).
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
+pub mod acpi;
 pub mod arch;
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).

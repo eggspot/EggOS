@@ -58,7 +58,7 @@ check, replace that with an in-job changed-files gate so docs PRs do not hang pe
 No macOS or Windows runners without the owner's OK; the xtask commands keep those hosts
 supported locally.
 
-## D9 Bring-up order: aarch64 and riscv64 first, x86_64 next — Decided by the build loop (engineering)
+## D9 Bring-up order: aarch64 and riscv64 first, x86_64 next — Decided by the build loop (engineering); x86_64 boot protocol superseded by D15
 QEMU's `virt` machines for aarch64 and riscv64 load an ELF kernel directly and start it in the
 kernel's privilege level (EL1 / S-mode under OpenSBI) with a UART at a fixed address, so the
 first boot needs only a few lines of entry assembly. Together they cover phones, tablets,
@@ -87,3 +87,19 @@ stays up (halts) after boot.
 The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS16550 at
 `0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
+
+## D15 x86_64 boots through PVH and powers off through ACPI S5 — Decided by engineering (owner approved the port); supersedes D9's Multiboot plan
+QEMU's `-kernel` does not load ELF64 images through Multiboot, but it does through PVH (the
+boot ABI of Xen's public `start_info.h`, also used by Linux and Firecracker): an ELF note
+(`XEN_ELFNOTE_PHYS32_ENTRY`) names a 32-bit entry point, entered in protected mode with paging
+off and `ebx` pointing at `hvm_start_info`. The x86_64 HAL entry code identity-maps the first
+4 GiB (2 MiB pages: RAM, ACPI tables and MMIO below 4 GiB) and switches to long mode. The kernel
+is linked static, non-PIE at 1 MiB, because that 32-bit code uses absolute addresses. UEFI
+boot for real hardware is a later decision.
+Power-off (D11) uses ACPI sleep state S5, the standard firmware interface on PCs, not QEMU's
+`isa-debug-exit`: RSDP from `hvm_start_info.rsdp_paddr`, or the spec's BIOS-area search when
+that is 0 (as QEMU 10 passes it) or invalid →
+RSDT/XSDT → FADT (PM1 control ports, ACPI-enable handshake) → `\_S5` package in the DSDT.
+`\_S5` is read as the static `Name`/`Package` firmware defines it, without an AML interpreter;
+the interpreter comes with ACPI device discovery in M5. The ACPI table code (`hal::acpi`) is
+architecture-independent and unit-tested on the host, since Arm servers use ACPI too.
