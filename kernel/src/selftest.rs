@@ -292,7 +292,8 @@ fn contiguous_frames_are_aligned_and_merge_back<P: Platform>(
 }
 
 /// The kernel's page tables must give each part of the kernel image only the access it needs,
-/// leave the stack guard page unmapped, map the early devices as device memory, and put the
+/// at its own address and through the direct map (never executable there), leave the stack
+/// guard page unmapped at both, map the early devices as device memory, and put the
 /// direct map where the platform says, in use: a frame written through the direct map is
 /// where the tables say.
 fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
@@ -305,8 +306,23 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
             }
         }
     }
+    let offset = P::direct_map_offset() as u64;
+    for (part, attributes) in image.mapped_parts() {
+        let alias = Some(crate::paging::direct_map_attributes(attributes));
+        for address in [part.start, part.end.wrapping_sub(1)] {
+            if !part.is_empty()
+                && tables.translate(address + offset).map(|t| (t.0, Some(t.1)))
+                    != Some((address, alias))
+            {
+                return Err("the direct map lets the kernel image be changed or executed");
+            }
+        }
+    }
     let guard = image.stack_guard();
-    if guard.is_empty() || tables.translate(guard.start).is_some() {
+    if guard.is_empty()
+        || tables.translate(guard.start).is_some()
+        || tables.translate(guard.start + offset).is_some()
+    {
         return Err("the boot stack has no unmapped guard page below it");
     }
     let mut devices_ok = true;

@@ -568,3 +568,31 @@ than a frame (D30's one-frame limit is gone; up to 4 MiB now), and virtio DMA (M
   for 32-bit DMA devices (M8); anti-fragmentation grouping (Linux's migrate types); a high
   watermark on the free stack, giving frames back to the buddy allocator (with per-CPU caches,
   M4).
+
+## D32 The direct map keeps the kernel image's protections — Decided by the build loop (review fix)
+Found by the build loop's review of M2 (D28-D31). D29 mapped all of physical memory read+write
+in the direct map, the kernel image included, so the image's code and constants were writable
+through their direct-map alias (`.text` at its physical address + the direct map offset): one
+stray or malicious kernel write could patch code, and the W^X that D29 tests on the image's own
+mapping did not hold for the frame.
+- **The fix.** The direct map is built around the kernel image: RAM below and above it stays
+  read+write and never executable; each part of the image gets its own access minus execute
+  (code and constants read-only, data, `.bss` and the boot stack read+write), and the stack
+  guard page is unmapped there too. Every mapping of an image frame is now writable or
+  executable, never both, and nothing that is read-only at the image's address is writable
+  anywhere. Nothing in the kernel wrote the image through the direct map.
+- **Cost.** The 2 MiB block or two holding the image are mapped with 4 KiB pages instead of a
+  large leaf: one or two more 4 KiB page tables and more TLB entries for direct-map accesses
+  there. On aarch64 and riscv64, which have 1 GiB leaves, a machine with a whole GiB of RAM
+  around the image also maps that GiB with 2 MiB leaves instead of one 1 GiB leaf (one more
+  table, more TLB entries for direct-map accesses anywhere in that GiB); x86_64 has no 1 GiB
+  leaves yet. QEMU's 128 MiB never used a 1 GiB leaf, so no benchmark changed; the cost on
+  real hardware is measured with M13.
+  The high-half relink (roadmap) maps the image at its own virtual address and keeps this rule.
+- **Testing.** Host tests map the direct map around a kernel image and check the access at
+  both ends of every part, the guard page and the surrounding RAM, that large leaves are still
+  used away from the image (2 MiB on x86_64, 1 GiB on Sv39), and an image across two RAM ranges
+  with a hole in it. The boot self-test now checks every part's
+  direct-map alias and the guard page's on aarch64, riscv64 and x86_64; with the old mapping it
+  fails on all three. The host test platform's direct map now covers its kernel image, as on
+  real machines.
