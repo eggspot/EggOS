@@ -67,6 +67,14 @@ pub struct Frames<'a>(pub &'a mut FrameAllocator);
 
 impl FrameSource for Frames<'_> {
     fn allocate_frames(&mut self, order: u32) -> Option<usize> {
+        // Blocks are aligned physically; they are aligned virtually (as `Layout`s need) only if
+        // the offset is, which every platform's direct map is, to far more than 4 MiB.
+        debug_assert!(
+            self.0
+                .physical_memory_offset()
+                .is_multiple_of((FRAME_SIZE as usize) << order),
+            "the direct map is not aligned to the block size"
+        );
         let first = self.0.allocate_contiguous(order)?;
         Some((first as usize).wrapping_add(self.0.physical_memory_offset()))
     }
@@ -336,10 +344,13 @@ mod tests {
 
     /// Host memory standing in for `count` frames of RAM at physical 0x10_0000, and an
     /// allocator over them.
+    /// The physical memory offset is aligned to the largest buddy block, as the real direct
+    /// maps are, so blocks aligned physically are aligned virtually.
     fn frames(count: u64) -> FrameAllocator {
-        const BASE: u64 = 0x10_0000;
-        let memory = vec![0u8; ((count + 1) * K) as usize].leak();
-        let start = (memory.as_mut_ptr() as usize).next_multiple_of(K as usize);
+        const BASE: u64 = 0x40_0000;
+        let block = (K << MAX_ORDER) as usize;
+        let memory = vec![0u8; (count * K) as usize + block].leak();
+        let start = (memory.as_mut_ptr() as usize).next_multiple_of(block);
         let mut map = MemoryMap::new();
         map.add_ram(PhysicalRange::from_start_length(BASE, count * K));
         FrameAllocator::new(&map, start.wrapping_sub(BASE as usize))
