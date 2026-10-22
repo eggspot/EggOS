@@ -833,7 +833,10 @@ Third step of M4.
   point). The scheduler remembers what it armed and arms again only for an earlier deadline;
   a later one waits for the earlier interrupt, which costs a spurious interrupt instead of an
   SBI call per switch on RISC-V. Slices are measured on the clock, as before: a thread that
-  runs after a voluntary yield, block or exit has the rest of the slice under way.
+  runs after a voluntary yield, block or exit has the rest of the slice under way, and one
+  the idle thread lets run gets a fresh slice. Whenever the scheduler sees the timer has
+  fired, it arms it again before going on, wherever it noticed (a preemption point, a yield,
+  a block or the idle thread).
 - **Expiry at preemption points, not in the interrupt handler (decided by the build loop,
   against the research's suggestion).** The handler still only counts timer interrupts; the
   scheduler compares the count with the one it last saw at every preemption point, yield and
@@ -846,7 +849,9 @@ Third step of M4.
   boot thread blocks in `join` and the idle thread waits for the timer; a deadline already
   passed and a condition that already holds never switch; a wait queue wakes one thread or all
   in the order they waited, and a thread woken while its condition does not hold waits again;
-  the tick is armed only while another thread is ready. Boot self-test on aarch64, riscv64 and
+  the tick is armed only while another thread is ready, stays armed when a slice ends in a
+  yield, and a thread woken from idle gets a whole slice (both found in review, and both
+  fail without their fix). Boot self-test on aarch64, riscv64 and
   x86_64 (`threads_sleep_wait_and_run_tickless`): three sleepers wake in order and on time, a
   waiter runs once its condition holds and it is woken, and 30 ms with preemption on and one
   runnable thread take no timer interrupt.

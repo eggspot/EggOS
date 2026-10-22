@@ -377,7 +377,7 @@ impl WaitQueue {
             if condition() {
                 return;
             }
-            scheduler.start_or_stop::<P>();
+            scheduler.start_or_panic::<P>();
             block::<P>(scheduler, |scheduler, thread| {
                 self.waiters(scheduler).push_back(thread);
             });
@@ -432,7 +432,9 @@ struct Scheduler {
     slice_end: u64,
     /// The timer deadline the scheduler armed and has not seen fire: `u64::MAX` if none.
     /// Arming again for a later deadline is skipped (the earlier one fires first, and the
-    /// scheduler then arms what it needs), so a switch rarely pays for arming the timer.
+    /// scheduler then arms what it needs), so a switch rarely pays for arming the timer. Code
+    /// that arms the timer itself (self-tests, benchmarks) does so only while no thread sleeps
+    /// and preemption is off, when this is `u64::MAX` and the scheduler needs no deadline.
     armed: u64,
 }
 
@@ -467,7 +469,7 @@ impl Scheduler {
 
     /// [`Self::start`] for the blocking calls, which cannot fail: without the memory for the
     /// idle thread's stack, nothing more can run anyway.
-    fn start_or_stop<P: Platform>(&mut self) {
+    fn start_or_panic<P: Platform>(&mut self) {
         if self.start::<P>().is_err() {
             panic!("no memory for the idle thread's stack");
         }
@@ -561,8 +563,9 @@ impl Scheduler {
 
     /// If the timer has fired since the scheduler last looked: wakes the sleepers whose time
     /// has come and arms the timer for what is needed next. Returns whether the running
-    /// thread's slice is over (then the caller yields, which starts the next slice, so the
-    /// tick is not armed here). Two loads and a compare when it has not fired.
+    /// thread's slice is over; the next slice has then started, for the thread the caller must
+    /// switch to (another is ready, or no slice would have ended). Two loads and a compare when
+    /// the timer has not fired.
     #[inline]
     fn timer_events<P: Platform>(&mut self) -> bool {
         let seen = interrupt::timer_interrupts();
@@ -588,8 +591,11 @@ impl Scheduler {
             let thread = self.sleeping.pop_front().expect("a sleeper is due");
             self.ready.push_back(thread);
         }
+        // Whatever happens next, the timer is armed again: the sleepers and the tick need it.
         let slice_over = self.tick_needed() && now >= self.slice_end;
-        if !slice_over {
+        if slice_over {
+            self.start_slice_now::<P>();
+        } else {
             self.update_timer::<P>();
         }
         slice_over
@@ -687,7 +693,7 @@ pub fn sleep_until<P: Platform>(deadline: u64) {
     if P::clock_ticks() >= deadline {
         return;
     }
-    scheduler.start_or_stop::<P>();
+    scheduler.start_or_panic::<P>();
     block::<P>(scheduler, |scheduler, thread| {
         scheduler.sleeping.insert_by_wake_at(thread, deadline);
         scheduler.update_timer::<P>();
@@ -707,7 +713,7 @@ pub fn sleep<P: Platform>(duration: Duration) {
 pub fn enable_preemption<P: Platform>() {
     let mut scheduler = SCHEDULER.lock();
     scheduler.slice_ticks = (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1);
-    scheduler.start_slice::<P>();
+    scheduler.start_slice_now::<P>();
 }
 
 /// Turns preemption off; threads run until they yield or block. Call it with interrupts
@@ -747,8 +753,6 @@ fn preemption_point_timer_fired<P: Platform>() {
         .ready
         .pop_front()
         .expect("a slice ends only while another thread is ready");
-    // The next thread's slice; it ends at a tick whoever runs then.
-    scheduler.start_slice::<P>();
     switch_to::<P>(scheduler, next, |scheduler, previous| {
         scheduler.ready.push_back(previous);
     });
@@ -868,6 +872,8 @@ extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
         if let Some(next) = scheduler.ready.pop_front() {
             switch_to::<P>(scheduler, next, |scheduler, idle| {
                 scheduler.idle = Some(idle);
+                // A fresh slice: the one under way was the idle thread's.
+                scheduler.start_slice::<P>();
             });
             continue;
         }
@@ -1230,6 +1236,56 @@ mod tests {
         other.join::<P>();
         disable_preemption::<P>();
         assert_eq!(crate::tests::timer_deadline(), u64::MAX);
+    }
+
+    #[test]
+    fn the_timer_stays_armed_when_a_slice_ends_in_a_yield() {
+        let _timer = crate::interrupt::lock_timer_interrupts_for_test();
+        let _frames = host::frames_for_test();
+        static ARMED_WHILE_OTHER_READY: AtomicU64 = AtomicU64::new(0);
+        start::<P>().unwrap();
+        disable_preemption::<P>();
+        enable_preemption::<P>();
+        let other = spawn::<P, _>(|| {
+            // The boot thread is ready: the tick must be armed.
+            ARMED_WHILE_OTHER_READY.store(crate::tests::timer_deadline(), Ordering::Relaxed);
+        })
+        .unwrap();
+        // The slice ends (the test platform jumps its clock to the deadline) and the boot
+        // thread notices in `yield_now`, not at a preemption point.
+        P::wait_for_interrupt();
+        yield_now::<P>();
+        other.join::<P>();
+        disable_preemption::<P>();
+        assert_ne!(ARMED_WHILE_OTHER_READY.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn a_thread_the_idle_thread_lets_run_gets_a_fresh_slice() {
+        let _timer = crate::interrupt::lock_timer_interrupts_for_test();
+        let _frames = host::frames_for_test();
+        static SLICE_LEFT: AtomicU64 = AtomicU64::new(0);
+        disable_preemption::<P>();
+        enable_preemption::<P>();
+        let sleeper = spawn::<P, _>(|| {
+            // Longer than a slice; the boot thread blocks in `join`, so the idle thread runs.
+            sleep_until::<P>(P::clock_ticks() + 50_000);
+            // Another thread ready brings the tick back: one slice from now, not the old one.
+            let other = spawn::<P, _>(|| {}).unwrap();
+            SLICE_LEFT.store(
+                crate::tests::timer_deadline().saturating_sub(P::clock_ticks()),
+                Ordering::Relaxed,
+            );
+            other.join::<P>();
+        })
+        .unwrap();
+        sleeper.join::<P>();
+        disable_preemption::<P>();
+        let left = SLICE_LEFT.load(Ordering::Relaxed);
+        assert!(
+            (5_000..=10_000).contains(&left),
+            "{left} ticks of the slice left"
+        );
     }
 
     #[test]
