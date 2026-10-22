@@ -16,6 +16,7 @@ use crate::thread::{JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
+use eggos_hal::paging::Format;
 use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
@@ -103,6 +104,8 @@ fn kill<P: Platform>(process: &Process<P>, kind: ExceptionKind) -> ControlFlow<(
         ExceptionKind::Alignment => signal::SIGBUS,
         ExceptionKind::DataFault
         | ExceptionKind::InstructionFault
+        // Never from user mode (interrupts come back as `UserExit::Interrupt`); listed so a
+        // new kind is a compile error here.
         | ExceptionKind::Interrupt
         | ExceptionKind::Other => signal::SIGSEGV,
     };
@@ -142,8 +145,15 @@ fn write<P: Platform>(
     buffer: u64,
     count: u64,
 ) -> Result<u64, Errno> {
-    if !matches!(fd, 1 | 2) {
+    // `fd` is an `unsigned int`: Linux ignores the register's upper half.
+    if !matches!(fd as u32, 1 | 2) {
         return Err(Errno::EBADF);
+    }
+    // As Linux's `access_ok`: a range that does not end within user space is `EFAULT` before
+    // anything is written, even if its start is the program's memory.
+    let user_end = <P::PageTableFormat as Format>::USER_END;
+    if count > 0 && buffer.checked_add(count).is_none_or(|end| end > user_end) {
+        return Err(Errno::EFAULT);
     }
     let mut chunk = [0u8; WRITE_CHUNK];
     let mut written = 0;
@@ -258,8 +268,14 @@ mod tests {
         }
         // Nothing to write: no check, as on Linux.
         assert_eq!(write(1, 0, 0), 0);
+        // A range that does not end within user space: nothing is written.
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(write(1, DATA + 4095, user_end), Errno::EFAULT.result());
         // Only standard output and standard error so far.
         assert_eq!(write(0, DATA + 4095, 2), Errno::EBADF.result());
+        // Only the descriptor's low 32 bits count, as on Linux.
+        assert_eq!(write(1 << 32, DATA + 4095, 2), Errno::EBADF.result());
+        assert_eq!(write(1 << 32 | 1, DATA + 4095, 0), 0);
         assert_eq!(write(3, DATA + 4095, 2), Errno::EBADF.result());
         assert!(console_output().is_empty());
         // Past the second page: everything up to it is written, then it stops.

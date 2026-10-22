@@ -67,7 +67,10 @@ address space loaded, once a shared process's mappings may change; pages owned b
 space (`mmap`, M6); (user faults that end the process with Linux's default signal, and the
 exit status `exit_group` records: done, D50); signal handlers; a process's threads (`clone`)
 and `wait4`; user-memory copies at user addresses with fault fixups once mappings can change
-under running threads (D50's trigger).
+under running threads (D50's trigger), and at the latest with `clone`: a plain copy racing
+another thread's writes to the same page is undefined in Rust (volatile or per-architecture
+copy routines); a cap per `write` call (Linux's `MAX_RW_COUNT`) or a preemption point per
+chunk, so one large write cannot hold its CPU.
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to

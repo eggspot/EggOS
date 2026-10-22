@@ -1482,7 +1482,9 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **`write` returns exactly what Linux returns.** It copies at most 256 bytes at a time
   through a stack buffer and never across a page, so when part of the buffer is not the
   program's memory it returns the bytes before that part, or `EFAULT` if there are none. A
-  zero-length write returns 0 unchecked, as on Linux.
+  zero-length write returns 0 unchecked, a range that does not end within user space is
+  `EFAULT` before anything is written (Linux's `access_ok`), and only the descriptor's low 32
+  bits count (it is an `unsigned int`), as on Linux.
 - **Cost (D24).** The dispatcher is inlined into the thread's loop and everything with a frame
   of its own (`write`, ending the process) is out of line: the first version kept `write`'s
   buffer and six saved registers in the shared frame and cost 35–50 instructions per call.

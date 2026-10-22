@@ -448,7 +448,9 @@ mod tests {
         process.read_user_memory(DATA + 2, &mut read).unwrap();
         assert_eq!(&read, b"234567");
 
-        // Read-only, unmapped, kernel, past user space, wrapping: refused.
+        // Read-only, unmapped, kernel, past user space, wrapping: refused. (The kernel half is
+        // refused by the user-space bound before the walk; the user and memory-type checks
+        // stand behind it.)
         assert_eq!(
             process.write_user_memory(DATA + FRAME_SIZE - 1, b"no"),
             Err(InvalidUserAddress)
