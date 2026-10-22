@@ -1096,3 +1096,55 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   scanning the CPU table in `spawn`; per-CPU idle stacks with canaries for the secondaries (their
   start stacks have none); preemption on a secondary CPU exercised by a boot self-test. (D41's
   follow-up of a secondary CPU waking the boot CPU is done: the self-test checks it.)
+
+## D44 Load balancing: idle CPUs take ready threads from busy ones; a slice that ends with threads ready wakes an idle CPU — Decided by the build loop (engineering); refines D43's placement
+- **Why now, and before the lock split.** D43 kept every thread on the CPU `spawn` placed it on,
+  so a thread woken onto a busy CPU waited there for its turn while other CPUs sat idle. D43
+  listed per-CPU locks first and balancing second; this step takes balancing first because, under
+  the one scheduler lock, it is a contained change to the idle and slice-end paths that leaves the
+  wait, wake and switch paths (and their benchmarks) alone. The lock split changes those paths
+  and their costs, and needs measuring on its own; the balancing policy carries over to it, with
+  the victim's lock taken instead of the one lock.
+- **Pull.** When a CPU's idle thread looks and nothing is ready on its CPU, it takes the first
+  ready thread of the next busy CPU after it (in index order, wrapping, so idle CPUs spread over
+  the victims) and moves it: the thread's CPU becomes the idle CPU, where it runs, sleeps and is
+  made ready from then on. A *busy* CPU runs a thread other than its idle thread; a CPU whose idle
+  thread runs is left alone even with threads ready, since it was told of them (D43) and is about
+  to run them itself, so balancing never fights a wake-up. The front thread is taken, the one that
+  has waited longest. Moving a ready thread is safe under the one lock: a thread put in a ready
+  list as its CPU switches away from it is still being saved, but the lock stays held until the
+  save is done (it is handed over across the switch, D37), so whoever takes the lock next finds it
+  saved; and a thread in a list is reached by nothing but that list.
+- **Push.** A CPU whose slice ends at a timer event with threads ready (the only time its tick
+  is armed, D39) sends the wake-up interrupt to the lowest-numbered idle CPU not already sent one
+  since it last looked (`wakeup_sent`, D43), with the lock held as `wake_all` does; that CPU then
+  pulls. So with preemption on, a thread waits a slice (10 ms) or a few while a CPU is idle: the
+  woken CPU takes from the next busy CPU after it, not necessarily the one whose slice ended, so
+  that one may need another slice end. This also happens when a slice ends at a yield or block.
+  With preemption off, only the pull at an idle CPU's next look applies.
+- **Pinned: the boot thread.** It is never moved: it runs the boot CPU's setup and the boot
+  self-tests, which expect the boot CPU. A CPU whose first ready thread is the boot thread is
+  passed over (the lists are singly linked, so taking from the middle would need a walk). So
+  while the boot thread is the only thread waiting on a busy boot CPU, each slice end there
+  wakes an idle CPU that finds nothing to take: one wasted wake-up interrupt per slice, rare and
+  cheap. A general CPU-affinity setting is a follow-up, when processes need one.
+- **Hot paths untouched.** Both halves live off the hot paths: the pull in the idle loop after
+  its own ready list came up empty, the push in the timer's cold slow path, only when a slice
+  ended, out of line (`#[cold]`, `#[inline(never)]`). Both are O(CPUs) scans of the CPU table;
+  an idle-CPU mask can replace them when CPU counts grow. Every benchmark is unchanged on all
+  three architectures.
+- **Testing.** Host unit tests: the pull takes from the next busy CPU, leaves a CPU whose idle
+  thread runs alone, passes over a boot thread at the front, moves the thread, and never takes
+  from itself; the push picks the lowest-numbered idle CPU, once per look, never itself, never a
+  CPU that has not started. Boot self-test `threads_move_to_idle_cpus` (four CPUs): a thread
+  sleeps on CPU 1, a second thread is placed on that idle CPU and runs there at preemption
+  points with preemption on, then the sleeper wakes onto the busy CPU; the two must end up
+  running side by side on two CPUs within 1 s. It fails with stealing disabled (x86_64) and with
+  the slice-end wake-up disabled (riscv64). It also exercises preemption on a secondary CPU, a
+  D37 follow-up.
+- **Cost (D24).** No memory, no boot time; code only on the idle and slice-end paths.
+- **Follow-ups (roadmap).** Wake-time placement (waking a thread onto an idle CPU directly, when
+  its own is busy and its cache is cold anyway); balancing with preemption off (a busy CPU's
+  yield or block could wake an idle CPU too); CPU affinity; an idle-CPU mask; balancing by load
+  and cache and NUMA distance, not just idle versus busy, once there are real workloads to
+  measure.

@@ -33,13 +33,15 @@ const CPU_START_TIMEOUT_MS: u64 = 1000;
 const WAKEUP_TIMEOUT_MS: u64 = 1000;
 /// How long the threads placed on the CPUs have to all run at once, and to wait together.
 const THREADS_MEET_TIMEOUT_MS: u64 = 1000;
+/// How long a thread made ready on a busy CPU has to run beside the busy thread on another CPU.
+const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 
 /// A self-test: a name and a check of `context` (for the boot self-tests, the kernel's
 /// [`Memory`]) returning `Err(reason)` on failure.
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 13] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 14] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -75,6 +77,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 13] {
         }),
         ("threads_run_on_every_cpu", |_| {
             threads_run_on_every_cpu::<P>()
+        }),
+        ("threads_move_to_idle_cpus", |_| {
+            threads_move_to_idle_cpus::<P>()
         }),
     ]
 }
@@ -822,6 +827,86 @@ fn threads_run_on_every_cpu<P: Platform>() -> Result<(), &'static str> {
     }
     if boot.wakeups() == boot_wakeups {
         return Err("the boot CPU was not woken from afar when the threads it joined exited");
+    }
+    Ok(())
+}
+
+/// Threads move to idle CPUs (D44). A thread placed on an idle CPU sleeps there; meanwhile a
+/// second thread is placed on that CPU, idle again, and keeps it busy at preemption points with
+/// preemption on. The sleeper then wakes onto the busy CPU while the other CPUs are idle: when
+/// the slice ends, an idle CPU is woken and takes whichever of the two is ready, so they run side
+/// by side on two CPUs (each sees the other on a CPU other than its own). Without balancing they
+/// would take turns on one CPU until the timeout. On one CPU (the benchmarks) there is nothing to
+/// check.
+fn threads_move_to_idle_cpus<P: Platform>() -> Result<(), &'static str> {
+    /// Each thread's CPU, as its index plus one; 0 before it runs.
+    static SLEEPER_ON: AtomicUsize = AtomicUsize::new(0);
+    static BUSY_ON: AtomicUsize = AtomicUsize::new(0);
+    static ASLEEP: AtomicBool = AtomicBool::new(false);
+    static PLACED_APART: AtomicBool = AtomicBool::new(false);
+    static GAVE_UP: AtomicBool = AtomicBool::new(false);
+    if cpu::CPUS.all().len() <= 1 {
+        return Ok(());
+    }
+    SLEEPER_ON.store(0, Ordering::Relaxed);
+    BUSY_ON.store(0, Ordering::Relaxed);
+    ASLEEP.store(false, Ordering::Relaxed);
+    PLACED_APART.store(false, Ordering::Relaxed);
+    GAVE_UP.store(false, Ordering::Relaxed);
+    let millisecond = P::clock_frequency() / 1000;
+    let give_up = P::clock_ticks() + THREADS_SPREAD_TIMEOUT_MS * millisecond;
+    // Runs at preemption points until it and `other` are seen on two CPUs.
+    let side_by_side = move |mine: &AtomicUsize, other: &AtomicUsize| loop {
+        let here = cpu::current::<P>().index() + 1;
+        mine.store(here, Ordering::Relaxed);
+        let there = other.load(Ordering::Relaxed);
+        if there != 0 && there != here {
+            return;
+        }
+        if P::clock_ticks() > give_up {
+            GAVE_UP.store(true, Ordering::Relaxed);
+            return;
+        }
+        thread::preemption_point::<P>();
+    };
+    thread::enable_preemption::<P>();
+    let sleeper = thread::spawn::<P, _>(move || {
+        let before = cpu::current::<P>().index() + 1;
+        SLEEPER_ON.store(before, Ordering::Relaxed);
+        ASLEEP.store(true, Ordering::Release);
+        thread::sleep_until::<P>(P::clock_ticks() + 20 * millisecond);
+        side_by_side(&SLEEPER_ON, &BUSY_ON);
+    });
+    let Ok(sleeper) = sleeper else {
+        thread::disable_preemption::<P>();
+        return Err("could not start a thread");
+    };
+    while !ASLEEP.load(Ordering::Acquire) && P::clock_ticks() < give_up {
+        core::hint::spin_loop();
+    }
+    // Long enough for the sleeper to block, leaving its CPU idle, the lowest-numbered one, with
+    // a margin for a host that stalls the machine: the sleeper sleeps four times as long.
+    thread::sleep_until::<P>(P::clock_ticks() + 5 * millisecond);
+    let sleeper_on = SLEEPER_ON.load(Ordering::Relaxed);
+    let busy = thread::spawn::<P, _>(move || {
+        if cpu::current::<P>().index() + 1 != sleeper_on {
+            PLACED_APART.store(true, Ordering::Relaxed);
+        }
+        side_by_side(&BUSY_ON, &SLEEPER_ON);
+    });
+    let Ok(busy) = busy else {
+        thread::disable_preemption::<P>();
+        sleeper.join::<P>();
+        return Err("could not start a second thread");
+    };
+    sleeper.join::<P>();
+    busy.join::<P>();
+    thread::disable_preemption::<P>();
+    if PLACED_APART.load(Ordering::Relaxed) {
+        return Err("the second thread was not placed on the sleeping thread's idle CPU");
+    }
+    if GAVE_UP.load(Ordering::Relaxed) {
+        return Err("a thread made ready on a busy CPU did not move to an idle one within 1 s");
     }
     Ok(())
 }
