@@ -9,7 +9,9 @@
 //!   read and execute, constants read only, data and the boot stack read and write but never
 //!   execute, and the page below the boot stack left unmapped, so an overflow faults instead of
 //!   silently overwriting `.bss`;
-//! - the direct map: all physical memory at [`Platform::direct_map_offset`];
+//! - the direct map: all physical memory at [`Platform::direct_map_offset`], read and write and
+//!   never executable, except that the kernel image's own frames keep their access there (code
+//!   and constants read-only) and its stack guard page is unmapped, so no alias undoes W^X;
 //! - the device registers the HAL uses before the driver model exists (M5), as device memory at
 //!   their physical addresses.
 //!
@@ -19,7 +21,7 @@
 use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
 use eggos_hal::memory::FRAME_SIZE;
-use eggos_hal::paging::{self, Attributes, Entry, Format};
+use eggos_hal::paging::{self, Attributes, Entry, Format, KernelImage};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Most roots any [`Format`] has.
@@ -234,20 +236,13 @@ pub fn kernel_page_tables<P: Platform>(
     for (range, attributes) in image.mapped_parts() {
         tables.map(range.start, range.start, range.len(), attributes, frames)?;
     }
-    let offset = P::direct_map_offset() as u64;
-    for range in physical_memory.ranges() {
-        let virt = range
-            .start
-            .checked_add(offset)
-            .ok_or(MapError::InvalidAddress)?;
-        tables.map(
-            virt,
-            range.start,
-            range.len(),
-            Attributes::READ_WRITE,
-            frames,
-        )?;
-    }
+    map_direct_map(
+        &mut tables,
+        physical_memory,
+        P::direct_map_offset() as u64,
+        &image,
+        frames,
+    )?;
     // Page by page: two register blocks may share a page. A page mapped already is compared
     // with a device leaf as the format decodes it (RISC-V does not record the memory type).
     let device_leaf = match <P::PageTableFormat as Format>::decode(
@@ -268,6 +263,65 @@ pub fn kernel_page_tables<P: Platform>(
         }
     });
     result.map(|()| tables)
+}
+
+/// The access the direct map gives a part of the kernel image mapped with `attributes`: the
+/// same, never executable. Code and constants stay read-only through their direct-map alias,
+/// so a stray or malicious write cannot change them there and W^X holds for every mapping of
+/// a frame, not just the image's own.
+pub const fn direct_map_alias(attributes: Attributes) -> Attributes {
+    Attributes {
+        executable: false,
+        ..attributes
+    }
+}
+
+/// Maps every range of `ram` at virtual physical + `offset`, read and write, never
+/// executable, except the kernel image's frames: each of its parts gets
+/// [`direct_map_alias`] of its access, and the stack guard page stays unmapped.
+fn map_direct_map<F: Format>(
+    tables: &mut PageTables<F>,
+    ram: &MemoryMap,
+    offset: u64,
+    image: &KernelImage,
+    frames: &mut FrameAllocator,
+) -> Result<(), MapError> {
+    let image_span = PhysicalRange {
+        start: image.start,
+        end: image.end,
+    };
+    for range in ram.ranges() {
+        let below_image = PhysicalRange {
+            start: range.start,
+            end: range.end.min(image_span.start),
+        };
+        let above_image = PhysicalRange {
+            start: range.start.max(image_span.end),
+            end: range.end,
+        };
+        let image_parts = image.mapped_parts().map(|(part, attributes)| {
+            let inside = PhysicalRange {
+                start: part.start.max(range.start),
+                end: part.end.min(range.end),
+            };
+            (inside, direct_map_alias(attributes))
+        });
+        let pieces = [
+            (below_image, Attributes::READ_WRITE),
+            (above_image, Attributes::READ_WRITE),
+        ];
+        for (piece, attributes) in pieces.into_iter().chain(image_parts) {
+            if piece.is_empty() {
+                continue;
+            }
+            let virt = piece
+                .start
+                .checked_add(offset)
+                .ok_or(MapError::InvalidAddress)?;
+            tables.map(virt, piece.start, piece.len(), attributes, frames)?;
+        }
+    }
+    Ok(())
 }
 
 /// Builds the kernel's page tables (see [`kernel_page_tables`]) from the free memory in
@@ -392,6 +446,74 @@ mod tests {
         assert_eq!(15 - frames.free_frames(), 5);
         for virt in [start, 2 << 20, (4 << 20) + K - 1] {
             assert_eq!(tables.translate(virt).map(|t| t.0), Some(virt));
+        }
+    }
+
+    #[test]
+    fn the_direct_map_keeps_the_kernel_image_read_only_and_never_executable() {
+        let mut frames = frames(64);
+        let mut tables = PageTables::<X86_64>::new(&mut frames).unwrap();
+        let mb = 1 << 20;
+        // 8 MiB of RAM in two ranges; the image sits inside the first, away from 2 MiB
+        // boundaries.
+        let mut ram = MemoryMap::new();
+        ram.add_ram(PhysicalRange::from_start_length(0, 6 * mb));
+        ram.add_ram(PhysicalRange::from_start_length(8 * mb, 2 * mb));
+        let base = mb + 3 * K;
+        let image = KernelImage {
+            start: base,
+            text_start: base + K,
+            rodata_start: base + 4 * K,
+            data_start: base + 6 * K,
+            stack_guard_start: base + 9 * K,
+            stack_start: base + 10 * K,
+            end: base + 14 * K,
+        };
+        let offset = 0xffff_8000_0000_0000;
+        map_direct_map(&mut tables, &ram, offset, &image, &mut frames).unwrap();
+        let alias = |phys: u64| tables.translate(offset + phys);
+        let rw = Some(Attributes::READ_WRITE);
+        let ro = Some(Attributes::READ_ONLY);
+        for (phys, expected) in [
+            (0, rw),
+            (base - 1, rw),
+            (image.start, ro),
+            (image.text_start, ro),
+            (image.rodata_start - 1, ro),
+            (image.rodata_start, ro),
+            (image.data_start, rw),
+            (image.stack_guard_start - 1, rw),
+            (image.stack_guard_start, None),
+            (image.stack_start - 1, None),
+            (image.stack_start, rw),
+            (image.end - 1, rw),
+            (image.end, rw),
+            (6 * mb - 1, rw),
+            (6 * mb, None),
+            (8 * mb, rw),
+            (10 * mb - 1, rw),
+        ] {
+            assert_eq!(
+                alias(phys).map(|t| t.0),
+                expected.map(|_| phys),
+                "{phys:#x}"
+            );
+            assert_eq!(alias(phys).map(|t| t.1), expected, "{phys:#x}");
+        }
+        // Away from the image, the largest leaves still map it: no page table under the
+        // second range's 2 MiB entry, nor under the first range's last.
+        for phys in [4 * mb, 8 * mb] {
+            let walk = |level| {
+                let mut table = tables.roots()[0];
+                for l in (level + 1..4).rev() {
+                    match X86_64::decode(tables.entry(table, offset + phys, l).read(), l) {
+                        Entry::Table(next) => table = next,
+                        other => return other,
+                    }
+                }
+                X86_64::decode(tables.entry(table, offset + phys, level).read(), level)
+            };
+            assert!(matches!(walk(1), Entry::Leaf(..)), "{phys:#x}");
         }
     }
 

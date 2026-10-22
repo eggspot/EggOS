@@ -173,7 +173,8 @@ mod tests {
             Self::physical_memory_offset()
         }
         fn kernel_image() -> eggos_hal::paging::KernelImage {
-            // Below the RAM: the tables only describe it, nothing reaches it.
+            // Below the free RAM, in RAM the direct map covers (see `physical_memory`), as on
+            // real machines: the tables only describe it, nothing reaches it.
             eggos_hal::paging::KernelImage {
                 start: 0x8_0000,
                 text_start: 0x8_1000,
@@ -185,7 +186,13 @@ mod tests {
             }
         }
         fn physical_memory() -> eggos_hal::MemoryMap {
-            Self::memory_map()
+            let mut map = Self::memory_map();
+            let image = Self::kernel_image();
+            map.add_ram(eggos_hal::PhysicalRange {
+                start: image.start,
+                end: image.end,
+            });
+            map
         }
         fn early_device_regions(region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {
             // Two register blocks in one page, as the paging code must allow.
