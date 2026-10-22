@@ -41,7 +41,10 @@ jobs:
       # Only main's image is ever pushed: a PR, or a manual run on another branch, only builds.
       - name: Log in to the GitHub container registry
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       # `--cache-from` fetches only the layers it reuses; without registry access (a PR) it logs
       # a 403 "failed to configure registry cache importer" error, which is expected, and builds
