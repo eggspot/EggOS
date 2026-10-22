@@ -31,8 +31,9 @@ Every CPU architecture, GPU, device type and driver, all written by us. Therefor
   register/bus access traits, so the same driver serves every architecture;
 - every supported architecture boots in QEMU in automated tests.
 
-## D5 License: MIT, clean-room — Decided
-All code is MIT. Never copy or translate GPL/LGPL/copyleft code (including Linux, GPL-2.0);
+## D5 License: MIT, clean-room — Decided, permanent
+All code is MIT, and the license will never change (owner, 2026-10-22): no relicensing, no dual
+licensing, no extra terms. Never copy or translate GPL/LGPL/copyleft code (including Linux, GPL-2.0);
 implement from public specifications, datasheets, man pages and observed behaviour.
 
 ## D6 Repository layout: a Cargo workspace of four crates — Decided by the build loop (engineering)
@@ -98,8 +99,8 @@ unit) are what we measure and ship. See CLAUDE.md, "The target: the fastest OS".
 ## D14 Everything written by us, in Rust — Decided
 All of EggOS (kernel, drivers, compatibility layers, userland, libraries, tools, build automation)
 is Rust we write ourselves. Assembly only where the CPU requires it, inside the HAL's architecture
-modules. No third-party crates; a rare exception needs the owner's explicit OK and an entry in
-docs/dependencies.md. Machine-provided firmware (UEFI, OpenSBI, QEMU loaders) is outside EggOS.
+modules. No third-party crates, ever, with no exceptions (owner, 2026-10-22): whatever a crate
+would provide, we write ourselves. Machine-provided firmware (UEFI, OpenSBI, QEMU loaders) is outside EggOS.
 
 ## D15 x86_64 boots through PVH and powers off through ACPI S5 — Decided by engineering (owner approved the port); supersedes D9's Multiboot plan
 QEMU's `-kernel` does not load ELF64 images through Multiboot, but it does through PVH (the

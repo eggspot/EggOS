@@ -66,7 +66,8 @@ Every change is judged against it:
 - **Release builds are what we measure and ship** (LTO, one codegen unit); debug builds are for
   debugging.
 - When performance and convenience conflict, choose performance. When a faster design would weaken
-  correctness or security, stop and ask the owner rather than choosing silently.
+  correctness or security, do not choose silently: resolve it with a research subagent (see "Open
+  questions" below) and record the decision.
 
 ## Priorities
 1. Performance first: see "The target: the fastest OS" above.
@@ -86,9 +87,9 @@ them.
   fine).
   - Assembly only where the CPU leaves no choice (boot entry, trap vectors, context switch), kept to the
     minimum and only inside the HAL's architecture modules.
-  - No third-party crates. A rare exception needs the owner's explicit OK first, and each approved one is
-    listed with its reason in docs/dependencies.md. "There is a crate for it" is never a reason on its
-    own: we write it ourselves so we control its performance, correctness and license.
+  - **No third-party crates, ever.** There are no exceptions and nothing to ask for: when we need
+    something a crate would give us, we write it ourselves, so we control its performance, correctness
+    and license. "There is a crate for it" is never a reason. `Cargo.lock` lists only our own crates.
   - Firmware the machine provides (UEFI, OpenSBI, QEMU's loaders) is outside EggOS and is not a
     dependency; nothing from it is copied into the repo.
 - `unsafe` only where unavoidable, each block with a `// SAFETY:` comment explaining why it is sound.
@@ -102,20 +103,47 @@ The owner does not merge PRs by hand. After opening a PR, in the same session:
 1. Run both review passes from the global PR workflow, fixing what they find and pushing the fixes.
 2. Wait for CI to finish (`gh pr checks <n> --watch`); a docs-only PR that CI skips has no checks.
 3. **Merge it yourself** when all of these hold: both passes are clean, every CI check passed, the PR
-   has no merge conflicts, and nothing in it needs the owner (below). Squash-merge to match the history
+   has no merge conflicts, it adds no third-party crate (never allowed; replace it with our own code
+   first), and nothing in it needs the owner (below). Squash-merge to match the history
    (`gh pr merge <n> --squash --delete-branch`), then say in the report that it was merged.
 4. If any condition fails, do not merge: fix what you can, and otherwise report plainly why the PR is
    still open.
 
-Never auto-merge a PR that needs the owner: one that adds a third-party crate, accepts a performance or
-UX regression, changes the license, touches credentials, money, deploys or releases, goes against a rule
-the owner stated, or still has an open question listed for the owner. Those wait for the owner's OK.
+An open question is never a reason to leave a PR unmerged: answer it with a research subagent (see
+"Open questions" below), record the answer in the PR under "Decided by research", and merge.
+Never auto-merge a PR that needs the owner: one that accepts a performance or UX regression, touches
+credentials or money, or goes against a rule the owner stated. Those wait for the owner's OK. A PR that changes the license is never merged at all (see License).
 
-## License: MIT, 100% open source
-- All EggOS code is MIT (see LICENSE). Keep everything in the repo MIT-compatible.
+## Releases: ship every major feature, don't ask
+A major feature is a roadmap milestone (`docs/roadmap.md`, M-numbers). When one is finished, its PRs
+are merged and CI on `main` passed, release it in the same session without asking the owner:
+1. **Version** (semantic versioning, tags `vMAJOR.MINOR.PATCH`): until 1.0, each finished milestone
+   bumps MINOR (`0.2.0`, `0.3.0`, ...) and fixes in between bump PATCH. `1.0.0` is the first release
+   someone can install and use as their everyday OS.
+2. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and mark the milestone **done** in
+   the roadmap, in one PR, reviewed and merged like any other.
+3. On the merged commit, run `cargo xtask ci` locally (no extra CI minutes); if anything fails, fix it
+   first and do not release.
+4. Build the kernel image for every architecture that boots (`cargo xtask build --arch <arch>`, release
+   profile) and name each `eggos-<version>-<arch>.elf`.
+5. Tag `v<version>` on that commit, push the tag, and publish a GitHub Release
+   (`gh release create v<version> --title "EggOS <version>" --notes-file ... <images>`). The notes say
+   what's new, what works, how to boot it in QEMU (`cargo xtask run --arch <arch>`), and known limits.
+6. Report the release link.
+Still the owner's: anything that needs new accounts, signing keys or other credentials, or money
+(e.g. app-store or code-signing certificates).
+
+## License: MIT, 100% open source, permanently
+- All EggOS code is MIT (see LICENSE), and the license will never change: no relicensing, no dual
+  licensing, no extra terms, no CLA that would allow it. Keep everything in the repo MIT-compatible.
 - Clean-room only: never copy or translate code from GPL/LGPL/copyleft projects, including the Linux kernel
   (GPL-2.0). Implement Linux compatibility from public specifications, man pages and observed behaviour,
   not from Linux source.
 
-## Not decided yet (ask the owner, don't assume)
-- Which compatibility layer comes first (Linux, Android, Windows, macOS or iOS apps).
+## Open questions: answer them with a research subagent
+Don't stop work to wait for the owner. When a question comes up (a design tradeoff, an assumption about
+intent, a choice between approaches, a name), launch a research subagent with the question, the context
+and the options; it researches the repo and, where useful, the web, and returns a recommendation with
+reasons. Follow it, record it (PR description under "Decided by research", and docs/decisions.md for
+architecture), and keep working. The owner can overrule any of these later.
+Still open: none.
