@@ -11,6 +11,7 @@ pub mod bench;
 pub mod console;
 pub mod exception;
 pub mod interrupt;
+pub mod memory;
 pub mod selftest;
 
 use core::fmt::Write;
@@ -26,6 +27,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
         .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
+        .and_then(|()| report_memory(console, &P::memory_map()))
         .and_then(|()| selftest::run(console, &selftest::all::<P>()));
     // Benchmarks only mean something on a kernel that passed its self-tests.
     #[cfg(feature = "qemu-bench")]
@@ -41,6 +43,21 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
+/// Prints how much memory is free and where.
+fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core::fmt::Result {
+    let ranges = map.ranges();
+    let plural = if ranges.len() == 1 { "" } else { "s" };
+    writeln!(
+        console,
+        "memory: {} KiB free in {} range{plural}",
+        map.total() / 1024,
+        ranges.len()
+    )?;
+    ranges
+        .iter()
+        .try_for_each(|range| writeln!(console, "  {range}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +71,21 @@ mod tests {
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
     static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// Physical address of the test platform's RAM.
+    const RAM_BASE: u64 = 0x10_0000;
+    const RAM_FRAMES: u64 = 128;
+
+    /// Real host memory standing in for the test platform's RAM: its first frame-aligned
+    /// address, which the platform's physical memory offset maps `RAM_BASE` to.
+    fn ram() -> usize {
+        static RAM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *RAM.get_or_init(|| {
+            let frame = eggos_hal::memory::FRAME_SIZE as usize;
+            let memory = vec![0u8; (RAM_FRAMES as usize + 1) * frame].leak();
+            (memory.as_mut_ptr() as usize).next_multiple_of(frame)
+        })
+    }
 
     impl Platform for TestPlatform {
         const ARCH: &'static str = "testarch";
@@ -94,6 +126,17 @@ mod tests {
                 interrupt::handle(Interrupt::Timer);
             }
         }
+        fn memory_map() -> eggos_hal::MemoryMap {
+            let mut map = eggos_hal::MemoryMap::new();
+            map.add_ram(eggos_hal::PhysicalRange::from_start_length(
+                RAM_BASE,
+                RAM_FRAMES * eggos_hal::memory::FRAME_SIZE,
+            ));
+            map
+        }
+        fn physical_memory_offset() -> usize {
+            ram().wrapping_sub(RAM_BASE as usize)
+        }
     }
 
     #[test]
@@ -101,7 +144,10 @@ mod tests {
         let _lock = interrupt::lock_timer_interrupts_for_test();
         let mut out = String::new();
         assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
-        assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n")));
+        assert!(out.starts_with(&format!(
+            "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
+             memory: 512 KiB free in 1 range\n  0x100000..0x180000\n"
+        )));
         assert!(out.ends_with(&format!("{}\n", selftest::PASS_MARKER)));
     }
 }

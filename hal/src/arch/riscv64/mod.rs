@@ -1,14 +1,17 @@
 //! RISC-V 64-bit (RV64GC).
 //!
 //! Boot contract: the SBI firmware (OpenSBI, as bundled with QEMU) enters `_start` in S-mode
-//! with `a0` = hart id and `a1` = device-tree address, MMU off.
+//! with `a0` = hart id and `a1` = device-tree address, MMU off. The device tree describes the
+//! RAM and the firmware's own reservation (see [`Platform::memory_map`]).
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
 mod exception;
 mod timer;
 
-use crate::{ExitStatus, Platform};
+use crate::arch::boot_memory;
+use crate::{ExitStatus, MemoryMap, Platform};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Ns16550, Uart};
 
@@ -28,10 +31,14 @@ _start:
     addi    t0, t0, 8
     j       1b
 
+    // Keep the device-tree address (after zeroing .bss, where it is stored).
+2:  la      t0, {device_tree}
+    sd      a1, 0(t0)
+
     // FPU off: the kernel uses no FP registers and the trap entry does not save them, so any
     // FP instruction traps as illegal. Then the trap vector, before any Rust code runs, and
     // the timer.
-2:  li      t0, 3 << 13
+    li      t0, 3 << 13
     csrc    sstatus, t0
     la      t0, exception_entry
     csrw    stvec, t0
@@ -41,7 +48,12 @@ _start:
     j       3b
 "#,
     init_timer = sym timer::init,
+    device_tree = sym DEVICE_TREE,
 );
+
+/// Physical address of the device tree, passed by the SBI firmware in `a1` and stored by the
+/// entry code.
+static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 
 /// QEMU `virt`: NS16550A UART0, registers 1 byte apart.
 const UART0_BASE: usize = 0x1000_0000;
@@ -135,5 +147,17 @@ impl Platform for Riscv64 {
         // No `nomem`/`nostack`: the kernel's handler may read and write any memory, and the
         // trap frame is pushed below the stack pointer.
         unsafe { core::arch::asm!("wfi", "csrsi sstatus, 2", "csrci sstatus, 2") };
+    }
+
+    fn memory_map() -> MemoryMap {
+        // SAFETY: the SBI firmware passes the address of its device tree in `a1` (the RISC-V
+        // boot convention, which OpenSBI follows), which stays readable and unwritten; with the
+        // MMU off physical addresses are accessible directly.
+        unsafe { boot_memory::device_tree_memory_map(DEVICE_TREE.load(Ordering::Relaxed)) }
+    }
+
+    #[inline]
+    fn physical_memory_offset() -> usize {
+        0
     }
 }

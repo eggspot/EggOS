@@ -9,7 +9,8 @@
 mod exception;
 mod timer;
 
-use crate::{ExitStatus, Platform};
+use crate::arch::boot_memory;
+use crate::{ExitStatus, MemoryMap, Platform};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
 
@@ -54,6 +55,11 @@ _start:
 "#,
     init_timer = sym timer::init,
 );
+
+/// QEMU `virt`: start of RAM, where QEMU places the device tree for a non-Linux kernel (it
+/// passes the tree's address in `x0` only to Linux images). The kernel links far enough above
+/// it for QEMU's 1 MiB tree to fit (see `linker.ld`).
+const RAM_BASE: usize = 0x4000_0000;
 
 /// QEMU `virt`: PL011 UART0.
 const UART0_BASE: usize = 0x0900_0000;
@@ -136,5 +142,17 @@ impl Platform for Aarch64 {
         // and setting I masks interrupts again. No `nomem`/`nostack`: the kernel's handler may
         // read and write any memory, and the exception frame is pushed below the stack pointer.
         unsafe { core::arch::asm!("wfi", "msr daifclr, #2", "isb", "msr daifset, #2") };
+    }
+
+    fn memory_map() -> MemoryMap {
+        // SAFETY: on QEMU `virt` the start of RAM is readable with the MMU off and holds the
+        // device tree QEMU loaded there, which nothing writes; if QEMU loaded none, the header
+        // check fails and the map is empty.
+        unsafe { boot_memory::device_tree_memory_map(RAM_BASE) }
+    }
+
+    #[inline]
+    fn physical_memory_offset() -> usize {
+        0
     }
 }

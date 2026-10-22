@@ -91,6 +91,7 @@ stays up (halts) after boot.
 The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS16550 at
 `0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
+The memory map already comes from the device tree (D28).
 
 ## D13 Performance target: the fastest OS — Decided
 EggOS must beat macOS, Windows and Linux on boot time, latency, throughput and memory footprint on
@@ -350,3 +351,45 @@ microbenchmarks were considered and left out: host timings are as noisy as CI wa
 architecture-independent code (allocators, data structures) runs in this harness on the real
 targets instead. Cycle-accurate benchmarks on real machines, and comparisons against macOS,
 Windows and Linux on the same hardware, come with real-hardware bring-up (M13).
+
+## D28 Physical memory: the HAL reports free RAM, the core allocates frames (bump + free stack) — Decided by the build loop (engineering; allocator choice decided by research)
+First step of M2. Each architecture module builds a `MemoryMap` (`Platform::memory_map`) from
+what its firmware describes, adds the RAM, then reserves everything in use; the
+architecture-independent core turns it into a `FrameAllocator` of 4 KiB frames.
+- **Where the memory map comes from.** RISC-V: the device tree whose address OpenSBI passes in
+  `a1` (its `/memory` nodes, memory reservation block and `/reserved-memory`, where OpenSBI
+  reserves itself). AArch64: the device tree at the start of RAM, where QEMU `virt` puts it for a
+  non-Linux ELF image (it passes the address in `x0` only to Linux images), and only if it fits
+  below the kernel; taking it from `x0` comes with booting through other loaders (M5, M13). QEMU's tree is 1 MiB, so the AArch64 kernel now
+  links at `0x4020_0000` instead of `0x4008_0000` (2 MiB aligned, which later suits a 2 MiB
+  kernel mapping). x86_64: the PVH start info's memory map (version 1, E820 types; RAM is type
+  1, and every other entry is reserved, so where entries overlap the more restrictive wins). The device-tree reader (`eggos_hal::fdt`) is architecture-independent and reads only what
+  memory needs; device discovery from it comes with M5 (D12).
+- **Reserved:** the kernel image with `.bss` and boot stack (`__kernel_start..__kernel_end`),
+  the device tree (kept for M5), every firmware reservation, and on x86_64 all memory below
+  1 MiB (BIOS data, EBDA, the BIOS area where the RSDP is found, and the future AP start-up
+  trampoline), the PVH start info and its memory map. On x86_64 only memory inside the boot
+  identity map (below 4 GiB) is offered until the kernel has its own page tables (next M2 step).
+- **The map** has a fixed capacity (64 ranges), needs no allocator, keeps whole frames only and
+  rounds reservations out to whole frames. When it is full it drops RAM (the smallest range),
+  never a reservation, so running out costs memory, not correctness.
+- **The allocator** (decided by research, options: bump + free stack, bitmap, buddy): a bump
+  allocator over the free ranges, top down so low memory that some devices' DMA is limited to
+  goes last, plus a stack of freed frames linked through their first word (reached through
+  `Platform::physical_memory_offset`, 0 while the kernel runs identity-mapped). Building it
+  costs O(ranges), not O(frames), so boot time does not grow with RAM, and it uses no metadata
+  memory (D24); a frame never handed out is never touched. Allocating a never-used frame costs
+  10-13 instructions and a free + allocate pair 15-16, beyond the benchmark loop's own 4
+  (benchmarks `frame_allocate_untouched`, `frame_free_allocate`). A bitmap
+  was rejected for its boot-time initialisation and O(n) search; a buddy allocator (contiguous
+  power-of-two blocks for DMA and huge pages) replaces this one when paging and the direct map
+  exist and SMP needs per-CPU caches (M2/M4, as Linux's memblock hands over to its buddy
+  allocator); the free stack becomes the per-CPU cache.
+- Not yet: a global allocator instance and its lock (the paging step adds them, with the first
+  user), double-free detection (the buddy allocator's metadata gives it for free).
+- Testing: host unit tests for the map (merging, splitting, rounding, a full map, randomised
+  invariants), the device-tree reader (QEMU-shaped trees, cell sizes, disabled nodes, every
+  truncation and single-byte corruption of the structure block) and the allocator (top-down
+  order, LIFO reuse, exhaustion, randomised allocate/free); a boot self-test on every
+  architecture writes and reads back 64 frames, checks LIFO reuse, and counts every frame to
+  the end of memory against the map.
