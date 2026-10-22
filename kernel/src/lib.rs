@@ -8,6 +8,7 @@
 
 pub mod console;
 pub mod exception;
+pub mod interrupt;
 pub mod selftest;
 
 use core::fmt::Write;
@@ -22,6 +23,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Returns how the boot went; the architecture entry point turns that into a machine exit.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
+        .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
         .and_then(|()| selftest::run(console, &selftest::all::<P>()));
     match report {
         Ok(true) => ExitStatus::Success,
@@ -33,11 +35,15 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
 mod tests {
     use super::*;
 
-    use eggos_hal::{Exception, ExceptionKind};
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use eggos_hal::{Exception, ExceptionKind, Interrupt};
 
-    /// A platform whose breakpoint goes straight to the kernel's handler, as the
-    /// architecture's exception vectors do on a real machine.
+    /// A platform whose breakpoint and timer go straight to the kernel's handlers, as the
+    /// architecture's vectors do on a real machine. Its clock advances one tick per read.
     struct TestPlatform;
+
+    static CLOCK: AtomicU64 = AtomicU64::new(0);
+    static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
 
     impl Platform for TestPlatform {
         const ARCH: &'static str = "testarch";
@@ -61,13 +67,30 @@ mod tests {
         fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
+        fn clock_ticks() -> u64 {
+            CLOCK.fetch_add(1, Ordering::Relaxed)
+        }
+        fn clock_frequency() -> u64 {
+            1_000_000
+        }
+        fn set_timer_deadline(deadline: u64) {
+            DEADLINE.store(deadline, Ordering::Relaxed);
+        }
+        fn wait_for_interrupt() {
+            // Sleeping until the deadline: jump the clock there and take the interrupt.
+            let deadline = DEADLINE.swap(u64::MAX, Ordering::Relaxed);
+            if deadline != u64::MAX {
+                CLOCK.fetch_max(deadline, Ordering::Relaxed);
+                interrupt::handle(Interrupt::Timer);
+            }
+        }
     }
 
     #[test]
     fn boot_prints_banner_with_version_and_arch() {
         let mut out = String::new();
         assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
-        assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\n")));
+        assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n")));
         assert!(out.ends_with(&format!("{}\n", selftest::PASS_MARKER)));
     }
 }

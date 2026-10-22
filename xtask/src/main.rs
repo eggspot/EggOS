@@ -37,7 +37,7 @@ pub const ARCHES: &[Arch] = &[
         name: "aarch64",
         target: "aarch64-unknown-none-softfloat",
         qemu: "qemu-system-aarch64",
-        machine_args: &["-machine", "virt", "-cpu", "cortex-a72"],
+        machine_args: &["-machine", "virt,gic-version=2", "-cpu", "cortex-a72"],
     },
     Arch {
         name: "riscv64",

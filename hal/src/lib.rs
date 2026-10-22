@@ -10,8 +10,11 @@
 pub mod acpi;
 pub mod arch;
 mod exception;
+mod interrupt;
+pub mod time;
 
 pub use exception::{Exception, ExceptionKind};
+pub use interrupt::Interrupt;
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,4 +49,23 @@ pub trait Platform {
     /// AArch64, `unimp` on RISC-V, `ud2` on x86). The kernel uses it to test that a fatal
     /// exception is reported; the kernel's handler never returns from that exception.
     fn execute_illegal_instruction() -> !;
+
+    /// This CPU's monotonic clock: ticks since an arbitrary point at or before boot. It never
+    /// goes backwards and counts at [`Self::clock_frequency`].
+    fn clock_ticks() -> u64;
+
+    /// Ticks of [`Self::clock_ticks`] per second, fixed from boot on; never 0.
+    fn clock_frequency() -> u64;
+
+    /// Arms this CPU's one-shot timer: once [`Self::clock_ticks`] reaches `deadline`, the
+    /// kernel's interrupt handler receives [`Interrupt::Timer`] (as soon as interrupts are
+    /// unmasked). Never earlier; a deadline already passed fires at once. Replaces any
+    /// deadline set before. The timer fires once per call.
+    fn set_timer_deadline(deadline: u64);
+
+    /// Called with interrupts masked, as the kernel runs today: sleeps until an interrupt is
+    /// pending, lets the kernel handle it, and returns with interrupts masked again. An
+    /// interrupt that became pending before the call is handled at once, so checking a
+    /// condition and then calling this cannot miss the interrupt that changes it.
+    fn wait_for_interrupt();
 }

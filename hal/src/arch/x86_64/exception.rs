@@ -1,8 +1,11 @@
-//! x86_64 exception vectors (Intel SDM vol. 3A, chapter 6 "Interrupt and Exception Handling").
+//! x86_64 exception and interrupt vectors (Intel SDM vol. 3A, chapter 6 "Interrupt and
+//! Exception Handling").
 //!
-//! The IDT has a gate for each of the 32 architecture-defined exception vectors, each pointing
-//! at a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where
-//! the CPU pushes none), so every exception reaches `exception_common` with the same frame.
+//! The IDT has a gate for each of the 32 architecture-defined exception vectors and for each
+//! interrupt vector in use (the legacy PICs' 0x20-0x2f, the APIC timer's 0x30 and the APIC's
+//! spurious vector 0xff, see [`super::timer`]). Each points at a 16-byte stub that pushes the
+//! vector number (and a 0 error code for the vectors where the CPU pushes none), so every
+//! exception and interrupt reaches `exception_common` with the same frame.
 //! That saves the general-purpose registers, calls [`x86_64_exception`] with the frame, and
 //! restores everything and `iretq`s if it returns. The kernel target uses no SSE/x87
 //! registers (`x86_64-unknown-none` is soft-float), so they are not saved.
@@ -11,12 +14,14 @@
 //! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
 //! stacks for double faults and NMIs come with the kernel's own page tables (M2).
 
+use super::timer::{self, APIC_SPURIOUS_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR};
 use crate::exception::{Exception, ExceptionKind, deliver};
 use core::cell::UnsafeCell;
 
 core::arch::global_asm!(
     r#"
-    // Each stub is at most 9 bytes (two 2-byte pushes and a 5-byte jmp), padded to 16.
+    // Each stub is at most 15 bytes (two pushes of up to 5 bytes and a 5-byte jmp), padded
+    // to 16.
     .macro EXCEPTION_STUB vector
     .balign 16
     pushq   $0
@@ -66,6 +71,14 @@ exception_stubs:
     EXCEPTION_STUB_WITH_ERROR_CODE 29
     EXCEPTION_STUB_WITH_ERROR_CODE 30
     EXCEPTION_STUB 31
+    // Interrupts 0x20-0x30 (legacy PIC inputs 0-15, APIC timer); the CPU pushes no error code.
+    .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48
+    EXCEPTION_STUB \vector
+    .endr
+    .balign 16                      // so the label is the stub, not the padding before it
+    .global apic_spurious_stub
+apic_spurious_stub:
+    EXCEPTION_STUB 255
 
 exception_common:
     pushq   %rax
@@ -111,9 +124,12 @@ exception_common:
     options(att_syntax)
 );
 
-/// The architecture-defined exception vectors, 0-31.
-const VECTORS: usize = 32;
-/// Every stub starts on a 16-byte boundary, so stub `n` is at `exception_stubs + n * 16`.
+/// Every vector the IDT can hold.
+const VECTORS: usize = 256;
+/// The vectors with a stub at `exception_stubs + vector * STUB_SIZE`: the exceptions 0-31 and
+/// the interrupts up to the APIC timer's.
+const CONTIGUOUS_STUBS: usize = TIMER_VECTOR as usize + 1;
+/// Every stub starts on a 16-byte boundary.
 const STUB_SIZE: usize = 16;
 
 /// Code segment selector of the boot GDT (`boot_gdt` in the entry code).
@@ -127,6 +143,8 @@ const PAGE_FAULT_INSTRUCTION_FETCH: u64 = 1 << 4;
 unsafe extern "C" {
     /// Start of the stubs; not callable from Rust, only its address is used.
     fn exception_stubs();
+    /// The stub for [`APIC_SPURIOUS_VECTOR`]; likewise only its address is used.
+    fn apic_spurious_stub();
 }
 
 /// The registers saved by the stub and `exception_common`, lowest address first, followed by
@@ -218,11 +236,17 @@ static IDT: InterruptDescriptorTable =
 pub(super) extern "C" fn install() {
     let stubs = exception_stubs as *const () as u64;
     let gates = IDT.0.get();
-    for vector in 0..VECTORS {
-        let gate = GateDescriptor::interrupt_gate(stubs + (vector * STUB_SIZE) as u64);
+    let stub_gates = (0..CONTIGUOUS_STUBS)
+        .map(|vector| (vector, stubs + (vector * STUB_SIZE) as u64))
+        .chain([(
+            APIC_SPURIOUS_VECTOR.into(),
+            apic_spurious_stub as *const () as u64,
+        )]);
+    // Vectors without a stub keep a not-present gate: delivering one raises #NP (reported).
+    for (vector, stub) in stub_gates {
         // SAFETY: `install` is the only writer and runs before the IDT is loaded, so nothing
-        // else accesses the table; `vector` is in bounds.
-        unsafe { (*gates)[vector] = gate };
+        // else accesses the table; `vector` is below 256, in bounds.
+        unsafe { (*gates)[vector] = GateDescriptor::interrupt_gate(stub) };
     }
     let pointer = DescriptorTablePointer {
         limit: (core::mem::size_of::<[GateDescriptor; VECTORS]>() - 1) as u16,
@@ -237,6 +261,15 @@ pub(super) extern "C" fn install() {
 
 /// Called by `exception_common` with the saved registers.
 extern "C" fn x86_64_exception(frame: &mut TrapFrame) {
+    match frame.vector {
+        vector if vector == u64::from(TIMER_VECTOR) => return timer::interrupt(),
+        // Spurious: the APIC needs no end of interrupt for it.
+        vector if vector == u64::from(APIC_SPURIOUS_VECTOR) => return,
+        vector if LEGACY_PIC_VECTORS.contains(&vector) && timer::legacy_pic_interrupt(vector) => {
+            return;
+        }
+        _ => {}
+    }
     let fault_address = if frame.vector == 14 {
         let cr2: u64;
         // SAFETY: reading CR2 at ring 0 has no side effects.
@@ -284,6 +317,7 @@ fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Except
         28 => (ExceptionKind::Other, "#HV hypervisor injection"),
         29 => (ExceptionKind::Other, "#VC VMM communication"),
         30 => (ExceptionKind::Other, "#SX security exception"),
+        32.. => (ExceptionKind::Interrupt, "unexpected interrupt"),
         _ => (ExceptionKind::Other, "reserved exception vector"),
     };
     Exception {

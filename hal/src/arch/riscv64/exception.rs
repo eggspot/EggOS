@@ -7,6 +7,8 @@
 //! that used FP registers would trap as an illegal instruction instead of silently corrupting
 //! state that this entry does not save.
 
+use super::timer;
+use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
 
 core::arch::global_asm!(
@@ -112,6 +114,8 @@ const _: () = assert!(core::mem::size_of::<TrapFrame>() == 272);
 
 /// `scause` bit 63: set for interrupts, clear for exceptions.
 const SCAUSE_INTERRUPT: u64 = 1 << 63;
+/// `scause` for the supervisor timer interrupt.
+const SCAUSE_SUPERVISOR_TIMER: u64 = SCAUSE_INTERRUPT | 5;
 
 /// Called by the entry code with the saved registers.
 extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
@@ -122,6 +126,12 @@ extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
     // SAFETY: reading the trap value CSR in S-mode has no side effects.
     unsafe { core::arch::asm!("csrr {}, stval", out(reg) stval, options(nomem, nostack)) };
 
+    if scause == SCAUSE_SUPERVISOR_TIMER {
+        // The interrupt stays pending while `time` >= the deadline; disarming clears it.
+        timer::disarm();
+        crate::interrupt::deliver(Interrupt::Timer);
+        return;
+    }
     let exception = decode(scause, stval, frame.sepc);
     deliver(&exception);
     if exception.kind == ExceptionKind::Breakpoint {

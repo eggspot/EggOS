@@ -11,6 +11,7 @@
 
 mod exception;
 mod port;
+mod timer;
 
 use crate::acpi::{self, RootTable};
 use crate::{ExitStatus, Platform};
@@ -100,6 +101,7 @@ start64:
     movw    %ax, %gs
     movq    $__stack_top, %rsp
     call    {install_exception_vectors}
+    call    {init_timer}
     call    kernel_main
 3:  cli
     hlt
@@ -130,6 +132,7 @@ boot_pd:
 "#,
     start_info = sym PVH_START_INFO,
     install_exception_vectors = sym exception::install,
+    init_timer = sym timer::init,
     options(att_syntax)
 );
 
@@ -205,6 +208,29 @@ impl Platform for X86_64 {
         // SAFETY: `ud2` always raises #UD; it traps to the IDT installed at boot, and the
         // kernel never resumes from that exception.
         unsafe { core::arch::asm!("ud2", options(noreturn)) }
+    }
+
+    #[inline]
+    fn clock_ticks() -> u64 {
+        timer::now()
+    }
+
+    #[inline]
+    fn clock_frequency() -> u64 {
+        timer::frequency()
+    }
+
+    fn set_timer_deadline(deadline: u64) {
+        timer::set_deadline(deadline);
+    }
+
+    fn wait_for_interrupt() {
+        // SAFETY: `sti` unmasks interrupts only after the next instruction, so `hlt` cannot
+        // miss an interrupt that arrives in between; the pending interrupt then goes through
+        // the IDT installed at boot, whose handler restores every register, and `cli` masks
+        // interrupts again. No `nomem`/`nostack`: the kernel's handler may read and write any
+        // memory, and the interrupt frame is pushed below the stack pointer.
+        unsafe { core::arch::asm!("sti", "hlt", "cli") };
     }
 }
 
