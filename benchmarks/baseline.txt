@@ -16,6 +16,8 @@ aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
 aarch64 heap_allocate_free_small 50.00
 aarch64 preemption_point_idle 8.00
+aarch64 process_switch_round_trip 482.55
+aarch64 process_syscall_round_trip 120.30
 aarch64 syscall_round_trip 106.17
 aarch64 thread_wait_wake_round_trip 204.06
 aarch64 thread_yield_round_trip 121.08
@@ -30,6 +32,8 @@ riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
 riscv64 heap_allocate_free_small 57.00
 riscv64 preemption_point_idle 6.00
+riscv64 process_switch_round_trip 590.84
+riscv64 process_syscall_round_trip 158.44
 riscv64 syscall_round_trip 148.27
 riscv64 thread_wait_wake_round_trip 207.08
 riscv64 thread_yield_round_trip 150.09
@@ -44,6 +48,8 @@ x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06
 x86_64 heap_allocate_free_small 48.00
 x86_64 preemption_point_idle 8.00
+x86_64 process_switch_round_trip 443.06
+x86_64 process_syscall_round_trip 120.54
 x86_64 syscall_round_trip 107.44
 x86_64 thread_wait_wake_round_trip 193.05
 x86_64 thread_yield_round_trip 110.07

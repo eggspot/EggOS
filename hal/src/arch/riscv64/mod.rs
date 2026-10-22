@@ -416,6 +416,10 @@ impl Platform for Riscv64 {
         // the new root are the active one's, so the kernel runs on at the same addresses.
         // SAFETY: the caller's guarantees include `activate_page_tables`'.
         unsafe { Self::activate_page_tables(roots) };
+        // `fence.i` is this hart's alone: code another hart wrote for the new address space
+        // (`make_instructions_visible` ran there) becomes visible to this one's fetch here.
+        // SAFETY: as in `make_instructions_visible`: it changes no memory contents.
+        unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {

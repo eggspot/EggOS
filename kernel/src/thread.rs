@@ -182,10 +182,19 @@ struct Thread {
     /// The CPU it runs on (D43): it is made ready there when woken, and sleeps on that CPU's
     /// timer, until balancing moves it to an idle CPU while it is ready (D44).
     cpu: &'static Cpu,
+    /// Whether it runs a program in user mode ([`spawn_user`]), where it reaches no preemption
+    /// point until a system call, an interrupt or an exception (D48).
+    user: bool,
 }
 
 impl Thread {
-    fn boxed(id: ThreadId, context: usize, stack: Option<Stack>, cpu: &'static Cpu) -> ThreadBox {
+    fn boxed(
+        id: ThreadId,
+        context: usize,
+        stack: Option<Stack>,
+        cpu: &'static Cpu,
+        user: bool,
+    ) -> ThreadBox {
         ThreadBox::new(Self {
             id,
             context,
@@ -197,6 +206,7 @@ impl Thread {
             next: None,
             wake_at: 0,
             cpu,
+            user,
         })
     }
 
@@ -454,7 +464,9 @@ impl WaitQueue {
     /// runs on its own CPU, after the threads already ready to run there. Meant for queues
     /// whose waiters all wait for the same condition: a woken thread whose own condition does
     /// not hold waits again at the back, and the wake is spent; otherwise use
-    /// [`Self::wake_all`].
+    /// [`Self::wake_all`]. Inlined, so that waking a queue nobody waits in costs its few
+    /// instructions where it is called.
+    #[inline]
     pub fn wake_one<P: Platform>(&self) -> bool {
         let mut schedulers = SCHEDULER.lock();
         let Some(thread) = self.waiters(&mut schedulers).pop_front() else {
@@ -654,10 +666,7 @@ fn make_ready<P: Platform>(schedulers: &mut Schedulers, thread: ThreadBox) -> Op
     let target = thread.get().cpu;
     match schedulers.of(target).push_ready(thread) {
         Notice::Nothing => None,
-        Notice::Reschedule => {
-            target.request_reschedule();
-            None
-        }
+        Notice::Reschedule => schedulers.of(target).request_reschedule::<P>(target),
         // This CPU's own idle thread looks at its ready threads once it runs on.
         Notice::Wake => (!ptr::eq(target, cpu::current::<P>())).then_some(target),
     }
@@ -719,8 +728,14 @@ impl Scheduler {
         // SAFETY: the stack's frames are allocated, writable through the direct map and used
         // by nothing else; the idle thread never exits, so they stay allocated.
         let context = unsafe { P::prepare_thread(stack.top(), idle_thread::<P>, 0) };
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here);
-        self.idle = Some(Thread::boxed(ThreadId::next(), context, Some(stack), here));
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false);
+        self.idle = Some(Thread::boxed(
+            ThreadId::next(),
+            context,
+            Some(stack),
+            here,
+            false,
+        ));
         self.current = Some(boot);
         Ok(())
     }
@@ -765,6 +780,23 @@ impl Scheduler {
         } else {
             Notice::Nothing
         }
+    }
+
+    /// Asks `target`, this scheduler's CPU, to look at its ready threads ([`Notice::Reschedule`]);
+    /// returns `target` if it also needs the wake-up interrupt, because the thread it runs is in
+    /// user mode, where it would see the request only at its next system call or interrupt, if
+    /// ever (D48). Not if `target` is this CPU: its user thread runs kernel code now and passes
+    /// a preemption point before it runs its program again. Out of line, as it is reached only
+    /// with preemption on: inlined, it made the wake paths dearer even when it was not.
+    #[cold]
+    #[inline(never)]
+    fn request_reschedule<P: Platform>(&self, target: &'static Cpu) -> Option<&'static Cpu> {
+        target.request_reschedule();
+        let running_user = self
+            .current
+            .as_ref()
+            .is_some_and(|thread| thread.get().user);
+        (running_user && !ptr::eq(target, cpu::current::<P>())).then_some(target)
     }
 
     /// Whether the running thread's slice needs the timer: preemption is on, another thread is
@@ -953,7 +985,7 @@ pub(crate) fn start_secondary<P: Platform>() {
         "a CPU started its scheduler twice"
     );
     scheduler.slice_ticks = slice_ticks;
-    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here));
+    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false));
 }
 
 /// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
@@ -966,6 +998,21 @@ pub(crate) fn run_idle<P: Platform>() -> ! {
 /// one. The caller keeps running.
 pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
+) -> Result<JoinHandle, SpawnError> {
+    spawn_thread::<P, F>(function, false)
+}
+
+/// [`spawn`] for a thread that runs a program in user mode ([`crate::process::spawn`]): a CPU
+/// running it gets the wake-up interrupt with a reschedule request (D48).
+pub(crate) fn spawn_user<P: Platform, F: FnOnce() + Send + 'static>(
+    function: F,
+) -> Result<JoinHandle, SpawnError> {
+    spawn_thread::<P, F>(function, true)
+}
+
+fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
+    function: F,
+    user: bool,
 ) -> Result<JoinHandle, SpawnError> {
     let stack = Stack::allocate().ok_or(SpawnError::OutOfMemory)?;
     let function: Box<dyn FnOnce() + Send> = Box::new(function);
@@ -983,7 +1030,7 @@ pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
         return Err(error);
     }
     let cpu = schedulers.place(cpu::current::<P>());
-    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu);
+    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
@@ -1074,6 +1121,24 @@ pub fn disable_preemption<P: Platform>() {
 pub fn preemption_point<P: Platform>() {
     P::interrupt_window();
     if cpu::local_unseen_by_scheduler::<P>() != 0 {
+        preemption_point_timer_fired::<P>();
+    }
+}
+
+/// [`preemption_point`] for a thread about to run a program in user mode (D48), where it passes
+/// no other until a system call, an interrupt or an exception: repeated until the scheduler has
+/// seen every timer interrupt and reschedule request on this CPU. A thread resumed by a switch
+/// may find some it did not see itself (the thread before it exited, or switched to it from
+/// a yield or block, without looking), and their timer has fired already: unseen, nothing would
+/// arm it again or wake the sleepers while the program runs. As cheap as
+/// [`preemption_point`] when there is nothing to see.
+#[inline]
+pub fn preemption_point_before_user_mode<P: Platform>() {
+    loop {
+        P::interrupt_window();
+        if cpu::local_unseen_by_scheduler::<P>() == 0 {
+            return;
+        }
         preemption_point_timer_fired::<P>();
     }
 }
@@ -1236,6 +1301,8 @@ extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
 fn idle_loop<P: Platform>() -> ! {
     let here = cpu::current::<P>();
     loop {
+        // A process that ended while its address space stayed loaded here is freed now (D48).
+        crate::address_space::release_unused::<P>(here);
         let mut schedulers = SCHEDULER.lock();
         // This look answers every wake-up sent so far: a thread made ready from now on needs
         // one of its own.
@@ -1675,7 +1742,7 @@ mod tests {
 
     /// A thread for the scheduler-state tests, which never runs.
     fn idle_thread_for_test(cpu: &'static Cpu) -> ThreadBox {
-        Thread::boxed(ThreadId::next(), 0, None, cpu)
+        Thread::boxed(ThreadId::next(), 0, None, cpu, false)
     }
 
     /// Takes every thread out of `scheduler`, so that it can be dropped.
@@ -1735,6 +1802,26 @@ mod tests {
             scheduler.push_ready(idle_thread_for_test(cpu)),
             Notice::Nothing
         );
+        empty(&mut scheduler);
+    }
+
+    #[test]
+    fn a_reschedule_request_to_a_cpu_running_a_user_thread_needs_the_wake_up_interrupt() {
+        let (here, other) = (cpu::current::<P>(), Cpu::for_test(2));
+        let mut scheduler = Scheduler::new();
+        scheduler.current = Some(idle_thread_for_test(other));
+        // A kernel thread passes a preemption point soon: the request alone does.
+        assert!(scheduler.request_reschedule::<P>(other).is_none());
+        empty(&mut scheduler);
+        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true));
+        // In user mode it may never pass one: the interrupt takes the CPU back.
+        assert!(
+            scheduler
+                .request_reschedule::<P>(other)
+                .is_some_and(|cpu| ptr::eq(cpu, other))
+        );
+        // On this CPU, the user thread runs kernel code now, and passes one before user mode.
+        assert!(scheduler.request_reschedule::<P>(here).is_none());
         empty(&mut scheduler);
     }
 
@@ -1812,7 +1899,7 @@ mod tests {
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3]);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false);
         schedulers.of(cpus[3]).ready.push_back(boot);
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;
@@ -1883,6 +1970,7 @@ mod tests {
             next: None,
             wake_at: 0,
             cpu: cpu::current::<P>(),
+            user: false,
         });
         thread.check_stack();
         memory[0] = 0;

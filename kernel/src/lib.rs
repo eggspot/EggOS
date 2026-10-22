@@ -18,10 +18,10 @@ pub mod heap;
 pub mod interrupt;
 pub mod memory;
 pub mod paging;
+pub mod process;
 pub mod selftest;
 pub mod sync;
 pub mod thread;
-pub mod user;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
@@ -106,6 +106,11 @@ pub(crate) mod tests {
 
     pub(crate) fn active_root() -> u64 {
         ACTIVE_ROOT.load(Ordering::Relaxed)
+    }
+
+    /// Overwrites the record, so a test sees whether the next switch happens.
+    pub(crate) fn set_active_root(root: u64) {
+        ACTIVE_ROOT.store(root, Ordering::Relaxed);
     }
 
     /// The test platform's armed timer deadline; `u64::MAX` if none.
@@ -239,8 +244,9 @@ pub(crate) mod tests {
             // Plays the test program's part: its system calls, its fault and its spin.
             use eggos_hal::user::{TestProgram, UserExit};
             let program = Self::user_test_program();
-            let checks = crate::user::TEST_PROGRAM_ADDRESS + program.checks as u64;
-            let spin = crate::user::TEST_PROGRAM_ADDRESS + program.spin as u64;
+            let checks = crate::process::TEST_PROGRAM_ADDRESS + program.checks as u64;
+            let null_syscalls = crate::process::TEST_PROGRAM_ADDRESS + program.null_syscalls as u64;
+            let spin = crate::process::TEST_PROGRAM_ADDRESS + program.spin as u64;
             match context.pc() {
                 pc if pc == checks => {
                     let arguments = [1, 2, 3, 4, 5, 6];
@@ -259,6 +265,10 @@ pub(crate) mod tests {
                     pc,
                     address: Some(context.syscall_result()),
                 }),
+                pc if pc == null_syscalls => {
+                    context.simulate_syscall(TestProgram::SYSCALL_NULL, [0; 6], pc);
+                    UserExit::Syscall
+                }
                 pc if pc == spin => {
                     Self::wait_for_interrupt();
                     UserExit::Interrupt
@@ -270,7 +280,7 @@ pub(crate) mod tests {
             eggos_hal::user::TestProgram {
                 code: &[0xa5; 24],
                 checks: 0,
-                null_syscalls: 8,
+                null_syscalls: 12,
                 spin: 16,
             }
         }

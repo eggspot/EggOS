@@ -8,11 +8,13 @@
 
 use crate::HEAP;
 use crate::memory::{FRAMES, FrameAllocator, Memory};
-use crate::user::LoadedTestProgram;
+use crate::process::{self, Process};
 use crate::{cpu, thread};
+use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
+use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::user::UserExit;
@@ -31,7 +33,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 14] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 16] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -65,6 +67,11 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 14] {
             thread_wait_wake_round_trip::<P>(n)
         }),
         ("syscall_round_trip", syscall_round_trip::<P>),
+        (
+            "process_syscall_round_trip",
+            process_syscall_round_trip::<P>,
+        ),
+        ("process_switch_round_trip", process_switch_round_trip::<P>),
     ]
 }
 
@@ -280,9 +287,9 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
 fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
-    let program = unsafe { LoadedTestProgram::<P>::new(&memory.page_tables) }
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
         .expect("the test program fits in memory");
-    let mut context = program.context(|program| program.null_syscalls);
+    let mut context = Process::<P>::test_program_context(|program| program.null_syscalls);
     program.with_active(|| {
         let mut calls = 0;
         while calls < n {
@@ -294,6 +301,63 @@ fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
             }
         }
     });
+}
+
+/// A null system call from a process's own thread (D48): `syscall_round_trip` plus what the
+/// thread's loop adds per call, its preemption point, the check that the address space is
+/// loaded and the call to its handler. Includes starting the process and its thread and
+/// joining it once per run.
+fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
+    // the benchmarks run on.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let context = Process::<P>::test_program_context(|program| program.null_syscalls);
+    let mut calls = 0;
+    let Ok(thread) = process::spawn::<P, _>(Arc::new(program), context, move |_, _, exit| {
+        if exit == UserExit::Syscall {
+            calls += 1;
+        }
+        if calls < n {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
+    }) else {
+        return;
+    };
+    thread.join::<P>();
+}
+
+/// Two processes' threads taking turns on one CPU, each yielding at every null system call
+/// (D48): per iteration two system calls, two thread switches and two address-space switches,
+/// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
+/// with `process_syscall_round_trip` and `thread_yield_round_trip`. Includes starting and
+/// joining both once per run.
+fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    let mut threads = [None, None];
+    for thread in &mut threads {
+        // SAFETY: as in `process_syscall_round_trip`.
+        let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+            .expect("the test program fits in memory");
+        let context = Process::<P>::test_program_context(|program| program.null_syscalls);
+        let mut calls = 0;
+        *thread = process::spawn::<P, _>(Arc::new(program), context, move |_, _, exit| {
+            if exit == UserExit::Syscall {
+                calls += 1;
+                thread::yield_now::<P>();
+            }
+            if calls < n {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        })
+        .ok();
+    }
+    for thread in threads.into_iter().flatten() {
+        thread.join::<P>();
+    }
 }
 
 #[cfg(test)]
@@ -415,16 +479,25 @@ mod tests {
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
         // Page tables for `run`, made first: the benchmarks run here must find the frame
-        // allocator as the other tests leave it, so `syscall_round_trip`, which takes frames,
-        // has a test of its own.
+        // allocator as the other tests leave it, so the user-mode benchmarks, which take
+        // frames, have a test of their own.
         let mut memory = page_tables_for_test();
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (benchmarks, [(syscall, _)]) = all.split_at(all.len() - 1) else {
+        let (benchmarks, [(syscall, _), (process_syscall, _), (process_switch, _)]) =
+            all.split_at(all.len() - 3)
+        else {
             unreachable!()
         };
-        assert_eq!(*syscall, "syscall_round_trip");
+        assert_eq!(
+            [*syscall, *process_syscall, *process_switch],
+            [
+                "syscall_round_trip",
+                "process_syscall_round_trip",
+                "process_switch_round_trip"
+            ]
+        );
         assert_eq!(
             run::<CountingPlatform, _>(&mut out, benchmarks, &mut memory),
             Ok(())
@@ -454,12 +527,28 @@ mod tests {
     }
 
     #[test]
-    fn syscall_round_trip_runs_the_program_and_frees_it() {
-        let mut memory = page_tables_for_test();
+    fn the_user_mode_benchmarks_run_their_programs_and_free_them() {
+        // Their threads pass preemption points, where this platform's timer fires.
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         let _frames = thread::host::frames_for_test();
+        // Page tables from the same allocator as the processes' (not `page_tables_for_test`,
+        // whose allocator may be gone once it returns).
+        let mut memory = {
+            let mut frames = FRAMES.lock();
+            let mut page_tables = crate::paging::PageTables::new(frames.as_mut().unwrap()).unwrap();
+            page_tables.mark_active();
+            Memory { page_tables }
+        };
+        // The idle thread's stack, taken once, is not the benchmarks'. Started as the other
+        // tests start it: an idle thread of this platform's would take its timer with it.
+        thread::start::<crate::tests::TestPlatform>().unwrap();
         let free = || FRAMES.lock().as_ref().unwrap().free_frames();
         let before = free();
         syscall_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        process_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        process_switch_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
     }
 

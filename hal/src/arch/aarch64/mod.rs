@@ -498,8 +498,10 @@ impl Platform for Aarch64 {
         }
         // SAFETY: barriers and instruction cache invalidation change no memory contents. The
         // whole instruction cache is invalidated, not by address, so that no alias of the
-        // lines (another virtual address of the same frames, as user space has) stays stale.
-        unsafe { core::arch::asm!("dsb ish", "ic iallu", "dsb ish", "isb", options(nostack)) };
+        // lines (another virtual address of the same frames, as user space has) stays stale;
+        // on every CPU in the inner shareable domain (`ialluis`), as the cleaning by address
+        // reaches them too, so a program loaded here runs on any CPU (D48).
+        unsafe { core::arch::asm!("dsb ish", "ic ialluis", "dsb ish", "isb", options(nostack)) };
     }
 
     unsafe fn prepare_thread(
