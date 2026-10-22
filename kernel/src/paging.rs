@@ -24,6 +24,7 @@
 
 use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
+use core::sync::atomic::{Ordering, fence};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{self, Attributes, Entry, Format, KernelImage};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
@@ -141,14 +142,19 @@ impl<F: Format> PageTables<F> {
 
     /// Frees the low half's tables, the user root among them, which
     /// [`Self::new_sharing_kernel_half`] and [`Self::map`] allocated from `frames`; the kernel
-    /// half's are the kernel's and stay. The frames the leaves map are not the tables' and stay
-    /// allocated.
+    /// half's are the kernel's and stay. The frames the leaves map are not the tables': each
+    /// leaf is handed to `leaf` as (`frames`, its physical address, its level), in the same walk,
+    /// for an owner that frees them.
     ///
     /// # Safety
     /// The tables must come from [`Self::new_sharing_kernel_half`] with `frames` as the
     /// allocator, must not be active on any CPU, and must not be used again afterwards (not even
     /// to free them again).
-    pub unsafe fn free_user_half(&mut self, frames: &mut FrameAllocator) {
+    pub unsafe fn free_user_half(
+        &mut self,
+        frames: &mut FrameAllocator,
+        mut leaf: impl FnMut(&mut FrameAllocator, u64, usize),
+    ) {
         assert!(
             self.user_half_only,
             "only a user address space's tables are freed"
@@ -159,8 +165,10 @@ impl<F: Format> PageTables<F> {
         let user_entries = kernel_half_root_entries::<F>().start;
         for index in 0..user_entries {
             let virt = index as u64 * paging::leaf_size(top);
-            if let Entry::Table(next) = F::decode(self.entry(root, virt, top).read(), top) {
-                self.free_table_tree(next, top - 1, frames);
+            match F::decode(self.entry(root, virt, top).read(), top) {
+                Entry::Table(next) => self.free_table_tree(next, top - 1, frames, &mut leaf),
+                Entry::Leaf(phys, _) => leaf(frames, phys, top),
+                Entry::Empty => {}
             }
         }
         // SAFETY: the root came from `frames` in `new_sharing_kernel_half`, and nothing walks
@@ -169,15 +177,23 @@ impl<F: Format> PageTables<F> {
         unsafe { frames.free(root) };
     }
 
-    /// Frees the table at physical `table`, at `level`, and every table below it.
-    fn free_table_tree(&self, table: u64, level: usize, frames: &mut FrameAllocator) {
-        if level > 0 {
-            for index in 0..paging::ENTRIES {
-                let virt = index as u64 * paging::leaf_size(level);
-                if let Entry::Table(next) = F::decode(self.entry(table, virt, level).read(), level)
-                {
-                    self.free_table_tree(next, level - 1, frames);
+    /// Frees the table at physical `table`, at `level`, and every table below it, handing
+    /// each leaf to `leaf` (see [`Self::free_user_half`]).
+    fn free_table_tree(
+        &self,
+        table: u64,
+        level: usize,
+        frames: &mut FrameAllocator,
+        leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
+    ) {
+        for index in 0..paging::ENTRIES {
+            let virt = index as u64 * paging::leaf_size(level);
+            match F::decode(self.entry(table, virt, level).read(), level) {
+                Entry::Table(next) if level > 0 => {
+                    self.free_table_tree(next, level - 1, frames, leaf)
                 }
+                Entry::Leaf(phys, _) => leaf(frames, phys, level),
+                _ => {}
             }
         }
         // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
@@ -333,6 +349,11 @@ impl<F: Format> PageTables<F> {
         attributes: Attributes,
         frames: &mut FrameAllocator,
     ) -> Result<(), MapError> {
+        // A user address space's tables gain mappings while other CPUs may walk them (D52):
+        // whatever was written to the frame before (a page's contents, a new table's zeros) must
+        // be seen by any CPU that sees the entry. A walker on another CPU is an observer as any
+        // other, so a release fence orders it (`dmb ish` on AArch64, `fence rw,w` on RISC-V).
+        fence(Ordering::Release);
         let mut table = self.roots[F::root(virt).ok_or(MapError::InvalidAddress)?];
         for level in (leaf_level + 1..F::LEVELS).rev() {
             let entry = self.entry(table, virt, level);
@@ -341,6 +362,8 @@ impl<F: Format> PageTables<F> {
                 Entry::Leaf(..) => return Err(MapError::AlreadyMapped),
                 Entry::Empty => {
                     let next = new_table(frames)?;
+                    // As above: the zeros before the entry that links the table in.
+                    fence(Ordering::Release);
                     entry.write(F::table(next, level, attributes.user));
                     next
                 }
@@ -984,7 +1007,7 @@ mod tests {
         .unwrap();
         assert_eq!(kernel.translate(F::USER_END - K), None);
         // SAFETY: from `new_sharing_kernel_half` with `frames`, never active, not used again.
-        unsafe { user.free_user_half(&mut frames) };
+        unsafe { user.free_user_half(&mut frames, |_, _, _| {}) };
         assert_eq!(frames.free_frames(), before);
         assert!(kernel.translate(high).is_some());
     }
@@ -1002,7 +1025,7 @@ mod tests {
         let mut frames = frames(4);
         let mut kernel = PageTables::<X86_64>::new(&mut frames).unwrap();
         // SAFETY: deliberately breaks the contract; the assertion stops it before any free.
-        unsafe { kernel.free_user_half(&mut frames) };
+        unsafe { kernel.free_user_half(&mut frames, |_, _, _| {}) };
     }
 
     #[test]

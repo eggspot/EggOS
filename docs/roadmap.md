@@ -13,7 +13,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); still to do: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC), when the first interrupting device driver needs it (M8) |
 | M4 | Scheduler, processes and threads (SMP-ready) | **in progress** — kernel threads with a context switch on aarch64, riscv64, x86_64 and a cooperative round-robin scheduler on one CPU, 16 KiB stacks with an overflow canary (D35); voluntary preemption: a 10 ms timer tick ends time slices and threads switch at preemption points, the scheduler's lock handed over across the switch (D37); sleeping and wait queues: an idle thread, `sleep`, `WaitQueue`, a blocking `join`, threads linked through themselves, and one timer shared by the tick and the sleepers with no tick while one thread is runnable (D39); secondary CPUs: discovered from the device tree / MADT, started (PSCI, SBI HSM, INIT-SIPI with a real-mode trampoline) on the kernel's page tables, each with a per-CPU block behind its per-CPU register, reporting in and parking (D40); every CPU takes its own interrupts: per-CPU timer and interrupt controller setup, wake-up interrupts between CPUs (GICv2 SGI, SBI IPI, local APIC fixed IPI), per-CPU interrupt counts, and a one-load per-CPU read for hot paths (D41); every CPU runs threads: per-CPU run queues, sleepers and idle threads, new threads placed on idle CPUs first, threads woken from any CPU onto their own with the wake-up interrupt or a reschedule request, one scheduler lock for now (D43); load balancing: an idle CPU takes ready threads from busy ones, and a slice that ends with threads ready wakes an idle CPU (D44); user address spaces: a low half of their own with the kernel half shared, user mappings on aarch64, riscv64, x86_64, switching with the CPU's user translations dropped, and kernel access to user pages only in a window (D45); user mode: the kernel runs a program in EL0, U-mode or ring 3 until a system call (`svc`, `ecall`, `syscall`), an interrupt or an exception brings the CPU back, with the program's registers in a `UserContext` and Linux's system-call registers; a per-CPU GDT and TSS on x86_64; a system-call round trip in about 106 (aarch64), 148 (riscv64) and 107 (x86_64) instructions (D47); processes: threads that run their program in a loop and hand each exit to a handler, address spaces loaded lazily per CPU at the point of use and kept until another is needed, preemption on return to user mode, processes on every CPU (D48); review of D47–D48: user programs get no FP/SIMD, vector unit or timer access whatever firmware left, `int3` after x86 returns, speculation mitigations per CPU with recorded triggers (D49); next: the Linux system calls (M6); per-CPU and per-wait-queue locks wait for a workload that shows contention (D45) |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
-| M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | **in progress** — the Linux system-call layer: dispatch by Linux number per architecture, `write` to the console, `exit` and `exit_group`, `ENOSYS` for the rest, exceptions end the process with Linux's signal, user memory copied after a table walk (D50); programs start from ELF images: a checked ELF parser, executables and static PIEs mapped page by page with W^X and a 0x10000 floor, Linux's initial stack with `argv`, `envp` and the auxiliary vector, Linux's `execve` errors (D51); next: `brk`, `mmap`, `munmap`, `mprotect`, `uname`, `writev`, `set_tid_address`, `arch_prctl` and the calls Rust's std makes at startup; FP/SIMD state per thread (no compiled Rust or C program runs on AArch64 or x86_64 without it); a first program built from our own Rust source; the SWAPGS fence before programs can set GS or map low pages (D49) |
+| M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | **in progress** — the Linux system-call layer: dispatch by Linux number per architecture, `write` to the console, `exit` and `exit_group`, `ENOSYS` for the rest, exceptions end the process with Linux's signal, user memory copied after a table walk (D50); programs start from ELF images: a checked ELF parser, executables and static PIEs mapped page by page with W^X and a 0x10000 floor, Linux's initial stack with `argv`, `envp` and the auxiliary vector, Linux's `execve` errors (D51); demand paging: processes have regions (Linux's mappings), a page is mapped with a zeroed frame when the program first touches it, the stack is one 8 MiB region mapped as it grows, kernel copies map untouched pages, and live address spaces gain mappings (D52); next: `brk`, `mmap`, `munmap`, `mprotect` on the regions, with TLB maintenance for other CPUs, then `uname`, `writev`, `set_tid_address`, `arch_prctl` and the calls Rust's std makes at startup; FP/SIMD state per thread (no compiled Rust or C program runs on AArch64 or x86_64 without it); a first program built from our own Rust source; the SWAPGS fence before programs can set GS or map low pages (D49) |
 | M7 | VFS and a first file system | |
 | M8 | virtio drivers (console, block, net, rng, input) | |
 | M9 | More architectures through the HAL | |
@@ -34,8 +34,12 @@ Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-
 
 Address-space follow-ups (D45): (threads that carry an address space, switched only when it
 differs: done, lazily at the point of use, D48; the first trip to user mode and back: done, D47);
-ASIDs and PCID; per-page TLB maintenance and cross-CPU shootdown once mappings change
-while active; PAN, SMAP and SMEP; (user faults that end the process: done, D50).
+ASIDs and PCID; (per-page TLB maintenance on this CPU: done, D52, `drop_user_translations`;
+mappings added while active: done, D52); cross-CPU TLB maintenance once mappings are removed
+or reduced while active (the memory calls, M6: CPUs that keep the address space loaded drop
+it before running it again; IPIs once `clone` runs a process on several CPUs at once); fault-around
+and large pages for demand-zero regions after measuring; a region tree that tracks gap sizes past
+about a thousand regions (D52); PAN, SMAP and SMEP; (user faults that end the process: done, D50).
 
 User-mode follow-ups (D47): (processes whose threads run their program in a loop over `run_user`,
 preempted on return to user mode: done, D48); on x86_64, IST stacks for NMI, double fault, machine check and debug exceptions before any
@@ -46,7 +50,9 @@ thread, saved lazily, once programs may use it (it traps on every architecture, 
 (M6); a measured system-call cost outside QEMU `-icount` (M13). From PR #39's independent review:
 a self-test that interrupts a program mid-pattern and checks every register (the `iretq` and
 interrupt-exit paths); `SCTLR_EL1.UMA` and `E0E` written explicitly, not left to firmware (M13);
-`IA32_CSTAR` at a safe stub before any 32-bit user segment exists; DPL-3 gates for `int3` and
+`IA32_CSTAR` at a safe stub before any 32-bit user segment exists; on AArch64, `SCTLR_EL1.UCT`,
+`UCI`, `DZE` and `nTWE`/`nTWI` set as Linux allows (EL0 `mrs ctr_el0`, `dc cvau`, `ic ivau` for
+`__clear_cache` and JITs, `dc zva`, `wfe`), found by the D52 research; DPL-3 gates for `int3` and
 `into` once user debuggers matter; UMIP where the CPU has it; `TSS.RSP0` cleared when `run_user`
 returns. From the D47–D48 review (D49): an NMI from ring 3 handled by the kernel, not as the
 program's exception, and NMIs unblocked with an `iretq` (with the IST stacks); AArch64
@@ -64,19 +70,19 @@ threads, a program that never traps keeps its CPU); waking CPUs that keep an end
 address space loaded while they stay busy with kernel threads, or idle after a look that raced with
 another CPU switching away from it (an idle CPU lets it go otherwise); TLB shootdown, to every CPU that has the
 address space loaded, once a shared process's mappings may change; pages owned by the address
-space (`mmap`, M6); (user faults that end the process with Linux's default signal, and the
+space (`mmap`, M6; frames owned by the address space and freed with it: done, D52); (user faults that end the process with Linux's default signal, and the
 exit status `exit_group` records: done, D50); signal handlers; a process's threads (`clone`)
-and `wait4`; user-memory copies at user addresses with fault fixups once mappings can change
-under running threads (D50's trigger), and at the latest with `clone`: a plain copy racing
-another thread's writes to the same page is undefined in Rust (volatile or per-architecture
-copy routines); a cap per `write` call (Linux's `MAX_RW_COUNT`) or a preemption point per
+and `wait4`; user-memory copies at user addresses with fault fixups with `clone` (D52 moved
+D50's trigger there: the regions lock keeps pages from being unmapped during a copy, but a
+plain copy racing another thread's writes to the same page is undefined in Rust: volatile or
+per-architecture copy routines); a cap per `write` call (Linux's `MAX_RW_COUNT`) or a preemption point per
 chunk, so one large write cannot hold its CPU.
 
 Exec follow-ups (D51): a kernel random number generator (ChaCha20 or BLAKE2s, seeded from
 RDRAND/RDSEED, RNDR, Zkr, virtio-rng) for `AT_RANDOM`, **before any program not built by us
 runs** (the bytes are a placeholder today), and with it `getrandom` and layout randomization
-of the PIE base, stack and `mmap` area; demand paging, so the stack grows into its 8 MiB
-reserve and its pages cost frames only when touched; `execve` itself, with the image read from
+of the PIE base, stack and `mmap` area; (demand paging, so the stack grows into its 8 MiB
+reserve and its pages cost frames only when touched: done, D52); `execve` itself, with the image read from
 a file (M7) and the process's old address space replaced; dynamically linked programs, with
 the interpreter loaded at its own base and `AT_BASE` set (M7); `AT_SYSINFO_EHDR` with a vDSO
 (fast clock reads), `AT_MINSIGSTKSZ` with signal frames; `AT_HWCAP` recomputed when FP/SIMD
@@ -139,9 +145,9 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 ### CPU architectures (QEMU boot test in CI is the bar for "done")
 | Architecture | Status | Notes |
 |--------------|--------|-------|
-| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary CPUs start (PSCI `CPU_ON`) and take their own timer and wake-up interrupts, threads on every CPU, user address spaces, user mode with system calls, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51)) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
-| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary harts start (SBI HSM) and take their own timer and wake-up interrupts, threads on every hart, user address spaces, user mode with system calls, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51)) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary CPUs start (INIT-SIPI) and take their own timer and wake-up interrupts, threads on every CPU, user address spaces, user mode with system calls, per-CPU GDT and TSS, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51)) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
+| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary CPUs start (PSCI `CPU_ON`) and take their own timer and wake-up interrupts, threads on every CPU, user address spaces, user mode with system calls, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51), demand paging (D52)) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
+| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary harts start (SBI HSM) and take their own timer and wake-up interrupts, threads on every hart, user address spaces, user mode with system calls, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51), demand paging (D52)) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
+| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption, sleeping, wait queues, tickless idle, secondary CPUs start (INIT-SIPI) and take their own timer and wake-up interrupts, threads on every CPU, user address spaces, user mode with system calls, per-CPU GDT and TSS, processes, first Linux system calls (`write`, `exit`, D50), Linux programs started from ELF images (D51), demand paging (D52)) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -178,7 +184,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 |------|---------|
 | Kernel | device interrupt routing, per-CPU scheduler locks, the Linux syscalls (processes run their programs in user mode on every CPU, preempted on return to user mode, and make system calls; user address spaces exist; CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points; they sleep and wait in wait queues, and an idle CPU takes no tick; every CPU starts, has its per-CPU block, takes its own timer and wake-up interrupts and runs threads, and idle CPUs take threads from busy ones) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
-| Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write` and `exit` work; memory calls, FP state per thread and files still missing), Android, Windows, macOS and iOS layers |
+| Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write` and `exit` work; pages are mapped on first touch and the stack grows on demand; memory calls, FP state per thread and files still missing), Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
 | AI-native | built-in MCP server, app capability registry, agent permissions |
 | Editions | component manager; packaging and policy per edition |

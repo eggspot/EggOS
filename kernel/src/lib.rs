@@ -21,6 +21,7 @@ pub mod linux;
 pub mod memory;
 pub mod paging;
 pub mod process;
+pub mod regions;
 pub mod selftest;
 pub mod sync;
 pub mod thread;
@@ -116,6 +117,20 @@ pub(crate) mod tests {
         ACTIVE_ROOT.store(root, Ordering::Relaxed);
     }
 
+    /// The test platforms' page faults that wrote have this bit in their code (as x86's error
+    /// code does).
+    pub(crate) const FAULT_WRITE: u64 = 1 << 1;
+
+    /// The ranges `drop_user_translations` was called with, in order.
+    static DROPPED_TRANSLATIONS: std::sync::Mutex<Vec<(u64, u64)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// The ranges the test platform dropped user translations of since the last call, which
+    /// clears them.
+    pub(crate) fn dropped_translations() -> Vec<(u64, u64)> {
+        core::mem::take(&mut *DROPPED_TRANSLATIONS.lock().unwrap())
+    }
+
     /// What the test platform's console received.
     static CONSOLE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
@@ -131,7 +146,8 @@ pub(crate) mod tests {
 
     /// Physical address of the test platform's RAM.
     const RAM_BASE: u64 = 0x10_0000;
-    const RAM_FRAMES: u64 = 128;
+    /// 16 MiB: enough for a Linux program's whole stack (8 MiB), which a self-test touches.
+    const RAM_FRAMES: u64 = 4096;
 
     /// Real host memory standing in for the test platform's RAM: the address the platform's
     /// physical memory offset maps `RAM_BASE` to. The offset is aligned to the largest buddy
@@ -265,7 +281,39 @@ pub(crate) mod tests {
             let linux_hello = crate::process::TEST_PROGRAM_ADDRESS + program.linux_hello as u64;
             let linux_hello_line = crate::process::TEST_PROGRAM_ADDRESS + TEST_PROGRAM_LINE as u64;
             let linux_start = crate::process::TEST_PROGRAM_ADDRESS + program.linux_start as u64;
+            let stack_growth = crate::process::TEST_PROGRAM_ADDRESS + program.stack_growth as u64;
             match context.pc() {
+                pc if pc == stack_growth => loop {
+                    // Its stores, from the stack pointer's page down, each page's address in its
+                    // first word, until one faults: the stack pointer stands in for the walk.
+                    let page = context.stack() & !(eggos_hal::memory::FRAME_SIZE - 1);
+                    let tables = crate::paging::PageTables::<
+                        <TestPlatform as Platform>::PageTableFormat,
+                    >::view_for_test(
+                        active_root(), Self::physical_memory_offset()
+                    );
+                    match tables.translate(page) {
+                        Some((phys, attributes)) if attributes.writable => {
+                            let word = (phys as usize).wrapping_add(Self::physical_memory_offset());
+                            // SAFETY: a writable page of the program's, a frame of the test RAM,
+                            // through its offset.
+                            unsafe { (word as *mut u64).write(page) };
+                            *context = eggos_hal::user::UserContext::new(
+                                pc,
+                                page - eggos_hal::memory::FRAME_SIZE,
+                            );
+                        }
+                        _ => {
+                            return UserExit::Exception(Exception {
+                                kind: ExceptionKind::DataFault,
+                                name: "test page fault",
+                                code: FAULT_WRITE,
+                                pc,
+                                address: Some(page),
+                            });
+                        }
+                    }
+                },
                 pc if pc == checks => {
                     let arguments = [1, 2, 3, 4, 5, 6];
                     context.simulate_syscall(TestProgram::SYSCALL_FIRST, arguments, pc + 4);
@@ -347,12 +395,19 @@ pub(crate) mod tests {
                 linux_hello: 21,
                 linux_start: 100,
                 linux_unknown_syscalls: 26,
+                stack_growth: 27,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
+        fn drop_user_translations(start: u64, length: u64) {
+            DROPPED_TRANSLATIONS.lock().unwrap().push((start, length));
+        }
+        fn fault_writes(code: u64) -> bool {
+            code & FAULT_WRITE != 0
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             entry: extern "C" fn(usize) -> !,
@@ -464,7 +519,7 @@ pub(crate) mod tests {
         );
         assert!(out.starts_with(&format!(
             "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
-             memory: 512 KiB free in 1 range\n  0x100000..0x180000\n\
+             memory: 16384 KiB free in 1 range\n  0x100000..0x1100000\n\
              paging: kernel page tables active, direct map at {:#x}\n",
             TestPlatform::direct_map_offset()
         )));

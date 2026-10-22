@@ -690,6 +690,37 @@ impl Platform for X86_64 {
         // is first entered through `iretq`, which serializes: nothing to do.
     }
 
+    fn fault_writes(code: u64) -> bool {
+        exception::page_fault_writes(code)
+    }
+
+    fn drop_user_translations(start: u64, length: u64) {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: loading CR3 with its own value drops every cached translation (no page is
+            // global yet) and changes no memory contents; the tables stay the active ones. Page
+            // walks read the tables from memory, so the caller's writes are seen. No `nomem`:
+            // memory accesses must not move across it.
+            unsafe {
+                core::arch::asm!(
+                    "mov {0}, cr3",
+                    "mov cr3, {0}",
+                    out(reg) _,
+                    options(nostack, preserves_flags)
+                )
+            };
+            return;
+        }
+        for page in 0..pages {
+            let address = start + page * crate::memory::FRAME_SIZE;
+            // SAFETY: `invlpg` drops this CPU's translations of one page and changes no memory
+            // contents. No `nomem`, as above.
+            unsafe {
+                core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags))
+            };
+        }
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

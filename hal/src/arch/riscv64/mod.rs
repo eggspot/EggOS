@@ -467,6 +467,27 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
+    fn fault_writes(code: u64) -> bool {
+        // `scause` of a store/AMO access or page fault.
+        matches!(code, 7 | 15)
+    }
+
+    fn drop_user_translations(start: u64, length: u64) {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: `sfence.vma` orders this hart's earlier page-table writes before its later
+            // walks and drops cached translations; it changes no memory contents. Every address
+            // space (no ASIDs are used), the kernel's global ones too, which costs refills only.
+            unsafe { core::arch::asm!("sfence.vma zero, zero", options(nostack)) };
+            return;
+        }
+        for page in 0..pages {
+            let address = start + page * crate::memory::FRAME_SIZE;
+            // SAFETY: as above, for one page, in every address space.
+            unsafe { core::arch::asm!("sfence.vma {}, zero", in(reg) address, options(nostack)) };
+        }
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

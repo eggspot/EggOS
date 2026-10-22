@@ -51,6 +51,11 @@ impl<T> SpinLock<T> {
         }
     }
 
+    /// The value, without taking the lock: `&mut self` means nobody else can hold it.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+
     /// Takes the lock if it is free; `None` if someone holds it.
     #[inline]
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {

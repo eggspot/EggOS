@@ -19,6 +19,11 @@ use crate::memory::PhysicalRange;
 /// Entries in one table: a 4 KiB table of 8-byte entries.
 pub const ENTRIES: usize = 512;
 
+/// The most pages [`crate::Platform::drop_user_translations`] drops one at a time; a longer
+/// range drops every user translation at once, which costs less than that many single drops
+/// and the refills are no worse (Linux draws the line at 33 on x86).
+pub const USER_PAGES_DROPPED_ONE_BY_ONE: u64 = 32;
+
 /// Bytes a leaf at `level` maps: 4 KiB at level 0, 2 MiB at level 1, 1 GiB at level 2, ...
 pub const fn leaf_size(level: usize) -> u64 {
     1 << (12 + 9 * level)

@@ -202,6 +202,23 @@ pub trait Platform: 'static {
     /// hart's alone, and the switch runs it there (D48).
     fn make_instructions_visible(start: usize, length: usize);
 
+    /// Drops what this CPU's TLB cached of user pages `start..start + length` (4 KiB-aligned)
+    /// in the active address space, after making the page-table writes before the call visible
+    /// to its table walks: one page at a time up to
+    /// [`paging::USER_PAGES_DROPPED_ONE_BY_ONE`] pages, every user translation beyond. Needed
+    /// after a user mapping is added on RISC-V (a hart may cache an invalid entry, unless it has
+    /// Svvptc) and AArch64 (the barrier), and on every architecture after a mapping is removed
+    /// or its permissions change. The kernel's own translations are kept where the architecture
+    /// tags them apart. Other CPUs are not told: the kernel sees to them.
+    fn drop_user_translations(start: u64, length: u64);
+
+    /// Whether an [`ExceptionKind::DataFault`] this architecture reported with raw cause `code`
+    /// ([`Exception::code`]) was an access that writes memory (a store, or an atomic
+    /// read-modify-write). The kernel asks only when it resolves a page fault in a program
+    /// (demand paging, D52), so the trap path decodes nothing more. Meaningless for any other
+    /// kind.
+    fn fault_writes(code: u64) -> bool;
+
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls
     /// `entry(argument)` on that stack, with interrupts masked (D35). `entry` must never return.

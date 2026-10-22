@@ -18,7 +18,7 @@ use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
-use eggos_hal::user::{TestProgram, UserExit};
+use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
 /// Printed when every self-test passed. The QEMU runner requires this exact line.
@@ -48,7 +48,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 21] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 22] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -98,6 +98,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 21] {
         (
             "linux_programs_start_from_elf_images",
             linux_programs_start_from_elf_images::<P>,
+        ),
+        (
+            "linux_stacks_grow_on_demand",
+            linux_stacks_grow_on_demand::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1023,6 +1027,60 @@ fn linux_programs_start_from_elf_images<P: Platform>(
     Ok(())
 }
 
+/// A Linux program's stack is mapped as the program touches it (D52): the test program's
+/// `stack_growth`, started from the self-test's ELF image with its stack, stores to every page
+/// of the stack's 8 MiB reserve from the arguments' page down, each a page fault the process
+/// resolves with a zeroed frame, until it runs into the guard gap below and is killed with
+/// `SIGSEGV`. Every page of the reserve must then hold its own address, nothing below it may
+/// be mapped, and everything must be freed.
+fn linux_stacks_grow_on_demand<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
+    let user_end = <P::PageTableFormat as Format>::USER_END;
+    let reserve = user_end - exec::STACK_RESERVE;
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    {
+        let image = linux_start_image::<P>();
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::new(&memory.page_tables) }?;
+        let started = exec::load(&mut process, &image, b"/selftest", &[], &[])
+            .map_err(|_| "the loader refused a valid ELF image")?;
+        let entry = Process::<P>::test_program_context(|program| program.stack_growth).pc();
+        let context = UserContext::new(entry, started.stack());
+        let process = Arc::new(process);
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        if process.exit_status()
+            != Some(ProcessExit::Killed {
+                signal: linux::signal::SIGSEGV,
+            })
+        {
+            return Err("the program did not run off its stack into a SIGSEGV");
+        }
+        let top = started.stack() & !(FRAME_SIZE - 1);
+        for page in (reserve..=top).step_by(FRAME_SIZE as usize) {
+            let mut word = [0; 8];
+            process
+                .read_user_memory(page, &mut word)
+                .map_err(|_| "a stack page is not mapped")?;
+            if u64::from_ne_bytes(word) != page {
+                return Err("a stack page does not hold what the program stored there");
+            }
+        }
+        if process
+            .address_space()
+            .translate(reserve - FRAME_SIZE)
+            .is_some()
+        {
+            return Err("a page below the stack's reserve was mapped");
+        }
+    }
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the stack's frames and tables were not all freed");
+    }
+    Ok(())
+}
+
 /// [`processes_keep_their_own_memory`] on every CPU: first one process whose threads, one per
 /// CPU (up to 16), run on different CPUs at once, so several CPUs keep its address space loaded
 /// when it ends and must all let it go; then a process per CPU with two threads each, so they
@@ -1663,6 +1721,10 @@ mod tests {
             [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
+        fn drop_user_translations(_start: u64, _length: u64) {}
+        fn fault_writes(code: u64) -> bool {
+            code & crate::tests::FAULT_WRITE != 0
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,
@@ -1774,6 +1836,10 @@ mod tests {
             [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
+        fn drop_user_translations(_start: u64, _length: u64) {}
+        fn fault_writes(code: u64) -> bool {
+            code & crate::tests::FAULT_WRITE != 0
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,

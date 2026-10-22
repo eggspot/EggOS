@@ -3,8 +3,9 @@
 //!
 //! [`spawn`] starts a thread of a [`Process`] whose exits go to [`handle`]: a system call is
 //! dispatched by its Linux number on the architecture ([`number`]) and returns its result, or
-//! `-errno`, in the result register; an interrupt resumes the program; an exception the kernel
-//! does not handle ends the process with the signal Linux would send for it.
+//! `-errno`, in the result register; an interrupt resumes the program; a page fault the
+//! process resolves (a page of one of its regions touched for the first time, D52) resumes it
+//! too; any other exception ends the process with the signal Linux would send for it.
 //!
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
@@ -16,7 +17,7 @@
 
 pub mod exec;
 
-use crate::process::{self, Process, ProcessExit};
+use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -78,6 +79,7 @@ pub mod signal {
     pub const SIGILL: u32 = 4;
     pub const SIGTRAP: u32 = 5;
     pub const SIGBUS: u32 = 7;
+    pub const SIGKILL: u32 = 9;
     pub const SIGSEGV: u32 = 11;
 }
 
@@ -106,7 +108,39 @@ pub fn handle<P: Platform>(
     match exit {
         UserExit::Syscall => syscall(process, context),
         UserExit::Interrupt => ControlFlow::Continue(()),
-        UserExit::Exception(exception) => kill(process, exception.kind),
+        UserExit::Exception(exception) => {
+            user_exception(process, exception.kind, exception.code, exception.address)
+        }
+    }
+}
+
+/// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
+/// any. A page fault resumes the program if the process resolves it (demand paging); otherwise
+/// the process ends: `SIGKILL` when there was no memory for the page, as Linux's out-of-memory
+/// killer would, else the signal Linux sends for the exception ([`kill`]). Out of line and laid
+/// out away from the system-call path, which stays as short as it was (the exception's parts
+/// passed alone keep the loop's state in registers): a fault costs a frame's zeroing anyway.
+#[cold]
+#[inline(never)]
+fn user_exception<P: Platform>(
+    process: &Process<P>,
+    kind: ExceptionKind,
+    code: u64,
+    address: Option<u64>,
+) -> ControlFlow<()> {
+    let (Some(access), Some(address)) = (process::page_fault_access::<P>(kind, code), address)
+    else {
+        return kill(process, kind);
+    };
+    match process.resolve_page_fault(address, access) {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(UnresolvedFault::NotAllowed) => kill(process, kind),
+        Err(UnresolvedFault::OutOfMemory) => {
+            process.exit(ProcessExit::Killed {
+                signal: signal::SIGKILL,
+            });
+            ControlFlow::Break(())
+        }
     }
 }
 

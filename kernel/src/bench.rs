@@ -18,7 +18,8 @@ use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
-use eggos_hal::user::UserExit;
+use eggos_hal::paging::Attributes;
+use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Starts every benchmark result line. The xtask bench runner parses these lines.
@@ -34,7 +35,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 18] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 19] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -75,6 +76,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 18] {
         ("process_switch_round_trip", process_switch_round_trip::<P>),
         ("linux_syscall_round_trip", linux_syscall_round_trip::<P>),
         ("linux_exec_load", linux_exec_load::<P>),
+        ("linux_page_fault", linux_page_fault::<P>),
     ]
 }
 
@@ -360,9 +362,10 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
 
 /// Starting a Linux program from its ELF image (D51): a new process, the self-test's image
 /// loaded into it with the self-test's arguments and environment (its code, data and `.bss`
-/// mapped, its stack mapped and laid out), then the process freed. Each page is a frame of its
-/// own, zeroed: 33 of them for the stack (`exec::STACK_SIZE` and the arguments' page), 6 for
-/// the program, and the tables, so the frames dominate.
+/// mapped, its stack's region recorded and its arguments' page mapped and laid out), then the
+/// process freed. Each page is a frame of its own, zeroed: 1 for the stack (the rest of it is
+/// mapped as the program touches it, D52), 6 for the program, and the tables, so the frames
+/// dominate.
 fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let image = selftest::linux_start_image::<P>();
     let arguments = selftest::LINUX_START_ARGUMENTS.map(str::as_bytes);
@@ -374,6 +377,38 @@ fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
         let context = exec::load(&mut process, &image, b"/bench", &arguments, &environment)
             .expect("the self-test's image loads");
         black_box(context);
+    }
+}
+
+/// The pages a Linux program's page faults map, in chunks of this many per process.
+const PAGE_FAULT_CHUNK: u64 = 512;
+
+/// A page fault on a page the program touches for the first time (D52): the trap from user
+/// mode, the Linux layer's dispatch, the region looked up, a frame allocated, zeroed and
+/// mapped, this CPU's stale translation dropped, and the return to the program, which stores
+/// to the page and goes on to the next. The test program's `stack_growth` walks down a
+/// region of [`PAGE_FAULT_CHUNK`] pages until it runs off the end and is killed; starting
+/// each process and its thread, the final fault and freeing it all are timed too, amortized
+/// over the chunk.
+fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    const TOP: u64 = 0x1000_0000;
+    let mut left = n;
+    while left > 0 {
+        let pages = left.min(PAGE_FAULT_CHUNK);
+        left -= pages;
+        // SAFETY: as in `process_syscall_round_trip`.
+        let mut program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+            .expect("the test program fits in memory");
+        program
+            .add_region(TOP - pages * FRAME_SIZE, TOP, Attributes::USER_READ_WRITE)
+            .expect("the region is in user space");
+        let start = Process::<P>::test_program_context(|program| program.stack_growth).pc();
+        // Its stack pointer just below the top: the first store is to the region's last page.
+        let context = UserContext::new(start, TOP - 16);
+        let Ok(thread) = linux::spawn::<P>(Arc::new(program), context) else {
+            return;
+        };
+        thread.join::<P>();
     }
 }
 
@@ -472,8 +507,22 @@ mod tests {
         unsafe fn run_user(
             context: &mut eggos_hal::user::UserContext,
         ) -> eggos_hal::user::UserExit {
-            // The test program's null system calls, and nothing else.
             let pc = context.pc();
+            if pc == crate::process::TEST_PROGRAM_ADDRESS + 2 {
+                // `stack_growth`: a store to each page from the stack pointer's down, each
+                // faulting the first time. The stack pointer stands in for the walk: the kernel
+                // resolves the fault and runs the program again, which stores and moves on.
+                let page = context.stack() & !(FRAME_SIZE - 1);
+                *context = eggos_hal::user::UserContext::new(pc, page - FRAME_SIZE);
+                return UserExit::Exception(eggos_hal::Exception {
+                    kind: eggos_hal::ExceptionKind::DataFault,
+                    name: "test page fault",
+                    code: crate::tests::FAULT_WRITE,
+                    pc,
+                    address: Some(page),
+                });
+            }
+            // The test program's null system calls, and nothing else.
             let null = eggos_hal::user::TestProgram::SYSCALL_NULL;
             context.simulate_syscall(null, [0; 6], pc);
             UserExit::Syscall
@@ -488,12 +537,17 @@ mod tests {
                 linux_hello: 0,
                 linux_start: 0,
                 linux_unknown_syscalls: 0,
+                stack_growth: 2,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
+        fn drop_user_translations(_start: u64, _length: u64) {}
+        fn fault_writes(code: u64) -> bool {
+            code & crate::tests::FAULT_WRITE != 0
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             entry: extern "C" fn(usize) -> !,
@@ -548,8 +602,9 @@ mod tests {
                 (process_switch, _),
                 (linux_syscall, _),
                 (linux_exec, _),
+                (linux_page_fault, _),
             ],
-        ) = all.split_at(all.len() - 5)
+        ) = all.split_at(all.len() - 6)
         else {
             unreachable!()
         };
@@ -559,14 +614,16 @@ mod tests {
                 *process_syscall,
                 *process_switch,
                 *linux_syscall,
-                *linux_exec
+                *linux_exec,
+                *linux_page_fault
             ],
             [
                 "syscall_round_trip",
                 "process_syscall_round_trip",
                 "process_switch_round_trip",
                 "linux_syscall_round_trip",
-                "linux_exec_load"
+                "linux_exec_load",
+                "linux_page_fault"
             ]
         );
         assert_eq!(
@@ -624,6 +681,8 @@ mod tests {
         linux_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         linux_exec_load::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_page_fault::<CountingPlatform>(&mut memory, PAGE_FAULT_CHUNK + 5);
         assert_eq!(free(), before);
     }
 
