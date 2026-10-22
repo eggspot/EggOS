@@ -133,6 +133,7 @@ mod tests {
 
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         let mut out = String::new();
         let benchmarks = all::<CountingPlatform>();
         assert_eq!(run::<CountingPlatform, _>(&mut out, &benchmarks), Ok(()));
@@ -153,9 +154,9 @@ mod tests {
 
     #[test]
     fn timer_interrupt_round_trip_waits_for_each_interrupt() {
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         let before = interrupt::timer_interrupts();
         timer_interrupt_round_trip::<CountingPlatform>(5);
-        // At least five more: other tests may take timer interrupts in parallel.
-        assert!(interrupt::timer_interrupts() >= before + 5);
+        assert_eq!(interrupt::timer_interrupts(), before + 5);
     }
 }

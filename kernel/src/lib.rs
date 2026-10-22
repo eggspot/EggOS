@@ -98,6 +98,7 @@ mod tests {
 
     #[test]
     fn boot_prints_banner_with_version_and_arch() {
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         let mut out = String::new();
         assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
         assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n")));

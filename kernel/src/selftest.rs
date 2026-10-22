@@ -208,6 +208,7 @@ mod tests {
 
     #[test]
     fn timer_that_never_fires_fails_after_a_second() {
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         assert_eq!(
             timer_interrupt_fires::<DeadTimer>(),
             Err("no timer interrupt within 1 s of its deadline")
