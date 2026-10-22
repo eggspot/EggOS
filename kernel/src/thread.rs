@@ -252,15 +252,18 @@ impl ThreadBox {
     fn get(&self) -> &Thread {
         // SAFETY: owned by `self`. Only the switch (holding the scheduler's lock, handed over
         // across the switch) and a `ThreadList` (once `into_raw` has given the box up) write
-        // it without a reference, and no `get` overlaps either.
+        // it without a reference, and no `get` overlaps either; `move_to` borrows `self`
+        // uniquely.
         unsafe { self.0.as_ref() }
     }
 
     /// Moves the thread, which is ready, to `cpu` (D44): it runs there, and sleeps and is made
     /// ready there from now on.
     fn move_to(&mut self, cpu: &'static Cpu) {
-        // SAFETY: owned by `self`, borrowed uniquely: a thread held in a box is in no list and
-        // not running, so nothing else reaches it (see `get`).
+        // SAFETY: owned by `self`, borrowed uniquely. The thread is ready, just taken from a
+        // ready list with the scheduler's lock held: it does not run, and the switch that saved
+        // it finished before the lock was handed on (see `switch_to`), so nothing else reaches
+        // it while this reference lives.
         unsafe { self.0.as_mut().cpu = cpu };
     }
 

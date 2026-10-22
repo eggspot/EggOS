@@ -874,7 +874,7 @@ fn threads_move_to_idle_cpus<P: Platform>() -> Result<(), &'static str> {
         let before = cpu::current::<P>().index() + 1;
         SLEEPER_ON.store(before, Ordering::Relaxed);
         ASLEEP.store(true, Ordering::Release);
-        thread::sleep_until::<P>(P::clock_ticks() + 3 * millisecond);
+        thread::sleep_until::<P>(P::clock_ticks() + 20 * millisecond);
         side_by_side(&SLEEPER_ON, &BUSY_ON);
     });
     let Ok(sleeper) = sleeper else {
@@ -884,8 +884,9 @@ fn threads_move_to_idle_cpus<P: Platform>() -> Result<(), &'static str> {
     while !ASLEEP.load(Ordering::Acquire) && P::clock_ticks() < give_up {
         core::hint::spin_loop();
     }
-    // Long enough for the sleeper to block, leaving its CPU idle, the lowest-numbered one.
-    thread::sleep_until::<P>(P::clock_ticks() + millisecond);
+    // Long enough for the sleeper to block, leaving its CPU idle, the lowest-numbered one, with
+    // a margin for a host that stalls the machine: the sleeper sleeps four times as long.
+    thread::sleep_until::<P>(P::clock_ticks() + 5 * millisecond);
     let sleeper_on = SLEEPER_ON.load(Ordering::Relaxed);
     let busy = thread::spawn::<P, _>(move || {
         if cpu::current::<P>().index() + 1 != sleeper_on {

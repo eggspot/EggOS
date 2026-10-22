@@ -1122,8 +1122,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   With preemption off, only the pull at an idle CPU's next look applies.
 - **Pinned: the boot thread.** It is never moved: it runs the boot CPU's setup and the boot
   self-tests, which expect the boot CPU. A CPU whose first ready thread is the boot thread is
-  passed over (the lists are singly linked, so taking from the middle would need a walk). A
-  general CPU-affinity setting is a follow-up, when processes need one.
+  passed over (the lists are singly linked, so taking from the middle would need a walk). So
+  while the boot thread is the only thread waiting on a busy boot CPU, each slice end there
+  wakes an idle CPU that finds nothing to take: one wasted wake-up interrupt per slice, rare and
+  cheap. A general CPU-affinity setting is a follow-up, when processes need one.
 - **Hot paths untouched.** Both halves live off the hot paths: the pull in the idle loop after
   its own ready list came up empty, the push in the timer's cold slow path, only when a slice
   ended, out of line (`#[cold]`, `#[inline(never)]`). Both are O(CPUs) scans of the CPU table;
