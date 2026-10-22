@@ -2,9 +2,9 @@
 //! sign-extended to 64 bits. Leaves are 4 KiB pages, 2 MiB megapages and 1 GiB gigapages.
 //!
 //! Sv39 is what every RVA profile requires, so it runs on every RISC-V application processor;
-//! its upper half (256 GiB) bounds the direct map (D29). Without the Svpbmt extension a page
-//! cannot say whether it is device memory: the platform's physical memory attributes decide,
-//! so [`MemoryType`] is not encoded.
+//! its upper half (256 GiB) holds the direct map (254 GiB) and the kernel image (D29, D33).
+//! Without the Svpbmt extension a page cannot say whether it is device memory: the platform's
+//! physical memory attributes decide, so [`MemoryType`] is not encoded.
 
 use super::{Attributes, Entry, Format};
 
