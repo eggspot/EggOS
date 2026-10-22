@@ -83,7 +83,7 @@ mod tests {
         *RAM.get_or_init(|| {
             let frame = eggos_hal::memory::FRAME_SIZE as usize;
             let memory = vec![0u8; (RAM_FRAMES as usize + 1) * frame].leak();
-            (memory.as_ptr() as usize).next_multiple_of(frame)
+            (memory.as_mut_ptr() as usize).next_multiple_of(frame)
         })
     }
 

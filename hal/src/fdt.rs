@@ -148,8 +148,13 @@ impl<'a> Fdt<'a> {
                 FDT_BEGIN_NODE => {
                     let name = cstr(self.structure, at).ok_or(Error::Truncated)?;
                     at = align4(at + name.len() + 1);
-                    let parent = depth.checked_sub(1).map(|d| stack[d]);
-                    let kind = match parent.map(|p| p.kind) {
+                    let parent = match depth.checked_sub(1) {
+                        None => None,
+                        Some(d) if d < MAX_DEPTH => Some(stack[d].kind),
+                        // Inside a node too deep to track: nothing of interest.
+                        Some(_) => Some(Kind::Other),
+                    };
+                    let kind = match parent {
                         None => Kind::Root,
                         Some(Kind::Root) => {
                             let base = name.split(|&b| b == b'@').next().unwrap_or(name);
@@ -566,6 +571,23 @@ mod tests {
                 }
             }
         }
+        // Nesting deeper than the walker tracks is skipped, not a panic.
+        let mut b = Builder::default();
+        b.begin("")
+            .cells("#address-cells", &[1])
+            .cells("#size-cells", &[1]);
+        for _ in 0..MAX_DEPTH + 10 {
+            b.begin("n").cells("reg", &[0, 0x1000]);
+        }
+        for _ in 0..MAX_DEPTH + 10 {
+            b.end();
+        }
+        b.begin("memory@0")
+            .cells("reg", &[0x4000, 0x1000])
+            .end()
+            .end();
+        let (ram, _) = memory_of(&b.build()).unwrap();
+        assert_eq!(ram, [range(0x4000, 0x1000)]);
         // An END_NODE without a node.
         let mut b = Builder::default();
         b.end();

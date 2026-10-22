@@ -151,8 +151,8 @@ impl Platform for Riscv64 {
 
     fn memory_map() -> MemoryMap {
         // SAFETY: the SBI firmware passes the address of its device tree in `a1` (the RISC-V
-        // boot convention), which stays readable and unwritten; with the MMU off physical
-        // addresses are accessible directly.
+        // boot convention, which OpenSBI follows), which stays readable and unwritten; with the
+        // MMU off physical addresses are accessible directly.
         unsafe { boot_memory::device_tree_memory_map(DEVICE_TREE.load(Ordering::Relaxed)) }
     }
 

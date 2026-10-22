@@ -358,9 +358,9 @@ what its firmware describes, adds the RAM, then reserves everything in use; the
 architecture-independent core turns it into a `FrameAllocator` of 4 KiB frames.
 - **Where the memory map comes from.** RISC-V: the device tree whose address OpenSBI passes in
   `a1` (its `/memory` nodes, memory reservation block and `/reserved-memory`, where OpenSBI
-  reserves itself). AArch64: the device tree at `x0` if the loader passed one there (the Linux
-  arm64 boot convention), else at the start of RAM, where QEMU `virt` puts it for a non-Linux
-  ELF image only if it fits below the kernel. QEMU's tree is 1 MiB, so the AArch64 kernel now
+  reserves itself). AArch64: the device tree at the start of RAM, where QEMU `virt` puts it for a
+  non-Linux ELF image (it passes the address in `x0` only to Linux images), and only if it fits
+  below the kernel; taking it from `x0` comes with booting through other loaders (M5, M13). QEMU's tree is 1 MiB, so the AArch64 kernel now
   links at `0x4020_0000` instead of `0x4008_0000` (2 MiB aligned, which later suits a 2 MiB
   kernel mapping). x86_64: the PVH start info's memory map (version 1, E820 types; RAM is type
   1). The device-tree reader (`eggos_hal::fdt`) is architecture-independent and reads only what
@@ -378,8 +378,9 @@ architecture-independent core turns it into a `FrameAllocator` of 4 KiB frames.
   goes last, plus a stack of freed frames linked through their first word (reached through
   `Platform::physical_memory_offset`, 0 while the kernel runs identity-mapped). Building it
   costs O(ranges), not O(frames), so boot time does not grow with RAM, and it uses no metadata
-  memory (D24); a frame never handed out is never touched. Allocation and free are each about
-  10-16 instructions (benchmarks `frame_allocate_untouched`, `frame_free_allocate`). A bitmap
+  memory (D24); a frame never handed out is never touched. Allocating a never-used frame costs
+  10-13 instructions and a free + allocate pair 15-16, beyond the benchmark loop's own 4
+  (benchmarks `frame_allocate_untouched`, `frame_free_allocate`). A bitmap
   was rejected for its boot-time initialisation and O(n) search; a buddy allocator (contiguous
   power-of-two blocks for DMA and huge pages) replaces this one when paging and the direct map
   exist and SMP needs per-CPU caches (M2/M4, as Linux's memblock hands over to its buddy

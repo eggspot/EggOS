@@ -10,9 +10,7 @@ mod exception;
 mod timer;
 
 use crate::arch::boot_memory;
-use crate::fdt;
 use crate::{ExitStatus, MemoryMap, Platform};
-use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
 
@@ -21,7 +19,6 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    mov     x19, x0
     // Only the CPU whose affinity (MPIDR_EL1 Aff0-Aff3) is all zero boots for now; park
     // every other CPU, in any cluster.
     mrs     x0, mpidr_el1
@@ -46,12 +43,8 @@ _start:
     str     xzr, [x0], #8
     b       1b
 
-    // Keep x0 (a device-tree address, if the loader passed one) after zeroing .bss.
-2:  adrp    x1, {boot_x0}
-    str     x19, [x1, :lo12:{boot_x0}]
-
     // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
-    adrp    x0, exception_vectors
+2:  adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0
     isb
@@ -61,14 +54,11 @@ _start:
     b       3b
 "#,
     init_timer = sym timer::init,
-    boot_x0 = sym BOOT_X0,
 );
 
-/// `x0` at entry. A loader following the Linux arm64 boot protocol passes the device tree
-/// there; QEMU passes it only to Linux images, and places it at the start of RAM otherwise.
-static BOOT_X0: AtomicUsize = AtomicUsize::new(0);
-
-/// QEMU `virt`: start of RAM, where QEMU places the device tree for a non-Linux kernel.
+/// QEMU `virt`: start of RAM, where QEMU places the device tree for a non-Linux kernel (it
+/// passes the tree's address in `x0` only to Linux images). The kernel links far enough above
+/// it for QEMU's 1 MiB tree to fit (see `linker.ld`).
 const RAM_BASE: usize = 0x4000_0000;
 
 /// QEMU `virt`: PL011 UART0.
@@ -155,31 +145,14 @@ impl Platform for Aarch64 {
     }
 
     fn memory_map() -> MemoryMap {
-        let address = [BOOT_X0.load(Ordering::Relaxed), RAM_BASE]
-            .into_iter()
-            .find(|&address| is_device_tree(address))
-            .unwrap_or(0);
-        // SAFETY: `address` is 0 or holds a device-tree header (checked by `is_device_tree`)
-        // left by the loader, whose blob stays readable and unwritten; with the MMU off
-        // physical addresses are accessible directly.
-        unsafe { boot_memory::device_tree_memory_map(address) }
+        // SAFETY: on QEMU `virt` the start of RAM is readable with the MMU off and holds the
+        // device tree QEMU loaded there, which nothing writes; if QEMU loaded none, the header
+        // check fails and the map is empty.
+        unsafe { boot_memory::device_tree_memory_map(RAM_BASE) }
     }
 
     #[inline]
     fn physical_memory_offset() -> usize {
         0
     }
-}
-
-/// Whether a device-tree header is at `address`: `x0` from the loader or QEMU `virt`'s start
-/// of RAM, both inside RAM (or 0, rejected).
-fn is_device_tree(address: usize) -> bool {
-    if address < RAM_BASE || !address.is_multiple_of(8) {
-        return false;
-    }
-    // SAFETY: `address` is 8-byte aligned and at or above the start of RAM, which is readable
-    // with the MMU off (QEMU `virt` maps at least 128 MiB there, and the loader passes an
-    // address inside RAM); a header is 40 bytes.
-    let header = unsafe { core::slice::from_raw_parts(address as *const u8, fdt::HEADER_LENGTH) };
-    fdt::total_size(header).is_ok()
 }

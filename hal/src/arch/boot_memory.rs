@@ -7,6 +7,10 @@ use crate::fdt::{self, Fdt};
 use crate::memory::MemoryMap;
 use crate::memory::PhysicalRange;
 
+/// Largest device tree read, against a corrupt size field (QEMU's are 1 MiB at most).
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+const MAX_DEVICE_TREE_SIZE: usize = 16 << 20;
+
 unsafe extern "C" {
     /// First byte of the kernel image (linker script).
     static __kernel_start: u8;
@@ -29,22 +33,25 @@ pub(crate) fn kernel_image() -> PhysicalRange {
 /// Empty if there is no valid tree at `address`.
 ///
 /// # Safety
-/// `address` must be 0 or point at memory that is readable for as many bytes as an FDT header
-/// there declares (the firmware's device tree, which nothing writes while the kernel runs).
+/// `address` must be 0, or readable for [`fdt::HEADER_LENGTH`] bytes and, if those hold an FDT
+/// header, for as many bytes as it declares (up to [`MAX_DEVICE_TREE_SIZE`]): the firmware's
+/// device tree, which nothing writes while the kernel runs.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) unsafe fn device_tree_memory_map(address: usize) -> MemoryMap {
     let mut map = MemoryMap::new();
     if address == 0 || !address.is_multiple_of(8) {
         return map;
     }
-    // SAFETY: the caller guarantees `address` is readable at least for a header (an FDT header
-    // is the smallest blob there can be, and the caller vouches for what one declares).
+    // SAFETY: the caller guarantees `address` is readable for a header's length.
     let header = unsafe { core::slice::from_raw_parts(address as *const u8, fdt::HEADER_LENGTH) };
     let Ok(size) = fdt::total_size(header) else {
         return map;
     };
-    // SAFETY: the header is valid and declares `size` bytes, which the caller guarantees are
-    // readable and not written while the kernel runs.
+    if size > MAX_DEVICE_TREE_SIZE {
+        return map;
+    }
+    // SAFETY: the header is valid and declares `size` bytes (bounded above), which the caller
+    // guarantees are readable and not written while the kernel runs.
     let blob = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
     let Ok(tree) = Fdt::new(blob) else {
         return map;

@@ -261,8 +261,9 @@ impl Platform for X86_64 {
             return map;
         };
         // SAFETY: the loader passed the address of its `hvm_start_info`; `mapped` checked the
-        // bytes are in the identity map and nothing writes them. Fields beyond version 0 are
-        // read only once the version says they exist.
+        // bytes are in the identity map and nothing writes them. A version 0 structure is
+        // shorter: the bytes after it are still identity-mapped memory, and the version 1
+        // fields are used only once the version says they exist.
         let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
         let field32 = |offset: usize| {
             u32::from_le_bytes(info[offset..offset + 4].try_into().unwrap_or_default())

@@ -133,10 +133,10 @@ mod tests {
                 frames,
             }
         }
-        fn aligned_start(&self) -> usize {
-            (self.memory.as_ptr() as usize).next_multiple_of(K as usize)
+        fn aligned_start(&mut self) -> usize {
+            (self.memory.as_mut_ptr() as usize).next_multiple_of(K as usize)
         }
-        fn offset(&self) -> usize {
+        fn offset(&mut self) -> usize {
             self.aligned_start().wrapping_sub(self.base as usize)
         }
         fn map(&self, ranges: &[(u64, u64)]) -> MemoryMap {
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn hands_out_every_frame_once_top_down_then_runs_out() {
-        let arena = Arena::new(0x10_0000, 16);
+        let mut arena = Arena::new(0x10_0000, 16);
         let b = arena.base;
         let map = arena.map(&[(b, b + 4 * K), (b + 8 * K, b + 10 * K)]);
         let mut frames = FrameAllocator::new(&map, arena.offset());
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn freed_frames_come_back_last_in_first_out() {
-        let arena = Arena::new(0x10_0000, 8);
+        let mut arena = Arena::new(0x10_0000, 8);
         let b = arena.base;
         let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 8 * K)]), arena.offset());
         let first = frames.allocate().unwrap();
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn random_allocate_and_free_never_hands_out_a_frame_twice() {
-        let arena = Arena::new(0x4000_0000, 64);
+        let mut arena = Arena::new(0x4000_0000, 64);
         let b = arena.base;
         let map = arena.map(&[(b, b + 20 * K), (b + 24 * K, b + 64 * K)]);
         let total = map.total() / K;

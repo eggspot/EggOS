@@ -53,7 +53,9 @@ impl PhysicalRange {
         }
     }
 
-    /// Every frame touching this range: start rounded down, end rounded up.
+    /// Every frame touching this range: start rounded down, end rounded up. An end in the last,
+    /// partial frame of the address space rounds down instead, which loses nothing: a map holds
+    /// whole frames only, so it has nothing there.
     const fn covering_frames(self) -> Self {
         let end = match self.end.checked_next_multiple_of(FRAME_SIZE) {
             Some(end) => end,

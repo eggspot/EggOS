@@ -7,7 +7,8 @@
 //! hand every exception to the kernel's `kernel_exception`, see [`crate::Exception`], and every
 //! timer interrupt to its `kernel_interrupt`, see [`crate::Interrupt`]), its linker script (`linker.ld`, used by the
 //! kernel's build script) and a type implementing [`crate::Platform`], re-exported here as
-//! `CurrentPlatform`.
+//! `CurrentPlatform`, which also reports the free physical memory (see [`crate::MemoryMap`];
+//! the shared parts of building it are in `boot_memory`).
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub mod aarch64;
