@@ -111,8 +111,10 @@ mod tests {
             let frame = eggos_hal::memory::FRAME_SIZE as usize;
             let block = frame << memory::MAX_ORDER;
             let memory = vec![0u8; RAM_FRAMES as usize * frame + block].leak();
-            let offset = (memory.as_mut_ptr() as usize).next_multiple_of(block);
-            offset + RAM_BASE as usize
+            // The first address in `memory` congruent to `RAM_BASE` modulo `block`.
+            let start = memory.as_mut_ptr() as usize;
+            let base = RAM_BASE as usize % block;
+            start + (base + block - start % block) % block
         })
     }
 
