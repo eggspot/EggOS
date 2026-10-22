@@ -996,3 +996,32 @@ run queues) is the next step.
   assuming SBI v0.2 or later (a debug check today); a visible error for a CPU beyond GICv2's
   8 interfaces; x2APIC ids above 254; GICv3
   (`ICC_SGI1R_EL1`), with more than 8 CPUs; the invariant-TSC check.
+
+## D42 A disarmed timer stays quiet; x86 converts deadlines with a fixed-point factor — Decided by the build loop (review fix)
+A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one defect, on x86_64.
+- **Disarming armed the timer for its longest count.** The scheduler disarms the timer with the
+  deadline `u64::MAX` (tickless idle, preemption off). On x86_64 that started the local APIC
+  timer at its largest count (2^32 - 1) instead of stopping it, so an idle CPU woke for
+  nothing once that count ran out: after 4.3 s on QEMU (measured; a 1 GHz APIC clock), after
+  tens of seconds to minutes on real machines. The HAL then delivered nothing, so no test saw
+  it, but it broke D39's promise of no tick on an idle CPU, which costs power. Now
+  `set_timer_deadline(u64::MAX)` stops the APIC timer (initial count 0), and the `Platform`
+  contract says what `u64::MAX` means on every architecture: no interrupt and no wake-up from
+  then on (aarch64 and riscv64 already behaved so). Checked by a throwaway boot test that
+  disarms and waits for an interrupt: before the fix it woke after 4315 ms; with it, the CPU
+  slept until the QEMU runner's 30 s timeout. No permanent test: the kernel cannot see a wake
+  that delivers no interrupt, short of waiting seconds in every boot test.
+- **The fix had to cost nothing.** The extra compare made `timer_arm` 3 instructions slower,
+  which the benchmark gate rejects. Arming divided a 128-bit product on every call
+  (`__udivti3`); now `init` turns the measured TSC and APIC timer frequencies into one 32.32
+  fixed-point factor, rounded up (`time::ratio_ceil`), and arming multiplies by it
+  (`time::scale_ceil`): never below the exact conversion, so a deadline is still never early,
+  and above it by at most 1 count plus 1 per 2^32 TSC ticks (about 4 µs late at the APIC
+  timer's 172 s reach with a 25 MHz APIC clock and a 2.4 GHz TSC; longer deadlines re-arm
+  anyway). Host tests check both bounds on measured and awkward clock pairs.
+- **Benchmarks (x86_64).** `timer_arm` 65 → 33 instructions, `timer_interrupt_round_trip`
+  95 → 81, and `breakpoint_round_trip` 81 → 73: without the division call, the trap handler,
+  which inlines the timer interrupt's re-arm, became a leaf function and no longer saves and
+  restores callee-saved registers on every exception. Nothing else moved beyond the gate.
+- **Also fixed.** `thread::enable_preemption`'s comment said a slice starts with every switch;
+  D39 has a thread that runs after a yield, block or exit finish the slice under way.

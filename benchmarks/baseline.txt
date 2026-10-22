@@ -34,7 +34,7 @@ riscv64 thread_yield_round_trip 151.10
 riscv64 timer_arm 266.01
 riscv64 timer_interrupt_round_trip 640.00
 riscv64 wait_queue_wake_empty 14.00
-x86_64 breakpoint_round_trip 81.00
+x86_64 breakpoint_round_trip 73.00
 x86_64 clock_read 8.00
 x86_64 empty_loop 4.00
 x86_64 frame_allocate_untouched 14.06
@@ -44,6 +44,6 @@ x86_64 heap_allocate_free_small 48.00
 x86_64 preemption_point_idle 8.00
 x86_64 thread_wait_wake_round_trip 205.04
 x86_64 thread_yield_round_trip 111.06
-x86_64 timer_arm 65.00
-x86_64 timer_interrupt_round_trip 95.00
+x86_64 timer_arm 33.00
+x86_64 timer_interrupt_round_trip 81.00
 x86_64 wait_queue_wake_empty 16.00

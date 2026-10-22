@@ -19,7 +19,7 @@ use super::port::PortIo;
 use crate::Interrupt;
 use crate::cpu::TIMER_DEADLINE_OFFSET;
 use crate::memory::PhysicalRange;
-use crate::time::mul_div_ceil;
+use crate::time::{mul_div_ceil, ratio_ceil, scale_ceil};
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
 use eggos_drivers::io::Mmio;
@@ -97,9 +97,12 @@ pub(super) fn wakeup_interrupt() {
     crate::interrupt::deliver(Interrupt::Wakeup);
 }
 
-/// Measured TSC and APIC timer frequencies in Hz, set by [`init`].
+/// The measured TSC frequency in Hz, set by [`init`].
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
-static APIC_TIMER_FREQUENCY: AtomicU64 = AtomicU64::new(0);
+/// APIC timer counts per TSC tick, from the measured frequencies, as a fixed-point factor
+/// rounded up ([`ratio_ceil`]), set by [`init`]: arming the timer then multiplies instead of
+/// dividing.
+static APIC_COUNTS_PER_TSC_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// The deadline this CPU's timer is armed for, in TSC ticks, from its per-CPU block.
 #[inline]
@@ -216,7 +219,7 @@ pub(super) extern "C" fn init() {
         "TSC or local APIC timer did not count during the PIT measurement"
     );
     TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
-    APIC_TIMER_FREQUENCY.store(apic_frequency, Ordering::Relaxed);
+    APIC_COUNTS_PER_TSC_TICK.store(ratio_ceil(apic_frequency, tsc_frequency), Ordering::Relaxed);
     apic.configure_one_shot_timer(TIMER_VECTOR, false);
 }
 
@@ -246,19 +249,21 @@ pub(super) fn frequency() -> u64 {
     TSC_FREQUENCY.load(Ordering::Relaxed)
 }
 
+/// Arms the timer for `deadline`, or stops it for [`NO_DEADLINE`]: armed for its longest count
+/// instead, it would wake an idle CPU for nothing (after about 4.3 s at QEMU's 1 GHz APIC clock).
 pub(super) fn set_deadline(deadline: u64) {
     set_deadline_word(deadline);
-    arm(deadline);
+    if deadline == NO_DEADLINE {
+        local_apic().start_timer(0);
+    } else {
+        arm(deadline);
+    }
 }
 
 /// Starts the APIC timer to expire at TSC `deadline` (at the earliest representable count).
 fn arm(deadline: u64) {
     let remaining = deadline.saturating_sub(now());
-    let count = mul_div_ceil(
-        remaining,
-        APIC_TIMER_FREQUENCY.load(Ordering::Relaxed),
-        TSC_FREQUENCY.load(Ordering::Relaxed),
-    );
+    let count = scale_ceil(remaining, APIC_COUNTS_PER_TSC_TICK.load(Ordering::Relaxed));
     // 0 would stop the timer instead of firing it at once.
     local_apic().start_timer(count.clamp(1, u32::MAX.into()) as u32);
 }
