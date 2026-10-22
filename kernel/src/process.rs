@@ -231,10 +231,11 @@ impl<P: Platform> Process<P> {
     /// length), after checking that the page is a user page of normal memory (and writable, if
     /// `write`). No user-access window is opened and the address space need not be loaded on
     /// this CPU: the copy goes through the direct map (the process's `frame_offset`), so it
-    /// can never fault (D50, decided by research). That is sound while a process's mappings are frozen and it owns every frame
-    /// they map (an `&self` here means no `&mut` can remap or free them); once mappings can
-    /// change under running threads (`munmap`, demand paging, copy-on-write), copies move to
-    /// user addresses with fault fixups, behind this same interface.
+    /// can never fault (D50, decided by research). That is sound while a process's mappings
+    /// are frozen and it owns every frame they map (an `&self` here means no `&mut` can remap
+    /// or free them); once mappings can change under running threads (`munmap`, demand paging,
+    /// copy-on-write), copies move to user addresses with fault fixups, behind this same
+    /// interface.
     fn copy_user_pages(
         &self,
         address: u64,
