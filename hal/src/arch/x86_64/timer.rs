@@ -217,7 +217,9 @@ pub(super) fn legacy_pic_interrupt(vector: u64) -> bool {
 /// The local APIC's register block, for the kernel's page tables. Valid once [`init`] ran.
 pub(super) fn local_apic_registers() -> PhysicalRange {
     PhysicalRange::from_start_length(
-        (APIC_BASE.load(Ordering::Relaxed) - super::DIRECT_MAP_OFFSET) as u64,
+        APIC_BASE
+            .load(Ordering::Relaxed)
+            .wrapping_sub(super::DIRECT_MAP_OFFSET) as u64,
         local_apic::REGISTER_BLOCK_SIZE as u64,
     )
 }

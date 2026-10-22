@@ -2,7 +2,9 @@
 //!
 //! Boot contract: entered at `_start` in EL1 with the MMU off, as QEMU's `virt` machine does
 //! for an ELF kernel. The kernel is built for `aarch64-unknown-none-softfloat` (decision D10):
-//! no FP/SIMD in the kernel, and `strict-align`, which is required while the MMU is off.
+//! no FP/SIMD in the kernel, and `strict-align`, which was required while the MMU was off. Since
+//! D33 only the entry code below runs with the MMU off: it builds the boot page tables, turns
+//! the MMU on and jumps to the kernel's virtual address before any Rust code runs.
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 

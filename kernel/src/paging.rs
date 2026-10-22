@@ -234,15 +234,7 @@ pub fn kernel_page_tables<P: Platform>(
         tables.map(virt, range.start, range.len(), attributes, frames)?;
     }
     let offset = P::direct_map_offset() as u64;
-    // The direct map must stay below the kernel image (on RISC-V Sv39 both share 256 GiB).
-    let image_virt = image.virtual_address(image.start);
-    let below_image = |range: &PhysicalRange| {
-        range
-            .end
-            .checked_add(offset)
-            .is_some_and(|end| end <= image_virt)
-    };
-    if !physical_memory.ranges().iter().all(below_image) {
+    if !direct_map_fits_below(physical_memory, offset, &image) {
         return Err(MapError::InvalidAddress);
     }
     map_direct_map(&mut tables, physical_memory, offset, &image, frames)?;
@@ -267,6 +259,18 @@ pub fn kernel_page_tables<P: Platform>(
         }
     });
     result.map(|()| tables)
+}
+
+/// Whether the direct map of `ram` at `offset` ends at or below the kernel image's virtual
+/// address: on RISC-V Sv39 both share the 256 GiB high half (D33).
+fn direct_map_fits_below(ram: &MemoryMap, offset: u64, image: &KernelImage) -> bool {
+    let image_virt = image.virtual_address(image.start);
+    ram.ranges().iter().all(|range| {
+        range
+            .end
+            .checked_add(offset)
+            .is_some_and(|end| end <= image_virt)
+    })
 }
 
 /// The access the direct map gives a part of the kernel image mapped with `attributes`: the
@@ -513,6 +517,35 @@ mod tests {
             };
             assert!(matches!(walk(1), Entry::Leaf(..)), "{phys:#x}");
         }
+    }
+
+    #[test]
+    fn the_direct_map_must_end_below_the_kernel_image() {
+        // Sv39: the direct map from 0xffff_ffc0_0000_0000, the image at 0xffff_ffff_8020_0000.
+        let image = KernelImage {
+            virtual_offset: 0xffff_ffff_0000_0000,
+            start: 0x8020_0000,
+            text_start: 0x8020_0000,
+            rodata_start: 0x8020_1000,
+            data_start: 0x8020_2000,
+            stack_guard_start: 0x8020_3000,
+            stack_start: 0x8020_4000,
+            end: 0x8020_5000,
+        };
+        let offset = 0xffff_ffc0_0000_0000;
+        let gb = 1 << 30;
+        let ram = |end| {
+            let mut map = MemoryMap::new();
+            map.add_ram(PhysicalRange { start: 2 * gb, end });
+            map
+        };
+        assert!(direct_map_fits_below(&ram(4 * gb), offset, &image));
+        // The image's first byte is the direct map's 254 GiB + 2 MiB.
+        let limit = 254 * gb + (2 << 20);
+        assert!(direct_map_fits_below(&ram(limit), offset, &image));
+        assert!(!direct_map_fits_below(&ram(limit + K), offset, &image));
+        // An end that wraps around the address space never fits.
+        assert!(!direct_map_fits_below(&ram(300 * gb), offset, &image));
     }
 
     #[test]
