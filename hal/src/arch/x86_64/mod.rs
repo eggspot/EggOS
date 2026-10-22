@@ -350,13 +350,14 @@ unsafe extern "C" {
 }
 
 /// Called by `secondary_start64` on the `CpuStart`'s stack, at the kernel's virtual address with
-/// the boot page tables and the IDT loaded: switches to the kernel's page tables, then calls the
-/// entry.
+/// the boot page tables and the IDT loaded: switches to the kernel's page tables, sets this CPU's
+/// local APIC and timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
     // interrupts are masked (the trampoline starts with `cli`).
     unsafe { X86_64::activate_page_tables(&start.page_table_roots[..1]) };
+    timer::init_this_cpu();
     (start.entry)(start.argument)
 }
 
@@ -726,6 +727,27 @@ impl Platform for X86_64 {
             core::arch::asm!("mov {}, gs:[0]", out(reg) block, options(nostack, readonly, preserves_flags));
         }
         block
+    }
+
+    #[inline]
+    unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
+        let value: u64;
+        // SAFETY: the caller guarantees the GS base is this CPU's block, with an aligned
+        // `AtomicU64` at `OFFSET`: one aligned 8-byte load, which never tears.
+        unsafe {
+            core::arch::asm!(
+                "mov {}, qword ptr gs:[{offset}]",
+                out(reg) value,
+                offset = const OFFSET,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        value
+    }
+
+    fn wake_cpu(cpu: u64) {
+        // `cpus` lists xAPIC ids only, which fit in a byte.
+        timer::wake(cpu as u8);
     }
 }
 

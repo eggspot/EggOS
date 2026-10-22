@@ -116,6 +116,8 @@ const _: () = assert!(core::mem::size_of::<TrapFrame>() == 272);
 const SCAUSE_INTERRUPT: u64 = 1 << 63;
 /// `scause` for the supervisor timer interrupt.
 const SCAUSE_SUPERVISOR_TIMER: u64 = SCAUSE_INTERRUPT | 5;
+/// `scause` for the supervisor software interrupt: the wake-up interrupt (D41).
+const SCAUSE_SUPERVISOR_SOFTWARE: u64 = SCAUSE_INTERRUPT | 1;
 
 /// Called by the entry code with the saved registers.
 extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
@@ -126,11 +128,26 @@ extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
     // SAFETY: reading the trap value CSR in S-mode has no side effects.
     unsafe { core::arch::asm!("csrr {}, stval", out(reg) stval, options(nomem, nostack)) };
 
-    if scause == SCAUSE_SUPERVISOR_TIMER {
-        // The interrupt stays pending while `time` >= the deadline; disarming clears it.
-        timer::disarm();
-        crate::interrupt::deliver(Interrupt::Timer);
-        return;
+    // Exceptions pay one test for the interrupts' checks.
+    if scause & SCAUSE_INTERRUPT != 0 {
+        match scause {
+            SCAUSE_SUPERVISOR_TIMER => {
+                // The interrupt stays pending while `time` >= the deadline; disarming clears
+                // it.
+                timer::disarm();
+                crate::interrupt::deliver(Interrupt::Timer);
+                return;
+            }
+            SCAUSE_SUPERVISOR_SOFTWARE => {
+                // Cleared before the kernel looks at why it was woken, so a wake sent
+                // meanwhile is taken again.
+                timer::end_wakeup();
+                crate::interrupt::deliver(Interrupt::Wakeup);
+                return;
+            }
+            // Reported below.
+            _ => {}
+        }
     }
     let exception = decode(scause, stval, frame.sepc);
     deliver(&exception);

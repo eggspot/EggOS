@@ -10,11 +10,14 @@
 //! APIC count rounded up, and a timer that still fires early (measurement error, or a deadline
 //! beyond 32 bits of count) is re-armed for the rest instead of being delivered.
 //!
-//! Per-CPU state is a set of statics while only the boot CPU runs; it moves to per-CPU data
-//! with SMP (M4).
+//! Each CPU arms its own local APIC timer; the deadline it is armed for is per-CPU, in the HAL's
+//! part of the per-CPU block (D41). The frequencies are measured once, on the boot CPU, and
+//! shared: the TSC and the APIC timer's clock run at the same rate on every CPU of a machine.
+//! The same local APIC sends the wake-up interrupt between CPUs.
 
 use super::port::PortIo;
 use crate::Interrupt;
+use crate::cpu::TIMER_DEADLINE_OFFSET;
 use crate::memory::PhysicalRange;
 use crate::time::mul_div_ceil;
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -29,6 +32,8 @@ const LEGACY_PIC_PRIMARY_SPURIOUS: u64 = 0x27;
 const LEGACY_PIC_SECONDARY_SPURIOUS: u64 = 0x2f;
 /// The local APIC timer's vector.
 pub(super) const TIMER_VECTOR: u8 = 0x30;
+/// The wake-up interrupt's vector ([`crate::Platform::wake_cpu`]).
+pub(super) const WAKEUP_VECTOR: u8 = 0x31;
 /// The local APIC's spurious-interrupt vector (its low four bits must be 1s on old CPUs).
 pub(super) const APIC_SPURIOUS_VECTOR: u8 = 0xff;
 
@@ -77,11 +82,56 @@ pub(super) fn send_init_to_others() {
 pub(super) fn send_startup(destination: u8, page: u8) {
     local_apic().send_startup(destination, page);
 }
+/// Sends the wake-up interrupt to the CPU whose local APIC id is `destination`. The send is an
+/// uncached store, which the CPU keeps after the caller's earlier stores (x86 does not reorder
+/// stores), so the woken CPU sees them; the fence keeps the compiler from moving them past it,
+/// as it may move ordinary accesses across volatile ones. It emits no instruction.
+pub(super) fn wake(destination: u8) {
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    local_apic().send_fixed(destination, WAKEUP_VECTOR);
+}
+
+/// Handles the wake-up interrupt.
+pub(super) fn wakeup_interrupt() {
+    local_apic().end_of_interrupt();
+    crate::interrupt::deliver(Interrupt::Wakeup);
+}
+
 /// Measured TSC and APIC timer frequencies in Hz, set by [`init`].
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 static APIC_TIMER_FREQUENCY: AtomicU64 = AtomicU64::new(0);
-/// The deadline the timer is armed for, in TSC ticks.
-static DEADLINE: AtomicU64 = AtomicU64::new(NO_DEADLINE);
+
+/// The deadline this CPU's timer is armed for, in TSC ticks, from its per-CPU block.
+#[inline]
+fn deadline() -> u64 {
+    let deadline: u64;
+    // SAFETY: a CPU arms its timer, and so takes its interrupt, only once its per-CPU block is
+    // set (`set_cpu_local`'s contract), whose HAL part holds the deadline, an aligned
+    // `AtomicU64`, at this offset.
+    unsafe {
+        core::arch::asm!(
+            "mov {}, qword ptr gs:[{offset}]",
+            out(reg) deadline,
+            offset = const TIMER_DEADLINE_OFFSET,
+            options(nostack, readonly, preserves_flags),
+        );
+    }
+    deadline
+}
+
+/// Sets the deadline [`deadline`] returns.
+#[inline]
+fn set_deadline_word(deadline: u64) {
+    // SAFETY: as in `deadline`; the word is the HAL's alone, and written by its own CPU only.
+    unsafe {
+        core::arch::asm!(
+            "mov qword ptr gs:[{offset}], {}",
+            in(reg) deadline,
+            offset = const TIMER_DEADLINE_OFFSET,
+            options(nostack, preserves_flags),
+        );
+    }
+}
 
 fn legacy_pic() -> LegacyPic<PortIo> {
     // SAFETY: ports 0x20-0x21 are the PC's primary 8259; only this module drives it.
@@ -170,6 +220,14 @@ pub(super) extern "C" fn init() {
     apic.configure_one_shot_timer(TIMER_VECTOR, false);
 }
 
+/// Enables this CPU's local APIC and sets its timer up, stopped, as [`init`] does for the boot
+/// CPU (D41). Called by each secondary CPU before it runs the kernel's code.
+pub(super) fn init_this_cpu() {
+    let apic = local_apic();
+    apic.enable(APIC_SPURIOUS_VECTOR);
+    apic.configure_one_shot_timer(TIMER_VECTOR, false);
+}
+
 /// The TSC.
 #[inline]
 pub(super) fn now() -> u64 {
@@ -189,7 +247,7 @@ pub(super) fn frequency() -> u64 {
 }
 
 pub(super) fn set_deadline(deadline: u64) {
-    DEADLINE.store(deadline, Ordering::Relaxed);
+    set_deadline_word(deadline);
     arm(deadline);
 }
 
@@ -208,7 +266,7 @@ fn arm(deadline: u64) {
 /// Handles the APIC timer's interrupt.
 pub(super) fn interrupt() {
     local_apic().end_of_interrupt();
-    let deadline = DEADLINE.load(Ordering::Relaxed);
+    let deadline = deadline();
     if deadline == NO_DEADLINE {
         return;
     }
@@ -216,7 +274,7 @@ pub(super) fn interrupt() {
         arm(deadline);
         return;
     }
-    DEADLINE.store(NO_DEADLINE, Ordering::Relaxed);
+    set_deadline_word(NO_DEADLINE);
     crate::interrupt::deliver(Interrupt::Timer);
 }
 

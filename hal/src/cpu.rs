@@ -13,7 +13,17 @@
 //!
 //! Each CPU has a per-CPU block pointer ([`crate::Platform::set_cpu_local`]) in a register only
 //! the kernel uses: `TPIDR_EL1` on AArch64, `tp` on RISC-V (while in the kernel; `sscratch`
-//! stays free for the user-mode trap entry), the GS base on x86_64.
+//! stays free for the user-mode trap entry), the GS base on x86_64. The block starts with its own
+//! address, then the HAL's part ([`HalCpuLocal`], at [`HAL_CPU_LOCAL_OFFSET`]); the rest is the
+//! kernel's.
+//!
+//! Each CPU sets its own interrupt controller and timer up before it runs the kernel's code
+//! (D41): the boot CPU's entry code before `kernel_main`, a secondary CPU's entry code before
+//! [`CpuStart::entry`]. From then on its timer works ([`crate::Platform::set_timer_deadline`]
+//! arms this CPU's) and other CPUs can wake it ([`crate::Platform::wake_cpu`]).
+
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicU64;
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
 /// has called [`CpuStart::entry`]; the architecture's entry code reads it through the boot
@@ -46,3 +56,41 @@ pub enum StartCpuError {
     /// The firmware or the machine refused for another reason, with its error code.
     Refused(i64),
 }
+
+/// The part of every per-CPU block the HAL keeps for itself, right after the block's own address
+/// ([`crate::Platform::set_cpu_local`]). The kernel embeds one, made with [`HalCpuLocal::new`],
+/// and never touches it.
+#[derive(Debug)]
+#[repr(C)]
+pub struct HalCpuLocal {
+    /// x86_64: the deadline this CPU's local APIC timer is armed for, in TSC ticks; `u64::MAX`
+    /// for none. Reached by offset only, GS-relative. The other architectures keep nothing, so
+    /// their blocks do not pay for it (D24).
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    timer_deadline: AtomicU64,
+}
+
+impl HalCpuLocal {
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(target_arch = "x86_64")]
+            timer_deadline: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl Default for HalCpuLocal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Where a per-CPU block holds its [`HalCpuLocal`]: right after the block's own address.
+pub const HAL_CPU_LOCAL_OFFSET: usize = 8;
+
+/// Where the x86_64 timer's deadline is in a per-CPU block.
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub(crate) const TIMER_DEADLINE_OFFSET: usize =
+    HAL_CPU_LOCAL_OFFSET + core::mem::offset_of!(HalCpuLocal, timer_deadline);

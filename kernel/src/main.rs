@@ -78,7 +78,7 @@ mod bare_metal {
     /// interrupted code.
     #[unsafe(no_mangle)]
     fn kernel_interrupt(interrupt: Interrupt) {
-        eggos_kernel::interrupt::handle(interrupt);
+        eggos_kernel::interrupt::handle::<CurrentPlatform>(interrupt);
     }
 
     /// With `qemu-test`, power off so the test runner sees the result; otherwise stay up.

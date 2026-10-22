@@ -161,19 +161,21 @@ fn irq(pc: u64) {
         timer::disarm();
     }
     timer::end_of_interrupt(interrupt);
-    if id == timer::VIRTUAL_TIMER_INTERRUPT {
+    match id {
         // A stale interrupt for a deadline since moved later is dropped: never early.
-        if timer_fired {
-            crate::interrupt::deliver(Interrupt::Timer);
+        timer::VIRTUAL_TIMER_INTERRUPT => {
+            if timer_fired {
+                crate::interrupt::deliver(Interrupt::Timer);
+            }
         }
-    } else {
-        deliver(&Exception {
+        timer::WAKEUP_SGI => crate::interrupt::deliver(Interrupt::Wakeup),
+        _ => deliver(&Exception {
             kind: ExceptionKind::Interrupt,
             name: "unexpected IRQ",
             code: id.into(),
             pc,
             address: None,
-        });
+        }),
     }
 }
 

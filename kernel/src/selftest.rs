@@ -29,13 +29,15 @@ const QEMU_CPUS: usize = 4;
 
 /// How long the started CPUs have to report in.
 const CPU_START_TIMEOUT_MS: u64 = 1000;
+/// How long a CPU has to take a wake-up interrupt.
+const WAKEUP_TIMEOUT_MS: u64 = 1000;
 
 /// A self-test: a name and a check of `context` (for the boot self-tests, the kernel's
 /// [`Memory`]) returning `Err(reason)` on failure.
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 11] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 12] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -66,6 +68,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 11] {
             "secondary_cpus_start_and_report_in",
             secondary_cpus_start_and_report_in::<P>,
         ),
+        ("cpus_take_their_own_interrupts", |_| {
+            cpus_take_their_own_interrupts::<P>()
+        }),
     ]
 }
 
@@ -144,13 +149,13 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
     if frequency < 1000 {
         return Err("the clock runs slower than 1 kHz");
     }
-    let before = interrupt::timer_interrupts();
+    let before = interrupt::timer_interrupts::<P>();
     let start = P::clock_ticks();
     let deadline = start + frequency / 1000;
     let give_up = start + frequency;
     P::set_timer_deadline(deadline);
     // Greater rather than exactly one more, as in `breakpoint_resumes`.
-    while interrupt::timer_interrupts() <= before {
+    while interrupt::timer_interrupts::<P>() <= before {
         if P::clock_ticks() > give_up {
             return Err("no timer interrupt within 1 s of its deadline");
         }
@@ -564,7 +569,7 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     let (Ok(first), Ok(second)) = (first, second) else {
         return Err("could not start two threads");
     };
-    let ticks_before = interrupt::timer_interrupts();
+    let ticks_before = interrupt::timer_interrupts::<P>();
     thread::enable_preemption::<P>();
     first.join::<P>();
     second.join::<P>();
@@ -575,7 +580,7 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     if !SECOND_RAN.load(Ordering::Relaxed) {
         return Err("the second thread never ran");
     }
-    if interrupt::timer_interrupts() == ticks_before {
+    if interrupt::timer_interrupts::<P>() == ticks_before {
         return Err("a thread was preempted without a timer tick");
     }
     Ok(())
@@ -628,14 +633,14 @@ fn threads_sleep_wait_and_run_tickless<P: Platform>() -> Result<(), &'static str
     }
     waiter.join::<P>();
 
-    let interrupts_before = interrupt::timer_interrupts();
+    let interrupts_before = interrupt::timer_interrupts::<P>();
     thread::enable_preemption::<P>();
     let until = P::clock_ticks() + 3 * thread::TIME_SLICE_MS * millisecond;
     while P::clock_ticks() < until {
         thread::preemption_point::<P>();
     }
     thread::disable_preemption::<P>();
-    if interrupt::timer_interrupts() != interrupts_before {
+    if interrupt::timer_interrupts::<P>() != interrupts_before {
         return Err("a timer tick came while only one thread was runnable");
     }
     Ok(())
@@ -674,6 +679,41 @@ fn secondary_cpus_start_and_report_in<P: Platform>(
     #[cfg(all(feature = "qemu-test", not(feature = "qemu-bench")))]
     if cpus.len() != QEMU_CPUS {
         return Err("the firmware does not list every CPU QEMU runs");
+    }
+    Ok(())
+}
+
+/// Every CPU takes its own interrupts (D41): each secondary CPU took its own timer interrupt
+/// before it reported in, and takes the wake-up interrupt the boot CPU sends it, counted in its
+/// own block and in no other CPU's. Fails if a CPU's interrupt controller or timer is not set up,
+/// or a wake-up goes to the wrong CPU (both checked by breaking them). Runs once the CPUs have
+/// started; on one CPU (the benchmarks) it has nothing to check, and the QEMU boot tests' four
+/// CPUs are checked by `secondary_cpus_start_and_report_in`.
+fn cpus_take_their_own_interrupts<P: Platform>() -> Result<(), &'static str> {
+    let cpus = cpu::CPUS.all();
+    let Some((boot, secondaries)) = cpus.split_first() else {
+        return Err("the CPUs have not started");
+    };
+    if secondaries.iter().any(|cpu| cpu.timer_interrupts() == 0) {
+        return Err("a CPU reported in without taking its timer interrupt");
+    }
+    let wakeups = |cpus: &[&cpu::Cpu]| cpus.iter().map(|cpu| cpu.wakeups()).sum::<u64>();
+    let boot_before = boot.wakeups();
+    for (index, &cpu) in secondaries.iter().enumerate() {
+        let before = cpu.wakeups();
+        let others_before = wakeups(&secondaries[..index]) + wakeups(&secondaries[index + 1..]);
+        cpu::wake::<P>(cpu);
+        let deadline = P::clock_ticks() + WAKEUP_TIMEOUT_MS * (P::clock_frequency() / 1000);
+        while cpu.wakeups() == before && P::clock_ticks() < deadline {
+            core::hint::spin_loop();
+        }
+        if cpu.wakeups() != before + 1 {
+            return Err("a CPU did not take the wake-up interrupt sent to it");
+        }
+        let others = wakeups(&secondaries[..index]) + wakeups(&secondaries[index + 1..]);
+        if others != others_before || boot.wakeups() != boot_before {
+            return Err("a wake-up interrupt reached a CPU it was not sent to");
+        }
     }
     Ok(())
 }
@@ -788,6 +828,9 @@ mod tests {
         fn cpu_local() -> usize {
             unreachable!("not used in tests")
         }
+        fn wake_cpu(_cpu: u64) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]
@@ -872,10 +915,15 @@ mod tests {
         ) -> Result<(), eggos_hal::cpu::StartCpuError> {
             unreachable!("not used in tests")
         }
-        unsafe fn set_cpu_local(_block: usize) {
-            unreachable!("not used in tests")
+        unsafe fn set_cpu_local(block: usize) {
+            // SAFETY: the caller's guarantees are the test platform's.
+            unsafe { crate::tests::TestPlatform::set_cpu_local(block) }
         }
         fn cpu_local() -> usize {
+            // The test machine's one CPU.
+            crate::tests::TestPlatform::cpu_local()
+        }
+        fn wake_cpu(_cpu: u64) {
             unreachable!("not used in tests")
         }
     }

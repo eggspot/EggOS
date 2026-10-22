@@ -41,15 +41,15 @@
 //! the previous one's context is saved, nothing else can take the scheduler, on this CPU or
 //! another.
 
+use crate::cpu;
 use crate::heap::{FrameSource, GlobalFrames};
-use crate::interrupt;
 use crate::sync::{SpinLock, SpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
@@ -64,12 +64,6 @@ const STACK_CANARY: u64 = 0x4567_4753_7461_636b;
 
 /// How long a thread runs, while preemption is on, before it lets the next one run.
 pub const TIME_SLICE_MS: u64 = 10;
-
-/// [`interrupt::timer_interrupts`] when the scheduler last looked at the timer: a different
-/// count means the timer has fired since, so a sleeper may be due or the slice over. Per-CPU
-/// with SMP. Written only with the scheduler's lock held, read without it by the preemption
-/// point's fast path.
-static TIMER_INTERRUPTS_SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// Identifies a thread for as long as the kernel runs; never reused. The boot thread is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -576,18 +570,17 @@ impl Scheduler {
     /// the timer has not fired.
     #[inline]
     fn timer_events<P: Platform>(&mut self) -> bool {
-        let seen = interrupt::timer_interrupts();
-        if seen == TIMER_INTERRUPTS_SEEN.load(Ordering::Relaxed) {
+        if cpu::local_timer_interrupts_unseen::<P>() == 0 {
             return false;
         }
-        self.timer_fired::<P>(seen)
+        self.timer_fired::<P>()
     }
 
-    /// [`Self::timer_events`]' slow path; `seen` is the timer interrupt count now.
+    /// [`Self::timer_events`]' slow path.
     #[cold]
     #[inline(never)]
-    fn timer_fired<P: Platform>(&mut self, seen: u64) -> bool {
-        TIMER_INTERRUPTS_SEEN.store(seen, Ordering::Relaxed);
+    fn timer_fired<P: Platform>(&mut self) -> bool {
+        cpu::current::<P>().see_timer_interrupts();
         // The timer fires once per arming, so whatever was armed has fired.
         self.armed = u64::MAX;
         let now = P::clock_ticks();
@@ -746,7 +739,7 @@ pub fn disable_preemption<P: Platform>() {
 #[inline]
 pub fn preemption_point<P: Platform>() {
     P::interrupt_window();
-    if interrupt::timer_interrupts() != TIMER_INTERRUPTS_SEEN.load(Ordering::Relaxed) {
+    if cpu::local_timer_interrupts_unseen::<P>() != 0 {
         preemption_point_timer_fired::<P>();
     }
 }
@@ -1027,6 +1020,7 @@ mod tests {
     use crate::sync::SpinLock;
     use crate::tests::TestPlatform as P;
     use alloc::vec::Vec;
+    use core::sync::atomic::AtomicU64;
 
     fn free_frames() -> u64 {
         crate::memory::FRAMES
@@ -1123,7 +1117,7 @@ mod tests {
         disable_preemption::<P>();
         let other = spawn::<P, _>(|| RAN.store(true, Ordering::Relaxed)).unwrap();
         // A timer interrupt for someone else ends no slice while preemption is off.
-        crate::interrupt::handle(eggos_hal::Interrupt::Timer);
+        crate::interrupt::handle::<P>(eggos_hal::Interrupt::Timer);
         preemption_point::<P>();
         preemption_point::<P>();
         assert!(!RAN.load(Ordering::Relaxed));

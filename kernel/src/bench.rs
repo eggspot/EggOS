@@ -8,7 +8,7 @@
 
 use crate::HEAP;
 use crate::memory::{FRAMES, FrameAllocator};
-use crate::{interrupt, thread};
+use crate::{cpu, thread};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
@@ -107,10 +107,14 @@ fn timer_arm<P: Platform>(n: u64) {
 /// Arming the timer for a deadline already passed and sleeping until its interrupt has been
 /// handled: interrupt entry, acknowledgement, delivery to the kernel and the return (D26).
 fn timer_interrupt_round_trip<P: Platform>(n: u64) {
+    // This CPU's block, found once, so polling its count costs what polling a global did. The
+    // count of interrupts the scheduler has not seen: nothing here runs the scheduler, so it
+    // only grows.
+    let this = cpu::current::<P>();
     for _ in 0..n {
-        let before = interrupt::timer_interrupts();
+        let before = this.timer_interrupts_unseen();
         P::set_timer_deadline(0);
-        while interrupt::timer_interrupts() == before {
+        while this.timer_interrupts_unseen() == before {
             P::wait_for_interrupt();
         }
     }
@@ -253,6 +257,7 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interrupt;
     use core::sync::atomic::{AtomicU64, Ordering};
     use eggos_hal::{ExitStatus, Interrupt};
 
@@ -283,7 +288,7 @@ mod tests {
         }
         fn set_timer_deadline(_deadline: u64) {}
         fn wait_for_interrupt() {
-            interrupt::handle(Interrupt::Timer);
+            interrupt::handle::<Self>(Interrupt::Timer);
         }
         fn interrupt_window() {}
         fn memory_map() -> MemoryMap {
@@ -329,10 +334,15 @@ mod tests {
         ) -> Result<(), eggos_hal::cpu::StartCpuError> {
             unreachable!("not used in tests")
         }
-        unsafe fn set_cpu_local(_block: usize) {
-            unreachable!("not used in tests")
+        unsafe fn set_cpu_local(block: usize) {
+            // SAFETY: the caller's guarantees are the test platform's.
+            unsafe { crate::tests::TestPlatform::set_cpu_local(block) }
         }
         fn cpu_local() -> usize {
+            // The test machine's one CPU.
+            crate::tests::TestPlatform::cpu_local()
+        }
+        fn wake_cpu(_cpu: u64) {
             unreachable!("not used in tests")
         }
     }
@@ -371,8 +381,11 @@ mod tests {
     #[test]
     fn timer_interrupt_round_trip_waits_for_each_interrupt() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
-        let before = interrupt::timer_interrupts();
+        let before = interrupt::timer_interrupts::<CountingPlatform>();
         timer_interrupt_round_trip::<CountingPlatform>(5);
-        assert_eq!(interrupt::timer_interrupts(), before + 5);
+        assert_eq!(
+            interrupt::timer_interrupts::<CountingPlatform>(),
+            before + 5
+        );
     }
 }

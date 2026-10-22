@@ -252,12 +252,14 @@ const PSCI_ALREADY_ON: i64 = -4;
 const PSCI_ON_PENDING: i64 = -5;
 
 /// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
-/// with the boot page tables: switches to the kernel's page tables, then calls the entry.
+/// with the boot page tables: switches to the kernel's page tables, sets this CPU's timer and
+/// interrupts up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
     // interrupts are masked (PSCI CPU_ON starts the CPU with them masked).
     unsafe { Aarch64::activate_page_tables(&start.page_table_roots) };
+    timer::init_this_cpu();
     (start.entry)(start.argument)
 }
 
@@ -520,5 +522,9 @@ impl Platform for Aarch64 {
         // SAFETY: reading TPIDR_EL1 has no side effects.
         unsafe { core::arch::asm!("mrs {}, tpidr_el1", out(reg) block, options(nomem, nostack)) };
         block
+    }
+
+    fn wake_cpu(cpu: u64) {
+        timer::wake(cpu);
     }
 }

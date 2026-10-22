@@ -1,6 +1,6 @@
 //! x86 local APIC in xAPIC mode, memory-mapped (Intel SDM vol. 3A, chapter 11): each CPU's
-//! interrupt controller, its timer, and the inter-processor interrupts that start the other
-//! CPUs.
+//! interrupt controller, its timer, and the inter-processor interrupts that start and wake the
+//! other CPUs.
 
 use crate::io::RegisterIo;
 
@@ -115,6 +115,16 @@ impl<R: RegisterIo> LocalApic<R> {
             .write32(ICR_LOW, ICR_ASSERT | ICR_STARTUP | u32::from(page));
     }
 
+    /// Sends the interrupt `vector` to the CPU whose local APIC id is `destination` (fixed
+    /// delivery, physical destination mode).
+    pub fn send_fixed(&self, destination: u8, vector: u8) {
+        self.wait_until_sent();
+        self.regs
+            .write32(ICR_HIGH, u32::from(destination) << ICR_DESTINATION_SHIFT);
+        // Delivery mode (bits 8-10) 000: fixed.
+        self.regs.write32(ICR_LOW, ICR_ASSERT | u32::from(vector));
+    }
+
     /// Waits until the last interrupt this CPU sent was accepted, so the ICR can be written.
     fn wait_until_sent(&self) {
         while self.regs.read32(ICR_LOW) & ICR_SEND_PENDING != 0 {
@@ -172,6 +182,18 @@ mod tests {
         assert_eq!(
             apic.regs.writes(),
             vec![(ICR_LOW, 0xc_4500), (ICR_HIGH, 7 << 24), (ICR_LOW, 0x4608),]
+        );
+    }
+
+    #[test]
+    fn a_fixed_interrupt_names_its_destination_then_its_vector() {
+        let apic = LocalApic::new(FakeRegs::default());
+        apic.regs.script_reads(ICR_LOW, &[ICR_SEND_PENDING, 0]);
+        apic.send_fixed(2, 0x31);
+        assert_eq!(apic.regs.reads_of(ICR_LOW), 2);
+        assert_eq!(
+            apic.regs.writes(),
+            vec![(ICR_HIGH, 2 << 24), (ICR_LOW, 0x4031)]
         );
     }
 

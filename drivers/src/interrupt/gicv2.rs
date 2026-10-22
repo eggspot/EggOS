@@ -13,6 +13,11 @@ const GICD_CTLR: usize = 0x000;
 const GICD_ISENABLER: usize = 0x100;
 /// Interrupt priority registers, one byte per interrupt ID.
 const GICD_IPRIORITYR: usize = 0x400;
+/// Interrupt processor targets registers, one byte per interrupt ID. The bytes of IDs 0-31 are
+/// banked and read-only: each names the reading CPU's own interface.
+const GICD_ITARGETSR: usize = 0x800;
+/// Software generated interrupt register: writing it sends an SGI.
+const GICD_SGIR: usize = 0xf00;
 
 /// CPU interface control register.
 const GICC_CTLR: usize = 0x000;
@@ -34,6 +39,10 @@ const IAR_INTERRUPT_ID: u32 = 0x3ff;
 const FIRST_SPECIAL_ID: u32 = 1020;
 /// The architecture's largest interrupt ID.
 const MAX_INTERRUPT_ID: u32 = 1019;
+/// The largest SGI ID.
+const MAX_SGI_ID: u32 = 15;
+/// `GICD_SGIR` bits 23:16: the CPU target list.
+const SGIR_TARGET_LIST_SHIFT: u32 = 16;
 
 /// Size of the distributor's register block in bytes.
 pub const DISTRIBUTOR_BLOCK_SIZE: usize = 0x1000;
@@ -80,6 +89,22 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
         // Writing 0 bits to ISENABLER has no effect, so no read-modify-write is needed.
         self.regs
             .write32(GICD_ISENABLER + id / 32 * 4, 1 << (id % 32));
+    }
+
+    /// The calling CPU's interface, as a target list with one bit set (bit n for CPU interface
+    /// n), for [`Self::send_sgi`]. 0 on a uniprocessor GIC, which has no targets to name.
+    pub fn this_cpu_target(&self) -> u8 {
+        // SGI 0's byte; any byte of IDs 0-31 names this CPU's interface.
+        self.regs.read8(GICD_ITARGETSR)
+    }
+
+    /// Sends SGI `id` to the CPU interfaces in `targets` (a target list from
+    /// [`Self::this_cpu_target`] on each target CPU).
+    pub fn send_sgi(&self, id: u32, targets: u8) {
+        assert!(id <= MAX_SGI_ID, "GIC SGI ID {id} out of range");
+        // Target list filter (bits 25:24) 0: the CPUs in the list.
+        self.regs
+            .write32(GICD_SGIR, u32::from(targets) << SGIR_TARGET_LIST_SHIFT | id);
     }
 }
 
@@ -143,6 +168,26 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn special_interrupt_ids_cannot_be_enabled() {
         Gicv2Distributor::new(FakeRegs::default()).enable_interrupt(1020, 0);
+    }
+
+    #[test]
+    fn an_sgi_names_its_targets_and_id() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.send_sgi(1, 0b0100);
+        assert_eq!(gicd.regs.writes(), vec![(0xf00, 0b0100 << 16 | 1)]);
+    }
+
+    #[test]
+    fn this_cpus_target_is_read_from_the_banked_target_byte() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.regs.script_reads(GICD_ITARGETSR, &[0b1000]);
+        assert_eq!(gicd.this_cpu_target(), 0b1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn only_sgi_ids_can_be_sent() {
+        Gicv2Distributor::new(FakeRegs::default()).send_sgi(16, 1);
     }
 
     #[test]

@@ -91,7 +91,7 @@ fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core:
 pub(crate) mod tests {
     use super::*;
 
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use eggos_hal::{Exception, ExceptionKind, Interrupt};
 
     /// A platform whose breakpoint and timer go straight to the kernel's handlers, as the
@@ -162,7 +162,7 @@ pub(crate) mod tests {
             let deadline = DEADLINE.swap(u64::MAX, Ordering::Relaxed);
             if deadline != u64::MAX {
                 CLOCK.fetch_max(deadline, Ordering::Relaxed);
-                interrupt::handle(Interrupt::Timer);
+                interrupt::handle::<Self>(Interrupt::Timer);
             }
         }
         fn interrupt_window() {
@@ -171,7 +171,7 @@ pub(crate) mod tests {
             let deadline = DEADLINE.load(Ordering::Relaxed);
             if deadline != u64::MAX && now >= deadline {
                 DEADLINE.store(u64::MAX, Ordering::Relaxed);
-                interrupt::handle(Interrupt::Timer);
+                interrupt::handle::<Self>(Interrupt::Timer);
             }
         }
         fn memory_map() -> eggos_hal::MemoryMap {
@@ -244,17 +244,24 @@ pub(crate) mod tests {
             unreachable!("the test platform has one CPU")
         }
         unsafe fn set_cpu_local(block: usize) {
-            CPU_LOCAL.set(block);
+            CPU_LOCAL.store(block, Ordering::Relaxed);
         }
         fn cpu_local() -> usize {
-            CPU_LOCAL.get()
+            // The boot CPU's block from the first use on, as on a machine that booted.
+            if CPU_LOCAL.load(Ordering::Relaxed) == 0 {
+                cpu::init_boot_cpu::<Self>();
+            }
+            CPU_LOCAL.load(Ordering::Relaxed)
+        }
+        fn wake_cpu(_cpu: u64) {
+            unreachable!("the test platform has one CPU")
         }
     }
 
-    std::thread_local! {
-        /// The test platform's per-CPU register: one per host thread, each test's "CPU".
-        static CPU_LOCAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
+    /// The test platform's per-CPU register. The test machine has one CPU, which the host
+    /// threads standing in for kernel threads take turns on (see `thread::host`), so they all
+    /// share it.
+    static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn boot_prints_banner_with_version_and_arch() {

@@ -933,3 +933,66 @@ run queues) is the next step.
   `enable-method` read from the device tree, and a full known `SCTLR_EL1` value instead of
   ORing bits into the reset value (real hardware, M13); starting the CPUs in `boot` itself,
   with the self-test only checking them, once secondaries run threads.
+
+## D41 Every CPU takes its own interrupts: per-CPU timer and interrupt controller setup, wake-up interrupts between CPUs, per-CPU interrupt counts — Decided by the build loop (engineering); supersedes D40's parking with interrupts masked
+- **Why now.** Per-CPU run queues (M4) need two things first: each CPU's own timer (for its
+  slices and sleepers) and a way to wake an idle CPU when a thread becomes ready on it. D40
+  left the secondaries parked with interrupts masked; this step makes them take interrupts,
+  as its own reviewable change, before the scheduler goes per-CPU.
+- **Setup.** Each CPU sets its own interrupt controller and timer up before it runs the kernel's
+  code: the boot CPU's entry code as before, a secondary CPU's entry code right after it
+  switches to the kernel's page tables, before `CpuStart::entry`. On aarch64: the timer PPI and
+  the wake-up SGI enabled in the GICv2 distributor's banked registers, and the CPU interface
+  on; on riscv64: `sie.STIE` and `sie.SSIE`; on x86_64: the local APIC enabled and its timer in
+  one-shot mode. The x86 TSC and APIC timer frequencies are measured once, on the boot CPU, and
+  shared (one machine's CPUs run them at one rate; the invariant-TSC check stays a follow-up).
+- **Wake-up interrupt.** `Platform::wake_cpu(hardware_id)` raises `Interrupt::Wakeup` on another
+  CPU, which carries nothing: the kernel looks at its own shared state to see why. GICv2 SGI 0
+  on aarch64 (the target named by the CPU interface number each CPU records for its MPIDR
+  affinity as it sets up, read from its banked `GICD_ITARGETSR0`; `dsb ishst` first so the
+  target sees earlier writes), the SBI IPI extension on riscv64 (`fence rw, rw` first; the
+  handler clears `sip.SSIP` before the kernel looks), a fixed IPI on vector 0x31 through the
+  local APIC's ICR on x86_64 (an uncached store, ordered after earlier stores).
+- **Per-CPU state.** The per-CPU block now starts with its own address, then a part the HAL
+  owns (`hal::cpu::HalCpuLocal`, at offset 8), then the kernel's. x86 keeps its timer's
+  deadline there, read and written GS-relative in one instruction (it was a global). The
+  kernel counts interrupts in the CPU's block instead of a global: wake-ups, and timer
+  interrupts split into those the scheduler has not seen yet and those it has.
+- **Hot paths stay as cheap as globals.** `Platform::cpu_local_u64::<OFFSET>()` reads a word of
+  this CPU's block in one load where the architecture allows: `gs:[OFFSET]` on x86_64,
+  `OFFSET(tp)` on riscv64, `mrs` plus a load on aarch64. The preemption point's fast path is
+  now one load and a branch on "timer interrupts not yet seen" (it compared two global
+  counters), which makes it one instruction cheaper on every architecture; the scheduler
+  moves them to "seen" when it looks. The register is read anew at every use (its asm is not
+  `pure`), so the compiler never carries one CPU's block across a context switch that may
+  later move the thread to another CPU. Trap dispatch checks the timer first, then skips the
+  rarer interrupts' checks for exceptions, so adding an interrupt made no path slower.
+- **Testing.** A secondary CPU reports in only after it takes its own timer interrupt (armed for
+  now), so a CPU whose timer or interrupt controller is not set up never reports in. The boot
+  self-test `cpus_take_their_own_interrupts` checks that every secondary took its timer
+  interrupt, and wakes each one in turn: it must take exactly one wake-up within a second, and
+  no other CPU (the boot CPU included) may count one. It failed as it should when a secondary
+  skipped its setup (aarch64) and when wake-ups went to the wrong CPU (x86_64). Host unit tests
+  cover the GIC SGI and target registers, the local APIC's fixed IPI, and per-CPU counting.
+- **Benchmarks.** Faster: the preemption point (9→8 on aarch64 and x86_64, 7→6 on riscv64),
+  yield and wait/wake round trips (one preemption-point-style check each), breakpoint dispatch
+  on riscv64 and x86_64. Unchanged within the gate: the timer interrupt round trip (its
+  benchmark now finds its CPU's block once, as it found the global's address once before);
+  riscv64's SBI-bound round trip measured 670 on `main` and 673 here with this machine's
+  OpenSBI 1.7.
+- **Cost (D24).** 24 bytes more per CPU block (three counters), 32 on x86_64 (the timer
+  deadline, which was a global); 64 bytes of GIC target
+  table on aarch64; no boot time beyond one timer interrupt per secondary CPU.
+- **Review fixes.** x86's `wake` puts a compiler fence before the ICR write (no instruction):
+  the hardware keeps the uncached store after earlier stores, but the compiler may move
+  ordinary accesses across volatile ones. aarch64 and riscv64 already had barriers in `asm!`
+  without `nomem`, which the compiler does not move accesses across. The HAL's per-CPU part is
+  empty except on x86_64. Another CPU reads a CPU's timer count seen-then-unseen, so it can
+  lag but never runs ahead.
+- **Follow-ups (roadmap).** Per-CPU run queues and idle threads using these wake-ups; a
+  benchmark of the wake-up round trip once the benchmarks run on more than one CPU (they run
+  on one: with `-icount`, QEMU runs every CPU in one host thread); the boot CPU woken by a
+  secondary (same setup path, not yet exercised); probing for the SBI IPI extension instead of
+  assuming SBI v0.2 or later (a debug check today); a visible error for a CPU beyond GICv2's
+  8 interfaces; x2APIC ids above 254; GICv3
+  (`ICC_SGI1R_EL1`), with more than 8 CPUs; the invariant-TSC check.
