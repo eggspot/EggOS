@@ -690,7 +690,7 @@ impl Platform for X86_64 {
         // is first entered through `iretq`, which serializes: nothing to do.
     }
 
-    fn fault_writes(code: u64) -> bool {
+    fn data_fault_writes(code: u64) -> bool {
         exception::page_fault_writes(code)
     }
 

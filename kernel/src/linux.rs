@@ -362,6 +362,71 @@ mod tests {
     }
 
     #[test]
+    fn page_faults_in_regions_resume_and_others_end_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let region = 0x60_0000;
+        let fault = |process: &Arc<Process<P>>, address, code| {
+            let mut context = called(1000, [0; 6]);
+            let exception = Exception {
+                kind: ExceptionKind::DataFault,
+                name: "test page fault",
+                code,
+                pc: 0x40_0000,
+                address: Some(address),
+            };
+            handle(process, &mut context, UserExit::Exception(exception))
+        };
+        let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
+        let with_region = |pages: u64| {
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            process
+                .add_region(region, region + pages * 4096, Attributes::USER_READ_ONLY)
+                .unwrap();
+            Arc::new(process)
+        };
+        // A read in the region maps the page and resumes; a write there is SIGSEGV.
+        let process = with_region(1);
+        assert_eq!(fault(&process, region + 8, 0), ControlFlow::Continue(()));
+        assert!(process.address_space().translate(region).is_some());
+        assert_eq!(process.exit_status(), None);
+        assert_eq!(
+            fault(&process, region + 8, crate::tests::FAULT_WRITE),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // Outside every region: SIGSEGV.
+        let process = with_region(1);
+        assert_eq!(fault(&process, region + 4096, 0), ControlFlow::Break(()));
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // No frame left for the page: SIGKILL, as Linux's out-of-memory killer.
+        let pages = free() + 1;
+        let process = with_region(pages);
+        let mut page = 0;
+        while fault(&process, region + page * 4096, 0) == ControlFlow::Continue(()) {
+            page += 1;
+            assert!(page < pages, "the frames never ran out");
+        }
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGKILL
+            })
+        );
+    }
+
+    #[test]
     fn exceptions_kill_the_process_with_linux_signals_and_interrupts_resume() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();

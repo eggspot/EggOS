@@ -545,7 +545,7 @@ mod tests {
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
-        fn fault_writes(code: u64) -> bool {
+        fn data_fault_writes(code: u64) -> bool {
             code & crate::tests::FAULT_WRITE != 0
         }
         unsafe fn prepare_thread(
@@ -682,7 +682,8 @@ mod tests {
         assert_eq!(free(), before);
         linux_exec_load::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
-        linux_page_fault::<CountingPlatform>(&mut memory, PAGE_FAULT_CHUNK + 5);
+        // Fewer pages than the test allocator has frames: each is mapped, none runs out.
+        linux_page_fault::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
     }
 

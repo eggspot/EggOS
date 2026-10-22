@@ -217,7 +217,7 @@ pub trait Platform: 'static {
     /// read-modify-write). The kernel asks only when it resolves a page fault in a program
     /// (demand paging, D52), so the trap path decodes nothing more. Meaningless for any other
     /// kind.
-    fn fault_writes(code: u64) -> bool;
+    fn data_fault_writes(code: u64) -> bool;
 
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls

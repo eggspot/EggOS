@@ -517,7 +517,7 @@ impl Platform for Aarch64 {
         unsafe { core::arch::asm!("dsb ish", "ic ialluis", "dsb ish", "isb", options(nostack)) };
     }
 
-    fn fault_writes(code: u64) -> bool {
+    fn data_fault_writes(code: u64) -> bool {
         exception::data_abort_writes(code)
     }
 

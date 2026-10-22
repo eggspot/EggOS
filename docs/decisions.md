@@ -1641,7 +1641,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   of its own (made visible to instruction fetch if executable) and the program runs the access
   again; anywhere else the Linux layer ends the process with `SIGSEGV`, and with `SIGKILL` when
   there was no frame (as Linux's out-of-memory killer would). The access comes from the new HAL
-  call `Platform::fault_writes(code)`, which decodes the raw cause only when the kernel asks
+  call `Platform::data_fault_writes(code)`, which decodes the raw cause only when the kernel asks
   (`ESR_EL1.ISS.WnR` without `CM`, `scause` 7 or 15, x86 error-code bit 1), so the trap path
   decodes nothing more (a field filled at every trap cost the kernel's breakpoint round trip an
   instruction).
@@ -1678,7 +1678,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   user pages, one page at a time up to `paging::USER_PAGES_DROPPED_ONE_BY_ONE` (32; Linux draws
   the line at 33 on x86) and all user translations beyond: `dsb ishst; tlbi vae1; dsb nsh; isb`
   or `tlbi aside1` on AArch64, `sfence.vma va, zero` or `sfence.vma` on RISC-V, `invlpg` or a
-  CR3 reload on x86_64. `Platform::fault_writes(code)` as above. The test program gains
+  CR3 reload on x86_64. `Platform::data_fault_writes(code)` as above. The test program gains
   `stack_growth`: from its stack pointer's page down, it stores each page's address in the
   page, until it runs off the stack.
 - **Cost (D24).** New benchmark `linux_page_fault`: a store to a page touched for the first

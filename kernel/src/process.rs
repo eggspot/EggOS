@@ -72,7 +72,7 @@ pub enum UnresolvedFault {
 #[inline]
 pub fn page_fault_access<P: Platform>(kind: ExceptionKind, code: u64) -> Option<Access> {
     match kind {
-        ExceptionKind::DataFault if P::fault_writes(code) => Some(Access::Write),
+        ExceptionKind::DataFault if P::data_fault_writes(code) => Some(Access::Write),
         ExceptionKind::DataFault => Some(Access::Read),
         ExceptionKind::InstructionFault => Some(Access::Execute),
         _ => None,

@@ -467,7 +467,7 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
-    fn fault_writes(code: u64) -> bool {
+    fn data_fault_writes(code: u64) -> bool {
         // `scause` of a store/AMO access or page fault.
         matches!(code, 7 | 15)
     }

@@ -508,7 +508,7 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     }
 }
 
-/// [`crate::Platform::fault_writes`]: `ESR_EL1.ISS.WnR` of a data abort, unless a cache
+/// [`crate::Platform::data_fault_writes`]: `ESR_EL1.ISS.WnR` of a data abort, unless a cache
 /// maintenance instruction faulted (it reports `WnR` set though it writes nothing).
 pub(super) fn data_abort_writes(esr: u64) -> bool {
     esr & (ISS_WRITE_NOT_READ | ISS_CACHE_MAINTENANCE) == ISS_WRITE_NOT_READ

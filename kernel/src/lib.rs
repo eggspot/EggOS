@@ -405,7 +405,7 @@ pub(crate) mod tests {
         fn drop_user_translations(start: u64, length: u64) {
             DROPPED_TRANSLATIONS.lock().unwrap().push((start, length));
         }
-        fn fault_writes(code: u64) -> bool {
+        fn data_fault_writes(code: u64) -> bool {
             code & FAULT_WRITE != 0
         }
         unsafe fn prepare_thread(

@@ -566,7 +566,7 @@ fn interrupt(vector: u64) -> bool {
     }
 }
 
-/// [`crate::Platform::fault_writes`]: the page fault's error code says the access wrote.
+/// [`crate::Platform::data_fault_writes`]: the page fault's error code says the access wrote.
 pub(super) fn page_fault_writes(error_code: u64) -> bool {
     error_code & PAGE_FAULT_WRITE != 0
 }

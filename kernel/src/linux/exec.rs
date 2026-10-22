@@ -4,8 +4,8 @@
 //! [`load`] first checks everything (the image, each `LOAD` segment, where the program
 //! headers are, the size of the arguments), then maps the segments into a new process, each
 //! page a frame of its own holding the file's bytes and zero after them (`.bss` included),
-//! maps a stack at the top of user space and lays out on it what a Linux program expects at
-//! its entry: `argc`, the `argv` and `envp` pointer arrays, each ended by a null pointer, and
+//! records the stack's region at the top of user space (its pages are mapped as the program
+//! touches them, D52) and lays out on it what a Linux program expects at its entry: `argc`, the `argv` and `envp` pointer arrays, each ended by a null pointer, and
 //! the auxiliary vector, with the strings they point to above them. It returns the registers
 //! the program starts with: its entry point and that stack, every other register zero (C
 //! libraries take a non-zero `rdx` / `x0` / `a0` as a function to run at exit).
