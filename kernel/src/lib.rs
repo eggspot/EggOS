@@ -16,6 +16,7 @@ pub mod cpu;
 pub mod exception;
 pub mod heap;
 pub mod interrupt;
+pub mod linux;
 pub mod memory;
 pub mod paging;
 pub mod process;
@@ -92,6 +93,7 @@ pub(crate) mod tests {
     use super::*;
 
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use eggos_hal::user::TestProgram;
     use eggos_hal::{Exception, ExceptionKind, Interrupt};
 
     /// A platform whose breakpoint and timer go straight to the kernel's handlers, as the
@@ -111,6 +113,14 @@ pub(crate) mod tests {
     /// Overwrites the record, so a test sees whether the next switch happens.
     pub(crate) fn set_active_root(root: u64) {
         ACTIVE_ROOT.store(root, Ordering::Relaxed);
+    }
+
+    /// What the test platform's console received.
+    static CONSOLE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+    /// What the test platform's console received since the last call, which clears it.
+    pub(crate) fn console_output() -> Vec<u8> {
+        core::mem::take(&mut *CONSOLE.lock().unwrap())
     }
 
     /// The test platform's armed timer deadline; `u64::MAX` if none.
@@ -140,7 +150,9 @@ pub(crate) mod tests {
 
     impl Platform for TestPlatform {
         const ARCH: &'static str = "testarch";
-        fn console_write(_bytes: &[u8]) {}
+        fn console_write(bytes: &[u8]) {
+            CONSOLE.lock().unwrap().extend_from_slice(bytes);
+        }
         fn exit(_status: ExitStatus) -> ! {
             unreachable!("not used in tests")
         }
@@ -242,13 +254,15 @@ pub(crate) mod tests {
             context: &mut eggos_hal::user::UserContext,
         ) -> eggos_hal::user::UserExit {
             // Plays the test program's part: its system calls, its faults and its spin.
-            use eggos_hal::user::{TestProgram, UserExit};
+            use eggos_hal::user::UserExit;
             let program = Self::user_test_program();
             let checks = crate::process::TEST_PROGRAM_ADDRESS + program.checks as u64;
             let null_syscalls = crate::process::TEST_PROGRAM_ADDRESS + program.null_syscalls as u64;
             let spin = crate::process::TEST_PROGRAM_ADDRESS + program.spin as u64;
             let floating_point =
                 crate::process::TEST_PROGRAM_ADDRESS + program.floating_point as u64;
+            let linux_hello = crate::process::TEST_PROGRAM_ADDRESS + program.linux_hello as u64;
+            let linux_hello_line = crate::process::TEST_PROGRAM_ADDRESS + TEST_PROGRAM_LINE as u64;
             match context.pc() {
                 pc if pc == checks => {
                     let arguments = [1, 2, 3, 4, 5, 6];
@@ -282,16 +296,47 @@ pub(crate) mod tests {
                     Self::wait_for_interrupt();
                     UserExit::Interrupt
                 }
+                pc if (linux_hello..linux_hello + 4).contains(&pc) => {
+                    // write(1, the line, its length), write(1, 0, 1), an unknown call, then
+                    // exit_group(0) if each returned what Linux returns.
+                    use crate::linux::{Errno, number};
+                    static WRONG: AtomicU64 = AtomicU64::new(0);
+                    let hello = TestProgram::LINUX_HELLO.len() as u64;
+                    let result = context.syscall_result();
+                    let (number, arguments) = match pc - linux_hello {
+                        0 => (number::WRITE, [1, linux_hello_line, hello, 0, 0, 0]),
+                        1 => {
+                            WRONG.store(u64::from(result != hello), Ordering::Relaxed);
+                            (number::WRITE, [1, 0, 1, 0, 0, 0])
+                        }
+                        2 => {
+                            WRONG.fetch_or(
+                                u64::from(result != Errno::EFAULT.result()),
+                                Ordering::Relaxed,
+                            );
+                            (TestProgram::LINUX_UNKNOWN_SYSCALL, [0; 6])
+                        }
+                        _ => {
+                            let wrong = WRONG.load(Ordering::Relaxed)
+                                | u64::from(result != Errno::ENOSYS.result());
+                            (number::EXIT_GROUP, [wrong, 0, 0, 0, 0, 0])
+                        }
+                    };
+                    context.simulate_syscall(number, arguments, pc + 1);
+                    UserExit::Syscall
+                }
                 _ => unreachable!("the test platform runs only the test program"),
             }
         }
         fn user_test_program() -> eggos_hal::user::TestProgram {
             eggos_hal::user::TestProgram {
-                code: &[0xa5; 24],
+                code: &TEST_PROGRAM_CODE,
                 checks: 0,
                 floating_point: 20,
                 null_syscalls: 12,
                 spin: 16,
+                linux_hello: 21,
+                linux_unknown_syscalls: 26,
             }
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
@@ -332,6 +377,21 @@ pub(crate) mod tests {
             unreachable!("the test platform has one CPU")
         }
     }
+
+    /// Where the test platform's test program keeps the line its Linux program writes.
+    const TEST_PROGRAM_LINE: usize = 28;
+    /// The test platform's test program: no real code (`run_user` plays its part), and the
+    /// line its Linux program writes.
+    static TEST_PROGRAM_CODE: [u8; 64] = {
+        let mut code = [0xa5; 64];
+        let line = TestProgram::LINUX_HELLO.as_bytes();
+        let mut i = 0;
+        while i < line.len() {
+            code[TEST_PROGRAM_LINE + i] = line[i];
+            i += 1;
+        }
+        code
+    };
 
     /// The test platform's per-CPU register. The test machine has one CPU, which the host
     /// threads standing in for kernel threads take turns on (see `thread::host`), so they all

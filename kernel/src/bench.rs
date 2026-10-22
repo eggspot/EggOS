@@ -9,7 +9,7 @@
 use crate::HEAP;
 use crate::memory::{FRAMES, FrameAllocator, Memory};
 use crate::process::{self, Process};
-use crate::{cpu, thread};
+use crate::{cpu, linux, thread};
 use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -33,7 +33,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 16] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 17] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -72,6 +72,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 16] {
             process_syscall_round_trip::<P>,
         ),
         ("process_switch_round_trip", process_switch_round_trip::<P>),
+        ("linux_syscall_round_trip", linux_syscall_round_trip::<P>),
     ]
 }
 
@@ -329,6 +330,32 @@ fn process_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     thread.join::<P>();
 }
 
+/// An unknown Linux system call from a Linux program's thread (M6): `process_syscall_round_trip`
+/// with the Linux layer's handler, whose dispatch answers `ENOSYS`, its cheapest path, as the
+/// thread's handler. Includes starting the process and its thread and joining it once per run.
+fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let context = Process::<P>::test_program_context(|program| program.linux_unknown_syscalls);
+    let mut calls = 0;
+    let Ok(thread) =
+        process::spawn::<P, _>(Arc::new(program), context, move |process, context, exit| {
+            if exit == UserExit::Syscall {
+                calls += 1;
+            }
+            if calls < n {
+                linux::handle(process, context, exit)
+            } else {
+                ControlFlow::Break(())
+            }
+        })
+    else {
+        return;
+    };
+    thread.join::<P>();
+}
+
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
 /// (D48): per iteration two system calls, two thread switches and two address-space switches,
 /// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
@@ -437,6 +464,8 @@ mod tests {
                 floating_point: 0,
                 null_syscalls: 0,
                 spin: 0,
+                linux_hello: 0,
+                linux_unknown_syscalls: 0,
             }
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
@@ -486,17 +515,25 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (benchmarks, [(syscall, _), (process_syscall, _), (process_switch, _)]) =
-            all.split_at(all.len() - 3)
+        let (
+            benchmarks,
+            [
+                (syscall, _),
+                (process_syscall, _),
+                (process_switch, _),
+                (linux_syscall, _),
+            ],
+        ) = all.split_at(all.len() - 4)
         else {
             unreachable!()
         };
         assert_eq!(
-            [*syscall, *process_syscall, *process_switch],
+            [*syscall, *process_syscall, *process_switch, *linux_syscall],
             [
                 "syscall_round_trip",
                 "process_syscall_round_trip",
-                "process_switch_round_trip"
+                "process_switch_round_trip",
+                "linux_syscall_round_trip"
             ]
         );
         assert_eq!(
@@ -550,6 +587,8 @@ mod tests {
         process_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         process_switch_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
     }
 

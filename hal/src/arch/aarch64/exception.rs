@@ -227,6 +227,37 @@ aarch64_user_test_null_syscalls:
     .global aarch64_user_test_spin
 aarch64_user_test_spin:
 3:  b       3b
+    .global aarch64_user_test_linux_hello
+aarch64_user_test_linux_hello:
+    // Linux's generic numbers: write 64, exit_group 94. x19 collects the differences.
+    mov     x0, #1
+    adr     x1, 9f
+    mov     x2, #{hello_length}
+    mov     x8, #64
+    svc     #0
+    sub     x19, x0, #{hello_length}
+    mov     x0, #1
+    mov     x1, #0
+    mov     x2, #1
+    svc     #0
+    add     x0, x0, #14             // -EFAULT
+    orr     x19, x19, x0
+    mov     x8, #{unknown_syscall}
+    svc     #0
+    add     x0, x0, #38             // -ENOSYS
+    orr     x19, x19, x0
+    cmp     x19, #0
+    cset    x0, ne
+    mov     x8, #94
+    svc     #0
+4:  b       4b
+9:  .ascii  "EGGOS-USER: hello from user mode\n"
+    .balign 4
+    .global aarch64_user_test_linux_unknown_syscalls
+aarch64_user_test_linux_unknown_syscalls:
+    mov     x8, #{unknown_syscall}
+5:  svc     #0
+    b       5b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -236,6 +267,8 @@ aarch64_user_test_end:
     syscall_first = const TestProgram::SYSCALL_FIRST,
     syscall_report = const TestProgram::SYSCALL_REPORT,
     syscall_null = const TestProgram::SYSCALL_NULL,
+    hello_length = const TestProgram::LINUX_HELLO.len(),
+    unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     handler = sym aarch64_exception,
 );
 
@@ -305,6 +338,8 @@ unsafe extern "C" {
     static aarch64_user_test_floating_point: u8;
     static aarch64_user_test_null_syscalls: u8;
     static aarch64_user_test_spin: u8;
+    static aarch64_user_test_linux_hello: u8;
+    static aarch64_user_test_linux_unknown_syscalls: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -356,6 +391,9 @@ pub(super) fn user_test_program() -> TestProgram {
         floating_point: (&raw const aarch64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const aarch64_user_test_null_syscalls) as usize - start,
         spin: (&raw const aarch64_user_test_spin) as usize - start,
+        linux_hello: (&raw const aarch64_user_test_linux_hello) as usize - start,
+        linux_unknown_syscalls: (&raw const aarch64_user_test_linux_unknown_syscalls) as usize
+            - start,
     }
 }
 

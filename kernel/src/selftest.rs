@@ -5,9 +5,9 @@
 use crate::HEAP;
 use crate::address_space::AddressSpace;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
-use crate::process::{self, Process};
+use crate::process::{self, Process, ProcessExit};
 use crate::sync::SpinLock;
-use crate::{cpu, exception, interrupt, thread};
+use crate::{cpu, exception, interrupt, linux, thread};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
@@ -46,7 +46,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 19] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 20] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -88,6 +88,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 19] {
         (
             "processes_are_preempted_on_return_to_user_mode",
             processes_are_preempted_on_return_to_user_mode::<P>,
+        ),
+        (
+            "linux_programs_write_and_exit",
+            linux_programs_write_and_exit::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -821,6 +825,56 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     }
     if free_frames() != Some(before) {
         return Err("the processes' frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// A Linux program (M6) must write to the console through `write`, get Linux's results for a
+/// bad buffer (`EFAULT`) and an unknown call (`ENOSYS`), and end with `exit_group`; one that
+/// runs a floating-point instruction must be ended with `SIGILL`. The QEMU runner checks that
+/// the line it writes reached the console. Everything the processes took must be freed.
+fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
+    let hello = TestProgram::LINUX_HELLO.as_bytes();
+    if !P::user_test_program()
+        .code
+        .windows(hello.len())
+        .any(|bytes| bytes == hello)
+    {
+        return Err("the test program does not write the line it is checked against");
+    }
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    for (entry, expected) in [
+        (
+            (|program: &TestProgram| program.linux_hello) as fn(&TestProgram) -> usize,
+            ProcessExit::Exited(0),
+        ),
+        (
+            |program| program.floating_point,
+            ProcessExit::Killed {
+                signal: linux::signal::SIGILL,
+            },
+        ),
+    ] {
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let process = Arc::new(unsafe { Process::<P>::with_test_program(&memory.page_tables) }?);
+        let context = Process::<P>::test_program_context(entry);
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        match process.exit_status() {
+            Some(exit) if exit == expected => {}
+            Some(ProcessExit::Exited(_)) => {
+                return Err("a Linux system call returned the wrong result");
+            }
+            Some(ProcessExit::Killed { .. }) => {
+                return Err("a Linux program was killed, or with the wrong signal");
+            }
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+    }
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the Linux programs' frames and tables were not all freed");
     }
     Ok(())
 }

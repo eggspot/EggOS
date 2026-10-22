@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 
+/// Must match `eggos_hal::user::TestProgram::LINUX_HELLO`, without its newline: the line the
+/// self-tests' Linux program writes from user mode, through the `write` system call (M6).
+const USER_HELLO: &str = "EGGOS-USER: hello from user mode";
+
 /// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";
 
@@ -160,7 +164,8 @@ fn banner_count(console: &str) -> usize {
         .count()
 }
 
-/// [`Expect::Pass`]: a clean exit, the pass marker and no fail marker.
+/// [`Expect::Pass`]: a clean exit, the pass marker, no fail marker and the line the Linux test
+/// program writes.
 /// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), the address
 /// of the read-only data the kernel writes, then a report of an exception at that address
 /// followed by the fail marker.
@@ -201,10 +206,13 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         };
     }
     match (clean_exit, passed, failed) {
-        (true, true, false) => {
+        (true, true, false) if lines().any(|l| l == USER_HELLO) => {
             eprintln!("xtask: {arch}: boot test passed");
             Ok(())
         }
+        (true, true, false) => Err(format!(
+            "{arch}: the Linux test program's line did not reach the console"
+        )),
         (_, _, true) => Err(format!(
             "{arch}: kernel reported a self-test failure or panic"
         )),
@@ -238,10 +246,15 @@ mod tests {
 
     #[test]
     fn passes_only_on_clean_exit_with_pass_marker() {
-        let ok = format!("EggOS\r\n{PASS_MARKER}\r\n");
+        let ok = format!("EggOS\r\n{USER_HELLO}\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
         assert!(verdict("x", Expect::Pass, false, &ok).is_err());
         assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
+        // The user program's line must be there, whole.
+        let silent = format!("EggOS\r\n{PASS_MARKER}\r\n");
+        assert!(verdict("x", Expect::Pass, true, &silent).is_err());
+        let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{PASS_MARKER}\r\n");
+        assert!(verdict("x", Expect::Pass, true, &garbled).is_err());
     }
 
     #[test]
