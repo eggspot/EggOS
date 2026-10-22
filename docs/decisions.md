@@ -781,7 +781,9 @@ A review of D33 found two gaps on x86_64, neither visible on QEMU:
   device region out of the normal direct map and maps them as device memory only, on every
   architecture: one page never gets two memory types. Should leaving them out split a range of
   a memory map that is already full (64 ranges), which would drop other memory from the
-  direct map, building the tables fails (`TooManyRanges`) instead.
+  direct map, building the tables fails (`TooManyRanges`) instead; and free memory that
+  overlaps an early device's page stops the boot, so the kernel never hands out (and writes)
+  a device's registers as RAM.
 - **ACPI tables outside the direct map.** `mapped` only checked that a table lay below 4 GiB,
   while the kernel's direct map covers only `physical_memory`; a table in a hole of the
   loader's map would have faulted at power-off. `mapped` now requires the table to lie inside

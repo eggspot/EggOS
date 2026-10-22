@@ -457,9 +457,9 @@ impl PvhMemoryMap {
         let start_info_address = u64::from(PVH_START_INFO.load(Ordering::Relaxed));
         let start_info = in_boot_direct_map(start_info_address, PVH_START_INFO_V1_LENGTH)?;
         // SAFETY: the loader passed the address of its `hvm_start_info`; `in_boot_direct_map`
-        // checked the bytes are reachable, and nothing writes them. A version 0 structure is shorter: the
-        // bytes after it are still mapped memory, and the version 1 fields are used only once
-        // the version says they exist.
+        // checked the bytes are reachable, and nothing writes them. A version 0 structure is
+        // shorter: the bytes after it are still mapped memory, and the version 1 fields are
+        // used only once the version says they exist.
         let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
         let field32 = |offset: usize| {
             u32::from_le_bytes(info[offset..offset + 4].try_into().unwrap_or_default())

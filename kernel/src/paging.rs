@@ -292,6 +292,21 @@ fn without_early_devices<P: Platform>(memory: &MemoryMap) -> Result<MemoryMap, M
     Ok(normal)
 }
 
+/// Whether any page of `memory` holds an early device's registers. Free memory must not: the
+/// direct map leaves those pages out ([`without_early_devices`]), and firmware that reports
+/// one as free RAM would otherwise have the kernel write the device's registers.
+fn overlaps_early_devices<P: Platform>(memory: &MemoryMap) -> bool {
+    let mut overlaps = false;
+    P::early_device_regions(&mut |device| {
+        let device = device.covering_frames();
+        overlaps |= memory
+            .ranges()
+            .iter()
+            .any(|range| range.start < device.end && device.start < range.end);
+    });
+    overlaps
+}
+
 /// Whether the direct map of `ram` at `offset` ends at or below the kernel image's virtual
 /// address: on RISC-V Sv39 both share the 256 GiB high half (D33).
 fn direct_map_fits_below(ram: &MemoryMap, offset: u64, image: &KernelImage) -> bool {
@@ -374,6 +389,9 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     };
     if !free_memory.ranges().iter().all(covered) {
         return Err("free memory outside the physical memory the direct map covers");
+    }
+    if overlaps_early_devices::<P>(free_memory) {
+        return Err("free memory overlaps an early device's registers");
     }
     let mut frames = FrameAllocator::new(free_memory, P::physical_memory_offset());
     let mut page_tables =
@@ -675,6 +693,24 @@ mod tests {
             test_platform_tables(&extra).err(),
             Some(MapError::TooManyRanges)
         );
+    }
+
+    #[test]
+    fn free_memory_on_an_early_device_page_is_refused() {
+        use crate::tests::TestPlatform;
+        let free = |start, length| {
+            let mut map = MemoryMap::new();
+            map.add_ram(PhysicalRange::from_start_length(start, length));
+            map
+        };
+        // The test platform's device registers are at 0xa_0000..0xa_0100 and 0xa_0800..0xa_0900.
+        assert!(overlaps_early_devices::<TestPlatform>(&free(
+            0x9_f000,
+            2 * K
+        )));
+        assert!(overlaps_early_devices::<TestPlatform>(&free(0xa_0000, K)));
+        assert!(!overlaps_early_devices::<TestPlatform>(&free(0x9_f000, K)));
+        assert!(!overlaps_early_devices::<TestPlatform>(&free(0xa_1000, K)));
     }
 
     #[test]
