@@ -3,6 +3,8 @@ AI-native operating system written from scratch in Rust, including its own Linux
 
 100% open source under the [MIT License](LICENSE).
 
+EggOS is built in the open and funded by the people who use it. If you want an OS that is fast, private and yours to shape, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
+
 ## Layout
 | Path | What |
 |------|------|
