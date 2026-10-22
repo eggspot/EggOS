@@ -292,6 +292,7 @@ pub(crate) mod x86_64 {
     }
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
+    #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) const SYSCALL_VECTOR: u64 = 0x100;
     /// [`Registers::vector`] for a program that has not run yet: entered with `iretq`.
     pub(crate) const NOT_RUN_VECTOR: u64 = u64::MAX;
