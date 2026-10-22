@@ -286,6 +286,15 @@ aarch64_user_test_linux_unknown_syscalls:
     mov     x8, #{unknown_syscall}
 5:  svc     #0
     b       5b
+    .global aarch64_user_test_stack_growth
+aarch64_user_test_stack_growth:
+    // From the stack pointer's page down, a page at a time: each page's address in its
+    // first word, until the stack runs out.
+    mov     x9, sp
+    and     x9, x9, #~0xfff
+6:  str     x9, [x9]
+    sub     x9, x9, #0x1000
+    b       6b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -328,6 +337,11 @@ const EC_BRK64: u64 = 0x3c;
 
 /// `ESR_EL1.ISS.FnV` for aborts: set when `FAR_EL1` does not hold the faulting address.
 const ISS_FAR_NOT_VALID: u64 = 1 << 10;
+/// `ESR_EL1.ISS.WnR` for data aborts: the access wrote memory.
+const ISS_WRITE_NOT_READ: u64 = 1 << 6;
+/// `ESR_EL1.ISS.CM` for data aborts: a cache maintenance instruction faulted, which reports
+/// `WnR` set though it writes nothing.
+const ISS_CACHE_MAINTENANCE: u64 = 1 << 8;
 
 /// Entry types within each group of four vector entries.
 const TYPE_SYNCHRONOUS: u64 = 0;
@@ -369,6 +383,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_hello: u8;
     static aarch64_user_test_linux_start: u8;
     static aarch64_user_test_linux_unknown_syscalls: u8;
+    static aarch64_user_test_stack_growth: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -424,6 +439,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_start: (&raw const aarch64_user_test_linux_start) as usize - start,
         linux_unknown_syscalls: (&raw const aarch64_user_test_linux_unknown_syscalls) as usize
             - start,
+        stack_growth: (&raw const aarch64_user_test_stack_growth) as usize - start,
     }
 }
 
@@ -490,6 +506,39 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
         pc,
         address: far_valid.then_some(far),
     }
+}
+
+/// [`crate::Platform::page_fault`]: an instruction or data abort whose fault status code is a
+/// translation fault (`0b0001LL`, no valid entry at level `LL`), an access flag fault
+/// (`0b0010LL`) or a permission fault (`0b0011LL`); alignment faults, external aborts, TLB
+/// conflicts and unsupported atomics are not page faults. A data abort writes if `WnR` is set,
+/// unless a cache maintenance instruction faulted (it reports `WnR` though it writes nothing).
+/// AArch64 never caches an invalid entry, but a translation fault on an entry another CPU
+/// has just made valid can still race with it, so only permission faults are never stale.
+pub(super) fn page_fault(esr: u64) -> Option<crate::paging::PageFault> {
+    use crate::paging::{Access, PageFault};
+    /// Fault status codes: translation faults are `0b0001LL`, access flag faults `0b0010LL`,
+    /// permission faults `0b0011LL`.
+    const TRANSLATION_FAULT: u64 = 0b00_0100;
+    const PERMISSION_FAULT: u64 = 0b00_1100;
+    let status = esr & 0x3f;
+    if !(TRANSLATION_FAULT..=PERMISSION_FAULT | 0b11).contains(&status) {
+        return None;
+    }
+    let access = match esr >> 26 & 0x3f {
+        EC_INSTRUCTION_ABORT_LOWER | EC_INSTRUCTION_ABORT => Access::Execute,
+        EC_DATA_ABORT_LOWER | EC_DATA_ABORT
+            if esr & (ISS_WRITE_NOT_READ | ISS_CACHE_MAINTENANCE) == ISS_WRITE_NOT_READ =>
+        {
+            Access::Write
+        }
+        EC_DATA_ABORT_LOWER | EC_DATA_ABORT => Access::Read,
+        _ => return None,
+    };
+    Some(PageFault {
+        access,
+        may_be_stale: status < PERMISSION_FAULT,
+    })
 }
 
 fn synchronous_kind(class: u64) -> (ExceptionKind, &'static str) {

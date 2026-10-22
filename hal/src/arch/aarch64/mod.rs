@@ -517,6 +517,43 @@ impl Platform for Aarch64 {
         unsafe { core::arch::asm!("dsb ish", "ic ialluis", "dsb ish", "isb", options(nostack)) };
     }
 
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        exception::page_fault(code)
+    }
+
+    fn drop_user_translations(start: u64, length: u64) {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: barriers and TLB invalidation change no memory contents. User
+            // translations carry ASID 0 and are not global (see `switch_address_space`), so
+            // `TLBI ASIDE1` with ASID 0 drops them all and keeps the kernel's. Local: the kernel
+            // sees to other CPUs.
+            unsafe {
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi aside1, xzr",
+                    "dsb nsh",
+                    "isb",
+                    options(nostack, preserves_flags)
+                )
+            };
+            return;
+        }
+        // SAFETY: as above: the first barrier completes the caller's table writes before any
+        // walk, then each page's translations (any level, ASID 0: the operand's top bits are 0
+        // as user addresses are below 2^48) are dropped on this CPU.
+        unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
+        for page in 0..pages {
+            let operand = (start + page * crate::memory::FRAME_SIZE) >> 12;
+            // SAFETY: as above.
+            unsafe {
+                core::arch::asm!("tlbi vae1, {}", in(reg) operand, options(nostack, preserves_flags))
+            };
+        }
+        // SAFETY: as above: completes the invalidations before the next instruction.
+        unsafe { core::arch::asm!("dsb nsh", "isb", options(nostack, preserves_flags)) };
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

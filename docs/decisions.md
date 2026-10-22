@@ -1620,3 +1620,113 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `SIGPIPE`, `sigaltstack`, `getrandom`); FP/SIMD state per thread, without which no compiled
   Rust or C program runs on AArch64 or x86_64 (their ABIs use FP registers); then a first
   program built from our own Rust source, embedded until there is a file system.
+
+## D52 Demand paging: processes have regions, their pages are mapped when first touched, and address spaces gain mappings while their program runs — Decided by the build loop (design decided by research)
+- **Why now.** The Linux memory calls (`brk`, `mmap`, `munmap`, `mprotect`, M6) need a
+  process's memory to change while its program runs, and real programs reserve far more than
+  they touch (Rust thread stacks, allocator arenas, `PROT_NONE` reservations): mapping every
+  page up front would zero all of it and fail where Linux succeeds. This entry is the first
+  part: regions, demand-zero pages, mappings added to a live address space. Removing and
+  changing mappings (with the TLB work that needs) come with the calls themselves.
+- **Regions** (`kernel::regions`). A process keeps sorted, disjoint `Region`s (start, end,
+  attributes): Linux's mappings (VMAs). A region says what may be mapped, not what is. They
+  live in one `Vec` searched by binary search, joined with a touching neighbour of the same
+  attributes; research recommended this over a tree for the handful a static program has
+  (revisit past about a thousand regions, as JVMs and glibc arenas reach, with a tree that
+  tracks gap sizes for `mmap`'s search). `Process::add_region` adds one while the process is
+  built.
+- **Demand paging.** A page fault in a program (`ExceptionKind::DataFault` or
+  `InstructionFault` with an address) goes to `Process::resolve_page_fault(address, access)`:
+  if the address is in a region that allows the access, the page is mapped with a zeroed frame
+  of its own (made visible to instruction fetch if executable) and the program runs the access
+  again; anywhere else the Linux layer ends the process with `SIGSEGV`, and with `SIGKILL` when
+  there was no frame (as Linux's out-of-memory killer would). Whether an exception is a page
+  fault at all, and which access made it, comes from the new HAL call
+  `Platform::page_fault(kind, code)`, which decodes the raw cause only when the kernel asks, so
+  the trap path decodes nothing more (a field filled at every trap cost the kernel's breakpoint
+  round trip an instruction): on AArch64 only translation, access-flag and permission faults
+  (fault status `0b0001LL`–`0b0011LL`), with `WnR` without `CM` for a write; on RISC-V only
+  `scause` 12, 13, 15 (access faults are PMP's, not page faults); on x86_64 `#PF` without the
+  reserved-bit flag. Alignment faults, external aborts, TLB conflicts, unsupported atomics and
+  access faults are not page faults and end the process as before (`SIGSEGV`; `SIGBUS` for
+  some comes with signals).
+- **Spurious faults.** A fault that may be stale (AArch64 translation and access-flag faults,
+  every RISC-V page fault, x86 faults with no present entry) on a page already mapped for the
+  access is a stale translation: a RISC-V hart without Svvptc may cache an invalid entry.
+  Dropping this CPU's translation of the page (`Platform::drop_user_translations`, new) and
+  running the access again is the whole fix. A permission fault on such a page is never
+  retried: the entry the CPU used raised it, and retrying would fault for ever (from the
+  independent review, which blocked an earlier version that retried every data abort,
+  alignment faults included). The memory calls will make other CPUs drop an address space whose
+  mappings changed in any way, so a permission increase never leaves a stale entry behind.
+- **The stack** is now one region: `exec::STACK_RESERVE` (8 MiB) below the end of user space,
+  with only the pages holding the arguments mapped at `execve` (written through the kernel's
+  copy, which maps them); the rest is mapped as the program grows into it, and the guard gap
+  below stays outside every region, so running off the stack is `SIGSEGV`. `exec::STACK_SIZE`
+  (128 KiB mapped up front) is gone. Program segments are regions too, already mapped.
+- **Kernel copies populate.** `Process::read_user_memory` / `write_user_memory` map an untouched
+  page of a region that allows the access before copying, as the program's own access would:
+  otherwise `write()` from a fresh stack buffer would be `EFAULT`. They hold the process's
+  regions lock throughout, so a copy never meets a page being mapped (or, later, unmapped), and
+  D50's direct-map copy stays sound; its trigger moves to `clone` (another thread of the
+  process writing the same page during a copy).
+- **Live address spaces gain mappings** (`AddressSpace::map` takes `&self`; its tables sit
+  behind a lock, their roots copied out so loading the address space takes no lock). Sound
+  without telling other CPUs: an added mapping replaces an invalid entry, which AArch64 and x86
+  never cache, and a RISC-V hart that did takes one spurious fault. The frame's contents and a
+  new table's zeros are ordered before the entry that makes them reachable by a release fence
+  in `PageTables::map_leaf` (`dmb ish` on AArch64), since another CPU's walker is an observer
+  like any other. Removing or changing a mapping still takes `&mut` (never while the address
+  space is shared) until the memory calls bring TLB maintenance for other CPUs. Page-table
+  frames are never freed before the address space is (research: another CPU may still walk a
+  cached pointer to one, and an x86 walker may set Accessed bits in a reused frame).
+- **Frames belong to the address space.** `AddressSpace::new_owning_frames` (a process's) frees
+  the 4 KiB frames its user pages map in the same walk that frees its tables
+  (`PageTables::free_user_half` hands each leaf to a callback); the process's `Vec` of frames
+  is gone, so `munmap` can free a page's frame from the tables alone.
+- **HAL.** `Platform::drop_user_translations(start, length)`: this CPU's cached translations of
+  user pages, one page at a time up to `paging::USER_PAGES_DROPPED_ONE_BY_ONE` (32; Linux draws
+  the line at 33 on x86) and all user translations beyond: `dsb ishst; tlbi vae1; dsb nsh; isb`
+  or `tlbi aside1` on AArch64, `sfence.vma va, zero` or `sfence.vma` on RISC-V, `invlpg` or a
+  CR3 reload on x86_64. `Platform::page_fault(kind, code)` as above, with `paging::Access` and
+  `paging::PageFault` in the HAL. The test program gains
+  `stack_growth`: from its stack pointer's page down, it stores each page's address in the
+  page, until it runs off the stack.
+- **Cost (D24).** New benchmark `linux_page_fault`: a store to a page touched for the first
+  time, trap to return, amortized over 512 pages per process: 2,162 (aarch64), 2,202
+  (riscv64), 1,159 (x86_64) instructions, dominated by zeroing the frame (the faster `memset`
+  and pre-zeroed frames on the roadmap cut it). `linux_exec_load` drops by 32–44% (the stack's
+  32 untouched pages are no longer zeroed): 62,884 / 57,413 / 41,297. Faster too:
+  `process_syscall_round_trip` (−2.4% on aarch64 and x86_64: the address space is no longer an
+  `Option`), `linux_syscall_round_trip` (−2.9% aarch64, −1.4% x86_64, −0.8% riscv64) and
+  `process_switch_round_trip` (−1.8% to −2.7%: the CPU's slot stays locked across the switch,
+  so the compiler sees it empty and drops nothing). Two regressions found on the way and fixed
+  before the PR: a runtime-length slice of the roots (bounds checks and spills, +14–24% on the
+  process switch) and passing the whole exception to the Linux layer's fault path (+4
+  instructions per system call on riscv64; the parts are passed alone, out of line and cold).
+  Every other benchmark is unchanged. The host test platform's RAM grows from 512 KiB to
+  16 MiB, enough for the stack self-test.
+- **Testing.** Boot self-test `linux_stacks_grow_on_demand` on aarch64, riscv64 and x86_64: the
+  self-test's ELF image started at `stack_growth` stores to all 2,048 pages of the stack's
+  reserve, each a page fault resolved with a zeroed frame, and is killed with `SIGSEGV` at the
+  guard gap; every page must hold its own address, nothing below the reserve may be mapped,
+  and every frame must be freed. Host tests: regions (sorting, joining, refusals), faults that
+  map a zeroed page once and drop the stale translation, faults the regions refuse (outside,
+  write to read-only, fetch from data, write to code, no address, not a fault) with nothing
+  mapped, kernel copies that populate untouched pages, the exec stack as one region, and the
+  benchmark's run and frees.
+- **Next.** `brk`, `mmap`, `munmap`, `mprotect` on these regions (research's answers recorded
+  for that PR: `PROT_WRITE|PROT_EXEC` refused with `EACCES` as Linux's `PR_SET_MDWE` and
+  SELinux `execmem` do, allowing the flip from writable to executable; `PROT_NONE` pages that
+  hold data keep their frame in an invalid entry; top-down `mmap` placement below the stack;
+  the first break at the page-aligned end of the highest segment), with them TLB maintenance
+  for other CPUs when a mapping is removed or reduced (CPUs that keep the address space loaded
+  told to drop it before they run it again) and fault-around or large pages only after
+  measuring. From the independent review, non-blocking: `AddressSpace::unmap` now refuses an
+  address space that owns its frames (the frame would leak; the owner unmaps, M6); table entries
+  written with an atomic release store instead of a fence and a volatile write (same code, says
+  what is meant); kernel copies over untouched memory hold the regions lock for the whole copy
+  (chunk it, or drop the lock between pages, once `clone` gives a process threads that fault
+  meanwhile); kernel reads of untouched pages allocate zeroed frames where Linux maps its shared
+  zero page; the HAL test program's code page has no region yet (a stale fault there on RISC-V
+  would end the test).

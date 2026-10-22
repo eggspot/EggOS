@@ -3,8 +3,9 @@
 //!
 //! [`spawn`] starts a thread of a [`Process`] whose exits go to [`handle`]: a system call is
 //! dispatched by its Linux number on the architecture ([`number`]) and returns its result, or
-//! `-errno`, in the result register; an interrupt resumes the program; an exception the kernel
-//! does not handle ends the process with the signal Linux would send for it.
+//! `-errno`, in the result register; an interrupt resumes the program; a page fault the
+//! process resolves (a page of one of its regions touched for the first time, D52) resumes it
+//! too; any other exception ends the process with the signal Linux would send for it.
 //!
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
@@ -16,7 +17,7 @@
 
 pub mod exec;
 
-use crate::process::{self, Process, ProcessExit};
+use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -78,6 +79,7 @@ pub mod signal {
     pub const SIGILL: u32 = 4;
     pub const SIGTRAP: u32 = 5;
     pub const SIGBUS: u32 = 7;
+    pub const SIGKILL: u32 = 9;
     pub const SIGSEGV: u32 = 11;
 }
 
@@ -106,7 +108,38 @@ pub fn handle<P: Platform>(
     match exit {
         UserExit::Syscall => syscall(process, context),
         UserExit::Interrupt => ControlFlow::Continue(()),
-        UserExit::Exception(exception) => kill(process, exception.kind),
+        UserExit::Exception(exception) => {
+            user_exception(process, exception.kind, exception.code, exception.address)
+        }
+    }
+}
+
+/// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
+/// any. A page fault resumes the program if the process resolves it (demand paging); otherwise
+/// the process ends: `SIGKILL` when there was no memory for the page, as Linux's out-of-memory
+/// killer would, else the signal Linux sends for the exception ([`kill`]). Out of line and laid
+/// out away from the system-call path, which stays as short as it was (the exception's parts
+/// passed alone keep the loop's state in registers): a fault costs a frame's zeroing anyway.
+#[cold]
+#[inline(never)]
+fn user_exception<P: Platform>(
+    process: &Process<P>,
+    kind: ExceptionKind,
+    code: u64,
+    address: Option<u64>,
+) -> ControlFlow<()> {
+    let (Some(fault), Some(address)) = (P::page_fault(kind, code), address) else {
+        return kill(process, kind);
+    };
+    match process.resolve_page_fault(address, fault) {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(UnresolvedFault::NotAllowed) => kill(process, kind),
+        Err(UnresolvedFault::OutOfMemory) => {
+            process.exit(ProcessExit::Killed {
+                signal: signal::SIGKILL,
+            });
+            ControlFlow::Break(())
+        }
     }
 }
 
@@ -325,6 +358,71 @@ mod tests {
             // Linux keeps the status's low 8 bits.
             assert_eq!(process.exit_status(), Some(ProcessExit::Exited(0x45)));
         }
+    }
+
+    #[test]
+    fn page_faults_in_regions_resume_and_others_end_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let region = 0x60_0000;
+        let fault = |process: &Arc<Process<P>>, address, code| {
+            let mut context = called(1000, [0; 6]);
+            let exception = Exception {
+                kind: ExceptionKind::DataFault,
+                name: "test page fault",
+                code,
+                pc: 0x40_0000,
+                address: Some(address),
+            };
+            handle(process, &mut context, UserExit::Exception(exception))
+        };
+        let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
+        let with_region = |pages: u64| {
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            process
+                .add_region(region, region + pages * 4096, Attributes::USER_READ_ONLY)
+                .unwrap();
+            Arc::new(process)
+        };
+        // A read in the region maps the page and resumes; a write there is SIGSEGV.
+        let process = with_region(1);
+        assert_eq!(fault(&process, region + 8, 0), ControlFlow::Continue(()));
+        assert!(process.address_space().translate(region).is_some());
+        assert_eq!(process.exit_status(), None);
+        assert_eq!(
+            fault(&process, region + 8, crate::tests::FAULT_WRITE),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // Outside every region: SIGSEGV.
+        let process = with_region(1);
+        assert_eq!(fault(&process, region + 4096, 0), ControlFlow::Break(()));
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // No frame left for the page: SIGKILL, as Linux's out-of-memory killer.
+        let pages = free() + 1;
+        let process = with_region(pages);
+        let mut page = 0;
+        while fault(&process, region + page * 4096, 0) == ControlFlow::Continue(()) {
+            page += 1;
+            assert!(page < pages, "the frames never ran out");
+        }
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGKILL
+            })
+        );
     }
 
     #[test]

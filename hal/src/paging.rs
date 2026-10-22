@@ -19,6 +19,11 @@ use crate::memory::PhysicalRange;
 /// Entries in one table: a 4 KiB table of 8-byte entries.
 pub const ENTRIES: usize = 512;
 
+/// The most pages [`crate::Platform::drop_user_translations`] drops one at a time; a longer
+/// range drops every user translation at once, which costs less than that many single drops
+/// and the refills are no worse (Linux draws the line at 33 on x86).
+pub const USER_PAGES_DROPPED_ONE_BY_ONE: u64 = 32;
+
 /// Bytes a leaf at `level` maps: 4 KiB at level 0, 2 MiB at level 1, 1 GiB at level 2, ...
 pub const fn leaf_size(level: usize) -> u64 {
     1 << (12 + 9 * level)
@@ -27,6 +32,37 @@ pub const fn leaf_size(level: usize) -> u64 {
 /// The index of `virt` in a table at `level` (0 is the last level, whose entries map 4 KiB).
 pub const fn index(virt: u64, level: usize) -> usize {
     ((virt >> (12 + 9 * level)) as usize) % ENTRIES
+}
+
+/// What a program does to a page: what a page fault reports, and what a mapping allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+    Execute,
+}
+
+impl Access {
+    /// Whether a mapping with `attributes` allows this access (every mapping is readable).
+    pub fn allowed_by(self, attributes: Attributes) -> bool {
+        match self {
+            Self::Read => true,
+            Self::Write => attributes.writable,
+            Self::Execute => attributes.executable,
+        }
+    }
+}
+
+/// A page fault, as [`crate::Platform::page_fault`] classifies one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageFault {
+    /// What the faulting access did.
+    pub access: Access,
+    /// Whether the fault can be a stale translation: the CPU found no valid entry (or may
+    /// have cached an invalid one), so if the tables now hold an entry that allows the access,
+    /// dropping this CPU's translation and running the access again cures it. False for a
+    /// permission fault, which the entry the CPU used really raised.
+    pub may_be_stale: bool,
 }
 
 /// What a mapping is for.

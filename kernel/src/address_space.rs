@@ -13,30 +13,44 @@
 //! (D48): [`AddressSpace::load_lazily`] switches only when the CPU has another one loaded, and
 //! the CPU keeps it, and a reference to its owner, until it needs a different one, so kernel
 //! threads and a process's own threads running in turn pay no switch, and the scheduler's
-//! switch knows nothing of address spaces. Changing the mappings takes `&mut self`, so it
-//! never happens while the address space is active or loaded anywhere (an owner shared to be
-//! loaded is frozen), and nothing cached of it outlives the change: no TLB maintenance per
-//! page is needed yet.
+//! switch knows nothing of address spaces.
 //!
-//! The frames user pages map belong to whoever mapped them; the address space owns only its
-//! low half's tables, which it frees when dropped.
+//! The tables sit behind the address space's lock. Adding a mapping ([`AddressSpace::map`])
+//! takes `&self` and may happen while the address space is active or loaded on any CPU: a
+//! process's thread maps the pages its program touches as it touches them (demand paging,
+//! D52). That is sound because an added mapping changes nothing a CPU has cached: the entry
+//! was invalid, which AArch64 and x86 never cache, and a RISC-V hart that did faults once, and
+//! the fault handler drops the stale entry ([`Platform::drop_user_translations`]); the
+//! frame's contents and new tables are ordered before the entry that makes them reachable.
+//! Removing or changing a mapping ([`AddressSpace::unmap`]) still takes `&mut self`, so it
+//! never happens while the address space is active or loaded anywhere: nothing cached of it
+//! outlives the change.
+//!
+//! The frames user pages map belong to whoever mapped them, unless the address space was made
+//! to own them ([`AddressSpace::new_owning_frames`], as a process's is): then it frees them
+//! with its low half's tables when dropped.
 
 use crate::cpu::{self, Cpu};
 use crate::memory;
 use crate::paging::{MAX_ROOTS, MapError, PageTables};
+use crate::sync::SpinLock;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::marker::PhantomData;
 use core::ptr;
 use eggos_hal::Platform;
-use eggos_hal::paging::Attributes;
+use eggos_hal::paging::{Attributes, Format};
 
 /// A user address space. See the module documentation.
 #[derive(Debug)]
 pub struct AddressSpace<P: Platform> {
-    tables: PageTables<P::PageTableFormat>,
+    tables: SpinLock<PageTables<P::PageTableFormat>>,
+    /// The tables' roots, which never change: what a CPU switches to, without the lock.
+    roots: [u64; MAX_ROOTS],
     /// The kernel's tables' roots, to switch back to.
     kernel_roots: [u64; MAX_ROOTS],
+    /// Whether the frames user pages map are the address space's, freed with it.
+    owns_frames: bool,
     platform: PhantomData<fn() -> P>,
 }
 
@@ -54,38 +68,72 @@ impl<P: Platform> AddressSpace<P> {
         let tables = PageTables::new_sharing_kernel_half(kernel, frames)?;
         let mut kernel_roots = [0; MAX_ROOTS];
         kernel_roots[..kernel.roots().len()].copy_from_slice(kernel.roots());
+        let mut roots = [0; MAX_ROOTS];
+        roots[..tables.roots().len()].copy_from_slice(tables.roots());
         Ok(Self {
-            tables,
+            tables: SpinLock::new(tables),
+            roots,
             kernel_roots,
+            owns_frames: false,
             platform: PhantomData,
         })
     }
 
+    /// As [`Self::new`], for an address space that owns the frames its user pages map: every
+    /// one must be a 4 KiB frame from the kernel's frame allocator ([`memory::FRAMES`]) that
+    /// nothing else frees, mapped once; dropping the address space frees them.
+    ///
+    /// # Safety
+    /// As [`Self::new`].
+    pub unsafe fn new_owning_frames(
+        kernel: &PageTables<P::PageTableFormat>,
+    ) -> Result<Self, MapError> {
+        // SAFETY: the caller's guarantees.
+        let mut space = unsafe { Self::new(kernel) }?;
+        space.owns_frames = true;
+        Ok(space)
+    }
+
+    /// The physical addresses of its root tables, one per [`eggos_hal::paging::Format::ROOTS`].
+    #[inline]
+    fn roots(&self) -> &[u64] {
+        &self.roots[..<P::PageTableFormat as Format>::ROOTS]
+    }
+
     /// Maps user `virt..virt + length` to physical `phys..phys + length` with `attributes`,
     /// which must be a user mapping, in the low half ([`MapError::NotUser`] otherwise). As
-    /// [`PageTables::map`] otherwise.
+    /// [`PageTables::map`] otherwise. Allowed while the address space is active or loaded
+    /// anywhere (see the module documentation); a CPU that runs its program and may have cached
+    /// the pages as unmapped drops that with [`Platform::drop_user_translations`].
     pub fn map(
-        &mut self,
+        &self,
         virt: u64,
         phys: u64,
         length: u64,
         attributes: Attributes,
     ) -> Result<(), MapError> {
+        let mut tables = self.tables.lock();
         let mut frames = memory::FRAMES.lock();
         let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
-        self.tables.map(virt, phys, length, attributes, frames)
+        tables.map(virt, phys, length, attributes, frames)
     }
 
     /// Unmaps user `virt..virt + length`, in the low half ([`MapError::NotUser`] otherwise).
-    /// As [`PageTables::unmap`] otherwise.
+    /// As [`PageTables::unmap`] otherwise. Not for an address space that owns its frames
+    /// ([`Self::new_owning_frames`]): an unmapped frame would leak (its owner frees the pages it
+    /// unmaps, with the memory calls, M6).
     pub fn unmap(&mut self, virt: u64, length: u64) -> Result<(), MapError> {
-        self.tables.unmap(virt, length)
+        assert!(
+            !self.owns_frames,
+            "an address space that owns its frames is unmapped through its owner"
+        );
+        self.tables.get_mut().unmap(virt, length)
     }
 
     /// The physical address `virt` translates to in this address space and the mapping's
     /// attributes, or `None`. Kernel addresses translate as in the kernel's tables.
     pub fn translate(&self, virt: u64) -> Option<(u64, Attributes)> {
-        self.tables.translate(virt)
+        self.tables.lock().translate(virt)
     }
 
     /// Runs `active` with this address space active on this CPU, then switches back to the
@@ -99,7 +147,7 @@ impl<P: Platform> AddressSpace<P> {
     /// pages only through [`Platform::with_user_access`].
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
-        let root = self.tables.roots()[0];
+        let root = self.roots()[0];
         // A process's address space this CPU kept loaded is not in use: put it away first.
         unload_lazily_loaded::<P>(here);
         assert!(
@@ -111,9 +159,10 @@ impl<P: Platform> AddressSpace<P> {
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
         // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
         // which `new_sharing_kernel_half` shared (it refuses tables not marked active, which
-        // never change); `&self` keeps them allocated and unchanged until the switch back
-        // below. Nothing points into the kernel's low half, which is empty.
-        unsafe { P::switch_address_space(self.tables.roots()) };
+        // never change); `&self` keeps them allocated, with no mapping removed or changed (that
+        // takes `&mut`; added ones are allowed, see the module documentation), until the
+        // switch back below. Nothing points into the kernel's low half, which is empty.
+        unsafe { P::switch_address_space(self.roots()) };
         let result = active();
         assert!(
             ptr::eq(cpu::current::<P>(), here),
@@ -127,7 +176,7 @@ impl<P: Platform> AddressSpace<P> {
         // SAFETY: as above, back to the kernel's own tables (`new`'s contract), which stay
         // allocated for as long as the kernel runs; `active` has returned, so nothing uses this
         // address space's low half.
-        unsafe { P::switch_address_space(&self.kernel_roots[..self.tables.roots().len()]) };
+        unsafe { P::switch_address_space(&self.kernel_roots[..self.roots().len()]) };
         result
     }
 
@@ -143,12 +192,13 @@ impl<P: Platform> AddressSpace<P> {
     /// thread of the same process runs without a switch.
     ///
     /// # Safety
-    /// `owner` must own this address space and keep it unchanged for as long as it lives
-    /// (frozen: nothing reaches it through `&mut`).
+    /// `owner` must own this address space and, for as long as it lives, never remove or
+    /// change a mapping in it (nothing reaches it through `&mut`); mappings may be added
+    /// ([`Self::map`]).
     #[inline]
     pub unsafe fn load_lazily<O: Any + Send + Sync>(&self, owner: &Arc<O>) {
         let here = cpu::current::<P>();
-        if here.active_address_space() != self.tables.roots()[0] {
+        if here.active_address_space() != self.roots()[0] {
             // SAFETY: the caller's guarantees.
             unsafe { self.switch_lazily(here, owner.clone()) };
         }
@@ -161,27 +211,31 @@ impl<P: Platform> AddressSpace<P> {
     #[cold]
     #[inline(never)]
     unsafe fn switch_lazily(&self, here: &'static Cpu, owner: Arc<dyn Any + Send + Sync>) {
-        let previous = here.lazily_loaded.lock().take();
+        // Held throughout (only this CPU takes it), so the slot is known empty when it is
+        // filled below and nothing is dropped there.
+        let mut slot = here.lazily_loaded.lock();
+        let previous = slot.take();
         assert!(
             previous.is_some() || here.active_address_space() == cpu::NO_ADDRESS_SPACE,
             "an address space was loaded lazily inside `with_active`"
         );
-        let root = self.tables.roots()[0];
+        let root = self.roots()[0];
         here.set_active_address_space(root);
         // SAFETY: interrupts are masked (the caller's duty). The tables are in `P`'s format,
         // built by `PageTables`, and share the kernel's active half (`new`'s contract). `owner`
-        // keeps them allocated and unchanged (the caller's duty) and is kept below until the
-        // CPU switches away from them. The previous address space, if any, is no longer used:
-        // `with_active` never runs around this call (checked above), and the kernel reaches
-        // user pages only after loading the address space it means.
-        unsafe { P::switch_address_space(self.tables.roots()) };
+        // keeps them allocated, with no mapping removed or changed (the caller's duty), and is
+        // kept below until the CPU switches away from them. The previous address space, if
+        // any, is no longer used: `with_active` never runs around this call (checked above),
+        // and the kernel reaches user pages only after loading the address space it means.
+        unsafe { P::switch_address_space(self.roots()) };
         let mut kernel_roots = self.kernel_roots;
-        kernel_roots[self.tables.roots().len()..].fill(0);
-        *here.lazily_loaded.lock() = Some(LazilyLoaded {
+        kernel_roots[self.roots().len()..].fill(0);
+        *slot = Some(LazilyLoaded {
             owner,
             kernel_roots,
-            root_count: self.tables.roots().len(),
+            root_count: self.roots().len(),
         });
+        drop(slot);
         // Freed, if this CPU held its last reference, now that it is not loaded. Other CPUs that
         // keep it are not woken here, which would cost every switch a look at every CPU: one
         // whose last look raced with this switch keeps it until something wakes it (roadmap).
@@ -196,7 +250,7 @@ impl<P: Platform> AddressSpace<P> {
 
     /// The first root of its tables: what a CPU records while it has the address space loaded.
     pub(crate) fn root(&self) -> u64 {
-        self.tables.roots()[0]
+        self.roots()[0]
     }
 }
 
@@ -316,16 +370,26 @@ fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
 
 impl<P: Platform> Drop for AddressSpace<P> {
     fn drop(&mut self) {
+        let owns_frames = self.owns_frames;
         let mut frames = memory::FRAMES.lock();
         let frames = frames
             .as_mut()
             .expect("the address space's tables came from the frame allocator");
+        let free_owned = |frames: &mut memory::FrameAllocator, frame, level| {
+            if owns_frames {
+                assert_eq!(level, 0, "an address space owns only 4 KiB frames");
+                // SAFETY: an owned frame came from this allocator and is the address space's
+                // alone, mapped once (`new_owning_frames`' contract); its tables are going, so
+                // nothing maps it any more.
+                unsafe { frames.free(frame) };
+            }
+        };
         // SAFETY: the tables come from `new_sharing_kernel_half` with the kernel's frame
         // allocator, the one locked here. They are not active anywhere: `with_active` borrows
         // `self` while they are, and switches back before it returns, and a CPU that loaded them
         // lazily holds their owner until it has switched away. They are freed once, here, and
         // never used again.
-        unsafe { self.tables.free_user_half(frames) };
+        unsafe { self.tables.get_mut().free_user_half(frames, free_owned) };
     }
 }
 
@@ -388,7 +452,7 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let space = new_space(&kernel).unwrap();
-        assert_ne!(space.tables.roots(), kernel.roots());
+        assert_ne!(space.roots(), kernel.roots());
         assert_eq!(space.translate(KERNEL_VIRT), kernel.translate(KERNEL_VIRT));
         assert_eq!(space.translate(USER_VIRT), None);
         assert_eq!(space.translate(0), None);
@@ -446,7 +510,7 @@ mod tests {
         // A `syscall` at its end would return to a non-canonical address (x86_64).
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let mut space = new_space(&kernel).unwrap();
+        let space = new_space(&kernel).unwrap();
         let last = (1 << 47) - FRAME_SIZE;
         assert_eq!(
             space.map(last, 0, FRAME_SIZE, Attributes::USER_TEXT),
@@ -485,7 +549,7 @@ mod tests {
         let kernel = kernel_tables();
         let before = free_frames();
         {
-            let mut space = new_space(&kernel).unwrap();
+            let space = new_space(&kernel).unwrap();
             // Pages far apart, so each needs tables of its own at every level.
             for (i, virt) in [0, USER_VIRT, 1 << 30, 1 << 39, (1 << 47) - 2 * FRAME_SIZE]
                 .into_iter()
@@ -516,7 +580,7 @@ mod tests {
         let kernel = kernel_tables();
         let space = new_space(&kernel).unwrap();
         let root = space.with_active(active_root);
-        assert_eq!(root, space.tables.roots()[0]);
+        assert_eq!(root, space.roots()[0]);
         assert_eq!(active_root(), kernel.roots()[0]);
     }
 
@@ -531,16 +595,16 @@ mod tests {
         assert!(nested.is_err());
         assert_eq!(
             active_root(),
-            first.tables.roots()[0],
+            first.roots()[0],
             "the second never became active"
         );
         // As if the first thread had switched back: the next use starts clean.
         let here = cpu::current::<P>();
-        assert_eq!(here.active_address_space(), first.tables.roots()[0]);
+        assert_eq!(here.active_address_space(), first.roots()[0]);
         here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
         // SAFETY: back to the kernel's own tables, as `with_active` would have.
         unsafe { P::switch_address_space(kernel.roots()) };
-        assert_eq!(second.with_active(active_root), second.tables.roots()[0]);
+        assert_eq!(second.with_active(active_root), second.roots()[0]);
         assert_eq!(active_root(), kernel.roots()[0]);
     }
 
@@ -548,7 +612,7 @@ mod tests {
     fn user_attributes_survive_the_round_trip_through_the_tables() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let mut space = new_space(&kernel).unwrap();
+        let space = new_space(&kernel).unwrap();
         for (i, attributes) in [
             Attributes::USER_TEXT,
             Attributes::USER_READ_ONLY,

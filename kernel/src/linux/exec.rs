@@ -4,9 +4,9 @@
 //! [`load`] first checks everything (the image, each `LOAD` segment, where the program
 //! headers are, the size of the arguments), then maps the segments into a new process, each
 //! page a frame of its own holding the file's bytes and zero after them (`.bss` included),
-//! maps a stack at the top of user space and lays out on it what a Linux program expects at
-//! its entry: `argc`, the `argv` and `envp` pointer arrays, each ended by a null pointer, and
-//! the auxiliary vector, with the strings they point to above them. It returns the registers
+//! records the stack's region at the top of user space (its pages are mapped as the program
+//! touches them, D52) and lays out on it what a Linux program expects at its entry: `argc`,
+//! the `argv` and `envp` pointer arrays, each ended by a null pointer, and the auxiliary vector, with the strings they point to above them. It returns the registers
 //! the program starts with: its entry point and that stack, every other register zero (C
 //! libraries take a non-zero `rdx` / `x0` / `a0` as a function to run at exit).
 //!
@@ -27,14 +27,13 @@ use eggos_hal::paging::{Attributes, Format};
 use eggos_hal::user::UserContext;
 
 /// The address space kept for the stack, below the end of user space: Linux's default stack
-/// limit. No segment may reach into it, nor into the [`STACK_GUARD_GAP`] below it.
+/// limit. It is one region (D52): the pages holding the arguments are mapped up front, the rest
+/// as the program first touches them. No segment may reach into it, nor into the
+/// [`STACK_GUARD_GAP`] below it.
 pub const STACK_RESERVE: u64 = 8 << 20;
 /// Address space below [`STACK_RESERVE`] that stays unmapped, so a stack that overruns
 /// faults instead of running into the program's data (Linux keeps the same gap).
 pub const STACK_GUARD_GAP: u64 = 1 << 20;
-/// The stack mapped below the arguments, up front: there is no demand paging yet to grow it
-/// as Linux does. Linux guarantees the same at `execve`.
-pub const STACK_SIZE: u64 = 128 << 10;
 /// The most bytes the arguments, the environment, their pointers and the auxiliary vector
 /// may take on the stack: a quarter of [`STACK_RESERVE`], as Linux allows a quarter of its
 /// stack limit. More is `E2BIG`.
@@ -233,15 +232,17 @@ pub fn load<P: Platform>(
             map_segment(process, image, &header, bias)?;
         }
     }
-    let stack_bottom = (stack.start & !(FRAME_SIZE - 1)) - STACK_SIZE;
-    for page in (stack_bottom..user_end).step_by(FRAME_SIZE as usize) {
-        process
-            .map_new_page(page, Attributes::USER_READ_WRITE, &[])
-            .map_err(ExecError::OutOfMemory)?;
-    }
+    process
+        .add_region(
+            user_end - STACK_RESERVE,
+            user_end,
+            Attributes::USER_READ_WRITE,
+        )
+        .map_err(|_| ExecError::InvalidProgram("a segment in the stack's reserve"))?;
+    // Maps the pages it writes, zeroed first, as the program's own stores would.
     process
         .write_user_memory(stack.start, &stack.bytes)
-        .map_err(|_| ExecError::OutOfMemory("the stack is not mapped"))?;
+        .map_err(|_| ExecError::OutOfMemory("no frame for the stack"))?;
     Ok(UserContext::new(entry, stack.start))
 }
 
@@ -350,7 +351,10 @@ fn map_segment<P: Platform>(
             .map_new_page(page, attributes, contents)
             .map_err(ExecError::OutOfMemory)?;
     }
-    Ok(())
+    // Every page is mapped already; the region records what the program may do there.
+    process
+        .add_region(first_page, end.next_multiple_of(FRAME_SIZE), attributes)
+        .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
 }
 
 /// The page attributes for a segment's `p_flags`. Code is readable, as on every architecture
@@ -488,6 +492,7 @@ mod tests {
     use crate::memory;
     use crate::paging::PageTables;
     use crate::process::TEST_PROGRAM_ADDRESS;
+    use crate::regions::Region;
     use crate::selftest::{
         LINUX_START_ARGUMENTS, LINUX_START_DATA, LINUX_START_DATA_BYTES, LINUX_START_DATA_SIZE,
         LINUX_START_ENVIRONMENT, linux_start_image,
@@ -622,20 +627,39 @@ mod tests {
             process.read_user_memory(text, &mut magic).unwrap();
             assert_eq!(&magic, b"\x7fELF");
 
-            // The stack: 16-byte aligned, at the top of user space, with a page of slack
-            // above the arguments' and `STACK_SIZE` below them mapped, and nothing below.
+            // The stack: 16-byte aligned, at the top of user space. Only the arguments' pages
+            // are mapped; the whole reserve is one region, mapped as it is touched, and
+            // nothing is below it.
             let sp = context.stack();
             assert_eq!(sp % 16, 0);
             assert!(USER_END - sp < FRAME_SIZE);
-            let stack_bottom = (sp & !(FRAME_SIZE - 1)) - STACK_SIZE;
-            for page in (stack_bottom..USER_END).step_by(FRAME_SIZE as usize) {
+            let arguments_page = sp & !(FRAME_SIZE - 1);
+            for page in (arguments_page..USER_END).step_by(FRAME_SIZE as usize) {
                 assert_eq!(
                     space.translate(page).unwrap().1,
                     Attributes::USER_READ_WRITE
                 );
             }
-            assert_eq!(space.translate(stack_bottom - FRAME_SIZE), None);
+            assert_eq!(space.translate(arguments_page - FRAME_SIZE), None);
+            let reserve = USER_END - STACK_RESERVE;
+            assert_eq!(
+                process.region(reserve),
+                Some(Region {
+                    start: reserve,
+                    end: USER_END,
+                    attributes: Attributes::USER_READ_WRITE
+                })
+            );
+            assert_eq!(process.region(reserve - 1), None);
             assert_eq!(word(&process, USER_END - 8), 0, "the end marker");
+            // A page the program has not touched reads as zero, mapped by the read.
+            assert_eq!(word(&process, reserve), 0);
+            assert!(space.translate(reserve).is_some());
+            // The segments are regions too, as mapped.
+            assert_eq!(
+                process.region(text).map(|region| region.attributes),
+                Some(Attributes::USER_TEXT)
+            );
 
             let (argc, arguments, environment, auxiliary) = read_stack(&process, sp);
             assert_eq!(argc, 2);

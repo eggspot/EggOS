@@ -467,6 +467,39 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
+    fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
+        use crate::paging::{Access, PageFault};
+        // `scause` of the instruction, load and store/AMO page faults; access faults (PMP)
+        // are not page faults. The cause does not say whether an entry was valid, and a hart
+        // without Svvptc may cache an invalid one: any of them can be stale.
+        let access = match code {
+            12 => Access::Execute,
+            13 => Access::Read,
+            15 => Access::Write,
+            _ => return None,
+        };
+        Some(PageFault {
+            access,
+            may_be_stale: true,
+        })
+    }
+
+    fn drop_user_translations(start: u64, length: u64) {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: `sfence.vma` orders this hart's earlier page-table writes before its later
+            // walks and drops cached translations; it changes no memory contents. Every address
+            // space (no ASIDs are used), the kernel's global ones too, which costs refills only.
+            unsafe { core::arch::asm!("sfence.vma zero, zero", options(nostack)) };
+            return;
+        }
+        for page in 0..pages {
+            let address = start + page * crate::memory::FRAME_SIZE;
+            // SAFETY: as above, for one page, in every address space.
+            unsafe { core::arch::asm!("sfence.vma {}, zero", in(reg) address, options(nostack)) };
+        }
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

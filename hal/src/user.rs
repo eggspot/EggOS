@@ -137,6 +137,11 @@ pub struct TestProgram {
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.
     pub linux_unknown_syscalls: usize,
+    /// Walks down its stack from the stack pointer's page, a page at a time, storing each
+    /// page's address in the page's first word, until a store faults and the kernel ends it:
+    /// every page of the stack is touched once, for demand paging's self-test and benchmark
+    /// (D52).
+    pub stack_growth: usize,
 }
 
 impl TestProgram {

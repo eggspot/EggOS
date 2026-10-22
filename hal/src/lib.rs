@@ -202,6 +202,24 @@ pub trait Platform: 'static {
     /// hart's alone, and the switch runs it there (D48).
     fn make_instructions_visible(start: usize, length: usize);
 
+    /// Drops what this CPU's TLB cached of user pages `start..start + length` (4 KiB-aligned)
+    /// in the active address space, after making the page-table writes before the call visible
+    /// to its table walks: one page at a time up to
+    /// [`paging::USER_PAGES_DROPPED_ONE_BY_ONE`] pages, every user translation beyond. Needed
+    /// after a user mapping is added on RISC-V (a hart may cache an invalid entry, unless it has
+    /// Svvptc) and AArch64 (the barrier), and on every architecture after a mapping is removed
+    /// or its permissions change. The kernel's own translations are kept where the architecture
+    /// tags them apart. Other CPUs are not told: the kernel sees to them.
+    fn drop_user_translations(start: u64, length: u64);
+
+    /// Whether an exception of `kind` with raw cause `code` ([`Exception::code`]) that a
+    /// program took is a page fault, a translation the tables did not give (no valid entry, or
+    /// one that does not allow the access), and if so which access made it. Alignment faults,
+    /// external aborts, access faults (RISC-V PMP) and the like are not: retrying them would
+    /// fault again. The kernel asks only when a program faults (demand paging, D52), so the
+    /// trap path decodes nothing more.
+    fn page_fault(kind: ExceptionKind, code: u64) -> Option<paging::PageFault>;
+
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls
     /// `entry(argument)` on that stack, with interrupts masked (D35). `entry` must never return.

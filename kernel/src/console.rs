@@ -117,6 +117,13 @@ mod tests {
             [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
+        fn drop_user_translations(_start: u64, _length: u64) {}
+        fn page_fault(
+            kind: eggos_hal::ExceptionKind,
+            code: u64,
+        ) -> Option<eggos_hal::paging::PageFault> {
+            crate::tests::page_fault(kind, code)
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,

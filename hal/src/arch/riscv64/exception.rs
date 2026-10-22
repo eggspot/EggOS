@@ -398,6 +398,16 @@ riscv64_user_test_linux_unknown_syscalls:
     li      a7, {unknown_syscall}
 5:  ecall
     j       5b
+    .global riscv64_user_test_stack_growth
+riscv64_user_test_stack_growth:
+    // From the stack pointer's page down, a page at a time: each page's address in its
+    // first word, until the stack runs out.
+    li      t0, -4096
+    and     t0, sp, t0
+    li      t1, 4096
+6:  sd      t0, 0(t0)
+    sub     t0, t0, t1
+    j       6b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -495,6 +505,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_hello: u8;
     static riscv64_user_test_linux_start: u8;
     static riscv64_user_test_linux_unknown_syscalls: u8;
+    static riscv64_user_test_stack_growth: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -543,6 +554,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_start: (&raw const riscv64_user_test_linux_start) as usize - start,
         linux_unknown_syscalls: (&raw const riscv64_user_test_linux_unknown_syscalls) as usize
             - start,
+        stack_growth: (&raw const riscv64_user_test_stack_growth) as usize - start,
     }
 }
 
