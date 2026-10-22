@@ -9,6 +9,9 @@
 
 pub mod acpi;
 pub mod arch;
+mod exception;
+
+pub use exception::{Exception, ExceptionKind};
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,4 +36,14 @@ pub trait Platform {
 
     /// Parks the current CPU forever, waiting for interrupts.
     fn halt() -> !;
+
+    /// Executes the architecture's breakpoint instruction. The exception goes to the kernel's
+    /// handler (see [`Exception`]); if the handler returns, execution continues after the
+    /// breakpoint instruction.
+    fn breakpoint();
+
+    /// Executes an instruction the architecture defines as permanently undefined (`udf` on
+    /// AArch64, `unimp` on RISC-V, `ud2` on x86). The kernel uses it to test that a fatal
+    /// exception is reported; the kernel's handler never returns from that exception.
+    fn execute_illegal_instruction() -> !;
 }

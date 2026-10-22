@@ -11,6 +11,19 @@ use std::time::{Duration, Instant};
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 
+/// Must match the start of `eggos_kernel::exception::report`'s line.
+const EXCEPTION_PREFIX: &str = "kernel exception: ";
+
+/// What a boot test expects the kernel to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expect {
+    /// Pass every self-test and power off.
+    Pass,
+    /// Pass every self-test, then report a fatal exception with the fail marker and power off
+    /// (the kernel's `qemu-test-fatal-exception` feature).
+    FatalException,
+}
+
 /// A boot test that has not powered off by then has hung.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -21,9 +34,9 @@ const BANNER_PREFIX: &str = "EggOS ";
 const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1"];
 
 /// Boots `kernel` headless and passes only if QEMU powers off cleanly within the timeout and
-/// the console shows the pass marker and no fail marker.
-pub fn boot_test(arch: &Arch, kernel: &Path) -> Result<(), String> {
-    eprintln!("xtask: booting {} in {}", arch.name, arch.qemu);
+/// the console shows what `expect` asks for (see [`verdict`]).
+pub fn boot_test(arch: &Arch, kernel: &Path, expect: Expect) -> Result<(), String> {
+    eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
         // No `-no-reboot` here: with it, an x86 triple fault (e.g. in the power-off path) ends
@@ -82,6 +95,7 @@ pub fn boot_test(arch: &Arch, kernel: &Path) -> Result<(), String> {
     console.extend(rx.iter().flatten());
     verdict(
         arch.name,
+        expect,
         status.success(),
         &String::from_utf8_lossy(&console),
     )
@@ -95,7 +109,11 @@ fn banner_count(console: &str) -> usize {
         .count()
 }
 
-fn verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+/// [`Expect::Pass`]: a clean exit, the pass marker and no fail marker.
+/// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), then an
+/// exception report followed by the fail marker.
+/// Either way, a second boot banner (a reset) fails.
+fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Result<(), String> {
     let lines = || console.lines().map(str::trim_end);
     let passed = lines().any(|l| l == PASS_MARKER);
     let failed = lines().any(|l| l == FAIL_MARKER);
@@ -103,6 +121,25 @@ fn verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
         return Err(format!(
             "{arch}: the machine reset and booted again (crash or triple fault?)"
         ));
+    }
+    if expect == Expect::FatalException {
+        let reported = lines()
+            .skip_while(|l| !l.starts_with(EXCEPTION_PREFIX))
+            .skip(1)
+            .any(|l| l == FAIL_MARKER);
+        return match (clean_exit, passed, reported) {
+            (true, true, true) => {
+                eprintln!("xtask: {arch}: fatal exception test passed");
+                Ok(())
+            }
+            (false, _, _) => Err(format!("{arch}: QEMU exited with an error")),
+            (true, false, _) => Err(format!(
+                "{arch}: the self-tests did not pass before the fatal exception test"
+            )),
+            (true, true, false) => Err(format!(
+                "{arch}: the illegal instruction was not reported as a fatal exception"
+            )),
+        };
     }
     match (clean_exit, passed, failed) {
         (true, true, false) => {
@@ -141,26 +178,47 @@ mod tests {
     #[test]
     fn passes_only_on_clean_exit_with_pass_marker() {
         let ok = format!("EggOS\r\n{PASS_MARKER}\r\n");
-        assert!(verdict("x", true, &ok).is_ok());
-        assert!(verdict("x", false, &ok).is_err());
-        assert!(verdict("x", true, "EggOS\r\n").is_err());
+        assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
+        assert!(verdict("x", Expect::Pass, false, &ok).is_err());
+        assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
     }
 
     #[test]
     fn fail_marker_wins_over_pass_marker() {
         let mixed = format!("{PASS_MARKER}\n{FAIL_MARKER}\n");
-        assert!(verdict("x", true, &mixed).is_err());
+        assert!(verdict("x", Expect::Pass, true, &mixed).is_err());
     }
 
     #[test]
     fn a_second_boot_banner_fails_even_after_pass() {
         let rebooted = format!("EggOS 0.1.0 (x86_64)\n{PASS_MARKER}\nEggOS 0.1.0 (x86_64)\n");
-        assert!(verdict("x", true, &rebooted).is_err());
+        assert!(verdict("x", Expect::Pass, true, &rebooted).is_err());
+    }
+
+    #[test]
+    fn fatal_exception_needs_the_report_then_the_fail_marker() {
+        let reported = format!(
+            "{PASS_MARKER}\n\n{EXCEPTION_PREFIX}#UD invalid opcode (code 0x0) at pc 0x1000\n{FAIL_MARKER}\n"
+        );
+        assert!(verdict("x", Expect::FatalException, true, &reported).is_ok());
+        assert!(verdict("x", Expect::FatalException, false, &reported).is_err());
+        // A plain pass, a panic or a fail marker before the report is not the exception path.
+        let pass = format!("{PASS_MARKER}\n");
+        assert!(verdict("x", Expect::FatalException, true, &pass).is_err());
+        let panic = format!("{PASS_MARKER}\nkernel panic: x\n{FAIL_MARKER}\n");
+        assert!(verdict("x", Expect::FatalException, true, &panic).is_err());
+        let early = format!("{FAIL_MARKER}\n{EXCEPTION_PREFIX}x\n");
+        assert!(verdict("x", Expect::FatalException, true, &early).is_err());
+        // Without the self-tests passing first, the run proves nothing about the vectors.
+        let no_pass = format!("{EXCEPTION_PREFIX}x\n{FAIL_MARKER}\n");
+        assert!(verdict("x", Expect::FatalException, true, &no_pass).is_err());
+        // And the fatal exception run is a failure when a pass is expected.
+        assert!(verdict("x", Expect::Pass, true, &reported).is_err());
     }
 
     #[test]
     fn marker_must_be_a_whole_line() {
         let embedded = format!("not {PASS_MARKER}\n");
-        assert!(verdict("x", true, &embedded).is_err());
+        assert!(verdict("x", Expect::Pass, true, &embedded).is_err());
     }
 }
