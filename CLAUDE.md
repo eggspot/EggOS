@@ -34,7 +34,8 @@ Check each task against these before starting and again before opening the PR.
 4. **100% CLI, 100% GUI, 100% AI: one capability, three front-ends.** Everything the OS can do
    (settings, files, apps, devices, network, users, components, ...) is built once as a typed system
    capability, then exposed three ways: a GUI, a CLI command, and an MCP tool. A feature is not done
-   until all three exist and are tested; a GUI-only or CLI-only feature is a bug. (D22)
+   until all three exist and are tested; a GUI-only or CLI-only feature is a bug. (Headless installs
+   such as servers simply leave the GUI front-end uninstalled.) (D22)
 5. **AI-native through a built-in MCP server.** The base includes the EggOS MCP server (Model Context
    Protocol, implemented by us in Rust from the public spec). Every system capability is an MCP tool
    or resource, so any AI agent can use the whole OS without screen scraping. Agents act only with
