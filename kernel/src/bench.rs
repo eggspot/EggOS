@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
-        let _scheduler = thread::host::lock_scheduler_and_frames_for_test();
+        let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let benchmarks = all::<CountingPlatform>();
         assert_eq!(run::<CountingPlatform, _>(&mut out, &benchmarks), Ok(()));
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn frame_benchmarks_run_on_the_host() {
-        let _lock = crate::thread::host::lock_scheduler_and_frames_for_test();
+        let _lock = crate::thread::host::lock_kernel_state_for_test();
         frame_allocate_untouched(ITERATIONS);
         frame_free_allocate(ITERATIONS);
         heap_allocate_free_small(ITERATIONS);

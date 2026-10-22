@@ -281,7 +281,7 @@ pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
         Err(error) => {
             drop(scheduler);
             // SAFETY: from `Box::into_raw` above; the thread that would have owned it never
-            // existed. (The stack, if any, was freed with the failed `Thread`.)
+            // existed. (The stack was freed when `new_thread` failed or was never called.)
             drop(unsafe { Box::from_raw(start) });
             return Err(error);
         }
@@ -425,22 +425,59 @@ pub(crate) mod host {
     }
 
     /// Held by every host test that uses the scheduler, boots the kernel or uses the kernel's
-    /// frame allocator ([`crate::memory::FRAMES`]), whose results depend on what other tests
-    /// take from it: there is one of each, and tests run in parallel. Also makes sure the frame
-    /// allocator exists, over the test platform's RAM, as boot leaves one.
-    pub(crate) fn lock_scheduler_and_frames_for_test() -> std::sync::MutexGuard<'static, ()> {
+    /// frame allocator ([`crate::memory::FRAMES`]) or heap ([`crate::HEAP`]): there is one of
+    /// each, and tests run in parallel.
+    pub(crate) fn lock_kernel_state_for_test() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
         // A test that panicked while holding the lock may leave the scheduler unusable, but
         // reporting that test's failure is what matters.
-        let guard = LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        use eggos_hal::Platform;
-        type P = crate::tests::TestPlatform;
-        crate::memory::FRAMES.lock().get_or_insert_with(|| {
-            crate::memory::FrameAllocator::new(&P::memory_map(), P::physical_memory_offset())
-        });
-        guard
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// [`lock_kernel_state_for_test`], plus a frame allocator for thread stacks: the
+    /// one boot left, or until the guard is dropped one over memory of its own. Never one over
+    /// the test platform's RAM, and never left behind: the boot test builds its allocator over
+    /// that RAM, and its heap self-test needs the heap to have taken no frames before.
+    pub(crate) fn frames_for_test() -> FramesForTest {
+        let lock = lock_kernel_state_for_test();
+        let mut frames = crate::memory::FRAMES.lock();
+        let installed = frames.is_none();
+        if installed {
+            use eggos_hal::memory::FRAME_SIZE;
+            use eggos_hal::{MemoryMap, PhysicalRange};
+            const BASE: u64 = 0x40_0000;
+            const FRAMES: u64 = 64;
+            // Aligned to the largest buddy block, as the direct maps are.
+            let block = (FRAME_SIZE as usize) << crate::memory::MAX_ORDER;
+            let memory = vec![0u8; FRAMES as usize * FRAME_SIZE as usize + block].leak();
+            let start = (memory.as_mut_ptr() as usize).next_multiple_of(block);
+            let mut map = MemoryMap::new();
+            map.add_ram(PhysicalRange::from_start_length(BASE, FRAMES * FRAME_SIZE));
+            *frames = Some(crate::memory::FrameAllocator::new(
+                &map,
+                start - BASE as usize,
+            ));
+        }
+        FramesForTest {
+            installed,
+            _lock: lock,
+        }
+    }
+
+    /// See [`frames_for_test`].
+    pub(crate) struct FramesForTest {
+        installed: bool,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for FramesForTest {
+        fn drop(&mut self) {
+            // Before the lock is released (fields drop after this).
+            if self.installed {
+                crate::memory::FRAMES.lock().take();
+            }
+        }
     }
 }
 
@@ -460,7 +497,7 @@ mod tests {
 
     #[test]
     fn threads_take_turns_in_spawn_order() {
-        let _lock = host::lock_scheduler_and_frames_for_test();
+        let _frames = host::frames_for_test();
         static LOG: SpinLock<Vec<(u32, u32)>> = SpinLock::new(Vec::new());
         LOG.lock().clear();
         let handles: Vec<JoinHandle> = (0..3)
@@ -486,7 +523,7 @@ mod tests {
 
     #[test]
     fn a_thread_that_exited_has_its_stack_freed() {
-        let _lock = host::lock_scheduler_and_frames_for_test();
+        let _frames = host::frames_for_test();
         let before = free_frames();
         let handle = spawn::<P, _>(|| {}).unwrap();
         assert!(free_frames() < before);
@@ -498,7 +535,7 @@ mod tests {
 
     #[test]
     fn yield_without_other_threads_returns_at_once() {
-        let _lock = host::lock_scheduler_and_frames_for_test();
+        let _frames = host::frames_for_test();
         yield_now::<P>();
         yield_now::<P>();
     }
