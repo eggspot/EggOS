@@ -775,3 +775,28 @@ Second step of M4.
   queues sharing the timer (tickless: no tick while one thread is runnable); per-CPU tick
   state and run queues (SMP); a measured worst-case gap between preemption points as a
   latency benchmark; a debug-build check that no lock is held at a preemption point.
+
+## D38 The direct map leaves early device pages out; x86 firmware tables are read only inside the direct map — Decided by the build loop (review fix)
+A review of D33 found two gaps on x86_64, neither visible on QEMU:
+- **A device page inside a firmware range.** x86_64's `physical_memory` covers every entry of
+  the loader's memory map (the ACPI tables sit in reserved entries), and loaders such as Xen
+  PVH dom0 list the local APIC's page as reserved. The kernel then mapped that page as normal,
+  cached memory in the direct map, and mapping it as a device afterwards failed ("a page is
+  mapped twice"), so boot stopped. Now `kernel_page_tables` leaves the pages of every early
+  device region out of the normal direct map and maps them as device memory only, on every
+  architecture: one page never gets two memory types. Should leaving them out split a range of
+  a memory map that is already full (64 ranges), which would drop other memory from the
+  direct map, building the tables fails (`TooManyRanges`) instead; and free memory that
+  overlaps an early device's page stops the boot, so the kernel never hands out (and writes)
+  a device's registers as RAM.
+- **ACPI tables outside the direct map.** `mapped` only checked that a table lay below 4 GiB,
+  while the kernel's direct map covers only `physical_memory`; a table in a hole of the
+  loader's map would have faulted at power-off. `mapped` now requires the table to lie inside
+  one range of `physical_memory`. The loader's own data (the start info and its memory map,
+  which `physical_memory` always includes) is checked against the boot map only
+  (`in_boot_direct_map`), since `physical_memory` itself reads it.
+- **Testing.** Host tests: a device page inside reported memory is mapped as a device, its
+  neighbours as normal memory, and a full map fails instead of losing memory; both fail
+  without the fix. QEMU boot and power-off on aarch64, riscv64 and x86_64.
+- **Still open (roadmap):** reserved ranges other than device pages are still direct-mapped
+  cached; mapping ACPI tables on demand and leaving reserved ranges out comes with M5.
