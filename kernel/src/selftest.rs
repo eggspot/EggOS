@@ -42,9 +42,13 @@ pub fn run<W: Write>(console: &mut W, tests: &[SelfTest]) -> Result<bool, core::
 }
 
 /// Lives in `.bss` (zero-initialised and interior-mutable, so it cannot be placed in
-/// read-only data). Reading anything but zero means the entry point did not clear `.bss`.
-/// QEMU hands over zeroed RAM, so this guards real hardware and warm reboots, where RAM
-/// holds whatever was there before.
+/// read-only data). Reading anything but zero means the entry point did not clear `.bss`, as
+/// on real hardware and warm reboots, where RAM holds whatever was there before.
+///
+/// QEMU hands over zeroed RAM, which would let a missing zeroing loop pass, so the QEMU boot
+/// tests look the probe up by its symbol name and fill it with a non-zero pattern before the
+/// kernel starts. The name must match `BSS_PROBE_SYMBOL` in `xtask`.
+#[unsafe(export_name = "eggos_selftest_bss_probe")]
 static BSS_PROBE: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 fn bss_is_zeroed() -> Result<(), &'static str> {

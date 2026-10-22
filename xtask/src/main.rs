@@ -4,6 +4,7 @@
 //! locally and in CI.
 
 mod bench;
+mod elf;
 mod qemu;
 
 use std::process::{Command, ExitCode};
@@ -153,11 +154,18 @@ fn ci() -> Result<(), String> {
 
 /// Boots `arch`'s kernel twice: once to pass its self-tests, once to check that the
 /// exception vectors report a fatal exception (an illegal instruction after the self-tests).
+/// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
 fn boot_tests(arch: &Arch) -> Result<(), String> {
-    let kernel = build_kernel(arch, Some("qemu-test"))?;
-    qemu::boot_test(arch, &kernel, qemu::Expect::Pass, &[])?;
-    let kernel = build_kernel(arch, Some("qemu-test-fatal-exception"))?;
-    qemu::boot_test(arch, &kernel, qemu::Expect::FatalException, &[]).map(drop)
+    for (feature, expect) in [
+        ("qemu-test", qemu::Expect::Pass),
+        ("qemu-test-fatal-exception", qemu::Expect::FatalException),
+    ] {
+        let kernel = build_kernel(arch, Some(feature))?;
+        let poison = qemu::bss_poison_args(&kernel)?;
+        let poison: Vec<&str> = poison.iter().map(String::as_str).collect();
+        qemu::boot_test(arch, &kernel, expect, &poison)?;
+    }
+    Ok(())
 }
 
 /// Lints the kernel crates as compiled for each bare-metal target, where the architecture

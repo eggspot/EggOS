@@ -1,6 +1,6 @@
 //! Booting kernel images in QEMU.
 
-use crate::Arch;
+use crate::{Arch, elf};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -32,6 +32,41 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 const BANNER_PREFIX: &str = "EggOS ";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1"];
+
+/// Symbol name of the kernel's `.bss` self-test probe (`BSS_PROBE` in
+/// `eggos_kernel::selftest`).
+const BSS_PROBE_SYMBOL: &str = "eggos_selftest_bss_probe";
+
+/// What the boot tests fill the `.bss` probe with before the kernel starts. The same byte
+/// everywhere, so it reads the same in either byte order.
+const BSS_POISON: u64 = 0xa5a5_a5a5_a5a5_a5a5;
+
+/// QEMU arguments that fill the kernel's `.bss` probe with [`BSS_POISON`] before the first
+/// instruction runs (one `loader` device per 8-byte word; QEMU applies them at reset, after
+/// loading the kernel image and before any firmware). QEMU itself hands over zeroed RAM, so
+/// without this the `bss_is_zeroed` self-test would pass even if the entry point never
+/// cleared `.bss`.
+pub fn bss_poison_args(kernel: &Path) -> Result<Vec<String>, String> {
+    let image = std::fs::read(kernel).map_err(|e| format!("{}: {e}", kernel.display()))?;
+    let probe = elf::find_symbol(&image, BSS_PROBE_SYMBOL)
+        .map_err(|e| format!("{}: {e}", kernel.display()))?;
+    if probe.size == 0 || probe.size % 8 != 0 {
+        return Err(format!(
+            "{}: `{BSS_PROBE_SYMBOL}` is {} bytes, not a whole number of 8-byte words",
+            kernel.display(),
+            probe.size
+        ));
+    }
+    Ok((0..probe.size / 8)
+        .flat_map(|word| {
+            let address = probe.physical_address + word * 8;
+            [
+                "-device".to_string(),
+                format!("loader,addr={address:#x},data={BSS_POISON:#x},data-len=8"),
+            ]
+        })
+        .collect())
+}
 
 /// Boots `kernel` headless with `extra_args` added to QEMU's and passes only if QEMU powers
 /// off cleanly within the timeout and the console shows what `expect` asks for (see
