@@ -666,6 +666,20 @@ impl Platform for X86_64 {
         access()
     }
 
+    unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
+        // SAFETY: the caller's guarantees are `run_user`'s.
+        unsafe { exception::run_user(context) }
+    }
+
+    fn user_test_program() -> crate::user::TestProgram {
+        exception::user_test_program()
+    }
+
+    fn make_instructions_visible(_start: usize, _length: usize) {
+        // x86 keeps instruction fetch coherent with stores to the same memory, and a program
+        // is first entered through `iretq`, which serializes: nothing to do.
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,
@@ -734,6 +748,14 @@ impl Platform for X86_64 {
         // `cpu_local`. Loading a selector into GS (the entry code does, before this) would
         // reset the base, which nothing does afterwards.
         unsafe { write_msr(IA32_GS_BASE, block as u64) };
+        // SAFETY: the caller guarantees a block that lives as long as the kernel runs, with a
+        // `HalCpuLocal` at `HAL_CPU_LOCAL_OFFSET`.
+        let hal = unsafe {
+            &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
+        };
+        // SAFETY: only the HAL uses that part (the caller's guarantee), and it is this CPU's,
+        // since its GS base points there now. Interrupts are masked, as the kernel runs.
+        unsafe { exception::set_up_user_mode(hal) };
     }
 
     #[inline]
@@ -768,6 +790,19 @@ impl Platform for X86_64 {
         // `cpus` lists xAPIC ids only, which fit in a byte.
         timer::wake(cpu as u8);
     }
+}
+
+/// Reads model-specific register `msr`, which must be an architectural one every x86_64 CPU has
+/// (reading one has no side effects).
+fn read_msr(msr: u32) -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: `rdmsr` of an architectural MSR, which every x86_64 CPU has (the caller's duty), at
+    // ring 0 has no side effects.
+    unsafe {
+        core::arch::asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
+            options(nomem, nostack, preserves_flags));
+    }
+    u64::from(high) << 32 | u64::from(low)
 }
 
 /// Writes `value` to model-specific register `msr`.

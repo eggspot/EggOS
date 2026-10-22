@@ -23,6 +23,8 @@
 //! arms this CPU's) and other CPUs can wake it ([`crate::Platform::wake_cpu`]).
 
 #[cfg(target_arch = "x86_64")]
+use core::cell::UnsafeCell;
+#[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicU64;
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
@@ -69,6 +71,10 @@ pub struct HalCpuLocal {
     #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     timer_deadline: AtomicU64,
+    /// x86_64: this CPU's GDT and TSS, which user mode needs (D47).
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    pub(crate) x86: X86CpuTables,
 }
 
 impl HalCpuLocal {
@@ -76,9 +82,69 @@ impl HalCpuLocal {
         Self {
             #[cfg(target_arch = "x86_64")]
             timer_deadline: AtomicU64::new(u64::MAX),
+            #[cfg(target_arch = "x86_64")]
+            x86: X86CpuTables(UnsafeCell::new(X86Tables {
+                gdt: [0; GDT_ENTRIES],
+                tss: Tss {
+                    reserved0: 0,
+                    rsp: [0; 3],
+                    reserved1: 0,
+                    ist: [0; 7],
+                    reserved2: 0,
+                    reserved3: 0,
+                    io_map_base: 0,
+                },
+                user_rsp: 0,
+            })),
         }
     }
 }
+
+/// x86_64: a CPU's own descriptor tables (D47). The TSS is per CPU (its `RSP0` is where an
+/// interrupt from ring 3 lands, and `ltr` marks its descriptor busy), so the GDT that holds its
+/// descriptor is too. Written by the CPU itself in `set_cpu_local`, then read by the CPU (the
+/// GDT and TSS) and by its ring-3 entry and exit code, GS-relative.
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct X86CpuTables(pub(crate) UnsafeCell<X86Tables>);
+
+// SAFETY: only the CPU whose block this is touches it (`set_cpu_local` and its own entry and exit
+// code), with interrupts masked; other CPUs never do.
+#[cfg(target_arch = "x86_64")]
+unsafe impl Sync for X86CpuTables {}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug)]
+#[repr(C)]
+pub(crate) struct X86Tables {
+    pub(crate) gdt: [u64; GDT_ENTRIES],
+    pub(crate) tss: Tss,
+    /// The program's `rsp` for the moment between `syscall` and its frame being pushed.
+    pub(crate) user_rsp: u64,
+}
+
+/// Null, kernel code and data, user data and code, and the TSS's two.
+#[cfg(target_arch = "x86_64")]
+pub(crate) const GDT_ENTRIES: usize = 7;
+
+/// The 64-bit task-state segment (SDM vol. 3A, figure 8-11): only `RSP0` is used, and no I/O
+/// permission bitmap (`io_map_base` past the end), so ring 3 has no port access.
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug)]
+#[repr(C, packed(4))]
+pub(crate) struct Tss {
+    pub(crate) reserved0: u32,
+    pub(crate) rsp: [u64; 3],
+    pub(crate) reserved1: u64,
+    pub(crate) ist: [u64; 7],
+    pub(crate) reserved2: u64,
+    pub(crate) reserved3: u16,
+    pub(crate) io_map_base: u16,
+}
+
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<Tss>() == 104);
 
 impl Default for HalCpuLocal {
     fn default() -> Self {
@@ -88,6 +154,21 @@ impl Default for HalCpuLocal {
 
 /// Where a per-CPU block holds its [`HalCpuLocal`]: right after the block's own address.
 pub const HAL_CPU_LOCAL_OFFSET: usize = 8;
+
+/// Where this CPU's `TSS.RSP0` is in a per-CPU block (x86_64).
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub(crate) const TSS_RSP0_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
+    + core::mem::offset_of!(HalCpuLocal, x86)
+    + core::mem::offset_of!(X86Tables, tss)
+    + core::mem::offset_of!(Tss, rsp);
+
+/// Where the program's `rsp` is kept on the way in from `syscall` in a per-CPU block (x86_64).
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub(crate) const USER_RSP_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
+    + core::mem::offset_of!(HalCpuLocal, x86)
+    + core::mem::offset_of!(X86Tables, user_rsp);
 
 /// Where the x86_64 timer's deadline is in a per-CPU block.
 #[cfg(target_arch = "x86_64")]

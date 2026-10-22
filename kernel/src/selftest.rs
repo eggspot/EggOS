@@ -6,14 +6,15 @@ use crate::HEAP;
 use crate::address_space::AddressSpace;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::sync::SpinLock;
-use crate::{cpu, exception, interrupt, thread};
+use crate::{cpu, exception, interrupt, thread, user};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
+use eggos_hal::user::{TestProgram, UserExit};
+use eggos_hal::{ExceptionKind, Platform};
 
 /// Printed when every self-test passed. The QEMU runner requires this exact line.
 pub const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
@@ -42,7 +43,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 15] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 16] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -63,6 +64,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 15] {
         (
             "address_spaces_keep_user_pages_apart",
             address_spaces_keep_user_pages_apart::<P>,
+        ),
+        (
+            "user_programs_make_system_calls_and_fault",
+            user_programs_make_system_calls_and_fault::<P>,
         ),
         ("threads_take_turns_and_free_their_stacks", |_| {
             threads_take_turns_and_free_their_stacks::<P>()
@@ -492,6 +497,93 @@ fn address_spaces_keep_user_pages_apart<P: Platform>(
     result?;
     if frames.free_frames() != before {
         return Err("dropping the address spaces did not free their tables");
+    }
+    Ok(())
+}
+
+/// A program in user mode must make system calls with its arguments in the ABI's registers, get
+/// each result back with every other register as it was, and, reading kernel memory, fault
+/// without stopping the kernel; a timer interrupt must take the CPU back from a program that
+/// never makes a system call. Everything the program took must be freed afterwards (D47).
+fn user_programs_make_system_calls_and_fault<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    const FIRST_RESULT: u64 = 0x5eed;
+    let free_frames = || {
+        memory::FRAMES
+            .lock()
+            .as_ref()
+            .map_or(0, FrameAllocator::free_frames)
+    };
+    let before = free_frames();
+    let kernel_address = {
+        let image = P::kernel_image();
+        image.virtual_address(image.rodata_start)
+    };
+    // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable` activated on
+    // this CPU, and every CPU started since runs on them.
+    let program = unsafe { user::LoadedTestProgram::<P>::new(&memory.page_tables) }?;
+    let syscall = |context: &eggos_hal::user::UserContext, exit, number| {
+        if exit != UserExit::Syscall {
+            return Err("the program did not make its system call");
+        }
+        if context.syscall_number() != number {
+            return Err("a system call came with the wrong number");
+        }
+        Ok(context.syscall_arguments())
+    };
+    program.with_active(|| {
+        let mut context = program.context(|program| program.checks);
+        // SAFETY: interrupts are masked, as the kernel runs; the program's address space is
+        // active, sharing the kernel's half; nothing here switches threads or address spaces
+        // before `run_user` returns. The same holds for each `run_user` below.
+        let exit = unsafe { P::run_user(&mut context) };
+        if syscall(&context, exit, TestProgram::SYSCALL_FIRST)? != [1, 2, 3, 4, 5, 6] {
+            return Err("a system call's arguments did not arrive");
+        }
+        context.set_syscall_result(FIRST_RESULT);
+        // SAFETY: as above.
+        let exit = unsafe { P::run_user(&mut context) };
+        let [result, differences, ..] = syscall(&context, exit, TestProgram::SYSCALL_REPORT)?;
+        if result != FIRST_RESULT {
+            return Err("a system call's result did not reach the program");
+        }
+        if differences != 0 {
+            return Err("the program's registers changed across a system call");
+        }
+        context.set_syscall_result(kernel_address);
+        // SAFETY: as above.
+        match unsafe { P::run_user(&mut context) } {
+            UserExit::Exception(exception)
+                if exception.kind == ExceptionKind::DataFault
+                    && exception.address == Some(kernel_address)
+                    && (user::TEST_PROGRAM_ADDRESS..user::TEST_PROGRAM_ADDRESS + FRAME_SIZE)
+                        .contains(&exception.pc) => {}
+            UserExit::Exception(_) => {
+                return Err("the program's read of kernel memory was misreported");
+            }
+            _ => return Err("the program read kernel memory without a fault"),
+        }
+        let mut context = program.context(|program| program.spin);
+        let spin = context.pc();
+        let timer_interrupts = interrupt::timer_interrupts::<P>();
+        // A deadline already passed: the interrupt is pending as the program starts.
+        P::set_timer_deadline(0);
+        // SAFETY: as above.
+        if unsafe { P::run_user(&mut context) } != UserExit::Interrupt {
+            return Err("a timer interrupt did not take the CPU back from the program");
+        }
+        if interrupt::timer_interrupts::<P>() <= timer_interrupts {
+            return Err("the timer interrupt from user mode did not reach the kernel");
+        }
+        if context.pc() != spin {
+            return Err("the interrupted program is not where it was");
+        }
+        Ok(())
+    })?;
+    drop(program);
+    if free_frames() != before {
+        return Err("the program's frame and tables were not all freed");
     }
     Ok(())
 }
@@ -1103,6 +1195,15 @@ mod tests {
         fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
             access()
         }
+        unsafe fn run_user(
+            _context: &mut eggos_hal::user::UserContext,
+        ) -> eggos_hal::user::UserExit {
+            unreachable!()
+        }
+        fn user_test_program() -> eggos_hal::user::TestProgram {
+            unreachable!()
+        }
+        fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,
@@ -1202,6 +1303,15 @@ mod tests {
         fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
             access()
         }
+        unsafe fn run_user(
+            _context: &mut eggos_hal::user::UserContext,
+        ) -> eggos_hal::user::UserExit {
+            unreachable!()
+        }
+        fn user_test_program() -> eggos_hal::user::TestProgram {
+            unreachable!()
+        }
+        fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,

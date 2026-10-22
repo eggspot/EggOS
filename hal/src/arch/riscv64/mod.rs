@@ -440,6 +440,21 @@ impl Platform for Riscv64 {
         result
     }
 
+    unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
+        // SAFETY: the caller's guarantees are `run_user`'s.
+        unsafe { exception::run_user(context) }
+    }
+
+    fn user_test_program() -> crate::user::TestProgram {
+        exception::user_test_program()
+    }
+
+    fn make_instructions_visible(_start: usize, _length: usize) {
+        // SAFETY: `fence.i` orders this hart's instruction fetches after its earlier stores;
+        // it changes no memory contents.
+        unsafe { core::arch::asm!("fence.i", options(nostack)) };
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

@@ -474,6 +474,34 @@ impl Platform for Aarch64 {
         access()
     }
 
+    unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
+        // SAFETY: the caller's guarantees are `run_user`'s.
+        unsafe { exception::run_user(context) }
+    }
+
+    fn user_test_program() -> crate::user::TestProgram {
+        exception::user_test_program()
+    }
+
+    fn make_instructions_visible(start: usize, length: usize) {
+        let ctr: u64;
+        // SAFETY: reading the cache type register has no side effects.
+        unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+        // CTR_EL0.DminLine: log2 of the smallest data cache line, in words.
+        let line = 4usize << (ctr >> 16 & 0xf);
+        let mut address = start & !(line - 1);
+        while address < start + length {
+            // SAFETY: cleaning a line to the point of unification writes back what the caller
+            // wrote and changes no memory contents; `address` is in the caller's mapped range.
+            unsafe { core::arch::asm!("dc cvau, {}", in(reg) address, options(nostack)) };
+            address += line;
+        }
+        // SAFETY: barriers and instruction cache invalidation change no memory contents. The
+        // whole instruction cache is invalidated, not by address, so that no alias of the
+        // lines (another virtual address of the same frames, as user space has) stays stale.
+        unsafe { core::arch::asm!("dsb ish", "ic iallu", "dsb ish", "isb", options(nostack)) };
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

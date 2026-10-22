@@ -2,14 +2,17 @@
 //!
 //! `VBAR_EL1` points at a 2 KiB-aligned table of 16 entries, 128 bytes each: four groups
 //! (current EL with SP_EL0, current EL with SP_ELx, lower EL in AArch64, lower EL in AArch32)
-//! of four types (synchronous, IRQ, FIQ, SError). Every entry saves the general-purpose
+//! of four types (synchronous, IRQ, FIQ, SError). Every entry from EL1 saves the general-purpose
 //! registers, `ELR_EL1` and `SPSR_EL1` on the current stack, then calls [`aarch64_exception`]
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
+//! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` included, into its
+//! `UserContext`, where `SP_EL1` points while it runs, and returns from [`run_user`] instead.
 //! The kernel uses no FP/SIMD registers (D10), so they are not saved.
 
 use super::timer;
 use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
+use crate::user::{self, TestProgram, UserContext, UserExit};
 
 core::arch::global_asm!(
     r#"
@@ -19,6 +22,16 @@ core::arch::global_asm!(
     stp     x0, x1, [sp, #0]
     mov     x1, #\index
     b       exception_common
+    .endm
+
+    // From EL0 (D47): `SP_EL1` points just past the saved part of the running program's
+    // `UserContext`, so the registers go straight into it.
+    .macro USER_ENTRY index
+    .balign 0x80
+    sub     sp, sp, #{user_saved_size}
+    stp     x0, x1, [sp, #0]
+    mov     x1, #\index
+    b       user_exception_common
     .endm
 
     .pushsection .text.vectors, "ax"
@@ -33,14 +46,14 @@ exception_vectors:
     EXCEPTION_ENTRY 5
     EXCEPTION_ENTRY 6
     EXCEPTION_ENTRY 7
-    EXCEPTION_ENTRY 8
-    EXCEPTION_ENTRY 9
-    EXCEPTION_ENTRY 10
-    EXCEPTION_ENTRY 11
-    EXCEPTION_ENTRY 12
-    EXCEPTION_ENTRY 13
-    EXCEPTION_ENTRY 14
-    EXCEPTION_ENTRY 15
+    USER_ENTRY 8
+    USER_ENTRY 9
+    USER_ENTRY 10
+    USER_ENTRY 11
+    USER_ENTRY 12
+    USER_ENTRY 13
+    USER_ENTRY 14
+    USER_ENTRY 15
 
 exception_common:
     stp     x2, x3, [sp, #16]
@@ -86,9 +99,137 @@ exception_common:
     ldp     x0, x1, [sp, #0]
     add     sp, sp, #{frame_size}
     eret
+
+    // The rest of the way out of EL0: save the program's registers in its `UserContext`
+    // (`sp`), record the vector entry, then return from `aarch64_enter_user` on the kernel
+    // stack it left.
+user_exception_common:
+    stp     x2, x3, [sp, #16]
+    stp     x4, x5, [sp, #32]
+    stp     x6, x7, [sp, #48]
+    stp     x8, x9, [sp, #64]
+    stp     x10, x11, [sp, #80]
+    stp     x12, x13, [sp, #96]
+    stp     x14, x15, [sp, #112]
+    stp     x16, x17, [sp, #128]
+    stp     x18, x19, [sp, #144]
+    stp     x20, x21, [sp, #160]
+    stp     x22, x23, [sp, #176]
+    stp     x24, x25, [sp, #192]
+    stp     x26, x27, [sp, #208]
+    stp     x28, x29, [sp, #224]
+    mrs     x2, elr_el1
+    stp     x30, x2, [sp, #240]
+    mrs     x2, spsr_el1
+    mrs     x3, sp_el0
+    stp     x2, x3, [sp, #256]
+    ldr     x2, [sp, #{user_saved_size}]
+    str     x1, [sp, #{user_saved_size} + 8]
+    mov     sp, x2
+    ldp     x19, x20, [sp, #0]
+    ldp     x21, x22, [sp, #16]
+    ldp     x23, x24, [sp, #32]
+    ldp     x25, x26, [sp, #48]
+    ldp     x27, x28, [sp, #64]
+    ldp     x29, x30, [sp, #80]
+    add     sp, sp, #96
+    ret
+
+    // `aarch64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
+    // the stack pointer in the context, points `SP_EL1` just past the context's saved part and
+    // enters EL0 with the program's registers. Returns through `user_exception_common`.
+    .global aarch64_enter_user
+aarch64_enter_user:
+    sub     sp, sp, #96
+    stp     x19, x20, [sp, #0]
+    stp     x21, x22, [sp, #16]
+    stp     x23, x24, [sp, #32]
+    stp     x25, x26, [sp, #48]
+    stp     x27, x28, [sp, #64]
+    stp     x29, x30, [sp, #80]
+    mov     x1, sp
+    str     x1, [x0, #{user_saved_size}]
+    ldp     x2, x3, [x0, #256]
+    msr     spsr_el1, x2
+    msr     sp_el0, x3
+    ldr     x2, [x0, #248]
+    msr     elr_el1, x2
+    add     x1, x0, #{user_saved_size}
+    mov     sp, x1
+    ldp     x2, x3, [x0, #16]
+    ldp     x4, x5, [x0, #32]
+    ldp     x6, x7, [x0, #48]
+    ldp     x8, x9, [x0, #64]
+    ldp     x10, x11, [x0, #80]
+    ldp     x12, x13, [x0, #96]
+    ldp     x14, x15, [x0, #112]
+    ldp     x16, x17, [x0, #128]
+    ldp     x18, x19, [x0, #144]
+    ldp     x20, x21, [x0, #160]
+    ldp     x22, x23, [x0, #176]
+    ldp     x24, x25, [x0, #192]
+    ldp     x26, x27, [x0, #208]
+    ldp     x28, x29, [x0, #224]
+    ldr     x30, [x0, #240]
+    ldp     x0, x1, [x0, #0]
+    eret
+    // Never reached: no speculation past the `eret` (straight-line speculation).
+    dsb     nsh
+    isb
+    .popsection
+
+    // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
+    // data. Copied to a user page, never run where it is linked.
+    .pushsection .rodata.user_test, "a"
+    .balign 4
+    .global aarch64_user_test_start
+aarch64_user_test_start:
+    .global aarch64_user_test_checks
+aarch64_user_test_checks:
+    mov     x0, #1
+    mov     x1, #2
+    mov     x2, #3
+    mov     x3, #4
+    mov     x4, #5
+    mov     x5, #6
+    .irp n, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+    mov     x\n, #(0x100 + \n)
+    .endr
+    mov     x8, #{syscall_first}
+    svc     #0
+    // Every register but x0 must be as it was: x1 collects the differences.
+    sub     x1, x1, #2
+    .irp n, 2, 3, 4, 5
+    sub     x\n, x\n, #(\n + 1)
+    orr     x1, x1, x\n
+    .endr
+    sub     x8, x8, #{syscall_first}
+    orr     x1, x1, x8
+    .irp n, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+    sub     x\n, x\n, #(0x100 + \n)
+    orr     x1, x1, x\n
+    .endr
+    mov     x8, #{syscall_report}
+    svc     #0
+    ldr     x1, [x0]
+1:  b       1b
+    .global aarch64_user_test_null_syscalls
+aarch64_user_test_null_syscalls:
+    mov     x8, #{syscall_null}
+2:  svc     #0
+    b       2b
+    .global aarch64_user_test_spin
+aarch64_user_test_spin:
+3:  b       3b
+    .global aarch64_user_test_end
+aarch64_user_test_end:
     .popsection
 "#,
     frame_size = const core::mem::size_of::<TrapFrame>(),
+    user_saved_size = const user::aarch64::SAVED_SIZE,
+    syscall_first = const TestProgram::SYSCALL_FIRST,
+    syscall_report = const TestProgram::SYSCALL_REPORT,
+    syscall_null = const TestProgram::SYSCALL_NULL,
     handler = sym aarch64_exception,
 );
 
@@ -148,7 +289,71 @@ extern "C" fn aarch64_exception(frame: &mut TrapFrame, index: u64) {
     }
 }
 
+unsafe extern "C" {
+    /// Enters EL0 with `context`'s registers; returns once an exception from EL0 has saved them
+    /// back, with the vector entry in `context.vector`.
+    fn aarch64_enter_user(context: *mut user::aarch64::Registers);
+    static aarch64_user_test_start: u8;
+    static aarch64_user_test_checks: u8;
+    static aarch64_user_test_null_syscalls: u8;
+    static aarch64_user_test_spin: u8;
+    static aarch64_user_test_end: u8;
+}
+
+/// `SPSR_EL1`'s condition flags (N, Z, C, V): all a program may keep of it. The rest is zero:
+/// EL0 with `SP_EL0` (EL0t), AArch64, and debug, SError, IRQ and FIQ unmasked.
+const SPSR_FLAGS: u64 = 0xf << 28;
+
+/// [`crate::Platform::run_user`]: the caller guarantees interrupts are masked and the active
+/// tables' kernel half is the kernel's.
+pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
+    let registers = &mut context.arch;
+    registers.spsr &= SPSR_FLAGS;
+    // SAFETY: interrupts are masked (the caller's duty), so nothing runs between the switch
+    // of `SP_EL1` to the context and the `eret`; the exception that ends the program saves its
+    // registers into the context, which `&mut` keeps valid and unaliased, and returns here on
+    // the kernel stack with the callee-saved registers restored. `SPSR_EL1` is sanitized above,
+    // so the program runs at EL0, where it reaches only user mappings and cannot change
+    // `VBAR_EL1`, `SP_EL1` or the translation tables.
+    unsafe { aarch64_enter_user(registers) };
+    let index = registers.vector;
+    if index % 4 == TYPE_IRQ {
+        irq(registers.elr);
+        return UserExit::Interrupt;
+    }
+    let esr: u64;
+    let far: u64;
+    // SAFETY: as in `aarch64_exception`: no side effects. Nothing since the exception from EL0
+    // has taken another (interrupts are masked and the kernel code above cannot fault).
+    unsafe { core::arch::asm!("mrs {}, esr_el1", out(reg) esr, options(nomem, nostack)) };
+    // SAFETY: as above.
+    unsafe { core::arch::asm!("mrs {}, far_el1", out(reg) far, options(nomem, nostack)) };
+    if index % 4 == TYPE_SYNCHRONOUS && esr >> 26 & 0x3f == EC_SVC64 {
+        // `ELR_EL1` already points after the `svc`.
+        return UserExit::Syscall;
+    }
+    UserExit::Exception(decode(index % 4, esr, far, registers.elr))
+}
+
+/// [`crate::Platform::user_test_program`].
+pub(super) fn user_test_program() -> TestProgram {
+    let start = (&raw const aarch64_user_test_start) as usize;
+    let end = (&raw const aarch64_user_test_end) as usize;
+    // SAFETY: the symbols bound the program's bytes in `.rodata.user_test`, which is part of the
+    // kernel image, read-only and never written, for as long as the kernel runs.
+    let code = unsafe { core::slice::from_raw_parts(start as *const u8, end - start) };
+    TestProgram {
+        code,
+        checks: (&raw const aarch64_user_test_checks) as usize - start,
+        null_syscalls: (&raw const aarch64_user_test_null_syscalls) as usize - start,
+        spin: (&raw const aarch64_user_test_spin) as usize - start,
+    }
+}
+
 /// Takes the pending interrupt from the GIC and handles it.
+// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
+// trap path keeps its length (D47).
+#[inline(always)]
 fn irq(pc: u64) {
     let Some(interrupt) = timer::acknowledge() else {
         return; // Spurious: the interrupt went away before it was acknowledged.
@@ -179,6 +384,9 @@ fn irq(pc: u64) {
     }
 }
 
+// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
+// trap path keeps its length (D47).
+#[inline(always)]
 fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     let class = esr >> 26 & 0x3f;
     let (kind, name, far_valid) = match entry_type {

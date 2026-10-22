@@ -17,6 +17,7 @@ pub mod memory;
 pub mod paging;
 pub mod thread;
 pub mod time;
+pub mod user;
 
 pub use exception::{Exception, ExceptionKind};
 pub use interrupt::Interrupt;
@@ -160,6 +161,32 @@ pub trait Platform {
     /// block or switch threads.
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R;
 
+    /// Runs the user program whose registers are in `context`, in user mode with the address
+    /// space active on this CPU, until a system call, an interrupt or an exception takes the CPU
+    /// back to the kernel; saves the program's registers in `context` and says why (D47). The
+    /// program runs with interrupts unmasked; the kernel continues with them masked. Values in
+    /// `context` that would let the program out of user mode are not used: the HAL enters
+    /// user mode with its own privilege, interrupt and segment settings, and on x86_64 a
+    /// program counter outside user space is refused (as an [`ExceptionKind::InstructionFault`])
+    /// without entering, since `sysretq` and `iretq` would fault in the kernel.
+    ///
+    /// # Safety
+    /// Interrupts must be masked (as the kernel runs outside [`Self::wait_for_interrupt`]): the
+    /// way in and out passes through code no handler may interrupt. The active page tables'
+    /// kernel half must be the kernel's own, as [`Self::switch_address_space`] keeps it, and
+    /// nothing may switch this CPU's address space or threads until the call returns.
+    unsafe fn run_user(context: &mut user::UserContext) -> user::UserExit;
+
+    /// The user-mode test program for the boot self-tests and benchmarks (D47).
+    fn user_test_program() -> user::TestProgram;
+
+    /// Makes the instructions just written as data at kernel virtual addresses
+    /// `start..start + length` visible to instruction fetch on this CPU, at any virtual address
+    /// that maps them: on AArch64 it cleans the data cache to the point of unification and
+    /// invalidates the instruction cache, on RISC-V it runs `fence.i`; x86 keeps the two
+    /// coherent itself. Another CPU that will run them needs the same on it.
+    fn make_instructions_visible(start: usize, length: usize);
+
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls
     /// `entry(argument)` on that stack, with interrupts masked (D35). `entry` must never return.
@@ -207,6 +234,8 @@ pub trait Platform {
     unsafe fn start_cpu(cpu: u64, start: &cpu::CpuStart) -> Result<(), cpu::StartCpuError>;
 
     /// Sets this CPU's per-CPU block pointer, which [`Self::cpu_local`] returns from then on.
+    /// On x86_64 it also loads this CPU's own GDT and TSS from the block's HAL part and sets
+    /// `syscall` up, which [`Self::run_user`] needs (D47).
     ///
     /// # Safety
     /// `block` must be the address of a block that lives for as long as the kernel runs, whose

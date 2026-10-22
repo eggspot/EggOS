@@ -6,16 +6,25 @@
 //! interrupt's 0x31 and the APIC's spurious vector 0xff, see [`super::timer`]). Each points at
 //! a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where the
 //! CPU pushes none), so every exception and interrupt reaches `exception_common` with the same
-//! frame. That saves the general-purpose registers, calls [`x86_64_exception`] with the frame, and
-//! restores everything and `iretq`s if it returns. The kernel target uses no SSE/x87
-//! registers (`x86_64-unknown-none` is soft-float), so they are not saved.
+//! frame. From the kernel, that saves the registers a call may change (the handler keeps the
+//! others itself), calls [`x86_64_exception`] with the frame, and restores them and `iretq`s if
+//! it returns. From ring 3 (D47), the CPU has switched to this CPU's `TSS.RSP0`, which points
+//! into the running program's `UserContext`: the entry saves every register there, switches
+//! back to the kernel's GS base and returns from [`run_user`]; `syscall` builds the same frame
+//! and joins it. The kernel target uses no SSE/x87 registers (`x86_64-unknown-none` is
+//! soft-float), so they are not saved.
 //!
 //! All exceptions run on the current stack: there is no IST stack yet, so a stack overflow
 //! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
-//! stacks for double faults and NMIs come with the kernel's own page tables (M2).
+//! stacks for double faults, NMIs and machine checks are needed before untrusted programs run
+//! (D47): `syscall` and `sysretq` leave a moment in ring 0 on the program's stack.
 
 use super::timer::{self, APIC_SPURIOUS_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR, WAKEUP_VECTOR};
+use crate::cpu::{GDT_ENTRIES, HalCpuLocal, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET};
 use crate::exception::{Exception, ExceptionKind, deliver};
+use crate::paging::{Format, x86_64::X86_64};
+use crate::user::x86_64::{NOT_RUN_VECTOR, Registers, SYSCALL_VECTOR};
+use crate::user::{TestProgram, UserContext, UserExit};
 use core::cell::UnsafeCell;
 
 core::arch::global_asm!(
@@ -82,6 +91,43 @@ apic_spurious_stub:
     EXCEPTION_STUB 255
 
 exception_common:
+    // From ring 3 (D47)? The code segment the CPU pushed is above the vector and error code.
+    testb   $3, 24(%rsp)
+    jnz     user_exception
+    // From the kernel: the handler keeps the callee-saved registers itself, as any call does.
+    pushq   %rax
+    pushq   %rcx
+    pushq   %rdx
+    pushq   %rsi
+    pushq   %rdi
+    pushq   %r8
+    pushq   %r9
+    pushq   %r10
+    pushq   %r11
+    // The CPU aligned the stack to 16 bytes before pushing its 5-word frame; with the error
+    // code, the vector and 9 registers (16 words) it is aligned again, as the call needs.
+    movq    %rsp, %rdi
+    cld
+    call    {handler}
+    popq    %r11
+    popq    %r10
+    popq    %r9
+    popq    %r8
+    popq    %rdi
+    popq    %rsi
+    popq    %rdx
+    popq    %rcx
+    popq    %rax
+    addq    $16, %rsp               // vector and error code
+    iretq
+
+    // From ring 3: the CPU switched to `TSS.RSP0`, which points just past the saved part of the
+    // running program's `UserContext`, so the frame and the registers go straight into it.
+    // Then back to the kernel's GS base, and return from `x86_64_enter_user` on the kernel
+    // stack it left.
+user_exception:
+    swapgs
+user_exception_save:
     pushq   %rax
     pushq   %rbx
     pushq   %rcx
@@ -97,11 +143,54 @@ exception_common:
     pushq   %r13
     pushq   %r14
     pushq   %r15
-    // The CPU aligned the stack to 16 bytes before pushing its 5-word frame; with the error
-    // code, the vector and 15 registers (22 words) it is aligned again, as the call needs.
-    movq    %rsp, %rdi
+    // The program's direction flag is its own; the kernel's code needs it clear.
     cld
-    call    {handler}
+    movq    {kernel_rsp}(%rsp), %rsp
+    popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %rbp
+    popq    %rbx
+    retq
+
+    // `syscall` from ring 3 (IA32_LSTAR): interrupts, the trap and direction flags are masked
+    // (IA32_FMASK), the stack is still the program's. Builds the frame an interrupt from ring 3
+    // would have in the `UserContext`, with the `syscall` vector, and saves the rest as above.
+    .balign 16
+    .global x86_64_syscall_entry
+x86_64_syscall_entry:
+    swapgs
+    movq    %rsp, %gs:{user_rsp}
+    movq    %gs:{tss_rsp0}, %rsp
+    pushq   ${user_ss}
+    pushq   %gs:{user_rsp}
+    pushq   %r11                    // rflags
+    pushq   ${user_cs}
+    pushq   %rcx                    // rip
+    pushq   $0                      // error code
+    pushq   ${syscall_vector}
+    jmp     user_exception_save
+
+    // `x86_64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
+    // the stack pointer in the context, points `TSS.RSP0` just past the context's saved part
+    // and enters ring 3 with the program's registers: with `sysretq` after a system call
+    // (`rcx` and `r11` take its `rip` and `rflags`), with `iretq` otherwise. Returns through
+    // `user_exception_save`.
+    .global x86_64_enter_user
+x86_64_enter_user:
+    pushq   %rbx
+    pushq   %rbp
+    pushq   %r12
+    pushq   %r13
+    pushq   %r14
+    pushq   %r15
+    movq    %rsp, {kernel_rsp}(%rdi)
+    leaq    {kernel_rsp}(%rdi), %rax
+    movq    %rax, %gs:{tss_rsp0}
+    movq    %rdi, %rsp
+    cmpq    ${syscall_vector}, {vector}(%rdi)
+    je      1f
     popq    %r15
     popq    %r14
     popq    %r13
@@ -118,10 +207,104 @@ exception_common:
     popq    %rbx
     popq    %rax
     addq    $16, %rsp               // vector and error code
+    swapgs
     iretq
+1:  popq    %r15
+    popq    %r14
+    popq    %r13
+    popq    %r12
+    popq    %r11
+    popq    %r10
+    popq    %r9
+    popq    %r8
+    popq    %rbp
+    popq    %rdi
+    popq    %rsi
+    popq    %rdx
+    popq    %rcx
+    popq    %rbx
+    popq    %rax
+    movq    16(%rsp), %rcx          // rip
+    movq    32(%rsp), %r11          // rflags
+    movq    40(%rsp), %rsp          // the program's stack
+    swapgs
+    sysretq
+    .popsection
+
+    // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
+    // data. Copied to a user page, never run where it is linked.
+    .pushsection .rodata.user_test, "a"
+    .global x86_64_user_test_start
+x86_64_user_test_start:
+    .global x86_64_user_test_checks
+x86_64_user_test_checks:
+    movl    $1, %edi
+    movl    $2, %esi
+    movl    $3, %edx
+    movl    $4, %r10d
+    movl    $5, %r8d
+    movl    $6, %r9d
+    movl    $0x103, %ebx
+    movl    $0x105, %ebp
+    movl    $0x10c, %r12d
+    movl    $0x10d, %r13d
+    movl    $0x10e, %r14d
+    movl    $0x10f, %r15d
+    movl    ${syscall_first}, %eax
+    syscall
+    // Every register but rax (and rcx and r11, which `syscall` takes) must be as it was: rsi
+    // collects the differences.
+    subq    $2, %rsi
+    subq    $1, %rdi
+    orq     %rdi, %rsi
+    subq    $3, %rdx
+    orq     %rdx, %rsi
+    subq    $4, %r10
+    orq     %r10, %rsi
+    subq    $5, %r8
+    orq     %r8, %rsi
+    subq    $6, %r9
+    orq     %r9, %rsi
+    subq    $0x103, %rbx
+    orq     %rbx, %rsi
+    subq    $0x105, %rbp
+    orq     %rbp, %rsi
+    subq    $0x10c, %r12
+    orq     %r12, %rsi
+    subq    $0x10d, %r13
+    orq     %r13, %rsi
+    subq    $0x10e, %r14
+    orq     %r14, %rsi
+    subq    $0x10f, %r15
+    orq     %r15, %rsi
+    movq    %rax, %rdi
+    movl    ${syscall_report}, %eax
+    syscall
+    movq    (%rax), %rcx
+1:  jmp     1b
+    .global x86_64_user_test_null_syscalls
+x86_64_user_test_null_syscalls:
+2:  movl    ${syscall_null}, %eax
+    syscall
+    jmp     2b
+    .global x86_64_user_test_spin
+x86_64_user_test_spin:
+3:  jmp     3b
+    .global x86_64_user_test_end
+x86_64_user_test_end:
     .popsection
 "#,
     handler = sym x86_64_exception,
+    kernel_rsp = const core::mem::offset_of!(Registers, kernel_rsp),
+    vector = const core::mem::offset_of!(Registers, vector),
+    tss_rsp0 = const TSS_RSP0_OFFSET,
+    user_rsp = const USER_RSP_OFFSET,
+    user_cs = const USER_CODE_SELECTOR,
+    user_ss = const USER_DATA_SELECTOR,
+    syscall_vector = const SYSCALL_VECTOR,
+    syscall_first = const TestProgram::SYSCALL_FIRST,
+    syscall_report = const TestProgram::SYSCALL_REPORT,
+    syscall_null = const TestProgram::SYSCALL_NULL,
     options(att_syntax)
 );
 
@@ -151,24 +334,19 @@ unsafe extern "C" {
     fn apic_spurious_stub();
 }
 
-/// The registers saved by the stub and `exception_common`, lowest address first, followed by
-/// what the CPU pushed.
+/// What the stub and `exception_common` save for a trap in the kernel, lowest address first,
+/// followed by what the CPU pushed: the registers a call may change, the others the handler
+/// keeps itself.
 #[repr(C)]
 struct TrapFrame {
-    r15: u64,
-    r14: u64,
-    r13: u64,
-    r12: u64,
     r11: u64,
     r10: u64,
     r9: u64,
     r8: u64,
-    rbp: u64,
     rdi: u64,
     rsi: u64,
     rdx: u64,
     rcx: u64,
-    rbx: u64,
     rax: u64,
     vector: u64,
     error_code: u64,
@@ -179,7 +357,7 @@ struct TrapFrame {
     ss: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<TrapFrame>() == 22 * 8);
+const _: () = assert!(core::mem::size_of::<TrapFrame>() == 16 * 8);
 
 /// A 64-bit IDT gate descriptor (SDM vol. 3A, figure 6-8).
 #[derive(Clone, Copy)]
@@ -275,21 +453,40 @@ pub(super) extern "C" fn load() {
     }
 }
 
-/// Called by `exception_common` with the saved registers.
+/// Called by `exception_common` with the saved registers, for a trap in the kernel.
 extern "C" fn x86_64_exception(frame: &mut TrapFrame) {
-    match frame.vector {
-        vector if vector == u64::from(TIMER_VECTOR) => return timer::interrupt(),
-        // The exceptions, without the rarer interrupts' checks.
-        vector if vector < FIRST_INTERRUPT_VECTOR => {}
-        vector if vector == u64::from(WAKEUP_VECTOR) => return timer::wakeup_interrupt(),
-        // Spurious: the APIC needs no end of interrupt for it.
-        vector if vector == u64::from(APIC_SPURIOUS_VECTOR) => return,
-        vector if LEGACY_PIC_VECTORS.contains(&vector) && timer::legacy_pic_interrupt(vector) => {
-            return;
-        }
-        _ => {}
+    if interrupt(frame.vector) {
+        return;
     }
-    let fault_address = if frame.vector == 14 {
+    // `int3` is a trap: the saved `rip` already points after it, so resuming needs no fix-up.
+    deliver(&exception(frame.vector, frame.error_code, frame.rip));
+}
+
+/// Handles the interrupt `vector`, if the kernel takes it; returns whether it did (if not, it
+/// is an exception or an unexpected interrupt, to be reported).
+#[inline(always)]
+fn interrupt(vector: u64) -> bool {
+    match vector {
+        vector if vector == u64::from(TIMER_VECTOR) => {
+            timer::interrupt();
+            true
+        }
+        // The exceptions, without the rarer interrupts' checks.
+        vector if vector < FIRST_INTERRUPT_VECTOR => false,
+        vector if vector == u64::from(WAKEUP_VECTOR) => {
+            timer::wakeup_interrupt();
+            true
+        }
+        // Spurious: the APIC needs no end of interrupt for it.
+        vector if vector == u64::from(APIC_SPURIOUS_VECTOR) => true,
+        vector => LEGACY_PIC_VECTORS.contains(&vector) && timer::legacy_pic_interrupt(vector),
+    }
+}
+
+/// Describes the exception or unexpected interrupt `vector`, with the faulting address for a
+/// page fault.
+fn exception(vector: u64, error_code: u64, rip: u64) -> Exception {
+    let fault_address = if vector == 14 {
         let cr2: u64;
         // SAFETY: reading CR2 at ring 0 has no side effects.
         unsafe {
@@ -299,13 +496,161 @@ extern "C" fn x86_64_exception(frame: &mut TrapFrame) {
     } else {
         None
     };
-    // `int3` is a trap: the saved `rip` already points after it, so resuming needs no fix-up.
-    deliver(&decode(
-        frame.vector,
-        frame.error_code,
-        frame.rip,
-        fault_address,
-    ));
+    decode(vector, error_code, rip, fault_address)
+}
+
+/// Selectors of the per-CPU GDT (D47): the boot GDT's two, then user data and code in the
+/// order `sysretq` needs (`IA32_STAR`), then the TSS.
+const KERNEL_DATA_SELECTOR: u64 = 0x10;
+const USER_DATA_SELECTOR: u64 = 0x18 | 3;
+const USER_CODE_SELECTOR: u64 = 0x20 | 3;
+const TSS_SELECTOR: u16 = 0x28;
+
+/// `rflags` bits a program may set: carry, parity, adjust, zero, sign, direction and overflow.
+/// Interrupts are always enabled in ring 3 and I/O privilege stays 0.
+const USER_RFLAGS: u64 = 0xcd5;
+const RFLAGS_INTERRUPTS: u64 = 1 << 9;
+/// `rflags` bit 1, always set.
+const RFLAGS_FIXED: u64 = 1 << 1;
+/// What `syscall` clears in `rflags` (IA32_FMASK): interrupts, trap, direction, alignment
+/// check, nested task. The entry runs on the program's stack until it switches; nothing may
+/// interrupt it, and the kernel's code needs the direction flag clear.
+const SYSCALL_MASKED_RFLAGS: u64 = 1 << 9 | 1 << 8 | 1 << 10 | 1 << 18 | 1 << 14;
+
+const IA32_EFER: u32 = 0xc000_0080;
+const EFER_SYSCALL: u64 = 1 << 0;
+const IA32_STAR: u32 = 0xc000_0081;
+const IA32_LSTAR: u32 = 0xc000_0082;
+const IA32_FMASK: u32 = 0xc000_0084;
+
+unsafe extern "C" {
+    /// Enters ring 3 with `context`'s registers; returns once an interrupt, exception or
+    /// `syscall` from ring 3 has saved them back.
+    fn x86_64_enter_user(context: *mut Registers);
+    /// `syscall`'s entry point; only its address is used.
+    fn x86_64_syscall_entry();
+    static x86_64_user_test_start: u8;
+    static x86_64_user_test_checks: u8;
+    static x86_64_user_test_null_syscalls: u8;
+    static x86_64_user_test_spin: u8;
+    static x86_64_user_test_end: u8;
+}
+
+/// Sets this CPU up for user mode (D47), from `set_cpu_local`: its own GDT, with user segments
+/// and its TSS, in its per-CPU block's HAL part `hal`, then `syscall`'s MSRs.
+///
+/// # Safety
+/// `hal` must be this CPU's per-CPU block's HAL part, which lives as long as the kernel runs,
+/// and nothing else may use its tables. Interrupts must be masked.
+pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
+    let tables = hal.x86.0.get();
+    // SAFETY: the caller guarantees the block is this CPU's and that nothing else uses its
+    // tables; they are written here before the CPU loads them.
+    unsafe { (*tables).tss.io_map_base = core::mem::size_of::<Tss>() as u16 };
+    // SAFETY: as above; only the address is taken.
+    let tss_base = unsafe { &raw const (*tables).tss } as u64;
+    let tss_limit = core::mem::size_of::<Tss>() as u64 - 1;
+    let gdt: [u64; GDT_ENTRIES] = [
+        0,
+        // Accessed bits preset, so the CPU never writes them.
+        0x00af_9b00_0000_ffff, // 0x08: 64-bit code, ring 0 (the boot GDT's)
+        0x00cf_9300_0000_ffff, // 0x10: data, ring 0 (the boot GDT's)
+        0x00cf_f300_0000_ffff, // 0x18: data, ring 3
+        0x00af_fb00_0000_ffff, // 0x20: 64-bit code, ring 3
+        // 0x28: an available 64-bit TSS (type 9), present, ring 0, then its base's top half.
+        tss_limit | (tss_base & 0xff_ffff) << 16 | 0x89 << 40 | (tss_base >> 24 & 0xff) << 56,
+        tss_base >> 32,
+    ];
+    // SAFETY: as above.
+    unsafe { (*tables).gdt = gdt };
+    let pointer = DescriptorTablePointer {
+        limit: (core::mem::size_of::<[u64; GDT_ENTRIES]>() - 1) as u16,
+        // SAFETY: as above; only the address is taken.
+        base: unsafe { &raw const (*tables).gdt } as u64,
+    };
+    // SAFETY: the GDT lives as long as the kernel runs and keeps the boot GDT's kernel code and
+    // data descriptors at the same selectors, so the loaded CS, DS, ES, SS (and FS and GS, whose
+    // bases are MSRs) stay valid without a reload. `ltr` loads this CPU's own TSS, marking its
+    // descriptor busy in this CPU's own GDT.
+    unsafe {
+        core::arch::asm!(
+            "lgdt [{pointer}]",
+            "ltr {tss:x}",
+            pointer = in(reg) &pointer,
+            tss = in(reg) TSS_SELECTOR,
+            options(nostack, preserves_flags),
+        );
+    }
+    // SAFETY: the `syscall` MSRs are architectural. EFER.SCE enables `syscall`, whose MSRs are
+    // all set below before anything runs in ring 3.
+    unsafe { super::write_msr(IA32_EFER, super::read_msr(IA32_EFER) | EFER_SYSCALL) };
+    // SAFETY: `IA32_STAR` names the kernel code selector for `syscall` (its SS is the next,
+    // kernel data) and the base for `sysretq` (+8 user data, +16 user code, ring 3), matching
+    // the GDT above.
+    unsafe {
+        super::write_msr(
+            IA32_STAR,
+            (USER_DATA_SELECTOR - 3 - 8) << 48 | u64::from(KERNEL_CODE_SELECTOR) << 32,
+        )
+    };
+    // SAFETY: the entry switches to the running program's context before anything can
+    // interrupt it (`IA32_FMASK` below masks interrupts).
+    unsafe { super::write_msr(IA32_LSTAR, x86_64_syscall_entry as *const () as u64) };
+    // SAFETY: as above.
+    unsafe { super::write_msr(IA32_FMASK, SYSCALL_MASKED_RFLAGS) };
+}
+
+const _: () = assert!(USER_DATA_SELECTOR - 3 - 8 == KERNEL_DATA_SELECTOR);
+
+/// [`crate::Platform::run_user`]: the caller guarantees interrupts are masked and the active
+/// tables' kernel half is the kernel's.
+pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
+    let registers = &mut context.arch;
+    // `sysretq` to a non-canonical `rip` faults in ring 0 on the program's stack, and `iretq`
+    // to one faults in ring 0 with the program's GS base: never enter with one.
+    if registers.rip >= X86_64::USER_END {
+        return UserExit::Exception(Exception {
+            kind: ExceptionKind::InstructionFault,
+            name: "program counter outside user space",
+            code: 0,
+            pc: registers.rip,
+            address: Some(registers.rip),
+        });
+    }
+    registers.cs = USER_CODE_SELECTOR;
+    registers.ss = USER_DATA_SELECTOR;
+    registers.rflags = registers.rflags & USER_RFLAGS | RFLAGS_INTERRUPTS | RFLAGS_FIXED;
+    // SAFETY: interrupts are masked (the caller's duty), so nothing interrupts the way in
+    // between `swapgs` and `iretq`/`sysretq`; the trap or `syscall` that ends the program saves
+    // its registers into the context, which `&mut` keeps valid and unaliased, switches back to
+    // the kernel's GS base and returns here on the kernel stack with the callee-saved registers
+    // restored. The selectors and flags are set above, so the program runs in ring 3 with I/O
+    // privilege 0, where it reaches only user mappings, and its `rip` is canonical.
+    unsafe { x86_64_enter_user(registers) };
+    match registers.vector {
+        SYSCALL_VECTOR => UserExit::Syscall,
+        vector if interrupt(vector) => UserExit::Interrupt,
+        vector => {
+            // Unchanged for an exception taken again on the way in (none can be).
+            debug_assert_ne!(vector, NOT_RUN_VECTOR);
+            UserExit::Exception(exception(vector, registers.error_code, registers.rip))
+        }
+    }
+}
+
+/// [`crate::Platform::user_test_program`].
+pub(super) fn user_test_program() -> TestProgram {
+    let start = (&raw const x86_64_user_test_start) as usize;
+    let end = (&raw const x86_64_user_test_end) as usize;
+    // SAFETY: the symbols bound the program's bytes in `.rodata.user_test`, which is part of the
+    // kernel image, read-only and never written, for as long as the kernel runs.
+    let code = unsafe { core::slice::from_raw_parts(start as *const u8, end - start) };
+    TestProgram {
+        code,
+        checks: (&raw const x86_64_user_test_checks) as usize - start,
+        null_syscalls: (&raw const x86_64_user_test_null_syscalls) as usize - start,
+        spin: (&raw const x86_64_user_test_spin) as usize - start,
+    }
 }
 
 fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Exception {

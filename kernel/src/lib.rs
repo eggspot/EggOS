@@ -21,6 +21,7 @@ pub mod paging;
 pub mod selftest;
 pub mod sync;
 pub mod thread;
+pub mod user;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
@@ -51,7 +52,13 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     "paging: kernel page tables active, direct map at {:#x}",
                     P::direct_map_offset()
                 )?;
-                selftest::run(console, &selftest::all::<P>(), &mut memory)
+                let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
+                // Benchmarks only mean something on a kernel that passed its self-tests.
+                #[cfg(feature = "qemu-bench")]
+                if passed {
+                    bench::run::<P, _>(console, &bench::all::<P>(), &mut memory)?;
+                }
+                Ok(passed)
             }
             Err(reason) => {
                 writeln!(console, "paging: FAILED: {reason}")?;
@@ -59,14 +66,6 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 Ok(false)
             }
         });
-    // Benchmarks only mean something on a kernel that passed its self-tests.
-    #[cfg(feature = "qemu-bench")]
-    let report = report.and_then(|passed| {
-        if passed {
-            bench::run::<P, _>(console, &bench::all::<P>())?;
-        }
-        Ok(passed)
-    });
     match report {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
@@ -234,6 +233,48 @@ pub(crate) mod tests {
         fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
             access()
         }
+        unsafe fn run_user(
+            context: &mut eggos_hal::user::UserContext,
+        ) -> eggos_hal::user::UserExit {
+            // Plays the test program's part: its system calls, its fault and its spin.
+            use eggos_hal::user::{TestProgram, UserExit};
+            let program = Self::user_test_program();
+            let checks = crate::user::TEST_PROGRAM_ADDRESS + program.checks as u64;
+            let spin = crate::user::TEST_PROGRAM_ADDRESS + program.spin as u64;
+            match context.pc() {
+                pc if pc == checks => {
+                    let arguments = [1, 2, 3, 4, 5, 6];
+                    context.simulate_syscall(TestProgram::SYSCALL_FIRST, arguments, pc + 4);
+                    UserExit::Syscall
+                }
+                pc if pc == checks + 4 => {
+                    let arguments = [context.syscall_result(), 0, 0, 0, 0, 0];
+                    context.simulate_syscall(TestProgram::SYSCALL_REPORT, arguments, pc + 4);
+                    UserExit::Syscall
+                }
+                pc if pc == checks + 8 => UserExit::Exception(Exception {
+                    kind: ExceptionKind::DataFault,
+                    name: "test page fault",
+                    code: 0,
+                    pc,
+                    address: Some(context.syscall_result()),
+                }),
+                pc if pc == spin => {
+                    Self::wait_for_interrupt();
+                    UserExit::Interrupt
+                }
+                _ => unreachable!("the test platform runs only the test program"),
+            }
+        }
+        fn user_test_program() -> eggos_hal::user::TestProgram {
+            eggos_hal::user::TestProgram {
+                code: &[0xa5; 24],
+                checks: 0,
+                null_syscalls: 8,
+                spin: 16,
+            }
+        }
+        fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
             entry: extern "C" fn(usize) -> !,
