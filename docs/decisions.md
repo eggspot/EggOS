@@ -509,3 +509,59 @@ architecture once `paging::enable` has run; before that, allocating fails.
   number), frees them and checks that exactly the whole frames came back, then grows a `Vec` to
   a frame through `realloc`. The spin lock's guard is `Sync` only for `T: Sync` (found by the
   independent review: without that, two threads could reach a `Cell` through one guard).
+
+## D31 Contiguous frames: a buddy allocator behind the single-frame fast paths — Decided by the build loop (engineering; design checked by research)
+Fourth step of M2, planned in D28 and D30. `FrameAllocator::allocate_contiguous(order)` hands out
+2^order contiguous frames aligned to their size (order up to `MAX_ORDER` = 10, 4 MiB, as
+Linux), and `free_contiguous` takes them back. The kernel heap uses it for allocations larger
+than a frame (D30's one-frame limit is gone; up to 4 MiB now), and virtio DMA (M8) will.
+- **Single frames stay on their fast paths.** `allocate` still pops the free stack, then bumps
+  the untouched ranges; `free` still pushes the stack. Only when both are empty does `allocate`
+  take a frame from the buddy allocator, through the same cold refill that moves to the next
+  untouched range, so the hot path's code is unchanged (`frame_allocate_untouched` and
+  `frame_free_allocate` within the benchmark gate on every architecture).
+- **Where contiguous blocks come from:** the buddy allocator's free lists (splitting a larger
+  block); else an aligned block carved from the top of the highest untouched range that has
+  one, the frames above it going to the buddy allocator as aligned power-of-two pieces; else
+  frames moved from the free stack into the buddy allocator, merging with free neighbours,
+  until a block of the order forms (not the whole stack: draining millions of frames under the
+  lock would stall, and the stack's frames are the cache-warm ones; research). Freed blocks go
+  to the buddy allocator, never the stack.
+- **Metadata (decided by research): one bit per frame**, set when the frame starts a free buddy
+  block; the block's own first three words hold its list links and its order. Freeing finds out
+  in one load whether the buddy is free (it is only read when the bit says so). A bit per frame
+  is 8 times less than a byte: 4 KiB for 128 MiB, 2 MiB for 64 GiB. The bitmap covers the span
+  from the lowest to the highest free frame and is taken from the top of the highest range that
+  keeps a frame besides it (no such range: no buddy allocator, single frames only). It is not
+  written until the buddy allocator is first used, so `FrameAllocator::new` stays O(ranges) and
+  writes nothing (D28), and a boot that never needs contiguous memory never pays for it.
+- **Correctness of the bit:** it is zero for everything that is not a free buddy block: frames
+  in use, on the free stack, still untouched, the bitmap itself and the holes between ranges. A
+  frame handed out before the bitmap is zeroed keeps a zero bit, which is right. Buddies are
+  computed from physical addresses (blocks are aligned to their size physically), and a buddy
+  outside the span is never read.
+- **Heap size classes by table.** Profiling the heap benchmark on riscv64 showed most of its
+  95 instructions were `next_power_of_two().trailing_zeros()`, which without the Zbb extension
+  is a long software sequence. A 128-byte table indexed by `(size - 1) / 16` gives the class:
+  `heap_allocate_free_small` 50 instructions on aarch64 (was 52), 57 on riscv64 (was 95), 48 on
+  x86_64 (was 52). The slab refill moved out of line.
+- **Benchmarks.** New `frame_contiguous_allocate_free` (an order-2 block allocated and freed
+  through the global allocator; with the rest of memory free, each round splits down from and
+  merges back up to a 4 MiB block): 159 instructions on aarch64, 200 on riscv64, 152 on x86_64.
+  `frame_allocate_untouched` now maps twice the frames it allocates, so the bitmap (taken from
+  the top, never written there) leaves it the same untouched frames to time.
+- **Testing.** Host tests: blocks of every order aligned and disjoint and merging back into a
+  4 MiB block from a base aligned to only 1 MiB; a block and its buddy merging; blocks forming
+  again after every frame went through the free stack; the bitmap placed below a too-small top
+  range, and no buddy allocator when nothing fits; 20,000 random single and contiguous
+  allocations and frees with exact free-frame accounting, no overlap and the bitmap never handed
+  out; the heap's multi-frame layouts. Boot self-tests on every architecture: blocks of every
+  order (up to what a quarter of free memory allows) after the frame self-test sent every frame
+  through the free stack, written, checked, freed and merged back into the largest block; the
+  heap self-test adds 2-, 4- and 16-frame allocations and grows a `Vec` to 40 KiB.
+- **Not yet:** double-free detection for single frames (a check in `free` would cost every
+  free; a debug-only check comes with the per-CPU caches); one bitmap per range instead of one
+  over the span (a sparse machine pays for its holes, 1 bit per 4 KiB); a physical address limit
+  for 32-bit DMA devices (M8); anti-fragmentation grouping (Linux's migrate types); a high
+  watermark on the free stack, giving frames back to the buddy allocator (with per-CPU caches,
+  M4).

@@ -9,7 +9,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 |---|-----------|--------|
 | M0 | Repo skeleton: workspace, pinned toolchain, HAL layout, CI, docs | **done** |
 | M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
-| M2 | Memory management: physical frames, paging, kernel heap | **in progress** — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); kernel page tables: a direct map in the high half, W^X kernel sections and a boot-stack guard page on aarch64, riscv64, x86_64 (D29); kernel heap: `alloc` works, size classes up to 2 KiB and single frames (D30); next: the buddy allocator (contiguous frames, so heap allocations above 4 KiB work, and virtio DMA), then link the kernel in the high half and drop the low identity map (both before M4) |
+| M2 | Memory management: physical frames, paging, kernel heap | **in progress** — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); kernel page tables: a direct map in the high half, W^X kernel sections and a boot-stack guard page on aarch64, riscv64, x86_64 (D29); kernel heap: `alloc` works, size classes up to 2 KiB (D30); buddy allocator: contiguous, aligned blocks of up to 4 MiB, so heap allocations up to 4 MiB work (D31); next: link the kernel in the high half and drop the low identity map (before M4) |
 | M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); still to do: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC), when the first interrupting device driver needs it (M8) |
 | M4 | Scheduler, processes and threads (SMP-ready) | |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
@@ -32,8 +32,10 @@ addresses (M5).
 
 Paging follow-ups (D29): link the kernel in the high half (top 2 GiB) and drop the low identity map, before M4; a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off (real hardware, M13); RAM above 4 GiB on x86_64; on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
 
-Heap follow-ups (D30): allocations larger than a frame and returning empty slabs to the frame
-allocator (both with the buddy allocator, next); per-CPU caches instead of one heap lock (M4).
+Heap and buddy follow-ups (D30, D31): returning empty slabs to the frame allocator (a live-block
+count per frame); per-CPU caches instead of one heap lock and a high watermark on the free stack
+(M4); a physical address limit for 32-bit DMA (M8); one buddy bitmap per range; anti-fragmentation
+grouping.
 
 Setup follow-ups from the 2026-10-22 review (all done: exception vectors in D25, the benchmark harness
 in D27):
@@ -90,7 +92,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 
 | Area | Missing |
 |------|---------|
-| Kernel | high-half kernel, contiguous frame allocation (buddy) and heap allocations above 4 KiB, device interrupt routing, scheduling, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables with W^X and a direct map; it has a heap) |
+| Kernel | high-half kernel, device interrupt routing, scheduling, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables with W^X and a direct map; it has a heap and contiguous frame allocation) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
