@@ -286,7 +286,9 @@ the kernel runs, so the kernel may later switch context from the handler without
 Per architecture:
 - **AArch64:** `CNTVCT_EL0` (with an `isb` so a read is not performed early) and the EL1
   virtual timer, PPI 27, through a GICv2 (QEMU `virt` with `gic-version=2`, set explicitly by
-  the runner). GICv3 and device-tree discovery of the GIC come with M5.
+  the runner). The handler delivers only if `CNTV_CTL_EL0.ISTATUS` says the deadline is met,
+  dropping an interrupt the GIC latched for a deadline since moved later. GICv3 and
+  device-tree discovery of the GIC come with M5.
 - **RISC-V:** `time` and the SBI Timer extension (works with and without Sstc; using
   `stimecmp` directly when Sstc is present is a later optimisation). The 10 MHz timebase is QEMU
   `virt`'s, read from the device tree in M5.

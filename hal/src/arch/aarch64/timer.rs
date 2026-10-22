@@ -17,6 +17,8 @@ const TIMER_PRIORITY: u8 = 0x80;
 
 /// `CNTV_CTL_EL0` bit 0: timer enabled (bit 1, IMASK, left clear: interrupt not masked).
 const CNTV_CTL_ENABLE: u64 = 1;
+/// `CNTV_CTL_EL0` bit 2: the timer condition is met (read-only).
+const CNTV_CTL_ISTATUS: u64 = 1 << 2;
 
 fn distributor() -> Gicv2Distributor<Mmio> {
     // SAFETY: on QEMU `virt` the GICv2 distributor's registers are at GICD_BASE, accessible
@@ -32,6 +34,11 @@ fn cpu_interface() -> Gicv2CpuInterface<Mmio> {
 /// Disarms the timer and routes its interrupt through the GIC to this CPU, so it is taken once
 /// `PSTATE.I` is cleared. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn init() {
+    // The panic handler reports this; the clock would be useless.
+    assert!(
+        frequency() != 0,
+        "CNTFRQ_EL0 is 0: firmware did not set the counter frequency"
+    );
     disarm();
     let gicd = distributor();
     gicd.enable_interrupt(VIRTUAL_TIMER_INTERRUPT, TIMER_PRIORITY);
@@ -74,6 +81,16 @@ pub(super) fn set_deadline(deadline: u64) {
             options(nomem, nostack)
         )
     };
+}
+
+/// Whether the timer is enabled and its deadline has been reached. An interrupt the GIC
+/// latched for an earlier deadline can still arrive after `set_deadline` moved it later; this
+/// tells the two apart.
+pub(super) fn expired() -> bool {
+    let control: u64;
+    // SAFETY: reading `CNTV_CTL_EL0` has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) control, options(nomem, nostack)) };
+    control & (CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS) == CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS
 }
 
 /// Disables the timer, which also drops its interrupt (it stays asserted while the timer is

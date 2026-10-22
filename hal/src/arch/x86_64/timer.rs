@@ -34,6 +34,8 @@ pub(super) const APIC_SPURIOUS_VECTOR: u8 = 0xff;
 /// `IA32_APIC_BASE` MSR: bits 12 and up hold the local APIC's physical address.
 const IA32_APIC_BASE: u32 = 0x1b;
 const APIC_BASE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+/// `IA32_APIC_BASE` bit 11: the local APIC is globally enabled (its registers respond).
+const APIC_BASE_GLOBAL_ENABLE: u64 = 1 << 11;
 
 /// PIC and PIT I/O ports.
 const PIC_PRIMARY_PORT: u16 = 0x20;
@@ -87,7 +89,13 @@ fn local_apic() -> LocalApic<Mmio> {
 pub(super) extern "C" fn init() {
     legacy_pic().remap_and_mask(*LEGACY_PIC_VECTORS.start() as u8);
 
-    let apic_base = read_msr(IA32_APIC_BASE) & APIC_BASE_ADDRESS_MASK;
+    let apic_base_msr = read_msr(IA32_APIC_BASE);
+    // Set at reset; firmware that clears it hides the APIC until the next reset.
+    assert!(
+        apic_base_msr & APIC_BASE_GLOBAL_ENABLE != 0,
+        "local APIC globally disabled by firmware"
+    );
+    let apic_base = apic_base_msr & APIC_BASE_ADDRESS_MASK;
     // Below 4 GiB at reset; firmware could move it. The panic handler reports a failure.
     assert!(
         apic_base < super::IDENTITY_MAP_END,

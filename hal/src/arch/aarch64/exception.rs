@@ -156,12 +156,16 @@ fn irq(pc: u64) {
     // End the interrupt before handing it on: the kernel may not return here soon (later, a
     // context switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile.
     let id = interrupt.id();
-    if id == timer::VIRTUAL_TIMER_INTERRUPT {
+    let timer_fired = id == timer::VIRTUAL_TIMER_INTERRUPT && timer::expired();
+    if timer_fired {
         timer::disarm();
     }
     timer::end_of_interrupt(interrupt);
     if id == timer::VIRTUAL_TIMER_INTERRUPT {
-        crate::interrupt::deliver(Interrupt::Timer);
+        // A stale interrupt for a deadline since moved later is dropped: never early.
+        if timer_fired {
+            crate::interrupt::deliver(Interrupt::Timer);
+        }
     } else {
         deliver(&Exception {
             kind: ExceptionKind::Interrupt,
