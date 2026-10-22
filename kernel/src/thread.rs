@@ -1,4 +1,4 @@
-//! Kernel threads and the scheduler (D35, D37, D39, D43).
+//! Kernel threads and the scheduler (D35, D37, D39, D43, D44).
 //!
 //! M4: threads that run kernel code on their own stacks, scheduled round-robin on each CPU. A
 //! thread runs until it calls [`yield_now`], blocks ([`sleep_until`], [`WaitQueue::wait_until`],
@@ -11,10 +11,16 @@
 //! Every CPU has its own scheduler state (D43): its running thread, ready threads, sleepers, idle
 //! thread and timer, in its per-CPU block ([`Cpu`]). A thread stays on the CPU [`spawn`] placed
 //! it on (an idle CPU if there is one, otherwise the next CPU in turn): it is woken there, sleeps
-//! on that CPU's timer, and runs there until it exits. A thread made ready on another CPU is
-//! announced to it: an idle CPU gets the wake-up interrupt ([`cpu::wake`]), a busy one with
+//! on that CPU's timer, and runs there, until balancing moves it. A thread made ready on another
+//! CPU is announced to it: an idle CPU gets the wake-up interrupt ([`cpu::wake`]), a busy one with
 //! preemption on a reschedule request its next preemption point sees, so a tick is armed for the
-//! new thread's turn. Moving threads between CPUs to balance them comes later.
+//! new thread's turn.
+//!
+//! Balancing (D44): an idle CPU with nothing ready takes a ready thread from a busy CPU, one
+//! running another thread, and the thread stays on its new CPU. A busy CPU whose slice ends with
+//! threads ready sends an idle CPU the wake-up interrupt, so that it takes one: a thread waits at
+//! most about a slice while a CPU is idle. Both happen off the hot paths (in the idle thread and
+//! when a slice ends), so a switch, a wait and a wake cost what they did.
 //!
 //! Preemption is voluntary inside the kernel (D37): kernel code runs with interrupts masked,
 //! and while [`enable_preemption`] is on, a thread whose [`TIME_SLICE_MS`] slice is over lets
@@ -172,7 +178,7 @@ struct Thread {
     /// While it sleeps: the [`Platform::clock_ticks`] it wakes at.
     wake_at: u64,
     /// The CPU it runs on (D43): it is made ready there when woken, and sleeps on that CPU's
-    /// timer.
+    /// timer, until balancing moves it to an idle CPU while it is ready (D44).
     cpu: &'static Cpu,
 }
 
@@ -248,6 +254,14 @@ impl ThreadBox {
         // across the switch) and a `ThreadList` (once `into_raw` has given the box up) write
         // it without a reference, and no `get` overlaps either.
         unsafe { self.0.as_ref() }
+    }
+
+    /// Moves the thread, which is ready, to `cpu` (D44): it runs there, and sleeps and is made
+    /// ready there from now on.
+    fn move_to(&mut self, cpu: &'static Cpu) {
+        // SAFETY: owned by `self`, borrowed uniquely: a thread held in a box is in no list and
+        // not running, so nothing else reaches it (see `get`).
+        unsafe { self.0.as_mut().cpu = cpu };
     }
 
     /// The thread, taken out of its box.
@@ -556,6 +570,63 @@ impl Schedulers {
         here
     }
 
+    /// A thread for `here`'s idle thread to run when none is ready there (D44): the first ready
+    /// thread of the next busy CPU after `here`, moved to `here`. A busy CPU runs a thread other
+    /// than its idle thread, so its ready threads wait; one whose idle thread runs is left alone,
+    /// since it runs its ready threads itself, having been told of them. The boot thread is never
+    /// moved: it runs the boot CPU's setup and the self-tests, which expect to run there; a CPU
+    /// whose first ready thread is the boot thread is passed over. O(CPUs), on the idle path.
+    fn steal(&mut self, here: &'static Cpu) -> Option<ThreadBox> {
+        self.steal_among(cpu::CPUS.all(), here)
+    }
+
+    /// [`Self::steal`] among `cpus`.
+    fn steal_among(&mut self, cpus: &[&'static Cpu], here: &'static Cpu) -> Option<ThreadBox> {
+        let first = here.index() + 1;
+        for offset in 0..cpus.len() {
+            let cpu = cpus[(first + offset) % cpus.len()];
+            if ptr::eq(cpu, here) {
+                continue;
+            }
+            let scheduler = self.of(cpu);
+            // Its idle thread is in its slot only while another thread runs.
+            let busy = scheduler.idle.is_some();
+            let movable = scheduler
+                .ready
+                .front()
+                .is_some_and(|thread| thread.id != ThreadId::BOOT);
+            if busy && movable {
+                let mut thread = scheduler.ready.pop_front().expect("a thread is ready");
+                thread.move_to(here);
+                return Some(thread);
+            }
+        }
+        None
+    }
+
+    /// The idle CPU to send the wake-up interrupt to when `here`'s slice ends with threads ready
+    /// (D44), so that it takes one ([`Self::steal`]): the lowest-numbered idle CPU not yet sent
+    /// one since it last looked, marked as sent. O(CPUs), once per slice that ends.
+    fn idle_cpu_to_wake(&mut self, here: &'static Cpu) -> Option<&'static Cpu> {
+        self.idle_cpu_to_wake_among(cpu::CPUS.all(), here)
+    }
+
+    /// [`Self::idle_cpu_to_wake`] among `cpus`.
+    fn idle_cpu_to_wake_among(
+        &mut self,
+        cpus: &[&'static Cpu],
+        here: &'static Cpu,
+    ) -> Option<&'static Cpu> {
+        for &cpu in cpus {
+            let scheduler = self.of(cpu);
+            if !ptr::eq(cpu, here) && scheduler.is_idle() && !scheduler.wakeup_sent {
+                scheduler.wakeup_sent = true;
+                return Some(cpu);
+            }
+        }
+        None
+    }
+
     /// Sets the time slice to `slice_ticks` (0 for none) on every CPU. Turning preemption on
     /// asks every other CPU to look, so those with ready threads arm their ticks.
     fn set_slice_ticks(&mut self, here: &'static Cpu, slice_ticks: u64) {
@@ -786,11 +857,26 @@ fn timer_events<P: Platform>(schedulers: &mut Schedulers) -> bool {
     timer_fired::<P>(schedulers)
 }
 
-/// [`timer_events`]' slow path.
+/// [`timer_events`]' slow path. A slice that ends with threads ready wakes an idle CPU, if
+/// there is one, to take one of them (D44).
 #[cold]
 #[inline(never)]
 fn timer_fired<P: Platform>(schedulers: &mut Schedulers) -> bool {
-    schedulers.of(cpu::current::<P>()).timer_fired::<P>()
+    let slice_over = schedulers.of(cpu::current::<P>()).timer_fired::<P>();
+    if slice_over {
+        wake_idle_cpu::<P>(schedulers);
+    }
+    slice_over
+}
+
+/// Sends the wake-up interrupt to an idle CPU ([`Schedulers::idle_cpu_to_wake`]) with the
+/// scheduler's lock held, so that it takes a ready thread once the lock is released.
+#[cold]
+#[inline(never)]
+fn wake_idle_cpu<P: Platform>(schedulers: &mut Schedulers) {
+    if let Some(cpu) = schedulers.idle_cpu_to_wake(cpu::current::<P>()) {
+        cpu::wake::<P>(cpu);
+    }
 }
 
 /// Starts the scheduler on this CPU if it has not started ([`Scheduler::start`]), finding the
@@ -1139,8 +1225,8 @@ extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
 }
 
 /// A CPU's idle thread: runs only when no other thread on its CPU is ready, and lets the first
-/// that becomes ready run. Meanwhile it arms the timer for the earliest sleeper alone (no tick)
-/// and waits for an interrupt.
+/// that becomes ready run, or else one that waits on a busy CPU (D44). Meanwhile it arms the
+/// timer for the earliest sleeper alone (no tick) and waits for an interrupt.
 fn idle_loop<P: Platform>() -> ! {
     let here = cpu::current::<P>();
     loop {
@@ -1149,8 +1235,11 @@ fn idle_loop<P: Platform>() -> ! {
         // one of its own.
         schedulers.of(here).wakeup_sent = false;
         timer_events::<P>(&mut schedulers);
-        let scheduler = schedulers.of(here);
-        if let Some(next) = scheduler.ready.pop_front() {
+        let next = match schedulers.of(here).ready.pop_front() {
+            Some(next) => Some(next),
+            None => schedulers.steal(here),
+        };
+        if let Some(next) = next {
             switch_to::<P>(schedulers, here, next, |schedulers, here, idle| {
                 let scheduler = schedulers.of(here);
                 scheduler.idle = Some(idle);
@@ -1159,15 +1248,16 @@ fn idle_loop<P: Platform>() -> ! {
             });
             continue;
         }
+        let scheduler = schedulers.of(here);
         // Exactly what is needed, so the CPU is not woken early for a stale deadline.
         let deadline = scheduler.timer_needed();
         if deadline != scheduler.armed {
             scheduler.arm::<P>(deadline);
         }
         drop(schedulers);
-        // A thread becomes ready on this CPU only through an interrupt: the timer's, or the
-        // wake-up interrupt from the CPU that made it ready here. One already pending is taken
-        // at once.
+        // A thread becomes ready on this CPU, or one to take waits on a busy CPU, only through
+        // an interrupt: the timer's, or the wake-up interrupt from the CPU that made it ready
+        // here or whose slice ended with threads ready. One already pending is taken at once.
         P::wait_for_interrupt();
     }
 }
@@ -1690,6 +1780,76 @@ mod tests {
         let idle = schedulers.of(cpus[3]).idle.take();
         assert_eq!(schedulers.place_among(cpus, here).index(), 3);
         schedulers.of(cpus[3]).idle = idle;
+        for &cpu in cpus {
+            empty(schedulers.of(cpu));
+        }
+    }
+
+    #[test]
+    fn an_idle_cpu_takes_a_ready_thread_from_the_next_busy_cpu_but_never_the_boot_thread() {
+        let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
+        let cpus: &'static [&'static Cpu] = cpus.leak();
+        let mut schedulers = Schedulers {
+            slice_ticks: 0,
+            next_placement: 0,
+        };
+        // CPU 1 looks; its idle thread runs and nothing is ready there.
+        schedulers.of(cpus[1]).current = Some(idle_thread_for_test(cpus[1]));
+        assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
+        // CPU 2's idle thread runs too, with a thread just made ready there: it runs it itself.
+        let woken = schedulers.of(cpus[2]);
+        woken.current = Some(idle_thread_for_test(cpus[2]));
+        woken.ready.push_back(idle_thread_for_test(cpus[2]));
+        // CPUs 3 and 0 are busy, with threads ready: the boot thread first on CPU 3.
+        for &cpu in [cpus[3], cpus[0]].iter() {
+            let busy = schedulers.of(cpu);
+            busy.current = Some(idle_thread_for_test(cpu));
+            busy.idle = Some(idle_thread_for_test(cpu));
+        }
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3]);
+        schedulers.of(cpus[3]).ready.push_back(boot);
+        let waiting = idle_thread_for_test(cpus[0]);
+        let id = waiting.get().id;
+        schedulers.of(cpus[0]).ready.push_back(waiting);
+        // From CPU 1 on, CPU 2 is left alone and CPU 3's boot thread stays: CPU 0's is taken.
+        let taken = schedulers
+            .steal_among(cpus, cpus[1])
+            .expect("CPU 0 has one ready");
+        assert_eq!(taken.get().id, id);
+        assert!(ptr::eq(taken.get().cpu, cpus[1]));
+        assert!(schedulers.of(cpus[0]).ready.is_empty());
+        assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
+        // A CPU never takes from itself.
+        assert!(schedulers.steal_among(cpus, cpus[3]).is_none());
+        drop(taken);
+        for &cpu in cpus {
+            empty(schedulers.of(cpu));
+        }
+    }
+
+    #[test]
+    fn a_slice_that_ends_with_threads_ready_wakes_one_idle_cpu_per_look() {
+        let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
+        let cpus: &'static [&'static Cpu] = cpus.leak();
+        let mut schedulers = Schedulers {
+            slice_ticks: 10,
+            next_placement: 0,
+        };
+        // CPUs 0 and 1 are busy; CPU 2 has not started; CPU 3's idle thread runs.
+        for &cpu in [cpus[0], cpus[1]].iter() {
+            let busy = schedulers.of(cpu);
+            busy.current = Some(idle_thread_for_test(cpu));
+            busy.idle = Some(idle_thread_for_test(cpu));
+        }
+        schedulers.of(cpus[3]).current = Some(idle_thread_for_test(cpus[3]));
+        let woken = schedulers.idle_cpu_to_wake_among(cpus, cpus[0]);
+        assert!(woken.is_some_and(|cpu| ptr::eq(cpu, cpus[3])));
+        // Until it looks, the wake-up already sent covers it.
+        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_none());
+        schedulers.of(cpus[3]).wakeup_sent = false;
+        // A CPU never wakes itself.
+        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[3]).is_none());
+        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_some());
         for &cpu in cpus {
             empty(schedulers.of(cpu));
         }
