@@ -176,7 +176,7 @@ Rules for every component:
   modules or per-component kernel builds) is a later decision, made with benchmarks;
 - removing it leaves no files, services or settings behind.
 
-## D19 Compatibility-layer order: Linux, Windows, Android, macOS, iOS — Decided by research (owner can overrule); supersedes D2's order
+## D19 Compatibility-layer order: Linux, Windows, Android, macOS, iOS — Decided (owner, 2026-10-22; first chosen by research); supersedes D2's order
 Order: (1) Linux userland, the kernel's native ABI and the base of every layer; (2) Windows;
 (3) Android; (4) macOS; (5) iOS. Windows comes before macOS because it is where most switchers
 are (StatCounter, June 2026: Windows ~57% of desktop use, macOS ~16%, Linux ~4%) and nearly all
