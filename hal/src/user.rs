@@ -115,6 +115,10 @@ pub struct TestProgram {
     /// came back unchanged (anything else if not). Then it loads a word from the address system
     /// call 1 returned, which the kernel makes a kernel address, so the program faults there.
     pub checks: usize,
+    /// Runs one floating-point instruction, which must trap: user programs get no FP/SIMD
+    /// registers until they are saved per thread. If it does not, it goes on as
+    /// `null_syscalls`.
+    pub floating_point: usize,
     /// Makes system call 2 in a loop.
     pub null_syscalls: usize,
     /// Loops forever without a system call, for an interrupt to stop.

@@ -1391,3 +1391,58 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   program that never traps keeps its CPU); pages owned by the address space for `mmap` (M6); ASIDs
   and PCID; PAN, SMAP and
   SMEP; user faults that end the process with a signal (M6); IST stacks and the other D47 follow-ups.
+
+## D49 Review fixes to D47–D48: user programs get no FP/SIMD, vector unit or timer access, whatever firmware left; speculation mitigations chosen per CPU, with triggers — Decided by the build loop (review item; mitigation timing decided by research)
+- **Why.** A review of D47–D48 (a review subagent, each finding then checked by hand) found no
+  register leak, privilege bug or lifetime race in the user-mode entry and exit paths or the
+  lazily loaded address spaces, and one isolation leak that was real: on x86_64, ring 3 could use
+  the x87 and MMX registers, which no one saves per thread, so one process could read what
+  another left there. The roadmap's "FP/SIMD traps today" was true on AArch64 and RISC-V under
+  QEMU only.
+- **x86_64.** Each CPU sets `CR0.TS` and `CR0.MP` and clears `CR0.EM` (in `set_up_user_mode`),
+  so every x87, MMX and SSE instruction raises #NM (SSE raises #UD anyway while `CR4.OSFXSR` is
+  clear), and `CR0.NE` for native x87 error reporting later. TS is also how lazy per-thread FP
+  state will work (`clts` on the first use). #NM is now decoded as an illegal instruction, as
+  the other architectures report it.
+- **AArch64.** Each CPU writes `CPACR_EL1 = 0` (FP/SIMD and SVE trap at EL0 and EL1; the kernel
+  uses none) and `CNTKCTL_EL1 = 0` (EL0 may not read the counters or touch the timers, so a
+  program cannot reprogram or stop the kernel's timer) at entry, instead of trusting reset
+  values: QEMU resets both to 0, but UEFI or TF-A may leave FP open and `EL0VTEN` is UNKNOWN at
+  reset. User reads of the virtual counter (`EL0VCTEN`) come with a fast clock for programs,
+  deliberately. The SIMD/FP access trap (EC 0x07) is decoded as an illegal instruction.
+- **RISC-V.** The boot code clears `sstatus.VS` along with `FS`, so vector instructions trap
+  too where the hart has V (OpenSBI enables VS; QEMU's default `rv64` has no V, so CI cannot see
+  the difference).
+- **Straight-line speculation.** An `int3` after each x86_64 `iretq`, `sysretq` and the user
+  path's `retq`: never executed, so it costs nothing at run time, and AArch64 already has
+  `dsb nsh; isb` after `eret`. The `ret`s rustc generates need `-Zharden-sls` (nightly only): a
+  follow-up.
+- **SWAPGS fence and KPTI: per CPU, deferred until their triggers (decided by research).** The
+  kernel-entry `testb $3` branch has no `lfence` (CVE-2019-1125, SWAPGS), and the kernel half
+  with its direct map is mapped in every user address space (Meltdown). A research subagent
+  compared adding them now unconditionally, per CPU at boot, or later with a recorded trigger,
+  and recommended per CPU, later: Linux, Windows and the BSDs enable both only on affected CPUs
+  (Intel without `RDCL_NO`; AMD is not affected); unconditional KPTI would cost every machine a
+  CR3 write each way (5–30% on system-call-heavy loads), against the performance target; and
+  neither is exploitable today (the user GS base is always 0, and QEMU TCG does not leak). The
+  SWAPGS fence must land, as a second copy of the entry stubs chosen at boot (a per-CPU flag
+  would be one more branch to mispredict), **before a program can set its GS base or map pages
+  near address 0** (`arch_prctl(ARCH_SET_GS)`, FSGSBASE, `mmap` at low addresses: M6, with an
+  `mmap_min_addr`-style floor). KPTI, with PCID, must land **before x86_64 EggOS runs anything
+  but our own test programs on a real Intel CPU** (KVM, HVF, WHPX or bare metal; M13 at the
+  latest), together with the other transient-execution mitigations chosen per CPU (MDS buffer
+  clearing, Retbleed) and KPTI for affected Arm cores (Cortex-A75).
+- **Smaller fixes.** A program may set `rflags.ID` (old-style CPUID detection toggles it);
+  alignment check stays clear, as interrupt gates keep it and with SMAP it would open user
+  memory to the kernel. An executable page is made visible to instruction fetch whole, not
+  only up to its contents, so fetch past them cannot see the frame's old data on AArch64.
+- **Left for later (roadmap).** An NMI from ring 3 is reported as the program's exception and,
+  since the user path returns with `retq`, leaves NMIs blocked until the next `iretq` on that
+  CPU (nothing raises NMIs yet; it belongs with the IST stacks); AArch64 `PSTATE.DIT`, `SSBS`
+  and `TCO` are not the program's to set yet.
+- **Testing.** The boot self-test `user_programs_make_system_calls_and_fault` now also runs one
+  floating-point instruction in user mode (`TestProgram::floating_point`: `fld1`, `fmov d0, xzr`,
+  `fmv.d.x`) and requires an illegal-instruction exception at it, on aarch64, riscv64 and
+  x86_64; without the CR0 change x86_64 runs on into its next system call and fails. No
+  benchmark moved beyond noise (the user-mode ones by 0.02 instructions: a whole page cleaned
+  once per program setup on AArch64); the `int3`s are never executed.

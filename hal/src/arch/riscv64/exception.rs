@@ -327,6 +327,9 @@ riscv64_user_test_checks:
     ecall
     ld      a1, 0(a0)
 1:  j       1b
+    .global riscv64_user_test_floating_point
+riscv64_user_test_floating_point:
+    fmv.d.x ft0, zero
     .global riscv64_user_test_null_syscalls
 riscv64_user_test_null_syscalls:
     li      a7, {syscall_null}
@@ -424,6 +427,7 @@ unsafe extern "C" {
     fn riscv64_enter_user(context: *mut user::riscv64::Registers);
     static riscv64_user_test_start: u8;
     static riscv64_user_test_checks: u8;
+    static riscv64_user_test_floating_point: u8;
     static riscv64_user_test_null_syscalls: u8;
     static riscv64_user_test_spin: u8;
     static riscv64_user_test_end: u8;
@@ -467,6 +471,7 @@ pub(super) fn user_test_program() -> TestProgram {
     TestProgram {
         code,
         checks: (&raw const riscv64_user_test_checks) as usize - start,
+        floating_point: (&raw const riscv64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const riscv64_user_test_null_syscalls) as usize - start,
         spin: (&raw const riscv64_user_test_spin) as usize - start,
     }
