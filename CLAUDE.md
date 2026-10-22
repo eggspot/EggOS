@@ -21,7 +21,8 @@ Check each task against these before starting and again before opening the PR.
    compatibility-layer hot path is benchmarked against the app on its own OS. When an app was
    built for a different CPU architecture than the machine (an x86_64 Windows app on an Arm laptop),
    its code is translated once, ahead of time, and cached, never interpreted; report those numbers
-   separately. (D17)
+   separately. No App Store access: macOS (and iOS) apps come from the vendor's own download
+   (`.dmg`, `.pkg`, `.zip`), which EggOS opens and installs itself. (D17)
 3. **Nothing is installed by default beyond the base** (kernel, drivers for the hardware present,
    base userland, the agent interface and the component manager). Every feature and service (each
    compatibility layer, the desktop, system apps, AI services, server roles, ...) is an optional
@@ -76,7 +77,3 @@ them.
 
 ## Not decided yet (ask the owner, don't assume)
 - Which compatibility layer comes first (Linux, Android, Windows, macOS or iOS apps).
-- App Store apps (see D17): our own clean-room code is not the issue. Two things about the apps
-  themselves are: App Store iOS apps are FairPlay-encrypted (decrypting them is anti-circumvention
-  law, whoever wrote the code), and Apple's App Store terms limit those apps to Apple devices. Apps
-  from outside the App Store (developer builds, open-source apps, direct downloads) are not affected.

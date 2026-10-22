@@ -137,11 +137,11 @@ those cases are measured and reported separately; on matching hardware (arm64 ap
 x86_64 apps on x86_64) there is no translation at all.
 Our code: settled. Everything is our own clean-room implementation of public interfaces (D5); no
 Apple, Microsoft or Google code or binaries are copied or shipped.
-Open for the owner (about the apps, not our code): App Store iOS apps are FairPlay-encrypted, and
-decrypting them falls under anti-circumvention law regardless of who wrote the decryptor; Apple's
-App Store terms limit those apps to Apple devices. Apps from outside the App Store (developer
-builds, open-source apps, direct downloads) are not affected. Decide how EggOS gets App Store apps
-before the iOS layer ships.
+Where the apps come from — Decided (owner): no App Store access. macOS apps come from the
+vendor's own download when the vendor offers one (`.dmg` disk images, `.pkg` installers, `.zip`
+archives), so EggOS must open and install those formats itself; iOS apps likewise only when they
+are distributed outside the App Store. App Store apps (FairPlay-encrypted, licensed for Apple
+devices only) are out of scope.
 
 ## D18 Modular install: only the base is installed, every feature is the user's choice — Decided
 EggOS installs a small base by default: the kernel, drivers for the hardware present, the base
