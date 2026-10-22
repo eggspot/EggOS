@@ -42,6 +42,9 @@ pub enum MapError {
     OutOfMemory,
     /// The tables are active: changing them needs TLB maintenance, which comes with M4.
     Active,
+    /// Leaving a device's pages out of the direct map would split a range of a memory map
+    /// that has no room left, losing memory the direct map must cover.
+    TooManyRanges,
 }
 
 impl MapError {
@@ -52,6 +55,7 @@ impl MapError {
             MapError::AlreadyMapped => "a page is mapped twice",
             MapError::OutOfMemory => "no free frame for a page table",
             MapError::Active => "the page tables are active and cannot be changed yet",
+            MapError::TooManyRanges => "too many memory ranges to leave a device's pages out",
         }
     }
 }
@@ -237,7 +241,8 @@ pub fn kernel_page_tables<P: Platform>(
     if !direct_map_fits_below(physical_memory, offset, &image) {
         return Err(MapError::InvalidAddress);
     }
-    map_direct_map(&mut tables, physical_memory, offset, &image, frames)?;
+    let normal_memory = without_early_devices::<P>(physical_memory)?;
+    map_direct_map(&mut tables, &normal_memory, offset, &image, frames)?;
     // Page by page: two register blocks may share a page. A page mapped already is compared
     // with a device leaf as the format decodes it (RISC-V does not record the memory type).
     let device_leaf = match <P::PageTableFormat as Format>::decode(
@@ -259,6 +264,32 @@ pub fn kernel_page_tables<P: Platform>(
         }
     });
     result.map(|()| tables)
+}
+
+/// `memory` without the pages of `P`'s early device regions. Firmware may describe a device's
+/// registers inside a range it reports (x86 loaders often list the local APIC's page as
+/// reserved, and the x86_64 direct map covers reserved ranges for the ACPI tables): those
+/// pages are mapped as device memory only, since a second, normal mapping would give one page
+/// two memory types (D33) and make the device's mapping fail as a page mapped twice.
+fn without_early_devices<P: Platform>(memory: &MemoryMap) -> Result<MemoryMap, MapError> {
+    let mut normal = memory.clone();
+    let mut left_out = MemoryMap::new();
+    P::early_device_regions(&mut |device| {
+        let device = device.covering_frames();
+        normal.reserve(device);
+        for range in memory.ranges() {
+            left_out.add_ram(PhysicalRange {
+                start: device.start.max(range.start),
+                end: device.end.min(range.end),
+            });
+        }
+    });
+    // A full map drops a piece of a range it cannot split (`MemoryMap::reserve`): memory the
+    // direct map must reach would be unmapped.
+    if normal.total() + left_out.total() != memory.total() {
+        return Err(MapError::TooManyRanges);
+    }
+    Ok(normal)
 }
 
 /// Whether the direct map of `ram` at `offset` ends at or below the kernel image's virtual
@@ -595,6 +626,55 @@ mod tests {
         assert!(matches!(root(0), Entry::Leaf(..)));
         assert!(matches!(root(2 * gb), Entry::Leaf(..)));
         assert!(matches!(root(gb), Entry::Table(_)));
+    }
+
+    /// The test platform's kernel page tables over its physical memory plus `extra`, which
+    /// covers the platform's early device page at 0xa_0000.
+    fn test_platform_tables(extra: &[PhysicalRange]) -> Result<PageTables<X86_64>, MapError> {
+        use crate::tests::TestPlatform;
+        let mut memory = TestPlatform::physical_memory();
+        for range in extra {
+            memory.add_ram(*range);
+        }
+        kernel_page_tables::<TestPlatform>(&mut frames(64), &memory)
+    }
+
+    #[test]
+    fn a_device_page_inside_reported_memory_is_mapped_as_a_device_only() {
+        use crate::tests::TestPlatform;
+        // The device page with free frames on both sides, as a reserved firmware range
+        // around the x86 local APIC would be.
+        let tables =
+            test_platform_tables(&[PhysicalRange::from_start_length(0x9_f000, 3 * K)]).unwrap();
+        let offset = TestPlatform::direct_map_offset() as u64;
+        let device = match X86_64::decode(X86_64::leaf(0, 0, Attributes::DEVICE), 0) {
+            Entry::Leaf(_, attributes) => attributes,
+            _ => unreachable!("a leaf"),
+        };
+        assert_eq!(
+            tables.translate(offset + 0xa_0000),
+            Some((0xa_0000, device))
+        );
+        for page in [0x9_f000, 0xa_1000] {
+            assert_eq!(
+                tables.translate(offset + page),
+                Some((page, Attributes::READ_WRITE)),
+                "{page:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaving_a_device_out_of_a_full_memory_map_fails_instead_of_losing_memory() {
+        use eggos_hal::memory::MAX_RANGES;
+        // Splitting the range around the device page needs one range more than the map holds.
+        let mut extra = vec![PhysicalRange::from_start_length(0x9_f000, 3 * K)];
+        let full = MAX_RANGES - crate::tests::TestPlatform::physical_memory().ranges().len();
+        extra.extend((1..full as u64).map(|i| PhysicalRange::from_start_length(i << 32, K)));
+        assert_eq!(
+            test_platform_tables(&extra).err(),
+            Some(MapError::TooManyRanges)
+        );
     }
 
     #[test]

@@ -455,9 +455,9 @@ struct PvhMemoryMap {
 impl PvhMemoryMap {
     fn read() -> Option<Self> {
         let start_info_address = u64::from(PVH_START_INFO.load(Ordering::Relaxed));
-        let start_info = mapped(start_info_address, PVH_START_INFO_V1_LENGTH)?;
-        // SAFETY: the loader passed the address of its `hvm_start_info`; `mapped` checked the
-        // bytes are reachable and nothing writes them. A version 0 structure is shorter: the
+        let start_info = in_boot_direct_map(start_info_address, PVH_START_INFO_V1_LENGTH)?;
+        // SAFETY: the loader passed the address of its `hvm_start_info`; `in_boot_direct_map`
+        // checked the bytes are reachable, and nothing writes them. A version 0 structure is shorter: the
         // bytes after it are still mapped memory, and the version 1 fields are used only once
         // the version says they exist.
         let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
@@ -477,12 +477,12 @@ impl PvhMemoryMap {
             return None;
         }
         let table_length = entries * PVH_MEMMAP_ENTRY_LENGTH;
-        let table = mapped(table_address, table_length)?;
+        let table = in_boot_direct_map(table_address, table_length)?;
         Some(Self {
             start_info: start_info_address,
             table_address,
-            // SAFETY: the loader's memory map table, `entries` entries long; `mapped` checked
-            // it is reachable, and nothing writes it.
+            // SAFETY: the loader's memory map table, `entries` entries long;
+            // `in_boot_direct_map` checked it is reachable, and nothing writes it.
             table: unsafe { physical_slice(table, table_length) },
         })
     }
@@ -544,6 +544,8 @@ fn signature_of(root: RootTable) -> &'static [u8; 4] {
 /// The RSDP's bytes, at the address the PVH loader passed in `hvm_start_info`, if any.
 /// QEMU 10's loader passes 0 (no address), so on QEMU the BIOS-area search finds the RSDP.
 fn pvh_rsdp() -> Option<&'static [u8]> {
+    // `mapped`, not `in_boot_direct_map`: only a version 1 start info, which `PvhMemoryMap`
+    // reads, is part of `physical_memory`.
     let start_info = mapped(
         PVH_START_INFO.load(Ordering::Relaxed).into(),
         PVH_START_INFO_READ_LENGTH,
@@ -591,10 +593,28 @@ fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     acpi::table_ok(table, signature).then_some(table)
 }
 
-/// `address` as a pointer-sized value if `address..address + length` is inside the first 4 GiB,
-/// where the firmware's tables are: the boot direct map covers all of it, the kernel's the
-/// parts [`Platform::physical_memory`] lists. Address 0 is rejected as "no table".
+/// `address` as a pointer-sized value if `address..address + length` lies inside one range of
+/// [`Platform::physical_memory`], where the firmware's tables are: the boot direct map covers
+/// the first 4 GiB, the kernel's every range of `physical_memory` (early device pages as device
+/// memory, D33). A table in a hole of the loader's map, or in a range a full map dropped, is
+/// refused rather than read through an unmapped address. Address 0 is rejected as "no table".
 fn mapped(address: u64, length: usize) -> Option<usize> {
+    let pointer = in_boot_direct_map(address, length)?;
+    // No overflow: `in_boot_direct_map` checked the end.
+    let end = address + length as u64;
+    X86_64::physical_memory()
+        .ranges()
+        .iter()
+        .any(|range| range.start <= address && end <= range.end)
+        .then_some(pointer)
+}
+
+/// `address` as a pointer-sized value if `address..address + length` is inside the first 4 GiB,
+/// which the boot direct map covers; address 0 is rejected as "none". Enough for the loader's
+/// own data, the start info and its memory map, which [`Platform::physical_memory`] always
+/// includes, so the kernel's direct map covers them too; firmware tables need [`mapped`] (which
+/// reads the memory map through this).
+fn in_boot_direct_map(address: u64, length: usize) -> Option<usize> {
     let end = address.checked_add(u64::try_from(length).ok()?)?;
     if address == 0 || end > BOOT_DIRECT_MAP_END {
         return None;

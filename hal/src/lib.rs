@@ -107,7 +107,10 @@ pub trait Platform {
 
     /// All the physical memory the direct map covers: every range of RAM, whether free or
     /// reserved, and the firmware tables the HAL reads (such as ACPI's on x86_64). Device
-    /// registers are not part of it. Built from the firmware's description on each call.
+    /// registers are not part of it; where a firmware range covers an early device region
+    /// anyway (x86 loaders may report the local APIC's page as reserved), the kernel leaves
+    /// those pages out of the normal direct map and maps them as device memory only. Built from
+    /// the firmware's description on each call.
     fn physical_memory() -> MemoryMap;
 
     /// Calls `region` for each block of device registers the HAL itself uses before the driver
