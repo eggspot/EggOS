@@ -5,15 +5,17 @@
 //! largest leaves the alignment allows (2 MiB and 1 GiB where the format has them), so a large
 //! direct map costs a handful of tables and few TLB entries. [`kernel_page_tables`] lays out
 //! the kernel's address space:
-//! - the kernel image at its physical address, each part with only the access it needs: code
-//!   read and execute, constants read only, data and the boot stack read and write but never
-//!   execute, and the page below the boot stack left unmapped, so an overflow faults instead of
-//!   silently overwriting `.bss`;
+//! - the kernel image at its virtual address, in the top 2 GiB (D33), each part with only the
+//!   access it needs: code read and execute, constants read only, data and the boot stack read
+//!   and write but never execute, and the page below the boot stack left unmapped, so an
+//!   overflow faults instead of silently overwriting `.bss`;
 //! - the direct map: all physical memory at [`Platform::direct_map_offset`], read and write and
 //!   never executable, except that the kernel image's own frames keep their access there (code
 //!   and constants read-only) and its stack guard page is unmapped, so no alias undoes W^X;
-//! - the device registers the HAL uses before the driver model exists (M5), as device memory at
-//!   their physical addresses.
+//! - the device registers the HAL uses before the driver model exists (M5), as device memory in
+//!   the direct map's window: physical address + [`Platform::direct_map_offset`] (D33).
+//!
+//! Nothing is mapped in the low half, which belongs to user space (M4, M6).
 //!
 //! Tables are only built before they are activated: changing live tables needs TLB
 //! maintenance, which comes with the first user that does it (M4).
@@ -89,12 +91,6 @@ impl<F: Format> PageTables<F> {
     /// The physical addresses of the root tables, one per [`Format::ROOTS`].
     pub fn roots(&self) -> &[u64] {
         &self.roots[..F::ROOTS]
-    }
-
-    /// Where the tables are reached from now on (see
-    /// [`FrameAllocator::set_physical_memory_offset`]).
-    pub fn set_physical_memory_offset(&mut self, offset: usize) {
-        self.physical_memory_offset = offset;
     }
 
     /// Maps virtual `virt..virt + length` to physical `phys..phys + length` with `attributes`,
@@ -234,15 +230,14 @@ pub fn kernel_page_tables<P: Platform>(
     let mut tables = PageTables::new(frames)?;
     let image = P::kernel_image();
     for (range, attributes) in image.mapped_parts() {
-        tables.map(range.start, range.start, range.len(), attributes, frames)?;
+        let virt = image.virtual_address(range.start);
+        tables.map(virt, range.start, range.len(), attributes, frames)?;
     }
-    map_direct_map(
-        &mut tables,
-        physical_memory,
-        P::direct_map_offset() as u64,
-        &image,
-        frames,
-    )?;
+    let offset = P::direct_map_offset() as u64;
+    if !direct_map_fits_below(physical_memory, offset, &image) {
+        return Err(MapError::InvalidAddress);
+    }
+    map_direct_map(&mut tables, physical_memory, offset, &image, frames)?;
     // Page by page: two register blocks may share a page. A page mapped already is compared
     // with a device leaf as the format decodes it (RISC-V does not record the memory type).
     let device_leaf = match <P::PageTableFormat as Format>::decode(
@@ -256,13 +251,26 @@ pub fn kernel_page_tables<P: Platform>(
     P::early_device_regions(&mut |device| {
         let device = device.covering_frames();
         for page in (device.start..device.end).step_by(FRAME_SIZE as usize) {
-            if result.is_err() || tables.translate(page) == Some((page, device_leaf)) {
+            let virt = page.wrapping_add(offset);
+            if result.is_err() || tables.translate(virt) == Some((page, device_leaf)) {
                 continue;
             }
-            result = tables.map(page, page, FRAME_SIZE, Attributes::DEVICE, frames);
+            result = tables.map(virt, page, FRAME_SIZE, Attributes::DEVICE, frames);
         }
     });
     result.map(|()| tables)
+}
+
+/// Whether the direct map of `ram` at `offset` ends at or below the kernel image's virtual
+/// address: on RISC-V Sv39 both share the 256 GiB high half (D33).
+fn direct_map_fits_below(ram: &MemoryMap, offset: u64, image: &KernelImage) -> bool {
+    let image_virt = image.virtual_address(image.start);
+    ram.ranges().iter().all(|range| {
+        range
+            .end
+            .checked_add(offset)
+            .is_some_and(|end| end <= image_virt)
+    })
 }
 
 /// The access the direct map gives a part of the kernel image mapped with `attributes`: the
@@ -340,16 +348,13 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     let mut page_tables =
         kernel_page_tables::<P>(&mut frames, &direct_map).map_err(MapError::description)?;
     // SAFETY: `kernel_page_tables` built tables in `P`'s format mapping the kernel image at
-    // its physical address with code executable and data and stack writable, every range of
-    // `P::physical_memory` at the direct map offset and every early device region as device
-    // memory at its physical address. Their frames are never freed and nothing changes them
-    // while they are active. Only the frame allocator and the tables reach memory through the
-    // physical memory offset, and both switch to the new one below.
+    // its virtual address with code executable and data and stack writable, and every range of
+    // `P::physical_memory` and every early device region (as device memory) at the direct map
+    // offset, and nothing in the low half. Their frames are never freed and nothing changes
+    // them while they are active. Everything the kernel reaches is in the image or reached
+    // through the direct map, as the boot page tables already had it.
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
-    let offset = P::physical_memory_offset();
-    frames.set_physical_memory_offset(offset);
-    page_tables.set_physical_memory_offset(offset);
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
 }
@@ -457,6 +462,7 @@ mod tests {
         ram.add_ram(PhysicalRange::from_start_length(8 * mb, 2 * mb));
         let base = mb + 3 * K;
         let image = KernelImage {
+            virtual_offset: 0xffff_ffff_8000_0000,
             start: base,
             text_start: base + K,
             rodata_start: base + 4 * K,
@@ -514,6 +520,35 @@ mod tests {
     }
 
     #[test]
+    fn the_direct_map_must_end_below_the_kernel_image() {
+        // Sv39: the direct map from 0xffff_ffc0_0000_0000, the image at 0xffff_ffff_8020_0000.
+        let image = KernelImage {
+            virtual_offset: 0xffff_ffff_0000_0000,
+            start: 0x8020_0000,
+            text_start: 0x8020_0000,
+            rodata_start: 0x8020_1000,
+            data_start: 0x8020_2000,
+            stack_guard_start: 0x8020_3000,
+            stack_start: 0x8020_4000,
+            end: 0x8020_5000,
+        };
+        let offset = 0xffff_ffc0_0000_0000;
+        let gb = 1 << 30;
+        let ram = |end| {
+            let mut map = MemoryMap::new();
+            map.add_ram(PhysicalRange { start: 2 * gb, end });
+            map
+        };
+        assert!(direct_map_fits_below(&ram(4 * gb), offset, &image));
+        // The image's first byte is the direct map's 254 GiB + 2 MiB.
+        let limit = 254 * gb + (2 << 20);
+        assert!(direct_map_fits_below(&ram(limit), offset, &image));
+        assert!(!direct_map_fits_below(&ram(limit + K), offset, &image));
+        // An end that wraps around the address space never fits.
+        assert!(!direct_map_fits_below(&ram(300 * gb), offset, &image));
+    }
+
+    #[test]
     fn the_direct_map_splits_a_gigabyte_leaf_around_an_image_across_two_ranges() {
         let mut frames = frames(64);
         let mut tables = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
@@ -522,6 +557,7 @@ mod tests {
         // part; the first and third GiBs hold no image.
         let base = gb + (5 << 20);
         let image = KernelImage {
+            virtual_offset: 0xffff_ffff_8000_0000,
             start: base,
             text_start: base,
             rodata_start: base + 2 * K,

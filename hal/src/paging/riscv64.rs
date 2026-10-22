@@ -2,9 +2,9 @@
 //! sign-extended to 64 bits. Leaves are 4 KiB pages, 2 MiB megapages and 1 GiB gigapages.
 //!
 //! Sv39 is what every RVA profile requires, so it runs on every RISC-V application processor;
-//! its upper half (256 GiB) bounds the direct map (D29). Without the Svpbmt extension a page
-//! cannot say whether it is device memory: the platform's physical memory attributes decide,
-//! so [`MemoryType`] is not encoded.
+//! its upper half (256 GiB) holds the direct map (254 GiB) and the kernel image (D29, D33).
+//! Without the Svpbmt extension a page cannot say whether it is device memory: the platform's
+//! physical memory attributes decide, so [`MemoryType`] is not encoded.
 
 use super::{Attributes, Entry, Format};
 
@@ -42,14 +42,7 @@ impl Format for Riscv64Sv39 {
     }
 
     fn leaf(phys: u64, _level: usize, attributes: Attributes) -> u64 {
-        let mut entry = ((phys >> 12) << PPN_SHIFT) & PPN | VALID | READ | ACCESSED | DIRTY;
-        if attributes.writable {
-            entry |= WRITE;
-        }
-        if attributes.executable {
-            entry |= EXECUTE;
-        }
-        entry
+        leaf(phys, attributes)
     }
 
     fn decode(entry: u64, _level: usize) -> Entry {
@@ -69,6 +62,19 @@ impl Format for Riscv64Sv39 {
             },
         )
     }
+}
+
+/// [`Format::leaf`] (the same at every level), usable in constants: the boot code's gigapage
+/// entries are built from it.
+pub const fn leaf(phys: u64, attributes: Attributes) -> u64 {
+    let mut entry = ((phys >> 12) << PPN_SHIFT) & PPN | VALID | READ | ACCESSED | DIRTY;
+    if attributes.writable {
+        entry |= WRITE;
+    }
+    if attributes.executable {
+        entry |= EXECUTE;
+    }
+    entry
 }
 
 #[cfg(test)]

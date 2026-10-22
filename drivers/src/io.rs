@@ -24,8 +24,8 @@ impl Mmio {
     /// Creates access to the `size`-byte register block at physical/virtual address `base`.
     ///
     /// # Safety
-    /// `base..base + size` must be the register block of a device, mapped (or identity
-    /// accessible with the MMU off) for as long as the returned value is used, and nothing
+    /// `base..base + size` must be the register block of a device, mapped (or reachable at its
+    /// physical address with the MMU off) for as long as the returned value is used, and nothing
     /// else may rely on those registers keeping their state between this value's accesses.
     pub const unsafe fn new(base: usize, size: usize) -> Self {
         Self { base, size }

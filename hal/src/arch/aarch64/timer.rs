@@ -1,6 +1,7 @@
 //! The Arm generic timer (Arm ARM, chapter D12): the virtual counter as the clock and the EL1
 //! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt.
 
+use super::DIRECT_MAP_OFFSET;
 use crate::memory::PhysicalRange;
 use eggos_drivers::interrupt::gicv2::{self, Acknowledged, Gicv2CpuInterface, Gicv2Distributor};
 use eggos_drivers::io::Mmio;
@@ -28,14 +29,22 @@ const CNTV_CTL_ENABLE: u64 = 1;
 const CNTV_CTL_ISTATUS: u64 = 1 << 2;
 
 fn distributor() -> Gicv2Distributor<Mmio> {
-    // SAFETY: on QEMU `virt` the GICv2 distributor's registers are at GICD_BASE, accessible
-    // with the MMU off; only this module drives the GIC.
-    Gicv2Distributor::new(unsafe { Mmio::new(GICD_BASE, gicv2::DISTRIBUTOR_BLOCK_SIZE) })
+    // SAFETY: on QEMU `virt` the GICv2 distributor's registers are at GICD_BASE, which the
+    // boot page tables and the kernel's own map as device memory at the direct map offset;
+    // only this module drives the GIC.
+    Gicv2Distributor::new(unsafe {
+        Mmio::new(DIRECT_MAP_OFFSET + GICD_BASE, gicv2::DISTRIBUTOR_BLOCK_SIZE)
+    })
 }
 
 fn cpu_interface() -> Gicv2CpuInterface<Mmio> {
     // SAFETY: as in `distributor`, for the CPU interface at GICC_BASE.
-    Gicv2CpuInterface::new(unsafe { Mmio::new(GICC_BASE, gicv2::CPU_INTERFACE_BLOCK_SIZE) })
+    Gicv2CpuInterface::new(unsafe {
+        Mmio::new(
+            DIRECT_MAP_OFFSET + GICC_BASE,
+            gicv2::CPU_INTERFACE_BLOCK_SIZE,
+        )
+    })
 }
 
 /// Disarms the timer and routes its interrupt through the GIC to this CPU, so it is taken once

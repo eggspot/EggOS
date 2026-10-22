@@ -49,25 +49,11 @@ impl Format for Aarch64 {
     }
 
     fn table(table: u64, _level: usize) -> u64 {
-        (table & ADDRESS) | VALID | PAGE_OR_TABLE
+        self::table(table)
     }
 
     fn leaf(phys: u64, level: usize, attributes: Attributes) -> u64 {
-        let mut entry = (phys & ADDRESS) | VALID | ACCESS_FLAG | USER_NO_EXECUTE;
-        if level == 0 {
-            entry |= PAGE_OR_TABLE;
-        }
-        entry |= match attributes.memory_type {
-            MemoryType::Normal => (NORMAL_INDEX << ATTRIBUTE_INDEX_SHIFT) | INNER_SHAREABLE,
-            MemoryType::Device => DEVICE_INDEX << ATTRIBUTE_INDEX_SHIFT,
-        };
-        if !attributes.writable {
-            entry |= READ_ONLY;
-        }
-        if !attributes.executable {
-            entry |= PRIVILEGED_NO_EXECUTE;
-        }
-        entry
+        leaf(phys, level, attributes)
     }
 
     fn decode(entry: u64, level: usize) -> Entry {
@@ -96,6 +82,30 @@ impl Format for Aarch64 {
             },
         )
     }
+}
+
+/// [`Format::table`], usable in constants and in the boot code.
+pub const fn table(table: u64) -> u64 {
+    (table & ADDRESS) | VALID | PAGE_OR_TABLE
+}
+
+/// [`Format::leaf`], usable in constants: the boot code's block entries are built from it.
+pub const fn leaf(phys: u64, level: usize, attributes: Attributes) -> u64 {
+    let mut entry = (phys & ADDRESS) | VALID | ACCESS_FLAG | USER_NO_EXECUTE;
+    if level == 0 {
+        entry |= PAGE_OR_TABLE;
+    }
+    entry |= match attributes.memory_type {
+        MemoryType::Normal => (NORMAL_INDEX << ATTRIBUTE_INDEX_SHIFT) | INNER_SHAREABLE,
+        MemoryType::Device => DEVICE_INDEX << ATTRIBUTE_INDEX_SHIFT,
+    };
+    if !attributes.writable {
+        entry |= READ_ONLY;
+    }
+    if !attributes.executable {
+        entry |= PRIVILEGED_NO_EXECUTE;
+    }
+    entry
 }
 
 #[cfg(test)]

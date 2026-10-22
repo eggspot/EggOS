@@ -1,17 +1,19 @@
 //! Building the boot memory map, shared by the architecture modules: the kernel image's extent
-//! from the linker script, the memory a device tree describes, and the physical memory offset.
+//! from the linker script and the memory a device tree describes.
 
+use crate::arch::KERNEL_VIRTUAL_OFFSET;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::fdt::{self, Fdt};
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use crate::memory::MemoryMap;
 use crate::memory::PhysicalRange;
 use crate::paging::KernelImage;
-use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::{Platform, arch::CurrentPlatform};
 
 /// Largest device tree read, against a corrupt size field (QEMU's are 1 MiB at most).
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-const MAX_DEVICE_TREE_SIZE: usize = 16 << 20;
+pub(crate) const MAX_DEVICE_TREE_SIZE: usize = 16 << 20;
 
 unsafe extern "C" {
     /// First byte of the kernel image (linker script).
@@ -27,38 +29,38 @@ unsafe extern "C" {
     static __kernel_end: u8;
 }
 
-/// [`crate::Platform::physical_memory_offset`]: 0 until the kernel's page tables are active.
-static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
+// The HAL's kernel virtual offset, for `linker.ld` to check its own against.
+core::arch::global_asm!(
+    ".globl __kernel_virtual_offset_hal",
+    ".set __kernel_virtual_offset_hal, {offset}",
+    offset = const KERNEL_VIRTUAL_OFFSET,
+);
 
-pub(crate) fn physical_memory_offset() -> usize {
-    PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed)
-}
-
-/// Called by `activate_page_tables` once the direct map is in use.
-pub(crate) fn set_physical_memory_offset(offset: usize) {
-    PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::Relaxed);
+/// The physical address of the kernel image's byte at virtual address `virt`.
+fn physical(virt: *const u8) -> u64 {
+    (virt as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET)
 }
 
 /// The physical memory the kernel image occupies, `.bss` and boot stack included. The kernel
-/// runs at its physical load address on every architecture today (MMU off, the x86_64 boot
-/// identity map, or the kernel's own page tables, which map it there).
+/// is linked, and runs, [`KERNEL_VIRTUAL_OFFSET`] above it (D33).
 pub(crate) fn kernel_image() -> PhysicalRange {
     PhysicalRange {
-        start: (&raw const __kernel_start) as u64,
-        end: (&raw const __kernel_end) as u64,
+        start: physical(&raw const __kernel_start),
+        end: physical(&raw const __kernel_end),
     }
 }
 
 /// The parts of the kernel image, for its page-table permissions.
 pub(crate) fn kernel_image_parts() -> KernelImage {
     KernelImage {
-        start: (&raw const __kernel_start) as u64,
-        text_start: (&raw const __text_start) as u64,
-        rodata_start: (&raw const __rodata_start) as u64,
-        data_start: (&raw const __data_start) as u64,
-        stack_guard_start: (&raw const __stack_guard) as u64,
-        stack_start: (&raw const __stack_bottom) as u64,
-        end: (&raw const __kernel_end) as u64,
+        virtual_offset: KERNEL_VIRTUAL_OFFSET,
+        start: physical(&raw const __kernel_start),
+        text_start: physical(&raw const __text_start),
+        rodata_start: physical(&raw const __rodata_start),
+        data_start: physical(&raw const __data_start),
+        stack_guard_start: physical(&raw const __stack_guard),
+        stack_start: physical(&raw const __stack_bottom),
+        end: physical(&raw const __kernel_end),
     }
 }
 
@@ -75,7 +77,7 @@ unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     if address == 0 || !address.is_multiple_of(8) {
         return None;
     }
-    let virt = address.wrapping_add(physical_memory_offset());
+    let virt = address.wrapping_add(CurrentPlatform::physical_memory_offset());
     // SAFETY: the caller guarantees `address` is readable for a header's length.
     let header = unsafe { core::slice::from_raw_parts(virt as *const u8, fdt::HEADER_LENGTH) };
     let size = fdt::total_size(header).ok()?;

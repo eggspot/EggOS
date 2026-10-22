@@ -176,6 +176,7 @@ mod tests {
             // Below the free RAM, in RAM the direct map covers (see `physical_memory`), as on
             // real machines: the tables only describe it, nothing reaches it.
             eggos_hal::paging::KernelImage {
+                virtual_offset: 0xffff_ffff_8000_0000,
                 start: 0x8_0000,
                 text_start: 0x8_1000,
                 rodata_start: 0x8_4000,

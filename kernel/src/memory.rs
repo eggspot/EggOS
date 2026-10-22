@@ -106,13 +106,6 @@ impl FrameAllocator {
         self.physical_memory_offset
     }
 
-    /// Reaches physical memory at `offset` from now on, as when the kernel switches to its own
-    /// page tables: the free stack links hold physical addresses, so they stay valid as long as
-    /// the new offset reaches the same memory.
-    pub fn set_physical_memory_offset(&mut self, offset: usize) {
-        self.physical_memory_offset = offset;
-    }
-
     /// Frames that [`Self::allocate`] can still return.
     pub fn free_frames(&self) -> u64 {
         self.free_frames

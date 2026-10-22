@@ -2,7 +2,9 @@
 //!
 //! Boot contract: entered at `_start` in EL1 with the MMU off, as QEMU's `virt` machine does
 //! for an ELF kernel. The kernel is built for `aarch64-unknown-none-softfloat` (decision D10):
-//! no FP/SIMD in the kernel, and `strict-align`, which is required while the MMU is off.
+//! no FP/SIMD in the kernel, and `strict-align`, which was required while the MMU was off. Since
+//! D33 only the entry code below runs with the MMU off: it builds the boot page tables, turns
+//! the MMU on and jumps to the kernel's virtual address before any Rust code runs.
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
@@ -11,7 +13,7 @@ mod timer;
 
 use crate::arch::boot_memory;
 use crate::memory::PhysicalRange;
-use crate::paging::{self, KernelImage};
+use crate::paging::{self, Attributes, KernelImage, MemoryType};
 use crate::{ExitStatus, MemoryMap, Platform};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
@@ -27,15 +29,13 @@ _start:
     and     x1, x0, #0xffffff
     ubfx    x2, x0, #32, #8
     orr     x0, x1, x2
-    cbnz    x0, 3f
+    cbnz    x0, 6f
 
     // Use SP_EL1 at EL1, so exceptions taken to EL1 run on the boot stack set up below.
     msr     spsel, #1
-    adrp    x0, __stack_top
-    add     x0, x0, :lo12:__stack_top
-    mov     sp, x0
 
-    // Zero .bss (8-byte aligned and sized by the linker script).
+    // The MMU is off, so `adrp` (PC-relative) gives physical addresses until the jump below.
+    // Zero .bss (8-byte aligned and sized by the linker script); the boot page tables are there.
     adrp    x0, __bss_start
     add     x0, x0, :lo12:__bss_start
     adrp    x1, __bss_end
@@ -45,18 +45,140 @@ _start:
     str     xzr, [x0], #8
     b       1b
 
+    // The boot page tables (D33), with 1 GiB blocks: the gigabyte holding the kernel, read,
+    // write and execute, at its physical address through TTBR0 (only for the jump below and
+    // the switch to the kernel's own tables) and at the kernel's virtual address through
+    // TTBR1, and the boot direct map: the first {direct_map_gigabytes} GiB of physical
+    // memory, never executable, at the direct map offset; device memory below the gigabyte
+    // RAM starts in, normal memory from there on.
+2:  adrp    x0, {l0_low}
+    adrp    x1, {l1_low}
+    adrp    x2, {l0_high}
+    adrp    x3, {l1_direct}
+    adrp    x4, {l1_kernel}
+    adrp    x9, __kernel_start      // physical
+    ldr     x13, =__kernel_start    // virtual
+    ubfx    x10, x9, #39, #9
+    orr     x6, x1, #{table}
+    str     x6, [x0, x10, lsl #3]
+    lsr     x10, x9, #30
+    lsl     x11, x10, #30
+    ldr     x12, ={kernel_block}
+    orr     x11, x11, x12
+    and     x10, x10, #511
+    str     x11, [x1, x10, lsl #3]  // identity
+    ubfx    x10, x13, #39, #9
+    orr     x6, x4, #{table}
+    str     x6, [x2, x10, lsl #3]
+    ubfx    x10, x13, #30, #9
+    str     x11, [x4, x10, lsl #3]  // the kernel's virtual address
+    mov     x10, #{direct_map_l0_index}
+    orr     x6, x3, #{table}
+    str     x6, [x2, x10, lsl #3]
+    ldr     x12, ={device_block}
+    ldr     x14, ={normal_block}
+    mov     x10, #0
+3:  cmp     x10, #{ram_gigabyte}
+    csel    x6, x12, x14, lo
+    orr     x6, x6, x10, lsl #30
+    str     x6, [x3, x10, lsl #3]   // the direct map
+    add     x10, x10, #1
+    cmp     x10, #{direct_map_gigabytes}
+    b.lo    3b
+
+    // Translation on: memory attributes, address sizes (IPS: the CPU's physical address
+    // size, at most 48 bits), both roots, then the MMU and the caches. Then continue at the
+    // kernel's virtual address.
+    ldr     x0, ={mair}
+    msr     mair_el1, x0
+    mrs     x1, id_aa64mmfr0_el1
+    and     x1, x1, #0xf
+    mov     x2, #{ips_max}
+    cmp     x1, x2
+    csel    x1, x1, x2, lo
+    ldr     x0, ={tcr}
+    orr     x0, x0, x1, lsl #{ips_shift}
+    msr     tcr_el1, x0
+    adrp    x0, {l0_low}
+    msr     ttbr0_el1, x0
+    adrp    x0, {l0_high}
+    msr     ttbr1_el1, x0
+    dsb     ish
+    tlbi    vmalle1
+    dsb     ish
+    isb
+    mrs     x0, sctlr_el1
+    ldr     x1, ={sctlr_enable}
+    orr     x0, x0, x1
+    msr     sctlr_el1, x0
+    isb
+    ldr     x0, =4f
+    br      x0
+
+    // From here on the kernel runs at its virtual address, and `adrp` gives virtual addresses.
+4:  adrp    x0, __stack_top
+    add     x0, x0, :lo12:__stack_top
+    mov     sp, x0
+
     // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
-2:  adrp    x0, exception_vectors
+    adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0
     isb
     bl      {init_timer}
     bl      kernel_main
-3:  wfe
-    b       3b
+6:  wfe
+    b       6b
+    .ltorg
 "#,
     init_timer = sym timer::init,
+    l0_low = sym BOOT_L0_LOW,
+    l1_low = sym BOOT_L1_LOW,
+    l0_high = sym BOOT_L0_HIGH,
+    l1_direct = sym BOOT_L1_DIRECT,
+    l1_kernel = sym BOOT_L1_KERNEL,
+    table = const paging::aarch64::table(0),
+    kernel_block = const paging::aarch64::leaf(0, 2, BOOT_KERNEL),
+    device_block = const paging::aarch64::leaf(0, 2, Attributes::DEVICE),
+    normal_block = const paging::aarch64::leaf(0, 2, Attributes::READ_WRITE),
+    direct_map_l0_index = const paging::index(DIRECT_MAP_OFFSET as u64, 3),
+    ram_gigabyte = const RAM_BASE >> 30,
+    direct_map_gigabytes = const BOOT_DIRECT_MAP_END >> 30,
+    mair = const paging::aarch64::MAIR,
+    tcr = const TCR,
+    ips_max = const TCR_IPS_MAX,
+    ips_shift = const TCR_IPS_SHIFT,
+    sctlr_enable = const SCTLR_MMU_AND_CACHES,
 );
+
+/// The image's virtual address minus its physical address: the kernel links at
+/// `0xffff_ffff_8020_0000`, in the top 2 GiB (D33). `linker.ld` uses the same value and checks
+/// it against this one.
+pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_4000_0000;
+
+/// The physical memory the boot direct map covers, and so the most the kernel reaches before
+/// the driver model (M5): 256 GiB, all of one level-1 table's first half. QEMU `virt` puts
+/// at most 255 GiB of RAM from 1 GiB on, below its high device region.
+const BOOT_DIRECT_MAP_END: u64 = 256 << 30;
+
+/// The kernel's boot mapping: read, write and execute until its own page tables are active.
+const BOOT_KERNEL: Attributes = Attributes {
+    writable: true,
+    executable: true,
+    memory_type: MemoryType::Normal,
+};
+
+/// A boot page table (see `_start`).
+#[repr(C, align(4096))]
+struct BootTable([u64; paging::ENTRIES]);
+
+// Built by `_start` before any Rust code runs; never used again once the kernel's own page
+// tables are active.
+static mut BOOT_L0_LOW: BootTable = BootTable([0; paging::ENTRIES]);
+static mut BOOT_L1_LOW: BootTable = BootTable([0; paging::ENTRIES]);
+static mut BOOT_L0_HIGH: BootTable = BootTable([0; paging::ENTRIES]);
+static mut BOOT_L1_DIRECT: BootTable = BootTable([0; paging::ENTRIES]);
+static mut BOOT_L1_KERNEL: BootTable = BootTable([0; paging::ENTRIES]);
 
 /// QEMU `virt`: start of RAM, where QEMU places the device tree for a non-Linux kernel (it
 /// passes the tree's address in `x0` only to Linux images). The kernel links far enough above
@@ -97,9 +219,10 @@ impl Platform for Aarch64 {
 
     #[inline]
     fn console_write(bytes: &[u8]) {
-        // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, accessible with the
-        // MMU off; the early console is its only user.
-        let regs = unsafe { Mmio::new(UART0_BASE, pl011::REGISTER_BLOCK_SIZE) };
+        // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
+        // tables and the kernel's own map as device memory at the direct map offset; the early
+        // console is its only user.
+        let regs = unsafe { Mmio::new(DIRECT_MAP_OFFSET + UART0_BASE, pl011::REGISTER_BLOCK_SIZE) };
         Pl011::new(regs).write_bytes(bytes);
     }
 
@@ -168,15 +291,20 @@ impl Platform for Aarch64 {
 
     fn memory_map() -> MemoryMap {
         // SAFETY: on QEMU `virt` the start of RAM holds the device tree QEMU loaded there,
-        // which nothing writes; RAM is reachable through the physical memory offset (the MMU is
-        // off, or the direct map covers it). If QEMU loaded none, the header check fails and
-        // the map is empty.
-        unsafe { boot_memory::device_tree_memory_map(RAM_BASE) }
+        // which nothing writes; the direct map covers it. If QEMU loaded none, the header check
+        // fails and the map is empty.
+        let mut map = unsafe { boot_memory::device_tree_memory_map(RAM_BASE) };
+        // The kernel's page tables are built through the boot direct map.
+        map.retain_within(PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
     }
 
     #[inline]
     fn physical_memory_offset() -> usize {
-        boot_memory::physical_memory_offset()
+        DIRECT_MAP_OFFSET
     }
 
     type PageTableFormat = paging::aarch64::Aarch64;
@@ -191,7 +319,14 @@ impl Platform for Aarch64 {
 
     fn physical_memory() -> MemoryMap {
         // SAFETY: as in `memory_map`.
-        unsafe { boot_memory::device_tree_ram(RAM_BASE) }
+        let mut map = unsafe { boot_memory::device_tree_ram(RAM_BASE) };
+        // RAM beyond the boot direct map is never handed out (see `memory_map`), so it is left
+        // unmapped.
+        map.retain_within(PhysicalRange {
+            start: 0,
+            end: BOOT_DIRECT_MAP_END,
+        });
+        map
     }
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
@@ -206,46 +341,46 @@ impl Platform for Aarch64 {
         let [low, high] = roots else {
             panic!("AArch64 page tables have two roots");
         };
-        let physical_address_size: u64;
-        // SAFETY: reading an ID register has no side effects.
-        unsafe {
-            core::arch::asm!(
-                "mrs {}, id_aa64mmfr0_el1",
-                out(reg) physical_address_size,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        let tcr = TCR | (physical_address_size & 0xf).min(TCR_IPS_MAX) << TCR_IPS_SHIFT;
         // SAFETY: the caller guarantees the tables map everything this CPU uses from here on
-        // at the addresses it uses now: the code runs on at its physical address, the stack and
-        // data likewise, and the devices too. `MAIR` matches the attribute indexes the format
-        // encodes. The barriers complete the table writes before the walker reads them, the
-        // TLB is invalidated before the MMU is turned on, and `isb` makes each change take
-        // effect before the next instruction. No `nomem`: memory accesses must not move across
-        // the switch.
+        // at the addresses it uses now: the kernel image at its virtual address (TTBR1), the
+        // direct map and the devices in it; the low half (`low`) is empty. `MAIR` and `TCR`
+        // stay as the boot code set them. The tables replace the boot tables without two live
+        // translations of one address ever meeting in the TLB (the Arm ARM's break-before-make
+        // rule, D8.16): the code branches to the kernel's identity alias in the boot TTBR0,
+        // points TTBR1 at the empty `low` root and invalidates the TLB, then at the new tables,
+        // branches back to the kernel's virtual address, and finally replaces the boot TTBR0
+        // with `low` and invalidates again. Nothing in between touches memory, and interrupts
+        // are masked. The first barrier completes the table writes before any walk. No
+        // `nomem`: memory accesses must not move across the switch.
         unsafe {
             core::arch::asm!(
-                "msr mair_el1, {mair}",
-                "msr tcr_el1, {tcr}",
-                "msr ttbr0_el1, {low}",
-                "msr ttbr1_el1, {high}",
-                "dsb ishst",
+                "dsb ish",
+                "adr {tmp}, 2f",
+                "sub {tmp}, {tmp}, {offset}",
+                "br {tmp}",
+                "2:",
+                "msr ttbr1_el1, {low}",
+                "isb",
                 "tlbi vmalle1",
                 "dsb ish",
                 "isb",
-                "mrs {sctlr}, sctlr_el1",
-                "orr {sctlr}, {sctlr}, {enable}",
-                "msr sctlr_el1, {sctlr}",
+                "msr ttbr1_el1, {high}",
                 "isb",
-                mair = in(reg) paging::aarch64::MAIR,
-                tcr = in(reg) tcr,
+                "adr {tmp}, 3f",
+                "add {tmp}, {tmp}, {offset}",
+                "br {tmp}",
+                "3:",
+                "msr ttbr0_el1, {low}",
+                "isb",
+                "tlbi vmalle1",
+                "dsb ish",
+                "isb",
                 low = in(reg) *low,
                 high = in(reg) *high,
-                enable = in(reg) SCTLR_MMU_AND_CACHES,
-                sctlr = out(reg) _,
+                offset = in(reg) KERNEL_VIRTUAL_OFFSET,
+                tmp = out(reg) _,
                 options(nostack, preserves_flags),
             );
         }
-        boot_memory::set_physical_memory_offset(DIRECT_MAP_OFFSET);
     }
 }

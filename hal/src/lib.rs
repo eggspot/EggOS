@@ -81,9 +81,10 @@ pub trait Platform {
     fn memory_map() -> MemoryMap;
 
     /// Where the kernel reaches physical memory: free RAM at physical address `p` (from
-    /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. Zero
-    /// while the kernel runs with the MMU off or on the boot identity map; once the kernel's
-    /// page tables are active ([`Self::activate_page_tables`]), [`Self::direct_map_offset`].
+    /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. On every
+    /// architecture this is [`Self::direct_map_offset`] from the kernel's first instruction on:
+    /// the boot code maps the direct map before any Rust code runs, and the kernel's own page
+    /// tables keep it where it is (D33).
     fn physical_memory_offset() -> usize;
 
     /// This architecture's page-table format.
@@ -93,7 +94,8 @@ pub trait Platform {
     /// address `p + offset`, in the high half of the address space (D29).
     fn direct_map_offset() -> usize;
 
-    /// Where the parts of the kernel image are, from the linker script.
+    /// Where the parts of the kernel image are in physical memory, from the linker script,
+    /// and the virtual address it is linked and runs at (in the top 2 GiB, D33).
     fn kernel_image() -> paging::KernelImage;
 
     /// All the physical memory the direct map covers: every range of RAM, whether free or
@@ -102,21 +104,23 @@ pub trait Platform {
     fn physical_memory() -> MemoryMap;
 
     /// Calls `region` for each block of device registers the HAL itself uses before the driver
-    /// model exists (the early console, the interrupt controller, the timer), which the
-    /// kernel's page tables map as device memory at its physical address. Call it after boot
+    /// model exists (the early console, the interrupt controller, the timer), which the HAL
+    /// reaches at physical address + [`Self::direct_map_offset`] and the kernel's page tables
+    /// map there as device memory (D33). Call it after boot
     /// set up the timer (as `kernel_main` runs).
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange));
 
-    /// Switches this CPU to the page tables at physical addresses `roots` (one per
-    /// [`paging::Format::ROOTS`]), then reports [`Self::direct_map_offset`] as the physical
-    /// memory offset.
+    /// Switches this CPU from the boot page tables to the page tables at physical addresses
+    /// `roots` (one per [`paging::Format::ROOTS`]). The boot tables' identity map of the kernel
+    /// is gone from then on: nothing is mapped in the low half.
     ///
     /// # Safety
     /// The tables must be in [`Self::PageTableFormat`], stay unchanged and allocated for as long
-    /// as they are active, and map at least: the kernel image at its physical address (code
+    /// as they are active, and map at least: the kernel image at its virtual address (code
     /// executable, data and stack writable), every range of [`Self::physical_memory`] at
-    /// [`Self::direct_map_offset`], and every [`Self::early_device_regions`] region at its
-    /// physical address as device memory. Nothing may hold a pointer derived from the old
-    /// physical memory offset into memory outside the kernel image.
+    /// [`Self::direct_map_offset`], and every [`Self::early_device_regions`] region at the same
+    /// offset as device memory. Nothing may hold a pointer into memory those tables leave
+    /// unmapped. Interrupts must be masked (as the kernel runs outside
+    /// [`Self::wait_for_interrupt`]): the switch passes through code no handler may interrupt.
     unsafe fn activate_page_tables(roots: &[u64]);
 }
