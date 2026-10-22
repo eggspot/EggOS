@@ -3,13 +3,14 @@
 //! verdict markers from the console.
 
 use crate::HEAP;
-use crate::memory::{self, FrameAllocator, Memory};
+use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::{exception, interrupt};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
 use eggos_hal::Platform;
+use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
 
 /// Printed when every self-test passed. The QEMU runner requires this exact line.
@@ -25,12 +26,16 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 6] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 7] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
         ("timer_interrupt_fires", |_| timer_interrupt_fires::<P>()),
         ("frames_are_usable_ram", frames_are_usable_ram::<P>),
+        (
+            "contiguous_frames_are_aligned_and_merge_back",
+            contiguous_frames_are_aligned_and_merge_back::<P>,
+        ),
         (
             "page_tables_protect_the_kernel",
             page_tables_protect_the_kernel::<P>,
@@ -228,6 +233,64 @@ fn every_frame_is_usable_ram(frames: &mut FrameAllocator) -> Result<(), &'static
     Ok(())
 }
 
+/// Blocks of contiguous frames of every order, largest first, must come out aligned to their
+/// size, be RAM the kernel can write, not overlap, and merge back when freed, so the largest
+/// block can be taken again. The largest order is [`MAX_ORDER`], or less on a machine with
+/// under 16 MiB free (a quarter of free memory at most, which leaves room for the page tables
+/// and slabs already scattered through memory). Runs after [`frames_are_usable_ram`], which
+/// sent every frame through the free stack, so the blocks must form again from freed frames.
+fn contiguous_frames_are_aligned_and_merge_back<P: Platform>(
+    _: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let mut frames = memory::FRAMES.lock();
+    let frames = frames.as_mut().ok_or("there is no frame allocator")?;
+    let free = frames.free_frames();
+    let top = (free / 4).checked_ilog2().unwrap_or(0).min(MAX_ORDER);
+    let mut blocks = [0u64; MAX_ORDER as usize + 1];
+    for order in (0..=top).rev() {
+        let block = frames
+            .allocate_contiguous(order)
+            .ok_or("no block of contiguous frames")?;
+        let size = FRAME_SIZE << order;
+        if !block.is_multiple_of(size) {
+            return Err("a block of contiguous frames is not aligned to its size");
+        }
+        let start = (block as usize).wrapping_add(frames.physical_memory_offset()) as *mut u64;
+        let last = start.wrapping_add(size as usize / 8 - 1);
+        for word in [start, last] {
+            // SAFETY: the block was just allocated, so the kernel owns it; the allocator
+            // reaches it through its offset, and both words are inside it and aligned.
+            unsafe { word.write_volatile(block ^ order as u64) };
+        }
+        blocks[order as usize] = block;
+    }
+    let blocks = &blocks[..=top as usize];
+    for (order, &block) in blocks.iter().enumerate() {
+        let size = FRAME_SIZE << order;
+        let start = (block as usize).wrapping_add(frames.physical_memory_offset()) as *mut u64;
+        let last = start.wrapping_add(size as usize / 8 - 1);
+        for word in [start, last] {
+            // SAFETY: as above; the block is still owned.
+            if unsafe { word.read_volatile() } != block ^ order as u64 {
+                return Err("blocks of contiguous frames overlap");
+            }
+        }
+    }
+    for (order, &block) in blocks.iter().enumerate() {
+        // SAFETY: allocated above with this order and no longer used.
+        unsafe { frames.free_contiguous(block, order as u32) };
+    }
+    if frames.free_frames() != free {
+        return Err("freeing blocks of contiguous frames lost frames");
+    }
+    let largest = frames
+        .allocate_contiguous(top)
+        .ok_or("freed blocks did not merge back into the largest one")?;
+    // SAFETY: just allocated with this order and not used.
+    unsafe { frames.free_contiguous(largest, top) };
+    Ok(())
+}
+
 /// The kernel's page tables must give each part of the kernel image only the access it needs,
 /// leave the stack guard page unmapped, map the early devices as device memory, and put the
 /// direct map where the platform says, in use: a frame written through the direct map is
@@ -280,15 +343,15 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
 }
 
 /// The kernel heap must hand out writable memory in the direct map, aligned as asked, without
-/// overlap, from every size class and as whole frames, and give it all back: exactly the
-/// frame-sized allocations return their frames. `Vec` growth (through `realloc`) must keep its contents up
-/// to a frame. On the bare-metal targets the `Vec` uses the kernel heap too, as the global
-/// allocator.
+/// overlap, from every size class and as blocks of whole frames, and give it all back: exactly
+/// the whole-frame allocations return their frames. A `Vec` growing past several frames
+/// (through `realloc`) must keep its contents. On the bare-metal targets the `Vec` uses the
+/// kernel heap too, as the global allocator.
 fn heap_allocates_in_the_direct_map<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    /// Every size class (16 to 2048 bytes), then three whole frames.
-    const LAYOUTS: [(usize, usize); 11] = [
+    /// Every size class (16 to 2048 bytes), then whole frames: 1, 1, 1, 4, 2 and 16.
+    const LAYOUTS: [(usize, usize); 14] = [
         (1, 1),
         (24, 8),
         (64, 64),
@@ -300,8 +363,11 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
         (2049, 8),
         (4096, 4096),
         (4000, 8),
+        (3 * 4096 + 1, 8),
+        (8192, 8192),
+        (65536, 8),
     ];
-    const WHOLE_FRAMES: u64 = 3;
+    const WHOLE_FRAMES: u64 = 25;
     let free_frames = || {
         memory::FRAMES
             .lock()
@@ -350,7 +416,7 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
         return Err("freeing did not give back exactly the whole-frame allocations' frames");
     }
     let mut numbers = Vec::new();
-    for n in 0..512u64 {
+    for n in 0..5000u64 {
         numbers.push(n * n);
     }
     if numbers

@@ -388,7 +388,8 @@ mod tests {
             )
             .unwrap();
         // Root, PDPT, page directory, two page tables.
-        assert_eq!(16 - frames.free_frames(), 5);
+        // (One of the 16 frames holds the buddy allocator's bitmap.)
+        assert_eq!(15 - frames.free_frames(), 5);
         for virt in [start, 2 << 20, (4 << 20) + K - 1] {
             assert_eq!(tables.translate(virt).map(|t| t.0), Some(virt));
         }
@@ -439,7 +440,8 @@ mod tests {
             Err(MapError::InvalidAddress)
         );
         // Nothing was allocated beyond the root.
-        assert_eq!(frames.free_frames(), 15);
+        // 16 frames, less the buddy allocator's bitmap and the root.
+        assert_eq!(frames.free_frames(), 14);
         assert_eq!(tables.map(0, 0, 0, rw, &mut frames), Ok(()));
     }
 

@@ -102,14 +102,19 @@ mod tests {
     const RAM_BASE: u64 = 0x10_0000;
     const RAM_FRAMES: u64 = 128;
 
-    /// Real host memory standing in for the test platform's RAM: its first frame-aligned
-    /// address, which the platform's physical memory offset maps `RAM_BASE` to.
+    /// Real host memory standing in for the test platform's RAM: the address the platform's
+    /// physical memory offset maps `RAM_BASE` to. The offset is aligned to the largest buddy
+    /// block, as the real direct maps are, so physically aligned blocks are aligned virtually.
     fn ram() -> usize {
         static RAM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         *RAM.get_or_init(|| {
             let frame = eggos_hal::memory::FRAME_SIZE as usize;
-            let memory = vec![0u8; (RAM_FRAMES as usize + 1) * frame].leak();
-            (memory.as_mut_ptr() as usize).next_multiple_of(frame)
+            let block = frame << memory::MAX_ORDER;
+            let memory = vec![0u8; RAM_FRAMES as usize * frame + block].leak();
+            // The first address in `memory` congruent to `RAM_BASE` modulo `block`.
+            let start = memory.as_mut_ptr() as usize;
+            let base = RAM_BASE as usize % block;
+            start + (base + block - start % block) % block
         })
     }
 

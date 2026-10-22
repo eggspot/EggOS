@@ -8,7 +8,7 @@
 
 use crate::HEAP;
 use crate::interrupt;
-use crate::memory::FrameAllocator;
+use crate::memory::{FRAMES, FrameAllocator};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
@@ -27,7 +27,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 8] {
+pub fn all<P: Platform>() -> [Benchmark; 9] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -39,6 +39,10 @@ pub fn all<P: Platform>() -> [Benchmark; 8] {
         ),
         ("frame_allocate_untouched", frame_allocate_untouched),
         ("frame_free_allocate", frame_free_allocate),
+        (
+            "frame_contiguous_allocate_free",
+            frame_contiguous_allocate_free,
+        ),
         ("heap_allocate_free_small", heap_allocate_free_small),
     ]
 }
@@ -105,10 +109,14 @@ fn timer_interrupt_round_trip<P: Platform>(n: u64) {
 }
 
 /// Allocating never-used frames, the path every frame takes first. Untouched frames are not
-/// written, so the range can be any addresses.
+/// written, so the range can be any addresses. Twice the frames allocated, so the buddy
+/// allocator's bitmap (taken from the top, never written here) leaves `n` untouched frames.
 fn frame_allocate_untouched(n: u64) {
     let mut map = MemoryMap::new();
-    map.add_ram(PhysicalRange::from_start_length(1 << 40, n * FRAME_SIZE));
+    map.add_ram(PhysicalRange::from_start_length(
+        1 << 40,
+        2 * n * FRAME_SIZE,
+    ));
     let mut frames = FrameAllocator::new(&map, 0);
     for _ in 0..n {
         black_box(frames.allocate());
@@ -138,6 +146,23 @@ fn frame_free_allocate(n: u64) {
         frame = frames.allocate().unwrap_or(frame);
     }
     black_box(&mut page);
+}
+
+/// Allocating and freeing a block of 4 contiguous frames from the kernel's frame allocator: the
+/// buddy allocator's split on allocation and merge on free (D31), the path of heap allocations
+/// larger than a frame. Runs after the self-tests, so the allocator is in place; host tests
+/// have none and time nothing.
+fn frame_contiguous_allocate_free(n: u64) {
+    let mut frames = FRAMES.lock();
+    let Some(frames) = frames.as_mut() else {
+        return;
+    };
+    for _ in 0..n {
+        if let Some(block) = frames.allocate_contiguous(black_box(2)) {
+            // SAFETY: allocated just above with order 2 and not used.
+            unsafe { frames.free_contiguous(black_box(block), 2) };
+        }
+    }
 }
 
 /// Allocating and freeing a small block through the kernel's global heap: taking and releasing
@@ -239,6 +264,7 @@ mod tests {
         frame_allocate_untouched(ITERATIONS);
         frame_free_allocate(ITERATIONS);
         heap_allocate_free_small(ITERATIONS);
+        frame_contiguous_allocate_free(ITERATIONS);
     }
 
     #[test]
