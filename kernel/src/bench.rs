@@ -76,7 +76,10 @@ fn breakpoint_round_trip<P: Platform>(n: u64) {
 
 /// Arming the one-shot timer for a deadline far ahead, so it never fires during the run.
 fn timer_arm<P: Platform>(n: u64) {
-    let far = P::clock_ticks().saturating_add(P::clock_frequency().saturating_mul(3600));
+    // Clamped so `far + i` cannot overflow, keeping the loop body a plain add.
+    let far = P::clock_ticks()
+        .saturating_add(P::clock_frequency().saturating_mul(3600))
+        .min(u64::MAX - n);
     for i in 0..n {
         P::set_timer_deadline(far + i);
     }

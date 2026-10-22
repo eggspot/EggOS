@@ -153,7 +153,16 @@ fn updated_baseline(
         }
     }
     for ((arch, name), value) in measured.results {
-        merged.results.entry((arch, name)).or_insert(value);
+        if is_firmware_dependent(&arch, &name) && other_firmware(&arch) {
+            if !merged.results.contains_key(&(arch.clone(), name.clone())) {
+                kept.push(format!(
+                    "not recorded: {arch} {name} {value:.2} was measured on other firmware \
+                     than the baseline's (record it with CI's QEMU)"
+                ));
+            }
+            continue;
+        }
+        merged.results.insert((arch, name), value);
     }
     for (arch, version) in measured.firmware {
         merged.firmware.entry(arch).or_insert(version);
@@ -260,6 +269,12 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
     let mut report = Comparison::default();
     for arch in ran {
         let (now, then) = (measured.firmware.get(*arch), baseline.firmware.get(*arch));
+        // Without a version, a changed banner would silently ungate the firmware's results.
+        if now.is_none() && FIRMWARE_DEPENDENT.iter().any(|(a, _, _)| a == arch) {
+            report.failures.push(format!(
+                "{arch}: could not read the firmware version from the console"
+            ));
+        }
         if now != then {
             let name = |v: Option<&String>| v.map_or("no firmware".to_owned(), String::clone);
             let _ = writeln!(
@@ -457,6 +472,14 @@ mod tests {
                 .contains("firmware OpenSBI-v1.7, baseline recorded with OpenSBI-v1.3")
         );
         assert!(report.text.contains("not gated"));
+        // No firmware version at all (a changed banner) fails instead of ungating silently.
+        let unknown = results(&[
+            ("riscv64", "timer_arm", 100.0),
+            ("riscv64", "clock_read", 4.0),
+        ]);
+        let report = compare(&baseline, &unknown, &["riscv64"]);
+        assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+        assert!(report.failures[0].contains("could not read the firmware version"));
     }
 
     #[test]
@@ -479,6 +502,10 @@ mod tests {
             "riscv64",
             "OpenSBI-v1.7",
         );
+        let mut measured = measured;
+        measured
+            .results
+            .insert(("riscv64".into(), "timer_interrupt_round_trip".into()), 7.0);
         let (merged, kept) = updated_baseline(baseline, measured, &["riscv64"]);
         let expected = with_firmware(
             results(&[
@@ -490,8 +517,10 @@ mod tests {
             "OpenSBI-v1.3",
         );
         assert_eq!(merged, expected);
-        assert_eq!(kept.len(), 1);
-        assert!(kept[0].contains("riscv64 timer_arm"));
+        // A firmware-dependent result with no baseline yet is not recorded from other firmware.
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept[0].contains("kept riscv64 timer_arm"));
+        assert!(kept[1].contains("not recorded: riscv64 timer_interrupt_round_trip"));
 
         // On the baseline's own firmware everything is replaced.
         let baseline = with_firmware(
