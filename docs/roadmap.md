@@ -43,8 +43,13 @@ on x86_64, IST stacks for NMI, double fault, machine check and debug exceptions 
 untrusted program runs (`syscall` and `sysretq` leave a moment in ring 0 on the program's stack),
 the paranoid GS check in those handlers, and reloading SS for AMD's `sysretq`; FP/SIMD state per
 thread, saved lazily, once programs may use it (it traps today); TLS registers (`TPIDR_EL0`,
-`FS` base) in the context; the Linux system calls themselves (M6); a measured system-call cost
-outside QEMU `-icount` (M13).
+`FS` base) in the context, and `KERNEL_GS_BASE` per program; the Linux system calls themselves
+(M6); a measured system-call cost outside QEMU `-icount` (M13). From PR #39's independent review:
+a self-test that interrupts a program mid-pattern and checks every register (the `iretq` and
+interrupt-exit paths); `SCTLR_EL1.UMA` and `E0E` written explicitly, not left to firmware (M13);
+`IA32_CSTAR` at a safe stub before any 32-bit user segment exists; DPL-3 gates for `int3` and
+`into` once user debuggers matter; UMIP where the CPU has it; `TSS.RSP0` cleared when `run_user`
+returns.
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to
