@@ -5,15 +5,17 @@
 //! largest leaves the alignment allows (2 MiB and 1 GiB where the format has them), so a large
 //! direct map costs a handful of tables and few TLB entries. [`kernel_page_tables`] lays out
 //! the kernel's address space:
-//! - the kernel image at its physical address, each part with only the access it needs: code
-//!   read and execute, constants read only, data and the boot stack read and write but never
-//!   execute, and the page below the boot stack left unmapped, so an overflow faults instead of
-//!   silently overwriting `.bss`;
+//! - the kernel image at its virtual address, in the top 2 GiB (D33), each part with only the
+//!   access it needs: code read and execute, constants read only, data and the boot stack read
+//!   and write but never execute, and the page below the boot stack left unmapped, so an
+//!   overflow faults instead of silently overwriting `.bss`;
 //! - the direct map: all physical memory at [`Platform::direct_map_offset`], read and write and
 //!   never executable, except that the kernel image's own frames keep their access there (code
 //!   and constants read-only) and its stack guard page is unmapped, so no alias undoes W^X;
-//! - the device registers the HAL uses before the driver model exists (M5), as device memory at
-//!   their physical addresses.
+//! - the device registers the HAL uses before the driver model exists (M5), as device memory in
+//!   the direct map's window: physical address + [`Platform::direct_map_offset`] (D33).
+//!
+//! Nothing is mapped in the low half, which belongs to user space (M4, M6).
 //!
 //! Tables are only built before they are activated: changing live tables needs TLB
 //! maintenance, which comes with the first user that does it (M4).
@@ -89,12 +91,6 @@ impl<F: Format> PageTables<F> {
     /// The physical addresses of the root tables, one per [`Format::ROOTS`].
     pub fn roots(&self) -> &[u64] {
         &self.roots[..F::ROOTS]
-    }
-
-    /// Where the tables are reached from now on (see
-    /// [`FrameAllocator::set_physical_memory_offset`]).
-    pub fn set_physical_memory_offset(&mut self, offset: usize) {
-        self.physical_memory_offset = offset;
     }
 
     /// Maps virtual `virt..virt + length` to physical `phys..phys + length` with `attributes`,
@@ -234,15 +230,22 @@ pub fn kernel_page_tables<P: Platform>(
     let mut tables = PageTables::new(frames)?;
     let image = P::kernel_image();
     for (range, attributes) in image.mapped_parts() {
-        tables.map(range.start, range.start, range.len(), attributes, frames)?;
+        let virt = image.virtual_address(range.start);
+        tables.map(virt, range.start, range.len(), attributes, frames)?;
     }
-    map_direct_map(
-        &mut tables,
-        physical_memory,
-        P::direct_map_offset() as u64,
-        &image,
-        frames,
-    )?;
+    let offset = P::direct_map_offset() as u64;
+    // The direct map must stay below the kernel image (on RISC-V Sv39 both share 256 GiB).
+    let image_virt = image.virtual_address(image.start);
+    let below_image = |range: &PhysicalRange| {
+        range
+            .end
+            .checked_add(offset)
+            .is_some_and(|end| end <= image_virt)
+    };
+    if !physical_memory.ranges().iter().all(below_image) {
+        return Err(MapError::InvalidAddress);
+    }
+    map_direct_map(&mut tables, physical_memory, offset, &image, frames)?;
     // Page by page: two register blocks may share a page. A page mapped already is compared
     // with a device leaf as the format decodes it (RISC-V does not record the memory type).
     let device_leaf = match <P::PageTableFormat as Format>::decode(
@@ -256,10 +259,11 @@ pub fn kernel_page_tables<P: Platform>(
     P::early_device_regions(&mut |device| {
         let device = device.covering_frames();
         for page in (device.start..device.end).step_by(FRAME_SIZE as usize) {
-            if result.is_err() || tables.translate(page) == Some((page, device_leaf)) {
+            let virt = page.wrapping_add(offset);
+            if result.is_err() || tables.translate(virt) == Some((page, device_leaf)) {
                 continue;
             }
-            result = tables.map(page, page, FRAME_SIZE, Attributes::DEVICE, frames);
+            result = tables.map(virt, page, FRAME_SIZE, Attributes::DEVICE, frames);
         }
     });
     result.map(|()| tables)
@@ -340,16 +344,13 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     let mut page_tables =
         kernel_page_tables::<P>(&mut frames, &direct_map).map_err(MapError::description)?;
     // SAFETY: `kernel_page_tables` built tables in `P`'s format mapping the kernel image at
-    // its physical address with code executable and data and stack writable, every range of
-    // `P::physical_memory` at the direct map offset and every early device region as device
-    // memory at its physical address. Their frames are never freed and nothing changes them
-    // while they are active. Only the frame allocator and the tables reach memory through the
-    // physical memory offset, and both switch to the new one below.
+    // its virtual address with code executable and data and stack writable, and every range of
+    // `P::physical_memory` and every early device region (as device memory) at the direct map
+    // offset, and nothing in the low half. Their frames are never freed and nothing changes
+    // them while they are active. Everything the kernel reaches is in the image or reached
+    // through the direct map, as the boot page tables already had it.
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
-    let offset = P::physical_memory_offset();
-    frames.set_physical_memory_offset(offset);
-    page_tables.set_physical_memory_offset(offset);
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
 }
@@ -457,6 +458,7 @@ mod tests {
         ram.add_ram(PhysicalRange::from_start_length(8 * mb, 2 * mb));
         let base = mb + 3 * K;
         let image = KernelImage {
+            virtual_offset: 0xffff_ffff_8000_0000,
             start: base,
             text_start: base + K,
             rodata_start: base + 4 * K,
@@ -522,6 +524,7 @@ mod tests {
         // part; the first and third GiBs hold no image.
         let base = gb + (5 << 20);
         let image = KernelImage {
+            virtual_offset: 0xffff_ffff_8000_0000,
             start: base,
             text_start: base,
             rodata_start: base + 2 * K,

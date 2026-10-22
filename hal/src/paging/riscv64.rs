@@ -42,14 +42,7 @@ impl Format for Riscv64Sv39 {
     }
 
     fn leaf(phys: u64, _level: usize, attributes: Attributes) -> u64 {
-        let mut entry = ((phys >> 12) << PPN_SHIFT) & PPN | VALID | READ | ACCESSED | DIRTY;
-        if attributes.writable {
-            entry |= WRITE;
-        }
-        if attributes.executable {
-            entry |= EXECUTE;
-        }
-        entry
+        leaf(phys, attributes)
     }
 
     fn decode(entry: u64, _level: usize) -> Entry {
@@ -69,6 +62,19 @@ impl Format for Riscv64Sv39 {
             },
         )
     }
+}
+
+/// [`Format::leaf`] (the same at every level), usable in constants: the boot code's gigapage
+/// entries are built from it.
+pub const fn leaf(phys: u64, attributes: Attributes) -> u64 {
+    let mut entry = ((phys >> 12) << PPN_SHIFT) & PPN | VALID | READ | ACCESSED | DIRTY;
+    if attributes.writable {
+        entry |= WRITE;
+    }
+    if attributes.executable {
+        entry |= EXECUTE;
+    }
+    entry
 }
 
 #[cfg(test)]

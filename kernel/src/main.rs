@@ -25,7 +25,8 @@ mod bare_metal {
             // Tests the fatal path and write protection (D29): writing the kernel's read-only
             // data must fault, and the handler must report the fault at that address and fail
             // the run. The QEMU runner checks the address.
-            let target = CurrentPlatform::kernel_image().rodata_start;
+            let image = CurrentPlatform::kernel_image();
+            let target = image.virtual_address(image.rodata_start);
             let _ = writeln!(
                 console,
                 "{}{target:#x}",
@@ -51,6 +52,15 @@ mod bare_metal {
         if exception::handle(exception) == Outcome::Resume {
             return;
         }
+        fatal_exception(exception)
+    }
+
+    /// Reports a fatal exception and stops. Kept out of line so the resumable path through
+    /// [`kernel_exception`] stays as short as it can be (the console code would otherwise
+    /// cost it registers).
+    #[cold]
+    #[inline(never)]
+    fn fatal_exception(exception: &Exception) -> ! {
         // A second fatal exception while reporting the first (say, a broken console) would
         // otherwise recurse until the stack overflows; stop this CPU instead.
         if IN_FATAL_EXCEPTION.swap(true, Ordering::Relaxed) {

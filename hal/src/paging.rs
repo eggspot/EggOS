@@ -74,10 +74,14 @@ impl Attributes {
     };
 }
 
-/// Where the parts of the kernel image are in physical memory, from the linker script. Every
-/// boundary is 4 KiB-aligned; the parts follow each other in this order.
+/// Where the parts of the kernel image are in physical memory, from the linker script, and
+/// where it runs: physical address `p` of the image at virtual address `p + virtual_offset`
+/// (wrapping), in the top 2 GiB of the address space. Every boundary is 4 KiB-aligned; the
+/// parts follow each other in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelImage {
+    /// The image's virtual address minus its physical address (wrapping).
+    pub virtual_offset: u64,
     /// The first byte of the image: anything before the code (the PVH note on x86_64).
     pub start: u64,
     pub text_start: u64,
@@ -109,6 +113,11 @@ impl KernelImage {
             ),
             (range(self.stack_start, self.end), Attributes::READ_WRITE),
         ]
+    }
+
+    /// The virtual address the kernel runs physical address `phys` of its image at.
+    pub const fn virtual_address(&self, phys: u64) -> u64 {
+        phys.wrapping_add(self.virtual_offset)
     }
 
     /// The unmapped page below the boot stack.

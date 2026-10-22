@@ -56,7 +56,8 @@ const MEASUREMENT_TIMEOUT_TSC_TICKS: u64 = 1 << 31;
 /// Disarmed: no deadline.
 const NO_DEADLINE: u64 = u64::MAX;
 
-/// Physical (= identity-mapped) address of the local APIC's registers, set by [`init`].
+/// Where the kernel reaches the local APIC's registers: their physical address in the direct
+/// map (D33), set by [`init`].
 static APIC_BASE: AtomicUsize = AtomicUsize::new(0);
 /// Measured TSC and APIC timer frequencies in Hz, set by [`init`].
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
@@ -74,9 +75,10 @@ fn legacy_pic() -> LegacyPic<PortIo> {
 
 fn local_apic() -> LocalApic<Mmio> {
     // SAFETY: `APIC_BASE` holds the address `IA32_APIC_BASE` reports (set before any caller
-    // runs), identity-mapped by the boot page tables; only this module drives the local APIC.
-    // The boot map does not set a memory type, so the firmware's MTRRs keep it uncached, as
-    // the SDM requires; the kernel's own page tables (M2) map device memory uncached.
+    // runs) in the direct map, which the boot page tables and the kernel's own map there; only
+    // this module drives the local APIC. The boot map does not set a memory type, so the
+    // firmware's MTRRs keep it uncached, as the SDM requires; the kernel's own page tables map
+    // device memory uncached.
     LocalApic::new(unsafe {
         Mmio::new(
             APIC_BASE.load(Ordering::Relaxed),
@@ -99,10 +101,13 @@ pub(super) extern "C" fn init() {
     let apic_base = apic_base_msr & APIC_BASE_ADDRESS_MASK;
     // Below 4 GiB at reset; firmware could move it. The panic handler reports a failure.
     assert!(
-        apic_base < super::IDENTITY_MAP_END,
-        "local APIC outside the boot identity map"
+        apic_base < super::BOOT_DIRECT_MAP_END,
+        "local APIC outside the boot direct map"
     );
-    APIC_BASE.store(apic_base as usize, Ordering::Relaxed);
+    APIC_BASE.store(
+        super::DIRECT_MAP_OFFSET + apic_base as usize,
+        Ordering::Relaxed,
+    );
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);
 
@@ -212,7 +217,7 @@ pub(super) fn legacy_pic_interrupt(vector: u64) -> bool {
 /// The local APIC's register block, for the kernel's page tables. Valid once [`init`] ran.
 pub(super) fn local_apic_registers() -> PhysicalRange {
     PhysicalRange::from_start_length(
-        APIC_BASE.load(Ordering::Relaxed) as u64,
+        (APIC_BASE.load(Ordering::Relaxed) - super::DIRECT_MAP_OFFSET) as u64,
         local_apic::REGISTER_BLOCK_SIZE as u64,
     )
 }

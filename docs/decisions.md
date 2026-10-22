@@ -596,3 +596,57 @@ mapping did not hold for the frame.
   direct-map alias and the guard page's on aarch64, riscv64 and x86_64; with the old mapping it
   fails on all three. The host test platform's direct map now covers its kernel image, as on
   real machines.
+
+## D33 The kernel runs in the top 2 GiB; the low half is empty — Decided by the build loop (engineering; design checked by research)
+Last step of M2, required before user space (M4/M6). Supersedes D29's "the kernel image stays
+at its physical address" and its identity-mapped devices.
+- **Layout.** The kernel is linked, and runs, in the top 2 GiB of the address space on every
+  architecture: x86_64 at `0xffff_ffff_8010_0000` (the kernel code model requires the top
+  2 GiB), aarch64 and riscv64 at `0xffff_ffff_8020_0000`. It is still loaded at its physical
+  address: every ELF segment's `p_paddr` is the physical address (`AT()` in each linker
+  script) and the ELF entry, like the PVH note on x86_64, names the physical `_start`.
+  The image's virtual minus physical address, `KERNEL_VIRTUAL_OFFSET`, is a constant in each
+  HAL module, which the linker script repeats and checks at link time against a symbol the HAL
+  exports. `KernelImage` reports the physical parts plus that offset.
+- **Boot page tables, built in assembly before any Rust code runs.** The entry code maps, with
+  the largest leaves: the gigabyte holding the kernel at its physical address (only for the
+  instructions that turn translation on and jump high) and at its virtual address, read, write
+  and execute; and a boot direct map at the same offset the kernel's own tables use (x86_64
+  0..4 GiB with 2 MiB pages, as before; aarch64 256 GiB of 1 GiB blocks, device memory below
+  the gigabyte RAM starts in, normal memory from there on; riscv64 254 GiB of gigapages). It
+  then jumps to the kernel's virtual address and only then sets the stack, the exception
+  vectors and the GDT (x86_64 reloads it with its virtual address), and calls Rust. So Rust
+  only ever runs at the kernel's virtual address and reaches physical memory through one
+  constant offset, the direct map: `Platform::physical_memory_offset` no longer changes when the
+  kernel's tables go live, and the frame allocator and the tables never switch offsets. Free
+  memory handed out is limited to what the boot direct map covers (the page tables are built
+  through it), as x86_64 already did.
+- **The kernel's own tables** map the image at its virtual address with W^X as before (D29,
+  D32), the direct map, and the early devices as device memory in the direct map's window
+  (physical address + direct map offset), and nothing in the low half. The self-test checks
+  that the image and the devices are no longer reachable at their physical addresses. Devices
+  in the direct map's window (decided by research): the final direct map covers only RAM and
+  firmware tables, so a device's physical address never gets two memory types (Arm ARM B2.8,
+  Intel SDM's PAT rules); the HAL computes the addresses as constants, so no hot path pays for
+  it. The driver model (M5) moves to a device window behind a mapping call (PCI BARs above the
+  direct map, devices sharing a large leaf with RAM).
+- **Sv39 (decided by research).** The direct map and the kernel share Sv39's 256 GiB high half,
+  so the direct map holds 254 GiB; RAM beyond it is left unused (and the kernel refuses to build
+  a direct map that would reach its own addresses).
+  Putting the kernel inside the direct map instead would lose its separate W^X mapping. Sv48 or
+  Sv57 chosen at boot (D29 follow-up) lifts the limit, as will vmalloc, stacks and the device
+  window once they need room.
+- **Switching (decided by research).** riscv64 writes `satp` between two `sfence.vma`; x86_64
+  loads CR3 (the boot tables set no global pages, so the TLB is flushed). On aarch64 the boot
+  tables' 1 GiB kernel block and the new 4 KiB pages must never meet in the TLB (break-before-
+  make, TLB conflict aborts): the code branches to the kernel's identity alias, points TTBR1 at
+  the empty low root, invalidates the TLB, points TTBR1 at the new tables, branches back high,
+  then replaces TTBR0 with the empty root and invalidates again. MAIR and TCR are set once, by
+  the boot code.
+- **Benchmarks.** No result is slower. Breakpoints got faster (aarch64 106 -> 92, riscv64
+  159 -> 132 instructions) because the fatal-exception report moved out of line: the console
+  code was costing the resumable path a saved register. The baseline records the new numbers.
+- **Not yet, on the roadmap:** aarch64 real hardware needs the boot tables' cache lines
+  invalidated (written with the MMU off, walked cached) and RAM mapped from the device tree
+  instead of a fixed Device/Normal split (M13); secondary CPUs start on the kernel's tables
+  (M4); global kernel mappings and PCID (M4).

@@ -3,8 +3,9 @@
 //! Boot contract: PVH, the boot ABI of Xen's public `arch-x86/hvm/start_info.h`, which QEMU's
 //! `-kernel` supports for ELF64 images. The loader enters `_start32` (named by the
 //! `XEN_ELFNOTE_PHYS32_ENTRY` ELF note) in 32-bit protected mode with paging off and `ebx`
-//! holding the physical address of an `hvm_start_info`. The entry code below identity-maps
-//! the first 4 GiB with 2 MiB pages, switches to long mode and calls `kernel_main`.
+//! holding the physical address of an `hvm_start_info`. The entry code below maps the first
+//! 4 GiB with 2 MiB pages, switches to long mode, jumps to the kernel's virtual address in the
+//! top 2 GiB and calls `kernel_main` (D33).
 //!
 //! The console is COM1, the PC's first serial port. Power-off uses ACPI sleep state S5, read
 //! from the firmware's ACPI tables (see [`crate::acpi`]).
@@ -24,6 +25,10 @@ use port::PortIo;
 
 core::arch::global_asm!(
     r#"
+    // The image's virtual address minus its physical address. The 32-bit code below runs at
+    // physical addresses with paging off, so it subtracts this from every symbol.
+    .set    KERNEL_VIRTUAL_OFFSET, {kernel_virtual_offset}
+
     // PVH entry point note (XEN_ELFNOTE_PHYS32_ENTRY = 18), read by the loader.
     .pushsection .note.Xen, "a", @note
     .balign 4
@@ -32,7 +37,7 @@ core::arch::global_asm!(
     .long 18                    // XEN_ELFNOTE_PHYS32_ENTRY
     .asciz "Xen"
     .balign 4
-    .quad _start32
+    .quad _start32 - KERNEL_VIRTUAL_OFFSET
     .popsection
 
     .pushsection .text.boot, "ax"
@@ -44,35 +49,46 @@ _start32:
     movl    %ebx, %esi              // keep the hvm_start_info address
 
     // Zero .bss (16-byte aligned and sized by the linker script); the page tables live there.
-    movl    $__bss_start, %edi
-    movl    $__bss_end, %ecx
+    movl    $(__bss_start - KERNEL_VIRTUAL_OFFSET), %edi
+    movl    $(__bss_end - KERNEL_VIRTUAL_OFFSET), %ecx
     subl    %edi, %ecx
     xorl    %eax, %eax
     rep stosb
 
-    movl    %esi, {start_info}
-    movl    $__stack_top, %esp
+    movl    %esi, ({start_info} - KERNEL_VIRTUAL_OFFSET)
 
-    // PML4[0] -> PDPT; PDPT[0..4] -> the four page directories.
-    movl    $boot_pdpt, %eax
+    // The boot page tables (D33): the first 4 GiB with 2 MiB pages, at their physical
+    // addresses (PML4[0], only for the switch to long mode and the jump below) and in the
+    // boot direct map (PML4[{direct_map_index}]): RAM below 4 GiB, ACPI tables, MMIO. The
+    // kernel's virtual addresses (PML4[511], PDPT entry {kernel_pdpt_index}) map its first
+    // gigabyte.
+    movl    $(boot_pdpt - KERNEL_VIRTUAL_OFFSET), %eax
     orl     $0x3, %eax              // present, writable
-    movl    %eax, boot_pml4
+    movl    %eax, (boot_pml4 - KERNEL_VIRTUAL_OFFSET)
+    movl    %eax, (boot_pml4 - KERNEL_VIRTUAL_OFFSET + {direct_map_index} * 8)
+    movl    $(boot_pdpt_kernel - KERNEL_VIRTUAL_OFFSET), %eax
+    orl     $0x3, %eax
+    movl    %eax, (boot_pml4 - KERNEL_VIRTUAL_OFFSET + 511 * 8)
+    movl    $(boot_pd - KERNEL_VIRTUAL_OFFSET), %eax
+    orl     $0x3, %eax
+    movl    %eax, (boot_pdpt_kernel - KERNEL_VIRTUAL_OFFSET + {kernel_pdpt_index} * 8)
+    // PDPT[0..4] -> the four page directories.
     xorl    %ecx, %ecx
 1:  movl    %ecx, %eax
     shll    $12, %eax
-    addl    $boot_pd, %eax
+    addl    $(boot_pd - KERNEL_VIRTUAL_OFFSET), %eax
     orl     $0x3, %eax
-    movl    %eax, boot_pdpt(, %ecx, 8)
+    movl    %eax, (boot_pdpt - KERNEL_VIRTUAL_OFFSET)(, %ecx, 8)
     incl    %ecx
     cmpl    $4, %ecx
     jne     1b
 
-    // 2048 2 MiB pages: identity map of 0 .. 4 GiB (RAM below 4 GiB, ACPI tables, MMIO).
+    // 2048 2 MiB pages: 0 .. 4 GiB.
     xorl    %ecx, %ecx
 2:  movl    %ecx, %eax
     shll    $21, %eax
     orl     $0x83, %eax             // present, writable, 2 MiB page
-    movl    %eax, boot_pd(, %ecx, 8)
+    movl    %eax, (boot_pd - KERNEL_VIRTUAL_OFFSET)(, %ecx, 8)
     incl    %ecx
     cmpl    $2048, %ecx
     jne     2b
@@ -81,7 +97,7 @@ _start32:
     movl    %cr4, %eax
     orl     $(1 << 5), %eax
     movl    %eax, %cr4
-    movl    $boot_pml4, %eax
+    movl    $(boot_pml4 - KERNEL_VIRTUAL_OFFSET), %eax
     movl    %eax, %cr3
     movl    $0xc0000080, %ecx
     rdmsr
@@ -91,11 +107,17 @@ _start32:
     orl     $0x80000001, %eax       // PG | PE
     movl    %eax, %cr0
 
-    lgdt    boot_gdt_pointer
-    ljmp    $0x08, $start64
+    lgdt    (boot_gdt_pointer32 - KERNEL_VIRTUAL_OFFSET)
+    ljmp    $0x08, $(start64 - KERNEL_VIRTUAL_OFFSET)
 
     .code64
 start64:
+    // Continue at the kernel's virtual address, then point the GDTR there too: the low
+    // identity map goes away once the kernel's own page tables are active.
+    movabsq $start64_high, %rax
+    jmpq    *%rax
+start64_high:
+    lgdt    boot_gdt_pointer64(%rip)
     movw    $0x10, %ax
     movw    %ax, %ds
     movw    %ax, %es
@@ -120,9 +142,13 @@ boot_gdt:
     .quad 0x00af9b000000ffff        // 0x08: 64-bit code, ring 0
     .quad 0x00cf93000000ffff        // 0x10: data, ring 0
 boot_gdt_end:
-boot_gdt_pointer:
+boot_gdt_pointer32:
     .word boot_gdt_end - boot_gdt - 1
-    .long boot_gdt
+    .long boot_gdt - KERNEL_VIRTUAL_OFFSET
+    .balign 8
+boot_gdt_pointer64:
+    .word boot_gdt_end - boot_gdt - 1
+    .quad boot_gdt
     .popsection
 
     .pushsection .bss.boot, "aw", @nobits
@@ -131,15 +157,26 @@ boot_pml4:
     .skip 4096
 boot_pdpt:
     .skip 4096
+boot_pdpt_kernel:
+    .skip 4096
 boot_pd:
     .skip 4 * 4096
     .popsection
 "#,
+    kernel_virtual_offset = const KERNEL_VIRTUAL_OFFSET,
+    direct_map_index = const paging::index(DIRECT_MAP_OFFSET as u64, 3),
+    kernel_pdpt_index = const paging::index(KERNEL_VIRTUAL_OFFSET, 2),
     start_info = sym PVH_START_INFO,
     install_exception_vectors = sym exception::install,
     init_timer = sym timer::init,
     options(att_syntax)
 );
+
+/// The image's virtual address minus its physical address: the kernel links at
+/// `0xffff_ffff_8010_0000`, in the top 2 GiB (D33), as the kernel code model requires; its
+/// physical addresses map there through the boot tables' first gigabyte. `linker.ld` uses the
+/// same value and checks it against this one.
+pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_8000_0000;
 
 /// Physical address of the PVH `hvm_start_info`, stored by the entry code. PVH loads the
 /// kernel below 4 GiB and passes a 32-bit address.
@@ -187,9 +224,9 @@ const COM1_PORT: u16 = 0x3f8;
 /// pass its address.
 const BIOS_AREA: core::ops::Range<usize> = 0xe_0000..0x10_0000;
 
-/// End of the boot identity map, which covers 0 .. 4 GiB (page 0 included). The kernel's own
-/// page tables replace it during boot and leave page 0 unmapped, so a null pointer faults.
-const IDENTITY_MAP_END: u64 = 1 << 32;
+/// End of the boot direct map, which covers 0 .. 4 GiB: the most the kernel reaches before its
+/// own page tables are active, and where the firmware's tables are.
+const BOOT_DIRECT_MAP_END: u64 = 1 << 32;
 
 /// Upper bound on any ACPI table we map as a slice, against corrupt length fields.
 const MAX_TABLE_LENGTH: usize = 1 << 20;
@@ -289,18 +326,18 @@ impl Platform for X86_64 {
         for range in pvh.boot_data() {
             map.reserve(range);
         }
-        // The kernel's page tables are built through the boot identity map, so only memory
+        // The kernel's page tables are built through the boot direct map, so only memory
         // inside it is handed out.
         map.retain_within(PhysicalRange {
             start: 0,
-            end: IDENTITY_MAP_END,
+            end: BOOT_DIRECT_MAP_END,
         });
         map
     }
 
     #[inline]
     fn physical_memory_offset() -> usize {
-        boot_memory::physical_memory_offset()
+        DIRECT_MAP_OFFSET
     }
 
     type PageTableFormat = paging::x86_64::X86_64;
@@ -368,13 +405,13 @@ impl Platform for X86_64 {
             );
         }
         // SAFETY: the caller guarantees the tables map everything this CPU uses from here on at
-        // the addresses it uses now: the code runs on at its physical address, the stack, data,
-        // GDT and IDT likewise, and the local APIC too. Loading CR3 flushes the TLB. No
-        // `nomem`: memory accesses must not move across the switch.
+        // the addresses it uses now: the kernel image (code, stack, data, GDT and IDT) at its
+        // virtual address, and the direct map with the local APIC in it. Loading CR3 flushes
+        // every TLB entry (the boot tables set no global pages). No `nomem`: memory accesses
+        // must not move across the switch.
         unsafe {
             core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
         }
-        boot_memory::set_physical_memory_offset(DIRECT_MAP_OFFSET);
     }
 }
 
@@ -482,7 +519,7 @@ fn pvh_rsdp() -> Option<&'static [u8]> {
         PVH_START_INFO_READ_LENGTH,
     )?;
     // SAFETY: the loader passed the address of its `hvm_start_info`, which spans at least
-    // `PVH_START_INFO_READ_LENGTH` bytes; `mapped` checked they are in the identity map, and
+    // `PVH_START_INFO_READ_LENGTH` bytes; `mapped` checked they are in the direct map, and
     // nothing writes them.
     let info = unsafe { physical_slice(start_info, PVH_START_INFO_READ_LENGTH) };
     let magic = u32::from_le_bytes(info[..4].try_into().ok()?);
@@ -491,14 +528,14 @@ fn pvh_rsdp() -> Option<&'static [u8]> {
         return None;
     }
     let rsdp = mapped(rsdp, acpi::RSDP_V2_LENGTH)?;
-    // SAFETY: the loader reports an RSDP there, inside the identity map (checked by `mapped`);
+    // SAFETY: the loader reports an RSDP there, inside the direct map (checked by `mapped`);
     // `parse_rsdp` validates the bytes, so a wrong address only fails validation.
     Some(unsafe { physical_slice(rsdp, acpi::RSDP_V2_LENGTH) })
 }
 
 /// The RSDP found by the ACPI spec's search of the legacy BIOS area.
 fn bios_area_rsdp() -> Option<RootTable> {
-    // SAFETY: the legacy BIOS area is identity-mapped, readable ROM/RAM on PCs, and nothing
+    // SAFETY: the legacy BIOS area is in the direct map, readable ROM/RAM on PCs, and nothing
     // writes it.
     let area = unsafe { physical_slice(BIOS_AREA.start, BIOS_AREA.len()) };
     let offset = acpi::find_rsdp(area)?;
@@ -509,7 +546,7 @@ fn bios_area_rsdp() -> Option<RootTable> {
 fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     let header_address = mapped(address, acpi::TABLE_HEADER_LENGTH)?;
     // SAFETY: firmware table addresses point at ACPI memory, which nothing writes; `mapped`
-    // checked the header lies inside the identity map.
+    // checked the header lies inside the direct map.
     let header = unsafe { physical_slice(header_address, acpi::TABLE_HEADER_LENGTH) };
     if &header[..4] != signature {
         return None;
@@ -525,11 +562,11 @@ fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
 }
 
 /// `address` as a pointer-sized value if `address..address + length` is inside the first 4 GiB,
-/// where the firmware's tables are: the boot identity map covers all of it, the direct map the
+/// where the firmware's tables are: the boot direct map covers all of it, the kernel's the
 /// parts [`Platform::physical_memory`] lists. Address 0 is rejected as "no table".
 fn mapped(address: u64, length: usize) -> Option<usize> {
     let end = address.checked_add(u64::try_from(length).ok()?)?;
-    if address == 0 || end > IDENTITY_MAP_END {
+    if address == 0 || end > BOOT_DIRECT_MAP_END {
         return None;
     }
     usize::try_from(address).ok()
@@ -537,10 +574,10 @@ fn mapped(address: u64, length: usize) -> Option<usize> {
 
 /// # Safety
 /// Physical `address..address + length` must be memory the kernel reaches through the physical
-/// memory offset (the boot identity map, or the direct map), that nothing writes while the
+/// memory offset (the direct map), that nothing writes while the
 /// returned slice is used.
 unsafe fn physical_slice(address: usize, length: usize) -> &'static [u8] {
-    let virt = address.wrapping_add(boot_memory::physical_memory_offset());
+    let virt = address.wrapping_add(DIRECT_MAP_OFFSET);
     // SAFETY: guaranteed by the caller.
     unsafe { core::slice::from_raw_parts(virt as *const u8, length) }
 }

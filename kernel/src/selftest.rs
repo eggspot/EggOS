@@ -292,17 +292,22 @@ fn contiguous_frames_are_aligned_and_merge_back<P: Platform>(
 }
 
 /// The kernel's page tables must give each part of the kernel image only the access it needs,
-/// at its own address and through the direct map (never executable there), leave the stack
-/// guard page unmapped at both, map the early devices as device memory, and put the
-/// direct map where the platform says, in use: a frame written through the direct map is
-/// where the tables say.
+/// at its virtual address and through the direct map (never executable there), leave the stack
+/// guard page unmapped at both, map nothing at the image's physical addresses (the boot identity
+/// map is gone), map the early devices as device memory in the direct map, and put the direct
+/// map where the platform says, in use: a frame written through the direct map is where the
+/// tables say.
 fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let tables = &memory.page_tables;
     let image = P::kernel_image();
     for (part, attributes) in image.mapped_parts() {
         for address in [part.start, part.end.wrapping_sub(1)] {
-            if !part.is_empty() && tables.translate(address) != Some((address, attributes)) {
+            let virt = image.virtual_address(address);
+            if !part.is_empty() && tables.translate(virt) != Some((address, attributes)) {
                 return Err("a part of the kernel image is not mapped with exactly its access");
+            }
+            if !part.is_empty() && tables.translate(address).is_some() {
+                return Err("the kernel image is still mapped at its physical address");
             }
         }
     }
@@ -320,22 +325,27 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
     }
     let guard = image.stack_guard();
     if guard.is_empty()
-        || tables.translate(guard.start).is_some()
+        || tables
+            .translate(image.virtual_address(guard.start))
+            .is_some()
         || tables.translate(guard.start + offset).is_some()
     {
         return Err("the boot stack has no unmapped guard page below it");
     }
     let mut devices_ok = true;
-    P::early_device_regions(&mut |device| match tables.translate(device.start) {
-        Some((phys, attributes)) => {
-            devices_ok &= phys == device.start && attributes.writable && !attributes.executable;
-            devices_ok &= !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE
-                || attributes.memory_type == MemoryType::Device;
-        }
-        None => devices_ok = false,
-    });
+    P::early_device_regions(
+        &mut |device| match tables.translate(device.start + offset) {
+            Some((phys, attributes)) => {
+                devices_ok &= phys == device.start && attributes.writable && !attributes.executable;
+                devices_ok &= !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE
+                    || attributes.memory_type == MemoryType::Device;
+                devices_ok &= tables.translate(device.start).is_none();
+            }
+            None => devices_ok = false,
+        },
+    );
     if !devices_ok {
-        return Err("an early device is not mapped as device memory at its physical address");
+        return Err("an early device is not mapped as device memory in the direct map only");
     }
     if P::physical_memory_offset() != P::direct_map_offset() {
         return Err("the platform does not reach physical memory through the direct map");
