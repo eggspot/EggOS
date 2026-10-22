@@ -170,12 +170,58 @@ fn build_kernel(arch: &Arch, qemu_test: bool) -> Result<std::path::PathBuf, Stri
     if qemu_test {
         args.extend(["--features", "qemu-test"]);
     }
-    cargo(&args)?;
-    Ok(workspace_root()
-        .join("target")
-        .join(arch.target)
-        .join("release")
-        .join("eggos-kernel"))
+    // Ask cargo where it put the binary rather than guessing `target/`: CARGO_TARGET_DIR or
+    // `build.target-dir` move it, and booting a stale image from the default path would test
+    // the wrong kernel.
+    args.push("--message-format=json-render-diagnostics");
+    let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    eprintln!("xtask: cargo {}", args.join(" "));
+    let output = Command::new(&cargo_bin)
+        .args(&args)
+        .current_dir(workspace_root())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("could not run {cargo_bin}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`cargo {}` failed ({})",
+            args.join(" "),
+            output.status
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| {
+            l.contains(r#""reason":"compiler-artifact""#) && l.contains(r#""kind":["bin"]"#)
+        })
+        .filter_map(|l| json_string_field(l, "executable"))
+        .next_back()
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| format!("cargo reported no kernel executable for {}", arch.target))
+}
+
+/// Returns the string value of `"field":"..."` in one line of cargo's JSON output, unescaped.
+/// Enough JSON for cargo's messages (paths may contain `\\` and `\"` escapes on Windows).
+fn json_string_field(line: &str, field: &str) -> Option<String> {
+    let start = line.find(&format!("\"{field}\":\""))? + field.len() + 4;
+    let mut value = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(value),
+            '\\' => match chars.next()? {
+                'n' => value.push('\n'),
+                't' => value.push('\t'),
+                'u' => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                other => value.push(other), // `\\`, `\"`, `\/`
+            },
+            c => value.push(c),
+        }
+    }
+    None
 }
 
 fn workspace_root() -> std::path::PathBuf {
@@ -199,5 +245,28 @@ fn cargo(args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("`cargo {}` failed ({status})", args.join(" ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_string_field;
+
+    #[test]
+    fn reads_executable_path_from_cargo_json() {
+        let unix = r#"{"reason":"compiler-artifact","executable":"/w/target/x/release/eggos-kernel","fresh":true}"#;
+        assert_eq!(
+            json_string_field(unix, "executable").as_deref(),
+            Some("/w/target/x/release/eggos-kernel")
+        );
+        let windows = r#"{"executable":"C:\\w\\target\\eggos-kernel"}"#;
+        assert_eq!(
+            json_string_field(windows, "executable").as_deref(),
+            Some(r"C:\w\target\eggos-kernel")
+        );
+        assert_eq!(
+            json_string_field(r#"{"executable":null}"#, "executable"),
+            None
+        );
     }
 }

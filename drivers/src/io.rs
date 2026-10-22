@@ -31,16 +31,19 @@ impl Mmio {
         Self { base, size }
     }
 
+    /// Checked in release builds too: `RegisterIo` is a safe trait, so an out-of-bounds or
+    /// unaligned offset from safe code must panic, never reach the volatile access. The
+    /// compares are a few cycles next to a device access that costs hundreds.
     #[inline]
     fn address(&self, offset: usize, width: usize) -> usize {
-        debug_assert!(
+        assert!(
             offset
                 .checked_add(width)
                 .is_some_and(|end| end <= self.size),
             "register offset {offset:#x} (+{width}) outside block of {:#x} bytes",
             self.size
         );
-        debug_assert!(
+        assert!(
             offset.is_multiple_of(width),
             "unaligned register offset {offset:#x}"
         );
@@ -52,22 +55,23 @@ impl RegisterIo for Mmio {
     #[inline]
     fn read8(&self, offset: usize) -> u8 {
         let address = self.address(offset, 1);
-        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register.
+        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register, and
+        // `address` has checked the bounds.
         unsafe { core::ptr::read_volatile(address as *const u8) }
     }
 
     #[inline]
     fn write8(&self, offset: usize, value: u8) {
         let address = self.address(offset, 1);
-        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register.
+        // SAFETY: as in `read8`.
         unsafe { core::ptr::write_volatile(address as *mut u8, value) }
     }
 
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
         let address = self.address(offset, 4);
-        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register;
-        // `address` checks 4-byte alignment in debug builds and register maps are aligned.
+        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
+        // and `address` has checked bounds and 4-byte alignment.
         unsafe { core::ptr::read_volatile(address as *const u32) }
     }
 
@@ -175,12 +179,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)] // the bounds check is a debug assertion
     #[should_panic(expected = "outside block")]
-    fn mmio_rejects_out_of_bounds_offset_in_debug() {
+    fn mmio_rejects_out_of_bounds_offset() {
         let mut block = [0u32; 1];
         // SAFETY: as above; the out-of-bounds access is caught before any memory is touched.
         let regs = unsafe { Mmio::new(block.as_mut_ptr() as usize, 4) };
         regs.read32(4);
+    }
+
+    #[test]
+    #[should_panic(expected = "unaligned")]
+    fn mmio_rejects_unaligned_offset() {
+        let mut block = [0u32; 2];
+        // SAFETY: as above; the unaligned access is caught before any memory is touched.
+        let regs = unsafe { Mmio::new(block.as_mut_ptr() as usize, 8) };
+        regs.read32(2);
     }
 }

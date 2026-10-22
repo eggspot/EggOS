@@ -22,4 +22,10 @@ fn main() {
     );
     println!("cargo:rerun-if-changed={}", script.display());
     println!("cargo:rustc-link-arg-bins=-T{}", script.display());
+    if arch == "x86_64" {
+        // The 32-bit entry code uses absolute addresses, so the kernel must not be PIE. The
+        // `relocation-model=static` flag in `.cargo/config.toml` does this too, but a RUSTFLAGS
+        // environment variable silently replaces it; this keeps the link working either way.
+        println!("cargo:rustc-link-arg-bins=--no-pie");
+    }
 }

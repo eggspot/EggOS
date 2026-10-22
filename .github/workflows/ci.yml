@@ -1,14 +1,18 @@
-# One cheap Linux job, checks ordered cheapest first so a typo fails in seconds.
+# One cheap Linux job, checks ordered cheapest first so a typo fails in seconds; on PRs, a small
+# macOS + Windows host check runs after it passes (CLAUDE.md: changes must build on both).
 # Billing rules: see ~/.claude/CLAUDE.md (CI section) and docs/decisions.md (D8).
+#
+# `check` is a required status check on main, so the workflow always runs (a workflow skipped
+# by a `paths` filter never reports and would leave docs PRs pending forever). Docs-only
+# changes are detected in the first step and every later step is skipped, which still reports
+# success in a few seconds.
 name: CI
 
 on:
   pull_request:
     branches: [main]
-    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
   push:
     branches: [main]
-    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,49 +20,107 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read # list a PR's changed files
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - name: Detect code changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only)
+          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE$|^\.github/FUNDING\.yml$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"; echo "Docs-only change: skipping checks."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.changes.outputs.code == 'true'
         with:
           fetch-depth: 1
 
       - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
 
-      - uses: actions/cache@v4
+      # Restore the newest cache on every run; save only from pushes to main, so PR commits no
+      # longer each upload their own cache. No dependencies, so only `target/` is worth caching.
+      - uses: actions/cache/restore@v6
+        if: steps.changes.outputs.code == 'true'
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          path: target
+          key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
       - name: Format
+        if: steps.changes.outputs.code == 'true'
         run: cargo fmt --all --check
 
       - name: Clippy (host)
+        if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (kernel targets)
+        if: steps.changes.outputs.code == 'true'
         run: cargo xtask clippy-targets
 
       - name: Unit tests (host)
+        if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace
 
       - name: Install QEMU
+        if: steps.changes.outputs.code == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             qemu-system-arm qemu-system-misc qemu-system-x86 qemu-system-data opensbi
 
       - name: QEMU boot tests (every architecture)
+        if: steps.changes.outputs.code == 'true'
         run: cargo xtask qemu --arch all
+
+      - uses: actions/cache/save@v6
+        if: steps.changes.outputs.code == 'true' && github.event_name == 'push'
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
+
+  # Development hosts are macOS and Windows: prove the workspace builds, lints and tests there.
+  # PRs into main only, after the Linux job passed, and only when code changed.
+  hosts:
+    needs: check
+    if: github.event_name == 'pull_request' && needs.check.outputs.code == 'true'
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Clippy (host)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit tests (host)
+        run: cargo test --workspace
+      - name: Build the kernel for every architecture
+        shell: bash
+        run: for arch in aarch64 riscv64 x86_64; do cargo xtask build --arch "$arch"; done

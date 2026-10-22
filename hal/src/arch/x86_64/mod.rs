@@ -301,32 +301,40 @@ fn enter_s5(target: S5Target) {
     if pm1a == 0 {
         return;
     }
-    // SAFETY: (all port accesses below) the ports come from the validated FADT, which is the
-    // firmware's description of the ACPI fixed hardware; the kernel is powering off and
-    // nothing else drives these registers.
-    unsafe {
-        let in_legacy_mode = port::in16(pm1a) & acpi::PM1_CONTROL_SCI_EN == 0;
-        if in_legacy_mode && smi_command != 0 && fadt.acpi_enable != 0 {
-            port::out8(smi_command, fadt.acpi_enable);
-            for _ in 0..ACPI_ENABLE_POLLS {
-                if port::in16(pm1a) & acpi::PM1_CONTROL_SCI_EN != 0 {
-                    break;
-                }
-                core::hint::spin_loop();
+    // The only ports touched below are the FADT's PM1 control and SMI command ports. They come
+    // from the validated FADT, the firmware's description of the ACPI fixed hardware; the
+    // kernel is powering off and nothing else drives these registers.
+    let read16 = |p: u16| {
+        // SAFETY: `p` is one of the FADT ports above, which are safe to read.
+        unsafe { port::in16(p) }
+    };
+    let write16 = |p: u16, value: u16| {
+        // SAFETY: `p` is a PM1 control port from the FADT; we write the spec's sleep sequence.
+        unsafe { port::out16(p, value) }
+    };
+    let in_legacy_mode = read16(pm1a) & acpi::PM1_CONTROL_SCI_EN == 0;
+    if in_legacy_mode && smi_command != 0 && fadt.acpi_enable != 0 {
+        // SAFETY: writing the FADT's ACPI_ENABLE value to its SMI command port is the spec's
+        // handshake for switching to ACPI mode.
+        unsafe { port::out8(smi_command, fadt.acpi_enable) };
+        for _ in 0..ACPI_ENABLE_POLLS {
+            if read16(pm1a) & acpi::PM1_CONTROL_SCI_EN != 0 {
+                break;
             }
+            core::hint::spin_loop();
         }
-        // Set SLP_TYP first, then SLP_EN in a second write, as the spec's sleep sequence
-        // does; every other bit (SCI_EN included) keeps its value.
-        let pm1a_value = acpi::pm1_control_sleep(port::in16(pm1a), target.sleep_type.a);
-        let pm1b_value =
-            (pm1b != 0).then(|| acpi::pm1_control_sleep(port::in16(pm1b), target.sleep_type.b));
-        port::out16(pm1a, pm1a_value & !acpi::PM1_CONTROL_SLP_EN);
-        if let Some(pm1b_value) = pm1b_value {
-            port::out16(pm1b, pm1b_value & !acpi::PM1_CONTROL_SLP_EN);
-        }
-        port::out16(pm1a, pm1a_value);
-        if let Some(pm1b_value) = pm1b_value {
-            port::out16(pm1b, pm1b_value);
-        }
+    }
+    // Set SLP_TYP first, then SLP_EN in a second write, as the spec's sleep sequence does;
+    // every other bit (SCI_EN included) keeps its value.
+    let pm1a_value = acpi::pm1_control_sleep(read16(pm1a), target.sleep_type.a);
+    let pm1b_value =
+        (pm1b != 0).then(|| acpi::pm1_control_sleep(read16(pm1b), target.sleep_type.b));
+    write16(pm1a, pm1a_value & !acpi::PM1_CONTROL_SLP_EN);
+    if let Some(pm1b_value) = pm1b_value {
+        write16(pm1b, pm1b_value & !acpi::PM1_CONTROL_SLP_EN);
+    }
+    write16(pm1a, pm1a_value);
+    if let Some(pm1b_value) = pm1b_value {
+        write16(pm1b, pm1b_value);
     }
 }

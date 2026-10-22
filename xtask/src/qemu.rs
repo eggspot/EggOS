@@ -14,7 +14,11 @@ const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// A boot test that has not powered off by then has hung.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
-const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1", "-no-reboot"];
+/// Start of the kernel's boot banner (`EggOS <version> (<arch>)`, see `eggos_kernel::boot`).
+/// Seeing it twice means the machine reset and booted again.
+const BANNER_PREFIX: &str = "EggOS ";
+
+const COMMON_ARGS: &[&str] = &["-m", "128M", "-smp", "1"];
 
 /// Boots `kernel` headless and passes only if QEMU powers off cleanly within the timeout and
 /// the console shows the pass marker and no fail marker.
@@ -22,6 +26,9 @@ pub fn boot_test(arch: &Arch, kernel: &Path) -> Result<(), String> {
     eprintln!("xtask: booting {} in {}", arch.name, arch.qemu);
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
+        // No `-no-reboot` here: with it, an x86 triple fault (e.g. in the power-off path) ends
+        // QEMU with exit code 0 and would look like a clean power-off. Without it the machine
+        // resets and prints the banner again, which fails the test below.
         .args(COMMON_ARGS)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
@@ -45,9 +52,19 @@ pub fn boot_test(arch: &Arch, kernel: &Path) -> Result<(), String> {
     });
 
     let started = Instant::now();
+    let mut console = Vec::new();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
+        }
+        console.extend(rx.try_iter().flatten());
+        if banner_count(&String::from_utf8_lossy(&console)) > 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{}: the machine reset and booted again (crash or triple fault?)",
+                arch.name
+            ));
         }
         if started.elapsed() > BOOT_TIMEOUT {
             let _ = child.kill();
@@ -61,16 +78,32 @@ pub fn boot_test(arch: &Arch, kernel: &Path) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    // The reader thread ends when QEMU closes stdout; collect everything it saw.
-    let output: Vec<u8> = rx.iter().flatten().collect();
-    let output = String::from_utf8_lossy(&output);
-    verdict(arch.name, status.success(), &output)
+    // The reader thread ends when QEMU closes stdout; collect the rest of what it saw.
+    console.extend(rx.iter().flatten());
+    verdict(
+        arch.name,
+        status.success(),
+        &String::from_utf8_lossy(&console),
+    )
+}
+
+/// How many times the kernel's boot banner appears on the console.
+fn banner_count(console: &str) -> usize {
+    console
+        .lines()
+        .filter(|l| l.starts_with(BANNER_PREFIX) && l.trim_end().ends_with(')'))
+        .count()
 }
 
 fn verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
     let lines = || console.lines().map(str::trim_end);
     let passed = lines().any(|l| l == PASS_MARKER);
     let failed = lines().any(|l| l == FAIL_MARKER);
+    if banner_count(console) > 1 {
+        return Err(format!(
+            "{arch}: the machine reset and booted again (crash or triple fault?)"
+        ));
+    }
     match (clean_exit, passed, failed) {
         (true, true, false) => {
             eprintln!("xtask: {arch}: boot test passed");
@@ -89,7 +122,7 @@ pub fn run_interactive(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let status = Command::new(arch.qemu)
         .args(arch.machine_args)
         .args(COMMON_ARGS)
-        .arg("-nographic")
+        .args(["-no-reboot", "-nographic"])
         .arg("-kernel")
         .arg(kernel)
         .status()
@@ -117,6 +150,12 @@ mod tests {
     fn fail_marker_wins_over_pass_marker() {
         let mixed = format!("{PASS_MARKER}\n{FAIL_MARKER}\n");
         assert!(verdict("x", true, &mixed).is_err());
+    }
+
+    #[test]
+    fn a_second_boot_banner_fails_even_after_pass() {
+        let rebooted = format!("EggOS 0.1.0 (x86_64)\n{PASS_MARKER}\nEggOS 0.1.0 (x86_64)\n");
+        assert!(verdict("x", true, &rebooted).is_err());
     }
 
     #[test]
