@@ -26,9 +26,9 @@ const FDT_END: u32 = 9;
 /// most this; every version from 16 on has the layout above).
 const SUPPORTED_VERSION: u32 = 17;
 
-/// Deepest node nesting tracked. Memory nodes are children of the root and reserved regions
-/// are grandchildren; deeper nodes are skipped.
-const MAX_DEPTH: usize = 64;
+/// Node levels tracked: the root, its children (memory nodes, `/reserved-memory`) and
+/// grandchildren (reserved regions). Deeper nodes are counted, not tracked.
+const MAX_DEPTH: usize = 3;
 
 /// Why a device tree was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
