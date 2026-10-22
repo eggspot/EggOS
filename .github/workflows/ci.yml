@@ -21,12 +21,17 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read # list a PR's changed files
-  packages: read # pull the CI image
 
 jobs:
   check:
     runs-on: ubuntu-24.04
-    # QEMU, OpenSBI and the pinned toolchain come preinstalled (D36; built by ci-image.yml).
+    # QEMU, OpenSBI and the pinned toolchain come preinstalled (D36; built by ci-image.yml from
+    # main). CI always runs in main's image, so a change that needs something new in the image
+    # lands in its own PR first.
+    permissions:
+      contents: read
+      pull-requests: read # list a PR's changed files
+      packages: read # pull the CI image
     container:
       image: ghcr.io/eggspot/eggos-ci:main
       credentials:
