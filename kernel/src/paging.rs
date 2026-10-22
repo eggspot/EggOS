@@ -269,16 +269,16 @@ pub fn kernel_page_tables<P: Platform>(
 /// same, never executable. Code and constants stay read-only through their direct-map alias,
 /// so a stray or malicious write cannot change them there and W^X holds for every mapping of
 /// a frame, not just the image's own.
-pub const fn direct_map_alias(attributes: Attributes) -> Attributes {
+pub const fn direct_map_attributes(attributes: Attributes) -> Attributes {
     Attributes {
         executable: false,
         ..attributes
     }
 }
 
-/// Maps every range of `ram` at virtual physical + `offset`, read and write, never
+/// Maps every range of `ram` at its physical address + `offset`, read and write, never
 /// executable, except the kernel image's frames: each of its parts gets
-/// [`direct_map_alias`] of its access, and the stack guard page stays unmapped.
+/// [`direct_map_attributes`] of its access, and the stack guard page stays unmapped.
 fn map_direct_map<F: Format>(
     tables: &mut PageTables<F>,
     ram: &MemoryMap,
@@ -286,17 +286,13 @@ fn map_direct_map<F: Format>(
     image: &KernelImage,
     frames: &mut FrameAllocator,
 ) -> Result<(), MapError> {
-    let image_span = PhysicalRange {
-        start: image.start,
-        end: image.end,
-    };
     for range in ram.ranges() {
         let below_image = PhysicalRange {
             start: range.start,
-            end: range.end.min(image_span.start),
+            end: range.end.min(image.start),
         };
         let above_image = PhysicalRange {
-            start: range.start.max(image_span.end),
+            start: range.start.max(image.end),
             end: range.end,
         };
         let image_parts = image.mapped_parts().map(|(part, attributes)| {
@@ -304,7 +300,7 @@ fn map_direct_map<F: Format>(
                 start: part.start.max(range.start),
                 end: part.end.min(range.end),
             };
-            (inside, direct_map_alias(attributes))
+            (inside, direct_map_attributes(attributes))
         });
         let pieces = [
             (below_image, Attributes::READ_WRITE),

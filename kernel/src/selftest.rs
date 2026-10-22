@@ -308,7 +308,7 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
     }
     let offset = P::direct_map_offset() as u64;
     for (part, attributes) in image.mapped_parts() {
-        let alias = Some(crate::paging::direct_map_alias(attributes));
+        let alias = Some(crate::paging::direct_map_attributes(attributes));
         for address in [part.start, part.end.wrapping_sub(1)] {
             if !part.is_empty()
                 && tables.translate(address + offset).map(|t| (t.0, Some(t.1)))
