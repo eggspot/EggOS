@@ -34,8 +34,8 @@ Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to
-confirm 16 KiB on every architecture; revisit the stack size when FP/SIMD state or nested
-interrupts add frames.
+confirm 16 KiB on every architecture (interrupt frames now land on thread stacks at
+preemption points); revisit the stack size when FP/SIMD state or nested interrupts add frames.
 
 Preemption follow-ups (D37): involuntary preemption on return to user mode (processes); the
 timer shared between the tick and sleeping threads, and no tick while one thread is runnable

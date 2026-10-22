@@ -345,9 +345,11 @@ pub fn yield_now<P: Platform>() {
     finish_switch();
 }
 
-/// Starts the timer tick that preempts threads (D37): once a thread has run for
-/// [`TIME_SLICE_MS`], it lets the next ready thread run at its next [`preemption_point`]. The
-/// tick owns this CPU's timer ([`Platform::set_timer_deadline`]) until [`disable_preemption`].
+/// Starts the timer tick that preempts threads (D37): every [`TIME_SLICE_MS`], the thread
+/// running then lets the next ready thread run at its next [`preemption_point`]. A slice
+/// starts there; a thread that runs after a voluntary [`yield_now`] or an exit has the rest of
+/// the slice under way. The tick owns this CPU's timer ([`Platform::set_timer_deadline`]) until
+/// [`disable_preemption`].
 pub fn enable_preemption<P: Platform>() {
     let interval = (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1);
     TICK_INTERVAL.store(interval, Ordering::Relaxed);
@@ -661,6 +663,8 @@ mod tests {
         let _frames = host::frames_for_test();
         static RAN: AtomicBool = AtomicBool::new(false);
         RAN.store(false, Ordering::Relaxed);
+        // Off even if a test that turned it on failed before turning it off.
+        disable_preemption::<P>();
         let other = spawn::<P, _>(|| RAN.store(true, Ordering::Relaxed)).unwrap();
         // A timer interrupt for someone else ends no slice while preemption is off.
         crate::interrupt::handle(eggos_hal::Interrupt::Timer);

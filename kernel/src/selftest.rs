@@ -536,11 +536,13 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     let give_up = P::clock_ticks().saturating_add(2 * P::clock_frequency());
     let first = thread::spawn::<P, _>(move || {
         while !SECOND_RAN.load(Ordering::Relaxed) {
-            if P::clock_ticks() > give_up {
+            thread::preemption_point::<P>();
+            // Rechecked after the preemption point, which takes a tick already pending: a
+            // host that stalled the machine past `give_up` does not fail the test.
+            if !SECOND_RAN.load(Ordering::Relaxed) && P::clock_ticks() > give_up {
                 GAVE_UP.store(true, Ordering::Relaxed);
                 return;
             }
-            thread::preemption_point::<P>();
         }
     });
     let second = thread::spawn::<P, _>(|| SECOND_RAN.store(true, Ordering::Relaxed));
