@@ -19,11 +19,11 @@ on each. The owner has not chosen which comes first. Provisional order:
    XNU/Mach traps, frameworks), order between them to be decided once the Linux layer is solid.
 Reasoning: nothing else can run before the Linux ABI exists, and each step reuses the previous one.
 
-## D3 AI-native interface — Decided (shape to be designed)
+## D3 AI-native interface — Decided; shape decided by D21 (MCP) and D22
 The OS exposes its capabilities (files, processes, settings, devices, UI) to AI agents as a
 first-class, permissioned interface, not as screen scraping. Design is a later roadmap milestone.
 
-## D4 Hardware scope: everything, behind a HAL and one driver model — Decided
+## D4 Hardware scope: everything, behind a HAL and one driver model — Decided; device classes spelled out by D23
 Every CPU architecture, GPU, device type and driver, all written by us. Therefore:
 - the kernel core is architecture-independent; architecture code lives only in the HAL, one
   module per architecture (`hal/src/arch/<arch>/`);
@@ -159,8 +159,8 @@ devices only) are out of scope.
 
 ## D18 Modular install: only the base is installed, every feature is the user's choice — Decided
 EggOS installs a small base by default: the kernel, drivers for the hardware present, the base
-userland, the agent interface (D3, so any installed agent can use it) and the installer/component
-manager. Everything else is an optional component the user picks at setup or later and can remove
+userland, the built-in MCP server (D21, so any installed agent can use the OS) and the
+installer/component manager. Everything else is an optional component the user picks at setup or later and can remove
 cleanly: each compatibility layer, the desktop and its apps, AI services and agents, server roles,
 developer tools, and so on. The editions (personal, professional, enterprise, server) become preset
 selections of components plus policy, not separate builds.
@@ -194,3 +194,52 @@ bump PR, full `cargo xtask ci` on the merged commit (locally, so no extra CI min
 for every architecture that boots, tag, and a GitHub Release with notes and the images attached
 (procedure: CLAUDE.md, "Releases"). Only new accounts, signing keys, credentials or money wait for
 the owner.
+
+## D21 AI-native through a built-in MCP server; every installed app is AI-usable — Decided (owner)
+The AI interface of D3 is the Model Context Protocol (MCP), the open standard AI agents already use
+to call tools. The EggOS MCP server is part of the base (D18) and implemented by us in Rust from
+the public specification, with no SDK crate (D14). Local transport first (stdio and a local socket);
+network access is an opt-in component.
+- **The OS:** every system capability (D22) is an MCP tool or resource.
+- **Native apps:** an app's manifest declares its actions (name, typed parameters, description,
+  whether it is destructive). On install the component manager publishes them as MCP tools and as
+  CLI commands, and removes them on uninstall. An app with no declared actions still gets the
+  generic tools below.
+- **Foreign apps:** we implement their UI and system libraries (D17), so we can expose their
+  windows and controls (Win32/WinUI, AppKit, UIKit, Android views) as structured data with actions
+  (read, click, type, select), not screenshots. Their own automation interfaces are bridged too:
+  Windows COM and UI Automation, macOS AppleScript and App Intents, Android intents, and iOS App
+  Intents and URL schemes.
+- **Security:** a capability-based permission model (correctness and security is priority 2). Each
+  agent gets only what the user grants, per capability and revocable. The default for an unknown
+  agent is deny. Destructive actions ask the user. Text read from apps, files and the web is data,
+  never instructions to the OS. Every agent action goes into an audit log the user can browse.
+
+## D22 One capability, three front-ends: GUI, CLI and MCP at 100% parity — Decided (owner)
+Each OS feature is implemented once, as a typed capability in a system service (operations, typed
+inputs and outputs, errors, permissions). The GUI, the CLI command and the MCP tool are front-ends
+over that same capability. Where possible, the CLI command and the MCP tool are generated from the
+capability's definition, so they cannot drift apart. A feature is done only when all three exist
+and are tested. A test walks the capability registry and fails if any capability lacks a front-end.
+The CLI is scriptable (stable output with a machine-readable mode) and familiar to switchers: the
+UX track maps common macOS, Windows and Linux commands.
+
+## D23 Every device class, one OS and one adaptive shell — Decided (owner); extends D4
+The device classes are desktop, laptop, phone, tablet, TV, wearable, car, server and embedded/IoT,
+and new classes are added as they appear. They share one kernel, one driver model, one capability
+layer and one app model. The shell adapts to screen size, distance (a TV is used from across the
+room) and input (keyboard and mouse, touch, TV remote/D-pad, voice, game controller). Server and
+embedded builds can run headless, using only the CLI and MCP. Each class's design comes from Claude
+Fable (D16). Form factor is a runtime property; code never assumes one.
+
+## D24 Lightweight: size, memory and boot-time budgets that only shrink — Decided (owner)
+EggOS must be the lightest OS to install and run as well as the fastest (D13). Every release
+measures and publishes:
+- the base install size;
+- idle memory after boot;
+- boot time to a usable CLI, and to a usable GUI when installed;
+- the per-component cost of each optional component (D18).
+
+The numbers may only go down. Any growth needs a stated reason in the PR and is handled like a
+performance regression. Concrete budgets are set once the base first installs (M10), from
+measurements against minimal Linux, Windows and macOS installs on the same hardware.

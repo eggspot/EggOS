@@ -1,7 +1,8 @@
 # EggOS — Claude Code instructions
 
-AI-native operating system, written entirely by us in Rust, kernel included.
-Editions: personal, professional, enterprise and server, from one codebase.
+AI-native operating system, written entirely by us in Rust, kernel included. One codebase for every
+device (desktop, laptop, phone, tablet, TV, wearable, car, server, embedded, and whatever comes next)
+and every edition (personal, professional, enterprise, server). Always the fastest and the lightest.
 
 ## IMPORTANT: notes for every task
 Check each task against these before starting and again before opening the PR.
@@ -25,20 +26,46 @@ Check each task against these before starting and again before opening the PR.
    `.pkg`, `.zip`), which EggOS opens and installs itself; iOS apps only when they are distributed
    outside the App Store. (D17)
 3. **Nothing is installed by default beyond the base** (kernel, drivers for the hardware present,
-   base userland, the agent interface and the component manager). Every feature and service (each
+   base userland, the built-in MCP server and the component manager). Every feature and service (each
    compatibility layer, the desktop, system apps, AI services, server roles, ...) is an optional
    component the user chooses to install, at setup or later, and can remove cleanly. Code must
    never assume an optional component is present, and a component that is not installed costs
    nothing: no disk, no memory, no running service, no boot time. (D18)
+4. **100% CLI, 100% GUI, 100% AI: one capability, three front-ends.** Everything the OS can do
+   (settings, files, apps, devices, network, users, components, ...) is built once as a typed system
+   capability, then exposed three ways: a GUI, a CLI command, and an MCP tool. A feature is not done
+   until all three exist and are tested; a GUI-only or CLI-only feature is a bug. (Headless installs
+   such as servers simply leave the GUI front-end uninstalled.) (D22)
+5. **AI-native through a built-in MCP server.** The base includes the EggOS MCP server (Model Context
+   Protocol, implemented by us in Rust from the public spec). Every system capability is an MCP tool
+   or resource, so any AI agent can use the whole OS without screen scraping. Agents act only with
+   permissions the user grants (per agent, per capability, revocable), destructive actions need the
+   user's confirmation, and every agent action is logged where the user can see it. (D21)
+6. **Every installed app becomes AI-usable, through the CLI and MCP, automatically.** Native EggOS
+   apps declare their actions in their manifest; on install the component manager publishes them as
+   CLI commands and MCP tools, and removes them on uninstall. Foreign apps get the same: because we
+   implement their UI and system libraries (D17), we expose their windows and controls as structured
+   data, plus their own automation interfaces (Windows COM and UI Automation, macOS AppleScript and
+   App Intents, Android intents, iOS App Intents and URL schemes). Same permission model as note 5.
+   (D21)
+7. **Every device class, one OS.** Desktop, laptop, phone, tablet, TV, wearable, car, server,
+   embedded, and new ones as they appear. The shell adapts to screen size and input (keyboard and
+   mouse, touch, TV remote, voice), and the same app runs everywhere it makes sense. Never write code
+   that assumes one form factor. (D23)
+8. **Always the fastest and the lightest.** Performance comes first (see "The target: the fastest
+   OS"). Lightweight counts too: the base install size, idle memory and boot time are measured for
+   every release and may only shrink. Any growth must be justified in the PR and treated like a
+   performance regression. (D24)
 
 ## Architecture decisions so far
 - **Kernel: our own, in Rust, Linux-compatible.** We do not use the Linux kernel's C code. "Linux-compatible"
   means our kernel implements the Linux interfaces (system calls, ABI) so Linux software runs on it.
 - **Foreign apps:** Windows, macOS, Android and iOS apps run on EggOS natively (no emulation, see
   important note 2) through compatibility layers we write ourselves, with the same features on each.
-- **AI-native:** the OS exposes its capabilities to AI agents as a first-class interface.
+- **AI-native:** the OS exposes its capabilities, and every installed app's, to AI agents as a
+  first-class interface: the built-in MCP server plus the CLI (important notes 4-6).
 - **Hardware: we support everything.** Every CPU architecture, every GPU, every device type (desktop,
-  laptop, phone, tablet, server, embedded) and every driver, all written by us. So from day one:
+  laptop, phone, tablet, TV, wearable, car, server, embedded) and every driver, all written by us. So from day one:
   - the kernel core is architecture-independent; architecture code lives only behind a hardware
     abstraction layer (one module per architecture), never mixed into the core;
   - drivers sit behind one common driver model, so adding a device never touches the core;
@@ -47,8 +74,8 @@ Check each task against these before starting and again before opening the PR.
   Bring-up order is an engineering choice, not a scope limit: start where QEMU emulation is good and most
   users are (e.g. x86_64, aarch64, riscv64; virtio devices and virtio-gpu first), then real hardware and
   vendor GPUs (Intel, AMD, NVIDIA, Apple, Arm Mali, Qualcomm Adreno, ...) behind the same interfaces.
-- Record every further architecture decision as a numbered entry in docs/decisions.md (start it with the
-  decisions above and the MIT license below as D1-D5).
+- Record every further architecture decision as a numbered entry in docs/decisions.md (append-only;
+  a later entry may supersede an earlier one).
 
 ## The target: the fastest OS
 EggOS must be the fastest operating system: faster boot, lower latency, higher throughput and a smaller
