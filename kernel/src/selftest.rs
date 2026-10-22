@@ -2,8 +2,11 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
-use crate::memory::{FrameAllocator, Memory};
+use crate::HEAP;
+use crate::memory::{self, FrameAllocator, Memory};
 use crate::{exception, interrupt};
+use alloc::vec::Vec;
+use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
 use eggos_hal::Platform;
@@ -22,7 +25,7 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 5] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 6] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -31,6 +34,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 5] {
         (
             "page_tables_protect_the_kernel",
             page_tables_protect_the_kernel::<P>,
+        ),
+        (
+            "heap_allocates_in_the_direct_map",
+            heap_allocates_in_the_direct_map::<P>,
         ),
     ]
 }
@@ -142,8 +149,13 @@ fn first_word(frames: &FrameAllocator, frame: u64) -> *mut u64 {
 /// other frame up to the end of memory, writing each, and give them all back. A frame
 /// overlapping the kernel image, its stack or a page table would most likely crash the kernel
 /// here instead of passing.
-fn frames_are_usable_ram<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
-    let frames = &mut memory.frames;
+fn frames_are_usable_ram<P: Platform>(_: &mut Memory<P>) -> Result<(), &'static str> {
+    let mut frames = memory::FRAMES.lock();
+    every_frame_is_usable_ram(frames.as_mut().ok_or("there is no frame allocator")?)
+}
+
+/// [`frames_are_usable_ram`] on `frames`.
+fn every_frame_is_usable_ram(frames: &mut FrameAllocator) -> Result<(), &'static str> {
     let total = frames.free_frames();
     if total == 0 {
         return Err("the boot memory map has no free memory");
@@ -249,7 +261,8 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
     if P::physical_memory_offset() != P::direct_map_offset() {
         return Err("the platform does not reach physical memory through the direct map");
     }
-    let frames = &mut memory.frames;
+    let mut frames = memory::FRAMES.lock();
+    let frames = frames.as_mut().ok_or("there is no frame allocator")?;
     let frame = frames.allocate().ok_or("no free frame")?;
     let word = first_word(frames, frame);
     // SAFETY: the frame was just allocated, so the kernel owns it; the allocator reaches it at
@@ -262,6 +275,82 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
     unsafe { frames.free(frame) };
     if translated != Some((frame, Attributes::READ_WRITE)) || read_back != 0x5eed_f00d {
         return Err("the direct map does not translate to the frame written through it");
+    }
+    Ok(())
+}
+
+/// The kernel heap must hand out writable memory in the direct map, aligned as asked, without
+/// overlap, from every size class and as whole frames, and give it all back: frame-sized
+/// allocations return their frames. `Vec` growth (through `realloc`) must keep its contents up
+/// to a frame. On the bare-metal targets the `Vec` uses the kernel heap too, as the global
+/// allocator.
+fn heap_allocates_in_the_direct_map<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    const LAYOUTS: [(usize, usize); 7] = [
+        (1, 1),
+        (24, 8),
+        (100, 64),
+        (2048, 16),
+        (2049, 8),
+        (4096, 4096),
+        (4000, 8),
+    ];
+    let free_before = memory::FRAMES
+        .lock()
+        .as_ref()
+        .ok_or("there is no frame allocator")?
+        .free_frames();
+    let mut taken = [core::ptr::null_mut::<u8>(); LAYOUTS.len()];
+    for (slot, &(size, align)) in taken.iter_mut().zip(&LAYOUTS) {
+        let layout = Layout::from_size_align(size, align).map_err(|_| "bad test layout")?;
+        // SAFETY: the layout has a non-zero size.
+        let pointer = unsafe { HEAP.alloc(layout) };
+        if pointer.is_null() {
+            return Err("the heap could not allocate");
+        }
+        *slot = pointer;
+        let address = pointer as u64;
+        let mapped = memory.page_tables.translate(address);
+        if (pointer as usize) < P::direct_map_offset()
+            || !address.is_multiple_of(align as u64)
+            || !mapped.is_some_and(|(_, attributes)| attributes == Attributes::READ_WRITE)
+        {
+            return Err("heap memory is not aligned, writable memory in the direct map");
+        }
+        // SAFETY: `pointer` is a fresh allocation of `size` bytes.
+        unsafe { pointer.write_bytes(size as u8, size) };
+    }
+    for (&pointer, &(size, _)) in taken.iter().zip(&LAYOUTS) {
+        // SAFETY: each allocation is still owned and was written in full.
+        let bytes = unsafe { core::slice::from_raw_parts(pointer, size) };
+        if bytes.iter().any(|&byte| byte != size as u8) {
+            return Err("heap allocations overlap");
+        }
+    }
+    for (&pointer, &(size, align)) in taken.iter().zip(&LAYOUTS) {
+        let layout = Layout::from_size_align(size, align).map_err(|_| "bad test layout")?;
+        // SAFETY: allocated above with this layout and no longer used.
+        unsafe { HEAP.dealloc(pointer, layout) };
+    }
+    let free_after = memory::FRAMES
+        .lock()
+        .as_ref()
+        .map_or(0, FrameAllocator::free_frames);
+    // The size classes keep the frames they carved (at most one each here).
+    if free_before.saturating_sub(free_after) > 4 {
+        return Err("frame-sized heap allocations did not give their frames back");
+    }
+    let mut numbers = Vec::new();
+    for n in 0..512u64 {
+        numbers.push(n * n);
+    }
+    if numbers
+        .iter()
+        .enumerate()
+        .any(|(n, &square)| square != (n * n) as u64)
+    {
+        return Err("a growing Vec lost its contents");
     }
     Ok(())
 }
@@ -427,13 +516,9 @@ mod tests {
         let mut map = eggos_hal::MemoryMap::new();
         map.add_ram(eggos_hal::PhysicalRange::from_start_length(0x1000, 0x1000));
         let mut frames = FrameAllocator::new(&map, start - 0x1000);
-        let page_tables = crate::paging::PageTables::new(&mut frames).unwrap();
-        let mut memory = Memory::<LostBreakpoints> {
-            frames,
-            page_tables,
-        };
+        crate::paging::PageTables::<eggos_hal::paging::x86_64::X86_64>::new(&mut frames).unwrap();
         assert_eq!(
-            frames_are_usable_ram(&mut memory),
+            every_frame_is_usable_ram(&mut frames),
             Err("the boot memory map has no free memory")
         );
     }

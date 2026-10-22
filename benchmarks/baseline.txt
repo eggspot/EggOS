@@ -13,6 +13,7 @@ aarch64 clock_read 5.00
 aarch64 empty_loop 4.00
 aarch64 frame_allocate_untouched 17.15
 aarch64 frame_free_allocate 19.15
+aarch64 heap_allocate_free_small 52.00
 aarch64 timer_arm 6.00
 aarch64 timer_interrupt_round_trip 97.00
 riscv64 breakpoint_round_trip 159.00
@@ -20,6 +21,7 @@ riscv64 clock_read 4.00
 riscv64 empty_loop 4.00
 riscv64 frame_allocate_untouched 16.16
 riscv64 frame_free_allocate 20.17
+riscv64 heap_allocate_free_small 95.00
 riscv64 timer_arm 266.01
 riscv64 timer_interrupt_round_trip 640.00
 x86_64 breakpoint_round_trip 85.00
@@ -27,5 +29,6 @@ x86_64 clock_read 8.00
 x86_64 empty_loop 4.00
 x86_64 frame_allocate_untouched 14.06
 x86_64 frame_free_allocate 19.06
+x86_64 heap_allocate_free_small 54.00
 x86_64 timer_arm 65.00
 x86_64 timer_interrupt_round_trip 95.00

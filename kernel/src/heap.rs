@@ -1,0 +1,432 @@
+//! The kernel heap: `alloc` for the kernel (D30).
+//!
+//! Small allocations come from power-of-two size classes of 16 to 2048 bytes. Each class
+//! carves 4 KiB frames into blocks of its size, reached through the direct map, so a block is
+//! aligned to its size and a class needs no metadata beyond three words: the most recently
+//! freed block (freed blocks are linked through their first word) and the never-used rest of
+//! the frame being carved. Allocating and freeing a block are each a few instructions and take
+//! no frame allocator call; a block never handed out is never touched. Allocations of 2049 to
+//! 4096 bytes take a whole frame from the frame allocator. Larger ones fail (the caller gets
+//! null, and `alloc` panics) until the buddy allocator (D28) can hand out contiguous frames:
+//! it is the next M2 step.
+//!
+//! Frames a size class took stay with that class when its blocks are freed: giving empty slabs
+//! back needs per-frame counts, which come with the buddy allocator (D28).
+//!
+//! Interrupt and exception handlers must not allocate: the heap's lock does not mask
+//! interrupts (see [`SpinLock`]), so a handler allocating while the code it interrupted holds
+//! the lock would wait forever. [`KernelHeap`] reports that case instead (see its `lock`).
+
+use crate::memory::{self, FrameAllocator};
+use crate::sync::{SpinLock, SpinLockGuard};
+use core::alloc::{GlobalAlloc, Layout};
+use core::ptr::{self, NonNull};
+use eggos_hal::memory::FRAME_SIZE;
+
+/// The smallest block: room for the free-list link, and the alignment `alloc` callers most
+/// often need.
+const MIN_BLOCK: usize = 16;
+/// The largest block a size class serves; larger allocations take whole frames.
+pub const MAX_BLOCK: usize = 2048;
+/// Size classes: 16, 32, ..., [`MAX_BLOCK`] bytes.
+const CLASSES: usize = (MAX_BLOCK.trailing_zeros() - MIN_BLOCK.trailing_zeros() + 1) as usize;
+
+/// Marks an empty free list. Never a block address: blocks are at least 16-byte aligned.
+const NO_BLOCK: usize = usize::MAX;
+
+/// Where the heap gets frames, as the virtual addresses the kernel reaches them at.
+pub trait FrameSource {
+    /// The address of a free frame, now owned by the heap; `None` when there is none.
+    fn allocate_frame(&mut self) -> Option<usize>;
+
+    /// Gives back the frame at `address`.
+    ///
+    /// # Safety
+    /// It must have come from [`Self::allocate_frame`] on this source, not have been freed
+    /// since, and nothing may use it any more.
+    unsafe fn free_frame(&mut self, address: usize);
+}
+
+/// A [`FrameAllocator`] the caller holds, as a [`FrameSource`].
+#[derive(Debug)]
+pub struct Frames<'a>(pub &'a mut FrameAllocator);
+
+impl FrameSource for Frames<'_> {
+    fn allocate_frame(&mut self) -> Option<usize> {
+        let frame = self.0.allocate()?;
+        Some((frame as usize).wrapping_add(self.0.physical_memory_offset()))
+    }
+
+    unsafe fn free_frame(&mut self, address: usize) {
+        let frame = address.wrapping_sub(self.0.physical_memory_offset()) as u64;
+        // SAFETY: the caller guarantees the frame came from this allocator (through
+        // `allocate_frame`) and is unused.
+        unsafe { self.0.free(frame) };
+    }
+}
+
+/// The kernel's frame allocator, [`memory::FRAMES`], locked for each call. Nothing is
+/// allocated before [`crate::paging::enable`] puts the allocator there.
+#[derive(Debug)]
+pub struct GlobalFrames;
+
+impl FrameSource for GlobalFrames {
+    fn allocate_frame(&mut self) -> Option<usize> {
+        Frames(memory::FRAMES.lock().as_mut()?).allocate_frame()
+    }
+
+    unsafe fn free_frame(&mut self, address: usize) {
+        let mut frames = memory::FRAMES.lock();
+        let Some(frames) = frames.as_mut() else {
+            debug_assert!(false, "freeing a frame before there is a frame allocator");
+            return;
+        };
+        // SAFETY: the frame came from `allocate_frame` on this source, which took it from the
+        // same global allocator, as the caller guarantees.
+        unsafe { Frames(frames).free_frame(address) };
+    }
+}
+
+/// One size class's free blocks.
+#[derive(Debug, Clone, Copy)]
+struct Class {
+    /// Virtual address of the most recently freed block, or [`NO_BLOCK`].
+    free: usize,
+    /// The never-used part of the frame being carved: `next..end` (empty when equal).
+    next: usize,
+    end: usize,
+}
+
+/// The heap's state. Each call is given the [`FrameSource`] it may take frames from, which
+/// must be the same one every time.
+#[derive(Debug)]
+pub struct Heap {
+    classes: [Class; CLASSES],
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What serves a layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The size class with this index.
+    Block(usize),
+    /// A whole frame.
+    Frame,
+}
+
+impl Kind {
+    /// `None` when the layout needs more than a frame (nothing serves that yet).
+    #[inline]
+    fn of(layout: Layout) -> Option<Self> {
+        let size = layout.size().max(layout.align()).max(MIN_BLOCK);
+        if size <= MAX_BLOCK {
+            let class = size.next_power_of_two().trailing_zeros() - MIN_BLOCK.trailing_zeros();
+            Some(Kind::Block(class as usize))
+        } else if size as u64 <= FRAME_SIZE {
+            Some(Kind::Frame)
+        } else {
+            None
+        }
+    }
+}
+
+impl Heap {
+    pub const fn new() -> Self {
+        Self {
+            classes: [Class {
+                free: NO_BLOCK,
+                next: 0,
+                end: 0,
+            }; CLASSES],
+        }
+    }
+
+    /// Memory for `layout`, or `None` when memory is exhausted or the layout needs more than a
+    /// frame. A zero-sized layout gets a real block, so every pointer returned is unique.
+    #[inline]
+    pub fn allocate(
+        &mut self,
+        layout: Layout,
+        frames: &mut impl FrameSource,
+    ) -> Option<NonNull<u8>> {
+        let address = match Kind::of(layout)? {
+            Kind::Block(class) => self.allocate_block(class, frames)?,
+            Kind::Frame => frames.allocate_frame()?,
+        };
+        NonNull::new(address as *mut u8)
+    }
+
+    /// Gives back memory from [`Self::allocate`].
+    ///
+    /// # Safety
+    /// `pointer` must have come from [`Self::allocate`] on this heap with this `layout` and the
+    /// same `frames`, not have been given back since, and nothing may use it any more.
+    #[inline]
+    pub unsafe fn deallocate(
+        &mut self,
+        pointer: NonNull<u8>,
+        layout: Layout,
+        frames: &mut impl FrameSource,
+    ) {
+        let address = pointer.as_ptr() as usize;
+        match Kind::of(layout) {
+            Some(Kind::Block(class)) => {
+                let class = &mut self.classes[class];
+                // SAFETY: the caller gives the block up, so its first word (blocks are at
+                // least 16 bytes and 16-byte aligned) is the heap's to write.
+                unsafe { (address as *mut usize).write(class.free) };
+                class.free = address;
+            }
+            // SAFETY: the caller gives the allocation up, and `allocate` took this frame from
+            // `frames` for this layout.
+            Some(Kind::Frame) => unsafe { frames.free_frame(address) },
+            None => debug_assert!(false, "deallocating a layout the heap never serves"),
+        }
+    }
+
+    /// Whether memory from [`Self::allocate`] for `old` also serves `new` as it is: both in the
+    /// same size class, or both a whole frame.
+    #[inline]
+    pub fn fits_in_place(old: Layout, new: Layout) -> bool {
+        Kind::of(old).is_some() && Kind::of(old) == Kind::of(new)
+    }
+
+    /// A block of size class `class`.
+    #[inline]
+    fn allocate_block(&mut self, class: usize, frames: &mut impl FrameSource) -> Option<usize> {
+        let state = &mut self.classes[class];
+        if state.free != NO_BLOCK {
+            let block = state.free;
+            // SAFETY: `block` is on the free list, so `deallocate` wrote the next link into its
+            // first word, which nothing else owns; it is aligned for a `usize`.
+            state.free = unsafe { (block as *const usize).read() };
+            return Some(block);
+        }
+        if state.next == state.end {
+            let frame = frames.allocate_frame()?;
+            state.next = frame;
+            state.end = frame + FRAME_SIZE as usize;
+        }
+        let block = state.next;
+        state.next += MIN_BLOCK << class;
+        Some(block)
+    }
+}
+
+/// The kernel's `alloc` allocator: a [`Heap`] behind a lock, taking frames from the global
+/// frame allocator. Lock order: this heap's lock, then [`memory::FRAMES`]; never the reverse.
+#[derive(Debug)]
+pub struct KernelHeap {
+    heap: SpinLock<Heap>,
+}
+
+impl Default for KernelHeap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KernelHeap {
+    pub const fn new() -> Self {
+        Self {
+            heap: SpinLock::new(Heap::new()),
+        }
+    }
+
+    /// The heap, locked. On the bare-metal targets, where there is one CPU so far (M4), the lock
+    /// can only be held already when an interrupt or exception handler allocates while the
+    /// code it interrupted is inside the heap: that breaks the rule in the module
+    /// documentation and would spin forever, so it is reported instead, at no cost to the
+    /// handlers or the heap. Host tests use the heap from several threads, so they wait.
+    #[inline]
+    fn lock(&self) -> SpinLockGuard<'_, Heap> {
+        if cfg!(target_os = "none") {
+            match self.heap.try_lock() {
+                Some(heap) => heap,
+                None => panic!("kernel heap used by an interrupt or exception handler"),
+            }
+        } else {
+            self.heap.lock()
+        }
+    }
+}
+
+// SAFETY: `alloc` returns memory from `Heap::allocate`, which is at least `layout.size()`
+// bytes aligned to `layout.align()` (a block of a size class at least that large, aligned to
+// its size; or a whole frame, for layouts no larger than a frame), owned by the caller until
+// `dealloc`, or null. `dealloc` gives it back with the same layout, as `GlobalAlloc` callers guarantee.
+// The lock serialises every use of the heap state, and the heap only ever takes frames from
+// the global frame allocator, under its lock.
+unsafe impl GlobalAlloc for KernelHeap {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.lock()
+            .allocate(layout, &mut GlobalFrames)
+            .map_or(ptr::null_mut(), NonNull::as_ptr)
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        let Some(pointer) = NonNull::new(pointer) else {
+            return;
+        };
+        // SAFETY: `GlobalAlloc` callers give back memory `alloc` returned for `layout`, which
+        // came from this heap with `GlobalFrames`, and do not use it any more.
+        unsafe {
+            self.heap
+                .lock()
+                .deallocate(pointer, layout, &mut GlobalFrames)
+        };
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // `GlobalAlloc` callers pass a `new_size` that is valid with `layout`'s alignment.
+        if let Ok(new) = Layout::from_size_align(new_size, layout.align())
+            && Heap::fits_in_place(layout, new)
+        {
+            return pointer;
+        }
+        let new = match Layout::from_size_align(new_size, layout.align()) {
+            Ok(new) => new,
+            Err(_) => return ptr::null_mut(),
+        };
+        // SAFETY: `new` has a non-zero size (the caller's `new_size` is non-zero) and valid
+        // alignment.
+        let moved = unsafe { self.alloc(new) };
+        if !moved.is_null() {
+            // SAFETY: both blocks are at least `min(old, new)` bytes long, `pointer` is the
+            // caller's live allocation and `moved` a fresh one, so they do not overlap.
+            unsafe { ptr::copy_nonoverlapping(pointer, moved, layout.size().min(new_size)) };
+            // SAFETY: `pointer` came from `alloc` with `layout` and its contents were copied;
+            // the caller stops using it once `realloc` succeeds.
+            unsafe { self.dealloc(pointer, layout) };
+        }
+        moved
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eggos_hal::{MemoryMap, PhysicalRange};
+
+    const K: u64 = FRAME_SIZE;
+
+    /// Host memory standing in for `count` frames of RAM at physical 0x10_0000, and an
+    /// allocator over them.
+    fn frames(count: u64) -> FrameAllocator {
+        const BASE: u64 = 0x10_0000;
+        let memory = vec![0u8; ((count + 1) * K) as usize].leak();
+        let start = (memory.as_mut_ptr() as usize).next_multiple_of(K as usize);
+        let mut map = MemoryMap::new();
+        map.add_ram(PhysicalRange::from_start_length(BASE, count * K));
+        FrameAllocator::new(&map, start.wrapping_sub(BASE as usize))
+    }
+
+    fn layout(size: usize, align: usize) -> Layout {
+        Layout::from_size_align(size, align).unwrap()
+    }
+
+    #[test]
+    fn layouts_pick_the_smallest_class_that_fits_size_and_alignment() {
+        let class = |size, align| match Kind::of(layout(size, align)) {
+            Some(Kind::Block(class)) => Some(MIN_BLOCK << class),
+            _ => None,
+        };
+        assert_eq!(class(0, 1), Some(16));
+        assert_eq!(class(1, 1), Some(16));
+        assert_eq!(class(17, 8), Some(32));
+        assert_eq!(class(24, 64), Some(64));
+        assert_eq!(class(2048, 8), Some(2048));
+        assert_eq!(class(8, 2048), Some(2048));
+        assert_eq!(class(2049, 8), None);
+        assert_eq!(Kind::of(layout(2049, 8)), Some(Kind::Frame));
+        assert_eq!(Kind::of(layout(8, 4096)), Some(Kind::Frame));
+        assert_eq!(Kind::of(layout(4096, 4096)), Some(Kind::Frame));
+        // More than a frame waits for the buddy allocator.
+        assert_eq!(Kind::of(layout(4097, 8)), None);
+        assert_eq!(Kind::of(layout(8, 8192)), None);
+    }
+
+    #[test]
+    fn blocks_are_aligned_distinct_and_reused_last_in_first_out() {
+        let mut allocator = frames(64);
+        let mut frames = Frames(&mut allocator);
+        let mut heap = Heap::new();
+        let mut got = Vec::new();
+        for size in [1, 16, 17, 100, 1000, 2048] {
+            for _ in 0..40 {
+                let l = layout(size, 1);
+                let p = heap.allocate(l, &mut frames).unwrap();
+                let block = size.max(MIN_BLOCK).next_power_of_two();
+                assert_eq!(p.as_ptr() as usize % block, 0, "size {size}");
+                // SAFETY: the block was just allocated with at least `size` bytes.
+                unsafe { p.as_ptr().write_bytes(0xa5, size) };
+                got.push((p, l));
+            }
+        }
+        let mut addresses: Vec<usize> = got.iter().map(|(p, _)| p.as_ptr() as usize).collect();
+        addresses.sort_unstable();
+        addresses.dedup();
+        assert_eq!(addresses.len(), got.len(), "a block was handed out twice");
+        let (last, l) = got.pop().unwrap();
+        let (before, l2) = got.pop().unwrap();
+        // SAFETY: both came from this heap with these layouts and are not used any more.
+        unsafe { heap.deallocate(before, l2, &mut frames) };
+        // SAFETY: as above.
+        unsafe { heap.deallocate(last, l, &mut frames) };
+        assert_eq!(heap.allocate(l, &mut frames), Some(last));
+        assert_eq!(heap.allocate(l2, &mut frames), Some(before));
+    }
+
+    #[test]
+    fn a_class_takes_a_frame_only_when_its_current_one_is_used_up() {
+        let mut allocator = frames(4);
+        let mut frames = Frames(&mut allocator);
+        let mut heap = Heap::new();
+        let l = layout(64, 8);
+        for _ in 0..K as usize / 64 {
+            heap.allocate(l, &mut frames).unwrap();
+        }
+        assert_eq!(frames.0.free_frames(), 3);
+        heap.allocate(l, &mut frames).unwrap();
+        assert_eq!(frames.0.free_frames(), 2);
+    }
+
+    #[test]
+    fn frame_sized_allocations_go_back_to_the_frame_allocator() {
+        let mut allocator = frames(8);
+        let mut frames = Frames(&mut allocator);
+        let mut heap = Heap::new();
+        let l = layout(3000, 8);
+        let p = heap.allocate(l, &mut frames).unwrap();
+        assert_eq!(p.as_ptr() as usize % K as usize, 0);
+        assert_eq!(frames.0.free_frames(), 7);
+        // SAFETY: from this heap with this layout, not used any more.
+        unsafe { heap.deallocate(p, l, &mut frames) };
+        assert_eq!(frames.0.free_frames(), 8);
+    }
+
+    #[test]
+    fn exhausted_memory_and_layouts_larger_than_a_frame_return_none() {
+        let mut allocator = frames(4);
+        let mut frames = Frames(&mut allocator);
+        let mut heap = Heap::new();
+        assert!(heap.allocate(layout(8, 8192), &mut frames).is_none());
+        assert!(heap.allocate(layout(4097, 8), &mut frames).is_none());
+        assert_eq!(frames.0.free_frames(), 4);
+        for _ in 0..3 {
+            heap.allocate(layout(4096, 8), &mut frames).unwrap();
+        }
+        assert!(heap.allocate(layout(2048, 8), &mut frames).is_some());
+        assert!(heap.allocate(layout(2048, 8), &mut frames).is_some());
+        assert!(heap.allocate(layout(2048, 8), &mut frames).is_none());
+        assert!(heap.allocate(layout(16, 8), &mut frames).is_none());
+    }
+}

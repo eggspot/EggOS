@@ -6,17 +6,27 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod console;
 pub mod exception;
+pub mod heap;
 pub mod interrupt;
 pub mod memory;
 pub mod paging;
 pub mod selftest;
+pub mod sync;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
+
+/// The kernel heap. On the bare-metal targets it is the global allocator, so `alloc` (`Box`,
+/// `Vec`, ...) works once [`paging::enable`] has run; before that, allocating fails. Host
+/// builds keep the host's allocator, and tests use this heap directly.
+#[cfg_attr(target_os = "none", global_allocator)]
+pub static HEAP: heap::KernelHeap = heap::KernelHeap::new();
 
 /// Kernel version, taken from the workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -186,7 +196,11 @@ mod tests {
     fn boot_prints_banner_with_version_and_arch() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
         let mut out = String::new();
-        assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
+        assert_eq!(
+            boot::<TestPlatform, _>(&mut out),
+            ExitStatus::Success,
+            "{out}"
+        );
         assert!(out.starts_with(&format!(
             "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
              memory: 512 KiB free in 1 range\n  0x100000..0x180000\n\

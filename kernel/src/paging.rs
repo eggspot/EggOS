@@ -16,7 +16,7 @@
 //! Tables are only built before they are activated: changing live tables needs TLB
 //! maintenance, which comes with the first user that does it (M4).
 
-use crate::memory::{FrameAllocator, Memory};
+use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{self, Attributes, Entry, Format};
@@ -272,7 +272,8 @@ pub fn kernel_page_tables<P: Platform>(
 
 /// Builds the kernel's page tables (see [`kernel_page_tables`]) from the free memory in
 /// `free_memory` and switches to them. From then on the frame allocator and the tables reach
-/// physical memory through the direct map.
+/// physical memory through the direct map, and the frame allocator is [`memory::FRAMES`], so
+/// the kernel heap works.
 pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'static str> {
     let direct_map = P::physical_memory();
     let covered = |free: &PhysicalRange| {
@@ -298,10 +299,8 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     let offset = P::physical_memory_offset();
     frames.set_physical_memory_offset(offset);
     page_tables.set_physical_memory_offset(offset);
-    Ok(Memory {
-        frames,
-        page_tables,
-    })
+    *memory::FRAMES.lock() = Some(frames);
+    Ok(Memory { page_tables })
 }
 
 #[cfg(test)]
