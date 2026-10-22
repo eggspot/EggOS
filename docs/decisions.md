@@ -8,7 +8,7 @@ We write our own kernel in Rust; no Linux kernel C code. "Linux-compatible" mean
 implements the Linux interfaces (system calls, ABI, `/proc`/`/sys` conventions where needed) so
 unmodified Linux software runs on it.
 
-## D2 Compatibility layers: Linux userland first — Provisional, owner to confirm
+## D2 Compatibility layers: Linux userland first — Provisional, owner to confirm; iOS added and native execution required by D17
 Windows, macOS and Android apps run through compatibility layers we write, with the same features
 on each. The owner has not chosen which comes first. Provisional order:
 1. **Linux userland** — the kernel's native ABI (D1), so it is not a separate layer so much as the
@@ -103,3 +103,53 @@ RSDT/XSDT → FADT (PM1 control ports, ACPI-enable handshake) → `\_S5` package
 `\_S5` is read as the static `Name`/`Package` firmware defines it, without an AML interpreter;
 the interpreter comes with ACPI device discovery in M5. The ACPI table code (`hal::acpi`) is
 architecture-independent and unit-tested on the host, since Arm servers use ACPI too.
+
+## D16 GUI design is done by Claude Fable — Decided
+Every user-visible design (desktop shell, window chrome, system apps, settings, installer, icons,
+design system, mockups, layouts, motion) comes from Claude Fable: Claude sessions delegate the
+design to an agent on the `fable` model (currently `claude-fable-5-1`; the alias tracks newer
+releases), record it in `docs/ux/`, and then implement it in Rust. Non-visual work does not need
+Fable. Implementation follows the design; a change that departs from it updates the design first.
+
+## D17 Foreign apps run natively at 100% of native speed or better, never emulated — Decided; extends D2 with iOS
+Windows, macOS, Android and iOS apps run from their own unmodified files. No virtual machine, no
+emulator, no simulator, no interpreter:
+- **Loaders** for each format (PE/COFF, Mach-O including universal binaries, APK/DEX, iOS `.app`)
+  map the app's machine code into a normal EggOS process, where it runs directly on the CPU.
+- **System calls** (NT, XNU/Mach traps, Linux/Bionic for Android) are implemented by our kernel as
+  additional native syscall personalities, not trapped and forwarded to another OS.
+- **System libraries** (Win32/NT user-mode DLLs, Darwin frameworks such as Foundation, AppKit and
+  UIKit, the Android framework and ART) are reimplemented by us in Rust on top of EggOS, with the
+  same exported symbols and behaviour, clean-room (D5): we never ship Microsoft's or Apple's
+  binaries and never copy Wine (LGPL), Darling (GPL) or similar projects.
+- **Graphics and media APIs** (DirectX, Metal, OpenGL ES, Vulkan, Core Audio, WASAPI, ...) are
+  implemented straight on our drivers, without an intermediate API hop.
+Target: each app runs at 100% of its speed on its own OS or better, on the same hardware. Reaching
+"better" comes from the rest of EggOS (faster syscalls, scheduler, I/O, memory management, no
+background services the user did not install). Every compatibility-layer hot path gets a benchmark
+that compares against the native OS, and a regression blocks merge like any other performance
+regression (CLAUDE.md, Priorities).
+Different CPU architecture: an app built for another architecture than the machine (an x86_64
+Windows app on an Arm laptop, an arm64 iOS app on an x86_64 PC) cannot run directly. Its code is
+translated once, ahead of time, into native code and cached on disk (the approach of Apple's
+Rosetta 2), never interpreted. That is the fastest known method, but translation has a cost, so
+those cases are measured and reported separately; on matching hardware (arm64 apps on Arm,
+x86_64 apps on x86_64) there is no translation at all.
+Open for the owner (legal, not engineering): Apple's terms limit App Store apps to Apple devices
+and App Store iOS apps are FairPlay-encrypted, so which iOS and macOS apps can lawfully be run
+needs a legal review before that layer ships.
+
+## D18 Modular install: only the base is installed, every feature is the user's choice — Decided
+EggOS installs a small base by default: the kernel, drivers for the hardware present, the base
+userland, the agent interface (D3, so any installed agent can use it) and the installer/component
+manager. Everything else is an optional component the user picks at setup or later and can remove
+cleanly: each compatibility layer, the desktop and its apps, AI services and agents, server roles,
+developer tools, and so on. The editions (personal, professional, enterprise, server) become preset
+selections of components plus policy, not separate builds.
+Rules for every component:
+- it declares its dependencies on other components, and nothing outside it assumes it is installed;
+- when it is not installed it costs nothing: no disk, no memory, no running service, no boot time;
+- kernel parts that belong to one component (e.g. the NT syscall personality, Android Binder) stay
+  out of the running kernel unless that component is installed; the mechanism (loadable kernel
+  modules or per-component kernel builds) is a later decision, made with benchmarks;
+- removing it leaves no files, services or settings behind.

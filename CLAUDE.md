@@ -3,11 +3,37 @@
 AI-native operating system, written entirely by us in Rust, kernel included.
 Editions: personal, professional, enterprise and server, from one codebase.
 
+## IMPORTANT: notes for every task
+Check each task against these before starting and again before opening the PR.
+1. **GUI design is done by Claude Fable.** Any task that designs something a user sees (desktop
+   shell, window chrome, system apps, settings, installer, icons, the design system, mockups,
+   layouts, motion) gets its design from Claude Fable: delegate the design work to an agent running
+   on the `fable` model (Agent tool, `model: "fable"`; currently `claude-fable-5-1`), record the
+   design in `docs/ux/`, then implement it in Rust. Non-visual work (kernel, drivers, layers) does
+   not need Fable. (D16)
+2. **Foreign apps run natively, never emulated.** Windows, macOS, Android and iOS apps run from
+   their own unmodified files (`.exe`/`.dll`, Mach-O `.app`, `.apk`, `.ipa`) with no virtual machine,
+   emulator, simulator or interpreter. Their machine code runs directly on the CPU; their system
+   calls and system libraries (NT/Win32, Darwin/Cocoa/UIKit, Android framework) are implemented
+   natively by us on our kernel; their graphics APIs (DirectX, Metal, OpenGL ES, Vulkan) go straight
+   to our GPU drivers. The target is **100% of native speed or better**: a macOS app must run faster
+   on EggOS than on macOS, a Windows app faster than on Windows, on the same hardware. Every
+   compatibility-layer hot path is benchmarked against the app on its own OS. When an app was
+   built for a different CPU architecture than the machine (an x86_64 Windows app on an Arm laptop),
+   its code is translated once, ahead of time, and cached, never interpreted; report those numbers
+   separately. (D17)
+3. **Nothing is installed by default beyond the base** (kernel, drivers for the hardware present,
+   base userland, the agent interface and the component manager). Every feature and service (each
+   compatibility layer, the desktop, system apps, AI services, server roles, ...) is an optional
+   component the user chooses to install, at setup or later, and can remove cleanly. Code must
+   never assume an optional component is present, and a component that is not installed costs
+   nothing: no disk, no memory, no running service, no boot time. (D18)
+
 ## Architecture decisions so far
 - **Kernel: our own, in Rust, Linux-compatible.** We do not use the Linux kernel's C code. "Linux-compatible"
   means our kernel implements the Linux interfaces (system calls, ABI) so Linux software runs on it.
-- **Foreign apps:** Windows, macOS and Android apps run on EggOS through compatibility layers we write
-  ourselves, with the same features on each.
+- **Foreign apps:** Windows, macOS, Android and iOS apps run on EggOS natively (no emulation, see
+  important note 2) through compatibility layers we write ourselves, with the same features on each.
 - **AI-native:** the OS exposes its capabilities to AI agents as a first-class interface.
 - **Hardware: we support everything.** Every CPU architecture, every GPU, every device type (desktop,
   laptop, phone, tablet, server, embedded) and every driver, all written by us. So from day one:
@@ -49,4 +75,7 @@ them.
   not from Linux source.
 
 ## Not decided yet (ask the owner, don't assume)
-- Which compatibility layer comes first (Linux, Android, Windows or macOS apps).
+- Which compatibility layer comes first (Linux, Android, Windows, macOS or iOS apps).
+- Legal review for running Apple and Microsoft apps: their system libraries cannot be shipped (we
+  reimplement them clean-room), App Store iOS apps are FairPlay-encrypted, and Apple's terms limit App
+  Store apps to Apple devices (see D17).
