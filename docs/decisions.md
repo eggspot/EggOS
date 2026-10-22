@@ -1213,3 +1213,29 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   round-trip benchmark; ASIDs and PCID; global kernel pages on x86_64; per-page TLB maintenance
   and cross-CPU shootdown once mappings change while active; PAN, SMAP and SMEP; user faults
   that end the process instead of stopping the kernel.
+
+## D46 Review fixes to D45: x86_64 user space ends a page early; one address space active per CPU, checked — Decided by the build loop (review item)
+- **Why.** A review of D43–D45 (a review subagent, then checked by hand) found no race or lock-order
+  bug in the per-CPU scheduler or the address spaces, and two things worth fixing before user
+  mode lands.
+- **x86_64 user space ends one page below 2^47.** `Format::USER_END` was `1 << 47`, so a program
+  could map the last canonical page and run a two-byte `syscall` at its end; `sysretq` would then
+  return to `0x8000_0000_0000`, which is not canonical, and on Intel CPUs `sysretq` raises the #GP
+  in ring 0 with the user's stack pointer already loaded: a known privilege-escalation pattern.
+  With `USER_END = (1 << 47) - 4096` that page is never user space, so no user instruction runs
+  there and no `sysretq` can return to the hole. AArch64 and RISC-V return with `eret`/`sret`
+  and fault in user mode instead, so they keep their whole low half. `USER_END` is now
+  documented as page-aligned and possibly short of the low half's end; the root entry that holds
+  it is still the user's.
+- **One address space active per CPU, checked.** `AddressSpace::with_active` must not block or
+  yield; it already stopped the kernel if its thread came back on another CPU, but not if another
+  thread made its own address space active on the same CPU meanwhile (the first would then switch
+  that one away under it). Each CPU's block now records the first root of the address space active
+  on it (`u64::MAX` for none); `with_active` refuses to start over another one and checks on the
+  way out that its own is still recorded. Not on any hot path: the scheduler is unchanged.
+- **Left for later (roadmap).** The general check that no preemption point is reached with a
+  lock held or a window open (address space, or RISC-V's per-CPU `sstatus.SUM` for user access)
+  stays a debug-build follow-up of D37.
+- **Testing.** Host unit tests: the last page before the hole is refused (`NotUser`) and the one
+  below it maps; a nested `with_active` panics before the second space becomes active. Boot and
+  fatal-exception tests on aarch64, riscv64 and x86_64 and every benchmark unchanged.

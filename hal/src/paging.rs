@@ -177,8 +177,9 @@ pub trait Format {
     const MAX_LEAF_LEVEL: usize;
     /// Whether an entry records its [`MemoryType`]; see [`Format::decode`].
     const ENCODES_MEMORY_TYPE: bool;
-    /// The end of the low half, user space: user addresses are `0..USER_END`. Everything a
-    /// root-level entry maps at or above it belongs to the kernel.
+    /// The end of user space: user addresses are `0..USER_END`, page-aligned, in the low half
+    /// (it may stop short of the half's end). A root-level entry whose range starts at or above
+    /// it belongs to the kernel.
     const USER_END: u64;
 
     /// Which root translates `virt`; `None` if `virt` is not a valid (canonical) address.

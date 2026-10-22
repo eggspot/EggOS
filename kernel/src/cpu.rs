@@ -48,6 +48,10 @@ pub struct Cpu {
     hardware_id: AtomicU64,
     /// Set by the CPU itself once it runs the kernel's code.
     online: AtomicBool,
+    /// The first root of the user address space active on this CPU
+    /// ([`crate::address_space::AddressSpace::with_active`]), or [`NO_ADDRESS_SPACE`] while the
+    /// kernel's empty low half is (D46). Changed only by the CPU itself.
+    active_address_space: AtomicU64,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
 }
@@ -57,6 +61,10 @@ pub struct Cpu {
 const RESCHEDULE: u64 = 1 << 63;
 
 const _: () = assert!(core::mem::offset_of!(Cpu, _hal) == HAL_CPU_LOCAL_OFFSET);
+
+/// [`Cpu::swap_active_address_space`]'s value while no user address space is active: not a
+/// table's address, which is frame-aligned.
+pub(crate) const NO_ADDRESS_SPACE: u64 = u64::MAX;
 
 impl Cpu {
     const fn new(index: usize) -> Self {
@@ -69,6 +77,7 @@ impl Cpu {
             index,
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
+            active_address_space: AtomicU64::new(NO_ADDRESS_SPACE),
             scheduler: CpuScheduler::new(),
         }
     }
@@ -155,6 +164,13 @@ impl Cpu {
             Interrupt::Wakeup => &self.wakeups,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// For this CPU, with interrupts masked: records `root` as the first root of the user
+    /// address space now active here ([`NO_ADDRESS_SPACE`] for none) and returns the one
+    /// recorded before.
+    pub(crate) fn swap_active_address_space(&self, root: u64) -> u64 {
+        self.active_address_space.swap(root, Ordering::Relaxed)
     }
 
     /// Sets the block's address and the CPU's hardware id, before anything uses the block.
