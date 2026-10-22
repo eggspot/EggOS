@@ -22,6 +22,7 @@
 //! [`CpuStart::entry`]. From then on its timer works ([`crate::Platform::set_timer_deadline`]
 //! arms this CPU's) and other CPUs can wake it ([`crate::Platform::wake_cpu`]).
 
+#[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicU64;
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
@@ -63,7 +64,9 @@ pub enum StartCpuError {
 #[repr(C)]
 pub struct HalCpuLocal {
     /// x86_64: the deadline this CPU's local APIC timer is armed for, in TSC ticks; `u64::MAX`
-    /// for none. Reached by offset only, GS-relative.
+    /// for none. Reached by offset only, GS-relative. The other architectures keep nothing, so
+    /// their blocks do not pay for it (D24).
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     timer_deadline: AtomicU64,
 }
@@ -71,6 +74,7 @@ pub struct HalCpuLocal {
 impl HalCpuLocal {
     pub const fn new() -> Self {
         Self {
+            #[cfg(target_arch = "x86_64")]
             timer_deadline: AtomicU64::new(u64::MAX),
         }
     }
@@ -86,6 +90,7 @@ impl Default for HalCpuLocal {
 pub const HAL_CPU_LOCAL_OFFSET: usize = 8;
 
 /// Where the x86_64 timer's deadline is in a per-CPU block.
-#[cfg_attr(not(all(target_arch = "x86_64", target_os = "none")), allow(dead_code))]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
 pub(crate) const TIMER_DEADLINE_OFFSET: usize =
     HAL_CPU_LOCAL_OFFSET + core::mem::offset_of!(HalCpuLocal, timer_deadline);

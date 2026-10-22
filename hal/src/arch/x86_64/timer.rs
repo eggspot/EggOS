@@ -82,9 +82,12 @@ pub(super) fn send_init_to_others() {
 pub(super) fn send_startup(destination: u8, page: u8) {
     local_apic().send_startup(destination, page);
 }
-/// Sends the wake-up interrupt to the CPU whose local APIC id is `destination`. An uncached
-/// store, which x86 keeps after the caller's earlier stores, so the woken CPU sees them.
+/// Sends the wake-up interrupt to the CPU whose local APIC id is `destination`. The send is an
+/// uncached store, which the CPU keeps after the caller's earlier stores (x86 does not reorder
+/// stores), so the woken CPU sees them; the fence keeps the compiler from moving them past it,
+/// as it may move ordinary accesses across volatile ones. It emits no instruction.
 pub(super) fn wake(destination: u8) {
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
     local_apic().send_fixed(destination, WAKEUP_VECTOR);
 }
 

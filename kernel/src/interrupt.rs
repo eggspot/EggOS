@@ -38,6 +38,8 @@ mod tests {
     #[test]
     fn interrupts_are_counted_on_the_cpu_that_took_them() {
         let _lock = lock_timer_interrupts_for_test();
+        // No scheduler test may move the counts meanwhile.
+        let _scheduler = crate::thread::host::lock_kernel_state_for_test();
         let this = cpu::current::<P>();
         let (timer, wakeups) = (timer_interrupts::<P>(), this.wakeups());
         handle::<P>(Interrupt::Timer);

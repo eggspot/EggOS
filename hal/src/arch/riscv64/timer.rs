@@ -41,7 +41,10 @@ pub(super) fn wake(hart: u64) {
     // SAFETY: `sbi_send_ipi` with hart mask 1 at base `hart` names that hart alone and touches
     // none of our memory. A hart that does not exist is an error the firmware returns, which
     // the caller's contract rules out.
-    unsafe { super::sbi_call(SBI_EXT_IPI, SBI_IPI_SEND_IPI, [1, hart as usize, 0]) };
+    let (error, _) =
+        unsafe { super::sbi_call(SBI_EXT_IPI, SBI_IPI_SEND_IPI, [1, hart as usize, 0]) };
+    // The IPI extension is in every SBI from v0.2 on, which the kernel needs anyway (HSM, D40).
+    debug_assert_eq!(error, 0, "SBI could not send a wake-up to hart {hart}");
 }
 
 /// Clears this hart's pending wake-up interrupt.

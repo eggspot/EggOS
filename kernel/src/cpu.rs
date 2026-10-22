@@ -81,10 +81,12 @@ impl Cpu {
     }
 
     /// Timer interrupts the CPU has taken since boot. Read from another CPU, it can be briefly
-    /// behind while the CPU's scheduler moves its unseen interrupts to the seen ones.
+    /// behind, never ahead, while the CPU's scheduler moves its unseen interrupts to the seen
+    /// ones ([`Self::see_timer_interrupts`] empties the unseen ones first, and they are read
+    /// last).
     pub fn timer_interrupts(&self) -> u64 {
-        self.timer_interrupts_unseen.load(Ordering::Relaxed)
-            + self.timer_interrupts_seen.load(Ordering::Relaxed)
+        let seen = self.timer_interrupts_seen.load(Ordering::Acquire);
+        seen + self.timer_interrupts_unseen.load(Ordering::Acquire)
     }
 
     /// Timer interrupts the CPU has taken that its scheduler has not looked at yet.
@@ -96,9 +98,9 @@ impl Cpu {
     /// For the scheduler, on this CPU, with interrupts masked: marks the timer interrupts taken
     /// so far as seen, so [`local_timer_interrupts_unseen`] is 0 until the next one.
     pub(crate) fn see_timer_interrupts(&self) {
-        let unseen = self.timer_interrupts_unseen.swap(0, Ordering::Relaxed);
+        let unseen = self.timer_interrupts_unseen.swap(0, Ordering::AcqRel);
         self.timer_interrupts_seen
-            .fetch_add(unseen, Ordering::Relaxed);
+            .fetch_add(unseen, Ordering::Release);
     }
 
     /// Wake-up interrupts the CPU has taken since boot ([`wake`]).

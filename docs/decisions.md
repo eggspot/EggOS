@@ -980,8 +980,19 @@ run queues) is the next step.
   benchmark now finds its CPU's block once, as it found the global's address once before);
   riscv64's SBI-bound round trip measured 670 on `main` and 673 here with this machine's
   OpenSBI 1.7.
-- **Cost (D24).** 32 bytes more per CPU block (the HAL part and three counters); 64 bytes of GIC target
+- **Cost (D24).** 24 bytes more per CPU block (three counters), 32 on x86_64 (the timer
+  deadline, which was a global); 64 bytes of GIC target
   table on aarch64; no boot time beyond one timer interrupt per secondary CPU.
-- **Follow-ups (roadmap).** Per-CPU run queues and idle threads using these wake-ups; the boot
-  CPU woken by a secondary (same setup path, not yet exercised); x2APIC ids above 254; GICv3
+- **Review fixes.** x86's `wake` puts a compiler fence before the ICR write (no instruction):
+  the hardware keeps the uncached store after earlier stores, but the compiler may move
+  ordinary accesses across volatile ones. aarch64 and riscv64 already had barriers in `asm!`
+  without `nomem`, which the compiler does not move accesses across. The HAL's per-CPU part is
+  empty except on x86_64. Another CPU reads a CPU's timer count seen-then-unseen, so it can
+  lag but never runs ahead.
+- **Follow-ups (roadmap).** Per-CPU run queues and idle threads using these wake-ups; a
+  benchmark of the wake-up round trip once the benchmarks run on more than one CPU (they run
+  on one: with `-icount`, QEMU runs every CPU in one host thread); the boot CPU woken by a
+  secondary (same setup path, not yet exercised); probing for the SBI IPI extension instead of
+  assuming SBI v0.2 or later (a debug check today); a visible error for a CPU beyond GICv2's
+  8 interfaces; x2APIC ids above 254; GICv3
   (`ICC_SGI1R_EL1`), with more than 8 CPUs; the invariant-TSC check.
