@@ -290,6 +290,13 @@ impl Platform for Aarch64 {
         unsafe { core::arch::asm!("wfi", "msr daifclr, #2", "isb", "msr daifset, #2") };
     }
 
+    #[inline]
+    fn interrupt_window() {
+        // SAFETY: as in `wait_for_interrupt`, without the `wfi`: the `isb` makes the unmasking
+        // take effect, so an interrupt already pending is taken before I is set again.
+        unsafe { core::arch::asm!("msr daifclr, #2", "isb", "msr daifset, #2") };
+    }
+
     fn memory_map() -> MemoryMap {
         // SAFETY: on QEMU `virt` the start of RAM holds the device tree QEMU loaded there,
         // which nothing writes; the direct map covers it. If QEMU loaded none, the header check

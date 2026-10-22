@@ -1,8 +1,9 @@
 //! What the kernel does with an interrupt, on every architecture.
 //!
 //! The HAL acknowledges each interrupt at its controller and hands it to the kernel binary,
-//! which calls [`handle`]. For now the kernel only counts timer interrupts; the scheduler
-//! (M4) will preempt on them.
+//! which calls [`handle`]. For now the kernel only counts timer interrupts. The count is also
+//! how the scheduler's preemption points see the timer tick (D37), so preemption adds nothing
+//! to the interrupt path.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Interrupt;

@@ -11,7 +11,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
 | M2 | Memory management: physical frames, paging, kernel heap | **done** (0.2.0) — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); kernel page tables: a direct map in the high half, W^X kernel sections and a boot-stack guard page on aarch64, riscv64, x86_64 (D29), with the image's direct-map alias keeping its protections (D32); kernel heap: `alloc` works, size classes up to 2 KiB (D30); buddy allocator: contiguous, aligned blocks of up to 4 MiB, so heap allocations up to 4 MiB work (D31); the kernel runs in the top 2 GiB with boot page tables built before any Rust code, and the low half is empty (D33) |
 | M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); still to do: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC), when the first interrupting device driver needs it (M8) |
-| M4 | Scheduler, processes and threads (SMP-ready) | **in progress** — kernel threads with a context switch on aarch64, riscv64, x86_64 and a cooperative round-robin scheduler on one CPU, 16 KiB stacks with an overflow canary (D35); next: preemption from the timer interrupt, sleeping and wait queues, secondary CPUs with per-CPU run queues, then processes (address spaces, user mode) |
+| M4 | Scheduler, processes and threads (SMP-ready) | **in progress** — kernel threads with a context switch on aarch64, riscv64, x86_64 and a cooperative round-robin scheduler on one CPU, 16 KiB stacks with an overflow canary (D35); voluntary preemption: a 10 ms timer tick ends time slices and threads switch at preemption points, the scheduler's lock handed over across the switch (D37); next: sleeping and wait queues, secondary CPUs with per-CPU run queues, then processes (address spaces, user mode, preempted on return to user mode) |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
 | M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | |
 | M7 | VFS and a first file system | |
@@ -34,8 +34,14 @@ Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to
-confirm 16 KiB on every architecture; the scheduler's lock handed over across the switch (SMP);
-revisit the stack size when FP/SIMD state, nested interrupts or preemption add frames.
+confirm 16 KiB on every architecture (interrupt frames now land on thread stacks at
+preemption points); revisit the stack size when FP/SIMD state or nested interrupts add frames.
+
+Preemption follow-ups (D37): involuntary preemption on return to user mode (processes); the
+timer shared between the tick and sleeping threads, and no tick while one thread is runnable
+(wait queues); per-CPU tick state and run queues (SMP); a measured worst-case gap between
+preemption points as a latency benchmark; a debug-build check that no lock is held at a
+preemption point.
 
 Heap and buddy follow-ups (D30, D31): returning empty slabs to the frame allocator (a live-block
 count per frame); per-CPU caches instead of one heap lock and a high watermark on the free stack
@@ -60,9 +66,9 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 ### CPU architectures (QEMU boot test in CI is the bar for "done")
 | Architecture | Status | Notes |
 |--------------|--------|-------|
-| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
-| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
+| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
+| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
+| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads, time-slice preemption) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -97,7 +103,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 
 | Area | Missing |
 |------|---------|
-| Kernel | device interrupt routing, preemptive and SMP scheduling, processes, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch cooperatively) |
+| Kernel | device interrupt routing, sleeping and SMP scheduling, processes, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |

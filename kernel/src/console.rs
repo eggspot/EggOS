@@ -74,6 +74,9 @@ mod tests {
         fn wait_for_interrupt() {
             unreachable!("not used in tests")
         }
+        fn interrupt_window() {
+            unreachable!("not used in tests")
+        }
         fn memory_map() -> eggos_hal::MemoryMap {
             unreachable!("not used in tests")
         }
