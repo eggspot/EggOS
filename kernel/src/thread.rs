@@ -711,8 +711,10 @@ pub fn sleep<P: Platform>(duration: Duration) {
 }
 
 /// Turns preemption on (D37): every [`TIME_SLICE_MS`], the running thread lets the next ready
-/// thread run at its next [`preemption_point`]. A slice starts now and with every switch; the
-/// timer ends it only while another thread is ready to run.
+/// thread run at its next [`preemption_point`]. A slice starts now, when a slice ends, and when
+/// the idle thread lets a thread run; a thread that runs after another yields, blocks or exits
+/// has the rest of the slice under way (D39). The timer ends it only while another thread is
+/// ready to run.
 pub fn enable_preemption<P: Platform>() {
     let mut scheduler = SCHEDULER.lock();
     scheduler.slice_ticks = (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1);

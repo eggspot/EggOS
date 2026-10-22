@@ -66,7 +66,9 @@ pub trait Platform {
     /// Arms this CPU's one-shot timer: once [`Self::clock_ticks`] reaches `deadline`, the
     /// kernel's interrupt handler receives [`Interrupt::Timer`] (as soon as interrupts are
     /// unmasked). Never earlier; a deadline already passed fires at once. Replaces any
-    /// deadline set before. The timer fires once per call.
+    /// deadline set before. The timer fires once per call. `u64::MAX` disarms it: from then on it
+    /// neither fires nor wakes the CPU (one raised before, for a replaced deadline, may still
+    /// arrive, and is not delivered).
     fn set_timer_deadline(deadline: u64);
 
     /// Called with interrupts masked, as the kernel runs today: sleeps until an interrupt is
