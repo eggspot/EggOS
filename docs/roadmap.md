@@ -50,7 +50,8 @@ interrupt-exit paths); `SCTLR_EL1.UMA` and `E0E` written explicitly, not left to
 `into` once user debuggers matter; UMIP where the CPU has it; `TSS.RSP0` cleared when `run_user`
 returns. From the D47–D48 review (D49): an NMI from ring 3 handled by the kernel, not as the
 program's exception, and NMIs unblocked with an `iretq` (with the IST stacks); AArch64
-`PSTATE.DIT`, `SSBS` and `TCO` for programs; `-Zharden-sls` for rustc's own `ret`s.
+`PSTATE.DIT`, `SSBS` and `TCO` for programs; `-Zharden-sls` for rustc's own `ret`s; RISC-V
+`scounteren` written explicitly (harmless today: counter reads cannot touch the timer).
 
 Speculation mitigations (D49), each chosen per CPU at boot: the SWAPGS `lfence` (a second copy
 of the x86 entry stubs) **before a program can set its GS base or map pages near address 0**

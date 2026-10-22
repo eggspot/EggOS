@@ -599,7 +599,7 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
         );
     }
     // SAFETY: CR0 only changes what x87, MMX and SSE instructions do: with TS and MP set and EM
-    // clear, each raises #NM (SSE raises #UD anyway while CR4.OSFXSR is clear), in ring 3 and
+    // clear, each raises #NM (SSE raises #UD or #NM while CR4.OSFXSR is clear), in ring 3 and
     // in the kernel, which uses none. Programs get no FP/SIMD registers until they are saved
     // per thread, so none can read what another left in them (D49); NE reports x87 errors as
     // #MF once they can happen.

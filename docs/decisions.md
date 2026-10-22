@@ -1400,7 +1400,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   another left there. The roadmap's "FP/SIMD traps today" was true on AArch64 and RISC-V under
   QEMU only.
 - **x86_64.** Each CPU sets `CR0.TS` and `CR0.MP` and clears `CR0.EM` (in `set_up_user_mode`),
-  so every x87, MMX and SSE instruction raises #NM (SSE raises #UD anyway while `CR4.OSFXSR` is
+  so every x87, MMX and SSE instruction raises #NM (SSE raises #UD or #NM while `CR4.OSFXSR` is
   clear), and `CR0.NE` for native x87 error reporting later. TS is also how lazy per-thread FP
   state will work (`clts` on the first use). #NM is now decoded as an illegal instruction, as
   the other architectures report it.
@@ -1414,8 +1414,8 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   too where the hart has V (OpenSBI enables VS; QEMU's default `rv64` has no V, so CI cannot see
   the difference).
 - **Straight-line speculation.** An `int3` after each x86_64 `iretq`, `sysretq` and the user
-  path's `retq`: never executed, so it costs nothing at run time, and AArch64 already has
-  `dsb nsh; isb` after `eret`. The `ret`s rustc generates need `-Zharden-sls` (nightly only): a
+  path's `retq`, and `dsb nsh; isb` after AArch64's kernel `eret`, as after its user-mode one
+  (D47): never executed, so they cost nothing at run time. The `ret`s rustc generates need `-Zharden-sls` (nightly only): a
   follow-up.
 - **SWAPGS fence and KPTI: per CPU, deferred until their triggers (decided by research).** The
   kernel-entry `testb $3` branch has no `lfence` (CVE-2019-1125, SWAPGS), and the kernel half

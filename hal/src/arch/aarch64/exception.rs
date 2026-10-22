@@ -100,6 +100,8 @@ exception_common:
     ldp     x0, x1, [sp, #0]
     add     sp, sp, #{frame_size}
     eret
+    dsb     nsh                     // never reached: as after the user-mode `eret`
+    isb
 
     // The rest of the way out of EL0: save the program's registers in its `UserContext`
     // (`sp`), record the vector entry, then return from `aarch64_enter_user` on the kernel
