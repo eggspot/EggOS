@@ -20,7 +20,8 @@ use core::cell::UnsafeCell;
 
 core::arch::global_asm!(
     r#"
-    // Each stub is at most 9 bytes (two 2-byte pushes and a 5-byte jmp), padded to 16.
+    // Each stub is at most 15 bytes (two pushes of up to 5 bytes and a 5-byte jmp), padded
+    // to 16.
     .macro EXCEPTION_STUB vector
     .balign 16
     pushq   $0
@@ -74,6 +75,7 @@ exception_stubs:
     .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48
     EXCEPTION_STUB \vector
     .endr
+    .balign 16                      // so the label is the stub, not the padding before it
     .global apic_spurious_stub
 apic_spurious_stub:
     EXCEPTION_STUB 255

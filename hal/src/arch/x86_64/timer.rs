@@ -15,7 +15,7 @@
 
 use super::port::PortIo;
 use crate::Interrupt;
-use crate::time::scale_up;
+use crate::time::mul_div_ceil;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
 use eggos_drivers::io::Mmio;
@@ -72,6 +72,8 @@ fn legacy_pic() -> LegacyPic<PortIo> {
 fn local_apic() -> LocalApic<Mmio> {
     // SAFETY: `APIC_BASE` holds the address `IA32_APIC_BASE` reports (set before any caller
     // runs), identity-mapped by the boot page tables; only this module drives the local APIC.
+    // The boot map does not set a memory type, so the firmware's MTRRs keep it uncached, as
+    // the SDM requires; the kernel's own page tables (M2) map device memory uncached.
     LocalApic::new(unsafe {
         Mmio::new(
             APIC_BASE.load(Ordering::Relaxed),
@@ -120,8 +122,8 @@ pub(super) extern "C" fn init() {
         "8254 PIT did not count down: no reference clock"
     );
     let window = u64::from(MEASUREMENT_PIT_TICKS);
-    let tsc_frequency = scale_up(tsc_end.wrapping_sub(start.0), i8254::FREQUENCY_HZ, window);
-    let apic_frequency = scale_up(
+    let tsc_frequency = mul_div_ceil(tsc_end.wrapping_sub(start.0), i8254::FREQUENCY_HZ, window);
+    let apic_frequency = mul_div_ceil(
         start.1.saturating_sub(apic_end).into(),
         i8254::FREQUENCY_HZ,
         window,
@@ -161,7 +163,7 @@ pub(super) fn set_deadline(deadline: u64) {
 /// Starts the APIC timer to expire at TSC `deadline` (at the earliest representable count).
 fn arm(deadline: u64) {
     let remaining = deadline.saturating_sub(now());
-    let count = scale_up(
+    let count = mul_div_ceil(
         remaining,
         APIC_TIMER_FREQUENCY.load(Ordering::Relaxed),
         TSC_FREQUENCY.load(Ordering::Relaxed),
