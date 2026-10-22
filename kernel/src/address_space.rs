@@ -94,9 +94,10 @@ impl<P: Platform> AddressSpace<P> {
         let here = cpu::current::<P>();
         let root = self.tables.roots()[0];
         assert!(
-            here.swap_active_address_space(root) == cpu::NO_ADDRESS_SPACE,
+            here.active_address_space() == cpu::NO_ADDRESS_SPACE,
             "an address space was made active over another one on this CPU"
         );
+        here.set_active_address_space(root);
         // SAFETY: interrupts are masked (the caller's duty, as the kernel runs). The tables
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
         // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
@@ -110,9 +111,10 @@ impl<P: Platform> AddressSpace<P> {
             "a thread left its CPU while an address space was active there"
         );
         assert!(
-            here.swap_active_address_space(cpu::NO_ADDRESS_SPACE) == root,
+            here.active_address_space() == root,
             "another address space was made active on this CPU meanwhile"
         );
+        here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
         // SAFETY: as above, back to the kernel's own tables (`new`'s contract), which stay
         // allocated for as long as the kernel runs; `active` has returned, so nothing uses this
         // address space's low half.
@@ -341,7 +343,9 @@ mod tests {
             "the second never became active"
         );
         // As if the first thread had switched back: the next use starts clean.
-        cpu::current::<P>().swap_active_address_space(cpu::NO_ADDRESS_SPACE);
+        let here = cpu::current::<P>();
+        assert_eq!(here.active_address_space(), first.tables.roots()[0]);
+        here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
         // SAFETY: back to the kernel's own tables, as `with_active` would have.
         unsafe { P::switch_address_space(kernel.roots()) };
         assert_eq!(second.with_active(active_root), second.tables.roots()[0]);

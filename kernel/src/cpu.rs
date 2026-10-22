@@ -62,8 +62,8 @@ const RESCHEDULE: u64 = 1 << 63;
 
 const _: () = assert!(core::mem::offset_of!(Cpu, _hal) == HAL_CPU_LOCAL_OFFSET);
 
-/// [`Cpu::swap_active_address_space`]'s value while no user address space is active: not a
-/// table's address, which is frame-aligned.
+/// [`Cpu::active_address_space`] while no user address space is active: not a table's address,
+/// which is frame-aligned.
 pub(crate) const NO_ADDRESS_SPACE: u64 = u64::MAX;
 
 impl Cpu {
@@ -166,11 +166,16 @@ impl Cpu {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// The first root of the user address space active on this CPU, or [`NO_ADDRESS_SPACE`].
+    pub(crate) fn active_address_space(&self) -> u64 {
+        self.active_address_space.load(Ordering::Relaxed)
+    }
+
     /// For this CPU, with interrupts masked: records `root` as the first root of the user
-    /// address space now active here ([`NO_ADDRESS_SPACE`] for none) and returns the one
-    /// recorded before.
-    pub(crate) fn swap_active_address_space(&self, root: u64) -> u64 {
-        self.active_address_space.swap(root, Ordering::Relaxed)
+    /// address space now active here ([`NO_ADDRESS_SPACE`] for none). Only the CPU itself reads
+    /// and writes the record, so a plain store does.
+    pub(crate) fn set_active_address_space(&self, root: u64) {
+        self.active_address_space.store(root, Ordering::Relaxed);
     }
 
     /// Sets the block's address and the CPU's hardware id, before anything uses the block.
