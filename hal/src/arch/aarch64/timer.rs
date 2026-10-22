@@ -1,6 +1,7 @@
 //! The Arm generic timer (Arm ARM, chapter D12): the virtual counter as the clock and the EL1
 //! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt.
 
+use crate::memory::PhysicalRange;
 use eggos_drivers::interrupt::gicv2::{self, Acknowledged, Gicv2CpuInterface, Gicv2Distributor};
 use eggos_drivers::io::Mmio;
 
@@ -8,6 +9,12 @@ use eggos_drivers::io::Mmio;
 /// discovery replaces these in M5, along with GICv3 support.
 const GICD_BASE: usize = 0x0800_0000;
 const GICC_BASE: usize = 0x0801_0000;
+
+/// The GIC register blocks this module drives, for the kernel's page tables.
+pub(super) const DEVICE_REGIONS: [PhysicalRange; 2] = [
+    PhysicalRange::from_start_length(GICD_BASE as u64, gicv2::DISTRIBUTOR_BLOCK_SIZE as u64),
+    PhysicalRange::from_start_length(GICC_BASE as u64, gicv2::CPU_INTERFACE_BLOCK_SIZE as u64),
+];
 
 /// The EL1 virtual timer's private interrupt (PPI 11, Arm's Server Base System Architecture
 /// assignment, used by every GIC-based board).

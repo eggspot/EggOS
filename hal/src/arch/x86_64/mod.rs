@@ -16,6 +16,7 @@ mod timer;
 use crate::acpi::{self, RootTable};
 use crate::arch::boot_memory;
 use crate::memory::{MemoryMap, PhysicalRange};
+use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, Platform};
 use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_drivers::serial::{Ns16550, Uart};
@@ -114,8 +115,10 @@ start64:
     .balign 8
 boot_gdt:
     .quad 0                         // null descriptor
-    .quad 0x00af9a000000ffff        // 0x08: 64-bit code, ring 0
-    .quad 0x00cf92000000ffff        // 0x10: data, ring 0
+    // Accessed bits preset, so the CPU never writes the GDT (it is in read-only memory once
+    // the kernel's page tables are active).
+    .quad 0x00af9b000000ffff        // 0x08: 64-bit code, ring 0
+    .quad 0x00cf93000000ffff        // 0x10: data, ring 0
 boot_gdt_end:
 boot_gdt_pointer:
     .word boot_gdt_end - boot_gdt - 1
@@ -159,6 +162,15 @@ const PVH_MEMMAP_ENTRY_LENGTH: usize = 24;
 const PVH_MEMMAP_TYPE_RAM: u32 = 1;
 /// More entries than any real memory map, against a corrupt count.
 const PVH_MAX_MEMMAP_ENTRIES: usize = 1024;
+
+/// The direct map: the start of the high half (PML4 entry 256, D29).
+const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
+
+/// `IA32_EFER` and its no-execute enable bit; `CR0.WP`, which makes read-only pages read-only
+/// for the kernel too.
+const EFER: u32 = 0xc000_0080;
+const EFER_NXE: u32 = 1 << 11;
+const CR0_WP: u64 = 1 << 16;
 
 /// Memory below 1 MiB stays out of the allocator: it holds the real-mode IVT, the BIOS data
 /// areas, the EBDA and the legacy BIOS area (where the RSDP is found), and the trampoline that
@@ -256,77 +268,30 @@ impl Platform for X86_64 {
 
     fn memory_map() -> MemoryMap {
         let mut map = MemoryMap::new();
-        let start_info_address = u64::from(PVH_START_INFO.load(Ordering::Relaxed));
-        let Some(start_info) = mapped(start_info_address, PVH_START_INFO_V1_LENGTH) else {
+        let Some(pvh) = PvhMemoryMap::read() else {
             return map;
-        };
-        // SAFETY: the loader passed the address of its `hvm_start_info`; `mapped` checked the
-        // bytes are in the identity map and nothing writes them. A version 0 structure is
-        // shorter: the bytes after it are still identity-mapped memory, and the version 1
-        // fields are used only once the version says they exist.
-        let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
-        let field32 = |offset: usize| {
-            u32::from_le_bytes(info[offset..offset + 4].try_into().unwrap_or_default())
-        };
-        if field32(0) != PVH_START_MAGIC || field32(PVH_VERSION) < 1 {
-            return map;
-        }
-        let table_address = u64::from_le_bytes(
-            info[PVH_MEMMAP_PADDR..PVH_MEMMAP_PADDR + 8]
-                .try_into()
-                .unwrap_or_default(),
-        );
-        let entries = usize::try_from(field32(PVH_MEMMAP_ENTRIES)).unwrap_or(usize::MAX);
-        if entries > PVH_MAX_MEMMAP_ENTRIES {
-            return map;
-        }
-        let table_length = entries * PVH_MEMMAP_ENTRY_LENGTH;
-        let Some(table) = mapped(table_address, table_length) else {
-            return map;
-        };
-        // SAFETY: the loader's memory map table, `entries` entries long; `mapped` checked it
-        // is in the identity map, and nothing writes it.
-        let table = unsafe { physical_slice(table, table_length) };
-        let entries = || {
-            table
-                .as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>()
-                .0
-                .iter()
-                .map(|entry| {
-                    let [address, length, kind] = [0, 8, 16].map(|offset| {
-                        u64::from_le_bytes(entry[offset..offset + 8].try_into().unwrap_or_default())
-                    });
-                    (
-                        PhysicalRange::from_start_length(address, length),
-                        kind as u32,
-                    )
-                })
         };
         // All RAM first, then every other type as reserved: where a loader reports
         // overlapping entries, the more restrictive type wins.
-        for (range, kind) in entries() {
+        for (range, kind) in pvh.entries() {
             if kind == PVH_MEMMAP_TYPE_RAM {
                 map.add_ram(range);
             }
         }
-        for (range, kind) in entries() {
+        for (range, kind) in pvh.entries() {
             if kind != PVH_MEMMAP_TYPE_RAM {
                 map.reserve(range);
             }
         }
         map.reserve(LOW_MEMORY);
         map.reserve(boot_memory::kernel_image());
-        // The start info and its memory map are read again on every call (and the start info
-        // at power-off, for the RSDP).
-        map.reserve(PhysicalRange::from_start_length(
-            start_info_address,
-            PVH_START_INFO_V1_LENGTH as u64,
-        ));
-        map.reserve(PhysicalRange::from_start_length(
-            table_address,
-            table_length as u64,
-        ));
-        // Only the boot identity map is reachable until the kernel has its own page tables.
+        // The start info and its memory map are read again (the start info at power-off, for
+        // the RSDP).
+        for range in pvh.boot_data() {
+            map.reserve(range);
+        }
+        // The kernel's page tables are built through the boot identity map, so only memory
+        // inside it is handed out.
         map.retain_within(PhysicalRange {
             start: 0,
             end: IDENTITY_MAP_END,
@@ -336,7 +301,149 @@ impl Platform for X86_64 {
 
     #[inline]
     fn physical_memory_offset() -> usize {
-        0
+        boot_memory::physical_memory_offset()
+    }
+
+    type PageTableFormat = paging::x86_64::X86_64;
+
+    fn direct_map_offset() -> usize {
+        DIRECT_MAP_OFFSET
+    }
+
+    fn kernel_image() -> KernelImage {
+        boot_memory::kernel_image_parts()
+    }
+
+    fn physical_memory() -> MemoryMap {
+        // Every entry of the loader's memory map, whatever its type (the ACPI tables are in
+        // reserved or ACPI entries), the low 1 MiB (where the RSDP is searched for) and the
+        // start info. Partial frames at the ends count whole.
+        let mut map = MemoryMap::new();
+        map.add_ram(LOW_MEMORY);
+        if let Some(pvh) = PvhMemoryMap::read() {
+            for (range, _) in pvh.entries() {
+                map.add_ram(range.covering_frames());
+            }
+            for range in pvh.boot_data() {
+                map.add_ram(range.covering_frames());
+            }
+        }
+        map
+    }
+
+    fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
+        region(timer::local_apic_registers());
+    }
+
+    unsafe fn activate_page_tables(roots: &[u64]) {
+        let [root] = roots else {
+            panic!("x86_64 page tables have one root");
+        };
+        // No-execute bits are reserved until EFER.NXE is set: set it before loading tables
+        // that use them.
+        // SAFETY: EFER is architectural on every x86_64 CPU, and reading and writing it back
+        // with NXE set changes only how page-table bit 63 is read. Every x86_64 CPU QEMU
+        // emulates, and every 64-bit CPU sold since 2004, has NX.
+        unsafe {
+            core::arch::asm!(
+                "rdmsr",
+                "or eax, {nxe:e}",
+                "wrmsr",
+                nxe = in(reg) EFER_NXE,
+                in("ecx") EFER,
+                out("eax") _,
+                out("edx") _,
+                options(nomem, nostack),
+            );
+        }
+        // SAFETY: `CR0.WP` makes read-only pages read-only for the kernel too; nothing writes
+        // read-only memory, so the kernel only gains faults it should get.
+        unsafe {
+            core::arch::asm!(
+                "mov {tmp}, cr0",
+                "or {tmp}, {wp}",
+                "mov cr0, {tmp}",
+                tmp = out(reg) _,
+                wp = in(reg) CR0_WP,
+                options(nomem, nostack),
+            );
+        }
+        // SAFETY: the caller guarantees the tables map everything this CPU uses from here on at
+        // the addresses it uses now: the code runs on at its physical address, the stack, data,
+        // GDT and IDT likewise, and the local APIC too. Loading CR3 flushes the TLB. No
+        // `nomem`: memory accesses must not move across the switch.
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
+        }
+        boot_memory::set_physical_memory_offset(DIRECT_MAP_OFFSET);
+    }
+}
+
+/// The PVH loader's memory map (start info version 1 and later).
+struct PvhMemoryMap {
+    start_info: u64,
+    table_address: u64,
+    table: &'static [u8],
+}
+
+impl PvhMemoryMap {
+    fn read() -> Option<Self> {
+        let start_info_address = u64::from(PVH_START_INFO.load(Ordering::Relaxed));
+        let start_info = mapped(start_info_address, PVH_START_INFO_V1_LENGTH)?;
+        // SAFETY: the loader passed the address of its `hvm_start_info`; `mapped` checked the
+        // bytes are reachable and nothing writes them. A version 0 structure is shorter: the
+        // bytes after it are still mapped memory, and the version 1 fields are used only once
+        // the version says they exist.
+        let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
+        let field32 = |offset: usize| {
+            u32::from_le_bytes(info[offset..offset + 4].try_into().unwrap_or_default())
+        };
+        if field32(0) != PVH_START_MAGIC || field32(PVH_VERSION) < 1 {
+            return None;
+        }
+        let table_address = u64::from_le_bytes(
+            info[PVH_MEMMAP_PADDR..PVH_MEMMAP_PADDR + 8]
+                .try_into()
+                .unwrap_or_default(),
+        );
+        let entries = usize::try_from(field32(PVH_MEMMAP_ENTRIES)).unwrap_or(usize::MAX);
+        if entries > PVH_MAX_MEMMAP_ENTRIES {
+            return None;
+        }
+        let table_length = entries * PVH_MEMMAP_ENTRY_LENGTH;
+        let table = mapped(table_address, table_length)?;
+        Some(Self {
+            start_info: start_info_address,
+            table_address,
+            // SAFETY: the loader's memory map table, `entries` entries long; `mapped` checked
+            // it is reachable, and nothing writes it.
+            table: unsafe { physical_slice(table, table_length) },
+        })
+    }
+
+    /// Each entry's range and type.
+    fn entries(&self) -> impl Iterator<Item = (PhysicalRange, u32)> + '_ {
+        self.table
+            .as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>()
+            .0
+            .iter()
+            .map(|entry| {
+                let [address, length, kind] = [0, 8, 16].map(|offset| {
+                    u64::from_le_bytes(entry[offset..offset + 8].try_into().unwrap_or_default())
+                });
+                (
+                    PhysicalRange::from_start_length(address, length),
+                    kind as u32,
+                )
+            })
+    }
+
+    /// The start info and the memory map table themselves.
+    fn boot_data(&self) -> [PhysicalRange; 2] {
+        [
+            PhysicalRange::from_start_length(self.start_info, PVH_START_INFO_V1_LENGTH as u64),
+            PhysicalRange::from_start_length(self.table_address, self.table.len() as u64),
+        ]
     }
 }
 
@@ -418,8 +525,9 @@ fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     acpi::table_ok(table, signature).then_some(table)
 }
 
-/// `address` as a pointer-sized value if `address..address + length` is inside the boot
-/// identity map (0 .. 4 GiB). Address 0 is rejected as "no table".
+/// `address` as a pointer-sized value if `address..address + length` is inside the first 4 GiB,
+/// where the firmware's tables are: the boot identity map covers all of it, the direct map the
+/// parts [`Platform::physical_memory`] lists. Address 0 is rejected as "no table".
 fn mapped(address: u64, length: usize) -> Option<usize> {
     let end = address.checked_add(u64::try_from(length).ok()?)?;
     if address == 0 || end > IDENTITY_MAP_END {
@@ -429,11 +537,13 @@ fn mapped(address: u64, length: usize) -> Option<usize> {
 }
 
 /// # Safety
-/// `address..address + length` must be identity-mapped memory that nothing writes while the
+/// Physical `address..address + length` must be memory the kernel reaches through the physical
+/// memory offset (the boot identity map, or the direct map), that nothing writes while the
 /// returned slice is used.
 unsafe fn physical_slice(address: usize, length: usize) -> &'static [u8] {
+    let virt = address.wrapping_add(boot_memory::physical_memory_offset());
     // SAFETY: guaranteed by the caller.
-    unsafe { core::slice::from_raw_parts(address as *const u8, length) }
+    unsafe { core::slice::from_raw_parts(virt as *const u8, length) }
 }
 
 /// Switches to ACPI mode if needed, then sets `SLP_TYP` and `SLP_EN` in the PM1 control

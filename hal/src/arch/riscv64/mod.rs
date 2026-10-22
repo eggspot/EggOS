@@ -10,6 +10,8 @@ mod exception;
 mod timer;
 
 use crate::arch::boot_memory;
+use crate::memory::PhysicalRange;
+use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, MemoryMap, Platform};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
@@ -58,6 +60,9 @@ static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 /// QEMU `virt`: NS16550A UART0, registers 1 byte apart.
 const UART0_BASE: usize = 0x1000_0000;
 const UART0_REG_SHIFT: u32 = 0;
+
+/// The direct map: the start of Sv39's high half (D29), which holds 256 GiB.
+const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;
 
 /// SBI System Reset extension (SBI spec v2.0, chapter 10).
 const SBI_EXT_SRST: usize = 0x5352_5354;
@@ -151,13 +156,58 @@ impl Platform for Riscv64 {
 
     fn memory_map() -> MemoryMap {
         // SAFETY: the SBI firmware passes the address of its device tree in `a1` (the RISC-V
-        // boot convention, which OpenSBI follows), which stays readable and unwritten; with the
-        // MMU off physical addresses are accessible directly.
+        // boot convention, which OpenSBI follows), which stays readable and unwritten; it is in
+        // RAM, reachable through the physical memory offset (the MMU is off, or the direct map
+        // covers it).
         unsafe { boot_memory::device_tree_memory_map(DEVICE_TREE.load(Ordering::Relaxed)) }
     }
 
     #[inline]
     fn physical_memory_offset() -> usize {
-        0
+        boot_memory::physical_memory_offset()
+    }
+
+    type PageTableFormat = paging::riscv64::Riscv64Sv39;
+
+    fn direct_map_offset() -> usize {
+        DIRECT_MAP_OFFSET
+    }
+
+    fn kernel_image() -> KernelImage {
+        boot_memory::kernel_image_parts()
+    }
+
+    fn physical_memory() -> MemoryMap {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_ram(DEVICE_TREE.load(Ordering::Relaxed)) }
+    }
+
+    fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
+        region(PhysicalRange::from_start_length(
+            UART0_BASE as u64,
+            Ns16550::<Mmio>::register_block_size(UART0_REG_SHIFT) as u64,
+        ));
+    }
+
+    unsafe fn activate_page_tables(roots: &[u64]) {
+        let [root] = roots else {
+            panic!("Sv39 page tables have one root");
+        };
+        let satp = paging::riscv64::SATP_MODE_SV39 | root >> 12;
+        // SAFETY: the caller guarantees the tables map everything this hart uses from here on
+        // at the addresses it uses now: the code runs on at its physical address, the stack and
+        // data likewise, and the UART too. The first `sfence.vma` orders the table writes
+        // before the walker reads them, the second drops translations cached before the
+        // switch. No `nomem`: memory accesses must not move across the switch.
+        unsafe {
+            core::arch::asm!(
+                "sfence.vma",
+                "csrw satp, {satp}",
+                "sfence.vma",
+                satp = in(reg) satp,
+                options(nostack, preserves_flags),
+            );
+        }
+        boot_memory::set_physical_memory_offset(DIRECT_MAP_OFFSET);
     }
 }

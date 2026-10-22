@@ -22,7 +22,20 @@ mod bare_metal {
         let mut console = PlatformConsole::<CurrentPlatform>::new();
         let status = eggos_kernel::boot::<CurrentPlatform, _>(&mut console);
         if cfg!(feature = "qemu-test-fatal-exception") && status == ExitStatus::Success {
-            // Tests the fatal path: the exception handler must report this and fail the run.
+            // Tests the fatal path and write protection (D29): writing the kernel's read-only
+            // data must fault, and the handler must report the fault at that address and fail
+            // the run. The QEMU runner checks the address.
+            let target = CurrentPlatform::kernel_image().rodata_start;
+            let _ = writeln!(
+                console,
+                "{}{target:#x}",
+                eggos_kernel::selftest::WRITE_PROTECT_PROBE
+            );
+            // SAFETY: `target` is the first word of `.rodata`, which the kernel's page tables
+            // map read-only, so the store faults and the fatal exception handler never returns.
+            // Should write protection be broken, the store lands and the kernel stops at once
+            // with an illegal instruction, which the runner rejects: no fault names `target`.
+            unsafe { (target as *mut u64).write_volatile(0) };
             CurrentPlatform::execute_illegal_instruction();
         }
         finish(status)

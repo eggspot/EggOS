@@ -393,3 +393,64 @@ architecture-independent core turns it into a `FrameAllocator` of 4 KiB frames.
   order, LIFO reuse, exhaustion, randomised allocate/free); a boot self-test on every
   architecture writes and reads back 64 frames, checks LIFO reuse, and counts every frame to
   the end of memory against the map.
+
+## D29 Kernel page tables: one architecture-independent mapper, a direct map in the high half, W^X kernel sections and a stack guard page — Decided by the build loop (engineering; Sv39 and kernel placement decided by research)
+Second step of M2. The kernel now runs on page tables it builds itself on every architecture.
+- **One mapper for every architecture.** All supported architectures translate through a
+  radix tree of 4 KiB tables of 512 entries, 9 address bits per level. The HAL describes only
+  what differs, as a `paging::Format` (entry encoding, levels, roots, the largest leaf, valid
+  addresses): x86_64 4-level paging (2 MiB leaves; 1 GiB pages wait for a CPUID check),
+  AArch64 4 KiB granule with 48-bit halves (TTBR0 and TTBR1, 2 MiB and 1 GiB blocks), RISC-V
+  Sv39 (2 MiB and 1 GiB leaves). The formats are plain bit encodings compiled on the host too,
+  so each is unit-tested against the manuals' bit patterns. The kernel's `PageTables<F>` walks,
+  allocates tables from the frame allocator and maps every range with the largest leaves the
+  alignment allows, so the direct map of 128 MiB costs a few tables and few TLB entries.
+- **Layout.** The kernel image stays at its physical address (identity-mapped) for this step,
+  with each part getting only the access it needs: code read+execute, `.rodata` (and the PVH
+  note) read-only, data, `.bss` and the boot stack read+write and never executable. The page
+  below the boot stack is left unmapped (a new guard page in each linker script), so an overflow
+  faults instead of overwriting `.bss`. All physical memory is mapped read+write, not
+  executable, at a fixed high-half offset, the direct map: x86_64 `0xffff_8000_0000_0000`,
+  AArch64 `0xffff_0000_0000_0000` (TTBR1), RISC-V `0xffff_ffc0_0000_0000` (Sv39's upper half,
+  256 GiB). `Platform::physical_memory_offset` becomes that offset once the tables are active,
+  and the frame allocator, the tables and the HAL's readers of firmware data (device tree,
+  PVH start info, ACPI) go through it. The direct map covers `Platform::physical_memory`: every
+  RAM range of the device tree, or every entry of the PVH memory map (whatever its type, since
+  the ACPI tables live in reserved entries) plus the low 1 MiB; boot fails if free memory lies
+  outside it. The device registers the HAL already drives (UART, GIC, local APIC) are mapped as
+  device memory at their physical addresses until the driver model maps devices (M5).
+- **Switching.** AArch64 programs `MAIR_EL1` (index 0 Device-nGnRnE, 1 Normal write-back),
+  `TCR_EL1` (48-bit halves, 4 KiB granule, cached inner-shareable walks, IPS from
+  `ID_AA64MMFR0_EL1`), both TTBRs, invalidates the TLB and turns on the MMU and both caches.
+  RISC-V writes `satp` (Sv39) between two `sfence.vma`. x86_64 sets `EFER.NXE` and `CR0.WP` (so
+  read-only means read-only for the kernel too) and loads CR3; the boot GDT's accessed bits are
+  preset so the CPU never writes the now read-only GDT.
+- **Sv39 rather than Sv48 (decided by research).** Every RVA profile (RVA20/22/23) requires
+  Sv39 and Sv48 is optional, shipping cores (SiFive U74, T-Head C910) are Sv39-only, and a TLB
+  miss walks three levels instead of four. The mapper takes the level count from the format, so
+  Sv48 or Sv57 can be chosen at boot when memory or address space needs it (roadmap follow-up).
+- **The kernel stays at its physical address in this step (decided by research).** Relinking
+  to the high half needs position-independent pre-MMU code and a jump to the high alias on
+  three architectures, a separate risk from building tables. It is the next M2 step and must
+  land before user space (M4/M6): user space owns the low half (TTBR0 on AArch64), and a
+  low-half kernel would get in the way of SMEP/SMAP/PAN and address-space randomisation.
+- **Testing.** Host unit tests for each format (bit patterns from the manuals, round trips,
+  canonical addresses) and the mapper on all three formats (largest leaves where aligned,
+  translation, double mapping, invalid and unaligned ranges, running out of frames). Boot
+  self-tests on every architecture check every part of the image has exactly its access, the
+  guard page is unmapped, the devices are device memory, and a frame written through the
+  direct map is where the tables say; the frame self-test now writes every free frame through
+  the direct map and gives them all back. The fatal-exception boot now writes the kernel's
+  `.rodata` instead of executing an illegal instruction, and the runner requires the fault
+  report to name that address, so hardware write protection is tested on every architecture
+  in CI without an extra boot.
+- **Benchmarks.** No change in any result (the switch adds no instructions to measured paths);
+  mapping is boot-time only for now, and its benchmarks come with the first runtime user (page
+  faults, `mmap`).
+- **Not yet, recorded on the roadmap:** the high-half kernel; changing live tables (TLB
+  shootdown, M4); a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard
+  page hit is reported instead of faulting again on the same stack; honouring device-tree
+  `no-map` reservations (they are in the direct map, never touched); on AArch64 real hardware,
+  cleaning and invalidating the data cache over memory written with the MMU off before the
+  caches go on (QEMU models no caches, M13); RAM above 4 GiB on x86_64 (tables are still built
+  through the boot identity map); 1 GiB pages on x86_64; Svpbmt on RISC-V.

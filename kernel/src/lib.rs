@@ -12,6 +12,7 @@ pub mod console;
 pub mod exception;
 pub mod interrupt;
 pub mod memory;
+pub mod paging;
 pub mod selftest;
 
 use core::fmt::Write;
@@ -25,10 +26,25 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Returns how the boot went; the architecture entry point turns that into a machine exit.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
+    let free_memory = P::memory_map();
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
         .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
-        .and_then(|()| report_memory(console, &P::memory_map()))
-        .and_then(|()| selftest::run(console, &selftest::all::<P>()));
+        .and_then(|()| report_memory(console, &free_memory))
+        .and_then(|()| match paging::enable::<P>(&free_memory) {
+            Ok(mut memory) => {
+                writeln!(
+                    console,
+                    "paging: kernel page tables active, direct map at {:#x}",
+                    P::direct_map_offset()
+                )?;
+                selftest::run(console, &selftest::all::<P>(), &mut memory)
+            }
+            Err(reason) => {
+                writeln!(console, "paging: FAILED: {reason}")?;
+                writeln!(console, "{}", selftest::FAIL_MARKER)?;
+                Ok(false)
+            }
+        });
     // Benchmarks only mean something on a kernel that passed its self-tests.
     #[cfg(feature = "qemu-bench")]
     let report = report.and_then(|passed| {
@@ -137,6 +153,31 @@ mod tests {
         fn physical_memory_offset() -> usize {
             ram().wrapping_sub(RAM_BASE as usize)
         }
+        type PageTableFormat = eggos_hal::paging::x86_64::X86_64;
+        fn direct_map_offset() -> usize {
+            Self::physical_memory_offset()
+        }
+        fn kernel_image() -> eggos_hal::paging::KernelImage {
+            // Below the RAM: the tables only describe it, nothing reaches it.
+            eggos_hal::paging::KernelImage {
+                start: 0x8_0000,
+                text_start: 0x8_1000,
+                rodata_start: 0x8_4000,
+                data_start: 0x8_6000,
+                stack_guard_start: 0x8_8000,
+                stack_start: 0x8_9000,
+                end: 0x9_9000,
+            }
+        }
+        fn physical_memory() -> eggos_hal::MemoryMap {
+            Self::memory_map()
+        }
+        fn early_device_regions(region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {
+            region(eggos_hal::PhysicalRange::from_start_length(0xa_0000, 0x100));
+        }
+        unsafe fn activate_page_tables(roots: &[u64]) {
+            assert_eq!(roots.len(), 1);
+        }
     }
 
     #[test]
@@ -146,7 +187,9 @@ mod tests {
         assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
         assert!(out.starts_with(&format!(
             "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
-             memory: 512 KiB free in 1 range\n  0x100000..0x180000\n"
+             memory: 512 KiB free in 1 range\n  0x100000..0x180000\n\
+             paging: kernel page tables active, direct map at {:#x}\n",
+            TestPlatform::direct_map_offset()
         )));
         assert!(out.ends_with(&format!("{}\n", selftest::PASS_MARKER)));
     }

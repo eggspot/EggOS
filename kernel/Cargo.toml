@@ -14,8 +14,9 @@ workspace = true
 [features]
 # Power the machine off after boot so the QEMU test runner sees the verdict.
 qemu-test = []
-# Also execute an illegal instruction after the self-tests pass, to test that a fatal exception
-# is reported with the fail marker (the QEMU runner then expects that failure).
+# After the self-tests pass, also write to the kernel's read-only data, to test that it faults
+# and that the fatal exception is reported with the fail marker (the QEMU runner then expects
+# that failure, at that address).
 qemu-test-fatal-exception = ["qemu-test"]
 # After the self-tests pass, run the boot-time benchmarks and print their results (read by
 # `cargo xtask bench`, which boots with `-icount shift=0`).

@@ -15,6 +15,7 @@
 
 use super::port::PortIo;
 use crate::Interrupt;
+use crate::memory::PhysicalRange;
 use crate::time::mul_div_ceil;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
@@ -206,6 +207,14 @@ pub(super) fn legacy_pic_interrupt(vector: u64) -> bool {
         }
         _ => false,
     }
+}
+
+/// The local APIC's register block, for the kernel's page tables. Valid once [`init`] ran.
+pub(super) fn local_apic_registers() -> PhysicalRange {
+    PhysicalRange::from_start_length(
+        APIC_BASE.load(Ordering::Relaxed) as u64,
+        local_apic::REGISTER_BLOCK_SIZE as u64,
+    )
 }
 
 fn read_msr(msr: u32) -> u64 {
