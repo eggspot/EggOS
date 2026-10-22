@@ -583,11 +583,16 @@ mapping did not hold for the frame.
   anywhere. Nothing in the kernel wrote the image through the direct map.
 - **Cost.** The 2 MiB block or two holding the image are mapped with 4 KiB pages instead of a
   large leaf: one or two more 4 KiB page tables and more TLB entries for direct-map accesses
-  near the image, which reach only the image and its neighbouring frames. No benchmark changed.
+  there. On aarch64 and riscv64, which have 1 GiB leaves, a machine with a whole GiB of RAM
+  around the image also maps that GiB with 2 MiB leaves instead of one 1 GiB leaf (one more
+  table, more TLB entries for direct-map accesses anywhere in that GiB); x86_64 has no 1 GiB
+  leaves yet. QEMU's 128 MiB never used a 1 GiB leaf, so no benchmark changed; the cost on
+  real hardware is measured with M13.
   The high-half relink (roadmap) maps the image at its own virtual address and keeps this rule.
-- **Testing.** A host test maps the direct map of two RAM ranges around a kernel image and
-  checks the access at both ends of every part, the guard page and the surrounding RAM, and that
-  large leaves are still used away from the image. The boot self-test now checks every part's
+- **Testing.** Host tests map the direct map around a kernel image and check the access at
+  both ends of every part, the guard page and the surrounding RAM, that large leaves are still
+  used away from the image (2 MiB on x86_64, 1 GiB on Sv39), and an image across two RAM ranges
+  with a hole in it. The boot self-test now checks every part's
   direct-map alias and the guard page's on aarch64, riscv64 and x86_64; with the old mapping it
   fails on all three. The host test platform's direct map now covers its kernel image, as on
   real machines.

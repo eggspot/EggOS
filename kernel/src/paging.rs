@@ -514,6 +514,54 @@ mod tests {
     }
 
     #[test]
+    fn the_direct_map_splits_a_gigabyte_leaf_around_an_image_across_two_ranges() {
+        let mut frames = frames(64);
+        let mut tables = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
+        let gb = 1 << 30;
+        // The image in the second GiB, across two RAM ranges with a one-page hole in its data
+        // part; the first and third GiBs hold no image.
+        let base = gb + (5 << 20);
+        let image = KernelImage {
+            start: base,
+            text_start: base,
+            rodata_start: base + 2 * K,
+            data_start: base + 3 * K,
+            stack_guard_start: base + 6 * K,
+            stack_start: base + 7 * K,
+            end: base + 9 * K,
+        };
+        let mut ram = MemoryMap::new();
+        ram.add_ram(PhysicalRange::from_start_length(0, base + 4 * K));
+        ram.add_ram(PhysicalRange {
+            start: base + 5 * K,
+            end: 3 * gb,
+        });
+        let offset = 0xffff_ffc0_0000_0000;
+        map_direct_map(&mut tables, &ram, offset, &image, &mut frames).unwrap();
+        let alias = |phys: u64| tables.translate(offset + phys).map(|t| t.1);
+        let rw = Some(Attributes::READ_WRITE);
+        let ro = Some(Attributes::READ_ONLY);
+        for (phys, expected) in [
+            (image.text_start, ro),
+            (image.data_start, rw),
+            (base + 4 * K, None),
+            (base + 5 * K, rw),
+            (image.stack_guard_start, None),
+            (image.stack_start, rw),
+            (image.end, rw),
+        ] {
+            assert_eq!(alias(phys), expected, "{phys:#x}");
+        }
+        // The image-free GiBs keep a 1 GiB leaf; the image's GiB is split into tables.
+        let root = |phys: u64| {
+            Riscv64Sv39::decode(tables.entry(tables.roots()[0], offset + phys, 2).read(), 2)
+        };
+        assert!(matches!(root(0), Entry::Leaf(..)));
+        assert!(matches!(root(2 * gb), Entry::Leaf(..)));
+        assert!(matches!(root(gb), Entry::Table(_)));
+    }
+
+    #[test]
     fn mapping_twice_fails() {
         let mut frames = frames(16);
         let mut tables = PageTables::<Aarch64>::new(&mut frames).unwrap();
