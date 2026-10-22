@@ -6,6 +6,7 @@
 //! sets both before loading tables built with this format.
 
 use super::{Attributes, Entry, Format, MemoryType};
+use crate::memory::FRAME_SIZE;
 
 /// The 4-level format. See the module documentation.
 #[derive(Debug)]
@@ -33,8 +34,10 @@ impl Format for X86_64 {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 1;
     const ENCODES_MEMORY_TYPE: bool = true;
-    /// The lower 128 TiB.
-    const USER_END: u64 = 1 << 47;
+    /// The lower 128 TiB but its last page. A `syscall` in that page's last bytes would return
+    /// (`sysretq`) to the first non-canonical address, which faults in ring 0 on the user's
+    /// stack on Intel CPUs; with the page never mapped, no user instruction runs there.
+    const USER_END: u64 = (1 << 47) - FRAME_SIZE;
 
     fn root(virt: u64) -> Option<usize> {
         // Canonical: bits 63:48 copy bit 47.

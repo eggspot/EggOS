@@ -85,11 +85,19 @@ impl<P: Platform> AddressSpace<P> {
     /// Runs `active` with this address space active on this CPU, then switches back to the
     /// kernel's tables, whose low half is empty. Call it with interrupts masked, as the kernel
     /// runs, and not nested. `active` must not block, yield or reach a preemption point: its
-    /// thread could go on on another CPU, leaving this one with tables that may be freed. That
-    /// stops the kernel rather than go on. The kernel reaches the user pages only through
-    /// [`Platform::with_user_access`].
+    /// thread could go on on another CPU, leaving this one with tables that may be freed, or
+    /// another thread could make its own address space active here meanwhile. Either stops the
+    /// kernel rather than go on (D46): each CPU records the address space active on it, and a
+    /// second one made active before the first is switched back is refused. The kernel reaches
+    /// the user pages only through [`Platform::with_user_access`].
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
+        let root = self.tables.roots()[0];
+        assert!(
+            here.active_address_space() == cpu::NO_ADDRESS_SPACE,
+            "an address space was made active over another one on this CPU"
+        );
+        here.set_active_address_space(root);
         // SAFETY: interrupts are masked (the caller's duty, as the kernel runs). The tables
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
         // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
@@ -102,6 +110,11 @@ impl<P: Platform> AddressSpace<P> {
             ptr::eq(cpu::current::<P>(), here),
             "a thread left its CPU while an address space was active there"
         );
+        assert!(
+            here.active_address_space() == root,
+            "another address space was made active on this CPU meanwhile"
+        );
+        here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
         // SAFETY: as above, back to the kernel's own tables (`new`'s contract), which stay
         // allocated for as long as the kernel runs; `active` has returned, so nothing uses this
         // address space's low half.
@@ -237,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn the_last_page_before_the_non_canonical_hole_is_never_user_space() {
+        // A `syscall` at its end would return to a non-canonical address (x86_64).
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let mut space = new_space(&kernel).unwrap();
+        let last = (1 << 47) - FRAME_SIZE;
+        assert_eq!(
+            space.map(last, 0, FRAME_SIZE, Attributes::USER_TEXT),
+            Err(MapError::NotUser)
+        );
+        space
+            .map(last - FRAME_SIZE, 0, FRAME_SIZE, Attributes::USER_TEXT)
+            .unwrap();
+    }
+
+    #[test]
     fn unmapping_part_of_a_large_page_fails_and_the_whole_page_unmaps() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
@@ -266,7 +295,7 @@ mod tests {
         {
             let mut space = new_space(&kernel).unwrap();
             // Pages far apart, so each needs tables of its own at every level.
-            for (i, virt) in [0, USER_VIRT, 1 << 30, 1 << 39, (1 << 47) - FRAME_SIZE]
+            for (i, virt) in [0, USER_VIRT, 1 << 30, 1 << 39, (1 << 47) - 2 * FRAME_SIZE]
                 .into_iter()
                 .enumerate()
             {
@@ -296,6 +325,30 @@ mod tests {
         let space = new_space(&kernel).unwrap();
         let root = space.with_active(active_root);
         assert_eq!(root, space.tables.roots()[0]);
+        assert_eq!(active_root(), kernel.roots()[0]);
+    }
+
+    #[test]
+    fn an_address_space_is_never_made_active_over_another() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let [first, second] = [new_space(&kernel).unwrap(), new_space(&kernel).unwrap()];
+        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            first.with_active(|| second.with_active(|| ()))
+        }));
+        assert!(nested.is_err());
+        assert_eq!(
+            active_root(),
+            first.tables.roots()[0],
+            "the second never became active"
+        );
+        // As if the first thread had switched back: the next use starts clean.
+        let here = cpu::current::<P>();
+        assert_eq!(here.active_address_space(), first.tables.roots()[0]);
+        here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
+        // SAFETY: back to the kernel's own tables, as `with_active` would have.
+        unsafe { P::switch_address_space(kernel.roots()) };
+        assert_eq!(second.with_active(active_root), second.tables.roots()[0]);
         assert_eq!(active_root(), kernel.roots()[0]);
     }
 

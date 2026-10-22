@@ -47,7 +47,8 @@ Preemption follow-ups (D37): involuntary preemption on return to user mode (proc
 (preemption on a secondary CPU exercised by a boot self-test: done, D44; per-CPU tick state and
 run queues: done, D43); a measured worst-case gap between
 preemption points as a latency benchmark; a debug-build check that no lock is held at a
-preemption point.
+preemption point, nor an address space or user-access window open (D46: an address space made
+active over another on one CPU is already caught; RISC-V's `sstatus.SUM` is per CPU, not per thread).
 
 Sleep and wait-queue follow-ups (D39): waits with a timeout; a condition-variable wait for data
 behind a `SpinLock` and a futex-style wait (M6); wait-queue locks of their own (per-CPU idle
@@ -63,7 +64,7 @@ CPUs, balancing with preemption off, CPU affinity, and balancing by load, cache 
 threads, waking an idle CPU with `cpu::wake`, and a secondary waking the boot CPU: done, D43;
 per-CPU interrupt setup and timer interrupt counts: done, D41); GICv3 SGIs and more than 8 CPUs on
 aarch64; TLB shootdown when live tables change; x2APIC for APIC ids of 255 and up;
-an invariant-TSC check before threads move between CPUs (they do not yet); booting from a CPU whose affinity is
+an invariant-TSC check, since threads now move between CPUs (D44) and may read two CPUs' clocks; booting from a CPU whose affinity is
 not 0 on aarch64, the PSCI conduit from the device tree and a full known `SCTLR_EL1` (M13); a
 console lock for messages from any CPU; starting the CPUs in `boot`, not in a self-test.
 
