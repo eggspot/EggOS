@@ -135,9 +135,13 @@ translated once, ahead of time, into native code and cached on disk (the approac
 Rosetta 2), never interpreted. That is the fastest known method, but translation has a cost, so
 those cases are measured and reported separately; on matching hardware (arm64 apps on Arm,
 x86_64 apps on x86_64) there is no translation at all.
-Open for the owner (legal, not engineering): Apple's terms limit App Store apps to Apple devices
-and App Store iOS apps are FairPlay-encrypted, so which iOS and macOS apps can lawfully be run
-needs a legal review before that layer ships.
+Our code: settled. Everything is our own clean-room implementation of public interfaces (D5); no
+Apple, Microsoft or Google code or binaries are copied or shipped.
+Open for the owner (about the apps, not our code): App Store iOS apps are FairPlay-encrypted, and
+decrypting them falls under anti-circumvention law regardless of who wrote the decryptor; Apple's
+App Store terms limit those apps to Apple devices. Apps from outside the App Store (developer
+builds, open-source apps, direct downloads) are not affected. Decide how EggOS gets App Store apps
+before the iOS layer ships.
 
 ## D18 Modular install: only the base is installed, every feature is the user's choice — Decided
 EggOS installs a small base by default: the kernel, drivers for the hardware present, the base

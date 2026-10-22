@@ -76,6 +76,7 @@ them.
 
 ## Not decided yet (ask the owner, don't assume)
 - Which compatibility layer comes first (Linux, Android, Windows, macOS or iOS apps).
-- Legal review for running Apple and Microsoft apps: their system libraries cannot be shipped (we
-  reimplement them clean-room), App Store iOS apps are FairPlay-encrypted, and Apple's terms limit App
-  Store apps to Apple devices (see D17).
+- App Store apps (see D17): our own clean-room code is not the issue. Two things about the apps
+  themselves are: App Store iOS apps are FairPlay-encrypted (decrypting them is anti-circumvention
+  law, whoever wrote the code), and Apple's App Store terms limit those apps to Apple devices. Apps
+  from outside the App Store (developer builds, open-source apps, direct downloads) are not affected.
