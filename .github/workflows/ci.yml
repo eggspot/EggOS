@@ -25,6 +25,18 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    # QEMU, OpenSBI and the pinned toolchain come preinstalled (D36; built by ci-image.yml from
+    # main). CI always runs in main's image, so a change that needs something new in the image
+    # lands in its own PR first.
+    permissions:
+      contents: read
+      pull-requests: read # list a PR's changed files
+      packages: read # pull the CI image
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 25
     outputs:
       code: ${{ steps.changes.outputs.code }}
@@ -52,6 +64,8 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Already in the image; installs it only when this change moved the pin and the image has
+      # not been rebuilt yet (ci-image.yml rebuilds it once the change is on main).
       - name: Install pinned toolchain (rust-toolchain.toml)
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
@@ -80,13 +94,6 @@ jobs:
       - name: Unit tests (host)
         if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace
-
-      - name: Install QEMU
-        if: steps.changes.outputs.code == 'true'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-arm qemu-system-misc qemu-system-x86 qemu-system-data opensbi
 
       - name: QEMU boot tests (every architecture)
         if: steps.changes.outputs.code == 'true'

@@ -726,7 +726,12 @@ where the mirror stalled `apt-get` for 194, 198, 850 and 1373 s (unpacking took 
 - **Rollout:** the image workflow lands first and builds the image, then CI switches to it,
   so `main` never points at an image that does not exist.
 - **Not decided here:** making the package public, which fork PRs may need to pull it, is an
-  organisation setting for the owner.
+  organisation setting for the owner. Update (2026-10-22): the first push created it public and
+  linked to this repository, so fork PRs can pull it; nothing was changed by hand.
+- **Image changes land first:** CI runs in `main`'s image, so a PR that needs something new in
+  the image adds it in its own PR, which `ci-image.yml` builds and checks; CI uses it once
+  that PR is on `main`. Pinning `ci.yml` to an image digest (so a rebuild cannot bring a newer
+  QEMU into the benchmarks unnoticed) is a possible follow-up.
 
 ## D37 Preemption is voluntary inside the kernel: a timer tick ends time slices, threads switch at preemption points — Decided by the build loop (engineering; model decided by research); supersedes D35's lock release before the switch
 Second step of M4.
