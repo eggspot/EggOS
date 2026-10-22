@@ -163,7 +163,7 @@ fn local_apic() -> LocalApic<Mmio> {
 pub(super) extern "C" fn init() {
     legacy_pic().remap_and_mask(*LEGACY_PIC_VECTORS.start() as u8);
 
-    let apic_base_msr = read_msr(IA32_APIC_BASE);
+    let apic_base_msr = super::read_msr(IA32_APIC_BASE);
     // Set at reset; firmware that clears it hides the APIC until the next reset.
     assert!(
         apic_base_msr & APIC_BASE_GLOBAL_ENABLE != 0,
@@ -304,15 +304,4 @@ pub(super) fn local_apic_registers() -> PhysicalRange {
             .wrapping_sub(super::DIRECT_MAP_OFFSET) as u64,
         local_apic::REGISTER_BLOCK_SIZE as u64,
     )
-}
-
-fn read_msr(msr: u32) -> u64 {
-    let (low, high): (u32, u32);
-    // SAFETY: `rdmsr` of an architectural MSR (here IA32_APIC_BASE, present on every x86_64
-    // CPU) at ring 0 has no side effects.
-    unsafe {
-        core::arch::asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
-            options(nomem, nostack, preserves_flags));
-    }
-    u64::from(high) << 32 | u64::from(low)
 }

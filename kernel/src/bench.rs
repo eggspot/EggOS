@@ -7,13 +7,15 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
-use crate::memory::{FRAMES, FrameAllocator};
+use crate::memory::{FRAMES, FrameAllocator, Memory};
+use crate::user::TestProgram;
 use crate::{cpu, thread};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
+use eggos_hal::user::UserExit;
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Starts every benchmark result line. The xtask bench runner parses these lines.
@@ -24,45 +26,60 @@ pub const MARKER: &str = "EGGOS-BENCH:";
 pub const ITERATIONS: u64 = 10_000;
 const WARMUP_ITERATIONS: u64 = 100;
 
-/// A benchmark: a name and a body that runs the measured operation `n` times.
-pub type Benchmark = (&'static str, fn(u64));
+/// A benchmark: a name and a body that runs the measured operation `n` times, with the
+/// kernel's memory ([`Memory`]) for those that need its page tables.
+pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 13] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 14] {
     [
-        ("empty_loop", empty_loop),
-        ("clock_read", clock_read::<P>),
-        ("breakpoint_round_trip", breakpoint_round_trip::<P>),
-        ("timer_arm", timer_arm::<P>),
-        (
-            "timer_interrupt_round_trip",
-            timer_interrupt_round_trip::<P>,
-        ),
-        ("frame_allocate_untouched", frame_allocate_untouched),
-        ("frame_free_allocate", frame_free_allocate),
-        (
-            "frame_contiguous_allocate_free",
-            frame_contiguous_allocate_free,
-        ),
-        ("heap_allocate_free_small", heap_allocate_free_small),
-        ("thread_yield_round_trip", thread_yield_round_trip::<P>),
-        ("preemption_point_idle", preemption_point_idle::<P>),
-        ("wait_queue_wake_empty", wait_queue_wake_empty::<P>),
-        (
-            "thread_wait_wake_round_trip",
-            thread_wait_wake_round_trip::<P>,
-        ),
+        ("empty_loop", |_, n| empty_loop(n)),
+        ("clock_read", |_, n| clock_read::<P>(n)),
+        ("breakpoint_round_trip", |_, n| {
+            breakpoint_round_trip::<P>(n)
+        }),
+        ("timer_arm", |_, n| timer_arm::<P>(n)),
+        ("timer_interrupt_round_trip", |_, n| {
+            timer_interrupt_round_trip::<P>(n)
+        }),
+        ("frame_allocate_untouched", |_, n| {
+            frame_allocate_untouched(n)
+        }),
+        ("frame_free_allocate", |_, n| frame_free_allocate(n)),
+        ("frame_contiguous_allocate_free", |_, n| {
+            frame_contiguous_allocate_free(n)
+        }),
+        ("heap_allocate_free_small", |_, n| {
+            heap_allocate_free_small(n)
+        }),
+        ("thread_yield_round_trip", |_, n| {
+            thread_yield_round_trip::<P>(n)
+        }),
+        ("preemption_point_idle", |_, n| {
+            preemption_point_idle::<P>(n)
+        }),
+        ("wait_queue_wake_empty", |_, n| {
+            wait_queue_wake_empty::<P>(n)
+        }),
+        ("thread_wait_wake_round_trip", |_, n| {
+            thread_wait_wake_round_trip::<P>(n)
+        }),
+        ("syscall_round_trip", syscall_round_trip::<P>),
     ]
 }
 
 /// Runs `benchmarks` and prints one line per benchmark:
 /// `EGGOS-BENCH: <name> iterations=<n> ticks=<clock ticks> frequency=<clock Hz>`.
-pub fn run<P: Platform, W: Write>(console: &mut W, benchmarks: &[Benchmark]) -> core::fmt::Result {
+pub fn run<P: Platform, W: Write>(
+    console: &mut W,
+    benchmarks: &[Benchmark<P>],
+    memory: &mut Memory<P>,
+) -> core::fmt::Result {
     let frequency = P::clock_frequency();
     for (name, body) in benchmarks {
-        body(WARMUP_ITERATIONS);
+        body(memory, WARMUP_ITERATIONS);
         let start = P::clock_ticks();
-        body(ITERATIONS);
+        body(memory, ITERATIONS);
         let ticks = P::clock_ticks().wrapping_sub(start);
         writeln!(
             console,
@@ -255,6 +272,31 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
+/// A null system call from user mode and back (D47): the HAL's test program makes system call
+/// 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the kernel
+/// looking at why, and the return to the program. The program's address space stays active
+/// throughout, as for a process making system calls. Setting the program up and freeing it
+/// (about 10 000 instructions on every architecture) is timed too, amortized over the
+/// iterations.
+fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
+    // the benchmarks run on.
+    let program = unsafe { TestProgram::<P>::new(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let mut context = program.context(|program| program.null_syscalls);
+    program.with_active(|| {
+        let mut calls = 0;
+        while calls < n {
+            // SAFETY: interrupts are masked, as the kernel runs; the program's address space is
+            // active, sharing the kernel's half; nothing here switches threads or address
+            // spaces before `run_user` returns. An interrupt in between is not counted.
+            if unsafe { P::run_user(&mut context) } == UserExit::Syscall {
+                calls += 1;
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,12 +354,28 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
-        unsafe fn switch_address_space(_roots: &[u64]) {
-            unreachable!("not used in tests")
-        }
+        unsafe fn switch_address_space(_roots: &[u64]) {}
         fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
             access()
         }
+        unsafe fn run_user(
+            context: &mut eggos_hal::user::UserContext,
+        ) -> eggos_hal::user::UserExit {
+            // The test program's null system calls, and nothing else.
+            let pc = context.pc();
+            let null = eggos_hal::user::TestProgram::SYSCALL_NULL;
+            context.simulate_syscall(null, [0; 6], pc);
+            UserExit::Syscall
+        }
+        fn user_test_program() -> eggos_hal::user::TestProgram {
+            eggos_hal::user::TestProgram {
+                code: &[0; 4],
+                checks: 0,
+                null_syscalls: 0,
+                spin: 0,
+            }
+        }
+        fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
             entry: extern "C" fn(usize) -> !,
@@ -357,13 +415,24 @@ mod tests {
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
+        // Page tables for `run`, made first: the benchmarks run here must find the frame
+        // allocator as the other tests leave it, so `syscall_round_trip`, which takes frames,
+        // has a test of its own.
+        let mut memory = page_tables_for_test();
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
-        let benchmarks = all::<CountingPlatform>();
-        assert_eq!(run::<CountingPlatform, _>(&mut out, &benchmarks), Ok(()));
+        let all = all::<CountingPlatform>();
+        let (benchmarks, [(syscall, _)]) = all.split_at(all.len() - 1) else {
+            unreachable!()
+        };
+        assert_eq!(*syscall, "syscall_round_trip");
+        assert_eq!(
+            run::<CountingPlatform, _>(&mut out, benchmarks, &mut memory),
+            Ok(())
+        );
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), benchmarks.len());
-        for (line, (name, _)) in lines.iter().zip(&benchmarks) {
+        for (line, (name, _)) in lines.iter().zip(benchmarks) {
             let prefix = format!("{MARKER} {name} iterations={ITERATIONS} ticks=");
             assert!(line.starts_with(&prefix), "{line}");
             assert!(line.ends_with(" frequency=1000000000"), "{line}");
@@ -374,6 +443,25 @@ mod tests {
             clock_line.contains(&format!("ticks={} ", ITERATIONS + 1)),
             "{clock_line}"
         );
+    }
+
+    /// Kernel memory for the benchmarks: page tables, active (frozen) as the kernel's are.
+    fn page_tables_for_test() -> Memory<CountingPlatform> {
+        let _frames = thread::host::frames_for_test();
+        let mut frames = FRAMES.lock();
+        let mut page_tables = crate::paging::PageTables::new(frames.as_mut().unwrap()).unwrap();
+        page_tables.mark_active();
+        Memory { page_tables }
+    }
+
+    #[test]
+    fn syscall_round_trip_runs_the_program_and_frees_it() {
+        let mut memory = page_tables_for_test();
+        let _frames = thread::host::frames_for_test();
+        let free = || FRAMES.lock().as_ref().unwrap().free_frames();
+        let before = free();
+        syscall_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
     }
 
     #[test]

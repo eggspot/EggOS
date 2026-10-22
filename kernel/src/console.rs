@@ -105,6 +105,15 @@ mod tests {
         fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
             access()
         }
+        unsafe fn run_user(
+            _context: &mut eggos_hal::user::UserContext,
+        ) -> eggos_hal::user::UserExit {
+            unreachable!()
+        }
+        fn user_test_program() -> eggos_hal::user::TestProgram {
+            unreachable!()
+        }
+        fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,

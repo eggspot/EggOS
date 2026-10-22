@@ -1239,3 +1239,64 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **Testing.** Host unit tests: the last page before the hole is refused (`NotUser`) and the one
   below it maps; a nested `with_active` panics before the second space becomes active. Boot and
   fatal-exception tests on aarch64, riscv64 and x86_64 and every benchmark unchanged.
+
+## D47 User mode: the kernel runs a program until it traps ("run until trap"), Linux's system-call registers — Decided by the build loop (design decided by research)
+- **The interface.** `Platform::run_user(&mut UserContext) -> UserExit` enters user mode (EL0,
+  U-mode, ring 3) with the program's registers and returns once a system call, an interrupt or an
+  exception takes the CPU back, with the registers saved in the same `UserContext` and the reason
+  (`Syscall`, `Interrupt` already handed to the kernel's handler, or `Exception`). The kernel's
+  side is plain Rust: run, handle the exit, run again. A research subagent compared this with the
+  classic design (traps build a frame on the thread's kernel stack, handlers return into it) and
+  recommended it: all architecture state stays in two short HAL routines, the user registers are a
+  typed struct that signals, `ptrace`, NT's `GetThreadContext` and Darwin's `thread_get_state`
+  will read and write directly, the ABI (Linux, NT, Darwin) is chosen by a Rust `match` per
+  process rather than three entry paths, and preemption on return to user mode is just "switch
+  threads before running it again" on an interrupt exit, the D37 model unchanged. Its cost is the
+  kernel's callee-saved registers, saved and restored once per round trip (6 on x86_64, 12 on
+  AArch64, 13 on RISC-V): measured, not guessed, below.
+- **System-call registers.** Linux's on each architecture, ready for M6: the number in
+  `x8`/`a7`/`rax`, six arguments in `x0`–`x5`/`a0`–`a5`/`rdi, rsi, rdx, r10, r8, r9`, the result
+  in `x0`/`a0`/`rax`; every other register comes back unchanged (`syscall` takes `rcx` and `r11`).
+- **AArch64.** The lower-EL vector entries (8–15) store straight into the context: while the
+  program runs, `SP_EL1` points just past the context's saved part, and the kernel's stack
+  pointer sits right there. `SPSR_EL1` is sanitized to the program's condition flags (EL0t,
+  nothing masked), and a `dsb nsh; isb` follows the `eret` against straight-line speculation.
+  `decode` and `irq` are now inlined into both callers, so the kernel's trap path keeps its length.
+- **RISC-V.** While a program runs, `stvec` points at a separate user trap entry and `sscratch` at
+  the context, so traps from the kernel pay nothing for user mode (the usual "`sscratch` is 0 in
+  the kernel" check would have added two instructions to every kernel trap). The entry saves
+  every register, the program's `tp` included, puts `stvec` back and returns with the kernel's
+  `tp` (the per-CPU block) restored from the kernel stack. `sret` goes to U-mode with `SPIE`
+  set; `sstatus.SUM` stays clear.
+- **x86_64.** Each CPU now has its own GDT (kernel code and data at the boot GDT's selectors,
+  user data 0x1b and user code 0x23 in the order `sysretq` needs, and a TSS) in the HAL part of
+  its per-CPU block, loaded in `set_cpu_local` with `ltr`, and `syscall` set up (`IA32_STAR`,
+  `IA32_LSTAR`, `IA32_FMASK` masking interrupts, trap, direction, alignment check and nested
+  task). `TSS.RSP0` points into the running program's context, so an interrupt from ring 3 pushes
+  its frame there and the entry pushes the rest after it; `syscall` builds the same frame. The
+  common entry tells the two apart by the pushed CS (`testb $3`) and runs `swapgs` only from ring
+  3. To pay for that test, a trap from the kernel now saves only the nine registers a call may
+  change: breakpoint and timer-interrupt round trips got faster (73 → 59 and 81 → 71
+  instructions). After a system call the program is entered with `sysretq`, otherwise with
+  `iretq`; `run_user` refuses a `rip` outside user space before entering, as both would fault in
+  ring 0, and sanitizes `rflags` (IOPL 0, interrupts on) and the selectors.
+- **Test program.** Each architecture's HAL carries a tiny position-independent program
+  (`Platform::user_test_program`) for the self-tests and benchmarks; the kernel copies it into a
+  zeroed frame, makes it visible to instruction fetch (`Platform::make_instructions_visible`: data
+  cache clean and instruction cache invalidate on AArch64, `fence.i` on RISC-V) and maps it
+  `USER_TEXT` (`kernel::user::TestProgram`).
+- **Testing.** Boot self-test `user_programs_make_system_calls_and_fault` on aarch64, riscv64 and
+  x86_64: the program's six arguments arrive, the result comes back, every register the ABI keeps
+  is unchanged across the call (it fails with one register restore removed on x86_64 and on
+  riscv64), a read of kernel memory is a data fault at that address that the kernel survives, a
+  timer interrupt takes the CPU back from a spinning program, and every frame is freed. Host
+  tests: the program's mapping and freeing, and the benchmark loop on a test platform.
+- **Cost (D24).** `syscall_round_trip`: about 106 (aarch64), 148 (riscv64) and 107 (x86_64)
+  instructions per null system call, with the program's setup amortized in. No other benchmark
+  moved except the x86_64 speedups above. 168 more bytes per CPU block on x86_64 (GDT, TSS, one
+  scratch word); about 300 bytes of test program per kernel image.
+- **Follow-ups (roadmap).** Processes that run their program in a loop and switch threads on an
+  interrupt exit (preemption on return to user mode); on x86_64, IST stacks for NMI, double fault,
+  machine check and debug exceptions, with the paranoid GS check, before any untrusted program
+  runs, since `syscall` and `sysretq` leave a moment in ring 0 on the program's stack (nothing
+  raises an NMI today); FP/SIMD state per thread; TLS registers; the Linux system calls (M6).
