@@ -1,5 +1,5 @@
 # EggOS
-AI-native operating system written from scratch in Rust, including its own Linux-compatible kernel; runs Windows, macOS, Android and iOS apps natively, without emulation; every feature is optional, so you install only what you choose; personal, professional, enterprise and server editions.
+AI-native operating system written from scratch in Rust, including its own Linux-compatible kernel; runs Windows, macOS, Android and iOS apps natively, without emulation; beyond a small base every feature is optional, so you install only what you choose; personal, professional, enterprise and server editions.
 
 100% open source under the [MIT License](LICENSE).
 
