@@ -70,8 +70,9 @@ impl Cpu {
 /// Every CPU the kernel knows, by index; set once, by [`start_secondaries`].
 #[derive(Debug)]
 pub struct CpuTable {
-    cpus: AtomicPtr<&'static Cpu>,
-    count: AtomicUsize,
+    /// A leaked slice of the CPUs, published with one store so that a reader never sees a
+    /// pointer and a length that do not belong together.
+    cpus: AtomicPtr<&'static [&'static Cpu]>,
     /// CPUs running the kernel's code, the boot CPU included.
     online: AtomicUsize,
 }
@@ -80,7 +81,6 @@ impl CpuTable {
     const fn new() -> Self {
         Self {
             cpus: AtomicPtr::new(ptr::null_mut()),
-            count: AtomicUsize::new(0),
             online: AtomicUsize::new(1),
         }
     }
@@ -89,12 +89,9 @@ impl CpuTable {
     /// until [`start_secondaries`].
     pub fn all(&self) -> &'static [&'static Cpu] {
         let cpus = self.cpus.load(Ordering::Acquire);
-        if cpus.is_null() {
-            return &[];
-        }
-        // SAFETY: `publish` stored a leaked slice of `count` CPUs, set once and never changed,
-        // with `count` written before the pointer (Release, read here with Acquire).
-        unsafe { core::slice::from_raw_parts(cpus, self.count.load(Ordering::Relaxed)) }
+        // SAFETY: `publish` stored a leaked slice, set once and never changed (Release, read
+        // here with Acquire).
+        unsafe { cpus.as_ref() }.copied().unwrap_or(&[])
     }
 
     /// CPUs running the kernel's code, the boot CPU included.
@@ -104,14 +101,9 @@ impl CpuTable {
 
     /// Publishes `cpus` as the table's CPUs; false if it already has some.
     fn publish(&self, cpus: &'static [&'static Cpu]) -> bool {
-        self.count.store(cpus.len(), Ordering::Relaxed);
+        let cpus: &'static mut &'static [&'static Cpu] = Box::leak(Box::new(cpus));
         self.cpus
-            .compare_exchange(
-                ptr::null_mut(),
-                cpus.as_ptr().cast_mut(),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            )
+            .compare_exchange(ptr::null_mut(), cpus, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
 }
@@ -153,7 +145,7 @@ pub enum StartError {
 
 /// What [`start_secondaries`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Started {
+pub struct StartSummary {
     /// CPUs asked to start, which then report in on their own (see [`CpuTable::online`]).
     pub started: usize,
     /// CPUs the firmware lists beyond [`CPU_LIMIT`], left stopped.
@@ -164,12 +156,12 @@ pub struct Started {
 /// page tables `roots`: numbers them from 1 in the firmware's order, publishes them in
 /// [`CPUS`], then starts each on a stack of its own, where it reports in and parks. Returns
 /// once every start is requested; the CPUs come online on their own. Stops at the first CPU
-/// that cannot be started; the CPUs started before it run.
+/// that cannot be started; the CPUs started before it run, and its stack stays allocated.
 ///
 /// # Safety
 /// `roots` must be the kernel's own page tables, active ([`crate::paging::enable`]) and
 /// allocated and unchanged from then on, as they are. [`init_boot_cpu`] must have run.
-pub unsafe fn start_secondaries<P: Platform>(roots: &[u64]) -> Result<Started, StartError> {
+pub unsafe fn start_secondaries<P: Platform>(roots: &[u64]) -> Result<StartSummary, StartError> {
     let mut ids = Vec::new();
     P::cpus(&mut |id| ids.push(id));
     let mut page_table_roots = [0; MAX_PAGE_TABLE_ROOTS];
@@ -198,7 +190,7 @@ fn start_with(
     page_table_roots: [u64; MAX_PAGE_TABLE_ROOTS],
     entry: extern "C" fn(usize) -> !,
     mut start_cpu: impl FnMut(u64, &CpuStart) -> Result<(), StartCpuError>,
-) -> Result<Started, StartError> {
+) -> Result<StartSummary, StartError> {
     let secondaries = ids.iter().filter(|&&id| id != boot.hardware_id());
     let listed = secondaries.clone().count();
     let count = listed.min(CPU_LIMIT - 1);
@@ -224,14 +216,12 @@ fn start_with(
             argument: ptr::from_ref(cpu) as usize,
             page_table_roots,
         }));
-        if let Err(error) = start_cpu(cpu.hardware_id(), start) {
-            // SAFETY: the CPU did not start, so nothing uses the stack: its frames came from
-            // `GlobalFrames` with this order just above.
-            unsafe { GlobalFrames.free_frames(stack, STACK_ORDER) };
-            return Err(StartError::Refused(cpu.hardware_id(), error));
-        }
+        // A refused CPU keeps its stack, like its `CpuStart`: on x86 a CPU that missed its
+        // deadline may still start late, and must not find the frames reused.
+        start_cpu(cpu.hardware_id(), start)
+            .map_err(|error| StartError::Refused(cpu.hardware_id(), error))?;
     }
-    Ok(Started {
+    Ok(StartSummary {
         started: count,
         left_stopped: listed - count,
     })
@@ -295,7 +285,7 @@ mod tests {
         });
         assert_eq!(
             started,
-            Ok(Started {
+            Ok(StartSummary {
                 started: 2,
                 left_stopped: 0
             })
@@ -312,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_cpu_stops_the_start_and_gets_its_stack_back() {
+    fn a_refused_cpu_stops_the_start_and_keeps_its_stack() {
         let _frames = frames_for_test();
         let (table, boot) = machine(0);
         let before = free_frames();
@@ -330,8 +320,8 @@ mod tests {
             Err(StartError::Refused(2, StartCpuError::InvalidCpu))
         );
         assert_eq!(starts, 2);
-        // CPU 1 keeps its stack; CPU 2's is freed and CPU 4's never taken.
-        assert_eq!(free_frames(), before - (1 << STACK_ORDER));
+        // CPUs 1 and 2 keep their stacks (2 might still start late); CPU 4's is never taken.
+        assert_eq!(free_frames(), before - (2 << STACK_ORDER));
         assert_eq!(table.online(), 1);
         assert_eq!(table.all().len(), 4);
     }
@@ -345,7 +335,7 @@ mod tests {
         });
         assert_eq!(
             started,
-            Ok(Started {
+            Ok(StartSummary {
                 started: 0,
                 left_stopped: 0
             })

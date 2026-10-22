@@ -138,7 +138,9 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
 /// "APIC") lists, in its order: each Processor Local APIC structure whose Enabled flag is set.
 /// Processors that are only online capable (hot-pluggable, not usable until enabled) are
 /// skipped, as are Processor Local x2APIC structures (type 9), which the specification uses for
-/// ids of 255 and up, beyond what xAPIC mode reaches. Stops at a malformed structure.
+/// ids of 255 and up, beyond what xAPIC mode reaches. A local APIC structure too short to hold
+/// its flags is skipped; a structure whose length runs past the table, or is below 2, ends the
+/// walk.
 pub fn madt_local_apic_ids(madt: &[u8], cpu: &mut dyn FnMut(u8)) {
     let mut at = MADT_ENTRIES;
     while let (Some(&kind), Some(&length)) = (madt.get(at), madt.get(at + 1)) {
@@ -277,8 +279,7 @@ mod tests {
     }
 
     fn madt_ids(body: &[u8]) -> Vec<u8> {
-        let mut madt = table(b"APIC", &[&[0u8; 8][..], body].concat());
-        madt.truncate(TABLE_HEADER_LENGTH + 8 + body.len());
+        let madt = table(b"APIC", &[&[0u8; 8][..], body].concat());
         let mut ids = Vec::new();
         madt_local_apic_ids(&madt, &mut |id| ids.push(id));
         ids

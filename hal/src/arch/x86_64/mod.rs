@@ -326,6 +326,7 @@ const LOW_MEMORY: PhysicalRange = PhysicalRange {
 /// the allocator never hands out. `start_cpu` checks the loader's memory map says it is RAM and
 /// holds none of the loader's data.
 const TRAMPOLINE: usize = 0x8000;
+const TRAMPOLINE_PAGE_SIZE: usize = 4096;
 
 /// Set once the trampoline is copied and the other CPUs are reset with INIT.
 static TRAMPOLINE_READY: AtomicBool = AtomicBool::new(false);
@@ -379,7 +380,7 @@ unsafe fn trampoline_word<T>(symbol: *const u8) -> &'static T {
 
 /// Whether the trampoline page is RAM in the loader's memory map and holds none of its data.
 fn trampoline_page_is_free() -> bool {
-    let page = PhysicalRange::from_start_length(TRAMPOLINE as u64, 4096);
+    let page = PhysicalRange::from_start_length(TRAMPOLINE as u64, TRAMPOLINE_PAGE_SIZE as u64);
     let Some(pvh) = PvhMemoryMap::read() else {
         return false;
     };
@@ -396,10 +397,10 @@ fn prepare_trampoline() -> Result<(), StartCpuError> {
     if TRAMPOLINE_READY.load(Ordering::Acquire) {
         return Ok(());
     }
-    if !trampoline_page_is_free() {
+    let length = trampoline_offset(&raw const eggos_trampoline_end);
+    if !trampoline_page_is_free() || length > TRAMPOLINE_PAGE_SIZE {
         return Err(StartCpuError::Refused(0));
     }
-    let length = trampoline_offset(&raw const eggos_trampoline_end);
     // SAFETY: the trampoline page is RAM that the allocator never hands out (`LOW_MEMORY`) and
     // that holds none of the loader's data (checked above); the direct map makes it writable.
     // The source is the trampoline in `.rodata`, `length` bytes, at most a page.
@@ -407,7 +408,7 @@ fn prepare_trampoline() -> Result<(), StartCpuError> {
         core::ptr::copy_nonoverlapping(
             &raw const eggos_trampoline_start,
             (DIRECT_MAP_OFFSET + TRAMPOLINE) as *mut u8,
-            length.min(4096),
+            length,
         );
     }
     timer::send_init_to_others();

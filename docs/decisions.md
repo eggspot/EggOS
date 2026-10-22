@@ -907,7 +907,9 @@ run queues) is the next step.
 - **Parking.** A secondary CPU sets its per-CPU register, marks its block online, counts
   itself in `CPUS.online()` and parks with interrupts masked. It prints nothing (the early
   console has no lock) and must not touch the scheduler, which is still one CPU's. Its 16 KiB
-  stack, from the buddy allocator, is kept: it becomes the CPU's idle thread's.
+  stack, from the buddy allocator, is kept: it becomes the CPU's idle thread's. A CPU the
+  firmware refuses keeps its stack too (an x86 CPU that missed its deadline may start late),
+  and the start stops there.
 - **Testing.** Host unit tests: the `/cpus` walker (enabled CPUs only, one- and two-cell ids,
   `cpu-map` and nested nodes skipped, malformed trees rejected), MADT parsing (enabled local
   APICs only, malformed structures stop the walk), the local APIC's INIT and start-up commands,
