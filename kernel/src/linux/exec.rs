@@ -263,10 +263,11 @@ fn load_bias(elf: &Elf<'_>, user_end: u64) -> Result<u64, ExecError> {
     Ok(pie_base(user_end, align).wrapping_sub(lowest & !(align - 1)))
 }
 
-/// Checks a `LOAD` segment with memory: its access, its file bytes within `image`, its file
-/// offset and address equal within a page (each page maps one page of the file), and, moved by
-/// `bias`, its memory within user space at or above [`MINIMUM_ADDRESS`] and below the stack's
-/// reserve. Returns its (start, end) in memory.
+/// Checks a `LOAD` segment with memory: its access; if it has file bytes, that they are within
+/// `image` and that its file offset and address are equal within a page (each page maps one
+/// page of the file); and its memory within user space, before and after the move by `bias`,
+/// at or above [`MINIMUM_ADDRESS`] and below the stack's reserve. Returns its (start, end) in
+/// memory.
 fn check_segment(
     image: &[u8],
     header: &ProgramHeader,
@@ -279,21 +280,27 @@ fn check_segment(
             "a segment with more file bytes than memory",
         ));
     }
-    if header.file_bytes(image).is_none() {
-        return Err(ExecError::InvalidProgram(
-            "a segment is not within the image",
-        ));
+    // A segment without file bytes is zero pages alone: its offset means nothing.
+    if header.file_size > 0 {
+        if header.file_bytes(image).is_none() {
+            return Err(ExecError::InvalidProgram(
+                "a segment is not within the image",
+            ));
+        }
+        if header.offset % FRAME_SIZE != header.virt % FRAME_SIZE {
+            return Err(ExecError::InvalidProgram(
+                "a segment whose file offset and address differ within a page",
+            ));
+        }
     }
-    if header.offset % FRAME_SIZE != header.virt % FRAME_SIZE {
-        return Err(ExecError::InvalidProgram(
-            "a segment whose file offset and address differ within a page",
-        ));
-    }
+    // Within user space before the bias too: a position-independent program's segments are
+    // then less than `user_end` above its lowest, so moving them to the PIE base (below
+    // `user_end`) cannot wrap around.
     let start = header.virt.wrapping_add(bias);
     let limit = user_end - STACK_RESERVE - STACK_GUARD_GAP;
     let end = start
         .checked_add(header.memory_size)
-        .filter(|&end| end <= limit && start < limit)
+        .filter(|&end| end <= limit && start < limit && header.virt < user_end)
         .ok_or(ExecError::InvalidSegment(
             "a segment past the end of user space or in the stack's reserve",
         ))?;
@@ -305,7 +312,8 @@ fn check_segment(
 
 /// Maps a checked `LOAD` segment ([`check_segment`]), moved by `bias`: every page it touches
 /// gets a frame of its own with the file's bytes for that page (from the page's start, as a
-/// file mapping has them) and zero after the segment's file bytes.
+/// file mapping has them) and zero after the segment's file bytes; one without file bytes is
+/// all zero.
 fn map_segment<P: Platform>(
     process: &mut Process<P>,
     image: &[u8],
@@ -318,9 +326,13 @@ fn map_segment<P: Platform>(
     // The segment's file bytes, from the start of its first page: the image holds the bytes
     // of that page before the segment just before them (checked: the offset and the address
     // are equal within a page, and the bias is page-aligned).
-    let head = (start - first_page) as usize;
-    let from = header.offset as usize - head;
-    let bytes = &image[from..header.offset as usize + header.file_size as usize];
+    let bytes = if header.file_size == 0 {
+        &[][..]
+    } else {
+        let head = (start - first_page) as usize;
+        let from = header.offset as usize - head;
+        &image[from..header.offset as usize + header.file_size as usize]
+    };
     let end = start + header.memory_size;
     for (index, page) in (first_page..end).step_by(FRAME_SIZE as usize).enumerate() {
         let offset = (index * FRAME_SIZE as usize).min(bytes.len());
@@ -711,6 +723,24 @@ mod tests {
     }
 
     #[test]
+    fn a_segment_without_file_bytes_is_zero_pages_wherever_its_offset_points() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let good = linux_start_image::<P>();
+        let image = with_header(&good, 2, |h| {
+            h.offset = 1 << 40;
+            h.file_size = 0;
+        });
+        let (process, context) = load_image(&kernel, &image);
+        context.unwrap();
+        let mut data = alloc::vec![0xff; LINUX_START_DATA_SIZE as usize];
+        process
+            .read_user_memory(LINUX_START_DATA & !(FRAME_SIZE - 1), &mut data)
+            .unwrap();
+        assert!(data.iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
     fn the_pie_base_is_two_thirds_up_and_aligned() {
         use eggos_hal::paging::{aarch64::Aarch64, riscv64::Riscv64Sv39, x86_64::X86_64};
         assert_eq!(pie_base(X86_64::USER_END, FRAME_SIZE), 0x5555_5540_0000);
@@ -796,6 +826,17 @@ mod tests {
             assert_eq!(before - free(), 1, "case {index}");
             drop(process);
         }
+        // A position-independent program whose second segment is so far above its first that
+        // the move would wrap around to a valid-looking address.
+        let mut pie = with_header(&good, 2, |h| h.virt = 0u64.wrapping_sub(0x10_0000) | 0x123);
+        pie[16..18].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(
+            load_image(&kernel, &pie)
+                .1
+                .map_err(ExecError::errno)
+                .map(|_| ()),
+            Err(Errno::EINVAL)
+        );
         // Program headers outside every segment.
         let outside = with_header(&good, 1, |h| {
             h.offset = FRAME_SIZE;

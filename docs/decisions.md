@@ -1543,8 +1543,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
     PIE startup calls `mprotect` on its RELRO region and dies if that fails; musl's does not.
   - **Segments** must be in ascending order without sharing a page (eager per-page mapping
     cannot honour two attribute sets on one page), with file offset and address equal within a
-    page, file bytes within the image (`ENOEXEC`), no more file bytes than memory, and within
-    user space below the stack's reserve (`EINVAL`, as Linux).
+    page and file bytes within the image (`ENOEXEC`; a segment without file bytes is zero
+    pages alone and its offset is not checked, as on Linux), no more file bytes than memory,
+    and within user space below the stack's reserve, before the PIE move as well as after, so
+    the move cannot wrap around (`EINVAL`, as Linux).
   - **`AT_PHDR`** is where the `LOAD` segment whose file bytes hold the whole program header
     table maps it, as Linux computes it; stricter than Linux, a table in no segment is refused
     (musl reads `AT_PHDR` unchecked), and so is a `PT_PHDR` that names another address (static
