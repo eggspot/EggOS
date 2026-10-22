@@ -74,7 +74,7 @@ impl<'a> Fdt<'a> {
             return Err(Error::UnsupportedVersion);
         }
         // The specification aligns the reservation block to 8 bytes and the structure block
-        // to 4, so every read below is aligned (the AArch64 kernel is built with `strict-align`, D10).
+        // to 4, so every read below is aligned (the AArch64 kernel is built `strict-align`, D10).
         if !field(16)?.is_multiple_of(8) || !field(8)?.is_multiple_of(4) {
             return Err(Error::Malformed);
         }
