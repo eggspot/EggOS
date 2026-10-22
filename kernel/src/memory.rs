@@ -1,12 +1,13 @@
 //! Physical memory: the frame allocator.
 //!
-//! The first allocator is a bump allocator over the free ranges of the boot memory map plus a
+//! Single frames come from a bump allocator over the free ranges of the boot memory map plus a
 //! stack of freed frames (D28). Building it costs nothing per frame, so boot time does not grow
-//! with RAM size and no metadata memory is spent; allocating and freeing a frame are each a
-//! handful of instructions. A frame never handed out is never touched. Freed frames are linked
-//! through their own first word, which the kernel reaches through the platform's physical
-//! memory offset. Contiguous multi-frame allocation (DMA, huge pages) comes with the buddy
-//! allocator that replaces this one; the interface stays.
+//! with RAM size; allocating and freeing a frame are each a handful of instructions. A frame
+//! never handed out is never touched. Freed frames are linked through their own first word,
+//! which the kernel reaches through the platform's physical memory offset. Blocks of
+//! contiguous frames (heap allocations over a frame, DMA, huge pages) come from a buddy
+//! allocator behind those fast paths, whose one bit of metadata per frame is written only once
+//! it is first used (D31).
 
 use crate::paging::PageTables;
 use crate::sync::SpinLock;
@@ -160,8 +161,8 @@ impl FrameAllocator {
     /// undefined.
     ///
     /// Not a hot path: it tries the buddy allocator's free blocks, then carves the block from
-    /// untouched memory, then moves every frame on the free stack into the buddy allocator,
-    /// where freed neighbours merge, and tries again.
+    /// untouched memory, then moves frames from the free stack into the buddy allocator, where
+    /// freed neighbours merge, until a block of `order` forms.
     pub fn allocate_contiguous(&mut self, order: u32) -> Option<u64> {
         if order == 0 {
             return self.allocate();
@@ -219,31 +220,28 @@ impl FrameAllocator {
             let start = range.end.checked_sub(size)? / size * size;
             (start >= range.start).then_some(start)
         };
-        let (index, block) = core::iter::once(MAX_RANGES)
-            .chain((0..self.untouched_ranges).rev())
+        // `None` is `current`, `Some(i)` the untouched range `i`; highest first.
+        let (index, block) = core::iter::once(None)
+            .chain((0..self.untouched_ranges).rev().map(Some))
             .find_map(|index| {
-                let range = if index == MAX_RANGES {
-                    &self.current
-                } else {
-                    &self.untouched[index]
-                };
+                let range = index.map_or(&self.current, |i| &self.untouched[i]);
                 Some((index, fits(range)?))
             })?;
-        let range = if index == MAX_RANGES {
-            &mut self.current
-        } else {
-            &mut self.untouched[index]
+        let range = match index {
+            None => &mut self.current,
+            Some(i) => &mut self.untouched[i],
         };
         let above = PhysicalRange {
             start: block + size,
             end: range.end,
         };
         range.end = block;
-        if index != MAX_RANGES && range.is_empty() {
+        if let Some(i) = index
+            && self.untouched[i].is_empty()
+        {
             // Only `current` may be empty: `allocate` moves on to the next range without
             // checking it.
-            self.untouched
-                .copy_within(index + 1..self.untouched_ranges, index);
+            self.untouched.copy_within(i + 1..self.untouched_ranges, i);
             self.untouched_ranges -= 1;
         }
         let mut buddy = self.buddy_memory();
