@@ -419,13 +419,24 @@ impl Platform for Riscv64 {
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        let before: u64;
         // SAFETY: `sstatus.SUM` only widens what S-mode may load and store to U-mode pages; it
-        // is cleared again below, and nothing else in the kernel sets it. No `nomem`: the
-        // accesses in `access` must not move out of the window.
-        unsafe { core::arch::asm!("csrs sstatus, {}", in(reg) SSTATUS_SUM, options(nostack)) };
+        // goes back to what it was below (clear unless an outer window is open), and nothing
+        // else in the kernel sets it. No `nomem`: the accesses in `access` must not move out of
+        // the window.
+        unsafe {
+            core::arch::asm!(
+                "csrrs {before}, sstatus, {sum}",
+                before = out(reg) before,
+                sum = in(reg) SSTATUS_SUM,
+                options(nostack),
+            );
+        }
         let result = access();
-        // SAFETY: as above.
-        unsafe { core::arch::asm!("csrc sstatus, {}", in(reg) SSTATUS_SUM, options(nostack)) };
+        if before & SSTATUS_SUM == 0 {
+            // SAFETY: as above: closes the window this call opened.
+            unsafe { core::arch::asm!("csrc sstatus, {}", in(reg) SSTATUS_SUM, options(nostack)) };
+        }
         result
     }
 

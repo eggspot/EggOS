@@ -110,11 +110,16 @@ impl<F: Format> PageTables<F> {
     /// [`Self::map`]): a kernel-half entry added later would be missing here. The new tables
     /// map and unmap only user mappings ([`Attributes::user`]) in the low half
     /// ([`MapError::NotUser`] otherwise), so the kernel half stays the kernel's. Free the low
-    /// half with [`Self::free_user_half`].
+    /// half with [`Self::free_user_half`]. `kernel` must be kernel tables marked active
+    /// ([`Self::mark_active`]), so frozen; anything else stops the kernel.
     pub fn new_sharing_kernel_half(
         kernel: &Self,
         frames: &mut FrameAllocator,
     ) -> Result<Self, MapError> {
+        assert!(
+            kernel.active && !kernel.user_half_only,
+            "an address space shares only the kernel's active tables"
+        );
         let user_root = F::root(0).expect("address 0 is valid on every format");
         let mut roots = kernel.roots;
         roots[user_root] = new_table(frames)?;

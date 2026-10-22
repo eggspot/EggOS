@@ -1166,8 +1166,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   x86_64 the lower 128 TiB, RISC-V Sv39 the lower 256 GiB). The kernel half is shared: on AArch64
   the kernel's `TTBR1_EL1` root itself, with one root (RISC-V, x86_64) copies of the kernel root's
   upper entries, which point to the same tables. That is sound because the kernel's tables never
-  change once active (`PageTables::map` refuses), so every kernel-half table exists from boot.
-  Its tables (`PageTables::new_sharing_kernel_half`) map and unmap only user mappings, only in
+  change once active (`PageTables::map` refuses), so every kernel-half table exists from boot;
+  sharing refuses tables not marked active, and `AddressSpace::new` is `unsafe`: its caller
+  vouches that the tables are the kernel's own, active on every CPU, since switching loads roots
+  whose kernel half is copied from them. Its tables (`PageTables::new_sharing_kernel_half`) map and unmap only user mappings, only in
   the low half (`MapError::NotUser` otherwise), so nothing reaches the shared kernel half through
   them; they unmap whole leaves (`NotMapped`, `PartOfLargePage`), and the address space frees its
   low half's tables when dropped (`free_user_half`, `unsafe`, refusing the kernel's tables); the
@@ -1188,7 +1190,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   switch both ways drops what was cached: no per-page TLB maintenance and no cross-CPU shootdown
   are needed yet.
 - **Kernel access to user memory.** Only inside `Platform::with_user_access`: on RISC-V it sets
-  `sstatus.SUM` for that closure alone, so a stray kernel pointer into user space faults. PAN
+  `sstatus.SUM` for that closure alone (restoring what it was, so windows nest), so a stray kernel pointer into user space faults. PAN
   (AArch64) and SMAP/SMEP (x86_64) are not turned on yet (QEMU's `cortex-a72` and default x86 CPU
   lack them); when they are, they are lifted in the same place.
 - **Testing.** Host unit tests: every format's user encodings and round trips; on every format,

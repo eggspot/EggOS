@@ -35,9 +35,14 @@ pub struct AddressSpace<P: Platform> {
 }
 
 impl<P: Platform> AddressSpace<P> {
-    /// An empty address space sharing the kernel half of `kernel`, the kernel's active tables;
-    /// its tables come from the kernel's frame allocator ([`memory::FRAMES`]).
-    pub fn new(kernel: &PageTables<P::PageTableFormat>) -> Result<Self, MapError> {
+    /// An empty address space sharing the kernel half of `kernel`; its tables come from the
+    /// kernel's frame allocator ([`memory::FRAMES`]).
+    ///
+    /// # Safety
+    /// `kernel` must be the kernel's own page tables, active on every CPU that runs
+    /// [`Self::with_active`] (the tables [`crate::paging::enable`] activated): `with_active`
+    /// loads roots whose kernel half is copied from them, and switches back to them.
+    pub unsafe fn new(kernel: &PageTables<P::PageTableFormat>) -> Result<Self, MapError> {
         let mut frames = memory::FRAMES.lock();
         let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
         let tables = PageTables::new_sharing_kernel_half(kernel, frames)?;
@@ -87,17 +92,19 @@ impl<P: Platform> AddressSpace<P> {
         let here = cpu::current::<P>();
         // SAFETY: interrupts are masked (the caller's duty, as the kernel runs). The tables
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
-        // active one (`new_sharing_kernel_half`); `&self` keeps them allocated and unchanged
-        // until the switch back below. Nothing points into the kernel's low half, which is
-        // empty.
+        // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
+        // which `new_sharing_kernel_half` shared (it refuses tables not marked active, which
+        // never change); `&self` keeps them allocated and unchanged until the switch back
+        // below. Nothing points into the kernel's low half, which is empty.
         unsafe { P::switch_address_space(self.tables.roots()) };
         let result = active();
         assert!(
             ptr::eq(cpu::current::<P>(), here),
             "a thread left its CPU while an address space was active there"
         );
-        // SAFETY: as above, back to the kernel's own tables, which stay active for as long as
-        // the kernel runs; `active` has returned, so nothing uses this address space's low half.
+        // SAFETY: as above, back to the kernel's own tables (`new`'s contract), which stay
+        // allocated for as long as the kernel runs; `active` has returned, so nothing uses this
+        // address space's low half.
         unsafe { P::switch_address_space(&self.kernel_roots[..self.tables.roots().len()]) };
         result
     }
@@ -155,11 +162,27 @@ mod tests {
         tables
     }
 
+    fn new_space(kernel: &PageTables<Format>) -> Result<AddressSpace<P>, MapError> {
+        // SAFETY: the test platform's switch only records the root; `kernel` stands in for the
+        // kernel's active tables (marked active).
+        unsafe { AddressSpace::new(kernel) }
+    }
+
+    #[test]
+    #[should_panic(expected = "an address space shares only the kernel's active tables")]
+    fn tables_not_active_are_never_shared() {
+        let _frames = frames_for_test();
+        let mut frames = FRAMES.lock();
+        let tables = PageTables::<Format>::new(frames.as_mut().unwrap()).unwrap();
+        drop(frames);
+        let _ = new_space(&tables);
+    }
+
     #[test]
     fn a_new_address_space_shares_the_kernel_half_and_maps_nothing_below() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let space = AddressSpace::<P>::new(&kernel).unwrap();
+        let space = new_space(&kernel).unwrap();
         assert_ne!(space.tables.roots(), kernel.roots());
         assert_eq!(space.translate(KERNEL_VIRT), kernel.translate(KERNEL_VIRT));
         assert_eq!(space.translate(USER_VIRT), None);
@@ -170,7 +193,7 @@ mod tests {
     fn user_pages_map_and_unmap_in_the_low_half_only() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let mut space = AddressSpace::<P>::new(&kernel).unwrap();
+        let mut space = new_space(&kernel).unwrap();
         space
             .map(
                 USER_VIRT,
@@ -217,7 +240,7 @@ mod tests {
     fn unmapping_part_of_a_large_page_fails_and_the_whole_page_unmaps() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let mut space = AddressSpace::<P>::new(&kernel).unwrap();
+        let mut space = new_space(&kernel).unwrap();
         let large = leaf_size(1);
         space
             .map(large, 0x4000_0000, large, Attributes::USER_READ_ONLY)
@@ -241,7 +264,7 @@ mod tests {
         let kernel = kernel_tables();
         let before = free_frames();
         {
-            let mut space = AddressSpace::<P>::new(&kernel).unwrap();
+            let mut space = new_space(&kernel).unwrap();
             // Pages far apart, so each needs tables of its own at every level.
             for (i, virt) in [0, USER_VIRT, 1 << 30, 1 << 39, (1 << 47) - FRAME_SIZE]
                 .into_iter()
@@ -270,7 +293,7 @@ mod tests {
     fn with_active_switches_to_the_address_space_and_back_to_the_kernel() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let space = AddressSpace::<P>::new(&kernel).unwrap();
+        let space = new_space(&kernel).unwrap();
         let root = space.with_active(active_root);
         assert_eq!(root, space.tables.roots()[0]);
         assert_eq!(active_root(), kernel.roots()[0]);
@@ -280,7 +303,7 @@ mod tests {
     fn user_attributes_survive_the_round_trip_through_the_tables() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let mut space = AddressSpace::<P>::new(&kernel).unwrap();
+        let mut space = new_space(&kernel).unwrap();
         for (i, attributes) in [
             Attributes::USER_TEXT,
             Attributes::USER_READ_ONLY,

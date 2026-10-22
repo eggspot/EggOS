@@ -442,7 +442,10 @@ fn address_spaces_keep_user_pages_apart<P: Platform>(
         space.with_active(|| P::with_user_access(|| unsafe { word.read_volatile() }))
     };
     let result = (|| {
-        let new = || AddressSpace::<P>::new(&memory.page_tables).map_err(|e| e.description());
+        // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable`
+        // activated on this CPU, and every CPU started since runs on them.
+        let new =
+            || unsafe { AddressSpace::<P>::new(&memory.page_tables) }.map_err(|e| e.description());
         let mut spaces = [new()?, new()?];
         for (space, page) in spaces.iter_mut().zip(pages) {
             space
