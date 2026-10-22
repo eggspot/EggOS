@@ -55,7 +55,9 @@ impl fmt::Display for ThreadId {
 /// Why [`spawn`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnError {
-    /// No frames for the stack, or no heap for the thread's bookkeeping.
+    /// No frames for the stack, or no heap to grow the run queue. (The thread's own small
+    /// allocations are infallible, like every `Box`: the heap running out there stops the
+    /// kernel.)
     OutOfMemory,
 }
 
@@ -254,6 +256,14 @@ impl JoinHandle {
 
     /// Runs other threads until this one has exited and its stack is freed.
     pub fn join<P: Platform>(self) {
+        debug_assert!(
+            SCHEDULER
+                .lock()
+                .current
+                .as_ref()
+                .is_none_or(|thread| thread.get().id != self.id),
+            "a thread joined itself, which never returns"
+        );
         while !self.is_finished() {
             yield_now::<P>();
         }
@@ -542,7 +552,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "overflowed its stack")]
-    fn an_overflowed_stack_stops_the_kernel_at_the_next_switch() {
+    fn a_clobbered_canary_stops_the_kernel_when_checked() {
         // No scheduler and no frame allocator: the thread never runs, and its stack is leaked
         // host memory, which must not reach the frame allocator, so the thread is never dropped.
         let memory = Box::leak(Box::new([0u64; STACK_SIZE / 8]));

@@ -678,7 +678,8 @@ First step of M4.
   r12-r15; aarch64 x19-x30; riscv64 ra, s0-s11), stores the stack pointer, loads the other
   thread's, pops and returns into it. No FP/SIMD registers: the kernel is soft-float on
   x86_64 and aarch64 and runs with the FPU off on riscv64; when user threads bring FP state,
-  it is saved lazily on the user/kernel boundary, not here. A new thread's initial frame is
+  it is saved lazily on the user/kernel boundary, not here (should the kernel itself ever turn
+  the riscv64 FPU on, the switch must save fs0-fs11 too). A new thread's initial frame is
   what a switch would have left, returning into a per-architecture trampoline that calls
   `entry(argument)` with the stack 16-byte aligned. The shared layout code is
   `eggos_hal::thread`, unit-tested on the host.
