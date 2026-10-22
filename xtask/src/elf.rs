@@ -17,6 +17,8 @@ const DATA_LITTLE_ENDIAN: u8 = 1;
 const DATA_BIG_ENDIAN: u8 = 2;
 const SECTION_TYPE_SYMTAB: u32 = 2;
 const SEGMENT_TYPE_LOAD: u32 = 1;
+/// `st_shndx` of a symbol that is referenced but not defined in this image.
+const SECTION_INDEX_UNDEFINED: u16 = 0;
 const SECTION_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const SYMBOL_SIZE: usize = 24;
@@ -92,29 +94,51 @@ impl<'a> Elf<'a> {
         })
     }
 
-    /// Offsets of the `count` table entries of `entry_size` bytes starting at `table`.
-    fn entries(table: u64, count: u64, entry_size: usize) -> impl Iterator<Item = u64> + use<> {
-        (0..count).map(move |index| table + index * entry_size as u64)
+    /// Offsets of the `count` table entries of `entry_size` bytes starting at `table`, after
+    /// checking that the whole table lies inside the image (so adding a field offset within
+    /// an entry cannot overflow).
+    fn entries(
+        &self,
+        table: u64,
+        count: u64,
+        entry_size: usize,
+    ) -> Result<impl Iterator<Item = u64> + use<>, String> {
+        let size = entry_size as u64;
+        let end = count
+            .checked_mul(size)
+            .and_then(|bytes| table.checked_add(bytes));
+        if end.is_none_or(|end| end > self.image.len() as u64) {
+            return Err(format!(
+                "ELF table at {table:#x} runs past the end of the image"
+            ));
+        }
+        Ok((0..count).map(move |index| table + index * size))
     }
 
     /// The value (address) and size of the symbol called `name`, from the `.symtab` section.
+    /// Undefined symbols (section index 0) do not count.
     fn symbol(&self, name: &str) -> Result<Option<(u64, u64)>, String> {
         let section_table = self.u64(0x28)?;
         let section_count = self.u16(0x3c)?.into();
-        for section in Self::entries(section_table, section_count, SECTION_HEADER_SIZE) {
+        for section in self.entries(section_table, section_count, SECTION_HEADER_SIZE)? {
             if self.u32(section + 4)? != SECTION_TYPE_SYMTAB {
                 continue;
             }
             let symbols = self.u64(section + 24)?;
             let symbols_size = self.u64(section + 32)?;
             // `sh_link` names the string table holding the symbol names.
-            let strings_section =
-                section_table + u64::from(self.u32(section + 40)?) * SECTION_HEADER_SIZE as u64;
+            let link = u64::from(self.u32(section + 40)?);
+            let strings_section = self
+                .entries(section_table, section_count, SECTION_HEADER_SIZE)?
+                .nth(link as usize)
+                .ok_or_else(|| format!("symbol table links to missing section {link}"))?;
             let strings = self.u64(strings_section + 24)?;
             let count = symbols_size / SYMBOL_SIZE as u64;
-            for symbol in Self::entries(symbols, count, SYMBOL_SIZE) {
-                let name_offset = strings + u64::from(self.u32(symbol)?);
-                if self.c_string_is(name_offset, name)? {
+            for symbol in self.entries(symbols, count, SYMBOL_SIZE)? {
+                let name_offset = strings.saturating_add(self.u32(symbol)?.into());
+                if self.u16(symbol + 6)? != SECTION_INDEX_UNDEFINED
+                    && self.c_string_is(name_offset, name)?
+                {
                     return Ok(Some((self.u64(symbol + 8)?, self.u64(symbol + 16)?)));
                 }
             }
@@ -137,14 +161,18 @@ impl<'a> Elf<'a> {
     fn physical_address(&self, address: u64) -> Result<Option<u64>, String> {
         let segment_table = self.u64(0x20)?;
         let segment_count = self.u16(0x38)?.into();
-        for segment in Self::entries(segment_table, segment_count, PROGRAM_HEADER_SIZE) {
+        for segment in self.entries(segment_table, segment_count, PROGRAM_HEADER_SIZE)? {
             if self.u32(segment)? != SEGMENT_TYPE_LOAD {
                 continue;
             }
             let virtual_start = self.u64(segment + 16)?;
             let memory_size = self.u64(segment + 40)?;
             if (virtual_start..virtual_start.saturating_add(memory_size)).contains(&address) {
-                return Ok(Some(self.u64(segment + 24)? + (address - virtual_start)));
+                let physical_start = self.u64(segment + 24)?;
+                return physical_start
+                    .checked_add(address - virtual_start)
+                    .map(Some)
+                    .ok_or_else(|| format!("segment at physical {physical_start:#x} overflows"));
             }
         }
         Ok(None)
@@ -186,10 +214,12 @@ mod tests {
         put(0x140 + 40, 2, 4);
         // Section 2: the string table at 0x1c0.
         put(0x180 + 24, 0x1c0, 8);
-        // Symbol 1: `other`; symbol 2: `probe`.
+        // Symbol 1: `other`; symbol 2: `probe`; both defined in section 1.
         put(0x80 + 24, 1, 4);
+        put(0x80 + 24 + 6, 1, 2);
         put(0x80 + 24 + 8, 0xffff_0000_0000_1000, 8);
         put(0x80 + 48, 7, 4);
+        put(0x80 + 48 + 6, 1, 2);
         put(0x80 + 48 + 8, 0xffff_0000_0000_1010, 8);
         put(0x80 + 48 + 16, 32, 8);
         out[..6].copy_from_slice(&[
@@ -252,5 +282,27 @@ mod tests {
         outside[0x80 + 48 + 8..0x80 + 48 + 16]
             .copy_from_slice(&0xffff_0000_0000_3000u64.to_le_bytes());
         assert!(find_symbol(&outside, "probe").is_err());
+    }
+
+    #[test]
+    fn an_undefined_symbol_does_not_count() {
+        let mut undefined = image(false);
+        undefined[0x80 + 48 + 6..0x80 + 48 + 8].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            find_symbol(&undefined, "probe"),
+            Err("no symbol `probe` in the kernel image".into())
+        );
+    }
+
+    #[test]
+    fn a_table_past_the_end_of_the_image_is_an_error_not_an_overflow() {
+        let mut huge = image(false);
+        // A section table offset whose end overflows u64, then a section count whose table
+        // ends past the image.
+        huge[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(find_symbol(&huge, "probe").is_err());
+        let mut many = image(false);
+        many[0x3c..0x3e].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(find_symbol(&many, "probe").is_err());
     }
 }
