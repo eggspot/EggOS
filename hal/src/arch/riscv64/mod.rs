@@ -86,10 +86,11 @@ _start:
     // From here on the kernel runs at its virtual address, and `lla` gives virtual addresses.
 4:  lla     sp, __stack_top
 
-    // FPU off: the kernel uses no FP registers and the trap entry does not save them, so any
-    // FP instruction traps as illegal. Then the trap vector, before any Rust code runs, and
+    // FPU and vector unit off (FS and VS = Off; VS reads as zero without V): the kernel uses
+    // neither and the trap entry saves neither, so any FP or vector instruction traps as
+    // illegal, in U-mode too (D49). Then the trap vector, before any Rust code runs, and
     // the timer.
-    li      t0, 3 << 13
+    li      t0, (3 << 13) | (3 << 9)
     csrc    sstatus, t0
     lla     t0, exception_entry
     csrw    stvec, t0
@@ -124,7 +125,7 @@ eggos_secondary_start:
     .balign 8
 10: .dword  11f
 11: ld      sp, {start_stack_top}(s1)
-    li      t0, 3 << 13
+    li      t0, (3 << 13) | (3 << 9)
     csrc    sstatus, t0
     lla     t0, exception_entry
     csrw    stvec, t0

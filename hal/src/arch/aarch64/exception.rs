@@ -7,7 +7,8 @@
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
 //! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` included, into its
 //! `UserContext`, where `SP_EL1` points while it runs, and returns from [`run_user`] instead.
-//! The kernel uses no FP/SIMD registers (D10), so they are not saved.
+//! The kernel uses no FP/SIMD registers (D10), so they are not saved, and programs may not use
+//! them either: `CPACR_EL1` traps them at EL0 (D49).
 
 use super::timer;
 use crate::Interrupt;
@@ -99,6 +100,8 @@ exception_common:
     ldp     x0, x1, [sp, #0]
     add     sp, sp, #{frame_size}
     eret
+    dsb     nsh                     // never reached: as after the user-mode `eret`
+    isb
 
     // The rest of the way out of EL0: save the program's registers in its `UserContext`
     // (`sp`), record the vector entry, then return from `aarch64_enter_user` on the kernel
@@ -213,6 +216,9 @@ aarch64_user_test_checks:
     svc     #0
     ldr     x1, [x0]
 1:  b       1b
+    .global aarch64_user_test_floating_point
+aarch64_user_test_floating_point:
+    .inst   0x9e6703e0              // fmov d0, xzr, spelled out: the target has no FP
     .global aarch64_user_test_null_syscalls
 aarch64_user_test_null_syscalls:
     mov     x8, #{syscall_null}
@@ -248,6 +254,7 @@ const _: () = assert!(core::mem::size_of::<TrapFrame>() == 272);
 
 /// Exception classes (`ESR_EL1.EC`, Arm ARM D24.2.40).
 const EC_UNKNOWN: u64 = 0x00;
+const EC_FP_ACCESS: u64 = 0x07;
 const EC_ILLEGAL_STATE: u64 = 0x0e;
 const EC_SVC64: u64 = 0x15;
 const EC_INSTRUCTION_ABORT_LOWER: u64 = 0x20;
@@ -295,6 +302,7 @@ unsafe extern "C" {
     fn aarch64_enter_user(context: *mut user::aarch64::Registers);
     static aarch64_user_test_start: u8;
     static aarch64_user_test_checks: u8;
+    static aarch64_user_test_floating_point: u8;
     static aarch64_user_test_null_syscalls: u8;
     static aarch64_user_test_spin: u8;
     static aarch64_user_test_end: u8;
@@ -345,6 +353,7 @@ pub(super) fn user_test_program() -> TestProgram {
     TestProgram {
         code,
         checks: (&raw const aarch64_user_test_checks) as usize - start,
+        floating_point: (&raw const aarch64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const aarch64_user_test_null_syscalls) as usize - start,
         spin: (&raw const aarch64_user_test_spin) as usize - start,
     }
@@ -418,6 +427,7 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
 fn synchronous_kind(class: u64) -> (ExceptionKind, &'static str) {
     match class {
         EC_UNKNOWN => (ExceptionKind::IllegalInstruction, "undefined instruction"),
+        EC_FP_ACCESS => (ExceptionKind::IllegalInstruction, "SIMD/FP access trap"),
         EC_ILLEGAL_STATE => (ExceptionKind::IllegalInstruction, "illegal execution state"),
         EC_SVC64 => (ExceptionKind::Other, "supervisor call (svc)"),
         EC_INSTRUCTION_ABORT_LOWER | EC_INSTRUCTION_ABORT => {

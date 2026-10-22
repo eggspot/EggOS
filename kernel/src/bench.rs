@@ -434,6 +434,7 @@ mod tests {
             eggos_hal::user::TestProgram {
                 code: &[0; 4],
                 checks: 0,
+                floating_point: 0,
                 null_syscalls: 0,
                 spin: 0,
             }

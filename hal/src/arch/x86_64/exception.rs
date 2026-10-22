@@ -12,7 +12,8 @@
 //! into the running program's `UserContext`: the entry saves every register there, switches
 //! back to the kernel's GS base and returns from [`run_user`]; `syscall` builds the same frame
 //! and joins it. The kernel target uses no SSE/x87 registers (`x86_64-unknown-none` is
-//! soft-float), so they are not saved.
+//! soft-float), so they are not saved, and programs may not use them either: `CR0.TS` traps
+//! them (D49).
 //!
 //! All exceptions run on the current stack: there is no IST stack yet, so a stack overflow
 //! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
@@ -120,6 +121,7 @@ exception_common:
     popq    %rax
     addq    $16, %rsp               // vector and error code
     iretq
+    int3                            // never runs: stops straight-line speculation (D49)
 
     // From ring 3: the CPU switched to `TSS.RSP0`, which points just past the saved part of the
     // running program's `UserContext`, so the frame and the registers go straight into it.
@@ -153,6 +155,7 @@ user_exception_save:
     popq    %rbp
     popq    %rbx
     retq
+    int3
 
     // `syscall` from ring 3 (IA32_LSTAR): interrupts, the trap and direction flags are masked
     // (IA32_FMASK), the stack is still the program's. Builds the frame an interrupt from ring 3
@@ -209,6 +212,7 @@ x86_64_enter_user:
     addq    $16, %rsp               // vector and error code
     swapgs
     iretq
+    int3
 1:  popq    %r15
     popq    %r14
     popq    %r13
@@ -229,6 +233,7 @@ x86_64_enter_user:
     movq    40(%rsp), %rsp          // the program's stack
     swapgs
     sysretq
+    int3
     .popsection
 
     // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
@@ -282,6 +287,9 @@ x86_64_user_test_checks:
     syscall
     movq    (%rax), %rcx
 1:  jmp     1b
+    .global x86_64_user_test_floating_point
+x86_64_user_test_floating_point:
+    .byte   0xd9, 0xe8              // fld1 (x87), spelled out: the target has no x87 feature
     .global x86_64_user_test_null_syscalls
 x86_64_user_test_null_syscalls:
 2:  movl    ${syscall_null}, %eax
@@ -506,9 +514,17 @@ const USER_DATA_SELECTOR: u64 = 0x18 | 3;
 const USER_CODE_SELECTOR: u64 = 0x20 | 3;
 const TSS_SELECTOR: u16 = 0x28;
 
-/// `rflags` bits a program may set: carry, parity, adjust, zero, sign, direction and overflow.
-/// Interrupts are always enabled in ring 3 and I/O privilege stays 0.
-const USER_RFLAGS: u64 = 0xcd5;
+/// `rflags` bits a program may set: carry, parity, adjust, zero, sign, direction, overflow and
+/// ID (which old-style CPUID detection toggles). Interrupts are always enabled in ring 3 and
+/// I/O privilege stays 0. Alignment check stays clear: interrupt gates keep it, and with SMAP
+/// it would open user memory to the kernel.
+const USER_RFLAGS: u64 = 0xcd5 | 1 << 21;
+/// CR0 bits for the FP/SIMD units (D49): monitor coprocessor, emulation, task switched,
+/// numeric error.
+const CR0_MP: u64 = 1 << 1;
+const CR0_EM: u64 = 1 << 2;
+const CR0_TS: u64 = 1 << 3;
+const CR0_NE: u64 = 1 << 5;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
@@ -531,6 +547,7 @@ unsafe extern "C" {
     fn x86_64_syscall_entry();
     static x86_64_user_test_start: u8;
     static x86_64_user_test_checks: u8;
+    static x86_64_user_test_floating_point: u8;
     static x86_64_user_test_null_syscalls: u8;
     static x86_64_user_test_spin: u8;
     static x86_64_user_test_end: u8;
@@ -579,6 +596,23 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             pointer = in(reg) &pointer,
             tss = in(reg) TSS_SELECTOR,
             options(nostack, preserves_flags),
+        );
+    }
+    // SAFETY: CR0 only changes what x87, MMX and SSE instructions do: with TS and MP set and EM
+    // clear, each raises #NM (SSE raises #UD or #NM while CR4.OSFXSR is clear), in ring 3 and
+    // in the kernel, which uses none. Programs get no FP/SIMD registers until they are saved
+    // per thread, so none can read what another left in them (D49); NE reports x87 errors as
+    // #MF once they can happen.
+    unsafe {
+        core::arch::asm!(
+            "mov {tmp}, cr0",
+            "and {tmp}, {clear}",
+            "or {tmp}, {set}",
+            "mov cr0, {tmp}",
+            tmp = out(reg) _,
+            clear = in(reg) !CR0_EM,
+            set = in(reg) CR0_MP | CR0_TS | CR0_NE,
+            options(nomem, nostack),
         );
     }
     // SAFETY: the `syscall` MSRs are architectural. EFER.SCE enables `syscall`, whose MSRs are
@@ -648,6 +682,7 @@ pub(super) fn user_test_program() -> TestProgram {
     TestProgram {
         code,
         checks: (&raw const x86_64_user_test_checks) as usize - start,
+        floating_point: (&raw const x86_64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const x86_64_user_test_null_syscalls) as usize - start,
         spin: (&raw const x86_64_user_test_spin) as usize - start,
     }
@@ -662,7 +697,10 @@ fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Except
         4 => (ExceptionKind::Other, "#OF overflow"),
         5 => (ExceptionKind::Other, "#BR bound range exceeded"),
         6 => (ExceptionKind::IllegalInstruction, "#UD invalid opcode"),
-        7 => (ExceptionKind::Other, "#NM device not available"),
+        7 => (
+            ExceptionKind::IllegalInstruction,
+            "#NM device not available",
+        ),
         8 => (ExceptionKind::Other, "#DF double fault"),
         10 => (ExceptionKind::Other, "#TS invalid TSS"),
         11 => (ExceptionKind::Other, "#NP segment not present"),

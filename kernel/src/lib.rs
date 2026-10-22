@@ -241,12 +241,14 @@ pub(crate) mod tests {
         unsafe fn run_user(
             context: &mut eggos_hal::user::UserContext,
         ) -> eggos_hal::user::UserExit {
-            // Plays the test program's part: its system calls, its fault and its spin.
+            // Plays the test program's part: its system calls, its faults and its spin.
             use eggos_hal::user::{TestProgram, UserExit};
             let program = Self::user_test_program();
             let checks = crate::process::TEST_PROGRAM_ADDRESS + program.checks as u64;
             let null_syscalls = crate::process::TEST_PROGRAM_ADDRESS + program.null_syscalls as u64;
             let spin = crate::process::TEST_PROGRAM_ADDRESS + program.spin as u64;
+            let floating_point =
+                crate::process::TEST_PROGRAM_ADDRESS + program.floating_point as u64;
             match context.pc() {
                 pc if pc == checks => {
                     let arguments = [1, 2, 3, 4, 5, 6];
@@ -265,6 +267,13 @@ pub(crate) mod tests {
                     pc,
                     address: Some(context.syscall_result()),
                 }),
+                pc if pc == floating_point => UserExit::Exception(Exception {
+                    kind: ExceptionKind::IllegalInstruction,
+                    name: "test floating-point trap",
+                    code: 0,
+                    pc,
+                    address: None,
+                }),
                 pc if pc == null_syscalls => {
                     context.simulate_syscall(TestProgram::SYSCALL_NULL, [0; 6], pc);
                     UserExit::Syscall
@@ -280,6 +289,7 @@ pub(crate) mod tests {
             eggos_hal::user::TestProgram {
                 code: &[0xa5; 24],
                 checks: 0,
+                floating_point: 20,
                 null_syscalls: 12,
                 spin: 16,
             }

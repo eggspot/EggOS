@@ -518,8 +518,9 @@ fn address_spaces_keep_user_pages_apart<P: Platform>(
 
 /// A program in user mode must make system calls with its arguments in the ABI's registers, get
 /// each result back with every other register as it was, and, reading kernel memory, fault
-/// without stopping the kernel; a timer interrupt must take the CPU back from a program that
-/// never makes a system call. Everything the program took must be freed afterwards (D47).
+/// without stopping the kernel; a floating-point instruction must trap (D49); a timer interrupt
+/// must take the CPU back from a program that never makes a system call. Everything the program
+/// took must be freed afterwards (D47).
 fn user_programs_make_system_calls_and_fault<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
@@ -579,6 +580,20 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
                 return Err("the program's read of kernel memory was misreported");
             }
             _ => return Err("the program read kernel memory without a fault"),
+        }
+        // A floating-point instruction traps: programs get no FP/SIMD registers until they are
+        // saved per thread, so none can read what another left in them.
+        let mut context = Process::<P>::test_program_context(|program| program.floating_point);
+        let floating_point = context.pc();
+        // SAFETY: as above.
+        match unsafe { P::run_user(&mut context) } {
+            UserExit::Exception(exception)
+                if exception.kind == ExceptionKind::IllegalInstruction
+                    && exception.pc == floating_point => {}
+            UserExit::Exception(_) => {
+                return Err("the program's floating-point instruction was misreported");
+            }
+            _ => return Err("a user program ran a floating-point instruction"),
         }
         let mut context = Process::<P>::test_program_context(|program| program.spin);
         let spin = context.pc();

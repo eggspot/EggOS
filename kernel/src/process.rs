@@ -89,7 +89,7 @@ impl<P: Platform> Process<P> {
 
     /// Maps a new page at user address `virt` with `attributes`, a user mapping: a frame of its
     /// own, holding `contents` and zero after them, so no stale kernel data is left where the
-    /// program can read. Executable contents are made visible to instruction fetch.
+    /// program can read. An executable page is made visible to instruction fetch.
     pub fn map_new_page(
         &mut self,
         virt: u64,
@@ -111,7 +111,9 @@ impl<P: Platform> Process<P> {
             // so the two do not overlap.
             unsafe { core::ptr::copy_nonoverlapping(contents.as_ptr(), page, contents.len()) };
             if attributes.executable {
-                P::make_instructions_visible(page as usize, contents.len());
+                // The whole page: its zeroed rest too, or instruction fetch past the contents
+                // could see the frame's old data.
+                P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
             }
             frame
         };
