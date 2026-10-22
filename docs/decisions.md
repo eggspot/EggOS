@@ -8,7 +8,7 @@ We write our own kernel in Rust; no Linux kernel C code. "Linux-compatible" mean
 implements the Linux interfaces (system calls, ABI, `/proc`/`/sys` conventions where needed) so
 unmodified Linux software runs on it.
 
-## D2 Compatibility layers: Linux userland first — Provisional, owner to confirm; iOS added and native execution required by D17
+## D2 Compatibility layers: Linux userland first — Provisional; iOS added and native execution required by D17; order superseded by D19
 Windows, macOS and Android apps run through compatibility layers we write, with the same features
 on each. The owner has not chosen which comes first. Provisional order:
 1. **Linux userland** — the kernel's native ABI (D1), so it is not a separate layer so much as the
@@ -31,8 +31,9 @@ Every CPU architecture, GPU, device type and driver, all written by us. Therefor
   register/bus access traits, so the same driver serves every architecture;
 - every supported architecture boots in QEMU in automated tests.
 
-## D5 License: MIT, clean-room — Decided
-All code is MIT. Never copy or translate GPL/LGPL/copyleft code (including Linux, GPL-2.0);
+## D5 License: MIT, clean-room — Decided, permanent
+All code is MIT, and the license will never change (owner, 2026-10-22): no relicensing, no dual
+licensing, no extra terms. Never copy or translate GPL/LGPL/copyleft code (including Linux, GPL-2.0);
 implement from public specifications, datasheets, man pages and observed behaviour.
 
 ## D6 Repository layout: a Cargo workspace of four crates — Decided by the build loop (engineering)
@@ -87,6 +88,19 @@ stays up (halts) after boot.
 The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS16550 at
 `0x1000_0000`). The driver model milestone (M5) replaces them with discovery from the device
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
+
+## D13 Performance target: the fastest OS — Decided
+EggOS must beat macOS, Windows and Linux on boot time, latency, throughput and memory footprint on
+the same hardware, and run foreign apps at least as fast as their native OS. Every hot path gets a
+benchmark when it is written, PRs touching one report before/after numbers, and a performance
+regression blocks merge unless the owner explicitly accepts it. Release builds (LTO, one codegen
+unit) are what we measure and ship. See CLAUDE.md, "The target: the fastest OS".
+
+## D14 Everything written by us, in Rust — Decided
+All of EggOS (kernel, drivers, compatibility layers, userland, libraries, tools, build automation)
+is Rust we write ourselves. Assembly only where the CPU requires it, inside the HAL's architecture
+modules. No third-party crates, ever, with no exceptions (owner, 2026-10-22): whatever a crate
+would provide, we write ourselves. Machine-provided firmware (UEFI, OpenSBI, QEMU loaders) is outside EggOS.
 
 ## D15 x86_64 boots through PVH and powers off through ACPI S5 — Decided by engineering (owner approved the port); supersedes D9's Multiboot plan
 QEMU's `-kernel` does not load ELF64 images through Multiboot, but it does through PVH (the
@@ -157,3 +171,26 @@ Rules for every component:
   out of the running kernel unless that component is installed; the mechanism (loadable kernel
   modules or per-component kernel builds) is a later decision, made with benchmarks;
 - removing it leaves no files, services or settings behind.
+
+## D19 Compatibility-layer order: Linux, Windows, Android, macOS, iOS — Decided by research (owner can overrule); supersedes D2's order
+Order: (1) Linux userland, the kernel's native ABI and the base of every layer; (2) Windows;
+(3) Android; (4) macOS; (5) iOS. Windows comes before macOS because it is where most switchers
+are (StatCounter, June 2026: Windows ~57% of desktop use, macOS ~16%, Linux ~4%) and nearly all
+games (Steam survey, July 2026: Windows 93.7%); its apps are mostly direct downloads, so the
+no-store rule (D17) barely shrinks the catalogue; the same apps cover much of a macOS
+switcher's daily use; and its ABI is stable and publicly documented. Android follows: it reuses
+almost all of the Linux ABI, but its value is mainly on phones and tablets (hardware bring-up
+M13), Microsoft dropped Android apps on Windows (WSA) in 2025, and many apps need Google Play
+Services, which we cannot ship. macOS then iOS, so iOS reuses the Mach-O loader, dyld, the
+Objective-C/Swift runtimes and the Darwin frameworks; iOS is last because most of its apps are
+App Store-only and therefore out of reach (D17). Each layer stays an optional component (D18).
+
+## D20 Releases: every finished milestone ships, without asking — Decided (owner)
+Semantic versioning, tags `vMAJOR.MINOR.PATCH`. Until 1.0, each finished roadmap milestone bumps
+MINOR and fixes in between bump PATCH; `1.0.0` is the first release someone can install and use as
+their everyday OS (decided by research: the usual meaning of 1.0, and it keeps 0.x honest about
+maturity). Claude cuts the release as soon as a milestone is merged and `main` is green: version
+bump PR, full `cargo xtask ci` on the merged commit (locally, so no extra CI minutes), kernel images
+for every architecture that boots, tag, and a GitHub Release with notes and the images attached
+(procedure: CLAUDE.md, "Releases"). Only new accounts, signing keys, credentials or money wait for
+the owner.

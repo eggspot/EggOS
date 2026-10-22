@@ -1,10 +1,8 @@
 # Third-party dependencies
 
-EggOS is written by us: no third-party crates without the owner's explicit OK. Each approved
-exception is listed here with its reason, scope and the date the owner approved it.
+None, and there never will be. EggOS is written entirely by us: no third-party crates, with no
+exceptions (CLAUDE.md, Rules; D14). When we need something a crate would provide, we write it
+ourselves. `Cargo.lock` lists only EggOS's own crates.
 
-| Crate | Version | Used by | Reason | Approved |
-|-------|---------|---------|--------|----------|
-| _none_ | | | | |
-
-CI uses only GitHub's own actions (`actions/checkout`, `actions/cache`).
+Outside EggOS, and so not dependencies: the firmware a machine provides (UEFI, OpenSBI, QEMU's
+loaders), and the GitHub-provided actions CI runs on (`actions/checkout`, `actions/cache`).

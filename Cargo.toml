@@ -22,3 +22,6 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 debug = 1
+# What we measure and ship (CLAUDE.md, "The target: the fastest OS").
+lto = true
+codegen-units = 1
