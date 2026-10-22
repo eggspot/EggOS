@@ -12,6 +12,7 @@
 
 mod exception;
 mod port;
+mod thread;
 mod timer;
 
 use crate::acpi::{self, RootTable};
@@ -412,6 +413,27 @@ impl Platform for X86_64 {
         unsafe {
             core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
         }
+    }
+
+    unsafe fn prepare_thread(
+        stack_top: usize,
+        entry: extern "C" fn(usize) -> !,
+        argument: usize,
+    ) -> usize {
+        // SAFETY: the frame, with the rounding down to 16 bytes, fits in `INITIAL_FRAME_MAX`
+        // bytes, which the caller guarantees are writable and unused below `stack_top`.
+        unsafe {
+            crate::thread::write_initial_frame(stack_top, &thread::initial_frame(entry, argument))
+        }
+    }
+
+    #[inline]
+    unsafe fn switch_thread(save: *mut usize, resume: usize) {
+        // SAFETY: the caller guarantees `save` is writable and `resume` a saved context whose
+        // stack is allocated and not running; the switch saves and restores every register the
+        // calling convention requires a call to preserve, so to each thread the call is an
+        // ordinary function call.
+        unsafe { thread::eggos_switch_thread(save, resume) }
     }
 }
 

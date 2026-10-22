@@ -96,6 +96,16 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
+        unsafe fn prepare_thread(
+            _stack_top: usize,
+            _entry: extern "C" fn(usize) -> !,
+            _argument: usize,
+        ) -> usize {
+            unreachable!("not used in tests")
+        }
+        unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]

@@ -7,8 +7,8 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
-use crate::interrupt;
 use crate::memory::{FRAMES, FrameAllocator};
+use crate::{interrupt, thread};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::hint::black_box;
@@ -27,7 +27,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 9] {
+pub fn all<P: Platform>() -> [Benchmark; 10] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -44,6 +44,7 @@ pub fn all<P: Platform>() -> [Benchmark; 9] {
             frame_contiguous_allocate_free,
         ),
         ("heap_allocate_free_small", heap_allocate_free_small),
+        ("thread_yield_round_trip", thread_yield_round_trip::<P>),
     ]
 }
 
@@ -150,8 +151,8 @@ fn frame_free_allocate(n: u64) {
 
 /// Allocating and freeing a block of 4 contiguous frames from the kernel's frame allocator: the
 /// buddy allocator's split on allocation and merge on free (D31), the path of heap allocations
-/// larger than a frame. Runs after the self-tests, so the allocator is in place; host tests
-/// have none and time nothing.
+/// larger than a frame. Runs after the self-tests, so the allocator is in place; without one,
+/// nothing is timed.
 fn frame_contiguous_allocate_free(n: u64) {
     let mut frames = FRAMES.lock();
     let Some(frames) = frames.as_mut() else {
@@ -167,8 +168,8 @@ fn frame_contiguous_allocate_free(n: u64) {
 
 /// Allocating and freeing a small block through the kernel's global heap: taking and releasing
 /// its lock around a size class's free-list pop and push, the steady state of `Box` and small
-/// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one (host
-/// tests) every allocation fails and only the failure path is timed.
+/// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one every
+/// allocation fails and only the failure path is timed.
 fn heap_allocate_free_small(n: u64) {
     let layout = Layout::new::<[u64; 4]>();
     for _ in 0..n {
@@ -179,6 +180,24 @@ fn heap_allocate_free_small(n: u64) {
             unsafe { HEAP.dealloc(black_box(pointer), layout) };
         }
     }
+}
+
+/// The boot thread and one other passing the CPU back and forth through `yield_now`: per
+/// iteration two switches (D35), each with the scheduler's queue rotation and a stack canary
+/// check. Includes starting and joining the thread once per run, a few hundred instructions
+/// spread over the iterations. Without a frame allocator for the stack, nothing is timed.
+fn thread_yield_round_trip<P: Platform>(n: u64) {
+    let Ok(other) = thread::spawn::<P, _>(move || {
+        for _ in 0..n {
+            thread::yield_now::<P>();
+        }
+    }) else {
+        return;
+    };
+    for _ in 0..n {
+        thread::yield_now::<P>();
+    }
+    other.join::<P>();
 }
 
 #[cfg(test)]
@@ -236,11 +255,23 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
+        unsafe fn prepare_thread(
+            _stack_top: usize,
+            entry: extern "C" fn(usize) -> !,
+            argument: usize,
+        ) -> usize {
+            thread::host::prepare_thread(entry, argument)
+        }
+        unsafe fn switch_thread(save: *mut usize, resume: usize) {
+            // SAFETY: the caller's guarantees are the host switch's.
+            unsafe { thread::host::switch_thread(save, resume) }
+        }
     }
 
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let benchmarks = all::<CountingPlatform>();
         assert_eq!(run::<CountingPlatform, _>(&mut out, &benchmarks), Ok(()));
@@ -261,6 +292,7 @@ mod tests {
 
     #[test]
     fn frame_benchmarks_run_on_the_host() {
+        let _lock = crate::thread::host::lock_kernel_state_for_test();
         frame_allocate_untouched(ITERATIONS);
         frame_free_allocate(ITERATIONS);
         heap_allocate_free_small(ITERATIONS);

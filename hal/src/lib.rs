@@ -14,6 +14,7 @@ pub mod fdt;
 mod interrupt;
 pub mod memory;
 pub mod paging;
+pub mod thread;
 pub mod time;
 
 pub use exception::{Exception, ExceptionKind};
@@ -123,4 +124,29 @@ pub trait Platform {
     /// unmapped. Interrupts must be masked (as the kernel runs outside
     /// [`Self::wait_for_interrupt`]): the switch passes through code no handler may interrupt.
     unsafe fn activate_page_tables(roots: &[u64]);
+
+    /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
+    /// returns its saved context: the first [`Self::switch_thread`] to that context calls
+    /// `entry(argument)` on that stack, with interrupts masked (D35). `entry` must never return.
+    ///
+    /// # Safety
+    /// The [`thread::INITIAL_FRAME_MAX`] bytes below `stack_top` must be writable memory that
+    /// the caller owns, and the whole stack must stay allocated and otherwise unused for as long
+    /// as the thread may run.
+    unsafe fn prepare_thread(
+        stack_top: usize,
+        entry: extern "C" fn(usize) -> !,
+        argument: usize,
+    ) -> usize;
+
+    /// Saves the running thread's context in `*save` and resumes the thread whose saved
+    /// context is `resume` (from [`Self::prepare_thread`], or saved by an earlier switch). The
+    /// call returns once another switch resumes the context saved in `*save`.
+    ///
+    /// # Safety
+    /// Interrupts must be masked (as the kernel runs outside [`Self::wait_for_interrupt`]).
+    /// `save` must be valid for a write. `resume` must be a context saved and not resumed
+    /// since, whose stack is still allocated: resuming a context twice runs two threads on one
+    /// stack.
+    unsafe fn switch_thread(save: *mut usize, resume: usize);
 }
