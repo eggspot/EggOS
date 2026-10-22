@@ -6,7 +6,9 @@
 //! (D43): a secondary CPU checks its timer, starts its scheduler, reports in and runs its idle
 //! thread, which runs the threads placed on it.
 
+use crate::address_space::LazilyLoaded;
 use crate::heap::{FrameSource, GlobalFrames};
+use crate::sync::SpinLock;
 use crate::thread::{self, CpuScheduler, STACK_ORDER, STACK_SIZE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -48,10 +50,17 @@ pub struct Cpu {
     hardware_id: AtomicU64,
     /// Set by the CPU itself once it runs the kernel's code.
     online: AtomicBool,
-    /// The first root of the user address space active on this CPU
-    /// ([`crate::address_space::AddressSpace::with_active`]), or [`NO_ADDRESS_SPACE`] while the
-    /// kernel's empty low half is active (D46). Changed only by the CPU itself.
+    /// The first root of the user address space active on this CPU, made active by
+    /// [`crate::address_space::AddressSpace::with_active`] or loaded lazily for a process
+    /// (D48), or [`NO_ADDRESS_SPACE`] while the kernel's empty low half is active (D46). Always
+    /// what the CPU has loaded. Changed only by the CPU itself.
     active_address_space: AtomicU64,
+    /// What keeps the address space a process loaded here lazily ([`AddressSpace::load_lazily`])
+    /// alive while it stays loaded, after its threads have left the CPU (D48); `None` while
+    /// none is. Only the CPU itself takes the lock, off the hot paths.
+    ///
+    /// [`AddressSpace::load_lazily`]: crate::address_space::AddressSpace::load_lazily
+    pub(crate) lazily_loaded: SpinLock<Option<LazilyLoaded>>,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
 }
@@ -78,6 +87,7 @@ impl Cpu {
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
             active_address_space: AtomicU64::new(NO_ADDRESS_SPACE),
+            lazily_loaded: SpinLock::new(None),
             scheduler: CpuScheduler::new(),
         }
     }

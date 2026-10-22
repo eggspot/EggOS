@@ -1301,3 +1301,76 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   machine check and debug exceptions, with the paranoid GS check, before any untrusted program
   runs, since `syscall` and `sysretq` leave a moment in ring 0 on the program's stack (nothing
   raises an NMI today); FP/SIMD state per thread; TLS registers; the Linux system calls (M6).
+
+## D48 Processes: threads that run their program in a loop, address spaces loaded lazily per CPU, preempted on return to user mode — Decided by the build loop (design decided by research)
+- **Processes.** `kernel::process::Process` owns a user address space and the frames its pages map
+  (`map_new_page`: a zeroed frame of its own, made visible to instruction fetch when executable),
+  frees them when dropped, and is shared as an `Arc` by its threads, which freezes its mappings.
+  It replaces D47's `kernel::user::LoadedTestProgram` (`Process::with_test_program`). A process's
+  thread (`process::spawn`) runs D47's loop: a preemption point, load the address space, `run_user`,
+  hand the exit to the thread's handler (`ControlFlow`), which stands in for the system calls (M6)
+  and signals, and may block, sleep or yield. A user thread ends when its handler says so.
+- **Address spaces are loaded lazily, per CPU, at the point of use.** A research subagent compared
+  (a) switching eagerly in the scheduler's `switch_to` whenever the next thread's space differs,
+  (b) Linux's lazy TLB (kernel threads keep the last user space, the scheduler switches when a
+  thread with another one runs) and (c) loading at the point of use with no scheduler change, and
+  recommended (c): `AddressSpace::load_lazily` compares the CPU's recorded root (D46) with the
+  space's (a load and a compare) and switches, out of line, only when they differ; the CPU then
+  keeps the space loaded, and a type-erased reference to its owner (`Cpu::lazily_loaded`) so its
+  tables stay allocated, until it needs another one. The thread loop loads before every `run_user`;
+  `Process::with_user_memory` loads before every kernel access to the process's pages, so a
+  handler that blocked while another process ran on its CPU still reaches its own. Reasons: the
+  scheduler's switch, and so every kernel-thread switch, pays nothing (option (b) cost about 4
+  instructions per `thread_yield_round_trip`, beyond the gate); on x86_64 without global pages or
+  PCID, (a) would flush the TLB twice per hand-off to a kernel thread and back; it works unchanged
+  when balancing (D44) moves a thread, since each CPU compares its own record; and freeing is
+  simple: the owner's last reference is dropped off the scheduler's lock. Kernel threads running
+  with a user space loaded is no new exposure: every system call runs the kernel so, and the kernel
+  reaches user pages only through `with_user_access` (PAN, SMAP and SMEP stay follow-ups).
+- **D46's check.** The per-CPU root record stays the single source of truth: it always equals
+  what the CPU has loaded. `with_active` (self-tests, `syscall_round_trip`) unloads a lazily loaded
+  space first and keeps its nesting and same-CPU checks.
+- **Freeing.** A user thread that ends drops its reference and, if its CPU then holds the last one,
+  unloads the space there, which frees the process. An idle CPU does the same at each look
+  (`address_space::release_unused`: a load and a compare when nothing is loaded), for a process
+  whose thread ended elsewhere.
+- **Preemption on return to user mode.** Before each run the thread passes
+  `thread::preemption_point_before_user_mode`, which repeats until the scheduler has seen every
+  timer interrupt and reschedule request on the CPU. The plain preemption point was not enough: a
+  thread resumed by a switch (after the previous one exited, or from a yield) may find a timer
+  interrupt nobody has looked at, whose one-shot timer has fired, so nothing would re-arm it or
+  wake the sleepers while the program spins (found by the new self-test, which hung on aarch64).
+  A reschedule request to a CPU whose running thread is a user thread (`Thread::user`, set by
+  `thread::spawn_user`) also sends it the wake-up interrupt: in user mode it would see the
+  request only at its next system call or interrupt, if ever. That branch is reached only with
+  preemption on, and is out of line.
+- **Instruction caches across CPUs.** A program loaded on one CPU now runs on any: AArch64's
+  `make_instructions_visible` invalidates every CPU's instruction cache (`ic ialluis`; the data
+  cache clean by address reaches them already), and RISC-V's `switch_address_space` runs `fence.i`,
+  which is the hart's own, so a hart that switches to a process's address space fetches its code
+  as written. x86 keeps the caches coherent itself.
+- **`Platform: 'static`.** Kernel objects that live on their own and are generic over the platform
+  (a process its threads share, type-erased per CPU) need it; every platform is a type with no data.
+- **Testing.** Boot self-tests on aarch64, riscv64 and x86_64: `processes_keep_their_own_memory_across_switches`
+  (two processes map different data at the same address; each yields at every system call and then
+  reads its page through `with_user_memory`; it fails with the load there removed),
+  `processes_are_preempted_on_return_to_user_mode` (two programs that never make a system call take
+  turns on one CPU, and end at an interrupt), `processes_run_on_every_cpu` (two processes per CPU,
+  up to 16, on every CPU, with balancing; then every CPU lets the address spaces go), every frame
+  freed after each. Host tests: lazy loading switches only when the root differs, the CPU keeps a
+  dropped process until another loads or it idles, `with_active` over a lazily loaded space, a user
+  thread's loop and handler, and the reschedule request to a CPU running a user thread.
+- **Cost (D24).** New benchmarks, instructions per iteration: `process_syscall_round_trip` (the
+  thread loop's null system call: preemption point, load check, handler) 120.30 (aarch64), 158.44
+  (riscv64), 120.54 (x86_64), against `syscall_round_trip`'s 106.17, 148.27 and 107.44;
+  `process_switch_round_trip` (two processes' threads yielding at each system call: two calls, two
+  thread switches and two address-space switches) 482.55, 590.84 and 443.06. No existing benchmark
+  moved: adding the branch to `make_ready` first stopped `WaitQueue::wake_one` from being inlined
+  into its callers (+8 instructions on an empty wake), and `wake_one` is now `#[inline]`, which
+  restores exactly the old numbers. The instruction counts do not show what an address-space switch
+  costs afterwards in TLB refills (M13 measures that on hardware). 8 more bytes per CPU block plus
+  the slot's lock.
+- **Follow-ups (roadmap).** Waking CPUs that keep an ended process's address space while they stay
+  busy with kernel threads; TLB shootdown once a shared process's mappings may change (they are
+  frozen today); pages owned by the address space for `mmap` (M6); ASIDs and PCID; PAN, SMAP and
+  SMEP; user faults that end the process with a signal (M6); IST stacks and the other D47 follow-ups.

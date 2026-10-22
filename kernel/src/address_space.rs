@@ -9,17 +9,23 @@
 //!
 //! [`AddressSpace::with_active`] runs code with the address space active on its CPU and
 //! switches back to the kernel's empty low half afterwards; the switch drops the CPU's cached
-//! user translations both ways. Changing the mappings takes `&mut self`, so it never happens
-//! while the address space is active anywhere, and nothing cached of it outlives the change:
-//! no TLB maintenance per page is needed yet. Threads that carry an address space, user mode
-//! and switching address spaces on a context switch come next (roadmap M4).
+//! user translations both ways. A process's threads load its address space lazily instead
+//! (D48): [`AddressSpace::load_lazily`] switches only when the CPU has another one loaded, and
+//! the CPU keeps it, and a reference to its owner, until it needs a different one, so kernel
+//! threads and a process's own threads running in turn pay no switch, and the scheduler's
+//! switch knows nothing of address spaces. Changing the mappings takes `&mut self`, so it
+//! never happens while the address space is active or loaded anywhere (an owner shared to be
+//! loaded is frozen), and nothing cached of it outlives the change: no TLB maintenance per
+//! page is needed yet.
 //!
 //! The frames user pages map belong to whoever mapped them; the address space owns only its
 //! low half's tables, which it frees when dropped.
 
-use crate::cpu;
+use crate::cpu::{self, Cpu};
 use crate::memory;
 use crate::paging::{MAX_ROOTS, MapError, PageTables};
+use alloc::sync::Arc;
+use core::any::Any;
 use core::marker::PhantomData;
 use core::ptr;
 use eggos_hal::Platform;
@@ -88,11 +94,14 @@ impl<P: Platform> AddressSpace<P> {
     /// thread could go on on another CPU, leaving this one with tables that may be freed, or
     /// another thread could make its own address space active here meanwhile. Either stops the
     /// kernel rather than go on (D46): each CPU records the address space active on it, and a
-    /// second one made active before the first is switched back is refused. The kernel reaches
-    /// the user pages only through [`Platform::with_user_access`].
+    /// second one made active before the first is switched back is refused. One a process
+    /// loaded lazily ([`Self::load_lazily`]) is unloaded first. The kernel reaches the user
+    /// pages only through [`Platform::with_user_access`].
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
         let root = self.tables.roots()[0];
+        // A process's address space this CPU kept loaded is not in use: put it away first.
+        unload_lazily_loaded::<P>(here);
         assert!(
             here.active_address_space() == cpu::NO_ADDRESS_SPACE,
             "an address space was made active over another one on this CPU"
@@ -121,6 +130,132 @@ impl<P: Platform> AddressSpace<P> {
         unsafe { P::switch_address_space(&self.kernel_roots[..self.tables.roots().len()]) };
         result
     }
+
+    /// Makes this address space the one loaded on this CPU, for a thread of the process that
+    /// `owner` is (D48): switches to it only if the CPU has another one loaded (or none), and
+    /// keeps a reference to `owner`, so the tables stay allocated, until the CPU loads another
+    /// one, [`unload_lazily_loaded`] or [`release_unused`] put it away, or [`Self::with_active`]
+    /// needs the CPU. Call it with interrupts masked, as the kernel runs; it does not block.
+    ///
+    /// The address space stays loaded after the thread leaves the CPU: kernel threads run with
+    /// it loaded, which they never use (the kernel reaches user pages only through
+    /// [`Platform::with_user_access`], after loading the address space it means), and the next
+    /// thread of the same process runs without a switch.
+    ///
+    /// # Safety
+    /// `owner` must own this address space and keep it unchanged for as long as it lives
+    /// (frozen: nothing reaches it through `&mut`).
+    #[inline]
+    pub unsafe fn load_lazily<O: Any + Send + Sync>(&self, owner: &Arc<O>) {
+        let here = cpu::current::<P>();
+        if here.active_address_space() != self.tables.roots()[0] {
+            // SAFETY: the caller's guarantees.
+            unsafe { self.switch_lazily(here, owner.clone()) };
+        }
+    }
+
+    /// [`Self::load_lazily`]'s switch, out of line so the check stays a load and a compare.
+    ///
+    /// # Safety
+    /// As [`Self::load_lazily`].
+    #[cold]
+    #[inline(never)]
+    unsafe fn switch_lazily(&self, here: &'static Cpu, owner: Arc<dyn Any + Send + Sync>) {
+        let previous = here.lazily_loaded.lock().take();
+        assert!(
+            previous.is_some() || here.active_address_space() == cpu::NO_ADDRESS_SPACE,
+            "an address space was loaded lazily inside `with_active`"
+        );
+        let root = self.tables.roots()[0];
+        here.set_active_address_space(root);
+        // SAFETY: interrupts are masked (the caller's duty). The tables are in `P`'s format,
+        // built by `PageTables`, and share the kernel's active half (`new`'s contract). `owner`
+        // keeps them allocated and unchanged (the caller's duty) and is kept below until the
+        // CPU switches away from them. The previous address space, if any, is no longer used:
+        // `with_active` never runs around this call (checked above), and the kernel reaches
+        // user pages only after loading the address space it means.
+        unsafe { P::switch_address_space(self.tables.roots()) };
+        let mut kernel_roots = self.kernel_roots;
+        kernel_roots[self.tables.roots().len()..].fill(0);
+        *here.lazily_loaded.lock() = Some(LazilyLoaded {
+            owner,
+            kernel_roots,
+            root_count: self.tables.roots().len(),
+        });
+        // Freed, if this CPU held its last reference, now that it is not loaded.
+        drop(previous);
+    }
+
+    /// Whether this address space is the one active or loaded on this CPU.
+    #[inline]
+    pub fn is_loaded_here(&self) -> bool {
+        cpu::current::<P>().active_address_space() == self.tables.roots()[0]
+    }
+}
+
+/// What keeps an address space a process loaded lazily on a CPU ([`AddressSpace::load_lazily`])
+/// alive, and how to switch back to the kernel's tables from it.
+pub(crate) struct LazilyLoaded {
+    /// The process that owns the address space: holding it keeps the tables allocated.
+    owner: Arc<dyn Any + Send + Sync>,
+    kernel_roots: [u64; MAX_ROOTS],
+    root_count: usize,
+}
+
+impl LazilyLoaded {
+    /// Whether this CPU holds the only reference left to the address space's owner.
+    fn is_last_reference(&self) -> bool {
+        Arc::strong_count(&self.owner) == 1
+    }
+}
+
+/// If a process's address space is loaded lazily on `here`, this CPU, switches back to the
+/// kernel's tables and drops the CPU's reference to it, which frees it if that was the last.
+/// Call it with interrupts masked, as the kernel runs, and outside [`AddressSpace::with_active`].
+pub(crate) fn unload_lazily_loaded<P: Platform>(here: &'static Cpu) {
+    if here.active_address_space() == cpu::NO_ADDRESS_SPACE {
+        return;
+    }
+    let Some(loaded) = here.lazily_loaded.lock().take() else {
+        return;
+    };
+    unload::<P>(here, loaded);
+}
+
+/// When the CPU idles: puts away a process's address space loaded lazily here if nothing but
+/// this CPU refers to it any more (its process is gone), so its memory is freed instead of
+/// waiting for the next process to run here (D48).
+#[inline]
+pub(crate) fn release_unused<P: Platform>(here: &'static Cpu) {
+    if here.active_address_space() != cpu::NO_ADDRESS_SPACE {
+        release_unused_cold::<P>(here);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn release_unused_cold<P: Platform>(here: &'static Cpu) {
+    let loaded = {
+        let mut slot = here.lazily_loaded.lock();
+        if !slot.as_ref().is_some_and(LazilyLoaded::is_last_reference) {
+            return;
+        }
+        slot.take()
+    };
+    if let Some(loaded) = loaded {
+        unload::<P>(here, loaded);
+    }
+}
+
+fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
+    // SAFETY: interrupts are masked (the callers' duty); back to the kernel's own tables, which
+    // stay allocated for as long as the kernel runs (`AddressSpace::new`'s contract). The
+    // address space switched away from stays allocated until `loaded` is dropped below, and
+    // nothing uses it: the kernel reaches user pages only after loading the address space it
+    // means.
+    unsafe { P::switch_address_space(&loaded.kernel_roots[..loaded.root_count]) };
+    here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
+    drop(loaded);
 }
 
 impl<P: Platform> Drop for AddressSpace<P> {
@@ -131,8 +266,9 @@ impl<P: Platform> Drop for AddressSpace<P> {
             .expect("the address space's tables came from the frame allocator");
         // SAFETY: the tables come from `new_sharing_kernel_half` with the kernel's frame
         // allocator, the one locked here. They are not active anywhere: `with_active` borrows
-        // `self` while they are, and switches back before it returns. They are freed once, here,
-        // and never used again.
+        // `self` while they are, and switches back before it returns, and a CPU that loaded them
+        // lazily holds their owner until it has switched away. They are freed once, here, and
+        // never used again.
         unsafe { self.tables.free_user_half(frames) };
     }
 }

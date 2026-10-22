@@ -5,11 +5,14 @@
 use crate::HEAP;
 use crate::address_space::AddressSpace;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
+use crate::process::{self, Process};
 use crate::sync::SpinLock;
-use crate::{cpu, exception, interrupt, thread, user};
+use crate::{cpu, exception, interrupt, thread};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
+use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
@@ -43,7 +46,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 16] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 19] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -79,6 +82,14 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 16] {
             threads_sleep_wait_and_run_tickless::<P>()
         }),
         (
+            "processes_keep_their_own_memory_across_switches",
+            |memory| processes_keep_their_own_memory::<P>(memory, 2),
+        ),
+        (
+            "processes_are_preempted_on_return_to_user_mode",
+            processes_are_preempted_on_return_to_user_mode::<P>,
+        ),
+        (
             "secondary_cpus_start_and_report_in",
             secondary_cpus_start_and_report_in::<P>,
         ),
@@ -91,6 +102,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 16] {
         ("threads_move_to_idle_cpus", |_| {
             threads_move_to_idle_cpus::<P>()
         }),
+        (
+            "processes_run_on_every_cpu",
+            processes_run_on_every_cpu::<P>,
+        ),
     ]
 }
 
@@ -522,7 +537,7 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
     };
     // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable` activated on
     // this CPU, and every CPU started since runs on them.
-    let program = unsafe { user::LoadedTestProgram::<P>::new(&memory.page_tables) }?;
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
     let syscall = |context: &eggos_hal::user::UserContext, exit, number| {
         if exit != UserExit::Syscall {
             return Err("the program did not make its system call");
@@ -533,7 +548,7 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         Ok(context.syscall_arguments())
     };
     program.with_active(|| {
-        let mut context = program.context(|program| program.checks);
+        let mut context = Process::<P>::test_program_context(|program| program.checks);
         // SAFETY: interrupts are masked, as the kernel runs; the program's address space is
         // active, sharing the kernel's half; nothing here switches threads or address spaces
         // before `run_user` returns. The same holds for each `run_user` below.
@@ -557,14 +572,15 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
             UserExit::Exception(exception)
                 if exception.kind == ExceptionKind::DataFault
                     && exception.address == Some(kernel_address)
-                    && (user::TEST_PROGRAM_ADDRESS..user::TEST_PROGRAM_ADDRESS + FRAME_SIZE)
+                    && (process::TEST_PROGRAM_ADDRESS
+                        ..process::TEST_PROGRAM_ADDRESS + FRAME_SIZE)
                         .contains(&exception.pc) => {}
             UserExit::Exception(_) => {
                 return Err("the program's read of kernel memory was misreported");
             }
             _ => return Err("the program read kernel memory without a fault"),
         }
-        let mut context = program.context(|program| program.spin);
+        let mut context = Process::<P>::test_program_context(|program| program.spin);
         let spin = context.pc();
         let timer_interrupts = interrupt::timer_interrupts::<P>();
         // A deadline already passed: the interrupt is pending as the program starts.
@@ -586,6 +602,213 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         return Err("the program's frame and tables were not all freed");
     }
     Ok(())
+}
+
+/// Where [`processes_keep_their_own_memory`] maps each process's data page.
+const PROCESS_DATA_ADDRESS: u64 = 0x50_0000;
+
+/// What a process's data page holds: its number, in a pattern no other page has.
+fn process_tag(number: usize) -> u64 {
+    0x7a6_0000_0000 | number as u64
+}
+
+/// `count` processes, each with the test program and a data page of its own at the same
+/// address, holding its [`process_tag`].
+fn processes_with_data<P: Platform>(
+    memory: &Memory<P>,
+    count: usize,
+) -> Result<Vec<Arc<Process<P>>>, &'static str> {
+    (0..count)
+        .map(|number| {
+            // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable`
+            // activated on this CPU, and every CPU started since runs on them.
+            let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+            process.map_new_page(
+                PROCESS_DATA_ADDRESS,
+                Attributes::USER_READ_ONLY,
+                &process_tag(number).to_ne_bytes(),
+            )?;
+            Ok(Arc::new(process))
+        })
+        .collect()
+}
+
+/// Processes must each see their own memory at the same address, whatever ran in between (D48):
+/// `count` processes' threads make system calls, and at each the handler yields, so the others
+/// run (and load their address spaces) on its CPU, then reads the process's data page through
+/// [`Process::with_user_memory`], which must load its own again. After the threads end, every
+/// frame the processes took must be free and no CPU may keep an address space loaded.
+fn processes_keep_their_own_memory<P: Platform>(
+    memory: &mut Memory<P>,
+    count: usize,
+) -> Result<(), &'static str> {
+    const CALLS: u64 = 20;
+    /// A read that did not show the process's own page, or an exception.
+    const WRONG: u64 = u64::MAX;
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    let processes = processes_with_data(memory, count)?;
+    let mut threads = Vec::new();
+    for (number, process) in processes.into_iter().enumerate() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        let context = Process::<P>::test_program_context(|program| program.null_syscalls);
+        let thread = process::spawn::<P, _>(process, context, move |process, _, exit| {
+            if exit == UserExit::Interrupt {
+                return ControlFlow::Continue(());
+            }
+            if exit != UserExit::Syscall {
+                counted.store(WRONG, Ordering::Relaxed);
+                return ControlFlow::Break(());
+            }
+            thread::yield_now::<P>();
+            let word = user_word(process.address_space(), PROCESS_DATA_ADDRESS);
+            // SAFETY: the process's data page, mapped at that address, readable by user mode,
+            // which `with_user_memory` lets the kernel read while it runs; a `u64` fits there.
+            let seen = process.with_user_memory(|| unsafe { word.read_volatile() });
+            if seen != process_tag(number) {
+                counted.store(WRONG, Ordering::Relaxed);
+                return ControlFlow::Break(());
+            }
+            if counted.fetch_add(1, Ordering::Relaxed) + 1 < CALLS {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        });
+        threads.push((
+            thread.map_err(|_| "could not start a process's thread")?,
+            calls,
+        ));
+    }
+    let mut result = Ok(());
+    for (thread, calls) in threads {
+        thread.join::<P>();
+        match calls.load(Ordering::Relaxed) {
+            CALLS => {}
+            WRONG => result = Err("a process saw another's memory, or faulted"),
+            _ => result = Err("a process's thread ended early"),
+        }
+    }
+    result?;
+    release_loaded_address_spaces::<P>();
+    if cpu::CPUS
+        .all()
+        .iter()
+        .any(|cpu| cpu.active_address_space() != cpu::NO_ADDRESS_SPACE)
+        || cpu::current::<P>().active_address_space() != cpu::NO_ADDRESS_SPACE
+    {
+        return Err("a CPU kept an ended process's address space loaded");
+    }
+    if free_frames() != Some(before) {
+        return Err("the processes' frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// Has every other CPU's idle thread look once more, so that a CPU that kept an ended process's
+/// address space loaded lets it go (D48): wakes each, then gives them a millisecond.
+fn release_loaded_address_spaces<P: Platform>() {
+    let here = cpu::current::<P>();
+    for &other in cpu::CPUS.all() {
+        if !core::ptr::eq(other, here) {
+            cpu::wake::<P>(other);
+        }
+    }
+    if cpu::CPUS.all().len() > 1 {
+        thread::sleep_until::<P>(P::clock_ticks() + P::clock_frequency() / 1000);
+    }
+}
+
+/// Programs that never make a system call must still take turns (D48): with preemption on, two
+/// processes' threads spinning in user mode on this CPU must each be interrupted, and so run,
+/// several times while the boot thread sleeps in between; then each ends at its next
+/// interrupt. Without preemption on return to user mode, the first would keep the CPU and the
+/// boot thread would never run again, which the QEMU runner's timeout reports. Runs before the
+/// other CPUs start, so everything runs on this one.
+fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    const TURNS: u64 = 3;
+    static STOP: AtomicBool = AtomicBool::new(false);
+    STOP.store(false, Ordering::Relaxed);
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    let millisecond = P::clock_frequency() / 1000;
+    let mut threads = Vec::new();
+    thread::enable_preemption::<P>();
+    for process in processes_with_data(memory, 2)? {
+        let interrupts = Arc::new(AtomicU64::new(0));
+        let counted = interrupts.clone();
+        let context = Process::<P>::test_program_context(|program| program.spin);
+        let thread = process::spawn::<P, _>(process, context, move |_, _, exit| {
+            if exit != UserExit::Interrupt {
+                counted.store(u64::MAX, Ordering::Relaxed);
+                return ControlFlow::Break(());
+            }
+            counted.fetch_add(1, Ordering::Relaxed);
+            if STOP.load(Ordering::Relaxed) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        match thread {
+            Ok(thread) => threads.push((thread, interrupts)),
+            Err(_) => {
+                STOP.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+    let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
+    let all_turns = |threads: &[(thread::JoinHandle, Arc<AtomicU64>)]| {
+        threads
+            .iter()
+            .all(|(_, interrupts)| interrupts.load(Ordering::Relaxed) >= TURNS)
+    };
+    while threads.len() == 2 && !all_turns(&threads) && P::clock_ticks() < give_up {
+        thread::sleep_until::<P>(P::clock_ticks() + millisecond);
+    }
+    let took_turns = threads.len() == 2 && all_turns(&threads);
+    STOP.store(true, Ordering::Relaxed);
+    // Each ends at its next interrupt: this thread's sleeps provide them once one runs alone.
+    while !threads.iter().all(|(thread, _)| thread.is_finished()) {
+        thread::sleep_until::<P>(P::clock_ticks() + millisecond);
+    }
+    thread::disable_preemption::<P>();
+    let faulted = threads
+        .iter()
+        .any(|(_, interrupts)| interrupts.load(Ordering::Relaxed) == u64::MAX);
+    for (thread, _) in threads {
+        thread.join::<P>();
+    }
+    if faulted {
+        return Err("a spinning program left user mode other than by an interrupt");
+    }
+    if !took_turns {
+        return Err("two programs in user mode did not take turns on one CPU");
+    }
+    if free_frames() != Some(before) {
+        return Err("the processes' frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// [`processes_keep_their_own_memory`] with two processes per CPU (up to 16), so they run, load
+/// their address spaces and their code on the other CPUs too, and move between them.
+fn processes_run_on_every_cpu<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
+    let cpus = cpu::CPUS.all().len();
+    if cpus <= 1 {
+        return Ok(());
+    }
+    processes_keep_their_own_memory(memory, (2 * cpus).min(16))
+}
+
+/// The frame allocator's free frames, `None` if there is none.
+fn free_frames() -> Option<u64> {
+    memory::FRAMES
+        .lock()
+        .as_ref()
+        .map(FrameAllocator::free_frames)
 }
 
 /// Where the kernel reaches the word at user address `virt` of `space` while it is active:

@@ -33,8 +33,10 @@ pub enum ExitStatus {
 /// The services every architecture module provides to the kernel core.
 ///
 /// Implementations are zero-sized types with associated functions, so the core is generic
-/// over the platform and every call is resolved and inlined at compile time.
-pub trait Platform {
+/// over the platform and every call is resolved and inlined at compile time. `'static`, as a
+/// type with no data is: kernel objects that live on their own (a process its threads share)
+/// are generic over it.
+pub trait Platform: 'static {
     /// Short architecture name, e.g. `"aarch64"`.
     const ARCH: &'static str;
 
@@ -143,7 +145,10 @@ pub trait Platform {
     /// on AArch64 `roots[1]` is the active `TTBR1_EL1` root and only `TTBR0_EL1` changes; with
     /// one root, the root's kernel-half entries are the active root's. Translations of the low
     /// half cached from the tables active before are dropped; the kernel's are kept where the
-    /// architecture tags them apart (AArch64).
+    /// architecture tags them apart (AArch64). Instructions [`Self::make_instructions_visible`]
+    /// made visible on any CPU before the switch are visible to this CPU's instruction fetch
+    /// after it (on RISC-V the switch runs `fence.i`), so a program loaded on one CPU runs on
+    /// another once that CPU switches to its address space (D48).
     ///
     /// # Safety
     /// Everything [`Self::activate_page_tables`] requires (interrupts masked, the tables in
@@ -183,8 +188,10 @@ pub trait Platform {
     /// Makes the instructions just written as data at kernel virtual addresses
     /// `start..start + length` visible to instruction fetch on this CPU, at any virtual address
     /// that maps them: on AArch64 it cleans the data cache to the point of unification and
-    /// invalidates the instruction cache, on RISC-V it runs `fence.i`; x86 keeps the two
-    /// coherent itself. Another CPU that will run them needs the same on it.
+    /// invalidates the instruction caches of every CPU in the inner shareable domain, on RISC-V
+    /// it runs `fence.i`; x86 keeps the two coherent itself. Another CPU sees them once it
+    /// switches address space ([`Self::switch_address_space`]): on RISC-V, `fence.i` is this
+    /// hart's alone, and the switch runs it there (D48).
     fn make_instructions_visible(start: usize, length: usize);
 
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
