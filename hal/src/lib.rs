@@ -184,11 +184,36 @@ pub trait Platform {
     /// Sets this CPU's per-CPU block pointer, which [`Self::cpu_local`] returns from then on.
     ///
     /// # Safety
-    /// `block` must be the address of a block that lives for as long as the kernel runs and
-    /// whose first word holds `block` itself (x86_64 reads it back through `gs:0`).
+    /// `block` must be the address of a block that lives for as long as the kernel runs, whose
+    /// first word holds `block` itself (x86_64 reads it back through `gs:0`), followed at
+    /// [`cpu::HAL_CPU_LOCAL_OFFSET`] by a [`cpu::HalCpuLocal`] made with
+    /// [`cpu::HalCpuLocal::new`] that only the HAL uses. Must run before this CPU arms its timer.
     unsafe fn set_cpu_local(block: usize);
 
     /// This CPU's per-CPU block pointer. Only valid once [`Self::set_cpu_local`] has run on
     /// this CPU; before that, x86_64 faults.
     fn cpu_local() -> usize;
+
+    /// The 64-bit word at byte `OFFSET` of this CPU's per-CPU block, with one load where the
+    /// architecture allows (GS-relative on x86_64), so that hot paths reach per-CPU data as
+    /// cheaply as a global. A relaxed atomic load: it never tears, even while an interrupt
+    /// handler on this CPU changes the word.
+    ///
+    /// # Safety
+    /// [`Self::set_cpu_local`] must have run on this CPU, and `OFFSET` must be the offset of an
+    /// 8-byte aligned `AtomicU64` in the block.
+    #[inline]
+    unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
+        // SAFETY: the caller guarantees an aligned `AtomicU64` at `OFFSET` in the block, which
+        // lives as long as the kernel runs.
+        unsafe { &*((Self::cpu_local() + OFFSET) as *const core::sync::atomic::AtomicU64) }
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Raises [`Interrupt::Wakeup`] on the CPU with hardware id `cpu` (from [`Self::cpus`]),
+    /// which must run the kernel's code (its [`cpu::CpuStart::entry`] was called, or it is the
+    /// boot CPU) and not be the calling CPU (D41). Whatever the caller wrote to memory before
+    /// the call is visible to that CPU once it takes the interrupt. Returns once the interrupt
+    /// is sent, which may be before it is taken. Interrupts must be masked, as the kernel runs.
+    fn wake_cpu(cpu: u64);
 }

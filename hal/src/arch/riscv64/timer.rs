@@ -12,14 +12,42 @@ const SBI_TIME_SET_TIMER: usize = 0;
 
 /// `sie` bit 5: supervisor timer interrupt enable.
 const SIE_STIE: usize = 1 << 5;
+/// `sie` / `sip` bit 1: supervisor software interrupt (enable / pending), which the SBI IPI
+/// extension raises: the wake-up interrupt between harts (D41).
+const SIE_SSIE: usize = 1 << 1;
 
-/// Disarms the timer and enables the supervisor timer interrupt in `sie`, so it is taken once
-/// `sstatus.SIE` is set. Called once by the entry code, before `kernel_main`.
+/// SBI IPI extension, `sbi_send_ipi` function (SBI spec v2.0, chapter 7).
+const SBI_EXT_IPI: usize = 0x73_5049;
+const SBI_IPI_SEND_IPI: usize = 0;
+
+/// Disarms this hart's timer and enables the supervisor timer and software interrupts in `sie`,
+/// so both are taken once `sstatus.SIE` is set. Called by each hart before it runs the kernel's
+/// code: the boot hart's entry code before `kernel_main`, a secondary hart's before its entry.
 pub(super) extern "C" fn init() {
     disarm();
-    // SAFETY: setting `sie.STIE` only lets the (now disarmed) timer interrupt reach the trap
-    // vector, which is installed, once interrupts are unmasked in `sstatus`.
-    unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_STIE, options(nomem, nostack)) };
+    // SAFETY: setting `sie.STIE` and `sie.SSIE` only lets the (now disarmed) timer interrupt and
+    // the wake-up interrupt reach the trap vector, which is installed, once interrupts are
+    // unmasked in `sstatus`.
+    unsafe {
+        core::arch::asm!("csrs sie, {}", in(reg) SIE_STIE | SIE_SSIE, options(nomem, nostack))
+    };
+}
+
+/// Raises the supervisor software interrupt on hart `hart` through SBI.
+pub(super) fn wake(hart: u64) {
+    // SAFETY: a barrier only: the caller's writes to memory are complete before the SBI
+    // firmware raises the interrupt on the other hart, which then sees them.
+    unsafe { core::arch::asm!("fence rw, rw", options(nostack)) };
+    // SAFETY: `sbi_send_ipi` with hart mask 1 at base `hart` names that hart alone and touches
+    // none of our memory. A hart that does not exist is an error the firmware returns, which
+    // the caller's contract rules out.
+    unsafe { super::sbi_call(SBI_EXT_IPI, SBI_IPI_SEND_IPI, [1, hart as usize, 0]) };
+}
+
+/// Clears this hart's pending wake-up interrupt.
+pub(super) fn end_wakeup() {
+    // SAFETY: clearing `sip.SSIP` only marks the software interrupt handled.
+    unsafe { core::arch::asm!("csrc sip, {}", in(reg) SIE_SSIE, options(nomem, nostack)) };
 }
 
 /// The `time` counter.

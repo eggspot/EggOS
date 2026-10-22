@@ -1,8 +1,10 @@
 //! The Arm generic timer (Arm ARM, chapter D12): the virtual counter as the clock and the EL1
-//! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt.
+//! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt; and
+//! the wake-up interrupt between CPUs, a GICv2 software-generated interrupt (D41).
 
 use super::DIRECT_MAP_OFFSET;
 use crate::memory::PhysicalRange;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_drivers::interrupt::gicv2::{self, Acknowledged, Gicv2CpuInterface, Gicv2Distributor};
 use eggos_drivers::io::Mmio;
 
@@ -22,6 +24,17 @@ pub(super) const DEVICE_REGIONS: [PhysicalRange; 2] = [
 pub(super) const VIRTUAL_TIMER_INTERRUPT: u32 = 27;
 /// Middle priority, leaving room above and below for interrupts added later.
 const TIMER_PRIORITY: u8 = 0x80;
+/// The software-generated interrupt that wakes a CPU ([`crate::Platform::wake_cpu`]).
+pub(super) const WAKEUP_SGI: u32 = 0;
+const WAKEUP_PRIORITY: u8 = 0x80;
+
+/// The CPU interfaces a GICv2 has.
+const GIC_CPU_INTERFACES: usize = 8;
+/// Which CPU each GIC CPU interface belongs to, for [`wake`]: the MPIDR affinity (as the device
+/// tree's `/cpus` gives it) plus 1, or 0 for none yet. Each CPU fills its own entry as it sets its
+/// interrupts up, before it runs the kernel's code.
+static GIC_CPUS: [AtomicU64; GIC_CPU_INTERFACES] =
+    [const { AtomicU64::new(0) }; GIC_CPU_INTERFACES];
 
 /// `CNTV_CTL_EL0` bit 0: timer enabled (bit 1, IMASK, left clear: interrupt not masked).
 const CNTV_CTL_ENABLE: u64 = 1;
@@ -47,19 +60,62 @@ fn cpu_interface() -> Gicv2CpuInterface<Mmio> {
     })
 }
 
-/// Disarms the timer and routes its interrupt through the GIC to this CPU, so it is taken once
-/// `PSTATE.I` is cleared. Called once by the entry code, before `kernel_main`.
+/// Sets the boot CPU's timer and interrupts up ([`init_this_cpu`]) and turns the GIC's
+/// distributor on. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn init() {
     // The panic handler reports this; the clock would be useless.
     assert!(
         frequency() != 0,
         "CNTFRQ_EL0 is 0: firmware did not set the counter frequency"
     );
+    init_this_cpu();
+    distributor().enable();
+}
+
+/// Disarms this CPU's timer and routes its interrupt and the wake-up SGI through the GIC to this
+/// CPU (their enables and priorities are banked per CPU), so both are taken once `PSTATE.I` is
+/// cleared; records this CPU's GIC interface for [`wake`]. Called by each CPU before it runs the
+/// kernel's code.
+pub(super) fn init_this_cpu() {
     disarm();
     let gicd = distributor();
     gicd.enable_interrupt(VIRTUAL_TIMER_INTERRUPT, TIMER_PRIORITY);
-    gicd.enable();
+    gicd.enable_interrupt(WAKEUP_SGI, WAKEUP_PRIORITY);
+    let target = gicd.this_cpu_target();
+    // 0 on a uniprocessor GIC: there is no other CPU to wake this one.
+    if target != 0 {
+        GIC_CPUS[target.trailing_zeros() as usize].store(affinity() + 1, Ordering::Release);
+    }
     cpu_interface().enable();
+}
+
+/// This CPU's MPIDR affinity, as the device tree's `/cpus` and the PSCI calls give it: Aff3 in
+/// bits 39:32, Aff2-Aff0 in bits 23:0.
+fn affinity() -> u64 {
+    let mpidr: u64;
+    // SAFETY: reading `MPIDR_EL1` has no side effects.
+    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)) };
+    mpidr & 0xff_00ff_ffff
+}
+
+/// Sends the wake-up SGI to the CPU whose MPIDR affinity is `cpu`. A CPU that has not set its
+/// interrupts up yet is not woken (the caller's contract excludes it).
+pub(super) fn wake(cpu: u64) {
+    let Some(interface) = GIC_CPUS
+        .iter()
+        .position(|entry| entry.load(Ordering::Acquire) == cpu + 1)
+    else {
+        debug_assert!(
+            false,
+            "woke CPU {cpu:#x}, which has not set its interrupts up"
+        );
+        return;
+    };
+    // SAFETY: a barrier only. It completes the caller's writes to memory before the write that
+    // sends the SGI (device memory, which a store to normal memory does not otherwise precede),
+    // so the woken CPU sees them.
+    unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
+    distributor().send_sgi(WAKEUP_SGI, 1 << interface);
 }
 
 /// The virtual counter, `CNTVCT_EL0`.

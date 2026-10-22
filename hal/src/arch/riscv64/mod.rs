@@ -182,12 +182,14 @@ static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 static BOOT_HART: AtomicU64 = AtomicU64::new(0);
 
 /// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
-/// with the boot page table: switches to the kernel's page tables, then calls the entry.
+/// with the boot page table: switches to the kernel's page tables, sets this hart's timer and
+/// interrupts up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this hart uses at the addresses it uses now, as they did for the boot hart;
     // interrupts are masked (HSM starts the hart with `sstatus.SIE` clear).
     unsafe { Riscv64::activate_page_tables(&start.page_table_roots[..1]) };
+    timer::init();
     (start.entry)(start.argument)
 }
 
@@ -481,5 +483,25 @@ impl Platform for Riscv64 {
         // SAFETY: reading `tp` has no side effects.
         unsafe { core::arch::asm!("mv {}, tp", out(reg) block, options(nomem, nostack)) };
         block
+    }
+
+    #[inline]
+    unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
+        let value: u64;
+        // SAFETY: the caller guarantees `tp` holds this hart's block, with an aligned
+        // `AtomicU64` at `OFFSET`: one aligned 8-byte load, which never tears.
+        unsafe {
+            core::arch::asm!(
+                "ld {}, {offset}(tp)",
+                out(reg) value,
+                offset = const OFFSET,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        value
+    }
+
+    fn wake_cpu(cpu: u64) {
+        timer::wake(cpu);
     }
 }

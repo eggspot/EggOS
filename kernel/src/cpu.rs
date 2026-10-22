@@ -1,8 +1,9 @@
-//! The machine's CPUs (D40). The kernel numbers them, 0 for the CPU that booted and then in the
-//! firmware's order, gives each a per-CPU block ([`Cpu`]) that the CPU reaches through its
-//! per-CPU register ([`current`]), and starts the others ([`start_secondaries`]). For now a
-//! secondary CPU only reports in and parks with interrupts masked; per-CPU run queues, so that
-//! it runs threads, come next (M4).
+//! The machine's CPUs (D40, D41). The kernel numbers them, 0 for the CPU that booted and then in
+//! the firmware's order, gives each a per-CPU block ([`Cpu`]) that the CPU reaches through its
+//! per-CPU register ([`current`]), and starts the others ([`start_secondaries`]). Every CPU
+//! takes its own interrupts: its timer's, and the wake-up interrupt another CPU sends it with
+//! [`wake`], each counted in its block. For now a secondary CPU checks its timer, reports in and
+//! waits for interrupts; per-CPU run queues, so that it runs threads, come next (M4).
 
 use crate::heap::{FrameSource, GlobalFrames};
 use crate::thread::{STACK_ORDER, STACK_SIZE};
@@ -10,8 +11,10 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
-use eggos_hal::Platform;
-use eggos_hal::cpu::{CpuStart, MAX_PAGE_TABLE_ROOTS, StartCpuError};
+use eggos_hal::cpu::{
+    CpuStart, HAL_CPU_LOCAL_OFFSET, HalCpuLocal, MAX_PAGE_TABLE_ROOTS, StartCpuError,
+};
+use eggos_hal::{Interrupt, Platform};
 
 /// More CPUs than any machine has, against a corrupt firmware table: the CPUs listed beyond it
 /// stay stopped.
@@ -25,6 +28,18 @@ pub struct Cpu {
     /// The block's own address, first: the HAL's per-CPU register contract
     /// ([`Platform::set_cpu_local`]). Set before the block is used, never changed after.
     this: AtomicPtr<Cpu>,
+    /// The HAL's part, at [`HAL_CPU_LOCAL_OFFSET`]; the kernel never touches it.
+    _hal: HalCpuLocal,
+    /// Timer interrupts this CPU has taken that the scheduler has not looked at yet (D39): not
+    /// 0 means the timer has fired since it last looked. Counted by the CPU's interrupt handler,
+    /// read by the preemption point's fast path with one load
+    /// ([`local_timer_interrupts_unseen`]), and moved to [`Self::timer_interrupts_seen`] by the
+    /// scheduler ([`Self::see_timer_interrupts`]). Only the CPU itself changes either.
+    timer_interrupts_unseen: AtomicU64,
+    /// Timer interrupts the scheduler has looked at.
+    timer_interrupts_seen: AtomicU64,
+    /// Wake-up interrupts this CPU has taken ([`wake`]). Changed only by the CPU itself.
+    wakeups: AtomicU64,
     index: usize,
     /// Set before the block is used, never changed after.
     hardware_id: AtomicU64,
@@ -32,10 +47,16 @@ pub struct Cpu {
     online: AtomicBool,
 }
 
+const _: () = assert!(core::mem::offset_of!(Cpu, _hal) == HAL_CPU_LOCAL_OFFSET);
+
 impl Cpu {
     const fn new(index: usize) -> Self {
         Self {
             this: AtomicPtr::new(ptr::null_mut()),
+            _hal: HalCpuLocal::new(),
+            timer_interrupts_unseen: AtomicU64::new(0),
+            timer_interrupts_seen: AtomicU64::new(0),
+            wakeups: AtomicU64::new(0),
             index,
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
@@ -57,6 +78,41 @@ impl Cpu {
     /// once it has reported in.
     pub fn is_online(&self) -> bool {
         self.online.load(Ordering::Acquire)
+    }
+
+    /// Timer interrupts the CPU has taken since boot. Read from another CPU, it can be briefly
+    /// behind while the CPU's scheduler moves its unseen interrupts to the seen ones.
+    pub fn timer_interrupts(&self) -> u64 {
+        self.timer_interrupts_unseen.load(Ordering::Relaxed)
+            + self.timer_interrupts_seen.load(Ordering::Relaxed)
+    }
+
+    /// Timer interrupts the CPU has taken that its scheduler has not looked at yet.
+    #[cfg(any(test, feature = "qemu-bench"))]
+    pub(crate) fn timer_interrupts_unseen(&self) -> u64 {
+        self.timer_interrupts_unseen.load(Ordering::Relaxed)
+    }
+
+    /// For the scheduler, on this CPU, with interrupts masked: marks the timer interrupts taken
+    /// so far as seen, so [`local_timer_interrupts_unseen`] is 0 until the next one.
+    pub(crate) fn see_timer_interrupts(&self) {
+        let unseen = self.timer_interrupts_unseen.swap(0, Ordering::Relaxed);
+        self.timer_interrupts_seen
+            .fetch_add(unseen, Ordering::Relaxed);
+    }
+
+    /// Wake-up interrupts the CPU has taken since boot ([`wake`]).
+    pub fn wakeups(&self) -> u64 {
+        self.wakeups.load(Ordering::Relaxed)
+    }
+
+    /// Counts `interrupt`, which this CPU, whose block this is, has taken.
+    pub(crate) fn count(&self, interrupt: Interrupt) {
+        let counter = match interrupt {
+            Interrupt::Timer => &self.timer_interrupts_unseen,
+            Interrupt::Wakeup => &self.wakeups,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Sets the block's address and the CPU's hardware id, before anything uses the block.
@@ -119,7 +175,8 @@ static BOOT_CPU: Cpu = Cpu::new(0);
 pub fn init_boot_cpu<P: Platform>() {
     BOOT_CPU.set_identity(P::boot_cpu());
     BOOT_CPU.online.store(true, Ordering::Release);
-    // SAFETY: `BOOT_CPU` is a static, and its first word now holds its own address.
+    // SAFETY: `BOOT_CPU` is a static made by `Cpu::new`, whose first word now holds its own
+    // address and whose HAL part is at the offset the HAL expects.
     unsafe { P::set_cpu_local(ptr::from_ref(&BOOT_CPU) as usize) };
 }
 
@@ -130,6 +187,27 @@ pub fn current<P: Platform>() -> &'static Cpu {
     // SAFETY: the per-CPU register holds a `Cpu` block, set by `init_boot_cpu` on the boot
     // CPU and by `secondary_main` on the others; blocks are never freed.
     unsafe { &*(P::cpu_local() as *const Cpu) }
+}
+
+/// This CPU's [`Cpu::timer_interrupts_unseen`] by the scheduler, with one load: as cheap as a
+/// global on every architecture. Only valid once [`init_boot_cpu`] has run.
+#[inline]
+pub(crate) fn local_timer_interrupts_unseen<P: Platform>() -> u64 {
+    // SAFETY: the per-CPU register holds this CPU's block (see `current`), in which the field
+    // is an aligned `AtomicU64`.
+    unsafe { P::cpu_local_u64::<{ core::mem::offset_of!(Cpu, timer_interrupts_unseen) }>() }
+}
+
+/// Raises the wake-up interrupt on `cpu`, which must be online and not the calling CPU: it
+/// stops waiting for an interrupt, and whatever the caller wrote before is visible to it (D41).
+/// Call it with interrupts masked, as the kernel runs.
+pub fn wake<P: Platform>(cpu: &Cpu) {
+    debug_assert!(
+        cpu.is_online(),
+        "woke CPU {}, which is not online",
+        cpu.index
+    );
+    P::wake_cpu(cpu.hardware_id());
 }
 
 /// Why [`start_secondaries`] stopped.
@@ -228,13 +306,22 @@ fn start_with(
 }
 
 /// Where a secondary CPU starts, on its own stack with interrupts masked, given its [`Cpu`]:
-/// sets its per-CPU register, reports in, then parks.
+/// sets its per-CPU register, takes one timer interrupt (so a CPU whose timer or interrupt
+/// controller does not work never reports in), reports in, then waits for interrupts.
 extern "C" fn secondary_main<P: Platform>(cpu: usize) -> ! {
-    // SAFETY: `start_with` passes the address of a leaked `Cpu` whose first word holds that
-    // address.
+    // SAFETY: `start_with` passes the address of a leaked `Cpu`, made by `Cpu::new`, whose
+    // first word holds that address and whose HAL part is at the offset the HAL expects.
     unsafe { P::set_cpu_local(cpu) };
-    report_in(current::<P>(), &CPUS);
-    P::halt()
+    let cpu = current::<P>();
+    // A deadline already passed fires at once.
+    P::set_timer_deadline(P::clock_ticks());
+    while cpu.timer_interrupts() == 0 {
+        P::wait_for_interrupt();
+    }
+    report_in(cpu, &CPUS);
+    loop {
+        P::wait_for_interrupt();
+    }
 }
 
 /// Marks `cpu` online in `table`.

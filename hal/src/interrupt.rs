@@ -13,6 +13,11 @@ pub enum Interrupt {
     /// This CPU's timer reached the deadline set with [`crate::Platform::set_timer_deadline`].
     /// The timer is disarmed until the next `set_timer_deadline`.
     Timer,
+    /// Another CPU called [`crate::Platform::wake_cpu`] for this one. It carries nothing: the
+    /// kernel looks at its own shared state to see why (D41). Wakes a CPU waiting in
+    /// [`crate::Platform::wait_for_interrupt`]. Wakes sent while one is pending may merge into
+    /// one.
+    Wakeup,
 }
 
 // The kernel binary defines `kernel_interrupt` with exactly this signature (Rust ABI), which is

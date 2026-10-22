@@ -127,6 +127,9 @@ mod tests {
         fn cpu_local() -> usize {
             unreachable!("not used in tests")
         }
+        fn wake_cpu(_cpu: u64) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]
