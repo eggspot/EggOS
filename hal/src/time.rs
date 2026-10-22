@@ -25,9 +25,10 @@ pub const fn ratio_ceil(multiplier: u64, divisor: u64) -> u64 {
 }
 
 /// `value` scaled by `ratio` (from [`ratio_ceil`]), rounded up, saturating at `u64::MAX`: one
-/// multiplication. Never below `mul_div_ceil(value, multiplier, divisor)`, so a converted
-/// deadline is never reached early, and above it by less than `value / 2^32 + 1` (the factor's
-/// rounding).
+/// multiplication. While `multiplier / divisor` is below 2^32 (the factor did not saturate; clock
+/// ratios are far below it), never below `mul_div_ceil(value, multiplier, divisor)`, so a
+/// converted deadline is never reached early, and above it by less than `value / 2^32 + 1` (the
+/// factor's rounding).
 #[inline]
 pub const fn scale_ceil(value: u64, ratio: u64) -> u64 {
     let product = value as u128 * ratio as u128;
