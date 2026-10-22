@@ -489,7 +489,8 @@ impl Platform for Riscv64 {
     unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
         let value: u64;
         // SAFETY: the caller guarantees `tp` holds this hart's block, with an aligned
-        // `AtomicU64` at `OFFSET`: one aligned 8-byte load, which never tears.
+        // `AtomicU64` (or a word nothing writes meanwhile) at `OFFSET`: one aligned 8-byte load,
+        // which never tears.
         unsafe {
             core::arch::asm!(
                 "ld {}, {offset}(tp)",

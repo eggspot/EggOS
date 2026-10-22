@@ -1025,3 +1025,72 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   restores callee-saved registers on every exception. Nothing else moved beyond the gate.
 - **Also fixed.** `thread::enable_preemption`'s comment said a slice starts with every switch;
   D39 has a thread that runs after a yield, block or exit finish the slice under way.
+
+## D43 Per-CPU run queues: every CPU runs threads; one scheduler lock for now — Decided by the build loop (engineering); supersedes D30's report of a held heap lock
+- **Why now.** D40 and D41 started the other CPUs and gave each its own timer and wake-up
+  interrupt, but threads still ran on the boot CPU alone. This step makes every CPU schedule
+  threads. Splitting the scheduler's one lock into per-CPU and per-wait-queue locks is the next,
+  separate step: it changes how a thread blocks and is woken (two locks, taken in a fixed order),
+  and is easier to review and measure on its own.
+- **Per-CPU state.** Each CPU's scheduler state (running thread, ready threads, sleepers, idle
+  thread, exited-thread slot, slice end, armed deadline) lives in its per-CPU block
+  (`Cpu::scheduler`), reached only with the scheduler's lock held (`Schedulers::of`, which
+  borrows the lock's one `Schedulers` mutably, as `WaitQueue` did with the old `Scheduler`).
+  Thread ids come from a global counter, 0 reserved for the boot thread. A secondary CPU's start
+  code becomes its idle thread once it has taken its timer interrupt, just before it reports in,
+  so a CPU that is online can run threads.
+- **Placement.** A thread stays on the CPU `spawn` places it on: woken there, sleeping on that
+  CPU's timer, running there until it exits. `spawn` picks the lowest-numbered idle CPU (started,
+  idle thread running, nothing ready), otherwise the next started CPU in turn, otherwise the
+  spawning CPU (one CPU, or before the CPU table exists: the host tests and the benchmarks).
+  O(CPUs) per spawn, which allocates a stack anyway. Moving threads between CPUs to balance them
+  (stealing from busy CPUs when idle) is a follow-up.
+- **Telling another CPU.** A thread made ready on another CPU is announced to it: an idle CPU
+  gets the wake-up interrupt (D41), sent after the lock is released (`wake_all` sends them while
+  holding it, having nowhere to keep the threads without allocating); a flag in its scheduler
+  state (`wakeup_sent`) skips further interrupts until its idle thread looks again. A busy CPU
+  whose running thread was alone with preemption on gets a reschedule request instead: the top
+  bit of the per-CPU word its preemption point already loads (now `unseen_by_scheduler`: timer
+  interrupts in the low 63 bits), set with one atomic OR, no interrupt. Its next preemption
+  point, yield or block arms the tick, which is where an armed tick would have ended the slice
+  anyway. The same rule applies on the CPU itself: making a thread ready no longer arms the timer
+  directly, which made wait/wake cheaper.
+- **Preemption.** `enable_preemption` and `disable_preemption` set the slice on every CPU; turning
+  it on asks the other CPUs to look, so those with ready threads arm their ticks.
+- **The heap's lock waits now.** On bare metal the heap panicked when its lock was held, since on
+  one CPU only an interrupt handler allocating could find it so (D30). With threads on four CPUs
+  two of them allocate at once, which the new self-test hit intermittently on x86_64; the heap's
+  lock now waits like any other.
+- **Keeping the hot paths as cheap.** Finding the per-CPU block costs an instruction a static
+  did not on RISC-V (`mv` from `tp`) and forced a saved register on x86_64 where the block's
+  address lived across a call. Recovered by: the timer slow path and `park` closures finding or
+  receiving their CPU, so no caller keeps it across a call; `finish_switch` reading the
+  exited-thread slot with one per-CPU load (the HAL's `cpu_local_u64` contract now also allows a
+  word in an `UnsafeCell` that nothing writes meanwhile); `Stack::base` as a `NonZeroUsize`, so
+  `Option<Stack>` is one word and the canary check one load shorter; `ThreadList::push_back`
+  writing the thread's link after reading the list; and `core::hint::cold_path()` in the
+  spin lock's contended loop, so the free case falls straight through (this removed a jump on
+  RISC-V from every lock). Tried and dropped: a word-sized lock with `swap` or `fetch_or`
+  (cheaper on RISC-V, dearer on AArch64 without LSE atomics) and a canary pointer per thread
+  (slower on two architectures).
+- **Testing.** Host unit tests: notices for an idle CPU (one wake-up per look), a busy CPU (a
+  reschedule request only while preemption is on and its thread was alone), `make_ready` across
+  CPUs, placement (idle first, then in turn over started CPUs, the spawner when alone), and a
+  reschedule request seen once without counting a timer interrupt. The boot self-test
+  `threads_run_on_every_cpu` places one thread on each secondary CPU and checks they all run at
+  once, sleep on their own CPU's timer, are woken from afar out of a wait queue (each idle CPU
+  takes the wake-up interrupt) and stay on their CPU, and that the boot CPU, blocked in `join`,
+  is woken from afar when they exit. It fails when placement is broken (aarch64: the threads
+  never run at once) and hangs, which the runner reports, when remote wake-ups are dropped
+  (x86_64).
+- **Benchmarks** (instructions per iteration, one CPU, this machine's QEMU, before → after):
+  `thread_wait_wake_round_trip` aarch64 222 → 204, riscv64 226 → 207, x86_64 203 → 193;
+  `thread_yield_round_trip` aarch64 132 → 121, riscv64 151 → 150, x86_64 111 → 110;
+  `wait_queue_wake_empty` aarch64 16 → 15, riscv64 14 → 13, x86_64 16 → 14. Nothing slower.
+- **Cost (D24).** About 100 bytes more per CPU block (the scheduler state, which was one static);
+  no boot time.
+- **Follow-ups (roadmap).** Per-CPU locks for the run queues and per-queue locks for wait queues;
+  load balancing (an idle CPU taking ready threads from a busy one); an idle-CPU mask instead of
+  scanning the CPU table in `spawn`; per-CPU idle stacks with canaries for the secondaries (their
+  start stacks have none); preemption on a secondary CPU exercised by a boot self-test. (D41's
+  follow-up of a secondary CPU waking the boot CPU is done: the self-test checks it.)

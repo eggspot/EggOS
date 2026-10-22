@@ -15,7 +15,7 @@
 //!
 //! Interrupt and exception handlers must not allocate: the heap's lock does not mask
 //! interrupts (see [`SpinLock`]), so a handler allocating while the code it interrupted holds
-//! the lock would wait forever. [`KernelHeap`] reports that case instead (see its `lock`).
+//! the lock would wait forever. Threads on other CPUs wait for it (D43).
 
 use crate::memory::{self, FrameAllocator, MAX_ORDER};
 use crate::sync::{SpinLock, SpinLockGuard};
@@ -269,21 +269,12 @@ impl KernelHeap {
         }
     }
 
-    /// The heap, locked. On the bare-metal targets, where there is one CPU so far (M4), the lock
-    /// can only be held already when an interrupt or exception handler allocates while the
-    /// code it interrupted is inside the heap: that breaks the rule in the module
-    /// documentation and would spin forever, so it is reported instead, at no cost to the
-    /// handlers or the heap. Host tests use the heap from several threads, so they wait.
+    /// The heap, locked, once the CPU using it (or the host thread, in tests) is done. Every
+    /// CPU allocates since threads run on all of them (D43), so a held lock no longer means an
+    /// interrupt handler broke the rule in the module documentation, as it did on one CPU.
     #[inline]
     fn lock(&self) -> SpinLockGuard<'_, Heap> {
-        if cfg!(target_os = "none") {
-            match self.heap.try_lock() {
-                Some(heap) => heap,
-                None => panic!("kernel heap used by an interrupt or exception handler"),
-            }
-        } else {
-            self.heap.lock()
-        }
+        self.heap.lock()
     }
 }
 

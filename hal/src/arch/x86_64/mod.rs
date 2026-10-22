@@ -733,7 +733,8 @@ impl Platform for X86_64 {
     unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
         let value: u64;
         // SAFETY: the caller guarantees the GS base is this CPU's block, with an aligned
-        // `AtomicU64` at `OFFSET`: one aligned 8-byte load, which never tears.
+        // `AtomicU64` (or a word nothing writes meanwhile) at `OFFSET`: one aligned 8-byte load,
+        // which never tears.
         unsafe {
             core::arch::asm!(
                 "mov {}, qword ptr gs:[{offset}]",

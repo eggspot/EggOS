@@ -108,13 +108,14 @@ fn timer_arm<P: Platform>(n: u64) {
 /// handled: interrupt entry, acknowledgement, delivery to the kernel and the return (D26).
 fn timer_interrupt_round_trip<P: Platform>(n: u64) {
     // This CPU's block, found once, so polling its count costs what polling a global did. The
-    // count of interrupts the scheduler has not seen: nothing here runs the scheduler, so it
-    // only grows.
+    // word of what the scheduler has not seen, read whole: nothing here runs the scheduler and
+    // no other CPU asks it to look (the benchmarks run on one), so it only grows by the timer
+    // interrupts.
     let this = cpu::current::<P>();
     for _ in 0..n {
-        let before = this.timer_interrupts_unseen();
+        let before = this.unseen_by_scheduler();
         P::set_timer_deadline(0);
-        while this.timer_interrupts_unseen() == before {
+        while this.unseen_by_scheduler() == before {
             P::wait_for_interrupt();
         }
     }

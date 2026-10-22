@@ -9,7 +9,7 @@ use crate::{cpu, exception, interrupt, thread};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
@@ -31,13 +31,15 @@ const QEMU_CPUS: usize = 4;
 const CPU_START_TIMEOUT_MS: u64 = 1000;
 /// How long a CPU has to take a wake-up interrupt.
 const WAKEUP_TIMEOUT_MS: u64 = 1000;
+/// How long the threads placed on the CPUs have to all run at once, and to wait together.
+const THREADS_MEET_TIMEOUT_MS: u64 = 1000;
 
 /// A self-test: a name and a check of `context` (for the boot self-tests, the kernel's
 /// [`Memory`]) returning `Err(reason)` on failure.
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 12] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 13] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -70,6 +72,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 12] {
         ),
         ("cpus_take_their_own_interrupts", |_| {
             cpus_take_their_own_interrupts::<P>()
+        }),
+        ("threads_run_on_every_cpu", |_| {
+            threads_run_on_every_cpu::<P>()
         }),
     ]
 }
@@ -714,6 +719,109 @@ fn cpus_take_their_own_interrupts<P: Platform>() -> Result<(), &'static str> {
         if others != others_before || boot.wakeups() != boot_before {
             return Err("a wake-up interrupt reached a CPU it was not sent to");
         }
+    }
+    Ok(())
+}
+
+/// Threads run on every CPU at once (D43): one thread per secondary CPU, each placed on an idle
+/// CPU of its own, all running at the same time (each waits until every CPU's thread, the boot
+/// thread included, has arrived). Each then sleeps on its own CPU's timer and waits in a wait
+/// queue until the boot thread wakes them all from afar, which takes the wake-up interrupt to
+/// their idle CPUs; each must still run on its own CPU. They sleep once more before they exit,
+/// so the boot thread blocks in `join` and is woken from afar too. Up to 64 CPUs take part; on
+/// one CPU (the benchmarks) there is nothing to check. A thread that is never woken leaves the
+/// boot thread blocked, which the QEMU runner's timeout reports.
+fn threads_run_on_every_cpu<P: Platform>() -> Result<(), &'static str> {
+    static ARRIVED: AtomicUsize = AtomicUsize::new(0);
+    static RAN_ON: AtomicU64 = AtomicU64::new(0);
+    static WAITING: AtomicUsize = AtomicUsize::new(0);
+    static OPEN: AtomicBool = AtomicBool::new(false);
+    static WOKE_EARLY: AtomicBool = AtomicBool::new(false);
+    static MOVED: AtomicBool = AtomicBool::new(false);
+    static QUEUE: thread::WaitQueue = thread::WaitQueue::new();
+    let cpus = cpu::CPUS.all();
+    let taking_part = cpus.len().min(64);
+    if taking_part <= 1 {
+        return Ok(());
+    }
+    ARRIVED.store(0, Ordering::Relaxed);
+    RAN_ON.store(0, Ordering::Relaxed);
+    WAITING.store(0, Ordering::Relaxed);
+    OPEN.store(false, Ordering::Relaxed);
+    WOKE_EARLY.store(false, Ordering::Relaxed);
+    MOVED.store(false, Ordering::Relaxed);
+    let millisecond = P::clock_frequency() / 1000;
+    let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
+    let arrive = move || {
+        let here = cpu::current::<P>();
+        RAN_ON.fetch_or(1 << here.index(), Ordering::Relaxed);
+        ARRIVED.fetch_add(1, Ordering::AcqRel);
+        while ARRIVED.load(Ordering::Acquire) < taking_part && P::clock_ticks() < give_up {
+            core::hint::spin_loop();
+        }
+        here
+    };
+    let boot = cpus[0];
+    let boot_wakeups = boot.wakeups();
+    let mut threads = Vec::new();
+    for _ in 1..taking_part {
+        let spawned = thread::spawn::<P, _>(move || {
+            let here = arrive();
+            let deadline = P::clock_ticks() + millisecond;
+            thread::sleep_until::<P>(deadline);
+            if P::clock_ticks() < deadline {
+                WOKE_EARLY.store(true, Ordering::Relaxed);
+            }
+            WAITING.fetch_add(1, Ordering::Release);
+            QUEUE.wait_until::<P>(|| OPEN.load(Ordering::Acquire));
+            // Long enough for the boot thread to block in `join`.
+            thread::sleep_until::<P>(P::clock_ticks() + millisecond);
+            if !core::ptr::eq(cpu::current::<P>(), here) {
+                MOVED.store(true, Ordering::Relaxed);
+            }
+        });
+        threads.push(spawned.map_err(|_| "could not start a thread per CPU")?);
+    }
+    arrive();
+    let all_at_once = ARRIVED.load(Ordering::Acquire) == taking_part;
+    while WAITING.load(Ordering::Acquire) < taking_part - 1 && P::clock_ticks() < give_up {
+        core::hint::spin_loop();
+    }
+    // Long enough for the threads to block in the queue, so the wake comes from afar.
+    thread::sleep_until::<P>(P::clock_ticks() + millisecond);
+    let wakeups_before: Vec<u64> = cpus[1..taking_part]
+        .iter()
+        .map(|cpu| cpu.wakeups())
+        .collect();
+    OPEN.store(true, Ordering::Release);
+    let woken = QUEUE.wake_all::<P>();
+    for thread in threads {
+        thread.join::<P>();
+    }
+    if !all_at_once {
+        return Err("the threads placed on the CPUs did not all run at once");
+    }
+    if RAN_ON.load(Ordering::Relaxed) != u64::MAX >> (64 - taking_part) {
+        return Err("the threads were not placed one on each CPU");
+    }
+    if WOKE_EARLY.load(Ordering::Relaxed) {
+        return Err("a thread on another CPU woke before its deadline");
+    }
+    if woken != taking_part - 1 {
+        return Err("a thread on another CPU was not waiting in the wait queue");
+    }
+    if MOVED.load(Ordering::Relaxed) {
+        return Err("a thread woken from afar ran on another CPU");
+    }
+    if cpus[1..taking_part]
+        .iter()
+        .zip(wakeups_before)
+        .any(|(cpu, before)| cpu.wakeups() == before)
+    {
+        return Err("an idle CPU was not sent the wake-up interrupt for its thread");
+    }
+    if boot.wakeups() == boot_wakeups {
+        return Err("the boot CPU was not woken from afar when the threads it joined exited");
     }
     Ok(())
 }

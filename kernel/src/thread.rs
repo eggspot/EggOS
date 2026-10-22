@@ -1,12 +1,20 @@
-//! Kernel threads and the scheduler (D35, D37, D39).
+//! Kernel threads and the scheduler (D35, D37, D39, D43).
 //!
-//! M4: threads that run kernel code on their own stacks, scheduled round-robin on one CPU. A
+//! M4: threads that run kernel code on their own stacks, scheduled round-robin on each CPU. A
 //! thread runs until it calls [`yield_now`], blocks ([`sleep_until`], [`WaitQueue::wait_until`],
 //! [`JoinHandle::join`]), its function returns, or its time slice is over at a
 //! [`preemption_point`]; [`spawn`] starts one. The boot code becomes a thread too, the first
-//! time it uses the scheduler (its stack is the boot stack), and so does the CPU's idle thread,
-//! which runs only when every other thread is blocked: it waits for an interrupt and lets the
-//! first thread that becomes ready run. Per-CPU run queues follow in the next step.
+//! time it uses the scheduler (its stack is the boot stack). Every CPU has an idle thread, which
+//! runs only when every other thread on that CPU is blocked: it waits for an interrupt and lets
+//! the first thread that becomes ready run. A secondary CPU's start code becomes its idle thread.
+//!
+//! Every CPU has its own scheduler state (D43): its running thread, ready threads, sleepers, idle
+//! thread and timer, in its per-CPU block ([`Cpu`]). A thread stays on the CPU [`spawn`] placed
+//! it on (an idle CPU if there is one, otherwise the next CPU in turn): it is woken there, sleeps
+//! on that CPU's timer, and runs there until it exits. A thread made ready on another CPU is
+//! announced to it: an idle CPU gets the wake-up interrupt ([`cpu::wake`]), a busy one with
+//! preemption on a reschedule request its next preemption point sees, so a tick is armed for the
+//! new thread's turn. Moving threads between CPUs to balance them comes later.
 //!
 //! Preemption is voluntary inside the kernel (D37): kernel code runs with interrupts masked,
 //! and while [`enable_preemption`] is on, a thread whose [`TIME_SLICE_MS`] slice is over lets
@@ -34,22 +42,24 @@
 //! silently corrupting the memory below. Guard pages need a kernel virtual area and exception
 //! stacks first (roadmap, paging follow-ups).
 //!
-//! Locking: the scheduler's lock, which also guards every [`WaitQueue`], is taken before the
+//! Locking: one lock, the scheduler's, guards every CPU's scheduler state and every
+//! [`WaitQueue`] for now; per-CPU and per-queue locks are the next step. It is taken before the
 //! heap's and the frame allocator's, never after; an exited thread's stack is freed after it
 //! is released. A switch is made holding it, and the lock is handed over to the thread the
 //! switch resumes, which releases it ([`finish_switch`]): from choosing the next thread until
 //! the previous one's context is saved, nothing else can take the scheduler, on this CPU or
 //! another.
 
-use crate::cpu;
+use crate::cpu::{self, Cpu};
 use crate::heap::{FrameSource, GlobalFrames};
 use crate::sync::{SpinLock, SpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::fmt;
-use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::num::NonZeroUsize;
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
@@ -69,6 +79,16 @@ pub const TIME_SLICE_MS: u64 = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ThreadId(u64);
 
+impl ThreadId {
+    const BOOT: Self = Self(0);
+
+    /// A new id, never handed out before; the boot thread's is reserved.
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -86,13 +106,15 @@ pub enum SpawnError {
 /// A thread's stack: [`STACK_SIZE`] bytes from the frame allocator, freed when dropped.
 #[derive(Debug)]
 struct Stack {
-    /// Direct-map address of the lowest byte, which holds the canary.
-    base: usize,
+    /// Direct-map address of the lowest byte, which holds the canary. Never 0, so an
+    /// `Option<Stack>` is one word and a switch checks a thread's stack with one load fewer.
+    base: NonZeroUsize,
 }
 
 impl Stack {
     fn allocate() -> Option<Self> {
         let base = GlobalFrames.allocate_frames(STACK_ORDER)?;
+        let base = NonZeroUsize::new(base).expect("the direct map never maps address 0");
         let stack = Self { base };
         // SAFETY: `base` is the first, 16 KiB-aligned word of the frames just allocated, which
         // this stack owns and which the direct map makes writable.
@@ -101,11 +123,11 @@ impl Stack {
     }
 
     fn canary(&self) -> *mut u64 {
-        self.base as *mut u64
+        self.base.get() as *mut u64
     }
 
     fn top(&self) -> usize {
-        self.base + STACK_SIZE
+        self.base.get() + STACK_SIZE
     }
 
     /// Whether the thread's writes have not reached the stack's lowest word. Volatile: the
@@ -121,7 +143,7 @@ impl Drop for Stack {
     fn drop(&mut self) {
         // SAFETY: the frames came from `GlobalFrames` with this order in `allocate`, and the
         // thread that ran on them has switched away for the last time (see `finish_switch`).
-        unsafe { GlobalFrames.free_frames(self.base, STACK_ORDER) };
+        unsafe { GlobalFrames.free_frames(self.base.get(), STACK_ORDER) };
     }
 }
 
@@ -140,7 +162,8 @@ struct Thread {
     id: ThreadId,
     /// The saved context while the thread is not running ([`Platform::switch_thread`]).
     context: usize,
-    /// `None` for the boot thread, which runs on the boot stack.
+    /// `None` for the boot thread, which runs on the boot stack, and a secondary CPU's idle
+    /// thread, which runs on the stack the CPU started on.
     stack: Option<Stack>,
     joined: Arc<Joined>,
     /// The next thread in the [`ThreadList`] that holds this one: the ready threads, a wait
@@ -148,9 +171,26 @@ struct Thread {
     next: Option<NonNull<Thread>>,
     /// While it sleeps: the [`Platform::clock_ticks`] it wakes at.
     wake_at: u64,
+    /// The CPU it runs on, whose scheduler holds it while it does not run (D43).
+    cpu: &'static Cpu,
 }
 
 impl Thread {
+    fn boxed(id: ThreadId, context: usize, stack: Option<Stack>, cpu: &'static Cpu) -> ThreadBox {
+        ThreadBox::new(Self {
+            id,
+            context,
+            stack,
+            joined: Arc::new(Joined {
+                finished: AtomicBool::new(false),
+                joiners: WaitQueue::new(),
+            }),
+            next: None,
+            wake_at: 0,
+            cpu,
+        })
+    }
+
     /// Stops the kernel if the thread overflowed its stack: whatever lies below it may already
     /// be corrupted, so carrying on is not safe.
     fn check_stack(&self) {
@@ -169,11 +209,13 @@ impl Thread {
 /// scheduler moves the owner between lists and `current`, which a `Box`'s uniqueness does not
 /// allow.
 #[derive(Debug)]
+#[repr(transparent)]
 struct ThreadBox(NonNull<Thread>);
 
 // SAFETY: a `ThreadBox` owns its `Thread` as a `Box` would. Everything in a `Thread` is `Send`
-// but its `next` link, a raw pointer that only the `ThreadList` holding the thread follows,
-// with the scheduler's lock held, so moving the owner to another CPU shares nothing unguarded.
+// (its `cpu` is a shared reference to a `Sync` block) but its `next` link, a raw pointer that
+// only the `ThreadList` holding the thread follows, with the scheduler's lock held, so moving
+// the owner to another CPU shares nothing unguarded.
 unsafe impl Send for ThreadBox {}
 
 impl ThreadBox {
@@ -255,8 +297,6 @@ impl ThreadList {
     #[inline]
     fn push_back(&mut self, thread: ThreadBox) {
         let thread = thread.into_raw();
-        // SAFETY: owned by this list now and in no other; no reference to it is live.
-        unsafe { (*thread.as_ptr()).next = None };
         if self.head.is_none() {
             self.head = Some(thread);
         } else {
@@ -264,6 +304,11 @@ impl ThreadList {
             // it is live.
             unsafe { (*self.tail.as_ptr()).next = Some(thread) };
         }
+        // Written after the list is read, so that the compiler need not read it again (it
+        // cannot tell the thread from the list's memory).
+        // SAFETY: owned by this list now and in no other (it was in none, so it is not the
+        // tail); no reference to it is live.
+        unsafe { (*thread.as_ptr()).next = None };
         self.tail = thread;
     }
 
@@ -323,15 +368,16 @@ impl Drop for ThreadList {
 
 /// Threads waiting for something: one waits with [`Self::wait_until`] until a condition holds,
 /// and whoever makes it hold wakes it with [`Self::wake_one`] or [`Self::wake_all`]. The
-/// waiting threads are linked through themselves, so waiting and waking never allocate.
-/// Guarded by the scheduler's lock for now; per-queue locks come with SMP.
+/// waiting threads are linked through themselves, so waiting and waking never allocate. A
+/// waiter on any CPU may be woken from any CPU; it runs again on its own. Guarded by the
+/// scheduler's lock for now; per-queue locks are the next step (D43).
 pub struct WaitQueue {
     /// Only reached through [`Self::waiters`], with the scheduler locked.
     waiters: UnsafeCell<ThreadList>,
 }
 
 // SAFETY: the list is only reached with the scheduler's lock held (`waiters` takes the
-// scheduler by `&mut`), which serialises every use of it; the threads in it are `Send`.
+// lock's `Schedulers` by `&mut`), which serialises every use of it; the threads in it are `Send`.
 unsafe impl Sync for WaitQueue {}
 
 impl fmt::Debug for WaitQueue {
@@ -353,12 +399,12 @@ impl WaitQueue {
         }
     }
 
-    /// The waiting threads. Borrowing the scheduler (whose one instance is behind its lock)
-    /// for as long as the list proves the lock is held and no other reference to the list
-    /// exists.
-    fn waiters<'a>(&'a self, _scheduler: &'a mut Scheduler) -> &'a mut ThreadList {
+    /// The waiting threads. Borrowing the scheduler's `Schedulers` (whose one instance is
+    /// behind its lock) for as long as the list proves the lock is held and no other reference
+    /// to the list exists.
+    fn waiters<'a>(&'a self, _schedulers: &'a mut Schedulers) -> &'a mut ThreadList {
         // SAFETY: see above: every reference to the list is made here, each borrowing the one
-        // `Scheduler` mutably for its whole life, so they never overlap.
+        // `Schedulers` mutably for its whole life, so they never overlap.
         unsafe { &mut *self.waiters.get() }
     }
 
@@ -373,46 +419,172 @@ impl WaitQueue {
     /// kernel if there is no memory for that.
     pub fn wait_until<P: Platform>(&self, mut condition: impl FnMut() -> bool) {
         loop {
-            let mut scheduler = SCHEDULER.lock();
+            let mut schedulers = SCHEDULER.lock();
             if condition() {
                 return;
             }
-            scheduler.start_or_panic::<P>();
-            block::<P>(scheduler, |scheduler, thread| {
-                self.waiters(scheduler).push_back(thread);
+            start_here_or_panic::<P>(&mut schedulers);
+            block::<P>(schedulers, |schedulers, _, thread| {
+                self.waiters(schedulers).push_back(thread);
             });
         }
     }
 
     /// Wakes the thread that has waited longest, if one waits; returns whether one did. It
-    /// runs after the threads already ready to run. Meant for queues whose waiters all wait
-    /// for the same condition: a woken thread whose own condition does not hold waits again at
-    /// the back, and the wake is spent; otherwise use [`Self::wake_all`].
+    /// runs on its own CPU, after the threads already ready to run there. Meant for queues
+    /// whose waiters all wait for the same condition: a woken thread whose own condition does
+    /// not hold waits again at the back, and the wake is spent; otherwise use
+    /// [`Self::wake_all`].
     pub fn wake_one<P: Platform>(&self) -> bool {
-        let mut scheduler = SCHEDULER.lock();
-        let Some(thread) = self.waiters(&mut scheduler).pop_front() else {
+        let mut schedulers = SCHEDULER.lock();
+        let Some(thread) = self.waiters(&mut schedulers).pop_front() else {
             return false;
         };
-        scheduler.make_ready::<P>(thread);
+        let wake = make_ready::<P>(&mut schedulers, thread);
+        drop(schedulers);
+        if let Some(cpu) = wake {
+            cpu::wake::<P>(cpu);
+        }
         true
     }
 
-    /// Wakes every waiting thread, in the order they began to wait; returns how many.
+    /// Wakes every waiting thread, in the order they began to wait; returns how many. Idle
+    /// CPUs among theirs get the wake-up interrupt with the scheduler's lock still held: the
+    /// threads cannot be kept anywhere else meanwhile without allocating.
     pub fn wake_all<P: Platform>(&self) -> usize {
-        let mut scheduler = SCHEDULER.lock();
+        let mut schedulers = SCHEDULER.lock();
         let mut woken = 0;
-        while let Some(thread) = self.waiters(&mut scheduler).pop_front() {
-            scheduler.ready.push_back(thread);
+        while let Some(thread) = self.waiters(&mut schedulers).pop_front() {
+            if let Some(cpu) = make_ready::<P>(&mut schedulers, thread) {
+                cpu::wake::<P>(cpu);
+            }
             woken += 1;
-        }
-        if woken > 0 {
-            scheduler.update_timer::<P>();
         }
         woken
     }
 }
 
-/// The scheduler's state for the one CPU.
+/// What a CPU must be told about a thread made ready on it ([`Scheduler::push_ready`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Notice {
+    /// Nothing: it runs the thread in turn, and a tick is armed if one is needed for that.
+    Nothing,
+    /// Its scheduler must look at its ready threads at its next preemption point, yield or
+    /// block ([`Cpu::request_reschedule`]): with preemption on, its running thread was alone,
+    /// so no tick is armed to end its slice.
+    Reschedule,
+    /// Its idle thread waits for an interrupt: it needs the wake-up interrupt ([`cpu::wake`]),
+    /// unless it is the CPU making the thread ready.
+    Wake,
+}
+
+/// One CPU's scheduler state, in its per-CPU block ([`Cpu::scheduler`]), reached only with the
+/// scheduler's lock held ([`Schedulers::of`]). Not `Debug`: reading it needs the lock.
+#[repr(transparent)]
+pub struct CpuScheduler(UnsafeCell<Scheduler>);
+
+// SAFETY: the state is only reached through `Schedulers::of`, which takes the one `Schedulers`
+// behind the scheduler's lock by `&mut`, so every use is serialised by that lock; everything in
+// it is `Send`.
+unsafe impl Sync for CpuScheduler {}
+
+impl CpuScheduler {
+    pub(crate) const fn new() -> Self {
+        Self(UnsafeCell::new(Scheduler::new()))
+    }
+}
+
+impl fmt::Debug for CpuScheduler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CpuScheduler").finish_non_exhaustive()
+    }
+}
+
+/// What the scheduler's lock guards beyond the wait queues: every CPU's [`Scheduler`], reached
+/// one at a time through [`Self::of`], and what they share.
+#[derive(Debug)]
+struct Schedulers {
+    /// The time slice in clock ticks while preemption is on, 0 while it is off. Each CPU's
+    /// scheduler keeps a copy, so a CPU that starts later takes it from here.
+    slice_ticks: u64,
+    /// Where [`Self::place`] looks first when no CPU is idle: an index into the CPU table.
+    next_placement: usize,
+}
+
+static SCHEDULER: SpinLock<Schedulers> = SpinLock::new(Schedulers {
+    slice_ticks: 0,
+    next_placement: 0,
+});
+
+impl Schedulers {
+    /// `cpu`'s scheduler state. Borrowing `self` (whose one instance is behind the scheduler's
+    /// lock) for as long as the state proves the lock is held and no other reference to any
+    /// CPU's state exists.
+    #[inline]
+    fn of<'a>(&'a mut self, cpu: &'a Cpu) -> &'a mut Scheduler {
+        // SAFETY: see above: every reference to a CPU's state is made here, each borrowing the
+        // one `Schedulers` mutably for its whole life, so they never overlap.
+        unsafe { &mut *cpu.scheduler.0.get() }
+    }
+
+    /// The CPU a new thread runs on, from `here`, the CPU spawning it: an idle CPU if there is
+    /// one, the lowest-numbered, so new threads spread over the idle CPUs first; otherwise the
+    /// next CPU in turn whose scheduler has started. O(CPUs); spawning is not a hot path.
+    fn place(&mut self, here: &'static Cpu) -> &'static Cpu {
+        self.place_among(cpu::CPUS.all(), here)
+    }
+
+    /// [`Self::place`] among `cpus`; `here` if there is no other.
+    fn place_among(&mut self, cpus: &[&'static Cpu], here: &'static Cpu) -> &'static Cpu {
+        if cpus.len() <= 1 {
+            return here;
+        }
+        if let Some(&idle) = cpus.iter().find(|&&cpu| self.of(cpu).is_idle()) {
+            return idle;
+        }
+        for _ in 0..cpus.len() {
+            let index = self.next_placement % cpus.len();
+            self.next_placement = (index + 1) % cpus.len();
+            let cpu = cpus[index];
+            if self.of(cpu).has_started() {
+                return cpu;
+            }
+        }
+        here
+    }
+
+    /// Sets the time slice to `slice_ticks` (0 for none) on every CPU. Turning preemption on
+    /// asks every other CPU to look, so those with ready threads arm their ticks.
+    fn set_slice_ticks(&mut self, here: &'static Cpu, slice_ticks: u64) {
+        self.slice_ticks = slice_ticks;
+        for &cpu in cpu::CPUS.all() {
+            self.of(cpu).slice_ticks = slice_ticks;
+            if slice_ticks != 0 && !ptr::eq(cpu, here) {
+                cpu.request_reschedule();
+            }
+        }
+        // Also before the CPU table exists.
+        self.of(here).slice_ticks = slice_ticks;
+    }
+}
+
+/// Makes `thread`, woken or new, ready on its CPU. Returns that CPU if it needs the wake-up
+/// interrupt, to send once the scheduler's lock is released.
+#[inline]
+fn make_ready<P: Platform>(schedulers: &mut Schedulers, thread: ThreadBox) -> Option<&'static Cpu> {
+    let target = thread.get().cpu;
+    match schedulers.of(target).push_ready(thread) {
+        Notice::Nothing => None,
+        Notice::Reschedule => {
+            target.request_reschedule();
+            None
+        }
+        // This CPU's own idle thread looks at its ready threads once it runs on.
+        Notice::Wake => (!ptr::eq(target, cpu::current::<P>())).then_some(target),
+    }
+}
+
+/// One CPU's scheduler state.
 #[derive(Debug)]
 struct Scheduler {
     /// The running thread; `None` until the scheduler [`start`]s.
@@ -426,9 +598,8 @@ struct Scheduler {
     /// A thread that has exited, until the next thread to run frees it (no thread can free the
     /// stack it is running on).
     exited: Option<ThreadBox>,
-    next_id: u64,
     /// The time slice in clock ticks while preemption is on ([`enable_preemption`]); 0 while
-    /// it is off.
+    /// it is off. A copy of [`Schedulers::slice_ticks`].
     slice_ticks: u64,
     /// While preemption is on: the clock tick at which the running thread's slice ends.
     slice_end: u64,
@@ -438,24 +609,30 @@ struct Scheduler {
     /// that arms the timer itself (self-tests, benchmarks) does so only while no thread sleeps
     /// and preemption is off, when this is `u64::MAX` and the scheduler needs no deadline.
     armed: u64,
+    /// Set when another CPU sends this one the wake-up interrupt for a thread it made ready
+    /// here, cleared by the idle thread when it next looks at the ready threads: until then,
+    /// further threads made ready here need no interrupt of their own.
+    wakeup_sent: bool,
 }
 
-static SCHEDULER: SpinLock<Scheduler> = SpinLock::new(Scheduler {
-    current: None,
-    ready: ThreadList::new(),
-    sleeping: ThreadList::new(),
-    idle: None,
-    exited: None,
-    next_id: 0,
-    slice_ticks: 0,
-    slice_end: 0,
-    armed: u64::MAX,
-});
-
 impl Scheduler {
-    /// Makes the code running now the boot thread and creates the idle thread, unless the
-    /// scheduler has started already.
-    fn start<P: Platform>(&mut self) -> Result<(), SpawnError> {
+    const fn new() -> Self {
+        Self {
+            current: None,
+            ready: ThreadList::new(),
+            sleeping: ThreadList::new(),
+            idle: None,
+            exited: None,
+            slice_ticks: 0,
+            slice_end: 0,
+            armed: u64::MAX,
+            wakeup_sent: false,
+        }
+    }
+
+    /// Makes the code running now, on `here`, the boot thread and creates the idle thread,
+    /// unless the scheduler has started already. (A secondary CPU's has: [`start_secondary`].)
+    fn start<P: Platform>(&mut self, here: &'static Cpu) -> Result<(), SpawnError> {
         if self.current.is_some() {
             return Ok(());
         }
@@ -463,34 +640,20 @@ impl Scheduler {
         // SAFETY: the stack's frames are allocated, writable through the direct map and used
         // by nothing else; the idle thread never exits, so they stay allocated.
         let context = unsafe { P::prepare_thread(stack.top(), idle_thread::<P>, 0) };
-        let boot = self.new_thread(0, None);
-        self.idle = Some(self.new_thread(context, Some(stack)));
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here);
+        self.idle = Some(Thread::boxed(ThreadId::next(), context, Some(stack), here));
         self.current = Some(boot);
         Ok(())
     }
 
-    /// [`Self::start`] for the blocking calls, which cannot fail: without the memory for the
-    /// idle thread's stack, nothing more can run anyway.
-    fn start_or_panic<P: Platform>(&mut self) {
-        if self.start::<P>().is_err() {
-            panic!("no memory for the idle thread's stack");
-        }
+    fn has_started(&self) -> bool {
+        self.current.is_some()
     }
 
-    fn new_thread(&mut self, context: usize, stack: Option<Stack>) -> ThreadBox {
-        let id = ThreadId(self.next_id);
-        self.next_id += 1;
-        ThreadBox::new(Thread {
-            id,
-            context,
-            stack,
-            joined: Arc::new(Joined {
-                finished: AtomicBool::new(false),
-                joiners: WaitQueue::new(),
-            }),
-            next: None,
-            wake_at: 0,
-        })
+    /// Whether the CPU has started and has nothing to run: its idle thread runs (it is not in
+    /// its slot) and no thread is ready.
+    fn is_idle(&self) -> bool {
+        self.has_started() && self.idle.is_none() && self.ready.is_empty()
     }
 
     /// Makes `next` the running thread and returns the previous one, whose stack it checks.
@@ -503,11 +666,26 @@ impl Scheduler {
         previous
     }
 
-    /// Adds a woken or new thread to the ready threads.
-    fn make_ready<P: Platform>(&mut self, thread: ThreadBox) {
+    /// Adds a woken or new thread to the ready threads, from this CPU or another; returns what
+    /// the CPU must be told. The scheduler does not arm the timer here, which only this CPU's
+    /// own scheduler can do: a running thread that was alone with preemption on gets a
+    /// reschedule request instead, and its next preemption point arms the tick, which is where
+    /// an armed tick would have ended its slice anyway.
+    #[inline]
+    fn push_ready(&mut self, thread: ThreadBox) -> Notice {
+        let was_alone = self.ready.is_empty();
         self.ready.push_back(thread);
-        // The running thread may have been alone, with no tick armed.
-        self.update_timer::<P>();
+        if self.idle.is_none() {
+            if self.wakeup_sent {
+                return Notice::Nothing;
+            }
+            self.wakeup_sent = true;
+            Notice::Wake
+        } else if was_alone && self.slice_ticks != 0 {
+            Notice::Reschedule
+        } else {
+            Notice::Nothing
+        }
     }
 
     /// Whether the running thread's slice needs the timer: preemption is on, another thread is
@@ -563,26 +741,14 @@ impl Scheduler {
         self.update_timer::<P>();
     }
 
-    /// If the timer has fired since the scheduler last looked: wakes the sleepers whose time
-    /// has come and arms the timer for what is needed next. Returns whether the running
-    /// thread's slice is over; the next slice has then started, for the thread the caller must
-    /// switch to (another is ready, or no slice would have ended). Two loads and a compare when
-    /// the timer has not fired.
+    /// [`timer_events`]' slow path, for this CPU's own scheduler.
     #[inline]
-    fn timer_events<P: Platform>(&mut self) -> bool {
-        if cpu::local_timer_interrupts_unseen::<P>() == 0 {
-            return false;
-        }
-        self.timer_fired::<P>()
-    }
-
-    /// [`Self::timer_events`]' slow path.
-    #[cold]
-    #[inline(never)]
     fn timer_fired<P: Platform>(&mut self) -> bool {
-        cpu::current::<P>().see_timer_interrupts();
-        // The timer fires once per arming, so whatever was armed has fired.
-        self.armed = u64::MAX;
+        // The timer fires once per arming, so whatever was armed has fired, unless only a
+        // reschedule request came.
+        if cpu::current::<P>().see_scheduler_events() != 0 {
+            self.armed = u64::MAX;
+        }
         let now = P::clock_ticks();
         while self
             .sleeping
@@ -600,6 +766,42 @@ impl Scheduler {
             self.update_timer::<P>();
         }
         slice_over
+    }
+}
+
+/// If the timer has fired, or another CPU asked, since this CPU's scheduler last looked: wakes
+/// the sleepers whose time has come and arms the timer for what is needed next. Returns whether
+/// the running thread's slice is over; the next slice has then started, for the thread the
+/// caller must switch to (another is ready, or no slice would have ended). A load and a branch
+/// when neither happened. The slow path finds its CPU itself, so no caller keeps one in a
+/// register across the call.
+#[inline]
+fn timer_events<P: Platform>(schedulers: &mut Schedulers) -> bool {
+    if cpu::local_unseen_by_scheduler::<P>() == 0 {
+        return false;
+    }
+    timer_fired::<P>(schedulers)
+}
+
+/// [`timer_events`]' slow path.
+#[cold]
+#[inline(never)]
+fn timer_fired<P: Platform>(schedulers: &mut Schedulers) -> bool {
+    schedulers.of(cpu::current::<P>()).timer_fired::<P>()
+}
+
+/// Starts the scheduler on this CPU if it has not started ([`Scheduler::start`]), finding the
+/// CPU itself, as [`timer_fired`] does.
+fn start_here<P: Platform>(schedulers: &mut Schedulers) -> Result<(), SpawnError> {
+    let here = cpu::current::<P>();
+    schedulers.of(here).start::<P>(here)
+}
+
+/// [`start_here`] for the blocking calls, which cannot fail: without the memory for the idle
+/// thread's stack, nothing more can run anyway.
+fn start_here_or_panic<P: Platform>(schedulers: &mut Schedulers) {
+    if start_here::<P>(schedulers).is_err() {
+        panic!("no memory for the idle thread's stack");
     }
 }
 
@@ -626,6 +828,7 @@ impl JoinHandle {
         debug_assert!(
             SCHEDULER
                 .lock()
+                .of(cpu::current::<P>())
                 .current
                 .as_ref()
                 .is_none_or(|thread| thread.get().id != self.id),
@@ -639,11 +842,33 @@ impl JoinHandle {
 /// and the idle thread gets its stack. [`spawn`] does this the first time; call it first to
 /// count a thread's frames alone.
 pub fn start<P: Platform>() -> Result<(), SpawnError> {
-    SCHEDULER.lock().start::<P>()
+    start_here::<P>(&mut SCHEDULER.lock())
+}
+
+/// Starts this secondary CPU's scheduler (D43): the code running now, on the stack the CPU
+/// started on, becomes its idle thread, and threads may be placed on it from then on. Then call
+/// [`run_idle`]. Its idle thread has no stack canary: the start stack has none.
+pub(crate) fn start_secondary<P: Platform>() {
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    let slice_ticks = schedulers.slice_ticks;
+    let scheduler = schedulers.of(here);
+    debug_assert!(
+        !scheduler.has_started(),
+        "a CPU started its scheduler twice"
+    );
+    scheduler.slice_ticks = slice_ticks;
+    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here));
+}
+
+/// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
+pub(crate) fn run_idle<P: Platform>() -> ! {
+    idle_loop::<P>()
 }
 
 /// Starts a thread that runs `function` on a stack of its own, after the threads already
-/// ready to run. The caller keeps running.
+/// ready to run on the CPU it is placed on ([`Schedulers::place`]): an idle one if there is
+/// one. The caller keeps running.
 pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
 ) -> Result<JoinHandle, SpawnError> {
@@ -654,34 +879,40 @@ pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     // SAFETY: the stack's frames are allocated, writable through the direct map and used by
     // nothing else; they stay allocated until the thread has exited (`finish_switch`).
     let context = unsafe { P::prepare_thread(stack.top(), thread_start::<P>, start as usize) };
-    let mut scheduler = SCHEDULER.lock();
-    if let Err(error) = scheduler.start::<P>() {
-        drop(scheduler);
+    let mut schedulers = SCHEDULER.lock();
+    if let Err(error) = start_here::<P>(&mut schedulers) {
+        drop(schedulers);
         // SAFETY: from `Box::into_raw` above; the thread that would have owned it never
         // existed. (The stack is freed on return.)
         drop(unsafe { Box::from_raw(start) });
         return Err(error);
     }
-    let thread = scheduler.new_thread(context, Some(stack));
+    let cpu = schedulers.place(cpu::current::<P>());
+    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
     };
-    scheduler.make_ready::<P>(thread);
+    let wake = make_ready::<P>(&mut schedulers, thread);
+    drop(schedulers);
+    if let Some(cpu) = wake {
+        cpu::wake::<P>(cpu);
+    }
     Ok(handle)
 }
 
 /// Lets the next ready thread run, if there is one; returns when this thread's turn comes
 /// again.
 pub fn yield_now<P: Platform>() {
-    let mut scheduler = SCHEDULER.lock();
+    let mut schedulers = SCHEDULER.lock();
     // Sleepers that are due run before this thread's next turn.
-    scheduler.timer_events::<P>();
-    let Some(next) = scheduler.ready.pop_front() else {
+    timer_events::<P>(&mut schedulers);
+    let here = cpu::current::<P>();
+    let Some(next) = schedulers.of(here).ready.pop_front() else {
         return;
     };
-    switch_to::<P>(scheduler, next, |scheduler, previous| {
-        scheduler.ready.push_back(previous);
+    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
+        schedulers.of(here).ready.push_back(previous);
     });
 }
 
@@ -692,12 +923,13 @@ pub fn yield_now<P: Platform>() {
 /// called: with interrupts masked and no lock held. Starts the scheduler if it has not started
 /// (see [`WaitQueue::wait_until`]).
 pub fn sleep_until<P: Platform>(deadline: u64) {
-    let mut scheduler = SCHEDULER.lock();
+    let mut schedulers = SCHEDULER.lock();
     if P::clock_ticks() >= deadline {
         return;
     }
-    scheduler.start_or_panic::<P>();
-    block::<P>(scheduler, |scheduler, thread| {
+    start_here_or_panic::<P>(&mut schedulers);
+    block::<P>(schedulers, |schedulers, here, thread| {
+        let scheduler = schedulers.of(here);
         scheduler.sleeping.insert_by_wake_at(thread, deadline);
         scheduler.update_timer::<P>();
     });
@@ -710,23 +942,28 @@ pub fn sleep<P: Platform>(duration: Duration) {
     sleep_until::<P>(P::clock_ticks().saturating_add(ticks));
 }
 
-/// Turns preemption on (D37): every [`TIME_SLICE_MS`], the running thread lets the next ready
-/// thread run at its next [`preemption_point`]. A slice starts now, when a slice ends, and when
-/// the idle thread lets a thread run; a thread that runs after another yields, blocks or exits
-/// has the rest of the slice under way (D39). The timer ends it only while another thread is
-/// ready to run.
+/// Turns preemption on (D37), on every CPU: every [`TIME_SLICE_MS`], the running thread lets
+/// the next ready thread run at its next [`preemption_point`]. A slice starts now, when a slice
+/// ends, and when the idle thread lets a thread run; a thread that runs after another yields,
+/// blocks or exits has the rest of the slice under way (D39). The timer ends it only while
+/// another thread is ready to run on its CPU. The other CPUs start their slices at their next
+/// preemption point, yield or block.
 pub fn enable_preemption<P: Platform>() {
-    let mut scheduler = SCHEDULER.lock();
-    scheduler.slice_ticks = (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1);
-    scheduler.start_slice_now::<P>();
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    schedulers.set_slice_ticks(here, (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1));
+    schedulers.of(here).start_slice_now::<P>();
 }
 
-/// Turns preemption off; threads run until they yield or block. Call it with interrupts
-/// masked, as the kernel runs: the timer is armed again for the sleepers alone, or for never,
-/// so no tick arrives afterwards.
+/// Turns preemption off, on every CPU; threads run until they yield or block. Call it with
+/// interrupts masked, as the kernel runs: this CPU's timer is armed again for its sleepers
+/// alone, or for never, so no tick arrives afterwards. Another CPU may take one more tick,
+/// which ends no slice.
 pub fn disable_preemption<P: Platform>() {
-    let mut scheduler = SCHEDULER.lock();
-    scheduler.slice_ticks = 0;
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    schedulers.set_slice_ticks(here, 0);
+    let scheduler = schedulers.of(here);
     let deadline = scheduler.timer_needed();
     P::set_timer_deadline(deadline);
     scheduler.armed = deadline;
@@ -741,7 +978,7 @@ pub fn disable_preemption<P: Platform>() {
 #[inline]
 pub fn preemption_point<P: Platform>() {
     P::interrupt_window();
-    if cpu::local_timer_interrupts_unseen::<P>() != 0 {
+    if cpu::local_unseen_by_scheduler::<P>() != 0 {
         preemption_point_timer_fired::<P>();
     }
 }
@@ -750,27 +987,31 @@ pub fn preemption_point<P: Platform>() {
 #[cold]
 #[inline(never)]
 fn preemption_point_timer_fired<P: Platform>() {
-    let mut scheduler = SCHEDULER.lock();
-    if !scheduler.timer_events::<P>() {
+    let mut schedulers = SCHEDULER.lock();
+    if !timer_events::<P>(&mut schedulers) {
         return;
     }
-    let next = scheduler
+    let here = cpu::current::<P>();
+    let next = schedulers
+        .of(here)
         .ready
         .pop_front()
         .expect("a slice ends only while another thread is ready");
-    switch_to::<P>(scheduler, next, |scheduler, previous| {
-        scheduler.ready.push_back(previous);
+    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
+        schedulers.of(here).ready.push_back(previous);
     });
 }
 
 /// Stops the running thread until something makes it ready again: `park` puts it where it
-/// waits (a wait queue, the sleepers). The next ready thread runs, or the idle thread if none
-/// is. The scheduler must have started.
+/// waits (a wait queue, the sleepers). The next ready thread on this CPU runs, or its idle
+/// thread if none is. The scheduler must have started on this CPU.
 fn block<P: Platform>(
-    mut scheduler: SpinLockGuard<'_, Scheduler>,
-    park: impl FnOnce(&mut Scheduler, ThreadBox),
+    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
-    scheduler.timer_events::<P>();
+    timer_events::<P>(&mut schedulers);
+    let here = cpu::current::<P>();
+    let scheduler = schedulers.of(here);
     let next = match scheduler.ready.pop_front() {
         Some(next) => next,
         None => scheduler
@@ -778,23 +1019,25 @@ fn block<P: Platform>(
             .take()
             .expect("the scheduler started, so the idle thread is not running"),
     };
-    switch_to::<P>(scheduler, next, park);
+    switch_to::<P>(schedulers, here, next, park);
 }
 
-/// Switches from the running thread to `next`, after `park` has put the running one where it
-/// goes (the ready threads, a wait queue, the sleepers, the exited slot, or the idle slot for
-/// the idle thread). Returns when the running thread is resumed.
+/// Switches from the running thread on `here`, this CPU, to `next`, after `park` has put the
+/// running one where it goes (the ready threads, a wait queue, the sleepers, the exited slot,
+/// or the idle slot for the idle thread), given `here` too. Returns when the running thread is
+/// resumed.
 fn switch_to<P: Platform>(
-    mut scheduler: SpinLockGuard<'_, Scheduler>,
+    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    here: &'static Cpu,
     next: ThreadBox,
-    park: impl FnOnce(&mut Scheduler, ThreadBox),
+    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
     let resume = next.get().context;
-    let previous = scheduler.replace_current(next);
+    let previous = schedulers.of(here).replace_current(next);
     let save = previous.context();
-    park(&mut scheduler, previous);
+    park(&mut schedulers, here, previous);
     // Held across the switch, for the thread it resumes to release.
-    SpinLockGuard::leak(scheduler);
+    SpinLockGuard::leak(schedulers);
     // SAFETY: interrupts are masked, as the kernel runs. `save` points into the previous
     // thread, which `park` keeps allocated (in a list or a slot of the scheduler) and which is
     // not resumed before this switch has saved it: that takes the scheduler's lock, which stays
@@ -807,7 +1050,9 @@ fn switch_to<P: Platform>(
 
 /// Ends the running thread: switches to the next one, which frees this one's stack.
 fn exit<P: Platform>() -> ! {
-    let mut scheduler = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    let scheduler = schedulers.of(here);
     let next = match scheduler.ready.pop_front() {
         Some(next) => next,
         None => scheduler
@@ -815,7 +1060,8 @@ fn exit<P: Platform>() -> ! {
             .take()
             .expect("a spawned thread runs, so the idle thread does not"),
     };
-    switch_to::<P>(scheduler, next, |scheduler, previous| {
+    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
+        let scheduler = schedulers.of(here);
         debug_assert!(
             scheduler.exited.is_none(),
             "every switch frees the exited thread"
@@ -832,17 +1078,34 @@ fn exit<P: Platform>() -> ! {
 fn finish_switch<P: Platform>() {
     // SAFETY: every switch is made holding the scheduler's lock and leaves it held for the
     // thread it resumes, which is this one, once.
-    let mut scheduler = unsafe { SCHEDULER.assume_locked() };
-    // Checked before it is taken, so a switch from a thread that did not exit writes nothing.
-    if scheduler.exited.is_none() {
+    let mut schedulers = unsafe { SCHEDULER.assume_locked() };
+    // Checked before it is taken, so a switch from a thread that did not exit writes nothing;
+    // with one load through the per-CPU register where the slot is one word (a null pointer
+    // for none: `ThreadBox` is a transparent `NonNull`), as cheap as a global was.
+    let none_exited = if EXITED_SLOT_IS_ONE_WORD {
+        // SAFETY: the per-CPU register holds this CPU's block, where `EXITED_SLOT` is the
+        // offset of its scheduler's `exited` slot: an aligned word in the state's `UnsafeCell`,
+        // which nothing writes meanwhile, since this thread holds the scheduler's lock.
+        unsafe { P::cpu_local_u64::<EXITED_SLOT>() == 0 }
+    } else {
+        schedulers.of(cpu::current::<P>()).exited.is_none()
+    };
+    if none_exited {
         return;
     }
-    let exited = scheduler.exited.take();
-    drop(scheduler);
+    let exited = schedulers.of(cpu::current::<P>()).exited.take();
+    drop(schedulers);
     if let Some(exited) = exited {
         free_exited::<P>(exited);
     }
 }
+
+/// Where a CPU's [`Scheduler::exited`] slot is in its per-CPU block.
+const EXITED_SLOT: usize =
+    core::mem::offset_of!(Cpu, scheduler) + core::mem::offset_of!(Scheduler, exited);
+/// Whether the slot is one 8-byte word, nullable: on 64-bit architectures.
+const EXITED_SLOT_IS_ONE_WORD: bool =
+    size_of::<Option<ThreadBox>>() == 8 && EXITED_SLOT.is_multiple_of(8);
 
 /// [`finish_switch`]'s slow path, out of line so a switch from a thread that did not exit
 /// does not pay for its registers.
@@ -866,16 +1129,27 @@ extern "C" fn thread_start<P: Platform>(argument: usize) -> ! {
     exit::<P>()
 }
 
-/// The idle thread: runs only when no other thread is ready, and lets the first that becomes
-/// ready run. Meanwhile it arms the timer for the earliest sleeper alone (no tick) and waits
-/// for an interrupt.
+/// The boot CPU's idle thread, prepared by [`Scheduler::start`].
 extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
     finish_switch::<P>();
+    idle_loop::<P>()
+}
+
+/// A CPU's idle thread: runs only when no other thread on its CPU is ready, and lets the first
+/// that becomes ready run. Meanwhile it arms the timer for the earliest sleeper alone (no tick)
+/// and waits for an interrupt.
+fn idle_loop<P: Platform>() -> ! {
+    let here = cpu::current::<P>();
     loop {
-        let mut scheduler = SCHEDULER.lock();
-        scheduler.timer_events::<P>();
+        let mut schedulers = SCHEDULER.lock();
+        // This look answers every wake-up sent so far: a thread made ready from now on needs
+        // one of its own.
+        schedulers.of(here).wakeup_sent = false;
+        timer_events::<P>(&mut schedulers);
+        let scheduler = schedulers.of(here);
         if let Some(next) = scheduler.ready.pop_front() {
-            switch_to::<P>(scheduler, next, |scheduler, idle| {
+            switch_to::<P>(schedulers, here, next, |schedulers, here, idle| {
+                let scheduler = schedulers.of(here);
                 scheduler.idle = Some(idle);
                 // A fresh slice: the one under way was the idle thread's.
                 scheduler.start_slice::<P>();
@@ -887,9 +1161,10 @@ extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
         if deadline != scheduler.armed {
             scheduler.arm::<P>(deadline);
         }
-        drop(scheduler);
-        // Nothing can make a thread ready on this CPU without an interrupt, and one that is
-        // already pending is taken at once.
+        drop(schedulers);
+        // A thread becomes ready on this CPU only through an interrupt: the timer's, or the
+        // wake-up interrupt from the CPU that made it ready here. One already pending is taken
+        // at once.
         P::wait_for_interrupt();
     }
 }
@@ -1068,7 +1343,7 @@ mod tests {
         assert!(!handle.is_finished());
         handle.join::<P>();
         assert_eq!(free_frames(), before);
-        assert!(SCHEDULER.lock().exited.is_none());
+        assert!(SCHEDULER.lock().of(cpu::current::<P>()).exited.is_none());
     }
 
     #[test]
@@ -1154,7 +1429,7 @@ mod tests {
             handle.join::<P>();
         }
         assert_eq!(*WOKEN.lock(), [(1, true), (2, true), (3, true)]);
-        assert!(SCHEDULER.lock().sleeping.is_empty());
+        assert!(SCHEDULER.lock().of(cpu::current::<P>()).sleeping.is_empty());
     }
 
     #[test]
@@ -1236,6 +1511,9 @@ mod tests {
         // Only the boot thread is runnable: no tick.
         assert_eq!(crate::tests::timer_deadline(), u64::MAX);
         let other = spawn::<P, _>(|| {}).unwrap();
+        // The new thread asks for the tick, which the next preemption point arms (D43).
+        assert!(cpu::current::<P>().reschedule_requested());
+        preemption_point::<P>();
         let deadline = crate::tests::timer_deadline();
         assert_ne!(deadline, u64::MAX, "a ready thread brings the tick back");
         assert!(deadline <= P::clock_ticks() + 10_000, "within one slice");
@@ -1276,8 +1554,10 @@ mod tests {
         let sleeper = spawn::<P, _>(|| {
             // Longer than a slice; the boot thread blocks in `join`, so the idle thread runs.
             sleep_until::<P>(P::clock_ticks() + 50_000);
-            // Another thread ready brings the tick back: one slice from now, not the old one.
+            // Another thread ready brings the tick back, at the next preemption point: one
+            // slice from now, not the old one.
             let other = spawn::<P, _>(|| {}).unwrap();
+            preemption_point::<P>();
             SLICE_LEFT.store(
                 crate::tests::timer_deadline().saturating_sub(P::clock_ticks()),
                 Ordering::Relaxed,
@@ -1294,6 +1574,124 @@ mod tests {
         );
     }
 
+    /// A thread for the scheduler-state tests, which never runs.
+    fn idle_thread_for_test(cpu: &'static Cpu) -> ThreadBox {
+        Thread::boxed(ThreadId::next(), 0, None, cpu)
+    }
+
+    /// Takes every thread out of `scheduler`, so that it can be dropped.
+    fn empty(scheduler: &mut Scheduler) {
+        while scheduler.ready.pop_front().is_some() {}
+        scheduler.current = None;
+        scheduler.idle = None;
+    }
+
+    #[test]
+    fn a_thread_made_ready_on_an_idle_cpu_wakes_it_once_per_look() {
+        let cpu = Cpu::for_test(1);
+        let mut scheduler = Scheduler::new();
+        // Started, and its idle thread runs: it is not in its slot.
+        scheduler.current = Some(idle_thread_for_test(cpu));
+        assert!(scheduler.is_idle());
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Wake
+        );
+        assert!(!scheduler.is_idle());
+        // The wake-up sent covers the next thread too, until the idle thread looks.
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Nothing
+        );
+        scheduler.wakeup_sent = false;
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Wake
+        );
+        empty(&mut scheduler);
+    }
+
+    #[test]
+    fn a_thread_made_ready_on_a_busy_cpu_asks_for_a_tick_only_if_one_is_needed() {
+        let cpu = Cpu::for_test(1);
+        let mut scheduler = Scheduler::new();
+        scheduler.current = Some(idle_thread_for_test(cpu));
+        scheduler.idle = Some(idle_thread_for_test(cpu));
+        // Without preemption, it runs when the running thread yields or blocks.
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Nothing
+        );
+        empty(&mut scheduler);
+        scheduler.current = Some(idle_thread_for_test(cpu));
+        scheduler.idle = Some(idle_thread_for_test(cpu));
+        scheduler.slice_ticks = 10;
+        // The running thread was alone: no tick is armed.
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Reschedule
+        );
+        // Another was ready already, so the tick is armed.
+        assert_eq!(
+            scheduler.push_ready(idle_thread_for_test(cpu)),
+            Notice::Nothing
+        );
+        empty(&mut scheduler);
+    }
+
+    #[test]
+    fn make_ready_on_another_cpu_hands_back_an_idle_one_and_flags_a_busy_one() {
+        let (idle, busy) = (Cpu::for_test(1), Cpu::for_test(2));
+        let mut schedulers = Schedulers {
+            slice_ticks: 10,
+            next_placement: 0,
+        };
+        schedulers.of(idle).current = Some(idle_thread_for_test(idle));
+        let busy_state = schedulers.of(busy);
+        busy_state.current = Some(idle_thread_for_test(busy));
+        busy_state.idle = Some(idle_thread_for_test(busy));
+        busy_state.slice_ticks = 10;
+        let woken = make_ready::<P>(&mut schedulers, idle_thread_for_test(idle));
+        assert!(woken.is_some_and(|cpu| ptr::eq(cpu, idle)));
+        assert!(!idle.reschedule_requested());
+        assert!(make_ready::<P>(&mut schedulers, idle_thread_for_test(busy)).is_none());
+        assert!(busy.reschedule_requested());
+        assert_eq!(busy.see_scheduler_events(), 0);
+        empty(schedulers.of(idle));
+        empty(schedulers.of(busy));
+    }
+
+    #[test]
+    fn new_threads_go_to_idle_cpus_first_then_to_each_started_cpu_in_turn() {
+        let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
+        let cpus: &'static [&'static Cpu] = cpus.leak();
+        let here = cpus[0];
+        let mut schedulers = Schedulers {
+            slice_ticks: 0,
+            next_placement: 0,
+        };
+        // Nothing started but this CPU: nowhere else to go.
+        assert!(ptr::eq(schedulers.place_among(cpus, here), here));
+        assert!(ptr::eq(schedulers.place_among(&cpus[..1], here), here));
+        // CPUs 0, 1 and 3 run threads; CPU 2 has not started.
+        for &cpu in [cpus[0], cpus[1], cpus[3]].iter() {
+            let state = schedulers.of(cpu);
+            state.current = Some(idle_thread_for_test(cpu));
+            state.idle = Some(idle_thread_for_test(cpu));
+        }
+        let placed: Vec<usize> = (0..4)
+            .map(|_| schedulers.place_among(cpus, here).index())
+            .collect();
+        assert_eq!(placed, [0, 1, 3, 0]);
+        // CPU 3 goes idle: its idle thread runs.
+        let idle = schedulers.of(cpus[3]).idle.take();
+        assert_eq!(schedulers.place_among(cpus, here).index(), 3);
+        schedulers.of(cpus[3]).idle = idle;
+        for &cpu in cpus {
+            empty(schedulers.of(cpu));
+        }
+    }
+
     #[test]
     #[should_panic(expected = "overflowed its stack")]
     fn a_clobbered_canary_stops_the_kernel_when_checked() {
@@ -1301,7 +1699,7 @@ mod tests {
         // host memory, which must not reach the frame allocator, so the thread is never dropped.
         let memory = Box::leak(Box::new([0u64; STACK_SIZE / 8]));
         let stack = Stack {
-            base: memory.as_mut_ptr() as usize,
+            base: NonZeroUsize::new(memory.as_mut_ptr() as usize).unwrap(),
         };
         // SAFETY: the first word of `memory`, which the stack owns.
         unsafe { stack.canary().write(STACK_CANARY) };
@@ -1315,6 +1713,7 @@ mod tests {
             }),
             next: None,
             wake_at: 0,
+            cpu: cpu::current::<P>(),
         });
         thread.check_stack();
         memory[0] = 0;
