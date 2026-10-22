@@ -158,11 +158,15 @@ const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;
 /// The physical memory the boot direct map covers, and so the most the kernel reaches: 254 GiB.
 const BOOT_DIRECT_MAP_END: u64 = 0xffff_ffff_8000_0000 - DIRECT_MAP_OFFSET as u64;
 
+/// `sstatus.SUM`: S-mode may access U-mode pages (see `with_user_access`).
+const SSTATUS_SUM: u64 = 1 << 18;
+
 /// The kernel's boot mapping: read, write and execute until its own page tables are active.
 const BOOT_KERNEL: Attributes = Attributes {
     writable: true,
     executable: true,
     memory_type: MemoryType::Normal,
+    user: false,
 };
 
 /// The boot page table (see `_start`).
@@ -405,6 +409,35 @@ impl Platform for Riscv64 {
                 options(nostack, preserves_flags),
             );
         }
+    }
+
+    unsafe fn switch_address_space(roots: &[u64]) {
+        // The same switch: `satp` holds one root for both halves, and the kernel's entries in
+        // the new root are the active one's, so the kernel runs on at the same addresses.
+        // SAFETY: the caller's guarantees include `activate_page_tables`'.
+        unsafe { Self::activate_page_tables(roots) };
+    }
+
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        let before: u64;
+        // SAFETY: `sstatus.SUM` only widens what S-mode may load and store to U-mode pages; it
+        // goes back to what it was below (clear unless an outer window is open), and nothing
+        // else in the kernel sets it. No `nomem`: the accesses in `access` must not move out of
+        // the window.
+        unsafe {
+            core::arch::asm!(
+                "csrrs {before}, sstatus, {sum}",
+                before = out(reg) before,
+                sum = in(reg) SSTATUS_SUM,
+                options(nostack),
+            );
+        }
+        let result = access();
+        if before & SSTATUS_SUM == 0 {
+            // SAFETY: as above: closes the window this call opened.
+            unsafe { core::arch::asm!("csrc sstatus, {}", in(reg) SSTATUS_SUM, options(nostack)) };
+        }
+        result
     }
 
     unsafe fn prepare_thread(

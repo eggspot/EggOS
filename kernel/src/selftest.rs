@@ -3,6 +3,7 @@
 //! verdict markers from the console.
 
 use crate::HEAP;
+use crate::address_space::AddressSpace;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::sync::SpinLock;
 use crate::{cpu, exception, interrupt, thread};
@@ -41,7 +42,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 14] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 15] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -58,6 +59,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 14] {
         (
             "heap_allocates_in_the_direct_map",
             heap_allocates_in_the_direct_map::<P>,
+        ),
+        (
+            "address_spaces_keep_user_pages_apart",
+            address_spaces_keep_user_pages_apart::<P>,
         ),
         ("threads_take_turns_and_free_their_stacks", |_| {
             threads_take_turns_and_free_their_stacks::<P>()
@@ -403,6 +408,105 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
         return Err("the direct map does not translate to the frame written through it");
     }
     Ok(())
+}
+
+/// Two user address spaces map a frame each at one user address (D45). With either active,
+/// the kernel reads that space's frame there, and a write there lands in it; the kernel's own
+/// low half stays empty. Then the first space maps the second's frame instead and must show it:
+/// a switch that kept a stale translation shows the old frame (the second read already
+/// fails if switching from one space to another keeps the first's). Dropping the spaces gives
+/// every table back.
+fn address_spaces_keep_user_pages_apart<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    const USER_VIRT: u64 = 0x40_0000;
+    const PATTERNS: [u64; 2] = [0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210];
+    const WRITTEN: u64 = 0x5555_aaaa_5555_aaaa;
+    let (before, pages) = {
+        let mut frames = memory::FRAMES.lock();
+        let frames = frames.as_mut().ok_or("there is no frame allocator")?;
+        let before = frames.free_frames();
+        let mut pages = [0; 2];
+        for (page, pattern) in pages.iter_mut().zip(PATTERNS) {
+            *page = frames.allocate().ok_or("no frame for a user page")?;
+            // SAFETY: the frame was just allocated, so the test owns it; the allocator reaches
+            // it through its offset.
+            unsafe { first_word(frames, *page).write_volatile(pattern) };
+        }
+        (before, pages)
+    };
+    let read = |space: &AddressSpace<P>| {
+        let word = user_word(space, USER_VIRT);
+        // SAFETY: `space` maps `USER_VIRT` to a frame this test owns, and is active while
+        // `word` is read, inside the window that lets the kernel read user pages.
+        space.with_active(|| P::with_user_access(|| unsafe { word.read_volatile() }))
+    };
+    let result = (|| {
+        // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable`
+        // activated on this CPU, and every CPU started since runs on them.
+        let new =
+            || unsafe { AddressSpace::<P>::new(&memory.page_tables) }.map_err(|e| e.description());
+        let mut spaces = [new()?, new()?];
+        for (space, page) in spaces.iter_mut().zip(pages) {
+            space
+                .map(USER_VIRT, page, FRAME_SIZE, Attributes::USER_READ_WRITE)
+                .map_err(|e| e.description())?;
+        }
+        for (space, pattern) in spaces.iter().zip(PATTERNS) {
+            if read(space) != pattern {
+                return Err("an active address space does not show its own page");
+            }
+        }
+        let word = user_word(&spaces[0], USER_VIRT);
+        spaces[0].with_active(|| {
+            // SAFETY: as in `read`: the first space maps `USER_VIRT` writable to `pages[0]`.
+            P::with_user_access(|| unsafe { word.write_volatile(WRITTEN) })
+        });
+        let guard = memory::FRAMES.lock();
+        let frames = guard.as_ref().ok_or("there is no frame allocator")?;
+        // SAFETY: `pages[0]` is the test's frame, reached through the allocator's offset.
+        if unsafe { first_word(frames, pages[0]).read_volatile() } != WRITTEN {
+            return Err("a write to a user page did not land in its frame");
+        }
+        drop(guard);
+        if memory.page_tables.translate(USER_VIRT).is_some() {
+            return Err("a user page appeared in the kernel's own tables");
+        }
+        let [first, _] = &mut spaces;
+        first
+            .unmap(USER_VIRT, FRAME_SIZE)
+            .and_then(|()| first.map(USER_VIRT, pages[1], FRAME_SIZE, Attributes::USER_READ_ONLY))
+            .map_err(|e| e.description())?;
+        if read(first) != PATTERNS[1] {
+            return Err("an address space showed a page it no longer maps");
+        }
+        Ok(())
+    })();
+    let mut frames = memory::FRAMES.lock();
+    let frames = frames.as_mut().ok_or("there is no frame allocator")?;
+    for page in pages {
+        // SAFETY: allocated above, and no address space maps them any more: they were
+        // dropped at the end of the closure.
+        unsafe { frames.free(page) };
+    }
+    result?;
+    if frames.free_frames() != before {
+        return Err("dropping the address spaces did not free their tables");
+    }
+    Ok(())
+}
+
+/// Where the kernel reaches the word at user address `virt` of `space` while it is active:
+/// `virt` itself, through the MMU. Host tests have no MMU, so there it is the word in the
+/// direct map of the frame `space`'s own tables map `virt` to (null if none).
+fn user_word<P: Platform>(space: &AddressSpace<P>, virt: u64) -> *mut u64 {
+    if cfg!(test) {
+        space.translate(virt).map_or(0, |(phys, _)| {
+            (phys as usize).wrapping_add(P::physical_memory_offset())
+        }) as *mut u64
+    } else {
+        virt as *mut u64
+    }
 }
 
 /// The kernel heap must hand out writable memory in the direct map, aligned as asked, without
@@ -993,6 +1097,12 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
+        unsafe fn switch_address_space(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
+        fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+            access()
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,
@@ -1085,6 +1195,12 @@ mod tests {
         fn early_device_regions(_region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {}
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
+        }
+        unsafe fn switch_address_space(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
+        fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+            access()
         }
         unsafe fn prepare_thread(
             _stack_top: usize,

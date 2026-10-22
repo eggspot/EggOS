@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+pub mod address_space;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod console;
@@ -100,6 +101,13 @@ pub(crate) mod tests {
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
     static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// The root the test platform's last [`Platform::switch_address_space`] switched to.
+    static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn active_root() -> u64 {
+        ACTIVE_ROOT.load(Ordering::Relaxed)
+    }
 
     /// The test platform's armed timer deadline; `u64::MAX` if none.
     pub(crate) fn timer_deadline() -> u64 {
@@ -219,6 +227,12 @@ pub(crate) mod tests {
         }
         unsafe fn activate_page_tables(roots: &[u64]) {
             assert_eq!(roots.len(), 1);
+        }
+        unsafe fn switch_address_space(roots: &[u64]) {
+            ACTIVE_ROOT.store(roots[0], Ordering::Relaxed);
+        }
+        fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+            access()
         }
         unsafe fn prepare_thread(
             _stack_top: usize,

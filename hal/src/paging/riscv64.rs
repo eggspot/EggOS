@@ -19,6 +19,8 @@ const VALID: u64 = 1 << 0;
 const READ: u64 = 1 << 1;
 const WRITE: u64 = 1 << 2;
 const EXECUTE: u64 = 1 << 3;
+/// U-mode may access the page; S-mode then only with `sstatus.SUM` set, and never executes it.
+const USER: u64 = 1 << 4;
 /// Accessed and dirty, set up front so the hardware never needs to set them (or fault).
 const ACCESSED: u64 = 1 << 6;
 const DIRTY: u64 = 1 << 7;
@@ -31,13 +33,16 @@ impl Format for Riscv64Sv39 {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 2;
     const ENCODES_MEMORY_TYPE: bool = false;
+    /// The lower 256 GiB.
+    const USER_END: u64 = 1 << 38;
 
     fn root(virt: u64) -> Option<usize> {
         // Canonical: bits 63:39 copy bit 38.
         (((virt as i64) << 25 >> 25) as u64 == virt).then_some(0)
     }
 
-    fn table(table: u64, _level: usize) -> u64 {
+    fn table(table: u64, _level: usize, _user: bool) -> u64 {
+        // `U` is reserved in a pointer to a table: only the leaf decides.
         ((table >> 12) << PPN_SHIFT) & PPN | VALID
     }
 
@@ -59,6 +64,7 @@ impl Format for Riscv64Sv39 {
                 writable: entry & WRITE != 0,
                 executable: entry & EXECUTE != 0,
                 memory_type: super::MemoryType::Normal,
+                user: entry & USER != 0,
             },
         )
     }
@@ -74,6 +80,9 @@ pub const fn leaf(phys: u64, attributes: Attributes) -> u64 {
     if attributes.executable {
         entry |= EXECUTE;
     }
+    if attributes.user {
+        entry |= USER;
+    }
     entry
 }
 
@@ -84,11 +93,17 @@ mod tests {
 
     #[test]
     fn encodings_match_the_specification() {
-        assert_eq!(Riscv64Sv39::table(0x8020_1000, 2), 0x2008_0401);
+        assert_eq!(Riscv64Sv39::table(0x8020_1000, 2, false), 0x2008_0401);
+        assert_eq!(Riscv64Sv39::table(0x8020_1000, 2, true), 0x2008_0401);
         // Data page: V | R | W | A | D.
         assert_eq!(
             Riscv64Sv39::leaf(0x8020_0000, 0, Attributes::READ_WRITE),
             0x2008_00c7
+        );
+        // User data page: V | R | W | U | A | D.
+        assert_eq!(
+            Riscv64Sv39::leaf(0x8020_0000, 0, Attributes::USER_READ_WRITE),
+            0x2008_00d7
         );
         // Code megapage: V | R | X | A | D.
         assert_eq!(

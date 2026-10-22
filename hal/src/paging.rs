@@ -38,13 +38,19 @@ pub enum MemoryType {
     Device,
 }
 
-/// The permissions and memory type of a kernel mapping. Kernel mappings are never accessible
-/// to user mode.
+/// The permissions and memory type of a mapping. A kernel mapping (`user` clear) is never
+/// accessible to user mode; the kernel reads and writes a user mapping only inside
+/// [`crate::Platform::with_user_access`], and never executes one (AArch64 sets `PXN` on every
+/// user page and RISC-V never lets S-mode execute one; x86_64 needs SMEP, not turned on yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attributes {
     pub writable: bool,
+    /// Executable by the mode the mapping is for: user code for a user mapping, kernel code
+    /// otherwise.
     pub executable: bool,
     pub memory_type: MemoryType,
+    /// A user-space mapping, in the low half (M4).
+    pub user: bool,
 }
 
 impl Attributes {
@@ -53,24 +59,43 @@ impl Attributes {
         writable: false,
         executable: true,
         memory_type: MemoryType::Normal,
+        user: false,
     };
     /// Constants: read only.
     pub const READ_ONLY: Self = Self {
         writable: false,
         executable: false,
         memory_type: MemoryType::Normal,
+        user: false,
     };
     /// Data: read and write, never execute.
     pub const READ_WRITE: Self = Self {
         writable: true,
         executable: false,
         memory_type: MemoryType::Normal,
+        user: false,
     };
     /// Device registers: read and write, never execute.
     pub const DEVICE: Self = Self {
         writable: true,
         executable: false,
         memory_type: MemoryType::Device,
+        user: false,
+    };
+    /// User code: read and execute.
+    pub const USER_TEXT: Self = Self {
+        user: true,
+        ..Self::TEXT
+    };
+    /// User constants: read only.
+    pub const USER_READ_ONLY: Self = Self {
+        user: true,
+        ..Self::READ_ONLY
+    };
+    /// User data: read and write, never execute.
+    pub const USER_READ_WRITE: Self = Self {
+        user: true,
+        ..Self::READ_WRITE
     };
 }
 
@@ -152,12 +177,17 @@ pub trait Format {
     const MAX_LEAF_LEVEL: usize;
     /// Whether an entry records its [`MemoryType`]; see [`Format::decode`].
     const ENCODES_MEMORY_TYPE: bool;
+    /// The end of the low half, user space: user addresses are `0..USER_END`. Everything a
+    /// root-level entry maps at or above it belongs to the kernel.
+    const USER_END: u64;
 
     /// Which root translates `virt`; `None` if `virt` is not a valid (canonical) address.
     fn root(virt: u64) -> Option<usize>;
 
-    /// An entry at `level` (at least 1) pointing to the next-level table at physical `table`.
-    fn table(table: u64, level: usize) -> u64;
+    /// An entry at `level` (at least 1) pointing to the next-level table at physical `table`,
+    /// on the walk to `user` mappings or to kernel ones (x86_64 checks user access at every
+    /// level; elsewhere only the leaf decides).
+    fn table(table: u64, level: usize, user: bool) -> u64;
 
     /// A leaf entry at `level` mapping [`leaf_size`]`(level)` bytes at physical `phys`, which is
     /// aligned to that size.
@@ -181,29 +211,34 @@ pub(crate) mod tests {
             for writable in [false, true] {
                 for executable in [false, true] {
                     for memory_type in types {
-                        let attributes = Attributes {
-                            writable,
-                            executable,
-                            memory_type,
-                        };
-                        let mut expected = attributes;
-                        if !F::ENCODES_MEMORY_TYPE {
-                            expected.memory_type = MemoryType::Normal;
+                        for user in [false, true] {
+                            let attributes = Attributes {
+                                writable,
+                                executable,
+                                memory_type,
+                                user,
+                            };
+                            let mut expected = attributes;
+                            if !F::ENCODES_MEMORY_TYPE {
+                                expected.memory_type = MemoryType::Normal;
+                            }
+                            assert_eq!(
+                                F::decode(F::leaf(phys, level, attributes), level),
+                                Entry::Leaf(phys, expected),
+                                "level {level}, {attributes:?}"
+                            );
                         }
-                        assert_eq!(
-                            F::decode(F::leaf(phys, level, attributes), level),
-                            Entry::Leaf(phys, expected),
-                            "level {level}, {attributes:?}"
-                        );
                     }
                 }
             }
         }
         for level in 1..F::LEVELS {
-            assert_eq!(
-                F::decode(F::table(0x5678_9000, level), level),
-                Entry::Table(0x5678_9000)
-            );
+            for user in [false, true] {
+                assert_eq!(
+                    F::decode(F::table(0x5678_9000, level, user), level),
+                    Entry::Table(0x5678_9000)
+                );
+            }
         }
         for level in 0..F::LEVELS {
             assert_eq!(F::decode(0, level), Entry::Empty);

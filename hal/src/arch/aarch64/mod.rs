@@ -200,6 +200,7 @@ const BOOT_KERNEL: Attributes = Attributes {
     writable: true,
     executable: true,
     memory_type: MemoryType::Normal,
+    user: false,
 };
 
 /// A boot page table (see `_start`).
@@ -441,6 +442,36 @@ impl Platform for Aarch64 {
                 options(nostack, preserves_flags),
             );
         }
+    }
+
+    unsafe fn switch_address_space(roots: &[u64]) {
+        let [low, _] = roots else {
+            panic!("AArch64 page tables have two roots");
+        };
+        // SAFETY: the caller guarantees `low` translates the low half alone, in the active
+        // format, with the kernel half (`TTBR1_EL1`) unchanged, and that nothing uses the low
+        // half meanwhile. The first barrier completes the table writes before any walk; every
+        // translation runs with ASID 0 (`TCR_EL1.A1` = 0, ASID 0 in `TTBR0_EL1`), user ones
+        // tagged with it as not global, so `TLBI ASIDE1` with ASID 0 drops the old low half's
+        // and keeps the kernel's global ones. Local: each CPU drops what its own TLB cached when
+        // it switches. No `nomem`: memory accesses must not move across the switch.
+        unsafe {
+            core::arch::asm!(
+                "dsb ish",
+                "msr ttbr0_el1, {low}",
+                "isb",
+                "tlbi aside1, xzr",
+                "dsb nsh",
+                "isb",
+                low = in(reg) *low,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        // Without PAN (not turned on yet), EL1 reaches EL0 pages directly.
+        access()
     }
 
     unsafe fn prepare_thread(
