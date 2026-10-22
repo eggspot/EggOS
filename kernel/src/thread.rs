@@ -177,7 +177,9 @@ impl Thread {
 #[derive(Debug)]
 struct ThreadBox(NonNull<Thread>);
 
-// SAFETY: a `ThreadBox` owns its `Thread` as a `Box` would, and `Thread` is `Send`.
+// SAFETY: a `ThreadBox` owns its `Thread` as a `Box` would. Everything in a `Thread` is `Send`
+// but its `next` link, a raw pointer that only the `ThreadList` holding the thread follows,
+// with the scheduler's lock held, so moving the owner to another CPU shares nothing unguarded.
 unsafe impl Send for ThreadBox {}
 
 impl ThreadBox {
@@ -205,8 +207,9 @@ impl ThreadBox {
     }
 
     fn get(&self) -> &Thread {
-        // SAFETY: owned by `self`, and only the switch writes it without a reference, holding
-        // the scheduler's lock (handed over across the switch), which no `get` overlaps.
+        // SAFETY: owned by `self`. Only the switch (holding the scheduler's lock, handed over
+        // across the switch) and a `ThreadList` (once `into_raw` has given the box up) write
+        // it without a reference, and no `get` overlaps either.
         unsafe { self.0.as_ref() }
     }
 
@@ -234,7 +237,8 @@ struct ThreadList {
     tail: NonNull<Thread>,
 }
 
-// SAFETY: the list owns its threads as `ThreadBox`es do.
+// SAFETY: the list owns its threads as `ThreadBox`es do (see there), and its links are only
+// followed through `&mut self` or `&self`.
 unsafe impl Send for ThreadList {}
 
 impl ThreadList {
@@ -368,9 +372,11 @@ impl WaitQueue {
     /// the thread waits in this queue until a [`Self::wake_one`] or [`Self::wake_all`], then
     /// checks again. `condition` runs with the scheduler's lock held, so a wake cannot slip in
     /// between its check and the wait: whoever makes it hold must do so before waking the
-    /// queue. It must be quick, must not block, and may take only locks that come after the
-    /// scheduler's (the heap's, the frame allocator's). Starts the scheduler if it has not
-    /// started (see [`start`]), which stops the kernel if there is no memory for that.
+    /// queue. It must be quick, must not block or wake a queue (the scheduler's lock is not
+    /// re-entrant), and may take only locks that come after the scheduler's (the heap's, the
+    /// frame allocator's). Call it as [`yield_now`] is called: with interrupts masked and no
+    /// lock held. Starts the scheduler if it has not started (see [`start`]), which stops the
+    /// kernel if there is no memory for that.
     pub fn wait_until<P: Platform>(&self, mut condition: impl FnMut() -> bool) {
         loop {
             let mut scheduler = SCHEDULER.lock();
@@ -385,7 +391,9 @@ impl WaitQueue {
     }
 
     /// Wakes the thread that has waited longest, if one waits; returns whether one did. It
-    /// runs after the threads already ready to run.
+    /// runs after the threads already ready to run. Meant for queues whose waiters all wait
+    /// for the same condition: a woken thread whose own condition does not hold waits again at
+    /// the back, and the wake is spent; otherwise use [`Self::wake_all`].
     pub fn wake_one<P: Platform>(&self) -> bool {
         let mut scheduler = SCHEDULER.lock();
         let Some(thread) = self.waiters(&mut scheduler).pop_front() else {
@@ -619,7 +627,8 @@ impl JoinHandle {
         self.joined.finished.load(Ordering::Acquire)
     }
 
-    /// Waits, running other threads, until this one has exited and its stack is freed.
+    /// Waits, running other threads, until this one has exited and its stack is freed. Call it
+    /// as [`yield_now`] is called: with interrupts masked and no lock held.
     pub fn join<P: Platform>(self) {
         debug_assert!(
             SCHEDULER
@@ -686,8 +695,9 @@ pub fn yield_now<P: Platform>() {
 /// Sleeps until [`Platform::clock_ticks`] reaches `deadline`, running other threads
 /// meanwhile; returns at once if it has. The thread wakes at its next chance after the
 /// deadline, never before: when the CPU is idle, at the timer interrupt; otherwise at the
-/// running thread's next preemption point, yield or block. Starts the scheduler if it has not
-/// started (see [`WaitQueue::wait_until`]).
+/// running thread's next preemption point, yield or block. Call it as [`yield_now`] is
+/// called: with interrupts masked and no lock held. Starts the scheduler if it has not started
+/// (see [`WaitQueue::wait_until`]).
 pub fn sleep_until<P: Platform>(deadline: u64) {
     let mut scheduler = SCHEDULER.lock();
     if P::clock_ticks() >= deadline {
