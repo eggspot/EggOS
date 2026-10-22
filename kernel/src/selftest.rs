@@ -690,13 +690,7 @@ fn processes_keep_their_own_memory<P: Platform>(
         }
     }
     result?;
-    release_loaded_address_spaces::<P>();
-    if cpu::CPUS
-        .all()
-        .iter()
-        .any(|cpu| cpu.active_address_space() != cpu::NO_ADDRESS_SPACE)
-        || cpu::current::<P>().active_address_space() != cpu::NO_ADDRESS_SPACE
-    {
+    if !release_loaded_address_spaces::<P>() {
         return Err("a CPU kept an ended process's address space loaded");
     }
     if free_frames() != Some(before) {
@@ -705,18 +699,29 @@ fn processes_keep_their_own_memory<P: Platform>(
     Ok(())
 }
 
-/// Has every other CPU's idle thread look once more, so that a CPU that kept an ended process's
-/// address space loaded lets it go (D48): wakes each, then gives them a millisecond.
-fn release_loaded_address_spaces<P: Platform>() {
+/// Has every other CPU's idle thread look again until none keeps an ended process's address
+/// space loaded (D48), waking them each millisecond, for up to [`THREADS_MEET_TIMEOUT_MS`].
+/// Returns whether every CPU, this one included, has none loaded.
+fn release_loaded_address_spaces<P: Platform>() -> bool {
     let here = cpu::current::<P>();
-    for &other in cpu::CPUS.all() {
-        if !core::ptr::eq(other, here) {
-            cpu::wake::<P>(other);
+    let millisecond = P::clock_frequency() / 1000;
+    let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
+    let none_loaded = || {
+        here.active_address_space() == cpu::NO_ADDRESS_SPACE
+            && cpu::CPUS
+                .all()
+                .iter()
+                .all(|cpu| cpu.active_address_space() == cpu::NO_ADDRESS_SPACE)
+    };
+    while !none_loaded() && P::clock_ticks() < give_up {
+        for &other in cpu::CPUS.all() {
+            if !core::ptr::eq(other, here) {
+                cpu::wake::<P>(other);
+            }
         }
+        thread::sleep_until::<P>(P::clock_ticks() + millisecond);
     }
-    if cpu::CPUS.all().len() > 1 {
-        thread::sleep_until::<P>(P::clock_ticks() + P::clock_frequency() / 1000);
-    }
+    none_loaded()
 }
 
 /// Programs that never make a system call must still take turns (D48): with preemption on, two

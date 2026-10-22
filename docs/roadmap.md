@@ -50,8 +50,9 @@ interrupt-exit paths); `SCTLR_EL1.UMA` and `E0E` written explicitly, not left to
 `into` once user debuggers matter; UMIP where the CPU has it; `TSS.RSP0` cleared when `run_user`
 returns.
 
-Process follow-ups (D48): waking CPUs that keep an ended process's address space loaded while they
-stay busy with kernel threads (an idle CPU lets it go); TLB shootdown, to every CPU that has the
+Process follow-ups (D48): preemption on whenever user programs run (with it off, as for kernel
+threads, a program that never traps keeps its CPU); waking CPUs that keep an ended process's
+address space loaded while they stay busy with kernel threads (an idle CPU lets it go); TLB shootdown, to every CPU that has the
 address space loaded, once a shared process's mappings may change; pages owned by the address
 space (`mmap`, M6); user faults that end the process with a signal (M6); a process's threads and
 exit status (`exit_group`, `wait4`).

@@ -188,11 +188,7 @@ struct Thread {
 }
 
 impl Thread {
-    fn boxed(id: ThreadId, context: usize, stack: Option<Stack>, cpu: &'static Cpu) -> ThreadBox {
-        Self::boxed_user(id, context, stack, cpu, false)
-    }
-
-    fn boxed_user(
+    fn boxed(
         id: ThreadId,
         context: usize,
         stack: Option<Stack>,
@@ -732,8 +728,14 @@ impl Scheduler {
         // SAFETY: the stack's frames are allocated, writable through the direct map and used
         // by nothing else; the idle thread never exits, so they stay allocated.
         let context = unsafe { P::prepare_thread(stack.top(), idle_thread::<P>, 0) };
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here);
-        self.idle = Some(Thread::boxed(ThreadId::next(), context, Some(stack), here));
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false);
+        self.idle = Some(Thread::boxed(
+            ThreadId::next(),
+            context,
+            Some(stack),
+            here,
+            false,
+        ));
         self.current = Some(boot);
         Ok(())
     }
@@ -983,7 +985,7 @@ pub(crate) fn start_secondary<P: Platform>() {
         "a CPU started its scheduler twice"
     );
     scheduler.slice_ticks = slice_ticks;
-    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here));
+    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false));
 }
 
 /// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
@@ -1028,7 +1030,7 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
         return Err(error);
     }
     let cpu = schedulers.place(cpu::current::<P>());
-    let thread = Thread::boxed_user(ThreadId::next(), context, Some(stack), cpu, user);
+    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
@@ -1740,7 +1742,7 @@ mod tests {
 
     /// A thread for the scheduler-state tests, which never runs.
     fn idle_thread_for_test(cpu: &'static Cpu) -> ThreadBox {
-        Thread::boxed(ThreadId::next(), 0, None, cpu)
+        Thread::boxed(ThreadId::next(), 0, None, cpu, false)
     }
 
     /// Takes every thread out of `scheduler`, so that it can be dropped.
@@ -1811,7 +1813,7 @@ mod tests {
         // A kernel thread passes a preemption point soon: the request alone does.
         assert!(scheduler.request_reschedule::<P>(other).is_none());
         empty(&mut scheduler);
-        scheduler.current = Some(Thread::boxed_user(ThreadId::next(), 0, None, other, true));
+        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true));
         // In user mode it may never pass one: the interrupt takes the CPU back.
         assert!(
             scheduler
@@ -1897,7 +1899,7 @@ mod tests {
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3]);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false);
         schedulers.of(cpus[3]).ready.push_back(boot);
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;

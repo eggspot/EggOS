@@ -1368,9 +1368,11 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   moved: adding the branch to `make_ready` first stopped `WaitQueue::wake_one` from being inlined
   into its callers (+8 instructions on an empty wake), and `wake_one` is now `#[inline]`, which
   restores exactly the old numbers. The instruction counts do not show what an address-space switch
-  costs afterwards in TLB refills (M13 measures that on hardware). 8 more bytes per CPU block plus
-  the slot's lock.
+  costs afterwards in TLB refills (M13 measures that on hardware). About 48 more bytes per CPU
+  block (the slot and its lock) and a flag per thread.
 - **Follow-ups (roadmap).** Waking CPUs that keep an ended process's address space while they stay
   busy with kernel threads; TLB shootdown once a shared process's mappings may change (they are
-  frozen today); pages owned by the address space for `mmap` (M6); ASIDs and PCID; PAN, SMAP and
+  frozen today); preemption on whenever user programs run (with it off, as for kernel threads, a
+  program that never traps keeps its CPU); pages owned by the address space for `mmap` (M6); ASIDs
+  and PCID; PAN, SMAP and
   SMEP; user faults that end the process with a signal (M6); IST stacks and the other D47 follow-ups.
