@@ -1330,10 +1330,19 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **D46's check.** The per-CPU root record stays the single source of truth: it always equals
   what the CPU has loaded. `with_active` (self-tests, `syscall_round_trip`) unloads a lazily loaded
   space first and keeps its nesting and same-CPU checks.
-- **Freeing.** A user thread that ends drops its reference and, if its CPU then holds the last one,
-  unloads the space there, which frees the process. An idle CPU does the same at each look
-  (`address_space::release_unused`: a load and a compare when nothing is loaded), for a process
-  whose thread ended elsewhere.
+- **Freeing.** A CPU lets a process's space go once only CPUs still refer to it: its owner's
+  reference count is no larger than the number of CPUs that record its root. No thread or other
+  holder is then left, so none can load it again, and every CPU may drop its reference; a count
+  that is changing only makes the test fail (a CPU records the root after taking its reference
+  and drops the reference after it stopped recording it), and dropping a CPU's own reference never
+  frees memory someone else uses, so a wrong guess costs a reload at most. A user thread that
+  ends drops its reference, lets the space go on its CPU if that test holds, and sends the
+  wake-up interrupt to every other CPU that has it loaded; an idle CPU makes the same test at
+  each look (`address_space::release_unused`: a load and a compare when nothing is loaded) and
+  wakes the others likewise when it lets one go. The first version freed only on the last
+  reference, which leaked a process whose threads had run on two CPUs that both went idle with
+  it loaded (found by the independent review; `processes_run_on_every_cpu` now covers it and fails
+  with the old rule).
 - **Preemption on return to user mode.** Before each run the thread passes
   `thread::preemption_point_before_user_mode`, which repeats until the scheduler has seen every
   timer interrupt and reschedule request on the CPU. The plain preemption point was not enough: a
@@ -1355,8 +1364,9 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   (two processes map different data at the same address; each yields at every system call and then
   reads its page through `with_user_memory`; it fails with the load there removed),
   `processes_are_preempted_on_return_to_user_mode` (two programs that never make a system call take
-  turns on one CPU, and end at an interrupt), `processes_run_on_every_cpu` (two processes per CPU,
-  up to 16, on every CPU, with balancing; then every CPU lets the address spaces go), every frame
+  turns on one CPU, and end at an interrupt), `processes_run_on_every_cpu` (one process with a thread per CPU,
+  up to 16, so several CPUs have it loaded when it ends; then two threads each of a process per
+  CPU, up to 8, with balancing; after each, every CPU lets the address spaces go), every frame
   freed after each. Host tests: lazy loading switches only when the root differs, the CPU keeps a
   dropped process until another loads or it idles, `with_active` over a lazily loaded space, a user
   thread's loop and handler, and the reschedule request to a CPU running a user thread.

@@ -83,7 +83,7 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 19] {
         }),
         (
             "processes_keep_their_own_memory_across_switches",
-            |memory| processes_keep_their_own_memory::<P>(memory, 2),
+            |memory| processes_keep_their_own_memory::<P>(memory, 2, 1),
         ),
         (
             "processes_are_preempted_on_return_to_user_mode",
@@ -634,13 +634,15 @@ fn processes_with_data<P: Platform>(
 }
 
 /// Processes must each see their own memory at the same address, whatever ran in between (D48):
-/// `count` processes' threads make system calls, and at each the handler yields, so the others
-/// run (and load their address spaces) on its CPU, then reads the process's data page through
-/// [`Process::with_user_memory`], which must load its own again. After the threads end, every
-/// frame the processes took must be free and no CPU may keep an address space loaded.
+/// `count` processes' threads, `threads_each` per process, make system calls, and at each the
+/// handler yields, so the others run (and load their address spaces) on its CPU, then reads the
+/// process's data page through [`Process::with_user_memory`], which must load its own again.
+/// After the threads end, every frame the processes took must be free and no CPU may keep an
+/// address space loaded, even one that several CPUs had loaded at once.
 fn processes_keep_their_own_memory<P: Platform>(
     memory: &mut Memory<P>,
     count: usize,
+    threads_each: usize,
 ) -> Result<(), &'static str> {
     const CALLS: u64 = 20;
     /// A read that did not show the process's own page, or an exception.
@@ -648,7 +650,11 @@ fn processes_keep_their_own_memory<P: Platform>(
     let before = free_frames().ok_or("there is no frame allocator")?;
     let processes = processes_with_data(memory, count)?;
     let mut threads = Vec::new();
-    for (number, process) in processes.into_iter().enumerate() {
+    let threads_of = processes
+        .into_iter()
+        .enumerate()
+        .flat_map(|(number, process)| (0..threads_each).map(move |_| (number, process.clone())));
+    for (number, process) in threads_of {
         let calls = Arc::new(AtomicU64::new(0));
         let counted = calls.clone();
         let context = Process::<P>::test_program_context(|program| program.null_syscalls);
@@ -690,19 +696,21 @@ fn processes_keep_their_own_memory<P: Platform>(
         }
     }
     result?;
-    if !release_loaded_address_spaces::<P>() {
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) {
         return Err("a CPU kept an ended process's address space loaded");
     }
-    if free_frames() != Some(before) {
+    if !freed() {
         return Err("the processes' frames and tables were not all freed");
     }
     Ok(())
 }
 
 /// Has every other CPU's idle thread look again until none keeps an ended process's address
-/// space loaded (D48), waking them each millisecond, for up to [`THREADS_MEET_TIMEOUT_MS`].
-/// Returns whether every CPU, this one included, has none loaded.
-fn release_loaded_address_spaces<P: Platform>() -> bool {
+/// space loaded (D48) and `freed` holds (a CPU frees what it let go just after it stops
+/// recording it), waking them each millisecond, for up to [`THREADS_MEET_TIMEOUT_MS`]. Returns
+/// whether every CPU, this one included, has none loaded.
+fn release_loaded_address_spaces<P: Platform>(freed: impl Fn() -> bool) -> bool {
     let here = cpu::current::<P>();
     let millisecond = P::clock_frequency() / 1000;
     let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
@@ -713,7 +721,7 @@ fn release_loaded_address_spaces<P: Platform>() -> bool {
                 .iter()
                 .all(|cpu| cpu.active_address_space() == cpu::NO_ADDRESS_SPACE)
     };
-    while !none_loaded() && P::clock_ticks() < give_up {
+    while !(none_loaded() && freed()) && P::clock_ticks() < give_up {
         for &other in cpu::CPUS.all() {
             if !core::ptr::eq(other, here) {
                 cpu::wake::<P>(other);
@@ -776,7 +784,11 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     let took_turns = threads.len() == 2 && all_turns(&threads);
     STOP.store(true, Ordering::Relaxed);
     // Each ends at its next interrupt: this thread's sleeps provide them once one runs alone.
+    let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
     while !threads.iter().all(|(thread, _)| thread.is_finished()) {
+        if P::clock_ticks() >= give_up {
+            return Err("a spinning program did not end at an interrupt");
+        }
         thread::sleep_until::<P>(P::clock_ticks() + millisecond);
     }
     thread::disable_preemption::<P>();
@@ -798,14 +810,17 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     Ok(())
 }
 
-/// [`processes_keep_their_own_memory`] with two processes per CPU (up to 16), so they run, load
-/// their address spaces and their code on the other CPUs too, and move between them.
+/// [`processes_keep_their_own_memory`] on every CPU: first one process whose threads, one per
+/// CPU (up to 16), run on different CPUs at once, so several CPUs keep its address space loaded
+/// when it ends and must all let it go; then a process per CPU with two threads each, so they
+/// run, load their address spaces and their code on the other CPUs too, and move between them.
 fn processes_run_on_every_cpu<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let cpus = cpu::CPUS.all().len();
     if cpus <= 1 {
         return Ok(());
     }
-    processes_keep_their_own_memory(memory, (2 * cpus).min(16))
+    processes_keep_their_own_memory(memory, 1, cpus.min(16))?;
+    processes_keep_their_own_memory(memory, cpus.min(8), 2)
 }
 
 /// The frame allocator's free frames, `None` if there is none.

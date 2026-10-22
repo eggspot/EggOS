@@ -189,7 +189,12 @@ impl<P: Platform> AddressSpace<P> {
     /// Whether this address space is the one active or loaded on this CPU.
     #[inline]
     pub fn is_loaded_here(&self) -> bool {
-        cpu::current::<P>().active_address_space() == self.tables.roots()[0]
+        cpu::current::<P>().active_address_space() == self.root()
+    }
+
+    /// The first root of its tables: what a CPU records while it has the address space loaded.
+    pub(crate) fn root(&self) -> u64 {
+        self.tables.roots()[0]
     }
 }
 
@@ -203,9 +208,23 @@ pub(crate) struct LazilyLoaded {
 }
 
 impl LazilyLoaded {
-    /// Whether this CPU holds the only reference left to the address space's owner.
-    fn is_last_reference(&self) -> bool {
-        Arc::strong_count(&self.owner) == 1
+    /// Whether only CPUs that keep the address space loaded, whose first root is `root`, still
+    /// refer to its owner: no thread or anything else does, so none can load it again, and
+    /// every CPU may let it go. Never wrong the other way round: a CPU records the root only
+    /// once it holds a reference, and lets the reference go only after it stopped recording
+    /// it, so a reference being taken or dropped meanwhile only makes this false. A false
+    /// "only CPUs" costs at most a reload: dropping a CPU's own reference never frees memory
+    /// another holder uses.
+    fn only_cpus_hold_it(&self, here: &'static Cpu, root: u64) -> bool {
+        let cpus = cpu::CPUS.all();
+        let holding = if cpus.is_empty() {
+            usize::from(here.active_address_space() == root)
+        } else {
+            cpus.iter()
+                .filter(|cpu| cpu.active_address_space() == root)
+                .count()
+        };
+        Arc::strong_count(&self.owner) <= holding
     }
 }
 
@@ -222,9 +241,9 @@ pub(crate) fn unload_lazily_loaded<P: Platform>(here: &'static Cpu) {
     unload::<P>(here, loaded);
 }
 
-/// When the CPU idles: puts away a process's address space loaded lazily here if nothing but
-/// this CPU refers to it any more (its process is gone), so its memory is freed instead of
-/// waiting for the next process to run here (D48).
+/// When the CPU idles: puts away a process's address space loaded lazily here if only CPUs
+/// still refer to it (its threads have ended), so its memory is freed instead of waiting for the
+/// next process to run here, and has every other CPU that keeps it loaded look again (D48).
 #[inline]
 pub(crate) fn release_unused<P: Platform>(here: &'static Cpu) {
     if here.active_address_space() != cpu::NO_ADDRESS_SPACE {
@@ -235,15 +254,44 @@ pub(crate) fn release_unused<P: Platform>(here: &'static Cpu) {
 #[cold]
 #[inline(never)]
 fn release_unused_cold<P: Platform>(here: &'static Cpu) {
+    let root = here.active_address_space();
     let loaded = {
         let mut slot = here.lazily_loaded.lock();
-        if !slot.as_ref().is_some_and(LazilyLoaded::is_last_reference) {
+        if !slot
+            .as_ref()
+            .is_some_and(|loaded| loaded.only_cpus_hold_it(here, root))
+        {
             return;
         }
         slot.take()
     };
     if let Some(loaded) = loaded {
         unload::<P>(here, loaded);
+        wake_cpus_holding::<P>(here, root);
+    }
+}
+
+/// For a process whose last thread just ended on `here`, this CPU, after it dropped its
+/// reference: lets the address space whose first root is `root` go here if only CPUs still
+/// hold it ([`release_unused`]), and has every other CPU that keeps it loaded look again, so
+/// an idle one lets it go too (D48).
+pub(crate) fn release_ended<P: Platform>(here: &'static Cpu, root: u64) {
+    if here.active_address_space() == root {
+        release_unused_cold::<P>(here);
+    } else {
+        wake_cpus_holding::<P>(here, root);
+    }
+}
+
+/// Sends the wake-up interrupt to every CPU but `here` whose loaded address space's first root
+/// is `root`: an idle one looks again ([`release_unused`]), a busy one is not disturbed beyond
+/// the interrupt. The root may have been freed and reused meanwhile, which costs a spurious
+/// look at most.
+fn wake_cpus_holding<P: Platform>(here: &'static Cpu, root: u64) {
+    for &other in cpu::CPUS.all() {
+        if !ptr::eq(other, here) && other.active_address_space() == root {
+            cpu::wake::<P>(other);
+        }
     }
 }
 
