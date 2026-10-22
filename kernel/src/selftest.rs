@@ -9,7 +9,7 @@ use crate::{exception, interrupt, thread};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
@@ -27,7 +27,7 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 8] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 9] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -47,6 +47,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 8] {
         ),
         ("threads_take_turns_and_free_their_stacks", |_| {
             threads_take_turns_and_free_their_stacks::<P>()
+        }),
+        ("threads_are_preempted_at_preemption_points", |_| {
+            threads_are_preempted_at_preemption_points::<P>()
         }),
     ]
 }
@@ -522,6 +525,45 @@ fn threads_take_turns_and_free_their_stacks<P: Platform>() -> Result<(), &'stati
     Ok(())
 }
 
+/// With preemption on, a thread that never yields lets the others run once its time slice is
+/// over: the first thread passes preemption points until the second has run, which only the
+/// timer tick ending its slice allows (D37). It gives up after 2 s of clock time.
+fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'static str> {
+    static SECOND_RAN: AtomicBool = AtomicBool::new(false);
+    static GAVE_UP: AtomicBool = AtomicBool::new(false);
+    SECOND_RAN.store(false, Ordering::Relaxed);
+    GAVE_UP.store(false, Ordering::Relaxed);
+    let give_up = P::clock_ticks().saturating_add(2 * P::clock_frequency());
+    let first = thread::spawn::<P, _>(move || {
+        while !SECOND_RAN.load(Ordering::Relaxed) {
+            if P::clock_ticks() > give_up {
+                GAVE_UP.store(true, Ordering::Relaxed);
+                return;
+            }
+            thread::preemption_point::<P>();
+        }
+    });
+    let second = thread::spawn::<P, _>(|| SECOND_RAN.store(true, Ordering::Relaxed));
+    let (Ok(first), Ok(second)) = (first, second) else {
+        return Err("could not start two threads");
+    };
+    let ticks_before = interrupt::timer_interrupts();
+    thread::enable_preemption::<P>();
+    first.join::<P>();
+    second.join::<P>();
+    thread::disable_preemption::<P>();
+    if GAVE_UP.load(Ordering::Relaxed) {
+        return Err("a thread passing preemption points was not preempted within 2 s");
+    }
+    if !SECOND_RAN.load(Ordering::Relaxed) {
+        return Err("the second thread never ran");
+    }
+    if interrupt::timer_interrupts() == ticks_before {
+        return Err("a thread was preempted without a timer tick");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +625,7 @@ mod tests {
         }
         fn set_timer_deadline(_deadline: u64) {}
         fn wait_for_interrupt() {}
+        fn interrupt_window() {}
         fn memory_map() -> eggos_hal::MemoryMap {
             eggos_hal::MemoryMap::new()
         }
@@ -654,6 +697,7 @@ mod tests {
         }
         fn set_timer_deadline(_deadline: u64) {}
         fn wait_for_interrupt() {}
+        fn interrupt_window() {}
         fn memory_map() -> eggos_hal::MemoryMap {
             eggos_hal::MemoryMap::new()
         }

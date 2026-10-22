@@ -62,6 +62,24 @@ impl<T> SpinLock<T> {
     }
 }
 
+impl<T> SpinLock<T> {
+    /// A guard for this lock, which a guard given up with [`SpinLockGuard::leak`] left held;
+    /// dropping it releases the lock. The scheduler hands its lock across a context switch this
+    /// way: the thread that switches leaks the guard, the thread it resumes takes it over.
+    ///
+    /// # Safety
+    /// The lock must be held through a leaked guard, and each leak may be taken over once: the
+    /// new guard is then the only access to the value.
+    #[inline]
+    pub unsafe fn assume_locked(&self) -> SpinLockGuard<'_, T> {
+        debug_assert!(self.locked.load(Ordering::Relaxed), "the lock is not held");
+        SpinLockGuard {
+            lock: self,
+            _value: PhantomData,
+        }
+    }
+}
+
 impl<T> fmt::Debug for SpinLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpinLock")
@@ -77,6 +95,15 @@ pub struct SpinLockGuard<'a, T> {
     /// `&T`, so sharing it between threads needs `T: Sync` (the lock alone is `Sync` for any
     /// `T: Send`, which would otherwise let two threads reach a `Cell` through one guard).
     _value: PhantomData<&'a mut T>,
+}
+
+impl<T> SpinLockGuard<'_, T> {
+    /// Gives up `guard` without releasing the lock, for [`SpinLock::assume_locked`] to take
+    /// over.
+    #[inline]
+    pub fn leak(guard: Self) {
+        core::mem::forget(guard);
+    }
 }
 
 impl<T> Deref for SpinLockGuard<'_, T> {
@@ -119,6 +146,20 @@ mod tests {
         let mut guard = lock.lock();
         *guard += 1;
         assert!(lock.try_lock().is_none());
+        drop(guard);
+        assert_eq!(*lock.try_lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_leaked_guard_keeps_the_lock_until_taken_over() {
+        let lock = SpinLock::new(1);
+        let mut guard = lock.lock();
+        *guard = 2;
+        SpinLockGuard::leak(guard);
+        assert!(lock.try_lock().is_none());
+        // SAFETY: held through the guard just leaked, taken over once.
+        let guard = unsafe { lock.assume_locked() };
+        assert_eq!(*guard, 2);
         drop(guard);
         assert_eq!(*lock.try_lock().unwrap(), 2);
     }

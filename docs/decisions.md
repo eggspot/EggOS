@@ -727,3 +727,46 @@ where the mirror stalled `apt-get` for 194, 198, 850 and 1373 s (unpacking took 
   so `main` never points at an image that does not exist.
 - **Not decided here:** making the package public, which fork PRs may need to pull it, is an
   organisation setting for the owner.
+
+## D37 Preemption is voluntary inside the kernel: a timer tick ends time slices, threads switch at preemption points — Decided by the build loop (engineering; model decided by research); supersedes D35's lock release before the switch
+Second step of M4.
+- **The model (decided by research).** Three options: full kernel preemption (a per-CPU
+  preempt-disable count in every `SpinLock`, as Linux `CONFIG_PREEMPT` and FreeBSD do), spin
+  locks that mask interrupts, or a non-preemptible kernel with voluntary preemption (Linux
+  `PREEMPT_NONE`/`PREEMPT_VOLUNTARY`, the server default; seL4's preemption points). The
+  first two put instructions on every lock and unlock: about +40% on
+  `heap_allocate_free_small`. We chose the third: kernel code keeps running with interrupts
+  masked, so nothing is ever preempted while it holds a lock and an interrupt handler never
+  finds one held, and locks cost nothing extra. Kernel latency is the longest stretch between
+  preemption points, which long-running kernel code bounds by calling one; user code will be
+  preempted involuntarily on its return to user mode (processes, M4). All locks go through
+  `sync`, so full preemption can still be added there later (for example as a low-latency
+  option for desktop and phone) if measured latency calls for it.
+- **The tick.** `thread::enable_preemption` arms the timer for a 10 ms time slice
+  (`TIME_SLICE_MS`, as macOS's default quantum; Linux and Windows use a few to tens of ms);
+  `disable_preemption` replaces the deadline with one never reached. While it runs, the tick
+  owns the CPU's one-shot timer; sharing it with sleeping threads comes with wait queues.
+- **Preemption points.** `thread::preemption_point` opens an interrupt window (new
+  `Platform::interrupt_window`: unmask, let a pending interrupt in, mask again; `sti; nop;
+  cli`, `msr daifclr; isb; msr daifset`, `csrsi; csrci` on SIE) and compares the timer
+  interrupt count with the count when the slice started. If a timer interrupt has come since
+  and preemption is on, it starts the next slice and yields. The interrupt handler does
+  nothing for preemption, so the interrupt path costs exactly what it did. A preemption point
+  costs 9 instructions on aarch64 and x86_64 and 7 on riscv64 when the slice is not over
+  (`preemption_point_idle`).
+- **The scheduler's lock is handed over across the switch** (a D35 follow-up, done here):
+  `yield_now` and `exit` keep it held through `switch_thread` (`SpinLockGuard::leak`) and the
+  resumed thread releases it (`SpinLock::assume_locked` in `finish_switch`). Nothing can take
+  the scheduler between choosing the next thread and saving the previous one's context, on any
+  CPU, which SMP needs; and a switch takes the lock once instead of twice:
+  `thread_yield_round_trip` went from 162 to 144 instructions on aarch64, 201 to 183 on
+  riscv64 and 149 to 135 on x86_64.
+- **Testing.** Host unit tests: a thread that only passes preemption points lets another run
+  once its slice is over, and with preemption off a preemption point never switches. Boot
+  self-test on aarch64, riscv64 and x86_64: with preemption on, a thread that never yields
+  spins at preemption points until a second thread has run; with the interrupt window
+  removed on aarch64 the boot fails ("not preempted within 2 s").
+- **Follow-ups (roadmap).** Involuntary preemption on return to user mode; sleeping and wait
+  queues sharing the timer (tickless: no tick while one thread is runnable); per-CPU tick
+  state and run queues (SMP); a measured worst-case gap between preemption points as a
+  latency benchmark; a debug-build check that no lock is held at a preemption point.

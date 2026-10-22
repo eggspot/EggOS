@@ -74,6 +74,12 @@ pub trait Platform {
     /// condition and then calling this cannot miss the interrupt that changes it.
     fn wait_for_interrupt();
 
+    /// Called with interrupts masked: unmasks them just long enough for an interrupt already
+    /// pending to be handled, then masks them again. Unlike [`Self::wait_for_interrupt`] it
+    /// never sleeps: with nothing pending it returns at once. The kernel's preemption points
+    /// use it to take the timer tick (D37).
+    fn interrupt_window();
+
     /// The physical memory the kernel may allocate: the machine's RAM as the firmware or
     /// loader describes it, minus everything in use (the kernel image and its boot stack, the
     /// firmware, and the boot data the kernel still reads, such as the device tree), limited

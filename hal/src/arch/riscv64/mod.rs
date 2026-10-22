@@ -245,6 +245,13 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("wfi", "csrsi sstatus, 2", "csrci sstatus, 2") };
     }
 
+    #[inline]
+    fn interrupt_window() {
+        // SAFETY: as in `wait_for_interrupt`, without the `wfi`: an interrupt already pending
+        // is taken as soon as the write sets SIE, before the next instruction clears it.
+        unsafe { core::arch::asm!("csrsi sstatus, 2", "csrci sstatus, 2") };
+    }
+
     fn memory_map() -> MemoryMap {
         // SAFETY: the SBI firmware passes the address of its device tree in `a1` (the RISC-V
         // boot convention, which OpenSBI follows), which stays readable and unwritten; it is in

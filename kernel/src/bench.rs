@@ -27,7 +27,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 10] {
+pub fn all<P: Platform>() -> [Benchmark; 11] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -45,6 +45,7 @@ pub fn all<P: Platform>() -> [Benchmark; 10] {
         ),
         ("heap_allocate_free_small", heap_allocate_free_small),
         ("thread_yield_round_trip", thread_yield_round_trip::<P>),
+        ("preemption_point_idle", preemption_point_idle::<P>),
     ]
 }
 
@@ -200,6 +201,14 @@ fn thread_yield_round_trip<P: Platform>(n: u64) {
     other.join::<P>();
 }
 
+/// A preemption point in a time slice that is not over: the window for a pending interrupt
+/// and the check, which long-running kernel code pays per call (D37).
+fn preemption_point_idle<P: Platform>(n: u64) {
+    for _ in 0..n {
+        thread::preemption_point::<P>();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +244,7 @@ mod tests {
         fn wait_for_interrupt() {
             interrupt::handle(Interrupt::Timer);
         }
+        fn interrupt_window() {}
         fn memory_map() -> MemoryMap {
             MemoryMap::new()
         }

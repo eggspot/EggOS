@@ -1,10 +1,17 @@
-//! Kernel threads and the scheduler (D35).
+//! Kernel threads and the scheduler (D35, D37).
 //!
-//! First step of M4: threads that run kernel code on their own stacks, scheduled round-robin
-//! on one CPU, cooperatively. A thread runs until it calls [`yield_now`] or its function
-//! returns; [`spawn`] starts one and [`JoinHandle::join`] waits for it. The boot code becomes a
-//! thread too, the first time it uses the scheduler (its stack is the boot stack). Preemption
-//! from the timer interrupt, blocking and per-CPU run queues follow in the next steps.
+//! M4: threads that run kernel code on their own stacks, scheduled round-robin on one CPU. A
+//! thread runs until it calls [`yield_now`], its function returns, or its time slice is over
+//! at a [`preemption_point`]; [`spawn`] starts one and [`JoinHandle::join`] waits for it. The
+//! boot code becomes a thread too, the first time it uses the scheduler (its stack is the boot
+//! stack). Blocking and per-CPU run queues follow in the next steps.
+//!
+//! Preemption is voluntary inside the kernel (D37): kernel code runs with interrupts masked,
+//! and while [`enable_preemption`] has the timer tick every [`TIME_SLICE_MS`], a thread whose
+//! slice is over lets the next one run at its next [`preemption_point`], which opens a window
+//! for the tick's interrupt. Nothing is preempted while it holds a lock, so locks cost nothing
+//! extra and an interrupt handler never finds one held. User code will be preempted on its
+//! return to user mode.
 //!
 //! The context switch itself is the HAL's ([`Platform::switch_thread`]): it saves only the
 //! registers a function call must preserve, on the thread's own stack, so a switch is a few
@@ -18,20 +25,20 @@
 //! stacks first (roadmap, paging follow-ups).
 //!
 //! Locking: the scheduler's lock is taken before the heap's and the frame allocator's, never
-//! after; an exited thread's stack is freed after it is released. It is never held across a
-//! switch: on one CPU, with
-//! interrupts masked outside [`Platform::wait_for_interrupt`] and no interrupt handler using the
-//! scheduler, nothing can run between releasing it and the switch. The SMP step (M4) hands the
-//! lock over across the switch instead.
+//! after; an exited thread's stack is freed after it is released. A switch is made holding it,
+//! and the lock is handed over to the thread the switch resumes, which releases it
+//! ([`finish_switch`]): from choosing the next thread until the previous one's context is
+//! saved, nothing else can take the scheduler, on this CPU or another.
 
 use crate::heap::{FrameSource, GlobalFrames};
-use crate::sync::SpinLock;
+use crate::interrupt;
+use crate::sync::{SpinLock, SpinLockGuard};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
@@ -41,6 +48,17 @@ pub const STACK_ORDER: u32 = 2;
 pub const STACK_SIZE: usize = (FRAME_SIZE as usize) << STACK_ORDER;
 /// The value of a stack's lowest word as long as the thread has not overflowed it.
 const STACK_CANARY: u64 = 0x4567_4753_7461_636b;
+
+/// How long a thread runs, while preemption is on, before it lets the next one run.
+pub const TIME_SLICE_MS: u64 = 10;
+
+/// The timer tick's interval in clock ticks while preemption is on ([`enable_preemption`]);
+/// 0 while it is off. Per-CPU with SMP, like [`SLICE_START`].
+static TICK_INTERVAL: AtomicU64 = AtomicU64::new(0);
+/// [`interrupt::timer_interrupts`] when the running thread's time slice started: the slice is
+/// over once a timer interrupt has been taken since. The interrupt handler itself does
+/// nothing for preemption, so the interrupt path costs no more with it.
+static SLICE_START: AtomicU64 = AtomicU64::new(0);
 
 /// Identifies a thread for as long as the kernel runs; never reused. The boot thread is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -159,8 +177,8 @@ impl ThreadBox {
     }
 
     fn get(&self) -> &Thread {
-        // SAFETY: owned by `self`, and only the switch writes it without a reference, while it
-        // is not running and the scheduler's lock is released, which no `get` overlaps.
+        // SAFETY: owned by `self`, and only the switch writes it without a reference, holding
+        // the scheduler's lock (handed over across the switch), which no `get` overlaps.
         unsafe { self.0.as_ref() }
     }
 }
@@ -316,14 +334,68 @@ pub fn yield_now<P: Platform>() {
     let save = previous.context();
     // Within capacity (see `Scheduler::ready`): the push never allocates.
     scheduler.ready.push_back(previous);
-    drop(scheduler);
+    // Held across the switch, for the thread it resumes to release.
+    SpinLockGuard::leak(scheduler);
     // SAFETY: interrupts are masked, as the kernel runs. `save` points into the previous
     // thread, which stays allocated in the queue and is not resumed before this switch has
-    // saved it (nothing else runs in between, see the module documentation). `resume` was
+    // saved it: that takes the scheduler's lock, which stays held until then. `resume` was
     // saved by the switch away from `next` (or prepared by `spawn`) and not resumed since: a
     // thread is in the queue only while it is not running.
     unsafe { P::switch_thread(save, resume) };
     finish_switch();
+}
+
+/// Starts the timer tick that preempts threads (D37): once a thread has run for
+/// [`TIME_SLICE_MS`], it lets the next ready thread run at its next [`preemption_point`]. The
+/// tick owns this CPU's timer ([`Platform::set_timer_deadline`]) until [`disable_preemption`].
+pub fn enable_preemption<P: Platform>() {
+    let interval = (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1);
+    TICK_INTERVAL.store(interval, Ordering::Relaxed);
+    start_slice::<P>(interval);
+}
+
+/// Stops the timer tick [`enable_preemption`] started; threads run until they yield again.
+/// Call it with interrupts masked, as the kernel runs: the tick's deadline is replaced by one
+/// that is never reached, so no tick arrives afterwards.
+pub fn disable_preemption<P: Platform>() {
+    TICK_INTERVAL.store(0, Ordering::Relaxed);
+    P::set_timer_deadline(u64::MAX);
+}
+
+/// Starts a time slice: the next timer interrupt, which the tick arms for `interval` from now,
+/// ends it.
+fn start_slice<P: Platform>(interval: u64) {
+    SLICE_START.store(interrupt::timer_interrupts(), Ordering::Relaxed);
+    P::set_timer_deadline(P::clock_ticks().saturating_add(interval));
+}
+
+/// Where the running thread lets the next one run if its time slice is over (D37): kernel
+/// code that runs for long calls it regularly, as cheap as a few loads when the slice is not
+/// over. Takes the timer interrupt if one is pending, then, when preemption is on and a timer
+/// interrupt has come since the slice started, starts the next slice and yields. Call it as
+/// [`yield_now`] is called: with interrupts masked and no lock held.
+#[inline]
+pub fn preemption_point<P: Platform>() {
+    P::interrupt_window();
+    if interrupt::timer_interrupts() != SLICE_START.load(Ordering::Relaxed) {
+        slice_over::<P>();
+    }
+}
+
+/// [`preemption_point`]'s slow path, out of line so the check stays a few instructions.
+#[cold]
+#[inline(never)]
+fn slice_over<P: Platform>() {
+    let interval = TICK_INTERVAL.load(Ordering::Relaxed);
+    if interval == 0 {
+        // A timer interrupt for someone else, with preemption off: nothing to do until it is
+        // on again, which starts a new slice.
+        SLICE_START.store(interrupt::timer_interrupts(), Ordering::Relaxed);
+        return;
+    }
+    // The next thread's slice; it ends at a tick whoever runs then.
+    start_slice::<P>(interval);
+    yield_now::<P>();
 }
 
 /// Ends the running thread: switches to the next one, which frees this one's stack.
@@ -343,18 +415,20 @@ fn exit<P: Platform>() -> ! {
         "every switch frees the exited thread"
     );
     scheduler.exited = Some(previous);
-    drop(scheduler);
+    SpinLockGuard::leak(scheduler);
     // SAFETY: as in `yield_now`; `save` is in the exited thread, which `finish_switch` frees
     // only once the switch has left its stack, and nothing resumes it.
     unsafe { P::switch_thread(save, resume) };
     unreachable!("an exited thread was resumed");
 }
 
-/// Runs in every thread right after a switch to it: frees the thread that exited, if the
-/// switch came from one. Its stack is no longer in use, and the scheduler's lock is not held
-/// while it is freed.
+/// Runs in every thread right after a switch to it: releases the scheduler's lock, which the
+/// switch handed over, then frees the thread that exited, if the switch came from one. Its
+/// stack is no longer in use, and the lock is not held while it is freed.
 fn finish_switch() {
-    let exited = SCHEDULER.lock().exited.take();
+    // SAFETY: every switch is made holding the scheduler's lock and leaves it held for the
+    // thread it resumes, which is this one, once.
+    let exited = unsafe { SCHEDULER.assume_locked() }.exited.take();
     drop(exited);
 }
 
@@ -548,6 +622,53 @@ mod tests {
         let _frames = host::frames_for_test();
         yield_now::<P>();
         yield_now::<P>();
+    }
+
+    #[test]
+    fn a_thread_at_preemption_points_lets_others_run_once_its_slice_is_over() {
+        let _timer = crate::interrupt::lock_timer_interrupts_for_test();
+        let _frames = host::frames_for_test();
+        static SECOND_RAN: AtomicBool = AtomicBool::new(false);
+        static PASSED: AtomicU64 = AtomicU64::new(0);
+        SECOND_RAN.store(false, Ordering::Relaxed);
+        PASSED.store(0, Ordering::Relaxed);
+        let first = spawn::<P, _>(|| {
+            // The test platform's clock advances one tick per preemption point, so the 10 ms
+            // slice is 10 000 of them at its 1 MHz; a million means it never ended.
+            while !SECOND_RAN.load(Ordering::Relaxed)
+                && PASSED.fetch_add(1, Ordering::Relaxed) < 1_000_000
+            {
+                preemption_point::<P>();
+            }
+        })
+        .unwrap();
+        let second = spawn::<P, _>(|| SECOND_RAN.store(true, Ordering::Relaxed)).unwrap();
+        enable_preemption::<P>();
+        first.join::<P>();
+        second.join::<P>();
+        disable_preemption::<P>();
+        assert!(SECOND_RAN.load(Ordering::Relaxed));
+        let passed = PASSED.load(Ordering::Relaxed);
+        assert!(
+            (1000..1_000_000).contains(&passed),
+            "{passed} preemption points"
+        );
+    }
+
+    #[test]
+    fn without_preemption_a_preemption_point_never_switches() {
+        let _timer = crate::interrupt::lock_timer_interrupts_for_test();
+        let _frames = host::frames_for_test();
+        static RAN: AtomicBool = AtomicBool::new(false);
+        RAN.store(false, Ordering::Relaxed);
+        let other = spawn::<P, _>(|| RAN.store(true, Ordering::Relaxed)).unwrap();
+        // A timer interrupt for someone else ends no slice while preemption is off.
+        crate::interrupt::handle(eggos_hal::Interrupt::Timer);
+        preemption_point::<P>();
+        preemption_point::<P>();
+        assert!(!RAN.load(Ordering::Relaxed));
+        other.join::<P>();
+        assert!(RAN.load(Ordering::Relaxed));
     }
 
     #[test]

@@ -158,6 +158,15 @@ pub(crate) mod tests {
                 interrupt::handle(Interrupt::Timer);
             }
         }
+        fn interrupt_window() {
+            // Time passes; the timer interrupt is taken once its deadline has.
+            let now = CLOCK.fetch_add(1, Ordering::Relaxed);
+            let deadline = DEADLINE.load(Ordering::Relaxed);
+            if deadline != u64::MAX && now >= deadline {
+                DEADLINE.store(u64::MAX, Ordering::Relaxed);
+                interrupt::handle(Interrupt::Timer);
+            }
+        }
         fn memory_map() -> eggos_hal::MemoryMap {
             let mut map = eggos_hal::MemoryMap::new();
             map.add_ram(eggos_hal::PhysicalRange::from_start_length(

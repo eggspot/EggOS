@@ -303,6 +303,14 @@ impl Platform for X86_64 {
         unsafe { core::arch::asm!("sti", "hlt", "cli") };
     }
 
+    #[inline]
+    fn interrupt_window() {
+        // SAFETY: as in `wait_for_interrupt`, with a `nop` for the `hlt`: `sti` unmasks
+        // interrupts only after the instruction that follows it, so an interrupt already
+        // pending is taken after the `nop`, before `cli` masks them again.
+        unsafe { core::arch::asm!("sti", "nop", "cli") };
+    }
+
     fn memory_map() -> MemoryMap {
         let mut map = MemoryMap::new();
         let Some(pvh) = PvhMemoryMap::read() else {
