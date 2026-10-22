@@ -1048,8 +1048,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **Telling another CPU.** A thread made ready on another CPU is announced to it: an idle CPU
   gets the wake-up interrupt (D41), sent after the lock is released (`wake_all` sends them while
   holding it, having nowhere to keep the threads without allocating); a flag in its scheduler
-  state (`wakeup_sent`) skips further interrupts until its idle thread looks again. A busy CPU
-  whose running thread was alone with preemption on gets a reschedule request instead: the top
+  state (`wakeup_sent`) skips further interrupts until its idle thread looks again. A CPU whose
+  scheduler has started but which has not reported in yet gets no interrupt: its idle thread
+  looks after reporting in, before it first waits, under the same lock. A busy CPU whose running
+  thread was alone with preemption on gets a reschedule request instead: the top
   bit of the per-CPU word its preemption point already loads (now `unseen_by_scheduler`: timer
   interrupts in the low 63 bits), set with one atomic OR, no interrupt. Its next preemption
   point, yield or block arms the tick, which is where an armed tick would have ended the slice

@@ -241,16 +241,23 @@ pub(crate) fn local_unseen_by_scheduler<P: Platform>() -> u64 {
     unsafe { P::cpu_local_u64::<{ core::mem::offset_of!(Cpu, unseen_by_scheduler) }>() }
 }
 
-/// Raises the wake-up interrupt on `cpu`, which must be online and not the calling CPU: it
-/// stops waiting for an interrupt, and whatever the caller wrote before is visible to it (D41).
+/// Raises the wake-up interrupt on `cpu`, which must not be the calling CPU: it stops waiting
+/// for an interrupt, and whatever the caller wrote before is visible to it (D41).
 /// Call it with interrupts masked, as the kernel runs.
+///
+/// A CPU that has not reported in yet is left alone (D43): a thread can be placed on it once
+/// its scheduler has started, just before it reports in, and its idle thread looks at its
+/// ready threads after reporting in, before it first waits. Seeing it not online here means
+/// that look has not taken the scheduler's lock yet, so it finds whatever the caller queued.
+///
+/// Out of line and cold: inlined, the check made the scheduler's wake paths dearer even when
+/// they send no interrupt.
+#[cold]
+#[inline(never)]
 pub fn wake<P: Platform>(cpu: &Cpu) {
-    debug_assert!(
-        cpu.is_online(),
-        "woke CPU {}, which is not online",
-        cpu.index
-    );
-    P::wake_cpu(cpu.hardware_id());
+    if cpu.is_online() {
+        P::wake_cpu(cpu.hardware_id());
+    }
 }
 
 /// Why [`start_secondaries`] stopped.
@@ -393,6 +400,12 @@ mod tests {
 
     fn free_frames() -> u64 {
         crate::memory::FRAMES.lock().as_ref().unwrap().free_frames()
+    }
+
+    #[test]
+    fn a_cpu_that_has_not_reported_in_is_not_woken() {
+        // The test platform has no wake-up interrupt: raising one panics.
+        wake::<crate::tests::TestPlatform>(Cpu::for_test(1));
     }
 
     #[test]
