@@ -18,6 +18,7 @@ pub mod memory;
 pub mod paging;
 pub mod selftest;
 pub mod sync;
+pub mod thread;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
@@ -85,7 +86,7 @@ fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core:
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use core::sync::atomic::{AtomicU64, Ordering};
@@ -93,7 +94,7 @@ mod tests {
 
     /// A platform whose breakpoint and timer go straight to the kernel's handlers, as the
     /// architecture's vectors do on a real machine. Its clock advances one tick per read.
-    struct TestPlatform;
+    pub(crate) struct TestPlatform;
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
     static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -203,11 +204,23 @@ mod tests {
         unsafe fn activate_page_tables(roots: &[u64]) {
             assert_eq!(roots.len(), 1);
         }
+        unsafe fn prepare_thread(
+            _stack_top: usize,
+            entry: extern "C" fn(usize) -> !,
+            argument: usize,
+        ) -> usize {
+            thread::host::prepare_thread(entry, argument)
+        }
+        unsafe fn switch_thread(save: *mut usize, resume: usize) {
+            // SAFETY: the caller's guarantees are the host switch's.
+            unsafe { thread::host::switch_thread(save, resume) }
+        }
     }
 
     #[test]
     fn boot_prints_banner_with_version_and_arch() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
+        let _scheduler = thread::host::lock_scheduler_and_frames_for_test();
         let mut out = String::new();
         assert_eq!(
             boot::<TestPlatform, _>(&mut out),

@@ -11,7 +11,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
 | M2 | Memory management: physical frames, paging, kernel heap | **done** (0.2.0) — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); kernel page tables: a direct map in the high half, W^X kernel sections and a boot-stack guard page on aarch64, riscv64, x86_64 (D29), with the image's direct-map alias keeping its protections (D32); kernel heap: `alloc` works, size classes up to 2 KiB (D30); buddy allocator: contiguous, aligned blocks of up to 4 MiB, so heap allocations up to 4 MiB work (D31); the kernel runs in the top 2 GiB with boot page tables built before any Rust code, and the low half is empty (D33) |
 | M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); still to do: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC), when the first interrupting device driver needs it (M8) |
-| M4 | Scheduler, processes and threads (SMP-ready) | |
+| M4 | Scheduler, processes and threads (SMP-ready) | **in progress** — kernel threads with a context switch on aarch64, riscv64, x86_64 and a cooperative round-robin scheduler on one CPU, 16 KiB stacks with an overflow canary (D35); next: preemption from the timer interrupt, sleeping and wait queues, secondary CPUs with per-CPU run queues, then processes (address spaces, user mode) |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
 | M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | |
 | M7 | VFS and a first file system | |
@@ -31,6 +31,11 @@ reference clocks when there is no 8254; `stimecmp` directly when RISC-V Sstc is 
 addresses (M5).
 
 Paging follow-ups (D29, D33): a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard-page hit is reported; TLB maintenance for changing live tables (M4); honour device-tree `no-map` reservations (M5); AArch64 data-cache maintenance for memory written with the MMU off, the boot tables included, and a boot direct map built from the device tree instead of QEMU `virt`'s fixed device/RAM split (real hardware, M13); secondary CPUs start on the kernel's tables, global kernel pages and PCID (M4); a device window behind a mapping call instead of the direct map's (M5); RAM above 4 GiB on x86_64; on x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of direct-mapping them cached (M5); 1 GiB pages on x86_64 (CPUID); Sv48/Sv57 chosen at boot on RISC-V when Sv39's 256 GiB is not enough; Svpbmt.
+
+Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
+cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to
+confirm 16 KiB on every architecture; the scheduler's lock handed over across the switch (SMP);
+revisit the stack size when FP/SIMD state, nested interrupts or preemption add frames.
 
 Heap and buddy follow-ups (D30, D31): returning empty slabs to the frame allocator (a live-block
 count per frame); per-CPU caches instead of one heap lock and a high watermark on the free stack
@@ -55,9 +60,9 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 ### CPU architectures (QEMU boot test in CI is the bar for "done")
 | Architecture | Status | Notes |
 |--------------|--------|-------|
-| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
-| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
+| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
+| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
+| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator, own page tables, high-half kernel, kernel heap, kernel threads) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -92,7 +97,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 
 | Area | Missing |
 |------|---------|
-| Kernel | device interrupt routing, scheduling, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation) |
+| Kernel | device interrupt routing, preemptive and SMP scheduling, processes, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch cooperatively) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |

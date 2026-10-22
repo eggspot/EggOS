@@ -669,3 +669,41 @@ roadmap's support matrix, and D17's rule (the same features on each) is checked 
 as they grow. Within that, the pieces the other two layers depend on (process model, files,
 sockets, threads, the Linux userland base) still land first. Each layer stays an optional
 component (D18).
+
+## D35 Kernel threads: a one-word context saved on the thread's stack, a cooperative round-robin scheduler first — Decided by the build loop (engineering; stack size and overflow check decided by research)
+First step of M4.
+- **The switch (HAL).** `Platform::prepare_thread` and `Platform::switch_thread`. A thread that
+  is not running is one word, its saved context: the stack pointer the switch left it at. The
+  switch pushes the registers the calling convention says a call preserves (x86_64 rbx, rbp,
+  r12-r15; aarch64 x19-x30; riscv64 ra, s0-s11), stores the stack pointer, loads the other
+  thread's, pops and returns into it. No FP/SIMD registers: the kernel is soft-float on
+  x86_64 and aarch64 and runs with the FPU off on riscv64; when user threads bring FP state,
+  it is saved lazily on the user/kernel boundary, not here. A new thread's initial frame is
+  what a switch would have left, returning into a per-architecture trampoline that calls
+  `entry(argument)` with the stack 16-byte aligned. The shared layout code is
+  `eggos_hal::thread`, unit-tested on the host.
+- **The scheduler (kernel, `thread`).** One run queue, round-robin, for the one CPU; a thread
+  runs until it calls `yield_now` or its function returns. `spawn` takes a closure; the boot
+  code becomes thread 0 the first time it uses the scheduler. An exited thread's stack is freed
+  by the next thread to run (a thread cannot free the stack it is on), and `JoinHandle::join`
+  returns only once that has happened. The run queue's capacity grows in `spawn`, so a switch
+  never allocates. The scheduler's lock is released before the switch: correct only on one
+  CPU with interrupts masked and no handler using the scheduler, which is how the kernel runs
+  today; the SMP step hands the lock over across the switch instead.
+- **Stacks (decided by research).** 16 KiB (an order-2 buddy block) through the direct map, the
+  size Linux uses on x86_64 since 3.15 and on arm64/riscv64, FreeBSD on amd64/arm64; frames
+  are small (soft-float, LTO, interrupts never nest). Under the direct map's large pages a
+  stack costs no TLB entries. Overflow detection: a canary in the stack's lowest word, checked
+  on every switch away from the thread (one load and compare); a clobbered canary stops the
+  kernel naming the thread. It catches overflow only after the fact and a large frame can jump
+  it, so it is a backstop: guard pages come with a kernel virtual area and exception stacks
+  (a guard-page fault on the same stack cannot be reported), both on the roadmap.
+- **Testing.** Host unit tests run the scheduler on the test platform, where each kernel thread
+  is a host thread and a switch hands a baton between them, so exactly one runs at a time:
+  turn order, stack freeing, yielding alone, the canary. The boot self-test runs two threads
+  and the boot thread through three rounds each, checking turn order, values live across every
+  switch (registers and stack) and that joining frees both stacks, on aarch64, riscv64 and
+  x86_64; with one register pair not restored on aarch64 the boot fails.
+- **Benchmark.** `thread_yield_round_trip`: two switches through `yield_now` per iteration,
+  with the queue rotation and canary checks: aarch64 162, riscv64 201, x86_64 149 instructions.
+  No existing benchmark changed.

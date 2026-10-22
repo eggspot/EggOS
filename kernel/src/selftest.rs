@@ -4,7 +4,8 @@
 
 use crate::HEAP;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
-use crate::{exception, interrupt};
+use crate::sync::SpinLock;
+use crate::{exception, interrupt, thread};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -26,7 +27,7 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 7] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 8] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -44,6 +45,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 7] {
             "heap_allocates_in_the_direct_map",
             heap_allocates_in_the_direct_map::<P>,
         ),
+        ("threads_take_turns_and_free_their_stacks", |_| {
+            threads_take_turns_and_free_their_stacks::<P>()
+        }),
     ]
 }
 
@@ -455,6 +459,69 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
     Ok(())
 }
 
+/// Two threads and the boot thread take turns in order through `yield_now`, each on its own
+/// stack with its live values intact across every switch, and the threads' stacks are freed
+/// once they have been joined (D35).
+fn threads_take_turns_and_free_their_stacks<P: Platform>() -> Result<(), &'static str> {
+    const TURNS: u64 = 3;
+    static LOG: SpinLock<Vec<u64>> = SpinLock::new(Vec::new());
+    /// Logs `thread`'s turns, checking that values live across each yield, in registers or on
+    /// the stack, come back unchanged. A broken value logs `u64::MAX`.
+    fn take_turns<P: Platform>(thread: u64) {
+        for turn in 0..TURNS {
+            let live = [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| core::hint::black_box(n * thread));
+            LOG.lock().push(thread * 10 + turn);
+            thread::yield_now::<P>();
+            if core::hint::black_box(live) != [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| n * thread) {
+                LOG.lock().push(u64::MAX);
+            }
+        }
+    }
+    let free_frames = || {
+        memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(FrameAllocator::free_frames)
+    };
+    // Two threads that only exit, and room for the log, bring the heap's size classes for the
+    // bookkeeping into use, so the frames counted below are only the stacks'.
+    let warm_up = (thread::spawn::<P, _>(|| {}), thread::spawn::<P, _>(|| {}));
+    let (Ok(first), Ok(second)) = warm_up else {
+        return Err("could not start two threads");
+    };
+    first.join::<P>();
+    second.join::<P>();
+    {
+        let mut log = LOG.lock();
+        log.clear();
+        log.reserve(4 * TURNS as usize);
+    }
+    let free_before = free_frames().ok_or("there is no frame allocator")?;
+    let first = thread::spawn::<P, _>(|| take_turns::<P>(1));
+    let second = thread::spawn::<P, _>(|| take_turns::<P>(2));
+    let (Ok(first), Ok(second)) = (first, second) else {
+        return Err("could not start two threads");
+    };
+    if free_frames() != Some(free_before - 2 * (1 << thread::STACK_ORDER)) {
+        return Err("each thread did not take one stack's frames");
+    }
+    take_turns::<P>(3);
+    first.join::<P>();
+    second.join::<P>();
+    if free_frames() != Some(free_before) {
+        return Err("the joined threads' stacks were not freed");
+    }
+    let log = core::mem::take(&mut *LOG.lock());
+    if log.contains(&u64::MAX) {
+        return Err("values live across a switch changed (registers or stack not restored)");
+    }
+    // The boot thread (3) goes first: spawning does not switch.
+    if log != [30, 10, 20, 31, 11, 21, 32, 12, 22] {
+        return Err("the threads did not take turns in round-robin order");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +603,16 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
+        unsafe fn prepare_thread(
+            _stack_top: usize,
+            _entry: extern "C" fn(usize) -> !,
+            _argument: usize,
+        ) -> usize {
+            unreachable!("not used in tests")
+        }
+        unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]
@@ -595,6 +672,16 @@ mod tests {
         }
         fn early_device_regions(_region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {}
         unsafe fn activate_page_tables(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn prepare_thread(
+            _stack_top: usize,
+            _entry: extern "C" fn(usize) -> !,
+            _argument: usize,
+        ) -> usize {
+            unreachable!("not used in tests")
+        }
+        unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
             unreachable!("not used in tests")
         }
     }
