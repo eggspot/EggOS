@@ -22,8 +22,8 @@ const FDT_PROP: u32 = 3;
 const FDT_NOP: u32 = 4;
 const FDT_END: u32 = 9;
 
-/// The oldest FDT version whose layout this reader understands (`last_comp_version` must be at
-/// most this; every version from 16 on has the layout above).
+/// The FDT version this reader understands: the tree's `version` must be at least this and
+/// its `last_comp_version` at most this.
 const SUPPORTED_VERSION: u32 = 17;
 
 /// Node levels tracked: the root, its children (memory nodes, `/reserved-memory`) and
@@ -69,8 +69,14 @@ impl<'a> Fdt<'a> {
     pub fn new(blob: &'a [u8]) -> Result<Self, Error> {
         let blob = blob.get(..total_size(blob)?).ok_or(Error::Truncated)?;
         let field = |offset| be32(blob, offset).ok_or(Error::Truncated);
-        if field(24)? > SUPPORTED_VERSION || field(20)? < 16 {
+        // Version 17 added the structure block's size, which this reader relies on.
+        if field(24)? > SUPPORTED_VERSION || field(20)? < SUPPORTED_VERSION {
             return Err(Error::UnsupportedVersion);
+        }
+        // The specification aligns the reservation block to 8 bytes and the structure block
+        // to 4, so every read below is aligned (which matters with the MMU off on Arm).
+        if !field(16)?.is_multiple_of(8) || !field(8)?.is_multiple_of(4) {
+            return Err(Error::Malformed);
         }
         let section = |offset: usize, size: Option<usize>| -> Result<&'a [u8], Error> {
             let start = usize::try_from(field(offset)?).map_err(|_| Error::Truncated)?;
@@ -537,8 +543,15 @@ mod tests {
         );
         assert_eq!(Fdt::new(&blob[..20]).err(), Some(Error::Truncated));
         let mut old = blob.clone();
-        old[20..24].copy_from_slice(&15u32.to_be_bytes());
+        old[20..24].copy_from_slice(&16u32.to_be_bytes());
         assert_eq!(Fdt::new(&old).err(), Some(Error::UnsupportedVersion));
+        let mut misaligned = blob.clone();
+        misaligned[16..20].copy_from_slice(&44u32.to_be_bytes());
+        assert_eq!(Fdt::new(&misaligned).err(), Some(Error::Malformed));
+        let mut misaligned = blob.clone();
+        let structure = be32(&blob, 8).unwrap() + 2;
+        misaligned[8..12].copy_from_slice(&structure.to_be_bytes());
+        assert_eq!(Fdt::new(&misaligned).err(), Some(Error::Malformed));
         let mut future = blob.clone();
         future[24..28].copy_from_slice(&18u32.to_be_bytes());
         assert_eq!(Fdt::new(&future).err(), Some(Error::UnsupportedVersion));

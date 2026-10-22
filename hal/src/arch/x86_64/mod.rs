@@ -287,12 +287,31 @@ impl Platform for X86_64 {
         // SAFETY: the loader's memory map table, `entries` entries long; `mapped` checked it
         // is in the identity map, and nothing writes it.
         let table = unsafe { physical_slice(table, table_length) };
-        for entry in table.as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>().0 {
-            let [address, length, kind] = [0, 8, 16].map(|offset| {
-                u64::from_le_bytes(entry[offset..offset + 8].try_into().unwrap_or_default())
-            });
-            if kind as u32 == PVH_MEMMAP_TYPE_RAM {
-                map.add_ram(PhysicalRange::from_start_length(address, length));
+        let entries = || {
+            table
+                .as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>()
+                .0
+                .iter()
+                .map(|entry| {
+                    let [address, length, kind] = [0, 8, 16].map(|offset| {
+                        u64::from_le_bytes(entry[offset..offset + 8].try_into().unwrap_or_default())
+                    });
+                    (
+                        PhysicalRange::from_start_length(address, length),
+                        kind as u32,
+                    )
+                })
+        };
+        // All RAM first, then every other type as reserved: where a loader reports
+        // overlapping entries, the more restrictive type wins.
+        for (range, kind) in entries() {
+            if kind == PVH_MEMMAP_TYPE_RAM {
+                map.add_ram(range);
+            }
+        }
+        for (range, kind) in entries() {
+            if kind != PVH_MEMMAP_TYPE_RAM {
+                map.reserve(range);
             }
         }
         map.reserve(LOW_MEMORY);

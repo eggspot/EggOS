@@ -363,7 +363,7 @@ architecture-independent core turns it into a `FrameAllocator` of 4 KiB frames.
   below the kernel; taking it from `x0` comes with booting through other loaders (M5, M13). QEMU's tree is 1 MiB, so the AArch64 kernel now
   links at `0x4020_0000` instead of `0x4008_0000` (2 MiB aligned, which later suits a 2 MiB
   kernel mapping). x86_64: the PVH start info's memory map (version 1, E820 types; RAM is type
-  1). The device-tree reader (`eggos_hal::fdt`) is architecture-independent and reads only what
+  1, and every other entry is reserved, so where entries overlap the more restrictive wins). The device-tree reader (`eggos_hal::fdt`) is architecture-independent and reads only what
   memory needs; device discovery from it comes with M5 (D12).
 - **Reserved:** the kernel image with `.bss` and boot stack (`__kernel_start..__kernel_end`),
   the device tree (kept for M5), every firmware reservation, and on x86_64 all memory below
