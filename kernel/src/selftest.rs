@@ -236,8 +236,9 @@ fn every_frame_is_usable_ram(frames: &mut FrameAllocator) -> Result<(), &'static
 /// Blocks of contiguous frames of every order, largest first, must come out aligned to their
 /// size, be RAM the kernel can write, not overlap, and merge back when freed, so the largest
 /// block can be taken again. The largest order is [`MAX_ORDER`], or less on a machine with
-/// under 16 MiB free (a quarter of free memory at most, so fragmentation cannot fail it). Runs after [`frames_are_usable_ram`], which sent every frame
-/// through the free stack, so the blocks must form again from freed frames.
+/// under 16 MiB free (a quarter of free memory at most, which leaves room for the page tables
+/// and slabs already scattered through memory). Runs after [`frames_are_usable_ram`], which
+/// sent every frame through the free stack, so the blocks must form again from freed frames.
 fn contiguous_frames_are_aligned_and_merge_back<P: Platform>(
     _: &mut Memory<P>,
 ) -> Result<(), &'static str> {

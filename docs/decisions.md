@@ -559,7 +559,10 @@ than a frame (D30's one-frame limit is gone; up to 4 MiB now), and virtio DMA (M
   order (up to what a quarter of free memory allows) after the frame self-test sent every frame
   through the free stack, written, checked, freed and merged back into the largest block; the
   heap self-test adds 2-, 4- and 16-frame allocations and grows a `Vec` to 40 KiB.
-- **Not yet:** double-free detection for single frames (a check in `free` would cost every
+- **Not yet:** finding a free run that straddles the untouched part of a range and frames on
+  the free stack (the carve looks at untouched memory only and the drain stops at the first
+  block of the order; found by the independent review, it costs at most about one block per
+  range boundary, near exhaustion); double-free detection for single frames (a check in `free` would cost every
   free; a debug-only check comes with the per-CPU caches); one bitmap per range instead of one
   over the span (a sparse machine pays for its holes, 1 bit per 4 KiB); a physical address limit
   for 32-bit DMA devices (M8); anti-fragmentation grouping (Linux's migrate types); a high
