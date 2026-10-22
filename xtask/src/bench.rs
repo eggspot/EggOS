@@ -32,11 +32,30 @@ const BASELINE_HEADER: &str = "\
 # `cargo xtask bench` (and CI) fails when a result is slower than its line here by more than
 # 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
 # slower, and say why in the PR (CLAUDE.md, \"Never merge a performance regression\").
+# `<arch> firmware <version>` names the firmware the results were recorded with: benchmarks
+# that run inside it are gated only on the same firmware. Record the baseline with CI's QEMU
+# (Ubuntu 24.04 packages).
 ";
+
+/// Benchmarks that execute firmware code (the SBI implementation on RISC-V), so their counts
+/// depend on the firmware build QEMU loads: (architecture, firmware banner prefix,
+/// benchmarks). Those are compared only when the firmware matches the baseline's.
+const FIRMWARE_DEPENDENT: &[(&str, &str, &[&str])] = &[(
+    "riscv64",
+    "OpenSBI v",
+    &["timer_arm", "timer_interrupt_round_trip"],
+)];
 
 /// Results in nanoseconds (= instructions, under icount) per iteration, keyed by
 /// (architecture, benchmark).
 type Results = BTreeMap<(String, String), f64>;
+
+/// A set of results and the firmware version each architecture ran with (when it matters).
+#[derive(Debug, Default, PartialEq)]
+struct Measurements {
+    results: Results,
+    firmware: BTreeMap<String, String>,
+}
 
 fn baseline_path() -> PathBuf {
     crate::workspace_root().join("benchmarks/baseline.txt")
@@ -45,7 +64,7 @@ fn baseline_path() -> PathBuf {
 /// Builds and boots the benchmark kernel for each of `arches`, then compares the results with
 /// the baseline, or with `update` writes them into it (keeping other architectures' lines).
 pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
-    let mut measured = Results::new();
+    let mut measured = Measurements::default();
     for arch in arches {
         let kernel = crate::build_kernel(arch, Some("qemu-bench"))?;
         let console = qemu::boot_test(arch, &kernel, qemu::Expect::Pass, ICOUNT_ARGS)?;
@@ -57,24 +76,38 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
             ));
         }
         for (name, ns_per_iteration) in results {
-            measured.insert((arch.name.to_owned(), name), ns_per_iteration);
+            measured
+                .results
+                .insert((arch.name.to_owned(), name), ns_per_iteration);
+        }
+        if let Some(version) = firmware_version(arch.name, &console) {
+            measured.firmware.insert(arch.name.to_owned(), version);
         }
     }
 
     let path = baseline_path();
     let baseline = match std::fs::read_to_string(&path) {
         Ok(text) => parse_baseline(&text)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Results::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Measurements::default(),
         Err(e) => return Err(format!("could not read {}: {e}", path.display())),
     };
 
     let ran: Vec<&str> = arches.iter().map(|a| a.name).collect();
     if update {
-        let mut merged: Results = baseline
-            .into_iter()
-            .filter(|((arch, _), _)| !ran.contains(&arch.as_str()))
-            .collect();
-        merged.extend(measured);
+        let mut merged = Measurements {
+            results: baseline
+                .results
+                .into_iter()
+                .filter(|((arch, _), _)| !ran.contains(&arch.as_str()))
+                .collect(),
+            firmware: baseline
+                .firmware
+                .into_iter()
+                .filter(|(arch, _)| !ran.contains(&arch.as_str()))
+                .collect(),
+        };
+        merged.results.extend(measured.results);
+        merged.firmware.extend(measured.firmware);
         write_baseline(&path, &merged)?;
         eprintln!("xtask: wrote {}", path.display());
         return Ok(());
@@ -124,27 +157,54 @@ fn parse_console(console: &str) -> Result<Vec<(String, f64)>, String> {
     Ok(results)
 }
 
-fn parse_baseline(text: &str) -> Result<Results, String> {
-    let mut results = Results::new();
+/// The firmware version `arch`'s console shows, if its benchmarks depend on firmware: the
+/// rest of the firmware's banner line (e.g. `1.3` from `OpenSBI v1.3`).
+fn firmware_version(arch: &str, console: &str) -> Option<String> {
+    let (_, prefix, _) = FIRMWARE_DEPENDENT.iter().find(|(a, _, _)| *a == arch)?;
+    console
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(prefix))
+        .map(|version| format!("{prefix}{version}").replace(' ', "-"))
+}
+
+fn is_firmware_dependent(arch: &str, benchmark: &str) -> bool {
+    FIRMWARE_DEPENDENT
+        .iter()
+        .any(|(a, _, benchmarks)| *a == arch && benchmarks.contains(&benchmark))
+}
+
+fn parse_baseline(text: &str) -> Result<Measurements, String> {
+    let mut baseline = Measurements::default();
     for line in text.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let words: Vec<&str> = line.split_whitespace().collect();
+        if let [arch, "firmware", version] = words[..] {
+            baseline
+                .firmware
+                .insert(arch.to_owned(), version.to_owned());
+            continue;
+        }
         let [arch, name, value] = words[..] else {
             return Err(format!("malformed baseline line `{line}`"));
         };
         let value: f64 = value
             .parse()
             .map_err(|_| format!("malformed baseline line `{line}`"))?;
-        results.insert((arch.to_owned(), name.to_owned()), value);
+        baseline
+            .results
+            .insert((arch.to_owned(), name.to_owned()), value);
     }
-    Ok(results)
+    Ok(baseline)
 }
 
-fn write_baseline(path: &Path, results: &Results) -> Result<(), String> {
+fn write_baseline(path: &Path, baseline: &Measurements) -> Result<(), String> {
     let mut text = BASELINE_HEADER.to_owned();
-    for ((arch, name), value) in results {
+    for (arch, version) in &baseline.firmware {
+        writeln!(text, "{arch} firmware {version}").expect("writing to a String");
+    }
+    for ((arch, name), value) in &baseline.results {
         writeln!(text, "{arch} {name} {value:.2}").expect("writing to a String");
     }
     if let Some(dir) = path.parent() {
@@ -162,11 +222,23 @@ struct Comparison {
 }
 
 /// Compares `measured` with `baseline` for the architectures in `ran`.
-fn compare(baseline: &Results, measured: &Results, ran: &[&str]) -> Comparison {
+fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Comparison {
     let mut report = Comparison::default();
-    for ((arch, name), &now) in measured {
+    for arch in ran {
+        let (now, then) = (measured.firmware.get(*arch), baseline.firmware.get(*arch));
+        if now != then {
+            let name = |v: Option<&String>| v.map_or("no firmware".to_owned(), String::clone);
+            let _ = writeln!(
+                report.text,
+                "  {arch}: firmware {}, baseline recorded with {}",
+                name(now),
+                name(then)
+            );
+        }
+    }
+    for ((arch, name), &now) in &measured.results {
         let key = (arch.clone(), name.clone());
-        let Some(&before) = baseline.get(&key) else {
+        let Some(&before) = baseline.results.get(&key) else {
             let _ = writeln!(report.text, "  {arch} {name}: {now:.2} ns (no baseline)");
             report
                 .failures
@@ -179,7 +251,11 @@ fn compare(baseline: &Results, measured: &Results, ran: &[&str]) -> Comparison {
             0.0
         };
         let limit = before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS;
-        let note = if now > limit {
+        let other_firmware = is_firmware_dependent(arch, name)
+            && measured.firmware.get(arch) != baseline.firmware.get(arch);
+        let note = if other_firmware {
+            "  not gated: firmware differs from the baseline's"
+        } else if now > limit {
             report.failures.push(format!(
                 "{arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%)"
             ));
@@ -194,8 +270,10 @@ fn compare(baseline: &Results, measured: &Results, ran: &[&str]) -> Comparison {
             "  {arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%){note}"
         );
     }
-    for (arch, name) in baseline.keys() {
-        if ran.contains(&arch.as_str()) && !measured.contains_key(&(arch.clone(), name.clone())) {
+    for (arch, name) in baseline.results.keys() {
+        if ran.contains(&arch.as_str())
+            && !measured.results.contains_key(&(arch.clone(), name.clone()))
+        {
             report.failures.push(format!(
                 "{arch} {name}: in the baseline but not measured (benchmark removed?)"
             ));
@@ -208,11 +286,19 @@ fn compare(baseline: &Results, measured: &Results, ran: &[&str]) -> Comparison {
 mod tests {
     use super::*;
 
-    fn results(entries: &[(&str, &str, f64)]) -> Results {
-        entries
-            .iter()
-            .map(|&(a, n, v)| ((a.to_owned(), n.to_owned()), v))
-            .collect()
+    fn results(entries: &[(&str, &str, f64)]) -> Measurements {
+        Measurements {
+            results: entries
+                .iter()
+                .map(|&(a, n, v)| ((a.to_owned(), n.to_owned()), v))
+                .collect(),
+            firmware: BTreeMap::new(),
+        }
+    }
+
+    fn with_firmware(mut m: Measurements, arch: &str, version: &str) -> Measurements {
+        m.firmware.insert(arch.to_owned(), version.to_owned());
+        m
     }
 
     #[test]
@@ -245,7 +331,11 @@ mod tests {
 
     #[test]
     fn baseline_round_trips_through_its_file_format() {
-        let original = results(&[("aarch64", "a", 12.0), ("x86_64", "b", 3.25)]);
+        let original = with_firmware(
+            results(&[("aarch64", "a", 12.0), ("x86_64", "b", 3.25)]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
         let dir = std::env::temp_dir().join(format!("eggos-bench-test-{}", std::process::id()));
         let path = dir.join("baseline.txt");
         write_baseline(&path, &original).unwrap();
@@ -253,7 +343,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&dir).unwrap();
         assert!(text.starts_with("# EggOS boot-time benchmark baseline"));
-        assert!(text.ends_with("aarch64 a 12.00\nx86_64 b 3.25\n"));
+        assert!(text.ends_with("riscv64 firmware OpenSBI-v1.3\naarch64 a 12.00\nx86_64 b 3.25\n"));
         assert_eq!(parse_baseline(&text).unwrap(), original);
         assert!(parse_baseline("aarch64 a").is_err());
         assert!(parse_baseline("aarch64 a fast").is_err());
@@ -285,5 +375,53 @@ mod tests {
         assert_eq!(report.failures.len(), 2, "{:?}", report.failures);
         assert!(report.failures[0].contains("a new: no baseline"));
         assert!(report.failures[1].contains("a old: in the baseline but not measured"));
+    }
+
+    #[test]
+    fn reads_the_firmware_version_only_where_benchmarks_depend_on_it() {
+        let console = "\nOpenSBI v1.3\n   ____  \nEggOS 0.1.0 (riscv64)\n";
+        assert_eq!(
+            firmware_version("riscv64", console).as_deref(),
+            Some("OpenSBI-v1.3")
+        );
+        assert_eq!(firmware_version("aarch64", console), None);
+        assert_eq!(firmware_version("riscv64", "EggOS\n"), None);
+    }
+
+    #[test]
+    fn firmware_dependent_results_are_gated_only_on_the_baselines_firmware() {
+        let baseline = with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", 100.0),
+                ("riscv64", "clock_read", 4.0),
+            ]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
+        let slower = results(&[
+            ("riscv64", "timer_arm", 200.0),
+            ("riscv64", "clock_read", 4.0),
+        ]);
+        // Same firmware: a regression.
+        let same = with_firmware(slower, "riscv64", "OpenSBI-v1.3");
+        assert_eq!(compare(&baseline, &same, &["riscv64"]).failures.len(), 1);
+        // Other firmware: reported, not gated; benchmarks that do not enter it still are.
+        let other = with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", 200.0),
+                ("riscv64", "clock_read", 9.0),
+            ]),
+            "riscv64",
+            "OpenSBI-v1.7",
+        );
+        let report = compare(&baseline, &other, &["riscv64"]);
+        assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+        assert!(report.failures[0].contains("clock_read"));
+        assert!(
+            report
+                .text
+                .contains("firmware OpenSBI-v1.7, baseline recorded with OpenSBI-v1.3")
+        );
+        assert!(report.text.contains("not gated"));
     }
 }

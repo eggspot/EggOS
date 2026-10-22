@@ -338,9 +338,12 @@ read, a breakpoint round trip (exception entry and return, the future syscall an
 path, D25), arming the timer, and a timer-interrupt round trip (D26).
 
 Limits, accepted for now: an instruction count is a proxy, not a cycle count; it does not see
-cache misses, pipeline stalls or slow device registers, and on RISC-V `timer_arm` and the
-interrupt round trip include the SBI firmware's instructions, so a different OpenSBI build
-changes them (CI's Ubuntu QEMU and a developer's may differ; the baseline follows CI). Host
+cache misses, pipeline stalls or slow device registers. On RISC-V, `timer_arm` and the
+interrupt round trip include the SBI firmware's instructions, so they depend on the OpenSBI
+build QEMU loads (measured: v1.3 in CI's Ubuntu 24.04 packages gives 266 and 640, v1.7 in
+Homebrew's QEMU 10 gives 286 and 680; every other result is identical on both). The baseline
+records the firmware version (`riscv64 firmware OpenSBI-v1.3`) and follows CI; on other
+firmware those two results are printed but not gated, everything else still is. Host
 microbenchmarks were considered and left out: host timings are as noisy as CI wall-clock, and
 architecture-independent code (allocators, data structures) runs in this harness on the real
 targets instead. Cycle-accurate benchmarks on real machines, and comparisons against macOS,

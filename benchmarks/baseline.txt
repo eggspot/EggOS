@@ -4,6 +4,10 @@
 # `cargo xtask bench` (and CI) fails when a result is slower than its line here by more than
 # 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
 # slower, and say why in the PR (CLAUDE.md, "Never merge a performance regression").
+# `<arch> firmware <version>` names the firmware the results were recorded with: benchmarks
+# that run inside it are gated only on the same firmware. Record the baseline with CI's QEMU
+# (Ubuntu 24.04 packages).
+riscv64 firmware OpenSBI-v1.3
 aarch64 breakpoint_round_trip 106.00
 aarch64 clock_read 5.00
 aarch64 empty_loop 4.00
@@ -12,8 +16,8 @@ aarch64 timer_interrupt_round_trip 97.00
 riscv64 breakpoint_round_trip 159.00
 riscv64 clock_read 4.00
 riscv64 empty_loop 4.00
-riscv64 timer_arm 286.00
-riscv64 timer_interrupt_round_trip 680.00
+riscv64 timer_arm 266.01
+riscv64 timer_interrupt_round_trip 640.00
 x86_64 breakpoint_round_trip 85.00
 x86_64 clock_read 8.00
 x86_64 empty_loop 4.00
