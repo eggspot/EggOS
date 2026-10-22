@@ -315,7 +315,7 @@ const CR0_WP: u64 = 1 << 16;
 
 /// Memory below 1 MiB stays out of the allocator: it holds the real-mode IVT, the BIOS data
 /// areas, the EBDA and the legacy BIOS area (where the RSDP is found), and the trampoline that
-/// starts the other CPUs will need it (M4).
+/// starts the other CPUs ([`TRAMPOLINE`]).
 const LOW_MEMORY: PhysicalRange = PhysicalRange {
     start: 0,
     end: 0x10_0000,

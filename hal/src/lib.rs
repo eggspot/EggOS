@@ -177,7 +177,8 @@ pub trait Platform {
     /// `start`'s page tables must be the kernel's own, active on this CPU, and meet
     /// [`Self::activate_page_tables`]' requirements for as long as the CPU may run. `start` must
     /// stay allocated and unchanged until the CPU has called its entry, and its stack must be as
-    /// [`cpu::CpuStart::stack_top`] says.
+    /// [`cpu::CpuStart::stack_top`] says. Calls must not overlap (x86_64 starts CPUs through one
+    /// trampoline).
     unsafe fn start_cpu(cpu: u64, start: &cpu::CpuStart) -> Result<(), cpu::StartCpuError>;
 
     /// Sets this CPU's per-CPU block pointer, which [`Self::cpu_local`] returns from then on.

@@ -867,3 +867,63 @@ Third step of M4.
   idle threads, run queues and wait-queue locks (SMP); RISC-V Sstc (`stimecmp` without an SBI
   call); waking from device interrupt handlers; per-thread CPU time from clock reads at each
   switch (ticks no longer sample it).
+
+## D40 Secondary CPUs start on the boot page tables and report in through a per-CPU block — Decided by the build loop (engineering; design decided by research)
+Fourth step of M4, the first part of SMP: every CPU starts; running threads on them (per-CPU
+run queues) is the next step.
+- **Discovery.** The HAL lists the CPUs by hardware id (`Platform::cpus`): the enabled children
+  of the device tree's `/cpus` on aarch64 (MPIDR affinity) and riscv64 (hart id), the enabled
+  Processor Local APIC structures of the ACPI MADT on x86_64 (local APIC id). x86 entries that
+  are only online capable (hot-plug) and x2APIC structures (ids of 255 and up, beyond xAPIC
+  mode) are skipped. `Platform::boot_cpu` names the CPU that booted: affinity 0 on aarch64
+  (`_start` lets only it boot), the hart id OpenSBI passed in `a0` on riscv64 (any hart may
+  win its boot lottery), the local APIC id read at boot on x86_64.
+- **Numbering (decided by research).** The kernel numbers the CPUs itself: 0 for the boot CPU,
+  then the others in the firmware's order. There is no compile-time CPU limit (D24): the
+  per-CPU blocks are allocated once from the firmware's count, published as one table
+  (`cpu::CPUS`), and never freed; a sanity cap of 4096 guards against a corrupt table.
+- **Per-CPU block (decided by research).** `Platform::set_cpu_local` / `cpu_local` give each CPU
+  a pointer to its `cpu::Cpu` block in a register only the kernel uses: `TPIDR_EL1` on aarch64,
+  `tp` on riscv64 (the kernel uses no thread-local storage; `sscratch` stays free for the
+  user-mode trap entry, which swaps it), the GS base (`IA32_GS_BASE`) on x86_64 (`swapgs` and
+  `KERNEL_GS_BASE` come with user mode). The block's first word holds its own address, so x86
+  reads it with one `mov gs:[0]`. The boot CPU's block is a static, set as `boot` starts.
+  Hot paths will reach per-CPU state through it, never through the table.
+- **Starting (decided by research).** PSCI `CPU_ON` over HVC on aarch64, SBI HSM `hart_start`
+  on riscv64 (after probing for HSM), and on x86_64 INIT to every other CPU once, the SDM's
+  10 ms wait once, then a start-up interrupt per CPU (a second one only if the first is not
+  taken within 200 µs, SDM vol. 3A 9.4.4.1). The x86 CPU starts in real mode in a trampoline
+  copied to physical 0x8000 (inside the low 1 MiB the allocator never hands out; checked to
+  be RAM free of loader data), which enters protected mode with its own GDT, then long mode
+  with the boot page tables, and jumps to the kernel's virtual address.
+- **Page tables (decided by research).** A secondary CPU turns translation on with the boot
+  page tables, still in `.bss` and never written after boot, which map the kernel at its
+  physical and virtual addresses and the boot direct map; it jumps to the kernel's virtual
+  address, reads its `CpuStart` (stack, entry, argument and the kernel's page-table roots,
+  passed explicitly) and only then switches to the kernel's tables with the same
+  `activate_page_tables` the boot CPU used (on aarch64 its break-before-make sequence, D33).
+  It reads nothing the boot CPU wrote before translation and the caches are on: with the MMU
+  off, AArch64 reads are not coherent with the boot CPU's caches.
+- **Parking.** A secondary CPU sets its per-CPU register, marks its block online, counts
+  itself in `CPUS.online()` and parks with interrupts masked. It prints nothing (the early
+  console has no lock) and must not touch the scheduler, which is still one CPU's. Its 16 KiB
+  stack, from the buddy allocator, is kept: it becomes the CPU's idle thread's.
+- **Testing.** Host unit tests: the `/cpus` walker (enabled CPUs only, one- and two-cell ids,
+  `cpu-map` and nested nodes skipped, malformed trees rejected), MADT parsing (enabled local
+  APICs only, malformed structures stop the walk), the local APIC's INIT and start-up commands,
+  and the kernel's numbering, publishing and refusal handling. The QEMU boot tests now run
+  with `-smp 4`; the boot self-test `secondary_cpus_start_and_report_in` checks the boot CPU
+  is CPU 0, every listed CPU reports in through its own block within a second, and the
+  firmware lists all four CPUs. It fails if a CPU reports in through another CPU's block, or
+  if discovery finds only the boot CPU (both checked by breaking them). Benchmarks stay on one
+  CPU: with `-icount`, QEMU runs every CPU in one host thread.
+- **Cost (D24).** Per secondary CPU: a 16 KiB stack and a few dozen bytes of block and start
+  data. Boot time: one 10 ms INIT wait on x86_64 when there are other CPUs; none on aarch64
+  and riscv64. No benchmark changed.
+- **Follow-ups (roadmap).** Per-CPU run queues, idle threads and tick state, and wait-queue
+  locks, so secondaries run threads; per-CPU interrupt controller and timer setup (the GIC CPU
+  interface and timer PPI, `sie.STIE`, the local APIC and its LVT), with x86's IDT already
+  split into fill-once and load-per-CPU; TLB shootdown for tables changed while other CPUs run
+  (`tlbi ...is`, SBI RFENCE, IPIs); x2APIC mode for ids of 255 and up; checking for an
+  invariant TSC before threads move between CPUs; booting from a CPU whose affinity is not 0
+  on aarch64 (M13); a console lock for messages from any CPU.
