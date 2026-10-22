@@ -3,10 +3,10 @@
 //!
 //! The IDT has a gate for each of the 32 architecture-defined exception vectors and for each
 //! interrupt vector in use (the legacy PICs' 0x20-0x2f, the APIC timer's 0x30, the wake-up
-//! interrupt's 0x31 and the APIC's spurious vector 0xff, see [`super::timer`]). Each points at a 16-byte stub that pushes the
-//! vector number (and a 0 error code for the vectors where the CPU pushes none), so every
-//! exception and interrupt reaches `exception_common` with the same frame.
-//! That saves the general-purpose registers, calls [`x86_64_exception`] with the frame, and
+//! interrupt's 0x31 and the APIC's spurious vector 0xff, see [`super::timer`]). Each points at
+//! a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where the
+//! CPU pushes none), so every exception and interrupt reaches `exception_common` with the same
+//! frame. That saves the general-purpose registers, calls [`x86_64_exception`] with the frame, and
 //! restores everything and `iretq`s if it returns. The kernel target uses no SSE/x87
 //! registers (`x86_64-unknown-none` is soft-float), so they are not saved.
 //!

@@ -334,6 +334,7 @@ fn report_in(cpu: &Cpu, table: &CpuTable) {
 mod tests {
     use super::*;
     use crate::thread::host::frames_for_test;
+    use eggos_hal::Interrupt;
     use eggos_hal::cpu::StartCpuError;
 
     extern "C" fn never(_: usize) -> ! {
@@ -411,6 +412,30 @@ mod tests {
         assert_eq!(free_frames(), before - (2 << STACK_ORDER));
         assert_eq!(table.online(), 1);
         assert_eq!(table.all().len(), 4);
+    }
+
+    #[test]
+    fn interrupts_are_counted_per_kind_and_the_scheduler_sees_timer_interrupts_once() {
+        let cpu = Cpu::new(1);
+        cpu.count(Interrupt::Timer);
+        cpu.count(Interrupt::Timer);
+        cpu.count(Interrupt::Wakeup);
+        assert_eq!(
+            (cpu.timer_interrupts(), cpu.timer_interrupts_unseen()),
+            (2, 2)
+        );
+        assert_eq!(cpu.wakeups(), 1);
+        cpu.see_timer_interrupts();
+        assert_eq!(
+            (cpu.timer_interrupts(), cpu.timer_interrupts_unseen()),
+            (2, 0)
+        );
+        cpu.count(Interrupt::Timer);
+        assert_eq!(
+            (cpu.timer_interrupts(), cpu.timer_interrupts_unseen()),
+            (3, 1)
+        );
+        assert_eq!(cpu.wakeups(), 1);
     }
 
     #[test]
