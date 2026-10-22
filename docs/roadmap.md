@@ -9,8 +9,8 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 |---|-----------|--------|
 | M0 | Repo skeleton: workspace, pinned toolchain, HAL layout, CI, docs | **done** |
 | M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
-| M2 | Memory management: physical frames, paging, kernel heap | |
-| M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); next: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC) |
+| M2 | Memory management: physical frames, paging, kernel heap | **in progress** — memory map from the device tree / PVH and a frame allocator on aarch64, riscv64, x86_64 (D28); next: kernel page tables with a direct map and guard pages, then the kernel heap |
+| M3 | Interrupts and timers | **in progress** — exception vectors (D25); monotonic clock and one-shot timer interrupts through GICv2, SBI and the local APIC on aarch64, riscv64, x86_64 (D26); still to do: device interrupt routing (GIC SPIs, PLIC/AIA, I/O APIC), when the first interrupting device driver needs it (M8) |
 | M4 | Scheduler, processes and threads (SMP-ready) | |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
 | M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | |
@@ -48,9 +48,9 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 ### CPU architectures (QEMU boot test in CI is the bar for "done")
 | Architecture | Status | Notes |
 |--------------|--------|-------|
-| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
-| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
+| aarch64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
+| riscv64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
+| x86_64 | **done** (boots, prints, self-tests, exception vectors, timer interrupts, memory map and frame allocator) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -71,6 +71,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 |--------|--------|
 | PL011 UART (Arm), transmit | **done** |
 | ACPI tables: RSDP/RSDT/XSDT/FADT, `\_S5` from the DSDT (power-off only) | **done** (full AML interpreter: planned, M5) |
+| Flattened device tree: memory nodes and reservations | **done** (device discovery: planned, M5) |
 | NS16550 UART (MMIO, any `reg-shift`, and x86 port I/O), transmit | **done** |
 | Arm GICv2 (distributor + CPU interface) | **done** (GICv3: planned, M5) |
 | Arm generic timer (EL1 virtual timer) | **done** |
@@ -84,7 +85,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 
 | Area | Missing |
 |------|---------|
-| Kernel | memory management, device interrupt routing, scheduling, syscalls (CPU exceptions are caught and reported; timer interrupts work) |
+| Kernel | paging and the kernel heap, device interrupt routing, scheduling, syscalls (CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |

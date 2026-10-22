@@ -1,9 +1,10 @@
-/* EggOS kernel layout for AArch64 on QEMU `virt` (RAM starts at 0x40000000). */
+/* EggOS kernel layout for AArch64 on QEMU `virt` (RAM starts at 0x40000000). The kernel links
+   2 MiB in: QEMU puts its 1 MiB device tree at the start of RAM only if it fits below (D28). */
 ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x40080000;
+    . = 0x40200000;
     __kernel_start = .;
 
     .text : {

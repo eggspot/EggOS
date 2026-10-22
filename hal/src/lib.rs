@@ -10,11 +10,14 @@
 pub mod acpi;
 pub mod arch;
 mod exception;
+pub mod fdt;
 mod interrupt;
+pub mod memory;
 pub mod time;
 
 pub use exception::{Exception, ExceptionKind};
 pub use interrupt::Interrupt;
+pub use memory::{MemoryMap, PhysicalRange};
 
 /// How a run ends, as reported to whoever started the machine (in tests: the QEMU runner).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,4 +71,16 @@ pub trait Platform {
     /// interrupt that became pending before the call is handled at once, so checking a
     /// condition and then calling this cannot miss the interrupt that changes it.
     fn wait_for_interrupt();
+
+    /// The physical memory the kernel may allocate: the machine's RAM as the firmware or
+    /// loader describes it, minus everything in use (the kernel image and its boot stack, the
+    /// firmware, and the boot data the kernel still reads, such as the device tree), limited
+    /// to what the kernel can reach today. Built from the firmware's description on each call;
+    /// the kernel calls it once at boot.
+    fn memory_map() -> MemoryMap;
+
+    /// Where the kernel reaches physical memory: free RAM at physical address `p` (from
+    /// [`Self::memory_map`]) is readable and writable at virtual address `p + offset`. Zero
+    /// while the kernel runs with the MMU off or on an identity map.
+    fn physical_memory_offset() -> usize;
 }

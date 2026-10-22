@@ -33,3 +33,6 @@ pub use x86_64::X86_64 as CurrentPlatform;
     ))
 ))]
 compile_error!("EggOS has no HAL module for this architecture yet (see docs/roadmap.md)");
+
+#[cfg(target_os = "none")]
+pub(crate) mod boot_memory;

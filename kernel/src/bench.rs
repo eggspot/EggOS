@@ -7,9 +7,11 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::interrupt;
+use crate::memory::FrameAllocator;
 use core::fmt::Write;
 use core::hint::black_box;
-use eggos_hal::Platform;
+use eggos_hal::memory::FRAME_SIZE;
+use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
 /// Starts every benchmark result line. The xtask bench runner parses these lines.
 pub const MARKER: &str = "EGGOS-BENCH:";
@@ -23,7 +25,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark = (&'static str, fn(u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark; 5] {
+pub fn all<P: Platform>() -> [Benchmark; 7] {
     [
         ("empty_loop", empty_loop),
         ("clock_read", clock_read::<P>),
@@ -33,6 +35,8 @@ pub fn all<P: Platform>() -> [Benchmark; 5] {
             "timer_interrupt_round_trip",
             timer_interrupt_round_trip::<P>,
         ),
+        ("frame_allocate_untouched", frame_allocate_untouched),
+        ("frame_free_allocate", frame_free_allocate),
     ]
 }
 
@@ -97,6 +101,42 @@ fn timer_interrupt_round_trip<P: Platform>(n: u64) {
     }
 }
 
+/// Allocating never-used frames, the path every frame takes first. Untouched frames are not
+/// written, so the range can be any addresses.
+fn frame_allocate_untouched(n: u64) {
+    let mut map = MemoryMap::new();
+    map.add_ram(PhysicalRange::from_start_length(1 << 40, n * FRAME_SIZE));
+    let mut frames = FrameAllocator::new(&map, 0);
+    for _ in 0..n {
+        black_box(frames.allocate());
+    }
+}
+
+/// Freeing a frame and allocating it again: the free stack's push and pop, the steady-state
+/// path once memory has been recycled. The frame is a page of this function's stack, which
+/// the allocator reaches at its own address (offset 0).
+fn frame_free_allocate(n: u64) {
+    #[repr(C, align(4096))]
+    struct Page(core::mem::MaybeUninit<[u8; FRAME_SIZE as usize]>);
+    let mut page = Page(core::mem::MaybeUninit::uninit());
+    let mut map = MemoryMap::new();
+    map.add_ram(PhysicalRange::from_start_length(
+        (&raw mut page).expose_provenance() as u64,
+        FRAME_SIZE,
+    ));
+    let mut frames = FrameAllocator::new(&map, 0);
+    let Some(mut frame) = frames.allocate() else {
+        return;
+    };
+    for _ in 0..n {
+        // SAFETY: `frame` came from `frames` and nothing uses it; it is `page`, which lives
+        // until the end of this function, so the allocator may write its link there.
+        unsafe { frames.free(black_box(frame)) };
+        frame = frames.allocate().unwrap_or(frame);
+    }
+    black_box(&mut page);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +172,12 @@ mod tests {
         fn wait_for_interrupt() {
             interrupt::handle(Interrupt::Timer);
         }
+        fn memory_map() -> MemoryMap {
+            MemoryMap::new()
+        }
+        fn physical_memory_offset() -> usize {
+            0
+        }
     }
 
     #[test]
@@ -153,6 +199,12 @@ mod tests {
             clock_line.contains(&format!("ticks={} ", ITERATIONS + 1)),
             "{clock_line}"
         );
+    }
+
+    #[test]
+    fn frame_benchmarks_run_on_the_host() {
+        frame_allocate_untouched(ITERATIONS);
+        frame_free_allocate(ITERATIONS);
     }
 
     #[test]

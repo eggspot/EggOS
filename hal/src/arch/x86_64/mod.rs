@@ -14,6 +14,8 @@ mod port;
 mod timer;
 
 use crate::acpi::{self, RootTable};
+use crate::arch::boot_memory;
+use crate::memory::{MemoryMap, PhysicalRange};
 use crate::{ExitStatus, Platform};
 use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_drivers::serial::{Ns16550, Uart};
@@ -146,6 +148,25 @@ const PVH_START_MAGIC: u32 = 0x336e_c578;
 const PVH_RSDP_PADDR: usize = 32;
 /// Bytes of `hvm_start_info` read: up to and including `rsdp_paddr` (present since version 0).
 const PVH_START_INFO_READ_LENGTH: usize = PVH_RSDP_PADDR + 8;
+/// Version 1 adds `memmap_paddr` (u64) at 40 and `memmap_entries` (u32) at 48: the memory map,
+/// an array of `hvm_memmap_table_entry` (`addr`, `size` as u64, `type`, `reserved` as u32).
+const PVH_VERSION: usize = 4;
+const PVH_MEMMAP_PADDR: usize = 40;
+const PVH_MEMMAP_ENTRIES: usize = 48;
+const PVH_START_INFO_V1_LENGTH: usize = 56;
+const PVH_MEMMAP_ENTRY_LENGTH: usize = 24;
+/// `XEN_HVM_MEMMAP_TYPE_RAM`: usable RAM (the E820 type 1 encoding).
+const PVH_MEMMAP_TYPE_RAM: u32 = 1;
+/// More entries than any real memory map, against a corrupt count.
+const PVH_MAX_MEMMAP_ENTRIES: usize = 1024;
+
+/// Memory below 1 MiB stays out of the allocator: it holds the real-mode IVT, the BIOS data
+/// areas, the EBDA and the legacy BIOS area (where the RSDP is found), and the trampoline that
+/// starts the other CPUs will need it (M4).
+const LOW_MEMORY: PhysicalRange = PhysicalRange {
+    start: 0,
+    end: 0x10_0000,
+};
 
 /// COM1's I/O ports.
 const COM1_PORT: u16 = 0x3f8;
@@ -231,6 +252,71 @@ impl Platform for X86_64 {
         // interrupts again. No `nomem`/`nostack`: the kernel's handler may read and write any
         // memory, and the interrupt frame is pushed below the stack pointer.
         unsafe { core::arch::asm!("sti", "hlt", "cli") };
+    }
+
+    fn memory_map() -> MemoryMap {
+        let mut map = MemoryMap::new();
+        let start_info_address = u64::from(PVH_START_INFO.load(Ordering::Relaxed));
+        let Some(start_info) = mapped(start_info_address, PVH_START_INFO_V1_LENGTH) else {
+            return map;
+        };
+        // SAFETY: the loader passed the address of its `hvm_start_info`; `mapped` checked the
+        // bytes are in the identity map and nothing writes them. Fields beyond version 0 are
+        // read only once the version says they exist.
+        let info = unsafe { physical_slice(start_info, PVH_START_INFO_V1_LENGTH) };
+        let field32 = |offset: usize| {
+            u32::from_le_bytes(info[offset..offset + 4].try_into().unwrap_or_default())
+        };
+        if field32(0) != PVH_START_MAGIC || field32(PVH_VERSION) < 1 {
+            return map;
+        }
+        let table_address = u64::from_le_bytes(
+            info[PVH_MEMMAP_PADDR..PVH_MEMMAP_PADDR + 8]
+                .try_into()
+                .unwrap_or_default(),
+        );
+        let entries = usize::try_from(field32(PVH_MEMMAP_ENTRIES)).unwrap_or(usize::MAX);
+        if entries > PVH_MAX_MEMMAP_ENTRIES {
+            return map;
+        }
+        let table_length = entries * PVH_MEMMAP_ENTRY_LENGTH;
+        let Some(table) = mapped(table_address, table_length) else {
+            return map;
+        };
+        // SAFETY: the loader's memory map table, `entries` entries long; `mapped` checked it
+        // is in the identity map, and nothing writes it.
+        let table = unsafe { physical_slice(table, table_length) };
+        for entry in table.as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>().0 {
+            let [address, length, kind] = [0, 8, 16].map(|offset| {
+                u64::from_le_bytes(entry[offset..offset + 8].try_into().unwrap_or_default())
+            });
+            if kind as u32 == PVH_MEMMAP_TYPE_RAM {
+                map.add_ram(PhysicalRange::from_start_length(address, length));
+            }
+        }
+        map.reserve(LOW_MEMORY);
+        map.reserve(boot_memory::kernel_image());
+        // The start info and its memory map are read again on every call (and the start info
+        // at power-off, for the RSDP).
+        map.reserve(PhysicalRange::from_start_length(
+            start_info_address,
+            PVH_START_INFO_V1_LENGTH as u64,
+        ));
+        map.reserve(PhysicalRange::from_start_length(
+            table_address,
+            table_length as u64,
+        ));
+        // Only the boot identity map is reachable until the kernel has its own page tables.
+        map.retain_within(PhysicalRange {
+            start: 0,
+            end: IDENTITY_MAP_END,
+        });
+        map
+    }
+
+    #[inline]
+    fn physical_memory_offset() -> usize {
+        0
     }
 }
 

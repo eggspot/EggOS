@@ -2,6 +2,7 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
+use crate::memory::FrameAllocator;
 use crate::{exception, interrupt};
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
@@ -16,11 +17,12 @@ pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 pub type SelfTest = (&'static str, fn() -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest; 3] {
+pub fn all<P: Platform>() -> [SelfTest; 4] {
     [
         ("bss_is_zeroed", bss_is_zeroed),
         ("breakpoint_resumes", breakpoint_resumes::<P>),
         ("timer_interrupt_fires", timer_interrupt_fires::<P>),
+        ("frames_are_usable_ram", frames_are_usable_ram::<P>),
     ]
 }
 
@@ -112,6 +114,74 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Frames written in [`frames_are_usable_ram`].
+const FRAMES_WRITTEN: usize = 64;
+
+/// The boot memory map must offer memory, and its frames must be RAM the kernel can write and
+/// read back, handed out once each: write a pattern to the first frames allocated, check them
+/// all, free them, see them come back in reverse order, then count every frame up to the end
+/// of memory. A frame overlapping the kernel image or its stack would most likely crash the
+/// kernel here instead of passing.
+fn frames_are_usable_ram<P: Platform>() -> Result<(), &'static str> {
+    let map = P::memory_map();
+    if map.total() == 0 {
+        return Err("the boot memory map has no free memory");
+    }
+    let offset = P::physical_memory_offset();
+    let mut frames = FrameAllocator::new(&map, offset);
+    let total = frames.free_frames();
+    let mut taken = [0u64; FRAMES_WRITTEN];
+    let mut count = 0;
+    for slot in &mut taken {
+        let Some(frame) = frames.allocate() else {
+            break;
+        };
+        *slot = frame;
+        count += 1;
+    }
+    let taken = &taken[..count];
+    let words = |frame: u64| {
+        let start = (frame as usize).wrapping_add(offset) as *mut u64;
+        let length = eggos_hal::memory::FRAME_SIZE as usize / 8;
+        (0..length).map(move |i| (start.wrapping_add(i), frame ^ i as u64))
+    };
+    for &frame in taken {
+        for (word, value) in words(frame) {
+            // SAFETY: `frame` was just allocated, so the kernel owns it, and the platform says
+            // free RAM is reachable at physical address + offset; `word` is inside the frame
+            // and aligned.
+            unsafe { word.write_volatile(value) };
+        }
+    }
+    for &frame in taken {
+        for (word, value) in words(frame) {
+            // SAFETY: as above; the frame is still owned and was written in full.
+            if unsafe { word.read_volatile() } != value {
+                return Err("a frame did not read back what was written (not RAM, or shared)");
+            }
+        }
+    }
+    for &frame in taken {
+        // SAFETY: each frame came from `frames` and is no longer used.
+        unsafe { frames.free(frame) };
+    }
+    if taken
+        .iter()
+        .rev()
+        .any(|&frame| frames.allocate() != Some(frame))
+    {
+        return Err("freed frames did not come back last in, first out");
+    }
+    let mut handed_out = taken.len() as u64;
+    while frames.allocate().is_some() {
+        handed_out += 1;
+    }
+    if handed_out != total {
+        return Err("the allocator handed out a different number of frames than the map holds");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +237,12 @@ mod tests {
         }
         fn set_timer_deadline(_deadline: u64) {}
         fn wait_for_interrupt() {}
+        fn memory_map() -> eggos_hal::MemoryMap {
+            eggos_hal::MemoryMap::new()
+        }
+        fn physical_memory_offset() -> usize {
+            0
+        }
     }
 
     #[test]
@@ -208,6 +284,12 @@ mod tests {
         }
         fn set_timer_deadline(_deadline: u64) {}
         fn wait_for_interrupt() {}
+        fn memory_map() -> eggos_hal::MemoryMap {
+            eggos_hal::MemoryMap::new()
+        }
+        fn physical_memory_offset() -> usize {
+            0
+        }
     }
 
     #[test]
@@ -216,6 +298,14 @@ mod tests {
         assert_eq!(
             timer_interrupt_fires::<DeadTimer>(),
             Err("no timer interrupt within 1 s of its deadline")
+        );
+    }
+
+    #[test]
+    fn no_free_memory_fails() {
+        assert_eq!(
+            frames_are_usable_ram::<LostBreakpoints>(),
+            Err("the boot memory map has no free memory")
         );
     }
 
