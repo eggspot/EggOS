@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(any(test, feature = "qemu-bench"))]
+pub mod bench;
 pub mod console;
 pub mod exception;
 pub mod interrupt;
@@ -25,6 +27,14 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
         .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
         .and_then(|()| selftest::run(console, &selftest::all::<P>()));
+    // Benchmarks only mean something on a kernel that passed its self-tests.
+    #[cfg(feature = "qemu-bench")]
+    let report = report.and_then(|passed| {
+        if passed {
+            bench::run::<P, _>(console, &bench::all::<P>())?;
+        }
+        Ok(passed)
+    });
     match report {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
@@ -88,6 +98,7 @@ mod tests {
 
     #[test]
     fn boot_prints_banner_with_version_and_arch() {
+        let _lock = interrupt::lock_timer_interrupts_for_test();
         let mut out = String::new();
         assert_eq!(boot::<TestPlatform, _>(&mut out), ExitStatus::Success);
         assert!(out.starts_with(&format!("EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n")));

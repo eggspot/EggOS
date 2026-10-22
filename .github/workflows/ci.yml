@@ -92,6 +92,10 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo xtask qemu --arch all
 
+      - name: Benchmarks against the baseline (every architecture)
+        if: steps.changes.outputs.code == 'true'
+        run: cargo xtask bench --arch all
+
       - uses: actions/cache/save@v6
         if: steps.changes.outputs.code == 'true' && github.event_name == 'push'
         with:

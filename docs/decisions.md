@@ -268,7 +268,7 @@ there without touching the HAL.
   `qemu-test-fatal-exception`) executes an illegal instruction after the self-tests and the
   runner requires the exception report followed by the fail marker and a clean power-off.
 - Not benchmarked yet: exception entry becomes a hot path with syscalls and page faults (M3, M6);
-  its benchmark comes with the benchmark harness (roadmap follow-up) before that.
+  its benchmark comes with the benchmark harness (roadmap follow-up) before that. (Done: D27.)
 
 ## D26 Clock and timer interrupts: one monotonic clock and one one-shot timer per CPU — Decided by the build loop (engineering)
 The HAL gives the kernel a per-CPU monotonic clock (`clock_ticks`, `clock_frequency`) and a
@@ -314,4 +314,39 @@ Per architecture:
   kernel counts the timer interrupt, checks it did not come early, and gives up after 1 s;
   drivers (GICv2, local APIC, 8259, 8254) are unit-tested on the host against fake registers.
 - Not benchmarked yet (as D25): interrupt entry and timer arming join the benchmark harness
-  (roadmap follow-up) before M4 uses them for preemption.
+  (roadmap follow-up) before M4 uses them for preemption. (Done: D27.)
+
+## D27 Benchmarks: deterministic instruction counts in QEMU, gated against a committed baseline — Decided by the build loop (engineering)
+"Never merge a performance regression" (D13) needs a number CI can check. Wall-clock timings on
+shared CI runners vary by tens of percent between runs, so they cannot gate a PR. Instead, the
+kernel feature `qemu-bench` runs boot-time benchmarks after the self-tests (`kernel::bench`:
+each body runs 100 untimed then 10 000 timed iterations between two reads of the platform
+clock) and `cargo xtask bench` boots it under QEMU `-icount shift=0,sleep=off`, where guest
+time advances exactly 1 ns per instruction executed. Each result is therefore an instruction
+count per iteration, identical on every run and every host (checked: repeated runs give the
+same numbers to the last digit), and is compared with `benchmarks/baseline.txt`:
+- slower than the baseline by more than 1% + 0.5 instructions fails (CI and `cargo xtask ci`
+  run it after the boot tests); faster is reported so the baseline can be tightened;
+- a benchmark without a baseline line, or a baseline line no longer measured, fails, so
+  benchmarks cannot be added or dropped silently;
+- `cargo xtask bench --arch <arch|all> --update-baseline` rewrites the lines of the
+  architectures it ran; a PR that changes the baseline says why (faster, or a regression the
+  owner accepted).
+
+First benchmarks: the empty loop (the per-iteration overhead in every other result), a clock
+read, a breakpoint round trip (exception entry and return, the future syscall and page-fault
+path, D25), arming the timer, and a timer-interrupt round trip (D26).
+
+Limits, accepted for now: an instruction count is a proxy, not a cycle count; it does not see
+cache misses, pipeline stalls or slow device registers. On RISC-V, `timer_arm` and the
+interrupt round trip include the SBI firmware's instructions, so they depend on the OpenSBI
+build QEMU loads (measured: v1.3 in CI's Ubuntu 24.04 packages gives 266 and 640, v1.7 in
+Homebrew's QEMU 10 gives 286 and 680; every other result is identical on both). The baseline
+records the firmware version (`riscv64 firmware OpenSBI-v1.3`) and follows CI; on other
+firmware those two results are printed but not gated, everything else still is, and
+`--update-baseline` keeps their baseline values, so updating on a developer machine cannot
+move CI's numbers. Host
+microbenchmarks were considered and left out: host timings are as noisy as CI wall-clock, and
+architecture-independent code (allocators, data structures) runs in this harness on the real
+targets instead. Cycle-accurate benchmarks on real machines, and comparisons against macOS,
+Windows and Linux on the same hardware, come with real-hardware bring-up (M13).
