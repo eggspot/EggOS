@@ -25,6 +25,16 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, then Windows, Android, macOS, iOS (order: D19) | |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
+Setup follow-ups from the 2026-10-22 review (not yet done):
+- **Exception vectors on every architecture** (M3): an IDT on x86_64, `VBAR_EL1` on aarch64 and
+  `stvec` on riscv64, whose handlers print the cause and the fail marker. Today a fault hangs until
+  the 30 s timeout, or resets on x86_64, which the runner now catches.
+- **Benchmarks** (`cargo xtask bench`, before M2 lands): host microbenchmarks plus instruction counts
+  in QEMU (`-icount`), compared against a committed baseline, so "never merge a regression" can be
+  checked.
+- **A BSS self-test that can fail:** QEMU hands over zeroed RAM, so fill `.bss` with a pattern
+  before boot (QEMU's `loader` device) to prove the zeroing loop works.
+
 UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switcher-habit research).
 
 ## Support matrix

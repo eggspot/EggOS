@@ -51,13 +51,16 @@ abstraction costs nothing at run time: every call is monomorphised and inlined.
 and lints. Bare-metal targets are official tier-2 targets with a prebuilt `core`, so no nightly
 and no `build-std` are needed yet. Revisit only if the kernel genuinely needs a nightly feature.
 
-## D8 CI: one cheap Linux job — Decided by the build loop (engineering, per billing rules)
-A single `ubuntu-latest` job runs fmt → clippy → build → host tests → QEMU boot tests (from M1,
-when the first architecture boots), cheapest first, with `timeout-minutes`, PR-only
-cancellation of superseded runs, `fetch-depth: 1` and a cargo cache. Docs-only changes are skipped with `paths-ignore`; if CI ever becomes a *required*
-check, replace that with an in-job changed-files gate so docs PRs do not hang pending.
-No macOS or Windows runners without the owner's OK; the xtask commands keep those hosts
-supported locally.
+## D8 CI: one cheap Linux job, plus a macOS/Windows host check on PRs — Decided by the build loop (engineering, per billing rules); updated by the setup review (2026-10-22)
+One `ubuntu-24.04` job (`check`) runs fmt → clippy → host tests → QEMU boot tests on every
+architecture, cheapest first, with `timeout-minutes`, PR-only cancellation of superseded runs,
+`fetch-depth: 1` and a `target/` cache that is restored on every run but saved only from `main`.
+`check` is a required status check on `main`, so the workflow always runs: a first step detects
+docs-only PRs and skips the rest, reporting success in seconds (a `paths-ignore` filter would
+leave such PRs pending forever). On PRs with code changes, a `hosts` job (macOS and Windows,
+after `check` passes) runs clippy, host tests and the kernel builds, because those are the
+development hosts. The repo is public, so standard runners are not billed today. If it ever
+becomes private, that job is the first thing to reconsider (10x and 2x rates).
 
 ## D9 Bring-up order: aarch64 and riscv64 first, x86_64 next — Decided by the build loop (engineering); x86_64 boot protocol superseded by D15
 QEMU's `virt` machines for aarch64 and riscv64 load an ELF kernel directly and start it in the

@@ -20,9 +20,11 @@ impl PortIo {
         Self { base, size }
     }
 
+    /// Checked in release builds too, as in `Mmio`: a stray offset from safe code must panic,
+    /// never reach another device's ports.
     #[inline]
     fn port(&self, offset: usize, width: usize) -> u16 {
-        debug_assert!(
+        assert!(
             offset
                 .checked_add(width)
                 .is_some_and(|end| end <= self.size),
@@ -38,7 +40,7 @@ impl RegisterIo for PortIo {
     #[inline]
     fn read8(&self, offset: usize) -> u8 {
         // SAFETY: `PortIo::new`'s contract makes every in-bounds offset one of the device's
-        // ports.
+        // ports, and `port` has checked the bounds.
         unsafe { in8(self.port(offset, 1)) }
     }
 
