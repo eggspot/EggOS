@@ -176,7 +176,7 @@ Rules for every component:
   modules or per-component kernel builds) is a later decision, made with benchmarks;
 - removing it leaves no files, services or settings behind.
 
-## D19 Compatibility-layer order: Linux, Windows, Android, macOS, iOS — Decided by research (owner can overrule); supersedes D2's order
+## D19 Compatibility-layer order: Linux, Windows, Android, macOS, iOS — Decided by research; superseded by D34 (owner, 2026-10-22); supersedes D2's order
 Order: (1) Linux userland, the kernel's native ABI and the base of every layer; (2) Windows;
 (3) Android; (4) macOS; (5) iOS. Windows comes before macOS because it is where most switchers
 are (StatCounter, June 2026: Windows ~57% of desktop use, macOS ~16%, Linux ~4%) and nearly all
@@ -650,3 +650,22 @@ at its physical address" and its identity-mapped devices.
   invalidated (written with the MMU off, walked cached) and RAM mapped from the device tree
   instead of a fixed Device/Normal split (M13); secondary CPUs start on the kernel's tables
   (M4); global kernel mappings and PCID (M4).
+
+## D34 Compatibility-layer order: Linux, Windows and macOS together, then Android and iOS — Decided (owner, 2026-10-22); supersedes D19
+The three desktop layers are built side by side, not one after another:
+- **Linux userland**: the kernel's native ABI, and the base the other layers build on;
+- **Windows**: PE loader, NT system calls and Win32, DirectX going straight to our GPU drivers;
+- **macOS**: Mach-O loader, dyld, the Objective-C and Swift runtimes, the Darwin frameworks, Metal.
+
+**Android and iOS follow**, after the desktop layers and phone/tablet hardware bring-up (M13):
+Android reuses the Linux ABI, iOS reuses the macOS loader, runtimes and frameworks.
+
+Why: the owner wants people switching from all three desktop systems served at the same time
+(D13, D23), rather than Windows users first and macOS users last. D19's research (desktop market
+share, which catalogues are reachable without an app store) stays valid as background.
+
+Consequences: M15 work for Linux, Windows and macOS is interleaved and tracked per layer in the
+roadmap's support matrix, and D17's rule (the same features on each) is checked across all three
+as they grow. Within that, the pieces the other two layers depend on (process model, files,
+sockets, threads, the Linux userland base) still land first. Each layer stays an optional
+component (D18).
