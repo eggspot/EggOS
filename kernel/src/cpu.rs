@@ -2,11 +2,12 @@
 //! the firmware's order, gives each a per-CPU block ([`Cpu`]) that the CPU reaches through its
 //! per-CPU register ([`current`]), and starts the others ([`start_secondaries`]). Every CPU
 //! takes its own interrupts: its timer's, and the wake-up interrupt another CPU sends it with
-//! [`wake`], each counted in its block. For now a secondary CPU checks its timer, reports in and
-//! waits for interrupts; per-CPU run queues, so that it runs threads, come next (M4).
+//! [`wake`], each counted in its block. Each block also holds the CPU's part of the scheduler
+//! (D43): a secondary CPU checks its timer, starts its scheduler, reports in and runs its idle
+//! thread, which runs the threads placed on it.
 
 use crate::heap::{FrameSource, GlobalFrames};
-use crate::thread::{STACK_ORDER, STACK_SIZE};
+use crate::thread::{self, CpuScheduler, STACK_ORDER, STACK_SIZE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
@@ -30,13 +31,15 @@ pub struct Cpu {
     this: AtomicPtr<Cpu>,
     /// The HAL's part, at [`HAL_CPU_LOCAL_OFFSET`]; the kernel never touches it.
     _hal: HalCpuLocal,
-    /// Timer interrupts this CPU has taken that the scheduler has not looked at yet (D39): not
-    /// 0 means the timer has fired since it last looked. Counted by the CPU's interrupt handler,
-    /// read by the preemption point's fast path with one load
-    /// ([`local_timer_interrupts_unseen`]), and moved to [`Self::timer_interrupts_seen`] by the
-    /// scheduler ([`Self::see_timer_interrupts`]). Only the CPU itself changes either.
-    timer_interrupts_unseen: AtomicU64,
-    /// Timer interrupts the scheduler has looked at.
+    /// What this CPU's scheduler has not looked at yet (D39, D43): in the low 63 bits, the timer
+    /// interrupts the CPU has taken since it last looked; in the top bit ([`RESCHEDULE`]),
+    /// another CPU's request that it look ([`Self::request_reschedule`]). Not 0 means it must
+    /// look. Counted by the CPU's interrupt handler, read by the preemption point's fast path
+    /// with one load ([`local_unseen_by_scheduler`]), and emptied by the scheduler
+    /// ([`Self::see_scheduler_events`]), which moves the timer interrupts to
+    /// [`Self::timer_interrupts_seen`]. Other CPUs only set the top bit.
+    unseen_by_scheduler: AtomicU64,
+    /// Timer interrupts the scheduler has looked at. Changed only by the CPU itself.
     timer_interrupts_seen: AtomicU64,
     /// Wake-up interrupts this CPU has taken ([`wake`]). Changed only by the CPU itself.
     wakeups: AtomicU64,
@@ -45,7 +48,13 @@ pub struct Cpu {
     hardware_id: AtomicU64,
     /// Set by the CPU itself once it runs the kernel's code.
     online: AtomicBool,
+    /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
+    pub(crate) scheduler: CpuScheduler,
 }
+
+/// The top bit of [`Cpu::unseen_by_scheduler`]: another CPU asks this CPU's scheduler to look at
+/// its ready threads.
+const RESCHEDULE: u64 = 1 << 63;
 
 const _: () = assert!(core::mem::offset_of!(Cpu, _hal) == HAL_CPU_LOCAL_OFFSET);
 
@@ -54,13 +63,22 @@ impl Cpu {
         Self {
             this: AtomicPtr::new(ptr::null_mut()),
             _hal: HalCpuLocal::new(),
-            timer_interrupts_unseen: AtomicU64::new(0),
+            unseen_by_scheduler: AtomicU64::new(0),
             timer_interrupts_seen: AtomicU64::new(0),
             wakeups: AtomicU64::new(0),
             index,
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
+            scheduler: CpuScheduler::new(),
         }
+    }
+
+    /// A CPU block for host tests that place threads on CPUs the test machine does not have.
+    #[cfg(test)]
+    pub(crate) fn for_test(index: usize) -> &'static Self {
+        let cpu: &'static Self = Box::leak(Box::new(Self::new(index)));
+        cpu.set_identity(index as u64);
+        cpu
     }
 
     /// The kernel's number for the CPU: 0 for the boot CPU.
@@ -82,25 +100,47 @@ impl Cpu {
 
     /// Timer interrupts the CPU has taken since boot. Read from another CPU, it can be briefly
     /// behind, never ahead, while the CPU's scheduler moves its unseen interrupts to the seen
-    /// ones ([`Self::see_timer_interrupts`] empties the unseen ones first, and they are read
+    /// ones ([`Self::see_scheduler_events`] empties the unseen ones first, and they are read
     /// last).
     pub fn timer_interrupts(&self) -> u64 {
         let seen = self.timer_interrupts_seen.load(Ordering::Acquire);
-        seen + self.timer_interrupts_unseen.load(Ordering::Acquire)
+        seen + self.timer_interrupts_unseen()
     }
 
     /// Timer interrupts the CPU has taken that its scheduler has not looked at yet.
-    #[cfg(any(test, feature = "qemu-bench"))]
     pub(crate) fn timer_interrupts_unseen(&self) -> u64 {
-        self.timer_interrupts_unseen.load(Ordering::Relaxed)
+        self.unseen_by_scheduler.load(Ordering::Acquire) & !RESCHEDULE
     }
 
-    /// For the scheduler, on this CPU, with interrupts masked: marks the timer interrupts taken
-    /// so far as seen, so [`local_timer_interrupts_unseen`] is 0 until the next one.
-    pub(crate) fn see_timer_interrupts(&self) {
-        let unseen = self.timer_interrupts_unseen.swap(0, Ordering::AcqRel);
+    /// For the scheduler, on this CPU, with interrupts masked: marks everything so far as seen,
+    /// so [`local_unseen_by_scheduler`] is 0 until the next timer interrupt or reschedule
+    /// request. Returns how many timer interrupts it saw: none if only a request came.
+    pub(crate) fn see_scheduler_events(&self) -> u64 {
+        let timer_interrupts = self.unseen_by_scheduler.swap(0, Ordering::AcqRel) & !RESCHEDULE;
         self.timer_interrupts_seen
-            .fetch_add(unseen, Ordering::Release);
+            .fetch_add(timer_interrupts, Ordering::Release);
+        timer_interrupts
+    }
+
+    /// Asks this CPU's scheduler to look at its ready threads at its next preemption point,
+    /// yield or block, without an interrupt (D43): set by another CPU that made a thread ready
+    /// here, with the scheduler's lock held, so the look finds the thread.
+    pub(crate) fn request_reschedule(&self) {
+        self.unseen_by_scheduler
+            .fetch_or(RESCHEDULE, Ordering::Release);
+    }
+
+    /// [`Self::unseen_by_scheduler`] as it is, both parts, for the benchmarks to poll as cheaply
+    /// as a global.
+    #[cfg(any(test, feature = "qemu-bench"))]
+    pub(crate) fn unseen_by_scheduler(&self) -> u64 {
+        self.unseen_by_scheduler.load(Ordering::Relaxed)
+    }
+
+    /// Whether another CPU's reschedule request waits for this CPU's scheduler.
+    #[cfg(test)]
+    pub(crate) fn reschedule_requested(&self) -> bool {
+        self.unseen_by_scheduler.load(Ordering::Relaxed) & RESCHEDULE != 0
     }
 
     /// Wake-up interrupts the CPU has taken since boot ([`wake`]).
@@ -111,7 +151,7 @@ impl Cpu {
     /// Counts `interrupt`, which this CPU, whose block this is, has taken.
     pub(crate) fn count(&self, interrupt: Interrupt) {
         let counter = match interrupt {
-            Interrupt::Timer => &self.timer_interrupts_unseen,
+            Interrupt::Timer => &self.unseen_by_scheduler,
             Interrupt::Wakeup => &self.wakeups,
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -191,25 +231,33 @@ pub fn current<P: Platform>() -> &'static Cpu {
     unsafe { &*(P::cpu_local() as *const Cpu) }
 }
 
-/// This CPU's [`Cpu::timer_interrupts_unseen`] by the scheduler, with one load: as cheap as a
-/// global on every architecture. Only valid once [`init_boot_cpu`] has run.
+/// This CPU's [`Cpu::unseen_by_scheduler`], with one load: as cheap as a global on every
+/// architecture. Not 0 when a timer interrupt or a reschedule request has come since its
+/// scheduler last looked. Only valid once [`init_boot_cpu`] has run.
 #[inline]
-pub(crate) fn local_timer_interrupts_unseen<P: Platform>() -> u64 {
+pub(crate) fn local_unseen_by_scheduler<P: Platform>() -> u64 {
     // SAFETY: the per-CPU register holds this CPU's block (see `current`), in which the field
     // is an aligned `AtomicU64`.
-    unsafe { P::cpu_local_u64::<{ core::mem::offset_of!(Cpu, timer_interrupts_unseen) }>() }
+    unsafe { P::cpu_local_u64::<{ core::mem::offset_of!(Cpu, unseen_by_scheduler) }>() }
 }
 
-/// Raises the wake-up interrupt on `cpu`, which must be online and not the calling CPU: it
-/// stops waiting for an interrupt, and whatever the caller wrote before is visible to it (D41).
+/// Raises the wake-up interrupt on `cpu`, which must not be the calling CPU: it stops waiting
+/// for an interrupt, and whatever the caller wrote before is visible to it (D41).
 /// Call it with interrupts masked, as the kernel runs.
+///
+/// A CPU that has not reported in yet is left alone (D43): a thread can be placed on it once
+/// its scheduler has started, just before it reports in, and its idle thread looks at its
+/// ready threads after reporting in, before it first waits. Seeing it not online here means
+/// that look has not taken the scheduler's lock yet, so it finds whatever the caller queued.
+///
+/// Out of line and cold: inlined, the check made the scheduler's wake paths dearer even when
+/// they send no interrupt.
+#[cold]
+#[inline(never)]
 pub fn wake<P: Platform>(cpu: &Cpu) {
-    debug_assert!(
-        cpu.is_online(),
-        "woke CPU {}, which is not online",
-        cpu.index
-    );
-    P::wake_cpu(cpu.hardware_id());
+    if cpu.is_online() {
+        P::wake_cpu(cpu.hardware_id());
+    }
 }
 
 /// Why [`start_secondaries`] stopped.
@@ -309,7 +357,8 @@ fn start_with(
 
 /// Where a secondary CPU starts, on its own stack with interrupts masked, given its [`Cpu`]:
 /// sets its per-CPU register, takes one timer interrupt (so a CPU whose timer or interrupt
-/// controller does not work never reports in), reports in, then waits for interrupts.
+/// controller does not work never reports in), starts its scheduler, reports in, then runs its
+/// idle thread on that stack (D43): threads placed on the CPU run from then on.
 extern "C" fn secondary_main<P: Platform>(cpu: usize) -> ! {
     // SAFETY: `start_with` passes the address of a leaked `Cpu`, made by `Cpu::new`, whose
     // first word holds that address and whose HAL part is at the offset the HAL expects.
@@ -320,10 +369,9 @@ extern "C" fn secondary_main<P: Platform>(cpu: usize) -> ! {
     while cpu.timer_interrupts() == 0 {
         P::wait_for_interrupt();
     }
+    thread::start_secondary::<P>();
     report_in(cpu, &CPUS);
-    loop {
-        P::wait_for_interrupt();
-    }
+    thread::run_idle::<P>()
 }
 
 /// Marks `cpu` online in `table`.
@@ -352,6 +400,12 @@ mod tests {
 
     fn free_frames() -> u64 {
         crate::memory::FRAMES.lock().as_ref().unwrap().free_frames()
+    }
+
+    #[test]
+    fn a_cpu_that_has_not_reported_in_is_not_woken() {
+        // The test platform has no wake-up interrupt: raising one panics.
+        wake::<crate::tests::TestPlatform>(Cpu::for_test(1));
     }
 
     #[test]
@@ -427,7 +481,7 @@ mod tests {
             (2, 2)
         );
         assert_eq!(cpu.wakeups(), 1);
-        cpu.see_timer_interrupts();
+        assert_eq!(cpu.see_scheduler_events(), 2);
         assert_eq!(
             (cpu.timer_interrupts(), cpu.timer_interrupts_unseen()),
             (2, 0)
@@ -438,6 +492,27 @@ mod tests {
             (3, 1)
         );
         assert_eq!(cpu.wakeups(), 1);
+    }
+
+    #[test]
+    fn a_reschedule_request_is_seen_once_and_counts_no_timer_interrupt() {
+        let cpu = Cpu::new(1);
+        cpu.count(Interrupt::Timer);
+        cpu.request_reschedule();
+        cpu.request_reschedule();
+        assert!(cpu.reschedule_requested());
+        assert_eq!(
+            (cpu.timer_interrupts(), cpu.timer_interrupts_unseen()),
+            (1, 1)
+        );
+        assert_eq!(cpu.see_scheduler_events(), 1);
+        assert!(!cpu.reschedule_requested());
+        assert_eq!(cpu.unseen_by_scheduler.load(Ordering::Relaxed), 0);
+        // A request alone: the scheduler looks, and sees no timer interrupt.
+        cpu.request_reschedule();
+        assert_ne!(cpu.unseen_by_scheduler.load(Ordering::Relaxed), 0);
+        assert_eq!(cpu.see_scheduler_events(), 0);
+        assert_eq!(cpu.timer_interrupts(), 1);
     }
 
     #[test]

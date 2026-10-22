@@ -203,11 +203,14 @@ pub trait Platform {
     ///
     /// # Safety
     /// [`Self::set_cpu_local`] must have run on this CPU, and `OFFSET` must be the offset of an
-    /// 8-byte aligned `AtomicU64` in the block.
+    /// 8-byte aligned `AtomicU64` in the block, or of an 8-byte aligned word inside an
+    /// `UnsafeCell` that nothing writes while it is read (say, one guarded by a lock the
+    /// caller holds).
     #[inline]
     unsafe fn cpu_local_u64<const OFFSET: usize>() -> u64 {
         // SAFETY: the caller guarantees an aligned `AtomicU64` at `OFFSET` in the block, which
-        // lives as long as the kernel runs.
+        // lives as long as the kernel runs, or an aligned word in an `UnsafeCell` (so a shared
+        // atomic view of it is allowed) that nothing writes meanwhile.
         unsafe { &*((Self::cpu_local() + OFFSET) as *const core::sync::atomic::AtomicU64) }
             .load(core::sync::atomic::Ordering::Relaxed)
     }

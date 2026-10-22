@@ -37,6 +37,8 @@ impl<T> SpinLock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            // Laid out away from the free case, which then falls straight through.
+            core::hint::cold_path();
             // Wait with plain loads, so a waiting CPU does not keep taking the cache line from
             // the holder.
             while self.locked.load(Ordering::Relaxed) {
