@@ -50,7 +50,7 @@ pub struct Cpu {
     online: AtomicBool,
     /// The first root of the user address space active on this CPU
     /// ([`crate::address_space::AddressSpace::with_active`]), or [`NO_ADDRESS_SPACE`] while the
-    /// kernel's empty low half is (D46). Changed only by the CPU itself.
+    /// kernel's empty low half is active (D46). Changed only by the CPU itself.
     active_address_space: AtomicU64,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,

@@ -1284,7 +1284,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   (`Platform::user_test_program`) for the self-tests and benchmarks; the kernel copies it into a
   zeroed frame, makes it visible to instruction fetch (`Platform::make_instructions_visible`: data
   cache clean and instruction cache invalidate on AArch64, `fence.i` on RISC-V) and maps it
-  `USER_TEXT` (`kernel::user::TestProgram`).
+  `USER_TEXT` (`kernel::user::LoadedTestProgram`).
 - **Testing.** Boot self-test `user_programs_make_system_calls_and_fault` on aarch64, riscv64 and
   x86_64: the program's six arguments arrive, the result comes back, every register the ABI keeps
   is unchanged across the call (it fails with one register restore removed on x86_64 and on

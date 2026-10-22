@@ -1,7 +1,9 @@
 //! RISC-V supervisor-mode trap entry (RISC-V privileged spec, 12.1 "Supervisor CSRs").
 //!
 //! `stvec` points at [`exception_entry`] in direct mode, so every exception and interrupt taken
-//! to S-mode arrives there. It saves the general-purpose registers, `sepc` and `sstatus` on the
+//! to S-mode from the kernel arrives there; while a program runs in U-mode it points at the user
+//! trap entry instead, which saves the program's registers into its `UserContext` and returns
+//! from [`run_user`] (D47). `exception_entry` saves the general-purpose registers, `sepc` and `sstatus` on the
 //! current stack, calls [`riscv64_exception`] with the frame, and restores everything and
 //! `sret`s if it returns. The boot code turns the FPU off (`sstatus.FS` = Off), so kernel code
 //! that used FP registers would trap as an illegal instruction instead of silently corrupting
@@ -99,7 +101,9 @@ exception_entry:
     // `stvec` while a program runs in U-mode (D47): every trap from it lands here, so traps
     // from the kernel pay nothing for user mode. `sscratch` holds the program's `UserContext`.
     // Saves the program's registers there, puts `stvec` back and returns from
-    // `riscv64_enter_user` on the kernel stack it left, with the kernel's `tp`.
+    // `riscv64_enter_user` on the kernel stack it left, with the kernel's `tp`. `gp` stays the
+    // program's: the kernel never uses it (the image defines no `__global_pointer$`, so the
+    // linker relaxes nothing against it).
     .balign 4
 riscv64_user_trap_entry:
     csrrw   x31, sscratch, x31

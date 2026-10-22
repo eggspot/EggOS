@@ -14,13 +14,13 @@ use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 use eggos_hal::user::{self, UserContext};
 
-/// Where [`TestProgram`] maps the HAL's test program: its first page.
+/// Where [`LoadedTestProgram`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
 
 /// The HAL's test program ([`Platform::user_test_program`]) in an address space of its own: a
 /// copy of its code in one frame, mapped [`Attributes::USER_TEXT`] at
 /// [`TEST_PROGRAM_ADDRESS`]. Dropping it frees the frame and the address space's tables.
-pub struct TestProgram<P: Platform> {
+pub struct LoadedTestProgram<P: Platform> {
     /// Always `Some` until dropped: taken first in `drop`, so the tables go before the frame
     /// they map.
     space: Option<AddressSpace<P>>,
@@ -28,7 +28,7 @@ pub struct TestProgram<P: Platform> {
     program: user::TestProgram,
 }
 
-impl<P: Platform> TestProgram<P> {
+impl<P: Platform> LoadedTestProgram<P> {
     /// Copies the HAL's test program into a new frame, the rest of it zero, and maps it in a new
     /// address space sharing the kernel half of `kernel`.
     ///
@@ -97,16 +97,16 @@ impl<P: Platform> TestProgram<P> {
     }
 }
 
-impl<P: Platform> core::fmt::Debug for TestProgram<P> {
+impl<P: Platform> core::fmt::Debug for LoadedTestProgram<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TestProgram")
+        f.debug_struct("LoadedTestProgram")
             .field("frame", &self.frame)
             .field("program", &self.program)
             .finish_non_exhaustive()
     }
 }
 
-impl<P: Platform> Drop for TestProgram<P> {
+impl<P: Platform> Drop for LoadedTestProgram<P> {
     fn drop(&mut self) {
         drop(self.space.take());
         free_frame(self.frame);
@@ -119,7 +119,7 @@ fn free_frame(frame: u64) {
     let frames = frames
         .as_mut()
         .expect("the frame came from the frame allocator");
-    // SAFETY: the frame came from this allocator in `TestProgram::new`, and nothing maps it any
+    // SAFETY: the frame came from this allocator in `LoadedTestProgram::new`, and nothing maps it any
     // more: the address space that did is gone (or was never made).
     unsafe { frames.free(frame) };
 }
@@ -146,7 +146,7 @@ mod tests {
         let before = free();
         {
             // SAFETY: test tables, never active; the test platform's switch only records roots.
-            let program = unsafe { TestProgram::<P>::new(&kernel) }.unwrap();
+            let program = unsafe { LoadedTestProgram::<P>::new(&kernel) }.unwrap();
             let space = program.space.as_ref().unwrap();
             let (phys, attributes) = space.translate(TEST_PROGRAM_ADDRESS).unwrap();
             assert_eq!((phys, attributes), (program.frame, Attributes::USER_TEXT));

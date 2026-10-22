@@ -8,7 +8,7 @@
 
 use crate::HEAP;
 use crate::memory::{FRAMES, FrameAllocator, Memory};
-use crate::user::TestProgram;
+use crate::user::LoadedTestProgram;
 use crate::{cpu, thread};
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -280,7 +280,7 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
 fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
-    let program = unsafe { TestProgram::<P>::new(&memory.page_tables) }
+    let program = unsafe { LoadedTestProgram::<P>::new(&memory.page_tables) }
         .expect("the test program fits in memory");
     let mut context = program.context(|program| program.null_syscalls);
     program.with_active(|| {

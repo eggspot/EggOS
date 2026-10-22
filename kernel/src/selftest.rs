@@ -522,7 +522,7 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
     };
     // SAFETY: `memory.page_tables` are the kernel's tables, which `paging::enable` activated on
     // this CPU, and every CPU started since runs on them.
-    let program = unsafe { user::TestProgram::<P>::new(&memory.page_tables) }?;
+    let program = unsafe { user::LoadedTestProgram::<P>::new(&memory.page_tables) }?;
     let syscall = |context: &eggos_hal::user::UserContext, exit, number| {
         if exit != UserExit::Syscall {
             return Err("the program did not make its system call");
