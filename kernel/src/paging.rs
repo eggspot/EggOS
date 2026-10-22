@@ -123,7 +123,7 @@ impl<F: Format> PageTables<F> {
                 .unwrap_or(0);
             self.map_leaf(virt, phys, level, attributes, frames)?;
             virt = virt.wrapping_add(paging::leaf_size(level));
-            phys += paging::leaf_size(level);
+            phys = phys.wrapping_add(paging::leaf_size(level));
         }
         Ok(())
     }
@@ -234,17 +234,23 @@ pub fn kernel_page_tables<P: Platform>(
             frames,
         )?;
     }
+    // Page by page: two register blocks may share a page. A page mapped already is compared
+    // with a device leaf as the format decodes it (RISC-V does not record the memory type).
+    let device_leaf = match <P::PageTableFormat as Format>::decode(
+        <P::PageTableFormat as Format>::leaf(0, 0, Attributes::DEVICE),
+        0,
+    ) {
+        Entry::Leaf(_, attributes) => attributes,
+        _ => Attributes::DEVICE,
+    };
     let mut result = Ok(());
     P::early_device_regions(&mut |device| {
         let device = device.covering_frames();
-        if result.is_ok() {
-            result = tables.map(
-                device.start,
-                device.start,
-                device.len(),
-                Attributes::DEVICE,
-                frames,
-            );
+        for page in (device.start..device.end).step_by(FRAME_SIZE as usize) {
+            if result.is_err() || tables.translate(page) == Some((page, device_leaf)) {
+                continue;
+            }
+            result = tables.map(page, page, FRAME_SIZE, Attributes::DEVICE, frames);
         }
     });
     result.map(|()| tables)

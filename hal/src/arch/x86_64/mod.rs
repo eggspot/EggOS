@@ -187,9 +187,8 @@ const COM1_PORT: u16 = 0x3f8;
 /// pass its address.
 const BIOS_AREA: core::ops::Range<usize> = 0xe_0000..0x10_0000;
 
-/// End of the boot identity map, which covers 0 .. 4 GiB. Page 0 is mapped too, so a null
-/// pointer dereference reads low memory instead of faulting until the kernel builds its own
-/// page tables (M2).
+/// End of the boot identity map, which covers 0 .. 4 GiB (page 0 included). The kernel's own
+/// page tables replace it during boot and leave page 0 unmapped, so a null pointer faults.
 const IDENTITY_MAP_END: u64 = 1 << 32;
 
 /// Upper bound on any ACPI table we map as a slice, against corrupt length fields.

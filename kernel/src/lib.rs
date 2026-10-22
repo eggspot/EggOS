@@ -173,7 +173,9 @@ mod tests {
             Self::memory_map()
         }
         fn early_device_regions(region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {
+            // Two register blocks in one page, as the paging code must allow.
             region(eggos_hal::PhysicalRange::from_start_length(0xa_0000, 0x100));
+            region(eggos_hal::PhysicalRange::from_start_length(0xa_0800, 0x100));
         }
         unsafe fn activate_page_tables(roots: &[u64]) {
             assert_eq!(roots.len(), 1);

@@ -447,6 +447,9 @@ Second step of M2. The kernel now runs on page tables it builds itself on every 
 - **Benchmarks.** No change in any result (the switch adds no instructions to measured paths);
   mapping is boot-time only for now, and its benchmarks come with the first runtime user (page
   faults, `mmap`).
+- **No global frame allocator yet** (D28 planned it, with its lock, for this step): nothing
+  allocates concurrently, so boot owns the kernel's `Memory` (frames and tables) and hands it
+  to the self-tests; the global instance and its lock come with the first concurrent user (M4).
 - **Not yet, recorded on the roadmap:** the high-half kernel; changing live tables (TLB
   shootdown, M4); a separate exception stack (x86 IST, AArch64/RISC-V stack switch) so a guard
   page hit is reported instead of faulting again on the same stack; honouring device-tree
