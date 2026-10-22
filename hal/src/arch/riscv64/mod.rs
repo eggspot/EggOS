@@ -104,7 +104,7 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("ebreak") };
     }
 
-    fn illegal_instruction() -> ! {
+    fn execute_illegal_instruction() -> ! {
         // SAFETY: `unimp` is defined to be illegal; it traps to the vector installed at boot,
         // and the kernel never resumes from that exception.
         unsafe { core::arch::asm!("unimp", options(noreturn)) }

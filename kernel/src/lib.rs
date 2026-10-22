@@ -58,7 +58,7 @@ mod tests {
             };
             assert_eq!(exception::handle(&breakpoint), exception::Outcome::Resume);
         }
-        fn illegal_instruction() -> ! {
+        fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
     }

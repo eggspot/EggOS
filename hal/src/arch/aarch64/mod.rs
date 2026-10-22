@@ -107,7 +107,7 @@ impl Platform for Aarch64 {
         unsafe { core::arch::asm!("brk #0") };
     }
 
-    fn illegal_instruction() -> ! {
+    fn execute_illegal_instruction() -> ! {
         // SAFETY: `udf` is permanently undefined; it traps to the exception vectors installed
         // at boot, and the kernel never resumes from that exception.
         unsafe { core::arch::asm!("udf #0", options(noreturn)) }

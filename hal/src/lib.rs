@@ -45,5 +45,5 @@ pub trait Platform {
     /// Executes an instruction the architecture defines as permanently undefined (`udf` on
     /// AArch64, `unimp` on RISC-V, `ud2` on x86). The kernel uses it to test that a fatal
     /// exception is reported; the kernel's handler never returns from that exception.
-    fn illegal_instruction() -> !;
+    fn execute_illegal_instruction() -> !;
 }

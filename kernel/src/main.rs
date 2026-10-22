@@ -23,7 +23,7 @@ mod bare_metal {
         let status = eggos_kernel::boot::<CurrentPlatform, _>(&mut console);
         if cfg!(feature = "qemu-test-fatal-exception") && status == ExitStatus::Success {
             // Tests the fatal path: the exception handler must report this and fail the run.
-            CurrentPlatform::illegal_instruction();
+            CurrentPlatform::execute_illegal_instruction();
         }
         finish(status)
     }

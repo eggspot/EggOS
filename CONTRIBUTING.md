@@ -20,7 +20,7 @@ Thanks for helping build EggOS. A few rules keep the project fast, clean and MIT
 cargo xtask ci
 ```
 This runs everything CI runs, cheapest first: formatting, clippy (host and every kernel target), host
-tests, and QEMU boot tests on every architecture. It needs QEMU installed (`brew install qemu` on
+tests, and QEMU boot tests on every architecture (a self-test boot and a fatal-exception boot each). It needs QEMU installed (`brew install qemu` on
 macOS; QEMU's Windows installer or MSYS2 on Windows; your distribution's `qemu-system-*` packages on
 Linux).
 

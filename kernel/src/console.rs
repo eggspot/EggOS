@@ -59,7 +59,7 @@ mod tests {
         fn breakpoint() {
             unreachable!("not used in tests")
         }
-        fn illegal_instruction() -> ! {
+        fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
     }

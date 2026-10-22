@@ -76,7 +76,7 @@ fn breakpoint_resumes<P: Platform>() -> Result<(), &'static str> {
     }
     let expected = [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| n * 0x0101_0101_0101);
     if core::hint::black_box(live) != expected {
-        return Err("registers changed across the breakpoint");
+        return Err("values live across the breakpoint changed (registers or stack not restored)");
     }
     Ok(())
 }
@@ -125,7 +125,7 @@ mod tests {
             unreachable!("not used in tests")
         }
         fn breakpoint() {}
-        fn illegal_instruction() -> ! {
+        fn execute_illegal_instruction() -> ! {
             unreachable!("not used in tests")
         }
     }

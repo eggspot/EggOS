@@ -78,7 +78,7 @@ The target also implies `strict-align`, which is required while the MMU is off (
 Device memory). Hot paths that benefit from SIMD (e.g. memcpy, checksums, crypto) will opt in
 explicitly in a dedicated, benchmarked module.
 
-## D11 Boot tests: console verdict marker plus real power-off — Decided by the build loop (engineering)
+## D11 Boot tests: console verdict marker plus real power-off — Decided by the build loop (engineering); a fatal-exception boot added by D25
 The kernel prints `EGGOS-SELFTEST: PASS` (or `FAIL`, also on panic) and, when built with the
 `qemu-test` feature, powers off through each architecture's standard firmware interface (PSCI
 `SYSTEM_OFF` on Arm, SBI System Reset on RISC-V) rather than a QEMU-only debug device. The

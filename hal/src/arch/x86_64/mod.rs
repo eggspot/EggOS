@@ -201,7 +201,7 @@ impl Platform for X86_64 {
         unsafe { core::arch::asm!("int3") };
     }
 
-    fn illegal_instruction() -> ! {
+    fn execute_illegal_instruction() -> ! {
         // SAFETY: `ud2` always raises #UD; it traps to the IDT installed at boot, and the
         // kernel never resumes from that exception.
         unsafe { core::arch::asm!("ud2", options(noreturn)) }
