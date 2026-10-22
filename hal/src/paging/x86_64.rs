@@ -13,6 +13,8 @@ pub struct X86_64;
 
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
+/// User/supervisor: user mode may access what the walk maps, if every level along it allows.
+const USER: u64 = 1 << 2;
 /// Page-level write-through and cache disable: with the default PAT, PWT | PCD selects UC.
 const WRITE_THROUGH: u64 = 1 << 3;
 const CACHE_DISABLE: u64 = 1 << 4;
@@ -31,15 +33,19 @@ impl Format for X86_64 {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 1;
     const ENCODES_MEMORY_TYPE: bool = true;
+    /// The lower 128 TiB.
+    const USER_END: u64 = 1 << 47;
 
     fn root(virt: u64) -> Option<usize> {
         // Canonical: bits 63:48 copy bit 47.
         (((virt as i64) << 16 >> 16) as u64 == virt).then_some(0)
     }
 
-    fn table(table: u64, _level: usize) -> u64 {
-        // Permissions are decided at the leaf; the table entry allows everything.
-        (table & ADDRESS) | PRESENT | WRITABLE
+    fn table(table: u64, _level: usize, user: bool) -> u64 {
+        // Permissions are decided at the leaf; the table entry allows everything, user access
+        // only on the way to user mappings.
+        let entry = (table & ADDRESS) | PRESENT | WRITABLE;
+        if user { entry | USER } else { entry }
     }
 
     fn leaf(phys: u64, level: usize, attributes: Attributes) -> u64 {
@@ -55,6 +61,9 @@ impl Format for X86_64 {
         }
         if attributes.memory_type == MemoryType::Device {
             entry |= WRITE_THROUGH | CACHE_DISABLE;
+        }
+        if attributes.user {
+            entry |= USER;
         }
         entry
     }
@@ -83,6 +92,7 @@ impl Format for X86_64 {
                 writable: entry & WRITABLE != 0,
                 executable: entry & NO_EXECUTE == 0,
                 memory_type,
+                user: entry & USER != 0,
             },
         )
     }
@@ -95,7 +105,14 @@ mod tests {
 
     #[test]
     fn encodings_match_the_manuals() {
-        assert_eq!(X86_64::table(0x1000, 3), 0x1003);
+        assert_eq!(X86_64::table(0x1000, 3, false), 0x1003);
+        // On the way to user mappings: P | RW | U/S.
+        assert_eq!(X86_64::table(0x1000, 3, true), 0x1007);
+        // 4 KiB user data page: P | RW | U/S | A | D | NX.
+        assert_eq!(
+            X86_64::leaf(0x20_0000, 0, Attributes::USER_READ_WRITE),
+            0x8000_0000_0020_0067
+        );
         // 4 KiB data page: P | RW | A | D | NX.
         assert_eq!(
             X86_64::leaf(0x20_0000, 0, Attributes::READ_WRITE),

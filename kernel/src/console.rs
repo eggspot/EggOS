@@ -99,6 +99,12 @@ mod tests {
         unsafe fn activate_page_tables(_roots: &[u64]) {
             unreachable!("not used in tests")
         }
+        unsafe fn switch_address_space(_roots: &[u64]) {
+            unreachable!("not used in tests")
+        }
+        fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+            access()
+        }
         unsafe fn prepare_thread(
             _stack_top: usize,
             _entry: extern "C" fn(usize) -> !,

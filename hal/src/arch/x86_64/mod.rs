@@ -648,6 +648,24 @@ impl Platform for X86_64 {
         }
     }
 
+    unsafe fn switch_address_space(roots: &[u64]) {
+        let [root] = roots else {
+            panic!("x86_64 page tables have one root");
+        };
+        // SAFETY: the caller guarantees the root's kernel half is the active one's, so the
+        // kernel runs on at the same addresses, and that nothing uses the low half meanwhile.
+        // Loading CR3 drops every cached translation (no page is global yet). No `nomem`:
+        // memory accesses must not move across the switch.
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
+        }
+    }
+
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
+        // Without SMAP (not turned on yet), ring 0 reaches user pages directly.
+        access()
+    }
+
     unsafe fn prepare_thread(
         stack_top: usize,
         entry: extern "C" fn(usize) -> !,

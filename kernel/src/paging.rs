@@ -15,10 +15,12 @@
 //! - the device registers the HAL uses before the driver model exists (M5), as device memory in
 //!   the direct map's window: physical address + [`Platform::direct_map_offset`] (D33).
 //!
-//! Nothing is mapped in the low half, which belongs to user space (M4, M6).
+//! Nothing is mapped in the low half, which belongs to user space: each user address space has
+//! a low half of its own and shares this kernel half ([`PageTables::new_sharing_kernel_half`],
+//! [`crate::address_space`], D45).
 //!
-//! Tables are only built before they are activated: changing live tables needs TLB
-//! maintenance, which comes with the first user that does it (M4).
+//! Tables are only built or changed while they are not active: changing live tables needs TLB
+//! maintenance, which comes with the first user that does it.
 
 use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
@@ -45,6 +47,12 @@ pub enum MapError {
     /// Leaving a device's pages out of the direct map would split a range of a memory map
     /// that has no room left, losing memory the direct map must cover.
     TooManyRanges,
+    /// Part of the range to unmap is not mapped.
+    NotMapped,
+    /// The range to unmap covers only part of a large leaf (a 2 MiB or 1 GiB page).
+    PartOfLargePage,
+    /// A user address space maps only user mappings, and only in the low half.
+    NotUser,
 }
 
 impl MapError {
@@ -56,6 +64,9 @@ impl MapError {
             MapError::OutOfMemory => "no free frame for a page table",
             MapError::Active => "the page tables are active and cannot be changed yet",
             MapError::TooManyRanges => "too many memory ranges to leave a device's pages out",
+            MapError::NotMapped => "a page to unmap is not mapped",
+            MapError::PartOfLargePage => "the range to unmap splits a large page",
+            MapError::NotUser => "a user address space maps only user pages in the low half",
         }
     }
 }
@@ -85,6 +96,70 @@ impl<F: Format> PageTables<F> {
             active: false,
             format: PhantomData,
         })
+    }
+
+    /// Tables for a user address space (M4): a low half of their own, empty, and the kernel
+    /// half of `kernel`, shared. On AArch64 that is `kernel`'s high-half root itself; with one
+    /// root, the new root's kernel-half entries are copies of `kernel`'s root's, which point to
+    /// the same tables. Sound only because the kernel's tables never change once active (see
+    /// [`Self::map`]): a kernel-half entry added later would be missing here. Free the low half
+    /// with [`Self::free_user_half`].
+    pub fn new_sharing_kernel_half(
+        kernel: &Self,
+        frames: &mut FrameAllocator,
+    ) -> Result<Self, MapError> {
+        let user_root = F::root(0).expect("address 0 is valid on every format");
+        let mut roots = kernel.roots;
+        roots[user_root] = new_table(frames)?;
+        let tables = Self {
+            roots,
+            physical_memory_offset: kernel.physical_memory_offset,
+            active: false,
+            format: PhantomData,
+        };
+        let top = F::LEVELS - 1;
+        for index in kernel_half_root_entries::<F>() {
+            let virt = index as u64 * paging::leaf_size(top);
+            let entry = kernel.entry(kernel.roots[user_root], virt, top).read();
+            tables.entry(roots[user_root], virt, top).write(entry);
+        }
+        Ok(tables)
+    }
+
+    /// Frees the low half's tables, the user root among them, which
+    /// [`Self::new_sharing_kernel_half`] and [`Self::map`] allocated from `frames`; the kernel
+    /// half's are the kernel's and stay. The frames the leaves map are not the tables' and stay
+    /// allocated. The tables must not be active on any CPU, and are unusable afterwards.
+    pub fn free_user_half(&mut self, frames: &mut FrameAllocator) {
+        let user_root = F::root(0).expect("address 0 is valid on every format");
+        let root = self.roots[user_root];
+        let top = F::LEVELS - 1;
+        let user_entries = kernel_half_root_entries::<F>().start;
+        for index in 0..user_entries {
+            let virt = index as u64 * paging::leaf_size(top);
+            if let Entry::Table(next) = F::decode(self.entry(root, virt, top).read(), top) {
+                self.free_table_tree(next, top - 1, frames);
+            }
+        }
+        // SAFETY: the root came from `frames` in `new_sharing_kernel_half`, and nothing walks
+        // it any more (the caller guarantees it is not active, and `self` is not used again).
+        unsafe { frames.free(root) };
+    }
+
+    /// Frees the table at physical `table`, at `level`, and every table below it.
+    fn free_table_tree(&self, table: u64, level: usize, frames: &mut FrameAllocator) {
+        if level > 0 {
+            for index in 0..paging::ENTRIES {
+                let virt = index as u64 * paging::leaf_size(level);
+                if let Entry::Table(next) = F::decode(self.entry(table, virt, level).read(), level)
+                {
+                    self.free_table_tree(next, level - 1, frames);
+                }
+            }
+        }
+        // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
+        // (a table hangs from one entry), and walked by nothing any more (see `free_user_half`).
+        unsafe { frames.free(table) };
     }
 
     /// Records that the tables are in use: [`Self::map`] refuses to change them from then on.
@@ -144,6 +219,44 @@ impl<F: Format> PageTables<F> {
         Ok(())
     }
 
+    /// Unmaps `virt..virt + length`, which must be mapped, 4 KiB-aligned and cover any large
+    /// leaf in it whole. Tables left empty stay until the tables are freed. The tables must not
+    /// be active, as for [`Self::map`]: the TLB may still hold what is unmapped. On an error,
+    /// part of the range may have been unmapped.
+    pub fn unmap(&mut self, mut virt: u64, length: u64) -> Result<(), MapError> {
+        if self.active {
+            return Err(MapError::Active);
+        }
+        if !(virt | length).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        let end = virt.checked_add(length).ok_or(MapError::InvalidAddress)?;
+        while virt < end {
+            let (entry, level) = self.leaf_entry(virt)?;
+            let size = paging::leaf_size(level);
+            if !virt.is_multiple_of(size) || end - virt < size {
+                return Err(MapError::PartOfLargePage);
+            }
+            entry.write(0);
+            virt += size;
+        }
+        Ok(())
+    }
+
+    /// The entry of the leaf mapping `virt`, and its level.
+    fn leaf_entry(&self, virt: u64) -> Result<(TableEntry, usize), MapError> {
+        let mut table = self.roots[F::root(virt).ok_or(MapError::InvalidAddress)?];
+        for level in (0..F::LEVELS).rev() {
+            let entry = self.entry(table, virt, level);
+            match F::decode(entry.read(), level) {
+                Entry::Empty => break,
+                Entry::Table(next) => table = next,
+                Entry::Leaf(..) => return Ok((entry, level)),
+            }
+        }
+        Err(MapError::NotMapped)
+    }
+
     /// The physical address `virt` translates to and the mapping's attributes, or `None`.
     pub fn translate(&self, virt: u64) -> Option<(u64, Attributes)> {
         let mut table = self.roots[F::root(virt)?];
@@ -175,7 +288,7 @@ impl<F: Format> PageTables<F> {
                 Entry::Leaf(..) => return Err(MapError::AlreadyMapped),
                 Entry::Empty => {
                     let next = new_table(frames)?;
-                    entry.write(F::table(next, level));
+                    entry.write(F::table(next, level, attributes.user));
                     next
                 }
             };
@@ -211,6 +324,15 @@ impl TableEntry {
         // SAFETY: as in `read`; the tables own the frame, so nothing else writes it.
         unsafe { self.0.write_volatile(value) }
     }
+}
+
+/// The root-level entries that map the kernel half in the root that also maps user space:
+/// those whose range starts at or above [`Format::USER_END`] (none on AArch64, whose user root
+/// maps the low half alone).
+fn kernel_half_root_entries<F: Format>() -> core::ops::Range<usize> {
+    let per_entry = paging::leaf_size(F::LEVELS - 1);
+    let first = F::USER_END.div_ceil(per_entry).min(paging::ENTRIES as u64) as usize;
+    first..paging::ENTRIES
 }
 
 /// A zeroed table frame from `frames`.

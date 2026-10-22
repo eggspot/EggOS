@@ -50,7 +50,8 @@
 //! stacks first (roadmap, paging follow-ups).
 //!
 //! Locking: one lock, the scheduler's, guards every CPU's scheduler state and every
-//! [`WaitQueue`] for now; per-CPU and per-queue locks are the next step. It is taken before the
+//! [`WaitQueue`] for now; per-CPU and per-queue locks come once a workload shows contention
+//! (D45). It is taken before the
 //! heap's and the frame allocator's, never after; an exited thread's stack is freed after it
 //! is released. A switch is made holding it, and the lock is handed over to the thread the
 //! switch resumes, which releases it ([`finish_switch`]): from choosing the next thread until
@@ -389,7 +390,7 @@ impl Drop for ThreadList {
 /// and whoever makes it hold wakes it with [`Self::wake_one`] or [`Self::wake_all`]. The
 /// waiting threads are linked through themselves, so waiting and waking never allocate. A
 /// waiter on any CPU may be woken from any CPU; it runs again on its own. Guarded by the
-/// scheduler's lock for now; per-queue locks are the next step (D43).
+/// scheduler's lock for now; per-queue locks come once a workload shows contention (D45).
 pub struct WaitQueue {
     /// Only reached through [`Self::waiters`], with the scheduler locked.
     waiters: UnsafeCell<ThreadList>,

@@ -1148,3 +1148,62 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   yield or block could wake an idle CPU too); CPU affinity; an idle-CPU mask; balancing by load
   and cache and NUMA distance, not just idle versus busy, once there are real workloads to
   measure.
+
+## D45 User address spaces: a low half of their own, the kernel half shared; the scheduler's lock split waits for a workload that shows contention — Decided by the build loop (engineering; order decided by research); reorders D43's and D44's follow-ups
+- **Why this step, before the lock split.** D43 and D44 listed per-CPU run-queue locks and
+  per-queue wait locks next. A research subagent weighed that against starting processes and
+  recommended processes first: the benchmarks run on one CPU under QEMU `-icount`, which runs
+  every virtual CPU on one host thread, so they can show only the split's cost (a wait/wake round
+  trip taking two locks per side instead of one, against a gate of 1% + 0.5 instructions on
+  about 200) and never its benefit; no workload contends for the lock yet; and user mode is on
+  the critical path to M6 (a static Linux hello world). seL4 still runs SMP under one kernel
+  lock, and Zircon and Linux split theirs once workloads showed contention. The split waits for
+  a measurable multi-CPU workload or a benchmark outside `-icount`; the intended design is a
+  lock-free local run queue (kernel code runs with interrupts masked) with a per-CPU list for
+  wake-ups from other CPUs, which could make a one-CPU wait/wake cheaper than today.
+- **The address space.** `AddressSpace` (kernel) owns the tables of the low half, user space:
+  addresses below the format's new `Format::USER_END` (AArch64 `TTBR0_EL1`'s whole 48-bit half,
+  x86_64 the lower 128 TiB, RISC-V Sv39 the lower 256 GiB). The kernel half is shared: on AArch64
+  the kernel's `TTBR1_EL1` root itself, with one root (RISC-V, x86_64) copies of the kernel root's
+  upper entries, which point to the same tables. That is sound because the kernel's tables never
+  change once active (`PageTables::map` refuses), so every kernel-half table exists from boot.
+  It maps only user mappings, only in the low half (`MapError::NotUser` otherwise), unmaps whole
+  leaves (`NotMapped`, `PartOfLargePage`), and frees its low half's tables when dropped; the
+  frames user pages map belong to whoever mapped them.
+- **The user bit.** `Attributes` gains `user`, with `USER_TEXT`, `USER_READ_ONLY` and
+  `USER_READ_WRITE`. AArch64: `AP[1]` (EL0 access), not global (`nG`), and `PXN` always, so the
+  kernel never executes a user page; `executable` means `UXN` clear for a user page and `PXN`
+  clear for a kernel page. RISC-V: `U`, in leaves only (it is reserved in a pointer to a table).
+  x86_64: `U/S` in the leaf and in every table entry on the walk to it (`Format::table` now takes
+  whether the walk leads to user mappings), so kernel tables keep it clear at every level.
+- **Switching.** `Platform::switch_address_space` replaces this CPU's low half and drops its
+  cached user translations: AArch64 writes `TTBR0_EL1` and invalidates ASID 0's non-global
+  entries (`TLBI ASIDE1`), keeping the kernel's global ones; RISC-V writes `satp` between two
+  `sfence.vma`; x86_64 loads CR3, which drops everything (no page is global yet).
+  `AddressSpace::with_active` runs code with the address space active on its CPU and switches
+  back to the kernel's empty low half; it stops the kernel if the thread left its CPU meanwhile.
+  Changing mappings takes `&mut`, so it never happens while the address space is active, and the
+  switch both ways drops what was cached: no per-page TLB maintenance and no cross-CPU shootdown
+  are needed yet.
+- **Kernel access to user memory.** Only inside `Platform::with_user_access`: on RISC-V it sets
+  `sstatus.SUM` for that closure alone, so a stray kernel pointer into user space faults. PAN
+  (AArch64) and SMAP/SMEP (x86_64) are not turned on yet (QEMU's `cortex-a72` and default x86 CPU
+  lack them); when they are, they are lifted in the same place.
+- **Testing.** Host unit tests: every format's user encodings and round trips; a new address
+  space shares the kernel half and maps nothing below; user-only and low-half-only mapping;
+  unmapping (not mapped, part of a large page); dropping frees exactly the tables it allocated and
+  none of the kernel's; `with_active` switches to the space's root and back. Boot self-test
+  `address_spaces_keep_user_pages_apart` (aarch64, riscv64, x86_64): two address spaces map a
+  frame each at one user address; with either active the kernel reads that space's frame there,
+  a write lands in it, the kernel's low half stays empty, a remapped address shows the new frame,
+  and dropping them frees every table. It fails on aarch64 without the `TLBI` (a switch keeps
+  the first space's translation) and faults on riscv64 without `SUM`.
+- **Cost (D24).** No hot path changes: the scheduler's machine code is unchanged (checked by
+  disassembly on aarch64; only a string's address differs) and every benchmark matches `main` on
+  this machine. Code only; no memory or boot time until an address space is made.
+- **Follow-ups (roadmap).** Threads that carry an address space, switched on a context switch
+  only when it differs (lazily for kernel threads); the first trip to user mode and back (EL0,
+  U-mode, ring 3; `svc`, `ecall`, `syscall` with a GDT and TSS on x86_64) with a system-call
+  round-trip benchmark; ASIDs and PCID; global kernel pages on x86_64; per-page TLB maintenance
+  and cross-CPU shootdown once mappings change while active; PAN, SMAP and SMEP; user faults
+  that end the process instead of stopping the kernel.

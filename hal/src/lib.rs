@@ -137,6 +137,29 @@ pub trait Platform {
     /// [`Self::wait_for_interrupt`]): the switch passes through code no handler may interrupt.
     unsafe fn activate_page_tables(roots: &[u64]);
 
+    /// Switches this CPU's low half, user space, to the page tables at physical addresses
+    /// `roots` (one per [`paging::Format::ROOTS`]), whose kernel half is the active tables' own:
+    /// on AArch64 `roots[1]` is the active `TTBR1_EL1` root and only `TTBR0_EL1` changes; with
+    /// one root, the root's kernel-half entries are the active root's. Translations of the low
+    /// half cached from the tables active before are dropped; the kernel's are kept where the
+    /// architecture tags them apart (AArch64).
+    ///
+    /// # Safety
+    /// Everything [`Self::activate_page_tables`] requires (interrupts masked, the tables in
+    /// [`Self::PageTableFormat`], unchanged and allocated while active), and the kernel half
+    /// must be exactly the active one. Nothing may hold a pointer into the low half the tables
+    /// replace.
+    unsafe fn switch_address_space(roots: &[u64]);
+
+    /// Runs `access` with the kernel allowed to read and write user mappings
+    /// ([`paging::Attributes::user`]) of the active address space: on RISC-V, S-mode reaches
+    /// U-mode pages only with `sstatus.SUM` set, which this sets for `access` alone. The kernel
+    /// touches user memory nowhere else, so a stray kernel pointer into user space faults
+    /// instead of reading what a program put there. (On AArch64 and x86_64 the kernel does not
+    /// turn PAN and SMAP on yet; when it does, they are lifted here too.) `access` must not
+    /// block or switch threads.
+    fn with_user_access<R>(access: impl FnOnce() -> R) -> R;
+
     /// Lays out a new kernel thread on the stack whose highest address is `stack_top` and
     /// returns its saved context: the first [`Self::switch_thread`] to that context calls
     /// `entry(argument)` on that stack, with interrupts masked (D35). `entry` must never return.
