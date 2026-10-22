@@ -343,7 +343,9 @@ interrupt round trip include the SBI firmware's instructions, so they depend on 
 build QEMU loads (measured: v1.3 in CI's Ubuntu 24.04 packages gives 266 and 640, v1.7 in
 Homebrew's QEMU 10 gives 286 and 680; every other result is identical on both). The baseline
 records the firmware version (`riscv64 firmware OpenSBI-v1.3`) and follows CI; on other
-firmware those two results are printed but not gated, everything else still is. Host
+firmware those two results are printed but not gated, everything else still is, and
+`--update-baseline` keeps their baseline values, so updating on a developer machine cannot
+move CI's numbers. Host
 microbenchmarks were considered and left out: host timings are as noisy as CI wall-clock, and
 architecture-independent code (allocators, data structures) runs in this harness on the real
 targets instead. Cycle-accurate benchmarks on real machines, and comparisons against macOS,

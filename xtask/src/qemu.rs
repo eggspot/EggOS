@@ -45,11 +45,11 @@ pub fn boot_test(
     eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
-        .args(extra_args)
         // No `-no-reboot` here: with it, an x86 triple fault (e.g. in the power-off path) ends
         // QEMU with exit code 0 and would look like a clean power-off. Without it the machine
         // resets and prints the banner again, which fails the test below.
         .args(COMMON_ARGS)
+        .args(extra_args)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
         .arg(kernel)

@@ -94,20 +94,10 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
 
     let ran: Vec<&str> = arches.iter().map(|a| a.name).collect();
     if update {
-        let mut merged = Measurements {
-            results: baseline
-                .results
-                .into_iter()
-                .filter(|((arch, _), _)| !ran.contains(&arch.as_str()))
-                .collect(),
-            firmware: baseline
-                .firmware
-                .into_iter()
-                .filter(|(arch, _)| !ran.contains(&arch.as_str()))
-                .collect(),
-        };
-        merged.results.extend(measured.results);
-        merged.firmware.extend(measured.firmware);
+        let (merged, kept) = updated_baseline(baseline, measured, &ran);
+        for line in kept {
+            eprintln!("xtask: {line}");
+        }
         write_baseline(&path, &merged)?;
         eprintln!("xtask: wrote {}", path.display());
         return Ok(());
@@ -125,6 +115,50 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
             report.failures.join("\n  ")
         ))
     }
+}
+
+/// The baseline with the results of the architectures in `ran` replaced by `measured`'s,
+/// except firmware-dependent results measured on other firmware than the baseline's: those
+/// keep their baseline value (with its firmware line), so updating from a machine whose QEMU
+/// ships another firmware build cannot move CI's numbers. Also returns a note per kept value.
+fn updated_baseline(
+    baseline: Measurements,
+    measured: Measurements,
+    ran: &[&str],
+) -> (Measurements, Vec<String>) {
+    let other_firmware = |arch: &str| {
+        baseline
+            .firmware
+            .get(arch)
+            .is_some_and(|then| measured.firmware.get(arch) != Some(then))
+    };
+    let mut kept = Vec::new();
+    let mut merged = Measurements::default();
+    for ((arch, name), value) in &baseline.results {
+        let keep = !ran.contains(&arch.as_str())
+            || (is_firmware_dependent(arch, name) && other_firmware(arch));
+        if keep {
+            if ran.contains(&arch.as_str()) {
+                kept.push(format!(
+                    "kept {arch} {name} {value:.2}: measured on other firmware than the \
+                     baseline's (record it with CI's QEMU)"
+                ));
+            }
+            merged.results.insert((arch.clone(), name.clone()), *value);
+        }
+    }
+    for (arch, version) in &baseline.firmware {
+        if !ran.contains(&arch.as_str()) || other_firmware(arch) {
+            merged.firmware.insert(arch.clone(), version.clone());
+        }
+    }
+    for ((arch, name), value) in measured.results {
+        merged.results.entry((arch, name)).or_insert(value);
+    }
+    for (arch, version) in measured.firmware {
+        merged.firmware.entry(arch).or_insert(version);
+    }
+    (merged, kept)
 }
 
 /// Parses the kernel's `EGGOS-BENCH: <name> iterations=<n> ticks=<t> frequency=<hz>` lines.
@@ -423,5 +457,55 @@ mod tests {
                 .contains("firmware OpenSBI-v1.7, baseline recorded with OpenSBI-v1.3")
         );
         assert!(report.text.contains("not gated"));
+    }
+
+    #[test]
+    fn updating_replaces_the_architectures_run_but_keeps_other_firmwares_numbers() {
+        let baseline = with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", 100.0),
+                ("riscv64", "clock_read", 4.0),
+                ("riscv64", "gone", 1.0),
+                ("x86_64", "clock_read", 8.0),
+            ]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
+        let measured = with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", 200.0),
+                ("riscv64", "clock_read", 5.0),
+            ]),
+            "riscv64",
+            "OpenSBI-v1.7",
+        );
+        let (merged, kept) = updated_baseline(baseline, measured, &["riscv64"]);
+        let expected = with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", 100.0),
+                ("riscv64", "clock_read", 5.0),
+                ("x86_64", "clock_read", 8.0),
+            ]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
+        assert_eq!(merged, expected);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].contains("riscv64 timer_arm"));
+
+        // On the baseline's own firmware everything is replaced.
+        let baseline = with_firmware(
+            results(&[("riscv64", "timer_arm", 100.0)]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
+        let same = with_firmware(
+            results(&[("riscv64", "timer_arm", 90.0)]),
+            "riscv64",
+            "OpenSBI-v1.3",
+        );
+        let (merged, kept) = updated_baseline(baseline, same, &["riscv64"]);
+        assert_eq!(merged.results.values().copied().collect::<Vec<_>>(), [90.0]);
+        assert!(kept.is_empty());
     }
 }
