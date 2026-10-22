@@ -9,6 +9,7 @@
 //! The console is COM1, the PC's first serial port. Power-off uses ACPI sleep state S5, read
 //! from the firmware's ACPI tables (see [`crate::acpi`]).
 
+mod exception;
 mod port;
 
 use crate::acpi::{self, RootTable};
@@ -98,6 +99,7 @@ start64:
     movw    %ax, %fs
     movw    %ax, %gs
     movq    $__stack_top, %rsp
+    call    {install_exception_vectors}
     call    kernel_main
 3:  cli
     hlt
@@ -127,6 +129,7 @@ boot_pd:
     .popsection
 "#,
     start_info = sym PVH_START_INFO,
+    install_exception_vectors = sym exception::install,
     options(att_syntax)
 );
 
@@ -188,6 +191,18 @@ impl Platform for X86_64 {
             // SAFETY: masking interrupts and halting only stops this CPU.
             unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
         }
+    }
+
+    fn breakpoint() {
+        // SAFETY: `int3` traps to the IDT installed at boot, whose handler saves and restores
+        // every general-purpose register and returns to the instruction after the `int3`.
+        unsafe { core::arch::asm!("int3", options(nomem, nostack)) };
+    }
+
+    fn illegal_instruction() -> ! {
+        // SAFETY: `ud2` always raises #UD; it traps to the IDT installed at boot, and the
+        // kernel never resumes from that exception.
+        unsafe { core::arch::asm!("ud2", options(nomem, nostack, noreturn)) }
     }
 }
 

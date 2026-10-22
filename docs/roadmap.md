@@ -10,7 +10,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M0 | Repo skeleton: workspace, pinned toolchain, HAL layout, CI, docs | **done** |
 | M1 | Kernel boots in QEMU and prints, on the first architectures, with an automated QEMU test runner | **done** — aarch64, riscv64, x86_64 |
 | M2 | Memory management: physical frames, paging, kernel heap | |
-| M3 | Interrupts and timers | |
+| M3 | Interrupts and timers | **in progress** — exception vectors on aarch64, riscv64, x86_64 (D25); next: interrupt controllers (GIC, PLIC/AIA, APIC) and timers |
 | M4 | Scheduler, processes and threads (SMP-ready) | |
 | M5 | Common driver model (bus enumeration, device tree / ACPI discovery) | |
 | M6 | Linux syscall ABI: what a static hello-world needs (`write`, `exit_group`, `brk`, `mmap`, ...) | |
@@ -25,10 +25,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, then Windows, Android, macOS, iOS (order: D19) | |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
-Setup follow-ups from the 2026-10-22 review (not yet done):
-- **Exception vectors on every architecture** (M3): an IDT on x86_64, `VBAR_EL1` on aarch64 and
-  `stvec` on riscv64, whose handlers print the cause and the fail marker. Today a fault hangs until
-  the 30 s timeout, or resets on x86_64, which the runner now catches.
+Setup follow-ups from the 2026-10-22 review (not yet done; exception vectors done in D25):
 - **Benchmarks** (`cargo xtask bench`, before M2 lands): host microbenchmarks plus instruction counts
   in QEMU (`-icount`), compared against a committed baseline, so "never merge a regression" can be
   checked.
@@ -42,9 +39,9 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 ### CPU architectures (QEMU boot test in CI is the bar for "done")
 | Architecture | Status | Notes |
 |--------------|--------|-------|
-| aarch64 | **done** (boots, prints, self-tests) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
-| riscv64 | **done** (boots, prints, self-tests) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
-| x86_64 | **done** (boots, prints, self-tests) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
+| aarch64 | **done** (boots, prints, self-tests, exception vectors) | QEMU `virt`, EL1, PSCI power-off (D9, D10) |
+| riscv64 | **done** (boots, prints, self-tests, exception vectors) | QEMU `virt` + OpenSBI, S-mode, SBI SRST power-off (D9) |
+| x86_64 | **done** (boots, prints, self-tests, exception vectors) | QEMU `q35`, PVH entry → long mode, COM1 over port I/O, ACPI S5 power-off (D15) |
 | loongarch64, ppc64, s390x, mips64, arm (32-bit), riscv32, sparc64 | planned | M9 |
 
 ### GPUs
@@ -74,7 +71,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 
 | Area | Missing |
 |------|---------|
-| Kernel | memory management, interrupts, timers, scheduling, syscalls |
+| Kernel | memory management, interrupt controllers, timers, scheduling, syscalls (CPU exceptions are caught and reported) |
 | Hardware | the other architectures; every driver beyond the early UARTs |
 | Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |

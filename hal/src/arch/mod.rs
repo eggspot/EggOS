@@ -1,10 +1,12 @@
 //! One module per CPU architecture. Each is compiled only for its own bare-metal target
 //! (`target_os = "none"`), so host builds and tests never see architecture code.
 //!
-//! An architecture module provides the boot entry point (`_start`, or `_start32` on x86_64, which sets up a stack,
-//! zeroes `.bss` and calls the kernel's `kernel_main`), its linker script (`linker.ld`, used
-//! by the kernel's build script) and a type implementing [`crate::Platform`], re-exported
-//! here as `CurrentPlatform`.
+//! An architecture module provides the boot entry point (`_start`, or `_start32` on x86_64,
+//! which sets up a stack, zeroes `.bss`, installs the exception vectors and calls the kernel's
+//! `kernel_main`), the exception vectors (which hand every exception to the kernel's
+//! `kernel_exception`, see [`crate::Exception`]), its linker script (`linker.ld`, used by the
+//! kernel's build script) and a type implementing [`crate::Platform`], re-exported here as
+//! `CurrentPlatform`.
 
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub mod aarch64;

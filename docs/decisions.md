@@ -246,3 +246,26 @@ measures and publishes:
 The numbers may only go down. Any growth needs a stated reason in the PR and is handled like a
 performance regression. Concrete budgets are set once the base first installs (M10), from
 measurements against minimal Linux, Windows and macOS installs on the same hardware.
+
+## D25 CPU exceptions: the HAL decodes, the kernel decides — Decided by the build loop (engineering)
+Each architecture module installs its exception vectors in the entry code, before any kernel
+code runs (`VBAR_EL1` on AArch64, `stvec` in direct mode on RISC-V, a 32-gate IDT on x86_64).
+Every entry saves all general-purpose registers on the current stack and decodes the exception
+into one architecture-neutral `eggos_hal::Exception` (a coarse `ExceptionKind` for policy, the
+architecture's own name, raw cause value, pc and fault address). The HAL hands it to the kernel
+binary's `kernel_exception`, the same way the entry code calls `kernel_main`, and resumes the
+interrupted code if that returns (after the instruction, for a breakpoint). So the policy
+(today: breakpoints resume, everything else is fatal and printed with the fail marker) lives in
+the architecture-independent core, and later page-fault handling, signals and debuggers plug in
+there without touching the HAL.
+- FP/SIMD registers are not saved: the AArch64 and x86_64 kernel targets are soft-float, and the
+  RISC-V boot code turns the FPU off (`sstatus.FS` = Off), so a stray FP instruction in kernel
+  code traps instead of silently corrupting state. User FP state is saved lazily later (M4).
+- x86_64 has no IST stacks yet, so a double fault from a stack overflow resets the machine
+  (which the QEMU runner detects); IST stacks for #DF/NMI come with the kernel page tables (M2).
+- Testing: a boot self-test takes a breakpoint and checks that it reached the kernel and came
+  back with state intact; a second QEMU boot per architecture (kernel feature
+  `qemu-test-fatal-exception`) executes an illegal instruction after the self-tests and the
+  runner requires the exception report followed by the fail marker and a clean power-off.
+- Not benchmarked yet: exception entry becomes a hot path with syscalls and page faults (M3, M6);
+  its benchmark comes with the benchmark harness (roadmap follow-up) before that.

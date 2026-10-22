@@ -5,6 +5,8 @@
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
+mod exception;
+
 use crate::{ExitStatus, Platform};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Ns16550, Uart};
@@ -25,7 +27,13 @@ _start:
     addi    t0, t0, 8
     j       1b
 
-2:  call    kernel_main
+    // FPU off: the kernel uses no FP registers and the trap entry does not save them, so any
+    // FP instruction traps as illegal. Then the trap vector, before any Rust code runs.
+2:  li      t0, 3 << 13
+    csrc    sstatus, t0
+    la      t0, exception_entry
+    csrw    stvec, t0
+    call    kernel_main
 3:  wfi
     j       3b
 "#
@@ -86,5 +94,17 @@ impl Platform for Riscv64 {
             // SAFETY: `wfi` only pauses the hart until an interrupt is pending.
             unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
         }
+    }
+
+    fn breakpoint() {
+        // SAFETY: `ebreak` traps to the vector installed at boot, whose handler saves and
+        // restores every general-purpose register and resumes after the `ebreak`.
+        unsafe { core::arch::asm!("ebreak", options(nomem, nostack)) };
+    }
+
+    fn illegal_instruction() -> ! {
+        // SAFETY: `unimp` is defined to be illegal; it traps to the vector installed at boot,
+        // and the kernel never resumes from that exception.
+        unsafe { core::arch::asm!("unimp", options(nomem, nostack, noreturn)) }
     }
 }

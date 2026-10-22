@@ -15,7 +15,8 @@ commands:
                          targets), host tests, QEMU boot tests on every architecture
   clippy-targets         clippy -D warnings on the kernel crates for every kernel target
   build --arch <arch>    build the kernel image for <arch>
-  qemu  --arch <arch>    boot the kernel in QEMU headless and check its self-test verdict
+  qemu  --arch <arch>    boot the kernel in QEMU headless and check its self-test verdict,
+                         then boot it again to check that a fatal exception is reported
                          (<arch> may be `all`)
   run   --arch <arch>    boot the kernel in QEMU interactively (quit: Ctrl-A then X)
 
@@ -78,14 +79,13 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("clippy-targets") => clippy_targets(),
         Some("build") => {
             for arch in arch()? {
-                build_kernel(arch, false)?;
+                build_kernel(arch, None)?;
             }
             Ok(())
         }
         Some("qemu") => {
             for arch in arch()? {
-                let kernel = build_kernel(arch, true)?;
-                qemu::boot_test(arch, &kernel)?;
+                boot_tests(arch)?;
             }
             Ok(())
         }
@@ -94,7 +94,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
-            let kernel = build_kernel(arch, false)?;
+            let kernel = build_kernel(arch, None)?;
             qemu::run_interactive(arch, &kernel)
         }
         _ => Err(USAGE.into()),
@@ -133,18 +133,30 @@ fn ci() -> Result<(), String> {
     clippy_targets()?;
     cargo(&["test", "--workspace"])?;
     for arch in ARCHES {
-        let kernel = build_kernel(arch, true)?;
-        qemu::boot_test(arch, &kernel)?;
+        boot_tests(arch)?;
     }
     Ok(())
 }
 
+/// Boots `arch`'s kernel twice: once to pass its self-tests, once to check that the
+/// exception vectors report a fatal exception (an illegal instruction after the self-tests).
+fn boot_tests(arch: &Arch) -> Result<(), String> {
+    let kernel = build_kernel(arch, Some("qemu-test"))?;
+    qemu::boot_test(arch, &kernel, qemu::Expect::Pass)?;
+    let kernel = build_kernel(arch, Some("qemu-test-fatal-exception"))?;
+    qemu::boot_test(arch, &kernel, qemu::Expect::FatalException)
+}
+
 /// Lints the kernel crates as compiled for each bare-metal target, where the architecture
-/// modules (invisible to a host build) are compiled. With and without `qemu-test`, since the
-/// feature changes code paths.
+/// modules (invisible to a host build) are compiled. Without features and with each test
+/// feature, since they change code paths.
 fn clippy_targets() -> Result<(), String> {
     for arch in ARCHES {
-        for features in [&[][..], &["--features", "eggos-kernel/qemu-test"]] {
+        for features in [
+            &[][..],
+            &["--features", "eggos-kernel/qemu-test"],
+            &["--features", "eggos-kernel/qemu-test-fatal-exception"],
+        ] {
             let mut args = vec!["clippy", "--target", arch.target];
             for krate in KERNEL_CRATES {
                 args.extend(["-p", krate]);
@@ -157,8 +169,9 @@ fn clippy_targets() -> Result<(), String> {
     Ok(())
 }
 
-/// Builds the kernel image for `arch` (release profile) and returns its path.
-fn build_kernel(arch: &Arch, qemu_test: bool) -> Result<std::path::PathBuf, String> {
+/// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
+/// any, and returns its path.
+fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let mut args = vec![
         "build",
         "--release",
@@ -167,8 +180,8 @@ fn build_kernel(arch: &Arch, qemu_test: bool) -> Result<std::path::PathBuf, Stri
         "--target",
         arch.target,
     ];
-    if qemu_test {
-        args.extend(["--features", "qemu-test"]);
+    if let Some(feature) = feature {
+        args.extend(["--features", feature]);
     }
     // Ask cargo where it put the binary rather than guessing `target/`: CARGO_TARGET_DIR or
     // `build.target-dir` move it, and booting a stale image from the default path would test

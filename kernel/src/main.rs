@@ -10,15 +10,36 @@
 mod bare_metal {
     use core::fmt::Write;
     use eggos_hal::arch::CurrentPlatform;
-    use eggos_hal::{ExitStatus, Platform};
+    use eggos_hal::{Exception, ExitStatus, Platform};
     use eggos_kernel::console::PlatformConsole;
+    use eggos_kernel::exception::{self, Outcome};
 
-    /// Called by the architecture entry point once a stack is set up and `.bss` is zeroed.
+    /// Called by the architecture entry point once a stack is set up, `.bss` is zeroed and the
+    /// exception vectors are installed.
     #[unsafe(no_mangle)]
     extern "C" fn kernel_main() -> ! {
         let mut console = PlatformConsole::<CurrentPlatform>::new();
-        let status = eggos_kernel::boot(&mut console, CurrentPlatform::ARCH);
+        let status = eggos_kernel::boot::<CurrentPlatform, _>(&mut console);
+        if cfg!(feature = "qemu-test-fatal-exception") && status == ExitStatus::Success {
+            // Tests the fatal path: the exception handler must report this and fail the run.
+            CurrentPlatform::illegal_instruction();
+        }
         finish(status)
+    }
+
+    /// Called by the HAL's exception vectors (declared in `eggos_hal`). Returning resumes the
+    /// interrupted code.
+    #[unsafe(no_mangle)]
+    fn kernel_exception(exception: &Exception) {
+        if exception::handle(exception) == Outcome::Resume {
+            return;
+        }
+        let mut console = PlatformConsole::<CurrentPlatform>::new();
+        // Nothing useful can be done if the console itself fails here.
+        let _ = writeln!(console);
+        let _ = exception::report(&mut console, exception);
+        let _ = writeln!(console, "{}", eggos_kernel::selftest::FAIL_MARKER);
+        finish(ExitStatus::Failure)
     }
 
     /// With `qemu-test`, power off so the test runner sees the result; otherwise stay up.

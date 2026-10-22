@@ -2,8 +2,10 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
+use crate::exception;
 use core::fmt::Write;
 use core::sync::atomic::AtomicU64;
+use eggos_hal::Platform;
 
 /// Printed when every self-test passed. The QEMU runner requires this exact line.
 pub const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
@@ -13,8 +15,13 @@ pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// A self-test: a name and a check returning `Err(reason)` on failure.
 pub type SelfTest = (&'static str, fn() -> Result<(), &'static str>);
 
-/// Every boot self-test, in run order.
-pub const ALL: &[SelfTest] = &[("bss_is_zeroed", bss_is_zeroed)];
+/// Every boot self-test for platform `P`, in run order.
+pub fn all<P: Platform>() -> [SelfTest; 2] {
+    [
+        ("bss_is_zeroed", bss_is_zeroed),
+        ("breakpoint_resumes", breakpoint_resumes::<P>),
+    ]
+}
 
 /// Runs `tests`, reporting each and then the verdict marker. Returns whether all passed.
 pub fn run<W: Write>(console: &mut W, tests: &[SelfTest]) -> Result<bool, core::fmt::Error> {
@@ -54,6 +61,26 @@ fn bss_is_zeroed() -> Result<(), &'static str> {
     }
 }
 
+/// A breakpoint must reach the kernel's exception handler through the architecture's vectors
+/// and come back to the next instruction with the interrupted code's state intact.
+fn breakpoint_resumes<P: Platform>() -> Result<(), &'static str> {
+    // Values live across the breakpoint, in registers or on the stack (the `asm!` block
+    // declares no clobbers), so a handler that corrupts either changes the result.
+    let live = [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| core::hint::black_box(n * 0x0101_0101_0101));
+    let before = exception::breakpoints_taken();
+    P::breakpoint();
+    // Greater rather than exactly one more: host unit tests run in parallel and may take
+    // breakpoints of their own at the same time.
+    if exception::breakpoints_taken() <= before {
+        return Err("the breakpoint did not reach the kernel's exception handler");
+    }
+    let expected = [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| n * 0x0101_0101_0101);
+    if core::hint::black_box(live) != expected {
+        return Err("registers changed across the breakpoint");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +110,29 @@ mod tests {
             out,
             format!("selftest a ... FAILED: broken\nselftest b ... ok\n{FAIL_MARKER}\n")
         );
+    }
+
+    /// A platform whose breakpoint never reaches the kernel's handler.
+    struct LostBreakpoints;
+
+    impl Platform for LostBreakpoints {
+        const ARCH: &'static str = "lost";
+        fn console_write(_bytes: &[u8]) {}
+        fn exit(_status: eggos_hal::ExitStatus) -> ! {
+            unreachable!("not used in tests")
+        }
+        fn halt() -> ! {
+            unreachable!("not used in tests")
+        }
+        fn breakpoint() {}
+        fn illegal_instruction() -> ! {
+            unreachable!("not used in tests")
+        }
+    }
+
+    #[test]
+    fn breakpoint_that_never_reaches_the_handler_fails() {
+        assert!(breakpoint_resumes::<LostBreakpoints>().is_err());
     }
 
     #[test]

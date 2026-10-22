@@ -6,6 +6,8 @@
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
+mod exception;
+
 use crate::{ExitStatus, Platform};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::serial::{Pl011, Uart, pl011};
@@ -23,6 +25,8 @@ _start:
     orr     x0, x1, x2
     cbnz    x0, 3f
 
+    // Use SP_EL1 at EL1, so exceptions taken to EL1 run on the boot stack set up below.
+    msr     spsel, #1
     adrp    x0, __stack_top
     add     x0, x0, :lo12:__stack_top
     mov     sp, x0
@@ -37,7 +41,12 @@ _start:
     str     xzr, [x0], #8
     b       1b
 
-2:  bl      kernel_main
+    // Exception vectors, before any Rust code runs.
+2:  adrp    x0, exception_vectors
+    add     x0, x0, :lo12:exception_vectors
+    msr     vbar_el1, x0
+    isb
+    bl      kernel_main
 3:  wfe
     b       3b
 "#
@@ -88,5 +97,17 @@ impl Platform for Aarch64 {
             // SAFETY: `wfe` only pauses the CPU until an event or interrupt.
             unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) };
         }
+    }
+
+    fn breakpoint() {
+        // SAFETY: `brk` traps to the exception vectors installed at boot, whose handler saves
+        // and restores every general-purpose register and resumes after the `brk`.
+        unsafe { core::arch::asm!("brk #0", options(nomem, nostack)) };
+    }
+
+    fn illegal_instruction() -> ! {
+        // SAFETY: `udf` is permanently undefined; it traps to the exception vectors installed
+        // at boot, and the kernel never resumes from that exception.
+        unsafe { core::arch::asm!("udf #0", options(nomem, nostack, noreturn)) }
     }
 }
