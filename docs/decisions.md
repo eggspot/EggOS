@@ -708,3 +708,22 @@ First step of M4.
 - **Benchmark.** `thread_yield_round_trip`: two switches through `yield_now` per iteration,
   with the queue rotation and canary checks: aarch64 162, riscv64 201, x86_64 149 instructions.
   No existing benchmark changed.
+
+## D36 CI's Linux job runs in our own image with QEMU and the toolchain preinstalled — Decided by the build loop (owner request, 2026-10-22); extends D8
+The `check` job installed QEMU from the Ubuntu mirror and the pinned toolchain on every run.
+Over 11 green runs on 2026-10-22 the toolchain took 10-14 s and QEMU 13-23 s, except four runs
+where the mirror stalled `apt-get` for 194, 198, 850 and 1373 s (unpacking took about 4 s).
+- **The image.** `.github/ci-image/Dockerfile`: Ubuntu 24.04 with QEMU and OpenSBI (the same
+  packages the benchmark baseline is recorded with), git, gcc and gh, and the toolchain
+  `rust-toolchain.toml` pins. It only installs tools, as CLAUDE.md allows outside `cargo xtask`.
+  `.github/workflows/ci-image.yml` builds it, checks it holds every tool CI uses, and pushes it
+  to `ghcr.io/eggspot/eggos-ci:main` (and the commit's SHA) only from `main`, when the image's
+  inputs change or by hand, reusing the previous image's layers; PRs that change the inputs
+  build and check it without pushing.
+- **CI** pulls `:main` with the workflow's own token (`packages: read`) and drops its QEMU step.
+  `rustup toolchain install` stays: a no-op with the image's toolchain, and an install only
+  when a PR moves the pin before the image is rebuilt from `main`. The `target/` cache stays.
+- **Rollout:** the image workflow lands first and builds the image, then CI switches to it,
+  so `main` never points at an image that does not exist.
+- **Not decided here:** making the package public, which fork PRs may need to pull it, is an
+  organisation setting for the owner.

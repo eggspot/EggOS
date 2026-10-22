@@ -1,0 +1,77 @@
+# Builds the image CI's Linux job runs in (.github/ci-image/Dockerfile, D36) and pushes it to
+# ghcr.io/eggspot/eggos-ci:main, where ci.yml pulls it. Runs only when the image's inputs change
+# (or by hand), so it bills a few minutes per toolchain or package change, not per PR: on a PR
+# (or a manual run on another branch) it builds and checks the image, on main it also pushes.
+# Layers are reused from the current image, so a toolchain bump does not reinstall QEMU.
+name: CI image
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/ci-image/**, .github/workflows/ci-image.yml, rust-toolchain.toml]
+  pull_request:
+    branches: [main]
+    paths: [.github/ci-image/**, .github/workflows/ci-image.yml, rust-toolchain.toml]
+  workflow_dispatch:
+
+# A superseded PR build is cancelled; a push to the registry is never cut off halfway.
+concurrency:
+  group: ci-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/eggspot/eggos-ci
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # A rebuild installs QEMU from the Ubuntu mirror, which has stalled for over 20 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          # The check step mounts the checkout into the image: keep the token out of it.
+          persist-credentials: false
+
+      # Only main's image is ever pushed: a PR, or a manual run on another branch, only builds.
+      - name: Log in to the GitHub container registry
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # `--cache-from` fetches only the layers it reuses; without registry access (a PR) it logs
+      # a 403 "failed to configure registry cache importer" error, which is expected, and builds
+      # from scratch.
+      - name: Build (reusing the current image's layers)
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker build \
+            --file .github/ci-image/Dockerfile \
+            --cache-from "$IMAGE:main" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "$IMAGE:main" \
+            --tag "$IMAGE:${{ github.sha }}" \
+            .
+
+      # In the checkout, so rustup picks the toolchain rust-toolchain.toml pins, as CI does; the
+      # check fails if that toolchain is not the image's own (rustup must not install it here).
+      - name: Check the image has what CI needs
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          docker run --rm --volume "$PWD:/repo" --workdir /repo --env RUSTUP_AUTO_INSTALL=0 \
+            --env CHANNEL="$channel" "$IMAGE:main" sh -c '
+            rustup toolchain list | grep -q "^$CHANNEL-" &&
+            rustc --version | grep -q "^rustc $CHANNEL " &&
+            cargo --version && rustup target list --installed &&
+            qemu-system-aarch64 --version && qemu-system-riscv64 --version &&
+            qemu-system-x86_64 --version && gh --version && git --version'
+
+      - name: Push
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: docker push --all-tags "$IMAGE"
