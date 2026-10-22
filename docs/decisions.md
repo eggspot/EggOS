@@ -500,7 +500,7 @@ architecture once `paging::enable` has run; before that, allocating fails.
   round trips, a regression, and dropped). Per-CPU caches replace this with SMP (M4).
 - **Benchmarks.** `heap_allocate_free_small` (a 32-byte block allocated and freed through the
   global allocator: lock, free-list pop and push, unlock): 52 instructions per pair on
-  aarch64, 95 on riscv64, 54 on x86_64, beyond the loop's own 4. Every other result unchanged.
+  aarch64, 95 on riscv64, 52 on x86_64, beyond the loop's own 4. Every other result unchanged.
 - **Testing.** Host unit tests for the spin lock (exclusion across threads), the size-class
   choice, alignment, distinct blocks, LIFO reuse, frame use per class, frames given back, and
   exhaustion and oversized layouts failing. A boot self-test on every architecture allocates

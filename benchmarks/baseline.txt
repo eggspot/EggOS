@@ -29,6 +29,6 @@ x86_64 clock_read 8.00
 x86_64 empty_loop 4.00
 x86_64 frame_allocate_untouched 14.06
 x86_64 frame_free_allocate 19.06
-x86_64 heap_allocate_free_small 54.00
+x86_64 heap_allocate_free_small 52.00
 x86_64 timer_arm 65.00
 x86_64 timer_interrupt_round_trip 95.00

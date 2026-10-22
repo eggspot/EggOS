@@ -140,8 +140,8 @@ fn frame_free_allocate(n: u64) {
     black_box(&mut page);
 }
 
-/// Allocating and freeing a small block through the kernel's global heap: the lock, the
-/// handler check and a size class's free-list pop and push, the steady state of `Box` and small
+/// Allocating and freeing a small block through the kernel's global heap: taking and releasing
+/// its lock around a size class's free-list pop and push, the steady state of `Box` and small
 /// `Vec`s. Runs after the self-tests, so the frame allocator is in place; without one (host
 /// tests) every allocation fails and only the failure path is timed.
 fn heap_allocate_free_small(n: u64) {

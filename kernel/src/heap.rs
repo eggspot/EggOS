@@ -259,9 +259,9 @@ impl KernelHeap {
 // SAFETY: `alloc` returns memory from `Heap::allocate`, which is at least `layout.size()`
 // bytes aligned to `layout.align()` (a block of a size class at least that large, aligned to
 // its size; or a whole frame, for layouts no larger than a frame), owned by the caller until
-// `dealloc`, or null. `dealloc` gives it back with the same layout, as `GlobalAlloc` callers guarantee.
-// The lock serialises every use of the heap state, and the heap only ever takes frames from
-// the global frame allocator, under its lock.
+// `dealloc`, or null. `dealloc` gives it back with the same layout, as `GlobalAlloc` callers
+// guarantee. The lock serialises every use of the heap state, and the heap only ever takes
+// frames from the global frame allocator, under its lock.
 unsafe impl GlobalAlloc for KernelHeap {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -277,25 +277,18 @@ unsafe impl GlobalAlloc for KernelHeap {
         };
         // SAFETY: `GlobalAlloc` callers give back memory `alloc` returned for `layout`, which
         // came from this heap with `GlobalFrames`, and do not use it any more.
-        unsafe {
-            self.heap
-                .lock()
-                .deallocate(pointer, layout, &mut GlobalFrames)
-        };
+        unsafe { self.lock().deallocate(pointer, layout, &mut GlobalFrames) };
     }
 
     #[inline]
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // `GlobalAlloc` callers pass a `new_size` that is valid with `layout`'s alignment.
-        if let Ok(new) = Layout::from_size_align(new_size, layout.align())
-            && Heap::fits_in_place(layout, new)
-        {
+        let Ok(new) = Layout::from_size_align(new_size, layout.align()) else {
+            return ptr::null_mut();
+        };
+        if Heap::fits_in_place(layout, new) {
             return pointer;
         }
-        let new = match Layout::from_size_align(new_size, layout.align()) {
-            Ok(new) => new,
-            Err(_) => return ptr::null_mut(),
-        };
         // SAFETY: `new` has a non-zero size (the caller's `new_size` is non-zero) and valid
         // alignment.
         let moved = unsafe { self.alloc(new) };
@@ -397,6 +390,16 @@ mod tests {
         assert_eq!(frames.0.free_frames(), 3);
         heap.allocate(l, &mut frames).unwrap();
         assert_eq!(frames.0.free_frames(), 2);
+    }
+
+    #[test]
+    fn realloc_stays_in_place_only_within_a_class_or_a_frame() {
+        assert!(Heap::fits_in_place(layout(20, 8), layout(32, 8)));
+        assert!(!Heap::fits_in_place(layout(32, 8), layout(33, 8)));
+        assert!(!Heap::fits_in_place(layout(32, 8), layout(8, 8)));
+        assert!(Heap::fits_in_place(layout(2049, 8), layout(4096, 8)));
+        assert!(!Heap::fits_in_place(layout(4096, 8), layout(4097, 8)));
+        assert!(!Heap::fits_in_place(layout(5000, 8), layout(5000, 8)));
     }
 
     #[test]
