@@ -1332,14 +1332,17 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   space first and keeps its nesting and same-CPU checks.
 - **Freeing.** A CPU lets a process's space go once only CPUs still refer to it: its owner's
   reference count is no larger than the number of CPUs that record its root. No thread or other
-  holder is then left, so none can load it again, and every CPU may drop its reference; a count
-  that is changing only makes the test fail (a CPU records the root after taking its reference
-  and drops the reference after it stopped recording it), and dropping a CPU's own reference never
-  frees memory someone else uses, so a wrong guess costs a reload at most. A user thread that
-  ends drops its reference, lets the space go on its CPU if that test holds, and sends the
-  wake-up interrupt to every other CPU that has it loaded; an idle CPU makes the same test at
-  each look (`address_space::release_unused`: a load and a compare when nothing is loaded) and
-  wakes the others likewise when it lets one go. The first version freed only on the last
+  holder is then left, so none can load it again, and every CPU may drop its reference. A count
+  that changes while the test reads it can make it wrong either way, harmlessly: a CPU only ever
+  drops its own reference, which never frees memory another holder uses (the space is loaded
+  again where it is needed), and a wrong "no" waits for the next look. A user thread that ends
+  drops its reference, lets the space go on its CPU if the test holds, and sends the wake-up
+  interrupt to every other CPU that has it loaded; an idle CPU makes the same test at each look
+  (`address_space::release_unused`: a load and a compare when nothing is loaded), and a CPU that
+  lets a space go when idle or for `with_active` wakes the others that keep it when only CPUs held
+  it. A CPU that drops one by switching to another process's space wakes nobody: the look at every
+  CPU cost about 25 instructions per switch (`process_switch_round_trip` +10%), so a CPU whose last
+  look raced with such a switch keeps the ended space until something wakes it (follow-up). The first version freed only on the last
   reference, which leaked a process whose threads had run on two CPUs that both went idle with
   it loaded (found by the independent review; `processes_run_on_every_cpu` now covers it and fails
   with the old rule).
@@ -1380,8 +1383,10 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   restores exactly the old numbers. The instruction counts do not show what an address-space switch
   costs afterwards in TLB refills (M13 measures that on hardware). About 48 more bytes per CPU
   block (the slot and its lock) and a flag per thread.
-- **Follow-ups (roadmap).** Waking CPUs that keep an ended process's address space while they stay
-  busy with kernel threads; TLB shootdown once a shared process's mappings may change (they are
+- **Follow-ups (roadmap).** Letting an ended process's address space go on CPUs that stay busy with
+  kernel threads (woken, they look only when they idle), and on an idle CPU whose last look raced
+  with another CPU switching away from it (a per-process thread count would make that check one
+  load); TLB shootdown once a shared process's mappings may change (they are
   frozen today); preemption on whenever user programs run (with it off, as for kernel threads, a
   program that never traps keeps its CPU); pages owned by the address space for `mmap` (M6); ASIDs
   and PCID; PAN, SMAP and

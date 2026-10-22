@@ -182,7 +182,9 @@ impl<P: Platform> AddressSpace<P> {
             kernel_roots,
             root_count: self.tables.roots().len(),
         });
-        // Freed, if this CPU held its last reference, now that it is not loaded.
+        // Freed, if this CPU held its last reference, now that it is not loaded. Other CPUs that
+        // keep it are not woken here, which would cost every switch a look at every CPU: one
+        // whose last look raced with this switch keeps it until something wakes it (roadmap).
         drop(previous);
     }
 
@@ -209,12 +211,11 @@ pub(crate) struct LazilyLoaded {
 
 impl LazilyLoaded {
     /// Whether only CPUs that keep the address space loaded, whose first root is `root`, still
-    /// refer to its owner: no thread or anything else does, so none can load it again, and
-    /// every CPU may let it go. Never wrong the other way round: a CPU records the root only
-    /// once it holds a reference, and lets the reference go only after it stopped recording
-    /// it, so a reference being taken or dropped meanwhile only makes this false. A false
-    /// "only CPUs" costs at most a reload: dropping a CPU's own reference never frees memory
-    /// another holder uses.
+    /// refer to its owner: no thread or anything else does, so none can load it
+    /// again, and every CPU may let it go. A reference taken or dropped while this looks can
+    /// make the answer wrong either way, and both are harmless: a wrong "yes" makes a CPU drop
+    /// its own reference, which never frees memory another holder uses (the space is loaded
+    /// again where it is needed), and a wrong "no" leaves it loaded until the next look.
     fn only_cpus_hold_it(&self, here: &'static Cpu, root: u64) -> bool {
         let cpus = cpu::CPUS.all();
         let holding = if cpus.is_empty() {
@@ -267,7 +268,6 @@ fn release_unused_cold<P: Platform>(here: &'static Cpu) {
     };
     if let Some(loaded) = loaded {
         unload::<P>(here, loaded);
-        wake_cpus_holding::<P>(here, root);
     }
 }
 
@@ -295,7 +295,12 @@ fn wake_cpus_holding<P: Platform>(here: &'static Cpu, root: u64) {
     }
 }
 
+/// Switches `here`, this CPU, back to the kernel's tables from the address space `loaded` keeps,
+/// and drops the CPU's reference to it; if only CPUs held it, has the others that keep it
+/// loaded look again ([`release_unused`]).
 fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
+    let root = here.active_address_space();
+    let ended = loaded.only_cpus_hold_it(here, root);
     // SAFETY: interrupts are masked (the callers' duty); back to the kernel's own tables, which
     // stay allocated for as long as the kernel runs (`AddressSpace::new`'s contract). The
     // address space switched away from stays allocated until `loaded` is dropped below, and
@@ -304,6 +309,9 @@ fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
     unsafe { P::switch_address_space(&loaded.kernel_roots[..loaded.root_count]) };
     here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
     drop(loaded);
+    if ended {
+        wake_cpus_holding::<P>(here, root);
+    }
 }
 
 impl<P: Platform> Drop for AddressSpace<P> {

@@ -52,7 +52,8 @@ returns.
 
 Process follow-ups (D48): preemption on whenever user programs run (with it off, as for kernel
 threads, a program that never traps keeps its CPU); waking CPUs that keep an ended process's
-address space loaded while they stay busy with kernel threads (an idle CPU lets it go); TLB shootdown, to every CPU that has the
+address space loaded while they stay busy with kernel threads, or idle after a look that raced with
+another CPU switching away from it (an idle CPU lets it go otherwise); TLB shootdown, to every CPU that has the
 address space loaded, once a shared process's mappings may change; pages owned by the address
 space (`mmap`, M6); user faults that end the process with a signal (M6); a process's threads and
 exit status (`exit_group`, `wait4`).
