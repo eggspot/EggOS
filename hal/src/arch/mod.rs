@@ -4,7 +4,9 @@
 //! An architecture module provides the boot entry point (`_start`, or `_start32` on x86_64,
 //! which zeroes `.bss`, builds the boot page tables and jumps to the kernel's virtual address
 //! in the top 2 GiB (D33), then sets up a stack, installs the exception vectors, sets up the
-//! timer and its interrupt controller, and calls the kernel's `kernel_main`), the exception
+//! timer and its interrupt controller, and calls the kernel's `kernel_main`), the secondary
+//! CPUs' entry point (`eggos_secondary_start`, or the real-mode trampoline on x86_64, see
+//! [`crate::cpu`]), the exception
 //! vectors (which hand every exception to the kernel's `kernel_exception`, see
 //! [`crate::Exception`], and every timer interrupt to its `kernel_interrupt`, see
 //! [`crate::Interrupt`]), the kernel thread switch and trampoline (`thread`, see

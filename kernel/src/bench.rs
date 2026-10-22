@@ -317,6 +317,24 @@ mod tests {
             // SAFETY: the caller's guarantees are the host switch's.
             unsafe { thread::host::switch_thread(save, resume) }
         }
+        fn cpus(_cpu: &mut dyn FnMut(u64)) {
+            unreachable!("not used in tests")
+        }
+        fn boot_cpu() -> u64 {
+            unreachable!("not used in tests")
+        }
+        unsafe fn start_cpu(
+            _cpu: u64,
+            _start: &eggos_hal::cpu::CpuStart,
+        ) -> Result<(), eggos_hal::cpu::StartCpuError> {
+            unreachable!("not used in tests")
+        }
+        unsafe fn set_cpu_local(_block: usize) {
+            unreachable!("not used in tests")
+        }
+        fn cpu_local() -> usize {
+            unreachable!("not used in tests")
+        }
     }
 
     #[test]

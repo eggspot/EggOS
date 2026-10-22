@@ -17,7 +17,7 @@ use super::port::PortIo;
 use crate::Interrupt;
 use crate::memory::PhysicalRange;
 use crate::time::mul_div_ceil;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{LegacyPic, LocalApic, i8259, local_apic};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::timer::{Pit, i8254};
@@ -59,6 +59,24 @@ const NO_DEADLINE: u64 = u64::MAX;
 /// Where the kernel reaches the local APIC's registers: their physical address in the direct
 /// map (D33), set by [`init`].
 static APIC_BASE: AtomicUsize = AtomicUsize::new(0);
+
+/// The boot CPU's local APIC id, read by `init`.
+static BOOT_APIC_ID: AtomicU8 = AtomicU8::new(0);
+
+/// The boot CPU's local APIC id.
+pub(super) fn boot_apic_id() -> u8 {
+    BOOT_APIC_ID.load(Ordering::Relaxed)
+}
+
+/// Sends INIT to every other CPU (see [`LocalApic::send_init_to_others`]).
+pub(super) fn send_init_to_others() {
+    local_apic().send_init_to_others();
+}
+
+/// Sends a start-up interrupt to the CPU `destination` (see [`LocalApic::send_startup`]).
+pub(super) fn send_startup(destination: u8, page: u8) {
+    local_apic().send_startup(destination, page);
+}
 /// Measured TSC and APIC timer frequencies in Hz, set by [`init`].
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 static APIC_TIMER_FREQUENCY: AtomicU64 = AtomicU64::new(0);
@@ -110,6 +128,7 @@ pub(super) extern "C" fn init() {
     );
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);
+    BOOT_APIC_ID.store(apic.id(), Ordering::Relaxed);
 
     // Count the TSC and the (masked) APIC timer over a known number of PIT periods.
     apic.configure_one_shot_timer(TIMER_VECTOR, true);

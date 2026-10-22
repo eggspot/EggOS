@@ -252,6 +252,96 @@ impl<'a> Fdt<'a> {
     }
 }
 
+impl Fdt<'_> {
+    /// Calls `cpu` with the hardware id of every enabled CPU: the first address in the `reg` of
+    /// each child of `/cpus` whose `device_type` is `"cpu"` and whose `status` is absent or
+    /// `"okay"` (Devicetree Specification v0.4, section 3.8), decoded with `/cpus`'
+    /// `#address-cells` (the MPIDR affinity on Arm, the hart id on RISC-V). Other children,
+    /// such as `cpu-map`, and ids wider than 64 bits are skipped.
+    pub fn cpus(&self, cpu: &mut dyn FnMut(u64)) -> Result<(), Error> {
+        /// What the walker knows about an open child of `/cpus`.
+        #[derive(Clone, Copy, Default)]
+        struct Cpu<'a> {
+            reg: Option<&'a [u8]>,
+            is_cpu_type: bool,
+            disabled: bool,
+        }
+        // `/cpus`' `#address-cells`, once inside it; the specification's default otherwise.
+        let mut address_cells = 2u32;
+        let mut in_cpus = false;
+        let mut child = Cpu::default();
+        let mut depth = 0usize;
+        let mut at = 0usize;
+        loop {
+            let token = be32(self.structure, at).ok_or(Error::Truncated)?;
+            at += 4;
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = cstr(self.structure, at).ok_or(Error::Truncated)?;
+                    at = align4(at + name.len() + 1);
+                    if depth == 1 && name == b"cpus" {
+                        in_cpus = true;
+                        address_cells = 2;
+                    } else if in_cpus && depth == 2 {
+                        child = Cpu::default();
+                    }
+                    depth += 1;
+                }
+                FDT_END_NODE => {
+                    depth = depth.checked_sub(1).ok_or(Error::Malformed)?;
+                    if in_cpus && depth == 2 && child.is_cpu_type && !child.disabled {
+                        let id = usize::try_from(address_cells)
+                            .ok()
+                            .and_then(|cells| child.reg?.get(..cells.checked_mul(4)?))
+                            .and_then(cells_value);
+                        if let Some(id) = id {
+                            cpu(id);
+                        }
+                    } else if in_cpus && depth == 1 {
+                        in_cpus = false;
+                    }
+                }
+                FDT_PROP => {
+                    let length = be32(self.structure, at).ok_or(Error::Truncated)?;
+                    let name_offset = be32(self.structure, at + 4).ok_or(Error::Truncated)?;
+                    let length = usize::try_from(length).map_err(|_| Error::Truncated)?;
+                    let start = at + 8;
+                    let value = start
+                        .checked_add(length)
+                        .and_then(|end| self.structure.get(start..end))
+                        .ok_or(Error::Truncated)?;
+                    at = align4(start + length);
+                    if !in_cpus {
+                        continue;
+                    }
+                    let name = usize::try_from(name_offset)
+                        .ok()
+                        .and_then(|offset| cstr(self.strings, offset))
+                        .ok_or(Error::Malformed)?;
+                    match (depth, name) {
+                        (2, b"#address-cells") => address_cells = be32(value, 0).unwrap_or(2),
+                        (3, b"reg") => child.reg = Some(value),
+                        (3, b"device_type") => child.is_cpu_type = value == b"cpu\0",
+                        (3, b"status") => {
+                            child.disabled = value != b"okay\0" && value != b"ok\0";
+                        }
+                        _ => {}
+                    }
+                }
+                FDT_NOP => {}
+                FDT_END => {
+                    return if depth == 0 {
+                        Ok(())
+                    } else {
+                        Err(Error::Malformed)
+                    };
+                }
+                _ => return Err(Error::Malformed),
+            }
+        }
+    }
+}
+
 /// Decodes a `reg` property: (address, size) pairs of `cells` 32-bit cells each.
 fn decode_reg(
     reg: &[u8],
@@ -605,5 +695,98 @@ mod tests {
         let mut b = Builder::default();
         b.end();
         assert_eq!(memory_of(&b.build()).err(), Some(Error::Malformed));
+    }
+
+    fn cpus_of(blob: &[u8]) -> Result<Vec<u64>, Error> {
+        let mut ids = Vec::new();
+        Fdt::new(blob)?.cpus(&mut |id| ids.push(id))?;
+        Ok(ids)
+    }
+
+    #[test]
+    fn finds_enabled_cpus_in_order() {
+        // QEMU `virt`'s shape on RISC-V: one-cell hart ids, an interrupt controller inside each
+        // CPU and a `cpu-map` among them.
+        let mut b = Builder::default();
+        b.begin("")
+            .cells("#address-cells", &[2])
+            .begin("cpus")
+            .cells("#address-cells", &[1])
+            .cells("#size-cells", &[0]);
+        for hart in [0u32, 1, 2, 3] {
+            b.begin(&format!("cpu@{hart}"))
+                .prop("device_type", b"cpu\0")
+                .cells("reg", &[hart])
+                .prop(
+                    "status",
+                    if hart == 2 {
+                        b"disabled\0" as &[u8]
+                    } else {
+                        b"okay\0"
+                    },
+                )
+                .begin("interrupt-controller")
+                .cells("reg", &[99])
+                .end()
+                .end();
+        }
+        b.begin("cpu-map")
+            .begin("cluster0")
+            .begin("core0")
+            .cells("cpu", &[1])
+            .end()
+            .end()
+            .end()
+            .end() // cpus
+            .begin("memory@80000000")
+            .prop("device_type", b"memory\0")
+            .end()
+            .end();
+        assert_eq!(cpus_of(&b.build()), Ok(vec![0, 1, 3]));
+    }
+
+    #[test]
+    fn decodes_two_cell_cpu_ids_and_ignores_cpus_outside_cpus() {
+        // Arm: MPIDR affinity in two cells, Aff3 in the high one.
+        let mut b = Builder::default();
+        b.begin("")
+            .begin("soc")
+            .begin("cpus")
+            .begin("cpu@7")
+            .prop("device_type", b"cpu\0")
+            .cells("reg", &[0, 7])
+            .end()
+            .end()
+            .end()
+            .begin("cpus")
+            .cells("#address-cells", &[2])
+            .begin("cpu@0")
+            .prop("device_type", b"cpu\0")
+            .cells("reg", &[0, 0])
+            .end()
+            .begin("cpu@100000001")
+            .prop("device_type", b"cpu\0")
+            .cells("reg", &[1, 1])
+            .end()
+            .begin("cpu@bad")
+            .prop("device_type", b"cpu\0")
+            .cells("reg", &[5])
+            .end()
+            .begin("not-a-cpu@2")
+            .cells("reg", &[0, 2])
+            .end()
+            .end()
+            .end();
+        assert_eq!(cpus_of(&b.build()), Ok(vec![0, 0x1_0000_0001]));
+    }
+
+    #[test]
+    fn cpus_walker_rejects_malformed_structure_without_panicking() {
+        let mut b = Builder::default();
+        b.end();
+        assert_eq!(cpus_of(&b.build()), Err(Error::Malformed));
+        let mut b = Builder::default();
+        b.begin("").begin("cpus");
+        assert_eq!(cpus_of(&b.build()), Err(Error::Malformed));
     }
 }

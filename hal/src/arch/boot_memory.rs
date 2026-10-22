@@ -1,5 +1,5 @@
 //! Building the boot memory map, shared by the architecture modules: the kernel image's extent
-//! from the linker script and the memory a device tree describes.
+//! from the linker script, and the memory and CPUs a device tree describes.
 
 use crate::arch::KERNEL_VIRTUAL_OFFSET;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -146,4 +146,21 @@ pub(crate) unsafe fn device_tree_ram(address: usize) -> MemoryMap {
         return MemoryMap::new();
     }
     map
+}
+
+/// Calls `cpu` with the hardware id of every enabled CPU the device tree at `address` lists
+/// (see [`Fdt::cpus`]); none if there is no valid tree at `address`, or a malformed one.
+///
+/// # Safety
+/// As for [`device_tree`].
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) {
+    // SAFETY: guaranteed by the caller.
+    let Some((tree, _)) = (unsafe { device_tree(address) }) else {
+        return;
+    };
+    // A tree that is malformed further on reports nothing, not a partial list.
+    if tree.cpus(&mut |_| {}).is_ok() {
+        let _ = tree.cpus(cpu);
+    }
 }

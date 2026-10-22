@@ -1,8 +1,9 @@
 //! Reading the ACPI tables the firmware leaves in memory, as far as the kernel needs them
-//! today: enough to power the machine off (sleep state S5).
+//! today: enough to power the machine off (sleep state S5) and to find the CPUs (the MADT).
 //!
 //! Layouts are from the public ACPI Specification (6.5): RSDP (5.2.5), system description
-//! table header (5.2.6), RSDT/XSDT (5.2.7, 5.2.8), FADT (5.2.9), the `\_S5` object (7.4.2) and
+//! table header (5.2.6), RSDT/XSDT (5.2.7, 5.2.8), FADT (5.2.9), MADT (5.2.12), the `\_S5`
+//! object (7.4.2) and
 //! the AML encoding of `Name`/`Package` (20.2). ACPI is not tied to one architecture (x86 PCs
 //! and Arm servers both use it), so this module is architecture-independent and works on byte
 //! slices; architecture code only turns physical addresses into slices.
@@ -23,6 +24,15 @@ const FADT_ACPI_ENABLE: usize = 52;
 const FADT_PM1A_CNT_BLK: usize = 64;
 const FADT_PM1B_CNT_BLK: usize = 68;
 const FADT_X_DSDT: usize = 140;
+
+/// Where the MADT's interrupt controller structures start: after the header, the local
+/// interrupt controller address and the flags (ACPI 6.5, table 5.19).
+const MADT_ENTRIES: usize = 44;
+/// MADT structure type 0, Processor Local APIC (5.2.12.2): 8 bytes, the APIC id at 3 and the
+/// flags at 4, whose bit 0 says the processor is usable.
+const MADT_LOCAL_APIC: u8 = 0;
+const MADT_LOCAL_APIC_LENGTH: usize = 8;
+const MADT_LOCAL_APIC_ENABLED: u32 = 1;
 
 /// Where the root table list lives, from the RSDP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +132,30 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
         pm1a_control_port: read_u32(fadt, FADT_PM1A_CNT_BLK)?,
         pm1b_control_port: read_u32(fadt, FADT_PM1B_CNT_BLK)?,
     })
+}
+
+/// Calls `cpu` with the local APIC id of every usable processor a validated MADT (signature
+/// "APIC") lists, in its order: each Processor Local APIC structure whose Enabled flag is set.
+/// Processors that are only online capable (hot-pluggable, not usable until enabled) are
+/// skipped, as are Processor Local x2APIC structures (type 9), which the specification uses for
+/// ids of 255 and up, beyond what xAPIC mode reaches. A local APIC structure too short to hold
+/// its flags is skipped; a structure whose length runs past the table, or is below 2, ends the
+/// walk.
+pub fn madt_local_apic_ids(madt: &[u8], cpu: &mut dyn FnMut(u8)) {
+    let mut at = MADT_ENTRIES;
+    while let (Some(&kind), Some(&length)) = (madt.get(at), madt.get(at + 1)) {
+        let length = usize::from(length);
+        let Some(entry) = madt.get(at..at + length).filter(|_| length >= 2) else {
+            return;
+        };
+        if kind == MADT_LOCAL_APIC
+            && length >= MADT_LOCAL_APIC_LENGTH
+            && read_u32(entry, 4).is_some_and(|flags| flags & MADT_LOCAL_APIC_ENABLED != 0)
+        {
+            cpu(entry[3]);
+        }
+        at += length;
+    }
 }
 
 /// The `SLP_TYPa` and `SLP_TYPb` values for sleep state S5 (soft off).
@@ -242,6 +276,46 @@ mod tests {
         table[4..8].copy_from_slice(&length.to_le_bytes());
         fix_checksum(&mut table, 9);
         table
+    }
+
+    fn madt_ids(body: &[u8]) -> Vec<u8> {
+        let madt = table(b"APIC", &[&[0u8; 8][..], body].concat());
+        let mut ids = Vec::new();
+        madt_local_apic_ids(&madt, &mut |id| ids.push(id));
+        ids
+    }
+
+    /// A Processor Local APIC structure.
+    fn local_apic(id: u8, flags: u32) -> Vec<u8> {
+        [&[0, 8, id, id][..], &flags.to_le_bytes()].concat()
+    }
+
+    #[test]
+    fn madt_lists_enabled_local_apics_and_skips_other_structures() {
+        let io_apic = [1u8, 12, 0, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0];
+        let x2apic = [9u8, 16, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let body = [
+            local_apic(0, 1),
+            local_apic(1, 1),
+            io_apic.to_vec(),
+            local_apic(2, 0), // disabled
+            local_apic(3, 2), // online capable only
+            x2apic.to_vec(),
+            local_apic(6, 3),
+        ]
+        .concat();
+        assert_eq!(madt_ids(&body), [0, 1, 6]);
+    }
+
+    #[test]
+    fn madt_stops_at_a_malformed_structure() {
+        // A zero length would loop forever; a length past the end is truncated.
+        let zero = [local_apic(4, 1), vec![0, 0, 9, 9], local_apic(5, 1)].concat();
+        assert_eq!(madt_ids(&zero), [4]);
+        let long = [local_apic(4, 1), vec![0, 40, 7, 7, 1, 0, 0, 0]].concat();
+        assert_eq!(madt_ids(&long), [4]);
+        let short = [local_apic(4, 1), vec![0, 4, 7, 7]].concat();
+        assert_eq!(madt_ids(&short), [4]);
     }
 
     #[test]

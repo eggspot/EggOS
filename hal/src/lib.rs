@@ -9,6 +9,7 @@
 
 pub mod acpi;
 pub mod arch;
+pub mod cpu;
 mod exception;
 pub mod fdt;
 mod interrupt;
@@ -158,4 +159,36 @@ pub trait Platform {
     /// since, whose stack is still allocated: resuming a context twice runs two threads on one
     /// stack.
     unsafe fn switch_thread(save: *mut usize, resume: usize);
+
+    /// Calls `cpu` with the hardware id of every CPU the firmware describes as usable, the
+    /// boot CPU included, in the firmware's order (D40). Built from the firmware's description
+    /// on each call.
+    fn cpus(cpu: &mut dyn FnMut(u64));
+
+    /// The hardware id of the CPU that booted the kernel.
+    fn boot_cpu() -> u64;
+
+    /// Starts the stopped CPU with hardware id `cpu` (from [`Self::cpus`]): it switches to the
+    /// page tables in `start` and calls `start.entry(start.argument)` on `start.stack_top`,
+    /// with interrupts masked and the exception vectors installed. Returns once the firmware or
+    /// the machine has accepted the request, which may be before the CPU runs.
+    ///
+    /// # Safety
+    /// `start`'s page tables must be the kernel's own, active on this CPU, and meet
+    /// [`Self::activate_page_tables`]' requirements for as long as the CPU may run. `start` must
+    /// stay allocated and unchanged until the CPU has called its entry, and its stack must be as
+    /// [`cpu::CpuStart::stack_top`] says. Calls must not overlap (x86_64 starts CPUs through one
+    /// trampoline).
+    unsafe fn start_cpu(cpu: u64, start: &cpu::CpuStart) -> Result<(), cpu::StartCpuError>;
+
+    /// Sets this CPU's per-CPU block pointer, which [`Self::cpu_local`] returns from then on.
+    ///
+    /// # Safety
+    /// `block` must be the address of a block that lives for as long as the kernel runs and
+    /// whose first word holds `block` itself (x86_64 reads it back through `gs:0`).
+    unsafe fn set_cpu_local(block: usize);
+
+    /// This CPU's per-CPU block pointer. Only valid once [`Self::set_cpu_local`] has run on
+    /// this CPU; before that, x86_64 faults.
+    fn cpu_local() -> usize;
 }

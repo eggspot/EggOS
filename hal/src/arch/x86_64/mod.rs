@@ -17,10 +17,11 @@ mod timer;
 
 use crate::acpi::{self, RootTable};
 use crate::arch::boot_memory;
+use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, Platform};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use eggos_drivers::serial::{Ns16550, Uart};
 use port::PortIo;
 
@@ -134,6 +135,103 @@ start64_high:
     jmp     3b
     .popsection
 
+    // A secondary CPU's 64-bit entry, reached from the trampoline below at the kernel's
+    // virtual address with the boot page tables (D40): the `CpuStart` from the trampoline's
+    // slot, read through the boot tables' identity map, and its stack; then the kernel's GDT
+    // and segments as in `start64_high` (CS through a far return, which needs the stack), and
+    // the IDT.
+    .pushsection .text.boot, "ax"
+secondary_start64:
+    movq    {trampoline} + (eggos_trampoline_start_slot - eggos_trampoline_start), %rbx
+    movq    {start_stack_top}(%rbx), %rsp
+    // The slot is read: the boot CPU may reuse it for the next CPU.
+    movl    $1, {trampoline} + (eggos_trampoline_taken - eggos_trampoline_start)
+    lgdt    boot_gdt_pointer64(%rip)
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %ss
+    movw    %ax, %fs
+    movw    %ax, %gs
+    leaq    1f(%rip), %rax
+    pushq   $0x08
+    pushq   %rax
+    lretq
+1:  call    {load_idt}
+    movq    %rbx, %rdi
+    call    {secondary_main}
+2:  cli
+    hlt
+    jmp     2b
+    .popsection
+
+    // The trampoline that starts a secondary CPU (D40), copied to physical address
+    // {trampoline} (page {trampoline_page}, the start-up vector) before the CPUs are started;
+    // never run where it is linked. The start-up interrupt starts the CPU in real mode at
+    // {trampoline}: protected mode with the trampoline's own GDT, then long mode with the boot
+    // page tables (below 4 GiB, as a 32-bit CR3 needs), then on to `secondary_start64` at the
+    // kernel's virtual address. Addresses are the copy's: {trampoline} + offset.
+    .pushsection .rodata.trampoline, "a"
+    .balign 16
+    .global eggos_trampoline_start
+eggos_trampoline_start:
+    .code16
+    cli
+    cld
+    xorw    %ax, %ax
+    movw    %ax, %ds
+    lgdtl   {trampoline} + (trampoline_gdt_pointer - eggos_trampoline_start)
+    movl    %cr0, %eax
+    orl     $1, %eax                // PE
+    movl    %eax, %cr0
+    ljmpl   $0x08, ${trampoline} + (trampoline32 - eggos_trampoline_start)
+    .code32
+trampoline32:
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %ss
+    movl    %cr4, %eax
+    orl     $(1 << 5), %eax         // PAE
+    movl    %eax, %cr4
+    movl    $(boot_pml4 - KERNEL_VIRTUAL_OFFSET), %eax
+    movl    %eax, %cr3
+    movl    $0xc0000080, %ecx
+    rdmsr
+    orl     $(1 << 8), %eax         // EFER.LME
+    wrmsr
+    movl    %cr0, %eax
+    orl     $0x80000000, %eax       // PG
+    movl    %eax, %cr0
+    ljmpl   $0x18, ${trampoline} + (trampoline64 - eggos_trampoline_start)
+    .code64
+trampoline64:
+    movabsq $secondary_start64, %rax
+    jmpq    *%rax
+    .balign 8
+trampoline_gdt:
+    .quad 0                         // null descriptor
+    .quad 0x00cf9b000000ffff        // 0x08: 32-bit code
+    .quad 0x00cf93000000ffff        // 0x10: data
+    .quad 0x00af9b000000ffff        // 0x18: 64-bit code
+trampoline_gdt_end:
+trampoline_gdt_pointer:
+    .word trampoline_gdt_end - trampoline_gdt - 1
+    .long {trampoline} + (trampoline_gdt - eggos_trampoline_start)
+    .balign 8
+    // Written by the boot CPU in the copy before each start: the `CpuStart`'s address, and
+    // a flag the CPU sets once it has read it.
+    .global eggos_trampoline_start_slot
+eggos_trampoline_start_slot:
+    .quad 0
+    .global eggos_trampoline_taken
+eggos_trampoline_taken:
+    .long 0
+    .balign 8
+    .global eggos_trampoline_end
+eggos_trampoline_end:
+    .popsection
+
     .pushsection .rodata.boot, "a"
     .balign 8
 boot_gdt:
@@ -170,6 +268,11 @@ boot_pd:
     start_info = sym PVH_START_INFO,
     install_exception_vectors = sym exception::install,
     init_timer = sym timer::init,
+    load_idt = sym exception::load,
+    secondary_main = sym secondary_main,
+    start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
+    trampoline = const TRAMPOLINE,
+    trampoline_page = const TRAMPOLINE >> 12,
     options(att_syntax)
 );
 
@@ -212,11 +315,132 @@ const CR0_WP: u64 = 1 << 16;
 
 /// Memory below 1 MiB stays out of the allocator: it holds the real-mode IVT, the BIOS data
 /// areas, the EBDA and the legacy BIOS area (where the RSDP is found), and the trampoline that
-/// starts the other CPUs will need it (M4).
+/// starts the other CPUs ([`TRAMPOLINE`]).
 const LOW_MEMORY: PhysicalRange = PhysicalRange {
     start: 0,
     end: 0x10_0000,
 };
+
+/// Where the trampoline that starts the secondary CPUs is copied (D40): a page of RAM below
+/// 1 MiB, as the start-up interrupt's 8-bit page number requires, inside [`LOW_MEMORY`], which
+/// the allocator never hands out. `start_cpu` checks the loader's memory map says it is RAM and
+/// holds none of the loader's data.
+const TRAMPOLINE: usize = 0x8000;
+const TRAMPOLINE_PAGE_SIZE: usize = 4096;
+
+/// Set once the trampoline is copied and the other CPUs are reset with INIT.
+static TRAMPOLINE_READY: AtomicBool = AtomicBool::new(false);
+
+/// How long to wait after INIT before the first start-up interrupt (SDM vol. 3A, 9.4.4.1),
+/// before a second start-up interrupt, and in all for a CPU to read its `CpuStart`.
+const INIT_DELAY_US: u64 = 10_000;
+const STARTUP_RETRY_US: u64 = 200;
+const STARTUP_TIMEOUT_US: u64 = 100_000;
+
+/// `IA32_GS_BASE`: the GS segment's base in 64-bit mode, the per-CPU block pointer (D40).
+const IA32_GS_BASE: u32 = 0xc000_0101;
+
+unsafe extern "C" {
+    /// The trampoline in `.rodata`, and the two words in it the boot CPU writes in the copy
+    /// (see the boot code above).
+    static eggos_trampoline_start: u8;
+    static eggos_trampoline_start_slot: u8;
+    static eggos_trampoline_taken: u8;
+    static eggos_trampoline_end: u8;
+}
+
+/// Called by `secondary_start64` on the `CpuStart`'s stack, at the kernel's virtual address with
+/// the boot page tables and the IDT loaded: switches to the kernel's page tables, then calls the
+/// entry.
+extern "C" fn secondary_main(start: &CpuStart) -> ! {
+    // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
+    // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
+    // interrupts are masked (the trampoline starts with `cli`).
+    unsafe { X86_64::activate_page_tables(&start.page_table_roots[..1]) };
+    (start.entry)(start.argument)
+}
+
+/// The trampoline's offset of `symbol`, one of the symbols inside it.
+fn trampoline_offset(symbol: *const u8) -> usize {
+    symbol as usize - &raw const eggos_trampoline_start as usize
+}
+
+/// The atomic word in the trampoline's copy at the offset `symbol` has in the original.
+///
+/// # Safety
+/// `symbol` must be one of the trampoline's words, aligned and sized for `T`, and the copy must
+/// be in place ([`prepare_trampoline`]).
+unsafe fn trampoline_word<T>(symbol: *const u8) -> &'static T {
+    let address = DIRECT_MAP_OFFSET + TRAMPOLINE + trampoline_offset(symbol);
+    // SAFETY: the copy is in the trampoline page, which the direct map maps and the allocator
+    // never hands out; the caller guarantees the word is a `T` there. `T` is an atomic, so
+    // the starting CPU's plain accesses to it are its only other use.
+    unsafe { &*(address as *const T) }
+}
+
+/// Whether the trampoline page is RAM in the loader's memory map and holds none of its data.
+fn trampoline_page_is_free() -> bool {
+    let page = PhysicalRange::from_start_length(TRAMPOLINE as u64, TRAMPOLINE_PAGE_SIZE as u64);
+    let Some(pvh) = PvhMemoryMap::read() else {
+        return false;
+    };
+    let in_ram = pvh.entries().any(|(range, kind)| {
+        kind == PVH_MEMMAP_TYPE_RAM && range.start <= page.start && page.end <= range.end
+    });
+    let overlaps = |range: PhysicalRange| range.start < page.end && page.start < range.end;
+    in_ram && !pvh.boot_data().into_iter().any(overlaps)
+}
+
+/// Copies the trampoline to [`TRAMPOLINE`] and sends INIT to every other CPU, then waits as
+/// the SDM asks, once for all of them; afterwards each CPU only needs its start-up interrupts.
+fn prepare_trampoline() -> Result<(), StartCpuError> {
+    if TRAMPOLINE_READY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let length = trampoline_offset(&raw const eggos_trampoline_end);
+    if !trampoline_page_is_free() || length > TRAMPOLINE_PAGE_SIZE {
+        return Err(StartCpuError::Refused(0));
+    }
+    // SAFETY: the trampoline page is RAM that the allocator never hands out (`LOW_MEMORY`) and
+    // that holds none of the loader's data (checked above); the direct map makes it writable.
+    // The source is the trampoline in `.rodata`, `length` bytes, at most a page.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            &raw const eggos_trampoline_start,
+            (DIRECT_MAP_OFFSET + TRAMPOLINE) as *mut u8,
+            length,
+        );
+    }
+    timer::send_init_to_others();
+    delay_us(INIT_DELAY_US);
+    TRAMPOLINE_READY.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Busy-waits `microseconds` on the clock.
+fn delay_us(microseconds: u64) {
+    let end = timer::now() + crate::time::mul_div_ceil(microseconds, timer::frequency(), 1_000_000);
+    while timer::now() < end {
+        core::hint::spin_loop();
+    }
+}
+
+/// Waits up to `microseconds` for the CPU being started to set the trampoline's taken flag.
+fn wait_until_taken(microseconds: u64) -> bool {
+    // SAFETY: the flag is the trampoline's u32, and the copy is in place (`start_cpu` waits
+    // only after `prepare_trampoline`).
+    let taken = unsafe { trampoline_word::<AtomicU32>(&raw const eggos_trampoline_taken) };
+    let end = timer::now() + crate::time::mul_div_ceil(microseconds, timer::frequency(), 1_000_000);
+    loop {
+        if taken.load(Ordering::Acquire) != 0 {
+            return true;
+        }
+        if timer::now() >= end {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
 
 /// COM1's I/O ports.
 const COM1_PORT: u16 = 0x3f8;
@@ -443,6 +667,83 @@ impl Platform for X86_64 {
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
     }
+
+    fn cpus(cpu: &mut dyn FnMut(u64)) {
+        if let Some(madt) = acpi_table(b"APIC") {
+            acpi::madt_local_apic_ids(madt, &mut |id| cpu(id.into()));
+        }
+    }
+
+    fn boot_cpu() -> u64 {
+        timer::boot_apic_id().into()
+    }
+
+    unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
+        let apic_id = u8::try_from(cpu).map_err(|_| StartCpuError::InvalidCpu)?;
+        if cpu == Self::boot_cpu() {
+            return Err(StartCpuError::AlreadyRunning);
+        }
+        prepare_trampoline()?;
+        // SAFETY: the slot is the trampoline's u64, and the copy is in place. No CPU reads it
+        // until the start-up interrupt below, and the previous CPU set the taken flag only
+        // after reading it, so it no longer does.
+        let slot = unsafe { trampoline_word::<AtomicU64>(&raw const eggos_trampoline_start_slot) };
+        // SAFETY: the taken flag is the trampoline's u32; as above.
+        let taken = unsafe { trampoline_word::<AtomicU32>(&raw const eggos_trampoline_taken) };
+        slot.store(core::ptr::from_ref(start) as u64, Ordering::Relaxed);
+        taken.store(0, Ordering::Release);
+        // Keep the stores above, and the caller's writes to `*start`, before the start-up
+        // interrupt's ICR write, which a release store alone would not order (x86 itself keeps
+        // stores in order).
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let page = (TRAMPOLINE >> 12) as u8;
+        // A second start-up interrupt only if the first was missed (SDM 9.4.4.1 sends two).
+        timer::send_startup(apic_id, page);
+        if wait_until_taken(STARTUP_RETRY_US) {
+            return Ok(());
+        }
+        timer::send_startup(apic_id, page);
+        if wait_until_taken(STARTUP_TIMEOUT_US) {
+            Ok(())
+        } else {
+            Err(StartCpuError::Refused(-1))
+        }
+    }
+
+    unsafe fn set_cpu_local(block: usize) {
+        // SAFETY: IA32_GS_BASE is architectural; only the kernel uses GS, and only through
+        // `cpu_local`. Loading a selector into GS (the entry code does, before this) would
+        // reset the base, which nothing does afterwards.
+        unsafe { write_msr(IA32_GS_BASE, block as u64) };
+    }
+
+    #[inline]
+    fn cpu_local() -> usize {
+        let block: usize;
+        // SAFETY: the caller has set the GS base to a block whose first word holds the block's
+        // own address (`set_cpu_local`'s contract), so the load reads it.
+        unsafe {
+            core::arch::asm!("mov {}, gs:[0]", out(reg) block, options(nostack, readonly, preserves_flags));
+        }
+        block
+    }
+}
+
+/// Writes `value` to model-specific register `msr`.
+///
+/// # Safety
+/// The MSR must exist and the write must keep the machine in a state the kernel expects.
+unsafe fn write_msr(msr: u32, value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
 }
 
 /// The PVH loader's memory map (start info version 1 and later).
@@ -519,16 +820,19 @@ struct S5Target {
     sleep_type: acpi::S5SleepType,
 }
 
-/// Reads the ACPI tables for the S5 sleep type and the PM1 control ports.
-fn s5_target() -> Option<S5Target> {
+/// The validated ACPI table with `signature` that the root table lists.
+fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
     let root = pvh_rsdp()
         .and_then(acpi::parse_rsdp)
         .or_else(bios_area_rsdp)?;
     let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
     let root_table = table(root_address, signature_of(root))?;
-    let fadt = acpi::root_table_entries(root_table, root)
-        .find_map(|address| table(address, b"FACP"))
-        .and_then(acpi::parse_fadt)?;
+    acpi::root_table_entries(root_table, root).find_map(|address| table(address, signature))
+}
+
+/// Reads the ACPI tables for the S5 sleep type and the PM1 control ports.
+fn s5_target() -> Option<S5Target> {
+    let fadt = acpi_table(b"FACP").and_then(acpi::parse_fadt)?;
     let sleep_type = table(fadt.dsdt, b"DSDT")
         .and_then(|dsdt| acpi::find_s5_sleep_type(&dsdt[acpi::TABLE_HEADER_LENGTH..]))?;
     Some(S5Target { fadt, sleep_type })

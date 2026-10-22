@@ -13,6 +13,7 @@ mod thread;
 mod timer;
 
 use crate::arch::boot_memory;
+use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
 use crate::{ExitStatus, MemoryMap, Platform};
@@ -87,9 +88,33 @@ _start:
     cmp     x10, #{direct_map_gigabytes}
     b.lo    3b
 
-    // Translation on: memory attributes, address sizes (IPS: the CPU's physical address
-    // size, at most 48 bits), both roots, then the MMU and the caches. Then continue at the
-    // kernel's virtual address.
+    // Translation on, then continue at the kernel's virtual address.
+    bl      boot_translation_on
+    ldr     x0, =4f
+    br      x0
+
+    // From here on the kernel runs at its virtual address, and `adrp` gives virtual addresses.
+4:  adrp    x0, __stack_top
+    add     x0, x0, :lo12:__stack_top
+    mov     sp, x0
+
+    // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
+    adrp    x0, exception_vectors
+    add     x0, x0, :lo12:exception_vectors
+    msr     vbar_el1, x0
+    isb
+    bl      {init_timer}
+    bl      kernel_main
+6:  wfe
+    b       6b
+
+    // Turns translation on with the boot page tables, from code running at its physical
+    // address with the MMU off: memory attributes, address sizes (IPS: the CPU's physical
+    // address size, at most 48 bits), both roots, then the MMU and the caches. The TLB is
+    // invalidated first, as its contents are unknown on a CPU that just started. Returns to
+    // the caller's physical address, mapped by the boot tables' identity gigabyte. Clobbers
+    // x0-x2.
+boot_translation_on:
     ldr     x0, ={mair}
     msr     mair_el1, x0
     mrs     x1, id_aa64mmfr0_el1
@@ -113,25 +138,33 @@ _start:
     orr     x0, x0, x1
     msr     sctlr_el1, x0
     isb
-    ldr     x0, =4f
+    ret
+
+    // A secondary CPU, started by PSCI CPU_ON (D40): EL1, MMU off, interrupts masked, and
+    // x0 = the context id, the kernel virtual address of the `CpuStart`. The boot page tables
+    // the boot CPU built are still in .bss, and map the `CpuStart` and its stack (the kernel
+    // image and the direct map).
+    .global eggos_secondary_start
+eggos_secondary_start:
+    mov     x19, x0
+    msr     spsel, #1
+    bl      boot_translation_on
+    ldr     x0, =7f
     br      x0
-
-    // From here on the kernel runs at its virtual address, and `adrp` gives virtual addresses.
-4:  adrp    x0, __stack_top
-    add     x0, x0, :lo12:__stack_top
+7:  ldr     x0, [x19, #{start_stack_top}]
     mov     sp, x0
-
-    // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
     adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0
     isb
-    bl      {init_timer}
-    bl      kernel_main
-6:  wfe
-    b       6b
+    mov     x0, x19
+    bl      {secondary_main}
+8:  wfe
+    b       8b
     .ltorg
 "#,
+    secondary_main = sym secondary_main,
+    start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
     init_timer = sym timer::init,
     l0_low = sym BOOT_L0_LOW,
     l1_low = sym BOOT_L1_LOW,
@@ -173,8 +206,8 @@ const BOOT_KERNEL: Attributes = Attributes {
 #[repr(C, align(4096))]
 struct BootTable([u64; paging::ENTRIES]);
 
-// Built by `_start` before any Rust code runs; never used again once the kernel's own page
-// tables are active.
+// Built by `_start` before any Rust code runs. Once the kernel's own page tables are active,
+// only secondary CPUs use them, to turn translation on (D40); nothing writes them again.
 static mut BOOT_L0_LOW: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L1_LOW: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L0_HIGH: BootTable = BootTable([0; paging::ENTRIES]);
@@ -209,8 +242,24 @@ const TCR_IPS_MAX: u64 = 0b101;
 /// `SCTLR_EL1`: M (MMU on), C (data cache), I (instruction cache).
 const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
 
-/// PSCI 0.2+ `SYSTEM_OFF` function ID (Arm DEN 0022).
+/// PSCI 0.2+ `SYSTEM_OFF` and 64-bit `CPU_ON` function IDs (Arm DEN 0022, 5.1).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
+const PSCI_CPU_ON: u64 = 0xc400_0003;
+/// PSCI return codes `CPU_ON` gives (Arm DEN 0022, 5.2.2).
+const PSCI_SUCCESS: i64 = 0;
+const PSCI_INVALID_PARAMETERS: i64 = -2;
+const PSCI_ALREADY_ON: i64 = -4;
+const PSCI_ON_PENDING: i64 = -5;
+
+/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
+/// with the boot page tables: switches to the kernel's page tables, then calls the entry.
+extern "C" fn secondary_main(start: &CpuStart) -> ! {
+    // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
+    // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
+    // interrupts are masked (PSCI CPU_ON starts the CPU with them masked).
+    unsafe { Aarch64::activate_page_tables(&start.page_table_roots) };
+    (start.entry)(start.argument)
+}
 
 #[derive(Debug)]
 pub struct Aarch64;
@@ -411,5 +460,65 @@ impl Platform for Aarch64 {
         // calling convention requires a call to preserve, so to each thread the call is an
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    fn cpus(cpu: &mut dyn FnMut(u64)) {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_cpus(RAM_BASE, cpu) };
+    }
+
+    fn boot_cpu() -> u64 {
+        // `_start` lets only the CPU whose affinity is all zero boot.
+        0
+    }
+
+    unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
+        unsafe extern "C" {
+            /// The secondary entry point in the boot code above.
+            fn eggos_secondary_start();
+        }
+        let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET);
+        let context = core::ptr::from_ref(start) as u64;
+        let result: i64;
+        // SAFETY: CPU_ON starts CPU `cpu` at the physical address `entry`, the secondary entry
+        // code, with `context` in x0; the caller guarantees what that code relies on (the
+        // kernel's tables, `start` and its stack). The new CPU reads `*start`, so the asm may
+        // read memory (no `nomem`: the compiler keeps the writes to it before the call), and
+        // `dsb ish` completes those writes for the other CPUs before the call: an HVC is not
+        // a barrier. SMCCC v1.0 lets the callee corrupt x0-x17, so all are declared clobbered.
+        unsafe {
+            core::arch::asm!(
+                "dsb ish",
+                "hvc #0",
+                inout("x0") PSCI_CPU_ON => result,
+                inout("x1") cpu => _,
+                inout("x2") entry => _,
+                inout("x3") context => _,
+                out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x9") _,
+                out("x10") _, out("x11") _, out("x12") _, out("x13") _, out("x14") _,
+                out("x15") _, out("x16") _, out("x17") _,
+                options(nostack),
+            );
+        }
+        match result {
+            PSCI_SUCCESS => Ok(()),
+            PSCI_INVALID_PARAMETERS => Err(StartCpuError::InvalidCpu),
+            PSCI_ALREADY_ON | PSCI_ON_PENDING => Err(StartCpuError::AlreadyRunning),
+            error => Err(StartCpuError::Refused(error)),
+        }
+    }
+
+    unsafe fn set_cpu_local(block: usize) {
+        // SAFETY: TPIDR_EL1 is a scratch register for the kernel's own use; nothing else
+        // reads it.
+        unsafe { core::arch::asm!("msr tpidr_el1, {}", in(reg) block, options(nomem, nostack)) };
+    }
+
+    #[inline]
+    fn cpu_local() -> usize {
+        let block: usize;
+        // SAFETY: reading TPIDR_EL1 has no side effects.
+        unsafe { core::arch::asm!("mrs {}, tpidr_el1", out(reg) block, options(nomem, nostack)) };
+        block
     }
 }
