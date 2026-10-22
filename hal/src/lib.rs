@@ -120,6 +120,7 @@ pub trait Platform {
     /// executable, data and stack writable), every range of [`Self::physical_memory`] at
     /// [`Self::direct_map_offset`], and every [`Self::early_device_regions`] region at the same
     /// offset as device memory. Nothing may hold a pointer into memory those tables leave
-    /// unmapped.
+    /// unmapped. Interrupts must be masked (as the kernel runs outside
+    /// [`Self::wait_for_interrupt`]): the switch passes through code no handler may interrupt.
     unsafe fn activate_page_tables(roots: &[u64]);
 }
