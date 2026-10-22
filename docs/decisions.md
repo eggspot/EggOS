@@ -1294,7 +1294,8 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
 - **Cost (D24).** `syscall_round_trip`: about 106 (aarch64), 148 (riscv64) and 107 (x86_64)
   instructions per null system call, with the program's setup amortized in. No other benchmark
   moved except the x86_64 speedups above. 168 more bytes per CPU block on x86_64 (GDT, TSS, one
-  scratch word); about 300 bytes of test program per kernel image.
+  scratch word); a test program of 396 (aarch64), 334 (riscv64) and 199 (x86_64) bytes in the
+  kernel image.
 - **Follow-ups (roadmap).** Processes that run their program in a loop and switch threads on an
   interrupt exit (preemption on return to user mode); on x86_64, IST stacks for NMI, double fault,
   machine check and debug exceptions, with the paranoid GS check, before any untrusted program

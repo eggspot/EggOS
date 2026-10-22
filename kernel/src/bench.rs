@@ -275,9 +275,8 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
 /// A null system call from user mode and back (D47): the HAL's test program makes system call
 /// 2 in a loop; each iteration is its `svc`/`ecall`/`syscall` into the kernel, the kernel
 /// looking at why, and the return to the program. The program's address space stays active
-/// throughout, as for a process making system calls. Setting the program up and freeing it
-/// (about 10 000 instructions on every architecture) is timed too, amortized over the
-/// iterations.
+/// throughout, as for a process making system calls. Setting the program up and freeing it is
+/// timed too, amortized over the iterations.
 fn syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     // SAFETY: `memory.page_tables` are the kernel's tables, active on this CPU, the only one
     // the benchmarks run on.
