@@ -2,6 +2,7 @@
 
 use core::cell::UnsafeCell;
 use core::fmt;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -42,7 +43,10 @@ impl<T> SpinLock<T> {
                 core::hint::spin_loop();
             }
         }
-        SpinLockGuard { lock: self }
+        SpinLockGuard {
+            lock: self,
+            _value: PhantomData,
+        }
     }
 
     /// Takes the lock if it is free; `None` if someone holds it.
@@ -51,7 +55,10 @@ impl<T> SpinLock<T> {
         self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| SpinLockGuard { lock: self })
+            .map(|_| SpinLockGuard {
+                lock: self,
+                _value: PhantomData,
+            })
     }
 }
 
@@ -66,6 +73,10 @@ impl<T> fmt::Debug for SpinLock<T> {
 /// Access to a [`SpinLock`]'s value; the lock is released when it is dropped.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+    /// Makes the guard `Send` and `Sync` exactly when `&mut T` is: a shared guard hands out
+    /// `&T`, so sharing it between threads needs `T: Sync` (the lock alone is `Sync` for any
+    /// `T: Send`, which would otherwise let two threads reach a `Cell` through one guard).
+    _value: PhantomData<&'a mut T>,
 }
 
 impl<T> Deref for SpinLockGuard<'_, T> {

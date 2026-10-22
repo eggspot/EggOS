@@ -280,27 +280,34 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
 }
 
 /// The kernel heap must hand out writable memory in the direct map, aligned as asked, without
-/// overlap, from every size class and as whole frames, and give it all back: frame-sized
-/// allocations return their frames. `Vec` growth (through `realloc`) must keep its contents up
+/// overlap, from every size class and as whole frames, and give it all back: exactly the
+/// frame-sized allocations return their frames. `Vec` growth (through `realloc`) must keep its contents up
 /// to a frame. On the bare-metal targets the `Vec` uses the kernel heap too, as the global
 /// allocator.
 fn heap_allocates_in_the_direct_map<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    const LAYOUTS: [(usize, usize); 7] = [
+    /// Every size class (16 to 2048 bytes), then three whole frames.
+    const LAYOUTS: [(usize, usize); 11] = [
         (1, 1),
         (24, 8),
-        (100, 64),
+        (64, 64),
+        (100, 8),
+        (200, 8),
+        (512, 512),
+        (1000, 8),
         (2048, 16),
         (2049, 8),
         (4096, 4096),
         (4000, 8),
     ];
-    let free_before = memory::FRAMES
-        .lock()
-        .as_ref()
-        .ok_or("there is no frame allocator")?
-        .free_frames();
+    const WHOLE_FRAMES: u64 = 3;
+    let free_frames = || {
+        memory::FRAMES
+            .lock()
+            .as_ref()
+            .map(FrameAllocator::free_frames)
+    };
     let mut taken = [core::ptr::null_mut::<u8>(); LAYOUTS.len()];
     for (slot, &(size, align)) in taken.iter_mut().zip(&LAYOUTS) {
         let layout = Layout::from_size_align(size, align).map_err(|_| "bad test layout")?;
@@ -318,28 +325,29 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
         {
             return Err("heap memory is not aligned, writable memory in the direct map");
         }
-        // SAFETY: `pointer` is a fresh allocation of `size` bytes.
-        unsafe { pointer.write_bytes(size as u8, size) };
     }
-    for (&pointer, &(size, _)) in taken.iter().zip(&LAYOUTS) {
+    // Each allocation filled with its own number, written only once all exist, so any overlap
+    // shows.
+    for (number, (&pointer, &(size, _))) in taken.iter().zip(&LAYOUTS).enumerate() {
+        // SAFETY: `pointer` is a live allocation of `size` bytes.
+        unsafe { pointer.write_bytes(number as u8 + 1, size) };
+    }
+    for (number, (&pointer, &(size, _))) in taken.iter().zip(&LAYOUTS).enumerate() {
         // SAFETY: each allocation is still owned and was written in full.
         let bytes = unsafe { core::slice::from_raw_parts(pointer, size) };
-        if bytes.iter().any(|&byte| byte != size as u8) {
+        if bytes.iter().any(|&byte| byte != number as u8 + 1) {
             return Err("heap allocations overlap");
         }
     }
+    let free_before = free_frames().ok_or("there is no frame allocator")?;
     for (&pointer, &(size, align)) in taken.iter().zip(&LAYOUTS) {
         let layout = Layout::from_size_align(size, align).map_err(|_| "bad test layout")?;
         // SAFETY: allocated above with this layout and no longer used.
         unsafe { HEAP.dealloc(pointer, layout) };
     }
-    let free_after = memory::FRAMES
-        .lock()
-        .as_ref()
-        .map_or(0, FrameAllocator::free_frames);
-    // The size classes keep the frames they carved (at most one each here).
-    if free_before.saturating_sub(free_after) > 4 {
-        return Err("frame-sized heap allocations did not give their frames back");
+    // The size classes keep the frames they carved; only the whole frames come back.
+    if free_frames() != Some(free_before + WHOLE_FRAMES) {
+        return Err("freeing did not give back exactly the whole-frame allocations' frames");
     }
     let mut numbers = Vec::new();
     for n in 0..512u64 {

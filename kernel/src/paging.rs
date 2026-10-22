@@ -273,7 +273,8 @@ pub fn kernel_page_tables<P: Platform>(
 /// Builds the kernel's page tables (see [`kernel_page_tables`]) from the free memory in
 /// `free_memory` and switches to them. From then on the frame allocator and the tables reach
 /// physical memory through the direct map, and the frame allocator is [`memory::FRAMES`], so
-/// the kernel heap works.
+/// the kernel heap works. Called once per boot: the heap keeps frames from the allocator this
+/// installs, which a second call would replace.
 pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'static str> {
     let direct_map = P::physical_memory();
     let covered = |free: &PhysicalRange| {

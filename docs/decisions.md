@@ -505,5 +505,7 @@ architecture once `paging::enable` has run; before that, allocating fails.
   choice, alignment, distinct blocks, LIFO reuse, frame use per class, frames given back, and
   exhaustion and oversized layouts failing. A boot self-test on every architecture allocates
   from every size class and as whole frames through the global heap, checks each block is
-  aligned, writable and in the direct map and that none overlap, frees them and checks the
-  frames came back, then grows a `Vec` to a frame through `realloc`.
+  aligned, writable and in the direct map and that none overlap (each filled with its own
+  number), frees them and checks that exactly the whole frames came back, then grows a `Vec` to
+  a frame through `realloc`. The spin lock's guard is `Sync` only for `T: Sync` (found by the
+  independent review: without that, two threads could reach a `Cell` through one guard).
