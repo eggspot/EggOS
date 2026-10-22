@@ -692,6 +692,10 @@ impl Platform for X86_64 {
         let taken = unsafe { trampoline_word::<AtomicU32>(&raw const eggos_trampoline_taken) };
         slot.store(core::ptr::from_ref(start) as u64, Ordering::Relaxed);
         taken.store(0, Ordering::Release);
+        // Keep the stores above, and the caller's writes to `*start`, before the start-up
+        // interrupt's ICR write, which a release store alone would not order (x86 itself keeps
+        // stores in order).
+        core::sync::atomic::fence(Ordering::SeqCst);
         let page = (TRAMPOLINE >> 12) as u8;
         // A second start-up interrupt only if the first was missed (SDM 9.4.4.1 sends two).
         timer::send_startup(apic_id, page);

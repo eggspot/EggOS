@@ -16,8 +16,9 @@
 //! stays free for the user-mode trap entry), the GS base on x86_64.
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
-/// has called [`CpuStart::entry`]; the architecture's entry code reads it through the direct
-/// map.
+/// has called [`CpuStart::entry`]; the architecture's entry code reads it through the boot
+/// page tables, at the address the kernel passed (on x86_64 that address is in the
+/// trampoline's slot, which the CPU reads through the boot tables' identity map).
 #[derive(Debug)]
 #[repr(C)]
 pub struct CpuStart {

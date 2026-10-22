@@ -482,10 +482,13 @@ impl Platform for Aarch64 {
         let result: i64;
         // SAFETY: CPU_ON starts CPU `cpu` at the physical address `entry`, the secondary entry
         // code, with `context` in x0; the caller guarantees what that code relies on (the
-        // kernel's tables, `start` and its stack). The call itself touches none of our memory.
-        // SMCCC v1.0 lets the callee corrupt x0-x17, so all of them are declared clobbered.
+        // kernel's tables, `start` and its stack). The new CPU reads `*start`, so the asm may
+        // read memory (no `nomem`: the compiler keeps the writes to it before the call), and
+        // `dsb ish` completes those writes for the other CPUs before the call: an HVC is not
+        // a barrier. SMCCC v1.0 lets the callee corrupt x0-x17, so all are declared clobbered.
         unsafe {
             core::arch::asm!(
+                "dsb ish",
                 "hvc #0",
                 inout("x0") PSCI_CPU_ON => result,
                 inout("x1") cpu => _,
@@ -494,7 +497,7 @@ impl Platform for Aarch64 {
                 out("x4") _, out("x5") _, out("x6") _, out("x7") _, out("x8") _, out("x9") _,
                 out("x10") _, out("x11") _, out("x12") _, out("x13") _, out("x14") _,
                 out("x15") _, out("x16") _, out("x17") _,
-                options(nomem, nostack),
+                options(nostack),
             );
         }
         match result {

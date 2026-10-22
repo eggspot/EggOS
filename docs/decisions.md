@@ -928,4 +928,8 @@ run queues) is the next step.
   split into fill-once and load-per-CPU; TLB shootdown for tables changed while other CPUs run
   (`tlbi ...is`, SBI RFENCE, IPIs); x2APIC mode for ids of 255 and up; checking for an
   invariant TSC before threads move between CPUs; booting from a CPU whose affinity is not 0
-  on aarch64 (M13); a console lock for messages from any CPU.
+  on aarch64 (M13); a console lock for messages from any CPU (a parked x86 CPU that takes an
+  NMI would report it through the shared handler); the PSCI conduit (HVC or SMC) and
+  `enable-method` read from the device tree, and a full known `SCTLR_EL1` value instead of
+  ORing bits into the reset value (real hardware, M13); starting the CPUs in `boot` itself,
+  with the self-test only checking them, once secondaries run threads.

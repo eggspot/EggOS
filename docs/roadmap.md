@@ -52,7 +52,8 @@ SMP follow-ups (D40): per-CPU run queues, idle threads, tick state and wait-queu
 per-CPU interrupt controller and timer setup (GIC CPU interface and timer PPI, `sie.STIE`,
 local APIC and LVT); TLB shootdown when live tables change; x2APIC for APIC ids of 255 and up;
 an invariant-TSC check before threads move between CPUs; booting from a CPU whose affinity is
-not 0 on aarch64 (M13); a console lock for messages from any CPU.
+not 0 on aarch64, the PSCI conduit from the device tree and a full known `SCTLR_EL1` (M13); a
+console lock for messages from any CPU; starting the CPUs in `boot`, not in a self-test.
 
 Heap and buddy follow-ups (D30, D31): returning empty slabs to the frame allocator (a live-block
 count per frame); per-CPU caches instead of one heap lock and a high watermark on the free stack

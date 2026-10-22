@@ -448,9 +448,12 @@ impl Platform for Riscv64 {
         }
         let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(KERNEL_VIRTUAL_OFFSET);
         let opaque = core::ptr::from_ref(start) as usize;
+        core::sync::atomic::fence(Ordering::SeqCst);
         // SAFETY: `hart_start` starts hart `cpu` at the physical address `entry`, the secondary
         // entry code, with `opaque` in a1; the caller guarantees what that code relies on (the
-        // kernel's tables, `start` and its stack). The call itself touches none of our memory.
+        // kernel's tables, `start` and its stack). The new hart reads `*start`: the fence
+        // above orders the writes to it before the call, for the compiler (`sbi_call` is no
+        // `nomem` asm either) and for the other harts (`fence rw, rw`).
         let (error, _) = unsafe {
             sbi_call(
                 SBI_EXT_HSM,
