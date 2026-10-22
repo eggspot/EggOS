@@ -21,9 +21,9 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M11 | Graphics stack (virtio-gpu first) and compositor | |
 | M12 | Desktop shell, designed from `docs/ux/` | |
 | M13 | Real hardware and vendor GPU drivers | |
-| M14 | Compatibility layers: Linux userland, then Android, Windows, macOS (order: D2, provisional) | |
+| M14 | Compatibility layers, native not emulated (D17): Linux userland, then Android, Windows, macOS, iOS (order: D2, provisional) | |
 | M15 | AI-native agent interface (D3) | |
-| M16 | Editions: personal, professional, enterprise, server | |
+| M16 | Component manager and editions as component presets (D18): personal, professional, enterprise, server | |
 
 UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switcher-habit research).
 
@@ -66,7 +66,7 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 |------|---------|
 | Kernel | memory management, interrupts, timers, scheduling, syscalls |
 | Hardware | the other architectures; every driver beyond the early UARTs |
-| Compatibility | Linux ABI, Android, Windows and macOS layers |
+| Compatibility | Linux ABI, Android, Windows, macOS and iOS layers |
 | Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
 | AI-native | agent interface design and implementation |
-| Editions | packaging and policy per edition |
+| Editions | component manager; packaging and policy per edition |
