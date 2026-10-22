@@ -461,7 +461,7 @@ Second step of M2. The kernel now runs on page tables it builds itself on every 
   without it), which on real hardware may alias device registers with the wrong memory type,
   so the ACPI work (M5) maps firmware tables on demand and reserved ranges uncached; 1 GiB pages on x86_64; Svpbmt on RISC-V.
 
-## D30 Kernel heap: power-of-two size classes in the direct map, one frame at most until the buddy allocator — Decided by the build loop (engineering; ordering, large allocations and locking decided by research)
+## D30 Kernel heap: power-of-two size classes in the direct map, one frame at most until the buddy allocator — Decided by the build loop (engineering; ordering, large allocations and locking decided by research); the panic on a held lock superseded by D43
 Third step of M2. `alloc` (`Box`, `Vec`, `BTreeMap`, ...) works in the kernel on every
 architecture once `paging::enable` has run; before that, allocating fails.
 - **Before the high-half relink (decided by research).** D29 planned the relink first. The heap

@@ -171,7 +171,8 @@ struct Thread {
     next: Option<NonNull<Thread>>,
     /// While it sleeps: the [`Platform::clock_ticks`] it wakes at.
     wake_at: u64,
-    /// The CPU it runs on, whose scheduler holds it while it does not run (D43).
+    /// The CPU it runs on (D43): it is made ready there when woken, and sleeps on that CPU's
+    /// timer.
     cpu: &'static Cpu,
 }
 
@@ -481,7 +482,7 @@ enum Notice {
 /// One CPU's scheduler state, in its per-CPU block ([`Cpu::scheduler`]), reached only with the
 /// scheduler's lock held ([`Schedulers::of`]). Not `Debug`: reading it needs the lock.
 #[repr(transparent)]
-pub struct CpuScheduler(UnsafeCell<Scheduler>);
+pub(crate) struct CpuScheduler(UnsafeCell<Scheduler>);
 
 // SAFETY: the state is only reached through `Schedulers::of`, which takes the one `Schedulers`
 // behind the scheduler's lock by `&mut`, so every use is serialised by that lock; everything in
@@ -523,7 +524,9 @@ impl Schedulers {
     #[inline]
     fn of<'a>(&'a mut self, cpu: &'a Cpu) -> &'a mut Scheduler {
         // SAFETY: see above: every reference to a CPU's state is made here, each borrowing the
-        // one `Schedulers` mutably for its whole life, so they never overlap.
+        // one `Schedulers` mutably for its whole life, so they never overlap. (Host tests build
+        // `Schedulers` of their own only over CPU blocks of their own, which `SCHEDULER` never
+        // reaches.)
         unsafe { &mut *cpu.scheduler.0.get() }
     }
 
