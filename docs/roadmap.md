@@ -21,7 +21,7 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M11 | Graphics stack (virtio-gpu first) and compositor | |
 | M12 | Desktop shell, designed from `docs/ux/` | |
 | M13 | Real hardware and vendor GPU drivers | |
-| M14 | Compatibility layers, native not emulated (D17): Linux userland, then Android, Windows, macOS, iOS (order: D2, provisional) | |
+| M14 | Compatibility layers, native not emulated (D17): Linux userland, then Windows, Android, macOS, iOS (order: D19) | |
 | M15 | AI-native agent interface (D3) | |
 | M16 | Component manager and editions as component presets (D18): personal, professional, enterprise, server | |
 

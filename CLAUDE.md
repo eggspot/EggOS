@@ -112,7 +112,8 @@ The owner does not merge PRs by hand. After opening a PR, in the same session:
 An open question is never a reason to leave a PR unmerged: answer it with a research subagent (see
 "Open questions" below), record the answer in the PR under "Decided by research", and merge.
 Never auto-merge a PR that needs the owner: one that accepts a performance or UX regression, touches
-credentials or money, or goes against a rule the owner stated. Those wait for the owner's OK. A PR that changes the license is never merged at all (see License).
+credentials or money, or goes against a rule the owner stated. Those wait for the owner's OK. A PR that
+changes the license is never merged at all (see License).
 
 ## Releases: ship every major feature, don't ask
 A major feature is a roadmap milestone (`docs/roadmap.md`, M-numbers). When one is finished, its PRs
@@ -130,6 +131,7 @@ are merged and CI on `main` passed, release it in the same session without askin
    (`gh release create v<version> --title "EggOS <version>" --notes-file ... <images>`). The notes say
    what's new, what works, how to boot it in QEMU (`cargo xtask run --arch <arch>`), and known limits.
 6. Report the release link.
+
 Still the owner's: anything that needs new accounts, signing keys or other credentials, or money
 (e.g. app-store or code-signing certificates).
 
