@@ -185,6 +185,14 @@ pub trait Platform: 'static {
     /// The user-mode test program for the boot self-tests and benchmarks (D47).
     fn user_test_program() -> user::TestProgram;
 
+    /// What user programs may run beyond the base instruction set, as Linux's `AT_HWCAP` and
+    /// `AT_HWCAP2` encode it for the architecture (D51): only what user mode really runs as
+    /// the kernel sets it up. While FP/SIMD traps (D49), that is nothing on AArch64, the base
+    /// letters without F, D or V on RISC-V, and on x86_64 `CPUID.1:EDX` without the FPU, MMX,
+    /// FXSR, SSE and SSE2 bits, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set
+    /// their GS base, D49's trigger).
+    fn linux_hardware_capabilities() -> [u64; 2];
+
     /// Makes the instructions just written as data at kernel virtual addresses
     /// `start..start + length` visible to instruction fetch on this CPU, at any virtual address
     /// that maps them: on AArch64 it cleans the data cache to the point of unification and

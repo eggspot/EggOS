@@ -326,6 +326,35 @@ x86_64_user_test_linux_hello:
     syscall
 4:  jmp     4b
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
+    .global x86_64_user_test_linux_start
+x86_64_user_test_linux_start:
+    // Linux's x86_64 numbers: write 1, exit_group 231. rbx is argc, r12 walks argv and envp,
+    // r13 counts the two lists.
+    movl    $255, %edi
+    testq   $15, %rsp
+    jnz     9f
+    movq    (%rsp), %rbx
+    leaq    8(%rsp), %r12
+    movl    $2, %r13d
+6:  movq    (%r12), %rsi
+    addq    $8, %r12
+    testq   %rsi, %rsi
+    jz      8f
+    xorl    %edx, %edx
+7:  cmpb    $0, (%rsi,%rdx)
+    je      5f
+    incq    %rdx
+    jmp     7b
+5:  movl    $1, %edi
+    movl    $1, %eax
+    syscall
+    jmp     6b
+8:  decl    %r13d
+    jnz     6b
+    movq    %rbx, %rdi
+9:  movl    $231, %eax
+    syscall
+4:  jmp     4b
     .global x86_64_user_test_linux_unknown_syscalls
 x86_64_user_test_linux_unknown_syscalls:
 5:  movl    ${unknown_syscall}, %eax
@@ -586,6 +615,7 @@ unsafe extern "C" {
     static x86_64_user_test_null_syscalls: u8;
     static x86_64_user_test_spin: u8;
     static x86_64_user_test_linux_hello: u8;
+    static x86_64_user_test_linux_start: u8;
     static x86_64_user_test_linux_unknown_syscalls: u8;
     static x86_64_user_test_end: u8;
 }
@@ -723,6 +753,7 @@ pub(super) fn user_test_program() -> TestProgram {
         null_syscalls: (&raw const x86_64_user_test_null_syscalls) as usize - start,
         spin: (&raw const x86_64_user_test_spin) as usize - start,
         linux_hello: (&raw const x86_64_user_test_linux_hello) as usize - start,
+        linux_start: (&raw const x86_64_user_test_linux_start) as usize - start,
         linux_unknown_syscalls: (&raw const x86_64_user_test_linux_unknown_syscalls) as usize
             - start,
     }

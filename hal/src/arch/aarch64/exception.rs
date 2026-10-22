@@ -253,6 +253,34 @@ aarch64_user_test_linux_hello:
 4:  b       4b
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .balign 4
+    .global aarch64_user_test_linux_start
+aarch64_user_test_linux_start:
+    // Linux's generic numbers: write 64, exit_group 94. x19 is argc, x20 walks argv and envp,
+    // x21 counts the two lists.
+    mov     x9, sp
+    mov     x0, #255
+    tst     x9, #15
+    b.ne    9f
+    ldr     x19, [sp]
+    add     x20, sp, #8
+    mov     x21, #2
+6:  ldr     x1, [x20], #8
+    cbz     x1, 8f
+    mov     x2, #0
+7:  ldrb    w3, [x1, x2]
+    cbz     w3, 5f
+    add     x2, x2, #1
+    b       7b
+5:  mov     x0, #1
+    mov     x8, #64
+    svc     #0
+    b       6b
+8:  subs    x21, x21, #1
+    b.ne    6b
+    mov     x0, x19
+9:  mov     x8, #94
+    svc     #0
+4:  b       4b
     .global aarch64_user_test_linux_unknown_syscalls
 aarch64_user_test_linux_unknown_syscalls:
     mov     x8, #{unknown_syscall}
@@ -339,6 +367,7 @@ unsafe extern "C" {
     static aarch64_user_test_null_syscalls: u8;
     static aarch64_user_test_spin: u8;
     static aarch64_user_test_linux_hello: u8;
+    static aarch64_user_test_linux_start: u8;
     static aarch64_user_test_linux_unknown_syscalls: u8;
     static aarch64_user_test_end: u8;
 }
@@ -392,6 +421,7 @@ pub(super) fn user_test_program() -> TestProgram {
         null_syscalls: (&raw const aarch64_user_test_null_syscalls) as usize - start,
         spin: (&raw const aarch64_user_test_spin) as usize - start,
         linux_hello: (&raw const aarch64_user_test_linux_hello) as usize - start,
+        linux_start: (&raw const aarch64_user_test_linux_start) as usize - start,
         linux_unknown_syscalls: (&raw const aarch64_user_test_linux_unknown_syscalls) as usize
             - start,
     }

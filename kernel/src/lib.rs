@@ -13,6 +13,7 @@ pub mod address_space;
 pub mod bench;
 pub mod console;
 pub mod cpu;
+pub mod elf;
 pub mod exception;
 pub mod heap;
 pub mod interrupt;
@@ -263,6 +264,7 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.floating_point as u64;
             let linux_hello = crate::process::TEST_PROGRAM_ADDRESS + program.linux_hello as u64;
             let linux_hello_line = crate::process::TEST_PROGRAM_ADDRESS + TEST_PROGRAM_LINE as u64;
+            let linux_start = crate::process::TEST_PROGRAM_ADDRESS + program.linux_start as u64;
             match context.pc() {
                 pc if pc == checks => {
                     let arguments = [1, 2, 3, 4, 5, 6];
@@ -295,6 +297,13 @@ pub(crate) mod tests {
                 pc if pc == spin => {
                     Self::wait_for_interrupt();
                     UserExit::Interrupt
+                }
+                pc if (linux_start..linux_start + 64).contains(&pc) => {
+                    // Its calls, from what its stack holds, one per step.
+                    let (number, arguments) =
+                        linux_start_calls(context.stack())[(pc - linux_start) as usize];
+                    context.simulate_syscall(number, arguments, pc + 1);
+                    UserExit::Syscall
                 }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
@@ -336,8 +345,12 @@ pub(crate) mod tests {
                 null_syscalls: 12,
                 spin: 16,
                 linux_hello: 21,
+                linux_start: 100,
                 linux_unknown_syscalls: 26,
             }
+        }
+        fn linux_hardware_capabilities() -> [u64; 2] {
+            [0, 0]
         }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
@@ -376,6 +389,47 @@ pub(crate) mod tests {
         fn wake_cpu(_cpu: u64) {
             unreachable!("the test platform has one CPU")
         }
+    }
+
+    /// The system calls the test program's `linux_start` makes, from a stack at `stack` in
+    /// the address space the test platform last switched to: a `write` for each argument and
+    /// environment string, then `exit_group(argc)`, or `exit_group(255)` if the stack pointer
+    /// is not 16-byte aligned.
+    fn linux_start_calls(stack: u64) -> Vec<(u64, [u64; 6])> {
+        use crate::linux::number;
+        let tables =
+            crate::paging::PageTables::<<TestPlatform as Platform>::PageTableFormat>::view_for_test(
+                active_root(),
+                TestPlatform::physical_memory_offset(),
+            );
+        let byte = |virt: u64| {
+            let (phys, _) = tables
+                .translate(virt)
+                .expect("the program's memory is mapped");
+            // SAFETY: a frame of the test RAM, through its offset.
+            unsafe {
+                *((phys as usize).wrapping_add(TestPlatform::physical_memory_offset()) as *const u8)
+            }
+        };
+        let word = |virt: u64| u64::from_le_bytes(core::array::from_fn(|i| byte(virt + i as u64)));
+        if !stack.is_multiple_of(16) {
+            return vec![(number::EXIT_GROUP, [255, 0, 0, 0, 0, 0])];
+        }
+        let mut calls = Vec::new();
+        let mut pointer = stack + 8;
+        for _list in 0..2 {
+            loop {
+                let string = word(pointer);
+                pointer += 8;
+                if string == 0 {
+                    break;
+                }
+                let length = (0..).take_while(|&i| byte(string + i) != 0).count() as u64;
+                calls.push((number::WRITE, [1, string, length, 0, 0, 0]));
+            }
+        }
+        calls.push((number::EXIT_GROUP, [word(stack), 0, 0, 0, 0, 0]));
+        calls
     }
 
     /// Where the test platform's test program keeps the line its Linux program writes.

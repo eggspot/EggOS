@@ -6,10 +6,15 @@
 //! `-errno`, in the result register; an interrupt resumes the program; an exception the kernel
 //! does not handle ends the process with the signal Linux would send for it.
 //!
+//! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
+//! out its stack as Linux does.
+//!
 //! So far: `write` to standard output and standard error (the console), `exit` and
 //! `exit_group`. Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a
 //! program that probes for a call carries on. The next calls are the rest of what a static
 //! hello-world needs (`brk`, `mmap`, `uname`, ...), then the file system's (M7).
+
+pub mod exec;
 
 use crate::process::{self, Process, ProcessExit};
 use crate::thread::{JoinHandle, SpawnError};
@@ -43,10 +48,22 @@ pub mod number {
 pub struct Errno(pub u16);
 
 impl Errno {
+    /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`).
+    pub const EPERM: Self = Self(1);
+    /// No such file: here, a program's interpreter (`execve`).
+    pub const ENOENT: Self = Self(2);
+    /// The arguments and environment are too long (`execve`).
+    pub const E2BIG: Self = Self(7);
+    /// Not a program the kernel can run (`execve`).
+    pub const ENOEXEC: Self = Self(8);
     /// Bad file descriptor.
     pub const EBADF: Self = Self(9);
+    /// Out of memory.
+    pub const ENOMEM: Self = Self(12);
     /// Bad address: a buffer that is not the program's memory.
     pub const EFAULT: Self = Self(14);
+    /// An invalid argument: here, a segment outside user space (`execve`).
+    pub const EINVAL: Self = Self(22);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
 

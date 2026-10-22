@@ -113,6 +113,9 @@ mod tests {
         fn user_test_program() -> eggos_hal::user::TestProgram {
             unreachable!()
         }
+        fn linux_hardware_capabilities() -> [u64; 2] {
+            [0, 0]
+        }
         fn make_instructions_visible(_start: usize, _length: usize) {}
         unsafe fn prepare_thread(
             _stack_top: usize,

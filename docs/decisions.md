@@ -1507,3 +1507,116 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `uname`, `writev`, `arch_prctl`/`set_tid_address`, ...), an ELF loader and a stack with
   `argv`, `envp` and the auxiliary vector, and a first program built from our own Rust source;
   the SWAPGS fence before a program can set its GS base or map low pages (D49).
+
+## D51 Linux programs start from ELF images: a checked parser, segments mapped page by page, Linux's initial stack and auxiliary vector — Decided by the build loop (loader policy decided by research)
+- **What.** `kernel::elf` parses an untrusted ELF-64 little-endian image without copying: the
+  file header checked against the kernel's machine (`e_machine` 62, 183, 243), executables and
+  position-independent files only, 56-byte program headers, at most a page of them (as Linux;
+  this also refuses `PN_XNUM`), all within the image. `kernel::linux::exec::load(process,
+  image, path, arguments, environment)` is what `execve` will do once it has the file's bytes:
+  it checks everything first and maps nothing until every check passed, then maps each `LOAD`
+  segment page by page (a frame of its own per page, holding the file's bytes for that page
+  from the page's start, as a file mapping has them, and zero after the segment's file bytes,
+  so `.bss` needs nothing more), maps the stack and lays it out, and returns the program's
+  registers: its entry and stack pointer, every other register zero (C libraries take a
+  non-zero `rdx` / `x0` / `a0` as an exit hook). `ExecError::errno` gives Linux's error.
+- **Loader policy (decided by research).** A research subagent was asked about each choice;
+  its recommendations, followed:
+  - **W^X for programs.** A segment both writable and executable is refused (`ENOEXEC`), as a
+    `PT_GNU_STACK` asking for an executable stack is: user pages are never both, as kernel
+    pages are not. Modern linkers never emit either unless forced; what breaks is `ld -N`
+    output, some very old or hand-made binaries and GCC nested-function trampolines. JITs need
+    writable-then-executable memory through `mmap`/`mprotect` (dual mapping or a `MAP_JIT`-style
+    flip), a separate item. A segment with no access is refused too (no `PROT_NONE` mappings
+    yet). **Trigger to revisit:** a real binary we must run needs RWX.
+  - **A floor.** No segment may start below `exec::MINIMUM_ADDRESS` = 0x10000 (`EPERM`, Linux's
+    default `mmap_min_addr` and RISC-V linkers' lowest base): a null pointer always faults, and
+    no program can map pages near 0 before D49's SWAPGS fence exists.
+  - **Static PIE is supported**, the default of Rust's musl targets: a position-independent
+    program is moved by a bias to `exec::pie_base(USER_END, align)`, two thirds of the way up
+    user space, rounded down to 2 MiB or the largest segment alignment (a power of two up to
+    1 GiB; anything else is refused): 0x5555_5540_0000 on x86_64, 0xaaaa_aaa0_0000 on
+    AArch64, 0x2a_aaa0_0000 on RISC-V Sv39. The program relocates itself; `AT_BASE` is 0.
+    Fixed until layout randomization comes with a random number generator. A program that
+    names an interpreter (dynamically linked) is refused with `ENOENT`, what Linux returns when
+    the interpreter is missing, until a file system can supply one (M7). Note: glibc's static
+    PIE startup calls `mprotect` on its RELRO region and dies if that fails; musl's does not.
+  - **Segments** must be in ascending order without sharing a page (eager per-page mapping
+    cannot honour two attribute sets on one page), with file offset and address equal within a
+    page and file bytes within the image (`ENOEXEC`; a segment without file bytes is zero
+    pages alone and its offset is not checked, as on Linux), no more file bytes than memory,
+    and within user space below the stack's reserve, before the PIE move as well as after, so
+    the move cannot wrap around (`EINVAL`, as Linux); so must the entry point. **Trigger to
+    revisit** the shared-page rule (Linux allows two segments on one page): a real binary
+    built with a small maximum page size or a hand-written linker script needs it.
+  - **`AT_PHDR`** is where the `LOAD` segment whose file bytes hold the whole program header
+    table maps it, as Linux computes it; stricter than Linux, a table in no segment is refused
+    (musl reads `AT_PHDR` unchecked), and so is a `PT_PHDR` that names another address (static
+    PIEs find their base from it).
+  - **The stack.** `exec::STACK_RESERVE` (8 MiB, Linux's default stack limit) below the end of
+    user space is kept for the stack, and `STACK_GUARD_GAP` (1 MiB, Linux's) below it stays
+    unmapped; no segment may reach either. Mapped up front: the arguments' pages and
+    `STACK_SIZE` (128 KiB, what Linux guarantees at `execve`) below them; there is no demand
+    paging yet to grow it. Linux's limits: argument and environment strings, pointers and the
+    auxiliary vector together at most a quarter of the reserve (2 MiB), each string at most
+    128 KiB with its NUL (`MAX_ARG_STRLEN`), else `E2BIG`. The layout is Linux's: from the 16-byte
+    aligned stack pointer, `argc`, `argv` and a null, `envp` and a null, the auxiliary vector;
+    above them the 16 `AT_RANDOM` bytes, the argument strings, the environment strings, the
+    path (`AT_EXECFN`) and 8 zero bytes at the very top.
+  - **The auxiliary vector**, in Linux's order: `AT_HWCAP`, `AT_PAGESZ`, `AT_CLKTCK` (100),
+    `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE` (0), `AT_FLAGS` (0), `AT_ENTRY`, `AT_UID`,
+    `AT_EUID`, `AT_GID`, `AT_EGID` (all 0, equal, with `AT_SECURE` 0, or C libraries treat the
+    program as privileged), `AT_SECURE`, `AT_RANDOM`, `AT_HWCAP2`, `AT_EXECFN`. Left out until
+    they mean something: `AT_SYSINFO_EHDR` (no vDSO; C libraries fall back to system calls),
+    `AT_MINSIGSTKSZ` (comes with signal frames), `AT_PLATFORM` (only the dynamic loader uses
+    it). `AT_HWCAP`/`AT_HWCAP2` come from the new HAL call
+    `Platform::linux_hardware_capabilities`: only what user mode really runs while FP/SIMD
+    traps (D49): 0 on AArch64; I, M, A and C on RISC-V; `CPUID.1:EDX` without the FPU, MMX,
+    FXSR, SSE and SSE2 bits on x86_64, and `AT_HWCAP2` 0 there (its `FSGSBASE` bit would invite
+    programs to set their GS base, D49's trigger). Recompute all three when FP state is saved
+    per thread.
+- **`AT_RANDOM` is not random yet (decided by research): a recorded placeholder.** There is no
+  random number generator, and RDRAND/RDSEED, RNDR, Zkr and virtio-rng each need feature
+  detection, retry and quirk handling (some AMD parts return all-ones from RDRAND; Zkr needs
+  firmware to open `mseccfg.SSEED`) and should feed a mixing generator rather than reach
+  programs raw: a design of its own. Until then `exec::insecure_random_bytes` mixes the clock
+  and a count of programs started (SplitMix64's output step), so the bytes at least differ
+  between programs; its documentation says plainly that it is not secure. **Trigger:** before
+  any program not built by us runs, it draws from the kernel's random number generator (our
+  own ChaCha20 or BLAKE2s, seeded from the hardware sources above), which also serves
+  `getrandom` (Rust's std calls it on first `HashMap` use) and layout randomization.
+- **Cost (D24).** New benchmark `linux_exec_load`: a new process, the self-test's image (code,
+  data and `.bss` across six pages, two arguments and an environment string) loaded, then
+  freed: 112,859 (aarch64), 96,571 (riscv64), 60,529 (x86_64) instructions. Zeroing frames
+  dominates: 33 for the stack, 6 for the program and the page tables. `map_new_page` now zeroes
+  only the part of a frame its contents do not fill. Follow-ups that cut it: demand paging (the
+  stack's pages only when touched), a faster `memset` on the kernel's targets, and frames
+  zeroed ahead of time. Every other benchmark is unchanged (the frame benchmarks' +0.2–0.7%
+  against the baseline, within the gate, is on `main` too). The HAL test program grows by
+  about 100 bytes per architecture; the parser and loader add a few KiB to the kernel image.
+- **Testing.** Boot self-test `linux_programs_start_from_elf_images` on aarch64, riscv64 and
+  x86_64: an ELF executable built around the HAL test program (`selftest::linux_start_image`:
+  headers and code in one read-only, executable segment with `PT_PHDR`, data at an unaligned
+  address with `.bss` across three pages, a non-executable `PT_GNU_STACK`) is loaded with two
+  arguments and one environment string; the kernel checks the data and that `.bss` is zero,
+  then runs it as a Linux program. The test program's new `linux_start` entry reads its stack
+  as Linux lays it out and writes every argument and environment string, which together are
+  `EGGOS-USER: started from an ELF image with arguments and an environment`, then
+  `exit_group(argc)` (255 for a misaligned stack); the self-test requires status 2 and the
+  QEMU runner requires the line on the console. Host tests: the parser's checks and refusals;
+  the loaded program's mappings and attributes, contents and `.bss`; the stack's layout,
+  alignment, end marker, strings and every auxiliary vector entry, read back as a program reads
+  it; a static PIE moved to the PIE base; the PIE base on all three formats; each refusal with
+  its Linux error and nothing mapped; `E2BIG` for a long string and for too many; every frame
+  freed.
+- **From the independent review (non-blocking, on the roadmap's exec follow-ups).** Before
+  `execve` takes outside input: a cap on a program's eagerly mapped pages (a hostile image's
+  huge `p_memsz` would zero frames until memory runs out), and the initial stack written
+  straight into its frames instead of through an infallible 2 MiB heap buffer; `CPUID` for
+  `AT_HWCAP` read once at boot rather than per exec (a VM exit under virtualization).
+- **Next (roadmap).** `brk`, `mmap`, `munmap`, `mprotect` (and with them D50's trigger to copy
+  user memory with fault fixups), `uname`, `writev`, `set_tid_address`, `arch_prctl`, then what
+  Rust's std calls at startup (`poll`/`ppoll` on descriptors 0–2, `rt_sigaction` for
+  `SIGPIPE`, `sigaltstack`, `getrandom`); FP/SIMD state per thread, without which no compiled
+  Rust or C program runs on AArch64 or x86_64 (their ABIs use FP registers); then a first
+  program built from our own Rust source, embedded until there is a file system.
