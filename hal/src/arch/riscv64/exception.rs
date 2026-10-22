@@ -339,6 +339,36 @@ riscv64_user_test_null_syscalls:
     .global riscv64_user_test_spin
 riscv64_user_test_spin:
 3:  j       3b
+    .global riscv64_user_test_linux_hello
+riscv64_user_test_linux_hello:
+    // Linux's generic numbers: write 64, exit_group 94. s1 collects the differences.
+    li      a0, 1
+    lla     a1, 9f
+    li      a2, {hello_length}
+    li      a7, 64
+    ecall
+    addi    s1, a0, -{hello_length}
+    li      a0, 1
+    li      a1, 0
+    li      a2, 1
+    ecall
+    addi    a0, a0, 14              // -EFAULT
+    or      s1, s1, a0
+    li      a7, {unknown_syscall}
+    ecall
+    addi    a0, a0, 38              // -ENOSYS
+    or      s1, s1, a0
+    snez    a0, s1
+    li      a7, 94
+    ecall
+4:  j       4b
+9:  .ascii  "EGGOS-USER: hello from user mode\n"
+    .balign 4
+    .global riscv64_user_test_linux_unknown_syscalls
+riscv64_user_test_linux_unknown_syscalls:
+    li      a7, {unknown_syscall}
+5:  ecall
+    j       5b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -350,6 +380,8 @@ riscv64_user_test_end:
     syscall_first = const TestProgram::SYSCALL_FIRST,
     syscall_report = const TestProgram::SYSCALL_REPORT,
     syscall_null = const TestProgram::SYSCALL_NULL,
+    hello_length = const TestProgram::LINUX_HELLO.len(),
+    unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
 );
 
 /// The registers saved by the entry code, in the order it stores them.
@@ -431,6 +463,8 @@ unsafe extern "C" {
     static riscv64_user_test_floating_point: u8;
     static riscv64_user_test_null_syscalls: u8;
     static riscv64_user_test_spin: u8;
+    static riscv64_user_test_linux_hello: u8;
+    static riscv64_user_test_linux_unknown_syscalls: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -475,6 +509,9 @@ pub(super) fn user_test_program() -> TestProgram {
         floating_point: (&raw const riscv64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const riscv64_user_test_null_syscalls) as usize - start,
         spin: (&raw const riscv64_user_test_spin) as usize - start,
+        linux_hello: (&raw const riscv64_user_test_linux_hello) as usize - start,
+        linux_unknown_syscalls: (&raw const riscv64_user_test_linux_unknown_syscalls) as usize
+            - start,
     }
 }
 

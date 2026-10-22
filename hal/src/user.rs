@@ -123,6 +123,14 @@ pub struct TestProgram {
     pub null_syscalls: usize,
     /// Loops forever without a system call, for an interrupt to stop.
     pub spin: usize,
+    /// A Linux program: writes [`Self::LINUX_HELLO`] to standard output, writes one byte from
+    /// address 0 (`EFAULT`), makes system call [`Self::LINUX_UNKNOWN_SYSCALL`] (`ENOSYS`), then
+    /// calls `exit_group(0)` if each returned what Linux returns, `exit_group(1)` if not. In
+    /// Linux's numbers for the architecture.
+    pub linux_hello: usize,
+    /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
+    /// the Linux layer's cheapest dispatch, for its benchmark.
+    pub linux_unknown_syscalls: usize,
 }
 
 impl TestProgram {
@@ -130,6 +138,11 @@ impl TestProgram {
     pub const SYSCALL_FIRST: u64 = 0;
     pub const SYSCALL_REPORT: u64 = 1;
     pub const SYSCALL_NULL: u64 = 2;
+    /// What [`Self::linux_hello`] writes. Each architecture's program spells it out; the boot
+    /// self-test checks that it is this, and the QEMU runner that it reached the console.
+    pub const LINUX_HELLO: &str = "EGGOS-USER: hello from user mode\n";
+    /// A number Linux has no system call for, on any architecture.
+    pub const LINUX_UNKNOWN_SYSCALL: u64 = 1000;
 }
 
 #[cfg(target_arch = "aarch64")]

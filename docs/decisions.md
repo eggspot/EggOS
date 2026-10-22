@@ -1446,3 +1446,62 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   x86_64; without the CR0 change x86_64 runs on into its next system call and fails. No
   benchmark moved beyond noise (the user-mode ones by 0.02 instructions: a whole page cleaned
   once per program setup on AArch64); the `int3`s are never executed.
+
+## D50 The Linux system-call layer starts: `write`, `exit`, `exit_group`, `ENOSYS`; user memory copied through the direct map after a table walk — Decided by the build loop (copy design decided by research)
+- **The layer.** `kernel::linux` is the handler a Linux program's threads hand their exits to
+  (D48's `ControlFlow` handler): `linux::spawn(process, context)` starts one. A system call is
+  dispatched by Linux's number on the architecture (`linux::number`: x86_64's own table,
+  AArch64 and RISC-V the generic one) and returns its result or `-errno` (`linux::Errno`) in
+  the result register; an interrupt resumes the program; an exception ends the process with the
+  signal Linux would send by default (`SIGILL`, `SIGTRAP`, `SIGBUS`, otherwise `SIGSEGV`; finer
+  ones, such as `SIGFPE` for a divide error, come with signals). First calls: `write` to
+  standard output and standard error (the console), `exit` and `exit_group` (one thread per
+  process until `clone`, so both end the process; Linux keeps the status's low 8 bits).
+  Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
+  probes carries on.
+- **How a process ends.** `Process::exit(ProcessExit)` records it, first one wins
+  (`Exited(status)` or `Killed { signal }`), and `Process::exit_status` reads it: what `wait4`
+  will return to the parent.
+- **User memory (decided by research).** `Process::read_user_memory` and `write_user_memory`
+  take an untrusted user address and length, check that it ends within user space, then walk
+  the process's tables a page at a time, require a user page of normal memory (writable, to
+  write), and copy through the kernel's direct map at the frame's address. A research subagent
+  compared this with (b) the same walk then a copy at the user address inside the user-access
+  window, and (c) Linux's way: copy at the user address with an exception-fixup table so a
+  fault returns `EFAULT`. It recommended this one for now: it is correct today because a
+  process's mappings are frozen while its threads run (D48) and it owns every frame they map,
+  so nothing can change between the check and the copy and nothing can fault; (b) does the same
+  walk and adds the window; (c) is the end state but needs per-architecture copy routines and
+  fixups in every trap handler, and today saves only the walk. The copy also needs no address
+  space loaded on this CPU and never opens the user-access window. **Trigger to switch to (c):**
+  the first change that lets a mapping change or appear while threads run (`munmap`,
+  `mprotect`, `mremap`, a shrinking `brk`, demand paging, copy-on-write); also if PAN/SMAP
+  turn on (the window is then paid anyway) or a benchmark shows the walk dominating large
+  copies. Only the inside of the two `Process` methods changes. Callers copy into kernel
+  buffers and read each user value once.
+- **`write` returns exactly what Linux returns.** It copies at most 256 bytes at a time
+  through a stack buffer and never across a page, so when part of the buffer is not the
+  program's memory it returns the bytes before that part, or `EFAULT` if there are none. A
+  zero-length write returns 0 unchecked, as on Linux.
+- **Cost (D24).** The dispatcher is inlined into the thread's loop and everything with a frame
+  of its own (`write`, ending the process) is out of line: the first version kept `write`'s
+  buffer and six saved registers in the shared frame and cost 35–50 instructions per call.
+  New benchmark `linux_syscall_round_trip` (an unknown call, `ENOSYS`, the cheapest dispatch,
+  from the HAL test program's new `linux_unknown_syscalls` loop): 134.34 (aarch64), 171.47
+  (riscv64), 137.56 (x86_64) instructions per call, against `process_syscall_round_trip`'s
+  120.30, 158.44 and 120.54. No other benchmark moved. The table is three compares today; a
+  jump table when it grows. Two more test-program entries in the kernel image (about 100 bytes
+  per architecture).
+- **Testing.** Boot self-test `linux_programs_write_and_exit` on aarch64, riscv64 and x86_64:
+  the HAL test program's `linux_hello` writes `EGGOS-USER: hello from user mode` with `write`,
+  checks `EFAULT` for a buffer at address 0 and `ENOSYS` for call 1000, and ends with
+  `exit_group(0)` only if all three are right; a program that runs a floating-point
+  instruction is ended with `SIGILL`; every frame is freed. The QEMU runner now requires the
+  line on the console, so the bytes are checked end to end. Host tests: copies across pages
+  both ways and refusals (read-only, unmapped, kernel, past user space, wrapping), `write`'s
+  chunks across pages and its partial count, bad descriptors, `ENOSYS`, both exits, and the
+  signal for each exception kind.
+- **Next (roadmap).** The rest of what a static hello-world binary needs (`brk`, `mmap`,
+  `uname`, `writev`, `arch_prctl`/`set_tid_address`, ...), an ELF loader and a stack with
+  `argv`, `envp` and the auxiliary vector, and a first program built from our own Rust source;
+  the SWAPGS fence before a program can set its GS base or map low pages (D49).

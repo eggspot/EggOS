@@ -24,17 +24,33 @@ use crate::address_space::{self, AddressSpace};
 use crate::cpu;
 use crate::memory;
 use crate::paging::PageTables;
+use crate::sync::SpinLock;
 use crate::thread::{self, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
-use eggos_hal::paging::Attributes;
+use eggos_hal::paging::{Attributes, Format, MemoryType};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
+
+/// How a process ended ([`Process::exit`]), as its parent will learn it (`wait4`, M6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessExit {
+    /// It ended itself with this status (Linux keeps its low 8 bits).
+    Exited(u32),
+    /// The kernel ended it with this signal, say after an exception it did not handle.
+    Killed { signal: u32 },
+}
+
+/// The user address `address` and `length` bytes after it are not all user memory the access
+/// may reach: unmapped, kernel, device or (for a write) read-only pages, or past
+/// [`Format::USER_END`]. A Linux system call reports it as `EFAULT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidUserAddress;
 
 /// A user address space and the frames its pages map. See the module documentation.
 pub struct Process<P: Platform> {
@@ -43,6 +59,11 @@ pub struct Process<P: Platform> {
     space: Option<AddressSpace<P>>,
     /// The frames the process's pages map, freed with it.
     frames: Vec<u64>,
+    /// Where the kernel reaches the process's frames: the frame allocator's offset, which on
+    /// the machine is the direct map's (a boot self-test checks it).
+    frame_offset: usize,
+    /// How the process ended, once it has: the first [`Self::exit`] wins.
+    exit: SpinLock<Option<ProcessExit>>,
 }
 
 impl<P: Platform> Process<P> {
@@ -54,9 +75,16 @@ impl<P: Platform> Process<P> {
     pub unsafe fn new(kernel: &PageTables<P::PageTableFormat>) -> Result<Self, &'static str> {
         // SAFETY: the caller's guarantees.
         let space = unsafe { AddressSpace::new(kernel) }.map_err(|error| error.description())?;
+        let frame_offset = memory::FRAMES
+            .lock()
+            .as_ref()
+            .ok_or("there is no frame allocator")?
+            .physical_memory_offset();
         Ok(Self {
             space: Some(space),
             frames: Vec::new(),
+            frame_offset,
+            exit: SpinLock::new(None),
         })
     }
 
@@ -165,6 +193,95 @@ impl<P: Platform> Process<P> {
     pub fn with_user_memory<R>(self: &Arc<Self>, access: impl FnOnce() -> R) -> R {
         self.load_here();
         P::with_user_access(access)
+    }
+
+    /// Copies the process's memory at user address `address` into `buffer`, as a system call
+    /// reads a buffer the program passed. The address is untrusted: every page must be a user
+    /// page of normal memory, or nothing more is copied and the error says so (part of `buffer`
+    /// may have been written by then). See [`Self::copy_user_pages`] for how.
+    pub fn read_user_memory(
+        &self,
+        address: u64,
+        buffer: &mut [u8],
+    ) -> Result<(), InvalidUserAddress> {
+        let destination = buffer.as_mut_ptr();
+        self.copy_user_pages(address, buffer.len(), false, |kernel, done, length| {
+            // SAFETY: `kernel` reaches `length` bytes of one of the process's frames through
+            // the direct map (`copy_user_pages`' promise), and `done + length` is within
+            // `buffer`, a kernel buffer, which no frame of the process is.
+            unsafe {
+                core::ptr::copy_nonoverlapping(kernel, destination.wrapping_add(done), length)
+            };
+        })
+    }
+
+    /// Copies `bytes` into the process's memory at user address `address`, as a system call
+    /// fills a buffer the program passed. As [`Self::read_user_memory`], and every page must
+    /// also be writable by the program.
+    pub fn write_user_memory(&self, address: u64, bytes: &[u8]) -> Result<(), InvalidUserAddress> {
+        let source = bytes.as_ptr();
+        self.copy_user_pages(address, bytes.len(), true, |kernel, done, length| {
+            // SAFETY: as in `read_user_memory`, the other way round.
+            unsafe { core::ptr::copy_nonoverlapping(source.wrapping_add(done), kernel, length) };
+        })
+    }
+
+    /// Walks `length` bytes of user memory from `address` a page at a time and hands each
+    /// piece to `copy` as (its address in the kernel's direct map, bytes done so far, its
+    /// length), after checking that the page is a user page of normal memory (and writable, if
+    /// `write`). No user-access window is opened and the address space need not be loaded on
+    /// this CPU: the copy goes through the direct map (the process's `frame_offset`), so it
+    /// can never fault (D50, decided by research). That is sound while a process's mappings are frozen and it owns every frame
+    /// they map (an `&self` here means no `&mut` can remap or free them); once mappings can
+    /// change under running threads (`munmap`, demand paging, copy-on-write), copies move to
+    /// user addresses with fault fixups, behind this same interface.
+    fn copy_user_pages(
+        &self,
+        address: u64,
+        length: usize,
+        write: bool,
+        mut copy: impl FnMut(*mut u8, usize, usize),
+    ) -> Result<(), InvalidUserAddress> {
+        if length == 0 {
+            return Ok(());
+        }
+        let end = address
+            .checked_add(length as u64)
+            .ok_or(InvalidUserAddress)?;
+        if end > <P::PageTableFormat as Format>::USER_END {
+            return Err(InvalidUserAddress);
+        }
+        let space = self.address_space();
+        let mut done = 0;
+        while done < length {
+            let virt = address + done as u64;
+            let (phys, attributes) = space.translate(virt).ok_or(InvalidUserAddress)?;
+            if !attributes.user
+                || attributes.memory_type != MemoryType::Normal
+                || (write && !attributes.writable)
+            {
+                return Err(InvalidUserAddress);
+            }
+            let in_page = (FRAME_SIZE - virt % FRAME_SIZE).min((length - done) as u64) as usize;
+            copy(
+                (phys as usize).wrapping_add(self.frame_offset) as *mut u8,
+                done,
+                in_page,
+            );
+            done += in_page;
+        }
+        Ok(())
+    }
+
+    /// Records how the process ended, unless it already has: the first to end it wins (say,
+    /// two threads calling `exit_group`).
+    pub fn exit(&self, how: ProcessExit) {
+        self.exit.lock().get_or_insert(how);
+    }
+
+    /// How the process ended, or `None` while it has not.
+    pub fn exit_status(&self) -> Option<ProcessExit> {
+        *self.exit.lock()
     }
 }
 
@@ -301,6 +418,50 @@ mod tests {
             assert!(free() < before);
         }
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn user_memory_is_copied_only_where_the_program_may_reach() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        const DATA: u64 = 0x50_0000;
+        process
+            .map_new_page(DATA, Attributes::USER_READ_WRITE, b"0123456789")
+            .unwrap();
+        process
+            .map_new_page(DATA + FRAME_SIZE, Attributes::USER_READ_ONLY, b"abc")
+            .unwrap();
+
+        // Across the two pages, both ways where the program may write.
+        let mut read = [0u8; 6];
+        assert_eq!(
+            process.write_user_memory(DATA + FRAME_SIZE - 3, b"xyz"),
+            Ok(())
+        );
+        process
+            .read_user_memory(DATA + FRAME_SIZE - 3, &mut read)
+            .unwrap();
+        assert_eq!(&read, b"xyzabc");
+        process.read_user_memory(DATA + 2, &mut read).unwrap();
+        assert_eq!(&read, b"234567");
+
+        // Read-only, unmapped, kernel, past user space, wrapping: refused.
+        assert_eq!(
+            process.write_user_memory(DATA + FRAME_SIZE - 1, b"no"),
+            Err(InvalidUserAddress)
+        );
+        let end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        for address in [DATA + 2 * FRAME_SIZE - 1, 0, end - 1, u64::MAX - 1] {
+            assert_eq!(
+                process.read_user_memory(address, &mut read),
+                Err(InvalidUserAddress),
+                "{address:#x}"
+            );
+        }
+        // Nothing to copy needs no check.
+        assert_eq!(process.read_user_memory(0, &mut []), Ok(()));
     }
 
     #[test]
