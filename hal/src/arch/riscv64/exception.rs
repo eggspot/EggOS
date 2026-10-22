@@ -11,7 +11,7 @@ use crate::exception::{Exception, ExceptionKind, deliver};
 
 core::arch::global_asm!(
     r#"
-    .section .text.trap, "ax"
+    .pushsection .text.trap, "ax"
     .balign 4
     .global exception_entry
 exception_entry:
@@ -92,6 +92,7 @@ exception_entry:
     ld      x31, 248(sp)
     addi    sp, sp, {frame_size}
     sret
+    .popsection
 "#,
     frame_size = const core::mem::size_of::<TrapFrame>(),
     handler = sym riscv64_exception,

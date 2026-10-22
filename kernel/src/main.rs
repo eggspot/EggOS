@@ -9,6 +9,7 @@
 #[cfg(target_os = "none")]
 mod bare_metal {
     use core::fmt::Write;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use eggos_hal::arch::CurrentPlatform;
     use eggos_hal::{Exception, ExitStatus, Platform};
     use eggos_kernel::console::PlatformConsole;
@@ -27,12 +28,20 @@ mod bare_metal {
         finish(status)
     }
 
+    /// Set once a fatal exception is being reported.
+    static IN_FATAL_EXCEPTION: AtomicBool = AtomicBool::new(false);
+
     /// Called by the HAL's exception vectors (declared in `eggos_hal`). Returning resumes the
     /// interrupted code.
     #[unsafe(no_mangle)]
     fn kernel_exception(exception: &Exception) {
         if exception::handle(exception) == Outcome::Resume {
             return;
+        }
+        // A second fatal exception while reporting the first (say, a broken console) would
+        // otherwise recurse until the stack overflows; stop this CPU instead.
+        if IN_FATAL_EXCEPTION.swap(true, Ordering::Relaxed) {
+            CurrentPlatform::halt();
         }
         let mut console = PlatformConsole::<CurrentPlatform>::new();
         // Nothing useful can be done if the console itself fails here.

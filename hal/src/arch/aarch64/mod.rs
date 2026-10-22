@@ -102,12 +102,14 @@ impl Platform for Aarch64 {
     fn breakpoint() {
         // SAFETY: `brk` traps to the exception vectors installed at boot, whose handler saves
         // and restores every general-purpose register and resumes after the `brk`.
-        unsafe { core::arch::asm!("brk #0", options(nomem, nostack)) };
+        // No `nomem`/`nostack`: the kernel's handler may read and write any memory, and the
+        // exception frame is pushed below the stack pointer.
+        unsafe { core::arch::asm!("brk #0") };
     }
 
     fn illegal_instruction() -> ! {
         // SAFETY: `udf` is permanently undefined; it traps to the exception vectors installed
         // at boot, and the kernel never resumes from that exception.
-        unsafe { core::arch::asm!("udf #0", options(nomem, nostack, noreturn)) }
+        unsafe { core::arch::asm!("udf #0", options(noreturn)) }
     }
 }

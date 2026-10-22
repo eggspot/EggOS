@@ -19,7 +19,7 @@ core::arch::global_asm!(
     b       exception_common
     .endm
 
-    .section .text.vectors, "ax"
+    .pushsection .text.vectors, "ax"
     .balign 2048
     .global exception_vectors
 exception_vectors:
@@ -84,6 +84,7 @@ exception_common:
     ldp     x0, x1, [sp, #0]
     add     sp, sp, #{frame_size}
     eret
+    .popsection
 "#,
     frame_size = const core::mem::size_of::<TrapFrame>(),
     handler = sym aarch64_exception,

@@ -99,12 +99,14 @@ impl Platform for Riscv64 {
     fn breakpoint() {
         // SAFETY: `ebreak` traps to the vector installed at boot, whose handler saves and
         // restores every general-purpose register and resumes after the `ebreak`.
-        unsafe { core::arch::asm!("ebreak", options(nomem, nostack)) };
+        // No `nomem`/`nostack`: the kernel's handler may read and write any memory, and the
+        // exception frame is pushed below the stack pointer.
+        unsafe { core::arch::asm!("ebreak") };
     }
 
     fn illegal_instruction() -> ! {
         // SAFETY: `unimp` is defined to be illegal; it traps to the vector installed at boot,
         // and the kernel never resumes from that exception.
-        unsafe { core::arch::asm!("unimp", options(nomem, nostack, noreturn)) }
+        unsafe { core::arch::asm!("unimp", options(noreturn)) }
     }
 }
