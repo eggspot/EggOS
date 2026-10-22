@@ -71,9 +71,13 @@ jobs:
             --env CHANNEL="$channel" "$IMAGE:main" sh -c '
             rustup toolchain list | grep -q "^$CHANNEL-" &&
             rustc --version | grep -q "^rustc $CHANNEL " &&
-            cargo --version && rustup target list --installed &&
+            cargo --version && cargo clippy --version && cargo fmt --version &&
+            for target in $(sed -n "s/^ *\"\(.*\)\",\$/\1/p" rust-toolchain.toml); do
+              rustup target list --installed | grep -qx "$target" || { echo "missing $target"; exit 1; }
+            done &&
             qemu-system-aarch64 --version && qemu-system-riscv64 --version &&
-            qemu-system-x86_64 --version && gh --version && git --version'
+            qemu-system-x86_64 --version && test -d /usr/lib/riscv64-linux-gnu/opensbi &&
+            cc --version && zstd --version && gh --version && git --version'
 
       - name: Push
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
