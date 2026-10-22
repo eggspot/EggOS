@@ -800,3 +800,65 @@ A review of D33 found two gaps on x86_64, neither visible on QEMU:
   without the fix. QEMU boot and power-off on aarch64, riscv64 and x86_64.
 - **Still open (roadmap):** reserved ranges other than device pages are still direct-mapped
   cached; mapping ACPI tables on demand and leaving reserved ranges out comes with M5.
+
+## D39 Sleeping and wait queues: an idle thread, threads linked through themselves, one timer shared by the tick and the sleepers — Decided by the build loop (engineering; design decided by research); supersedes D37's tick owning the timer and D35's yielding `join`
+Third step of M4.
+- **Blocking.** A thread blocks in `thread::sleep_until` / `sleep` (until a clock tick, never
+  waking early) or in `WaitQueue::wait_until(condition)`, which returns once `condition`
+  holds; `wake_one` / `wake_all` make waiting threads ready again, first come first served.
+  The condition is checked with the scheduler's lock held and the thread queued before the
+  lock is released, so a wake that follows a change to the condition is never lost (on SMP
+  too). `JoinHandle::join` now blocks on a wait queue the exiting thread's joiners share,
+  instead of yielding in a loop. Not here yet: waits with a timeout, a condition-variable
+  form for data behind a `SpinLock`, and a futex-style "wait while the word holds this value"
+  (with the Linux ABI, M6).
+- **Idle (decided by research).** Each CPU has an idle thread, as Linux, FreeBSD, Windows,
+  macOS and seL4 do, rather than letting the blocking thread wait for interrupts on its own
+  stack: an exiting thread cannot free its own stack, and on SMP another CPU could resume a
+  thread whose context is not saved yet. It runs only when no other thread is ready: it arms
+  the timer for the earliest sleeper alone and waits for an interrupt. It costs one 16 KiB
+  stack per CPU, taken when the scheduler starts (the first `spawn`, or the first blocking
+  call, which stops the kernel if even that memory is missing).
+- **Lists (decided by research).** The ready threads, every wait queue and the sleepers are
+  lists linked through a field of the thread itself (a thread is in at most one), so a switch,
+  a block and a wake never allocate, and `spawn` no longer reserves run-queue capacity. The
+  sleepers are kept sorted by wake time: O(n) to add one, O(1) to find and wake the earliest;
+  enough for a few threads per CPU, behind three operations, so it can become a pairing heap or
+  a timer wheel when measurements call for it. Wait queues are guarded by the scheduler's lock
+  for now; their own locks come with per-CPU run queues.
+- **One timer, tickless (decided by research).** The CPU's one-shot timer is armed for the
+  earlier of the running thread's slice end, only while another thread is ready to run, and
+  the earliest sleeper's wake time: one runnable thread takes no tick at all, and a woken or
+  new thread brings the tick back (a slice already over then ends at the next preemption
+  point). The scheduler remembers what it armed and arms again only for an earlier deadline;
+  a later one waits for the earlier interrupt, which costs a spurious interrupt instead of an
+  SBI call per switch on RISC-V. Slices are measured on the clock, as before: a thread that
+  runs after a voluntary yield, block or exit has the rest of the slice under way.
+- **Expiry at preemption points, not in the interrupt handler (decided by the build loop,
+  against the research's suggestion).** The handler still only counts timer interrupts; the
+  scheduler compares the count with the one it last saw at every preemption point, yield and
+  block, and in the idle thread, and then wakes the sleepers that are due and ends the slice
+  if it is over. The interrupt path and `timer_interrupt_round_trip` cost what they did, and
+  a sleeper wakes as late as the next preemption point, the same bound D37 gives preemption.
+  Device interrupts that wake threads will need the handler to reach the scheduler (it may:
+  handlers only run where no lock is held, D37).
+- **Testing.** Host unit tests: sleepers wake in deadline order and never early while the
+  boot thread blocks in `join` and the idle thread waits for the timer; a deadline already
+  passed and a condition that already holds never switch; a wait queue wakes one thread or all
+  in the order they waited, and a thread woken while its condition does not hold waits again;
+  the tick is armed only while another thread is ready. Boot self-test on aarch64, riscv64 and
+  x86_64 (`threads_sleep_wait_and_run_tickless`): three sleepers wake in order and on time, a
+  waiter runs once its condition holds and it is woken, and 30 ms with preemption on and one
+  runnable thread take no timer interrupt.
+- **Benchmarks.** `thread_yield_round_trip` became faster with the intrusive run queue and the
+  out-of-line slow paths: aarch64 144 → 138, riscv64 183 → 157, x86_64 135 → 113
+  instructions. New: `wait_queue_wake_empty` (aarch64 16, riscv64 14, x86_64 16) and
+  `thread_wait_wake_round_trip`, two blocks, two wakes and two switches (aarch64 228, riscv64
+  228, x86_64 205). `frame_contiguous_allocate_free` on riscv64 went from 200 to 203 with the
+  allocator's machine code unchanged (checked instruction by instruction): the idle thread's
+  stack now holds one block, which changes how far the measured allocation splits and merges
+  (aarch64 moved the other way, 159 → 158).
+- **Follow-ups (roadmap).** Wait timeouts, the condition-variable and futex-style waits; per-CPU
+  idle threads, run queues and wait-queue locks (SMP); RISC-V Sstc (`stimecmp` without an SBI
+  call); waking from device interrupt handlers; per-thread CPU time from clock reads at each
+  switch (ticks no longer sample it).

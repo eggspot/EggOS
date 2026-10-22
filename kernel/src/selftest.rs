@@ -27,7 +27,7 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 9] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 10] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -50,6 +50,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 9] {
         }),
         ("threads_are_preempted_at_preemption_points", |_| {
             threads_are_preempted_at_preemption_points::<P>()
+        }),
+        ("threads_sleep_wait_and_run_tickless", |_| {
+            threads_sleep_wait_and_run_tickless::<P>()
         }),
     ]
 }
@@ -562,6 +565,66 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     }
     if interrupt::timer_interrupts() == ticks_before {
         return Err("a thread was preempted without a timer tick");
+    }
+    Ok(())
+}
+
+/// Threads that sleep wake in deadline order and never early, while the boot thread blocks in
+/// `join` and the idle thread waits for the timer; a thread waiting in a wait queue runs once
+/// its condition holds and it is woken; and with preemption on and one thread runnable, no
+/// timer tick comes (D39). A sleeper that is never woken leaves the boot thread blocked, which
+/// the QEMU runner's timeout reports.
+fn threads_sleep_wait_and_run_tickless<P: Platform>() -> Result<(), &'static str> {
+    static WOKEN: SpinLock<Vec<(u64, bool)>> = SpinLock::new(Vec::new());
+    static QUEUE: thread::WaitQueue = thread::WaitQueue::new();
+    static OPEN: AtomicBool = AtomicBool::new(false);
+    let millisecond = P::clock_frequency() / 1000;
+    WOKEN.lock().clear();
+    let base = P::clock_ticks();
+    let mut sleepers = Vec::new();
+    for order in [3u64, 1, 2] {
+        let sleeper = thread::spawn::<P, _>(move || {
+            let deadline = base + order * millisecond;
+            thread::sleep_until::<P>(deadline);
+            let on_time = P::clock_ticks() >= deadline;
+            WOKEN.lock().push((order, on_time));
+        });
+        sleepers.push(sleeper.map_err(|_| "could not start three threads")?);
+    }
+    for sleeper in sleepers {
+        sleeper.join::<P>();
+    }
+    let woken = core::mem::take(&mut *WOKEN.lock());
+    if woken.iter().any(|&(_, on_time)| !on_time) {
+        return Err("a sleeping thread woke before its deadline");
+    }
+    if woken != [(1, true), (2, true), (3, true)] {
+        return Err("sleeping threads did not wake in deadline order");
+    }
+
+    OPEN.store(false, Ordering::Relaxed);
+    let waiter = thread::spawn::<P, _>(|| QUEUE.wait_until::<P>(|| OPEN.load(Ordering::Acquire)))
+        .map_err(|_| "could not start a thread")?;
+    // The waiter runs, finds the queue closed and waits.
+    thread::yield_now::<P>();
+    if waiter.is_finished() {
+        return Err("a thread did not wait for its condition");
+    }
+    OPEN.store(true, Ordering::Release);
+    if !QUEUE.wake_one::<P>() {
+        return Err("the waiting thread was not in the wait queue");
+    }
+    waiter.join::<P>();
+
+    let interrupts_before = interrupt::timer_interrupts();
+    thread::enable_preemption::<P>();
+    let until = P::clock_ticks() + 3 * thread::TIME_SLICE_MS * millisecond;
+    while P::clock_ticks() < until {
+        thread::preemption_point::<P>();
+    }
+    thread::disable_preemption::<P>();
+    if interrupt::timer_interrupts() != interrupts_before {
+        return Err("a timer tick came while only one thread was runnable");
     }
     Ok(())
 }
