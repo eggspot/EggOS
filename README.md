@@ -1,7 +1,9 @@
 # EggOS
-AI-native operating system written from scratch in Rust, including its own Linux-compatible kernel; runs Windows, macOS and Android apps; personal, professional, enterprise and server editions.
+AI-native operating system written from scratch in Rust, including its own Linux-compatible kernel; runs Windows, macOS, Android and iOS apps natively, without emulation; beyond a small base every feature is optional, so you install only what you choose; personal, professional, enterprise and server editions.
 
 100% open source under the [MIT License](LICENSE).
+
+EggOS is open source and open for funding. If you want to help build it, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
 
 ## Layout
 | Path | What |
@@ -20,5 +22,6 @@ cargo xtask ci                   # everything CI runs, cheapest first
 cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
 cargo xtask run --arch aarch64   # boot interactively (quit: Ctrl-A then X)
 ```
-QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`) must be on `PATH` for the boot commands.
-Kernel architectures so far: aarch64, riscv64.
+QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`, `qemu-system-x86_64`) must be on `PATH` for the
+boot commands.
+Kernel architectures so far: aarch64, riscv64, x86_64.

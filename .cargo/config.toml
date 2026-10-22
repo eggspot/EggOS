@@ -1,3 +1,10 @@
 # Host-side helper commands written in Rust, so they work the same on macOS, Windows and Linux.
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# The x86_64 entry code runs 32-bit code that uses absolute addresses, so the kernel is linked
+# as a static, non-PIE executable at its load address (the target defaults to static PIE).
+# Note: a RUSTFLAGS environment variable replaces these flags; if it is set, the link fails
+# with R_X86_64_32 relocation errors, so add the flag below to it.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static"]

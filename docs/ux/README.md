@@ -2,7 +2,7 @@
 
 EggOS should feel familiar on day one to someone coming from macOS, Windows or a Linux desktop
 (GNOME, KDE Plasma), and then feel like an upgrade. This folder collects what those users expect
-and how EggOS maps each habit, so the desktop (M12) is designed before it is built.
+and how EggOS maps each habit, so the desktop (M12) is designed before it is built. Designs are made by Claude Fable (D16).
 Sources: each platform's public user documentation and human interface guidelines, and observed
 behaviour. A UX regression is treated like a performance regression.
 

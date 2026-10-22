@@ -19,7 +19,7 @@ commands:
                          (<arch> may be `all`)
   run   --arch <arch>    boot the kernel in QEMU interactively (quit: Ctrl-A then X)
 
-architectures: aarch64, riscv64";
+architectures: aarch64, riscv64, x86_64";
 
 /// A kernel architecture: its Rust target and how to boot it in QEMU.
 #[derive(Debug)]
@@ -43,6 +43,12 @@ pub const ARCHES: &[Arch] = &[
         target: "riscv64gc-unknown-none-elf",
         qemu: "qemu-system-riscv64",
         machine_args: &["-machine", "virt", "-bios", "default"],
+    },
+    Arch {
+        name: "x86_64",
+        target: "x86_64-unknown-none",
+        qemu: "qemu-system-x86_64",
+        machine_args: &["-machine", "q35"],
     },
 ];
 
