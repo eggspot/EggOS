@@ -2967,7 +2967,8 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   device), and every other id. `clock_getres` reports 1 ns for each, as Linux does for its
   high-resolution clocks; the coarse ones read precisely, so 1 ns is true for them too.
 - **Sleeping** (research): `nanosleep` and `clock_nanosleep` on the realtime, monotonic,
-  boot-time and TAI clocks (`EOPNOTSUPP` on the raw and coarse ones, as Linux), relative or
+  boot-time and TAI clocks (`EOPNOTSUPP` on the raw, coarse and thread CPU-time ones, and on
+  the alarm clocks after the request's checks, as Linux without a real-time clock), relative or
   with `TIMER_ABSTIME` (other flag bits ignored, as on Linux), in Linux's error order:
   `EINVAL` for the clock, `EOPNOTSUPP`, `EFAULT` for the request, `EINVAL` for negative seconds
   or nanoseconds outside 0 to 999999999. The deadline is computed in nanoseconds and woken at
@@ -2976,7 +2977,8 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   sleeping thread a signal yet, so a sleep is never interrupted and `rem` is never written;
   `EINTR` with `rem` comes with the first sender from outside the thread.
 - **Setting the clock** (research): `clock_settime` and `settimeofday` make Linux's checks
-  (`EINVAL` for any clock but `CLOCK_REALTIME`, `EFAULT`, `EINVAL` for a bad time, and for
+  (`EINVAL` for any clock but `CLOCK_REALTIME`, `EFAULT`, `EINVAL` for a bad time or one past
+  Linux's latest settable second, 30 years of uptime short of the 64-bit nanosecond limit, and for
   `settimeofday` its microseconds and time zone checks in Linux's order) and then answer
   `EPERM`: no process may set the wall clock until processes have credentials
   (`CAP_SYS_TIME`), as none may raise a hard resource limit (D59). The clock is shared by
@@ -2989,8 +2991,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
 - **Tests.** Host, through the dispatcher: every clock reads forward and reports 1 ns, the
   refused clocks `EINVAL` before `EFAULT`, unwritable buffers `EFAULT`; `gettimeofday` in
   microseconds with a zeroed time zone, x86_64's `time`; `nanosleep` and both kinds of
-  `clock_nanosleep` never wake early, with Linux's errors in order; the setting calls' checks
-  then `EPERM`. QEMU: a new test program, `linux_clock`, reads `CLOCK_MONOTONIC`, sleeps 1 ms
+  `clock_nanosleep` never wake early, with Linux's errors in order, the alarm clocks included;
+  the setting calls' checks then `EPERM`; and, at frequencies from 1 MHz to 3.7 GHz, the first
+  tick at a time reads at least it and the tick before reads less. QEMU: a new test program, `linux_clock`, reads `CLOCK_MONOTONIC`, sleeps 1 ms
   with `nanosleep`, reads it again and checks that at least 1 ms passed, then checks that
   `CLOCK_PROCESS_CPUTIME_ID` is `EINVAL`; it passes on aarch64, riscv64 and x86_64.
 - **For later.** Real-time clock drivers setting the wall clock (after M5); a vDSO for clock

@@ -3325,7 +3325,9 @@ mod tests {
         assert!(now() - before < 1_000_000);
         for (id, errno) in [
             (clock::PROCESS_CPUTIME_ID, Errno::EINVAL),
-            (clock::REALTIME_ALARM, Errno::EINVAL),
+            (clock::THREAD_CPUTIME_ID, Errno::EOPNOTSUPP),
+            (clock::REALTIME_ALARM, Errno::EFAULT),
+            (clock::BOOTTIME_ALARM, Errno::EFAULT),
             (clock::MONOTONIC_RAW, Errno::EOPNOTSUPP),
             (clock::MONOTONIC_COARSE, Errno::EOPNOTSUPP),
             (clock::REALTIME_COARSE, Errno::EOPNOTSUPP),
@@ -3337,6 +3339,22 @@ mod tests {
                     [u64::from(id as u32), 0, UNMAPPED, 0, 0, 0]
                 ),
                 errno.result()
+            );
+        }
+        write_timespec(&process, req, 0, -1);
+        for alarm in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM] {
+            let alarm = u64::from(alarm as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_NANOSLEEP, [alarm, 0, req, 0, 0, 0]),
+                Errno::EINVAL.result()
+            );
+        }
+        write_timespec(&process, req, 0, 1);
+        for alarm in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM] {
+            let alarm = u64::from(alarm as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_NANOSLEEP, [alarm, 0, req, 0, 0, 0]),
+                Errno::EOPNOTSUPP.result()
             );
         }
     }
@@ -3354,8 +3372,12 @@ mod tests {
         assert_eq!(settime(1, UNMAPPED), Errno::EINVAL.result());
         assert_eq!(settime(0, UNMAPPED), Errno::EFAULT.result());
         assert_eq!(settime(0, time), Errno::EPERM.result());
-        write_timespec(&process, time, -1, 0);
-        assert_eq!(settime(0, time), Errno::EINVAL.result());
+        for seconds in [-1, 8_277_292_037, i64::MAX] {
+            write_timespec(&process, time, seconds, 0);
+            assert_eq!(settime(0, time), Errno::EINVAL.result());
+        }
+        write_timespec(&process, time, 8_277_292_036, 999_999_999);
+        assert_eq!(settime(0, time), Errno::EPERM.result());
         let settimeofday =
             |tv: u64, tz: u64| call(&process, number::SETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]);
         assert_eq!(settimeofday(UNMAPPED, UNMAPPED), Errno::EFAULT.result());
@@ -3364,8 +3386,10 @@ mod tests {
         write_timespec(&process, time, 1, 1_000_000);
         assert_eq!(settimeofday(time, UNMAPPED), Errno::EFAULT.result());
         assert_eq!(settimeofday(time, zone), Errno::EINVAL.result());
-        write_timespec(&process, time, -1, 0);
-        assert_eq!(settimeofday(time, 0), Errno::EINVAL.result());
+        for seconds in [-1, 8_277_292_037] {
+            write_timespec(&process, time, seconds, 0);
+            assert_eq!(settimeofday(time, 0), Errno::EINVAL.result());
+        }
         write_timespec(&process, time, 1, 999_999);
         assert_eq!(settimeofday(time, zone), Errno::EPERM.result());
         assert_eq!(settimeofday(0, 0), Errno::EPERM.result());

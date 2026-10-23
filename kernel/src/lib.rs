@@ -806,12 +806,6 @@ pub(crate) mod tests {
         UserExit::Syscall
     }
 
-    /// Plays `linux_signal_suspend` (at `start`) for the test platform: `rt_sigaction` for
-    /// `SIGUSR1` below a stack pointer it moves down, `rt_sigprocmask` blocking it, `getpid`,
-    /// `tgkill`, then `rt_sigsuspend` with an empty set, whose handler (at [`SIGNAL_HANDLER`])
-    /// checks the mask its frame saved, changes the frame and returns with `rt_sigreturn`;
-    /// then `rt_sigprocmask` reads the mask back, and `exit_group(0)` if every check passed.
-    /// Each call's result is checked as the program checks it.
     /// Plays `linux_clock` (at `start`) for the test platform: `clock_gettime(CLOCK_MONOTONIC)`
     /// below a stack pointer it moves down, `nanosleep` for
     /// [`TestProgram::LINUX_CLOCK_WAIT_NS`], `clock_gettime(CLOCK_MONOTONIC)` again, then
@@ -864,6 +858,12 @@ pub(crate) mod tests {
         UserExit::Syscall
     }
 
+    /// Plays `linux_signal_suspend` (at `start`) for the test platform: `rt_sigaction` for
+    /// `SIGUSR1` below a stack pointer it moves down, `rt_sigprocmask` blocking it, `getpid`,
+    /// `tgkill`, then `rt_sigsuspend` with an empty set, whose handler (at [`SIGNAL_HANDLER`])
+    /// checks the mask its frame saved, changes the frame and returns with `rt_sigreturn`;
+    /// then `rt_sigprocmask` reads the mask back, and `exit_group(0)` if every check passed.
+    /// Each call's result is checked as the program checks it.
     fn signal_suspend_program(
         context: &mut eggos_hal::user::UserContext,
         start: u64,

@@ -40,6 +40,10 @@ const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 /// The size of a `struct timespec` and of a `struct timeval`: two 64-bit fields.
 const TIMESPEC_SIZE: usize = 16;
 
+/// The latest wall-clock second that may be set, as on Linux: room for 30 years of uptime
+/// before the clock's nanoseconds overflow a signed 64-bit count.
+const SETTABLE_SECONDS_MAX: i64 = i64::MAX / NANOSECONDS_PER_SECOND as i64 - 30 * 365 * 86_400;
+
 /// The size of a `struct timezone`: two `int`s.
 const TIMEZONE_SIZE: usize = 8;
 
@@ -86,17 +90,23 @@ fn nanoseconds_per_tick<P: Platform>() -> u64 {
 /// factor is rounded up, so the clock never shows less time passing than the ticks did, and
 /// a sleep of a duration always reads as at least that long.
 pub fn monotonic_nanoseconds<P: Platform>() -> u64 {
-    nanoseconds_at::<P>(P::clock_ticks())
+    nanoseconds_at(P::clock_ticks(), nanoseconds_per_tick::<P>())
 }
 
-fn nanoseconds_at<P: Platform>(ticks: u64) -> u64 {
-    let nanoseconds = (u128::from(ticks) * u128::from(nanoseconds_per_tick::<P>())) >> 32;
+/// Clock tick `ticks` in nanoseconds, with `per_tick` from [`nanoseconds_per_tick`].
+fn nanoseconds_at(ticks: u64, per_tick: u64) -> u64 {
+    let nanoseconds = (u128::from(ticks) * u128::from(per_tick)) >> 32;
     u64::try_from(nanoseconds).unwrap_or(u64::MAX)
 }
 
-/// The first clock tick whose nanoseconds reach `nanoseconds`: a deadline never early.
-fn first_tick_at<P: Platform>(nanoseconds: u64) -> u64 {
-    mul_div_ceil(nanoseconds, 1 << 32, nanoseconds_per_tick::<P>())
+/// The first clock tick whose nanoseconds ([`nanoseconds_at`]) reach `nanoseconds`: a
+/// deadline never early.
+fn first_tick_at(nanoseconds: u64, per_tick: u64) -> u64 {
+    mul_div_ceil(nanoseconds, 1 << 32, per_tick)
+}
+
+fn sleep_until_nanoseconds<P: Platform>(deadline: u64) {
+    thread::sleep_until::<P>(first_tick_at(deadline, nanoseconds_per_tick::<P>()));
 }
 
 fn timespec(nanoseconds: u64) -> [u8; TIMESPEC_SIZE] {
@@ -172,7 +182,8 @@ pub fn time<P: Platform>(process: &Process<P>, tloc: u64) -> Result<u64, Errno> 
 
 /// `clock_settime(clock, tp)`: as Linux, `EINVAL` for any clock but `CLOCK_REALTIME`, the only
 /// one that can be set, then `EFAULT` if `tp` is not the program's memory, then `EINVAL` for
-/// negative seconds or nanoseconds outside 0 to 999999999, then `EPERM`: no process may set
+/// negative seconds, seconds past [`SETTABLE_SECONDS_MAX`] or nanoseconds outside 0 to
+/// 999999999, then `EPERM`: no process may set
 /// the wall clock (Linux's `CAP_SYS_TIME`) until processes have credentials, as none may raise
 /// a hard resource limit (D59). The clock is shared by every process, and an agent confined to
 /// its own permissions (D21) must not move it.
@@ -184,13 +195,19 @@ pub fn clock_settime<P: Platform>(
     if clock_id as u32 as i32 != clock::REALTIME {
         return Err(Errno::EINVAL);
     }
-    poll::read_timeout(process, tp)?;
+    let nanoseconds = poll::read_timeout(process, tp)?;
+    if nanoseconds.is_none_or(|nanoseconds| {
+        nanoseconds / NANOSECONDS_PER_SECOND > SETTABLE_SECONDS_MAX as u64
+    }) {
+        return Err(Errno::EINVAL);
+    }
     Err(Errno::EPERM)
 }
 
 /// `settimeofday(tv, tz)`: as Linux, each unless null: `EFAULT` if `tv` is not the program's
 /// memory, `EINVAL` for microseconds outside 0 to 1000000, `EFAULT` if `tz` is not the
-/// program's memory, `EINVAL` for negative seconds or a whole second of microseconds, then
+/// program's memory, `EINVAL` for negative seconds, seconds past [`SETTABLE_SECONDS_MAX`] or a
+/// whole second of microseconds, then
 /// `EPERM`, as for [`clock_settime`].
 pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Result<u64, Errno> {
     let mut seconds_and_microseconds = None;
@@ -213,7 +230,7 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
             .map_err(|_| Errno::EFAULT)?;
     }
     if let Some((seconds, microseconds)) = seconds_and_microseconds
-        && (seconds < 0 || microseconds == 1_000_000)
+        && (!(0..=SETTABLE_SECONDS_MAX).contains(&seconds) || microseconds == 1_000_000)
     {
         return Err(Errno::EINVAL);
     }
@@ -230,9 +247,10 @@ pub fn nanosleep<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Err
 /// timespec` at `req`, or, with [`TIMER_ABSTIME`] in `flags`, until the clock reads it (at
 /// once if it has); its other bits are ignored, as on Linux. It never wakes early, and a
 /// sleep too long to count lasts for good. As Linux: `EINVAL` for a clock it does not answer
-/// for, `EOPNOTSUPP` for one it cannot sleep on (the raw and coarse ones), then `EFAULT` if
-/// `req` is not the program's memory, then `EINVAL` for negative seconds or nanoseconds outside
-/// 0 to 999999999. Nothing can send the thread a signal while it sleeps yet, so the sleep is
+/// for, `EOPNOTSUPP` for one it cannot sleep on (the raw, coarse and thread CPU-time ones),
+/// then `EFAULT` if `req` is not the program's memory, then `EINVAL` for negative seconds or
+/// nanoseconds outside 0 to 999999999; the alarm clocks, which need a real-time clock device,
+/// are `EOPNOTSUPP` after those checks, as on Linux without one. Nothing can send the thread a signal while it sleeps yet, so the sleep is
 /// never interrupted and `rem` is never written.
 pub fn clock_nanosleep<P: Platform>(
     process: &Process<P>,
@@ -240,7 +258,14 @@ pub fn clock_nanosleep<P: Platform>(
     flags: u64,
     req: u64,
 ) -> Result<u64, Errno> {
-    let clock = clock(clock_id).ok_or(Errno::EINVAL)?;
+    let clock = match clock_id as u32 as i32 {
+        clock::THREAD_CPUTIME_ID => return Err(Errno::EOPNOTSUPP),
+        clock::REALTIME_ALARM | clock::BOOTTIME_ALARM => {
+            poll::read_timeout(process, req)?;
+            return Err(Errno::EOPNOTSUPP);
+        }
+        _ => clock(clock_id).ok_or(Errno::EINVAL)?,
+    };
     if !clock.can_sleep {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -248,13 +273,61 @@ pub fn clock_nanosleep<P: Platform>(
         return sleep_for::<P>(process, req);
     }
     let deadline = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    thread::sleep_until::<P>(first_tick_at::<P>(deadline));
+    sleep_until_nanoseconds::<P>(deadline);
     Ok(0)
 }
 
 fn sleep_for<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
     let duration = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    let deadline = monotonic_nanoseconds::<P>().saturating_add(duration);
-    thread::sleep_until::<P>(first_tick_at::<P>(deadline));
+    sleep_until_nanoseconds::<P>(monotonic_nanoseconds::<P>().saturating_add(duration));
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_tick_at_a_time_reads_at_least_it_and_the_tick_before_reads_less() {
+        let frequencies = [
+            1_000_000,
+            1_193_182,
+            10_000_000,
+            62_500_000,
+            999_152_405,
+            2_400_000_001,
+            3_696_000_000,
+        ];
+        let times = [
+            0,
+            1,
+            999,
+            1_000_000,
+            2_000_001,
+            1_000_000_007,
+            86_400 * NANOSECONDS_PER_SECOND + 17,
+            40 * 365 * 86_400 * NANOSECONDS_PER_SECOND + 3,
+        ];
+        for frequency in frequencies {
+            let per_tick = ratio_ceil(NANOSECONDS_PER_SECOND, frequency);
+            for time in times {
+                let tick = first_tick_at(time, per_tick);
+                assert!(
+                    nanoseconds_at(tick, per_tick) >= time,
+                    "{time} at {frequency}"
+                );
+                if tick > 0 {
+                    assert!(
+                        nanoseconds_at(tick - 1, per_tick) < time,
+                        "{time} at {frequency}"
+                    );
+                }
+                let exact = mul_div_ceil(tick, NANOSECONDS_PER_SECOND, frequency);
+                assert!(
+                    nanoseconds_at(tick, per_tick) + 1 >= exact,
+                    "{time} at {frequency}"
+                );
+            }
+        }
+    }
 }
