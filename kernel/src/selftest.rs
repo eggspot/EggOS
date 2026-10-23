@@ -761,9 +761,9 @@ fn processes_keep_their_own_memory<P: Platform>(
     if !release_loaded_address_spaces::<P>(|| true) {
         return Err("a CPU kept an ended process's address space loaded");
     }
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     run_processes_reading_their_own_memory(memory, count, threads_each)?;
-    let freed = || free_frames() == Some(before);
+    let freed = || free_and_slab_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) {
         return Err("a CPU kept an ended process's address space loaded");
     }
@@ -935,7 +935,7 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     const TURNS: u64 = 3;
     static STOP: AtomicBool = AtomicBool::new(false);
     STOP.store(false, Ordering::Relaxed);
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     let millisecond = P::clock_frequency() / 1000;
     let mut threads = Vec::new();
     thread::enable_preemption::<P>();
@@ -995,7 +995,7 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     if !took_turns {
         return Err("two programs in user mode did not take turns on one CPU");
     }
-    if free_frames() != Some(before) {
+    if free_and_slab_frames() != Some(before) {
         return Err("the processes' frames and tables were not all freed");
     }
     Ok(())
@@ -1015,7 +1015,7 @@ fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<
     {
         return Err("the test program does not write the line it is checked against");
     }
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     for (entry, expected) in [
         (
             (|program: &TestProgram| program.linux_hello) as fn(&TestProgram) -> usize,
@@ -1045,7 +1045,7 @@ fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<
             None => return Err("a Linux program's thread ended without ending it"),
         }
     }
-    let freed = || free_frames() == Some(before);
+    let freed = || free_and_slab_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the Linux programs' frames and tables were not all freed");
     }
@@ -1168,7 +1168,7 @@ fn linux_programs_start_from_elf_images<P: Platform>(
     if joined != LINUX_START_LINE.as_bytes() {
         return Err("the program's strings are not the line it is checked against");
     }
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     {
         let image = linux_start_image::<P>();
         let arguments = LINUX_START_ARGUMENTS.map(str::as_bytes);
@@ -1198,7 +1198,7 @@ fn linux_programs_start_from_elf_images<P: Platform>(
             None => return Err("a Linux program's thread ended without ending it"),
         }
     }
-    let freed = || free_frames() == Some(before);
+    let freed = || free_and_slab_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the ELF program's frames and tables were not all freed");
     }
@@ -1214,7 +1214,7 @@ fn linux_programs_start_from_elf_images<P: Platform>(
 fn linux_stacks_grow_on_demand<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let user_end = <P::PageTableFormat as Format>::USER_END;
     let reserve = user_end - exec::STACK_RESERVE;
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     {
         let image = linux_start_image::<P>();
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
@@ -1252,7 +1252,7 @@ fn linux_stacks_grow_on_demand<P: Platform>(memory: &mut Memory<P>) -> Result<()
             return Err("a page below the stack's reserve was mapped");
         }
     }
-    let freed = || free_frames() == Some(before);
+    let freed = || free_and_slab_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the stack's frames and tables were not all freed");
     }
@@ -1274,7 +1274,7 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
     use linux::memory::{map, prot};
     const PAGES: u64 = 8;
     const HALF: u64 = PAGES / 2 * FRAME_SIZE;
-    let before = free_frames().ok_or("there is no frame allocator")?;
+    let before = free_and_slab_frames().ok_or("there is no frame allocator")?;
     {
         let image = linux_start_image::<P>();
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
@@ -1363,7 +1363,7 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
             }
         }
     }
-    let freed = || free_frames() == Some(before);
+    let freed = || free_and_slab_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the range's frames and the program's were not all freed");
     }
@@ -1406,7 +1406,7 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err("a CPU kept an ended process's address space loaded");
             }
-            before = Some(free_frames().ok_or("there is no frame allocator")?);
+            before = Some(free_and_slab_frames().ok_or("there is no frame allocator")?);
         }
         let mut programs = Vec::new();
         for _ in 0..count {
@@ -1433,7 +1433,7 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
             }
         }
     }
-    let freed = || free_frames() == before;
+    let freed = || free_and_slab_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the Linux programs' frames and tables were not all freed");
     }
@@ -1464,7 +1464,7 @@ fn linux_programs_poll_the_console<P: Platform>(
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err("a CPU kept an ended process's address space loaded");
             }
-            before = Some(free_frames().ok_or("there is no frame allocator")?);
+            before = Some(free_and_slab_frames().ok_or("there is no frame allocator")?);
         }
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
         let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
@@ -1492,7 +1492,7 @@ fn linux_programs_poll_the_console<P: Platform>(
             return Err("ppoll returned before its timeout");
         }
     }
-    let freed = || free_frames() == before;
+    let freed = || free_and_slab_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the polling program's frames and tables were not all freed");
     }
@@ -1516,7 +1516,7 @@ fn linux_programs_signal_themselves<P: Platform>(
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err("a CPU kept an ended process's address space loaded");
             }
-            before = Some(free_frames().ok_or("there is no frame allocator")?);
+            before = Some(free_and_slab_frames().ok_or("there is no frame allocator")?);
         }
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
         let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
@@ -1539,7 +1539,7 @@ fn linux_programs_signal_themselves<P: Platform>(
             None => return Err("a Linux program's thread ended without ending it"),
         }
     }
-    let freed = || free_frames() == before;
+    let freed = || free_and_slab_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the signalling program's frames and tables were not all freed");
     }
@@ -1704,7 +1704,7 @@ fn run_handling_program<P: Platform>(
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err(Other("a CPU kept an ended process's address space loaded"));
             }
-            before = Some(free_frames().ok_or(Other("there is no frame allocator"))?);
+            before = Some(free_and_slab_frames().ok_or(Other("there is no frame allocator"))?);
         }
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
         let mut process =
@@ -1730,7 +1730,7 @@ fn run_handling_program<P: Platform>(
             None => return Err(Other("a Linux program's thread ended without ending it")),
         }
     }
-    let freed = || free_frames() == before;
+    let freed = || free_and_slab_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err(Other(
             "the handling program's frames and tables were not all freed",
@@ -1739,12 +1739,12 @@ fn run_handling_program<P: Platform>(
     Ok(())
 }
 
-/// The frame allocator's free frames, `None` if there is none.
-fn free_frames() -> Option<u64> {
-    memory::FRAMES
-        .lock()
-        .as_ref()
-        .map(FrameAllocator::free_frames)
+/// The frame allocator's free frames plus those the heap's size classes keep
+/// ([`crate::heap::KernelHeap::free_and_slab_frames`]), `None` if there is no frame allocator:
+/// a size class that grows while a test runs, as one may when threads on several CPUs allocate
+/// in another order than before, does not count as frames the test failed to free.
+fn free_and_slab_frames() -> Option<u64> {
+    crate::HEAP.free_and_slab_frames()
 }
 
 /// Where the kernel reaches the word at user address `virt` of `space` while it is active:

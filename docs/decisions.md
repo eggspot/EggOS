@@ -3399,3 +3399,24 @@ grant. It stays free forever, with no extra terms, no proprietary edition and no
 accepted under the same terms. Every contributor so far is the owner, its bots or its AI
 assistants, so the owner can relicense. D5's clean-room rule is unchanged. Only the owner changes
 the license, by an explicit instruction recorded here.
+
+## D80 Self-tests count the heap's slab frames as free when they check that frames were freed — Decided by the build loop
+- **Why.** On `main` after PR #72, CI's aarch64 boot test failed once in
+  `processes_run_on_every_cpu`: "the processes' frames and tables were not all freed". A rerun
+  passed, and it passed 5 times out of 5 locally. The self-tests run a workload twice and
+  check that the second round gave back every frame, on the assumption that the first round
+  grew the heap's size classes as far as they need (D30): those classes never give frames
+  back. With threads on several CPUs, the second round can allocate in another order and
+  reach a higher peak, so a class takes one more frame. The check then fails with nothing
+  leaked.
+- **What.** The heap counts the frames its size classes take (`Heap::slab_frames`), one
+  increment in the out-of-line refill and nothing on the block path.
+  `KernelHeap::free_and_slab_frames` reads that count with the frame allocator's free frames
+  under the heap's lock, and the self-tests that run processes and threads compare that sum,
+  so a class that grows does not count as a leak. A leaked frame, page table or larger
+  allocation still changes the sum. Tests that check the frame or heap allocator itself still
+  count free frames only. What the sum no longer catches is a leak of small heap blocks
+  alone (2048 bytes or less, with no frame or page table behind them); the old check caught
+  one only when it happened to make a size class take a frame.
+- **Tests.** Host: the count grows by one when a class takes a frame and not for a frame-sized
+  allocation, and the sum is unchanged after both are freed.

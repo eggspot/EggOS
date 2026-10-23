@@ -124,6 +124,7 @@ struct Class {
 #[derive(Debug)]
 pub struct Heap {
     classes: [Class; CLASSES],
+    slab_frames: u64,
 }
 
 impl Default for Heap {
@@ -164,7 +165,14 @@ impl Heap {
                 next: 0,
                 end: 0,
             }; CLASSES],
+            slab_frames: 0,
         }
+    }
+
+    /// How many frames the size classes have taken to carve into blocks, which they keep for
+    /// good (D30).
+    pub fn slab_frames(&self) -> u64 {
+        self.slab_frames
     }
 
     /// Memory for `layout`, or `None` when memory is exhausted or the layout is larger than
@@ -230,7 +238,7 @@ impl Heap {
             return Some(block);
         }
         if state.next == state.end {
-            Self::refill(state, frames)?;
+            Self::refill(state, &mut self.slab_frames, frames)?;
         }
         let block = state.next;
         state.next += MIN_BLOCK << class;
@@ -241,8 +249,13 @@ impl Heap {
     /// the block path stays short.
     #[cold]
     #[inline(never)]
-    fn refill(class: &mut Class, frames: &mut impl FrameSource) -> Option<()> {
+    fn refill(
+        class: &mut Class,
+        slab_frames: &mut u64,
+        frames: &mut impl FrameSource,
+    ) -> Option<()> {
         let frame = frames.allocate_frames(0)?;
+        *slab_frames += 1;
         class.next = frame;
         class.end = frame + FRAME_SIZE as usize;
         Some(())
@@ -275,6 +288,15 @@ impl KernelHeap {
     #[inline]
     fn lock(&self) -> SpinLockGuard<'_, Heap> {
         self.heap.lock()
+    }
+
+    /// The frame allocator's free frames plus [`Heap::slab_frames`], read together: a count
+    /// that frames the size classes take do not change, so code that gives back every frame
+    /// it took leaves it as it was even when a size class grew meanwhile.
+    pub fn free_and_slab_frames(&self) -> Option<u64> {
+        let heap = self.lock();
+        let free = memory::FRAMES.lock().as_ref()?.free_frames();
+        Some(free + heap.slab_frames())
     }
 }
 
@@ -417,8 +439,31 @@ mod tests {
             heap.allocate(l, &mut frames).unwrap();
         }
         assert_eq!(frames.0.free_frames(), free - 1);
+        assert_eq!(heap.slab_frames(), 1);
         heap.allocate(l, &mut frames).unwrap();
         assert_eq!(frames.0.free_frames(), free - 2);
+        assert_eq!(heap.slab_frames(), 2);
+    }
+
+    #[test]
+    fn free_and_slab_frames_count_a_class_s_new_frame_but_not_a_frame_allocation() {
+        let _frames = crate::thread::host::frames_for_test();
+        let heap = KernelHeap::new();
+        let before = heap.free_and_slab_frames().unwrap();
+        let small = layout(64, 8);
+        let page = layout(4096, 4096);
+        // SAFETY: the layout has a non-zero size.
+        let block = unsafe { heap.alloc(small) };
+        // SAFETY: as above.
+        let frame = unsafe { heap.alloc(page) };
+        assert!(!block.is_null() && !frame.is_null());
+        assert_eq!(heap.lock().slab_frames(), 1);
+        assert_eq!(heap.free_and_slab_frames(), Some(before - 1));
+        // SAFETY: it came from this heap with this layout and is not used any more.
+        unsafe { heap.dealloc(frame, page) };
+        // SAFETY: as above.
+        unsafe { heap.dealloc(block, small) };
+        assert_eq!(heap.free_and_slab_frames(), Some(before));
     }
 
     #[test]
