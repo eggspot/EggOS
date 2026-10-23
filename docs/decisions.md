@@ -3316,7 +3316,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
     (`PROT_NONE`), at the new address (`PageTables::move_user_pages`): the frame and its
     contents go with it, and the old entries are dropped from the TLB as `munmap` drops them
     (D53). If a table for the new place cannot be allocated, the pages moved so far go back
-    and the call fails with `ENOMEM`, nothing changed. The region keeps its attributes; what
+    and the call fails with `ENOMEM`, the old range as it was (with `MREMAP_FIXED`, what was
+    at `new_address` is already unmapped, as on Linux), and every CPU drops what it may have
+    cached of the entries that held pages at the new place. The region keeps its attributes; what
     it grew by is mapped, zeroed, when first touched.
   - **`MREMAP_FIXED`** moves the first `new_size` bytes to `new_address`, replacing whatever
     was there, and unmaps the rest of the old range; `MREMAP_DONTUNMAP` leaves the old range a
@@ -3326,8 +3328,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
 - **Deviations from Linux** (research):
   - Linux's `MREMAP_FIXED` unmaps the target and the old range's tail before it checks the
     old range, so a call that then fails with `EFAULT` has unmapped both. Here everything is
-    checked first and a failing call unmaps nothing; no program can depend on the half-done
-    state.
+    checked first and a call that fails a check unmaps nothing (only running out of frames
+    for page tables, after the target is unmapped, leaves it unmapped, as on Linux); no
+    program can depend on the half-done state.
   - Growing in place stops below where `mmap` places mappings (the stack's reserve and guard
     gap, D52), where Linux lets a mapping grow up to the stack. The stack is one fixed 8 MiB
     region here, so the gap below it is what makes an overflow fault instead of running into

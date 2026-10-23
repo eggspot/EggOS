@@ -166,7 +166,8 @@ impl<P: Platform> AddressSpace<P> {
     /// Moves every page of user `from..from + length` that is mapped or kept to the same
     /// offset from `to`, frames and contents with them, as [`PageTables::move_user_pages`]
     /// (nothing there may be mapped yet; on an error nothing has moved), then makes sure no CPU
-    /// goes on using what it cached of the entries at `from`. Used as [`Self::change_pages`].
+    /// goes on using what it cached of the entries at `from`, or, after an error, of the
+    /// entries at `to` that held pages until they went back. Used as [`Self::change_pages`].
     pub fn move_pages(&self, from: u64, to: u64, length: u64) -> Result<(), MapError> {
         let result = {
             let mut tables = self.tables.lock();
@@ -174,8 +175,9 @@ impl<P: Platform> AddressSpace<P> {
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
             tables.move_user_pages(from, to, length, frames)
         };
-        if result.is_ok() {
-            self.drop_old_translations(from, length);
+        match result {
+            Ok(()) => self.drop_old_translations(from, length),
+            Err(_) => self.drop_old_translations(to, length),
         }
         result
     }

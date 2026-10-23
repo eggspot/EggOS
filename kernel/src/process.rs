@@ -578,7 +578,10 @@ impl<P: Platform> Process<P> {
             if access == Access::Write {
                 for page in (part_start..part_end).step_by(FRAME_SIZE as usize) {
                     self.populate(&regions, page, access, true)
-                        .map_err(|_| PopulateError::OutOfMemory)?;
+                        .map_err(|error| match error {
+                            UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
+                            UnresolvedFault::OutOfMemory => PopulateError::OutOfMemory,
+                        })?;
                 }
             }
             covered = part_end;
@@ -597,7 +600,9 @@ impl<P: Platform> Process<P> {
     /// whose pages are mapped, zeroed, when next touched. [`Remap::Replace`] unmaps the new
     /// range once the part is found. Errors: [`RegionError::NotCovered`] if the part is
     /// not all in one region; [`RegionError::NoRoom`] if it cannot be where `remap` allows;
-    /// [`RegionError::OutOfMemory`] if there was no frame for a page table, with nothing moved.
+    /// [`RegionError::OutOfMemory`] if there was no frame for a page table, with nothing moved;
+    /// [`RegionError::Invalid`] for a [`Remap::Replace`] range past user space or overlapping
+    /// the part.
     pub fn remap_region(
         &self,
         start: u64,
@@ -618,7 +623,9 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         if let Remap::Replace(to) = remap
-            && to.checked_add(new_length).is_none_or(|end| end > user_end)
+            && to
+                .checked_add(new_length)
+                .is_none_or(|end| end > user_end || (to < old_end && start < end))
         {
             return Err(RegionError::Invalid);
         }
@@ -987,7 +994,6 @@ impl<P: Platform> core::fmt::Debug for Process<P> {
     }
 }
 
-/// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
 /// Where `length` bytes, page-aligned, go within `floor..top`: at `hint` if it is given,
 /// page-aligned and the range there is free; otherwise as high as a free range fits
 /// ([`RegionError::NoRoom`] if none does), as Linux places a mapping top-down.
@@ -1014,6 +1020,7 @@ fn free_range(
     }
 }
 
+/// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
 fn free_frame(frame: u64) {
     let mut frames = memory::FRAMES.lock();
     let frames = frames

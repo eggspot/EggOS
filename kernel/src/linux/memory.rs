@@ -1219,6 +1219,36 @@ mod tests {
     }
 
     #[test]
+    fn mremap_out_of_frames_for_tables_keeps_the_pages_and_drops_the_new_place_s_translations() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let start = mmap(&process, 0x1000_0000, 2 * PAGE, READ_WRITE, ANONYMOUS);
+        assert!(store(&process, start, 0x1234));
+        assert!(store(&process, start + PAGE, 0x5678));
+        let blocker = start + 2 * PAGE;
+        assert_eq!(
+            mmap(&process, blocker, PAGE, prot::READ, ANONYMOUS | map::FIXED),
+            blocker
+        );
+        let taken: Vec<u64> =
+            core::iter::from_fn(|| FRAMES.lock().as_mut().unwrap().allocate()).collect();
+        dropped_translations();
+        let result =
+            process.with_active(|| mremap(&process, start, 2 * PAGE, 3 * PAGE, remap::MAYMOVE, 0));
+        let dropped = dropped_translations();
+        for frame in taken {
+            // SAFETY: taken from `FRAMES` above and used for nothing.
+            unsafe { FRAMES.lock().as_mut().unwrap().free(frame) };
+        }
+        assert_eq!(result, Errno::ENOMEM.result());
+        assert_eq!(dropped, [(mmap_top::<P>() - 3 * PAGE, 2 * PAGE)]);
+        assert_eq!(process.region(mmap_top::<P>() - 3 * PAGE), None);
+        assert_eq!(word(&process, start), Some(0x1234));
+        assert_eq!(word(&process, start + PAGE), Some(0x5678));
+    }
+
+    #[test]
     fn mremap_fixed_replaces_the_target_and_dontunmap_leaves_an_empty_mapping() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
