@@ -119,7 +119,7 @@ static WINDOW_SIZE: SpinLock<[u8; WINSIZE_SIZE]> = SpinLock::new([0; WINSIZE_SIZ
 /// `ioctl(fd, request, argument)` on the console: see the module documentation. As Linux:
 /// `EBADF` for a descriptor that is not open, before the request is looked at; `ENOTTY` for a
 /// request the console does not answer; `EFAULT` if `argument` is not the program's memory
-/// (writable, for a request that reads something). `fd` and `request` are 32-bit: the
+/// (writable, for a request that reports something). `fd` and `request` are 32-bit: the
 /// registers' upper halves are ignored.
 pub fn ioctl<P: Platform>(
     process: &Process<P>,
