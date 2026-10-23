@@ -42,7 +42,7 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only)
-          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE$|^\.github/FUNDING\.yml$)'; then
+          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE(-MIT|-APACHE)?$|^\.github/FUNDING\.yml$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"; echo "Docs-only change: skipping checks."

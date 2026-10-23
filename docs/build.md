@@ -34,7 +34,7 @@ theirs with the next change to the image, which rebuilds it anyway.)
   benchmarks on every architecture.
 - **`check` is a required status check on `main`**, so the workflow always runs: a workflow
   skipped by a `paths` filter never reports, and would leave docs PRs pending for ever. Its first
-  step detects a docs-only change (Markdown, `docs/`, `LICENSE`, `.github/FUNDING.yml`) and
+  step detects a docs-only change (Markdown, `docs/`, `LICENSE-MIT`, `LICENSE-APACHE`, `.github/FUNDING.yml`) and
   skips every later step, which still reports success in a few seconds. The job reads the PR's
   changed files, hence `pull-requests: read`; it pulls the CI image, hence `packages: read`.
 - **It runs in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain

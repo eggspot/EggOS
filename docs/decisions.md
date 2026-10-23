@@ -31,7 +31,7 @@ Every CPU architecture, GPU, device type and driver, all written by us. Therefor
   register/bus access traits, so the same driver serves every architecture;
 - every supported architecture boots in QEMU in automated tests.
 
-## D5 License: MIT, clean-room — Decided, permanent
+## D5 License: MIT, clean-room — Decided, permanent; the license superseded by D79 (MIT OR Apache-2.0)
 All code is MIT, and the license will never change (owner, 2026-10-22): no relicensing, no dual
 licensing, no extra terms. Never copy or translate GPL/LGPL/copyleft code (including Linux, GPL-2.0);
 implement from public specifications, datasheets, man pages and observed behaviour.
@@ -3386,3 +3386,16 @@ treated like performance regressions.
 
 Why: PR #47 (FP/SIMD state per thread) waited a day for an owner OK on a cost that every OS pays.
 The owner: "the agent should make the research to solve it instead wait for me".
+
+## D79 License: MIT OR Apache-2.0 — Decided (owner, 2026-10-23); supersedes D5's license and its "no dual licensing" rule
+EggOS is licensed under either the MIT License or the Apache License 2.0, at the user's option
+(`LICENSE-MIT`, `LICENSE-APACHE`), the same as Rust and most of its ecosystem. The owner replaced
+D5's "never relicense, no dual licensing" rule on 2026-10-23: *"switch EggOS to MIT OR Apache-2.0
+too and replace the never-dual-license rule."* The same change was made to the other eggspot
+open-source projects.
+
+Nothing is taken away: anyone can still use EggOS under MIT, and Apache-2.0 adds an express patent
+grant. It stays free forever, with no extra terms, no proprietary edition and no CLA. Contributions are
+accepted under the same terms. Every contributor so far is the owner, its bots or its AI
+assistants, so the owner can relicense. D5's clean-room rule is unchanged. Only the owner changes
+the license, by an explicit instruction recorded here.
