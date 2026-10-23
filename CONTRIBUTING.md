@@ -1,6 +1,6 @@
 # Contributing to EggOS
 
-Thanks for helping build EggOS. A few rules keep the project fast, clean and MIT-licensed forever.
+Thanks for helping build EggOS. A few rules keep the project fast, clean and free forever under MIT OR Apache-2.0.
 
 ## The rules
 - **Everything is our own Rust.** No third-party crates, ever, and no C, C++ or shell build scripts.
@@ -29,5 +29,6 @@ Linux).
 Architecture decisions go in `docs/decisions.md` as a new numbered entry.
 
 ## License
-EggOS is MIT-licensed, permanently. By contributing you agree that your contribution is licensed under
-the MIT License (see `LICENSE`). There is no CLA.
+EggOS is licensed under either the MIT License or the Apache License 2.0, at your option (see
+`LICENSE-MIT` and `LICENSE-APACHE`). By contributing you agree that your contribution is licensed under
+the same terms. There is no CLA.

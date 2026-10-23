@@ -184,9 +184,12 @@ are merged and CI on `main` passed, release it in the same session without askin
 Still the owner's: anything that needs new accounts, signing keys or other credentials, or money
 (e.g. app-store or code-signing certificates).
 
-## License: MIT, 100% open source, permanently
-- All EggOS code is MIT (see LICENSE), and the license will never change: no relicensing, no dual
-  licensing, no extra terms, no CLA that would allow it. Keep everything in the repo MIT-compatible.
+## License: MIT OR Apache-2.0, 100% open source, permanently
+- All EggOS code is licensed under either the MIT License or the Apache License 2.0, at the user's
+  option (`LICENSE-MIT`, `LICENSE-APACHE`), like Rust itself (D79). It stays free forever: no extra
+  terms, no proprietary edition, no CLA. Only the owner can change the license, by an explicit
+  instruction recorded in docs/decisions.md. Keep everything in the repo compatible with both
+  licenses.
 - Clean-room only: never copy or translate code from GPL/LGPL/copyleft projects, including the Linux kernel
   (GPL-2.0). Implement Linux compatibility from public specifications, man pages and observed behaviour,
   not from Linux source.
