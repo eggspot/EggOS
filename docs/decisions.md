@@ -3675,8 +3675,7 @@ the license, by an explicit instruction recorded here.
   `AT_HWCAP`, where Linux's architecture block puts it (we have no vDSO or cache entries to
   precede it): 2048 on x86_64 and riscv64, 5120 on AArch64, our `MIN_STACK_SIZE`, the size
   `sigaltstack` refuses below with `ENOMEM`. Rust's std sizes its alternate stacks from it
-  (the larger of it and `SIGSTKSZ`), glibc's `sysconf(_SC_MINSIGSTKSZ)` returns it, and musl
-  reads it the same way.
+  (the larger of it and `SIGSTKSZ`), and glibc's `sysconf(_SC_MINSIGSTKSZ)` returns it.
 - **Why this value.** Linux documents it as the space the kernel needs to deliver one signal
   (frame, `siginfo_t`, FP state, alignment). Ours, `signal_frame::LARGEST_FRAME_SPACE`, is
   computed from the frame placement for every alignment of the stack's top: 1031 bytes on
@@ -3689,6 +3688,9 @@ the license, by an explicit instruction recorded here.
 - **riscv64.** Linux gives it there only from 6.5 (with vector support), and we report 6.1;
   research judged emitting it harmless (absent, libraries fall back to `MINSIGSTKSZ`) and kept
   the three architectures alike.
+- **Cost.** The entry alone added 80, 87 and 43 instructions to `linux_exec_load` (aarch64,
+  riscv64, x86_64). The same PR writes the initial stack's words straight into its image
+  instead of through a vector, so the benchmark ends 0.6%, 1.2% and 0.7% faster than before.
 - **Tests.** Host: the vector's order and value; `LARGEST_FRAME_SPACE` per architecture and
   no frame placed below it for 256 consecutive tops. QEMU: the program of D85 checks the entry,
   that `sigaltstack` refuses one byte less with `ENOMEM`, and takes a stack of exactly that
