@@ -2345,6 +2345,6 @@ switch-path cost; this entry follows it.)
   length before the unreadable entry, `EFAULT` without) and with an array past the end of user
   space whose readable entry is negative (`EFAULT`, nothing read); `ppoll` writing back a
   little under 5 s when ready at once, after a later `EFAULT`, zero after a wait that ran out,
-  nothing for a too-long timeout, and nothing to a read-only one. Each fails without its
-  fix. `cargo xtask ci` passes: fmt, clippy, 259 host tests, boot tests and benchmarks on
+  nothing for a too-long timeout, and nothing to a read-only one. The `writev` cases and the
+  ready-at-once `ppoll` case fail without their fixes. `cargo xtask ci` passes: fmt, clippy, 259 host tests, boot tests and benchmarks on
   aarch64, riscv64 and x86_64.
