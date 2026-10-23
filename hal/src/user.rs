@@ -155,11 +155,13 @@ pub struct TestProgram {
     /// A Linux program started as Linux starts one (D51): its stack pointer at `argc`, then
     /// the `argv` and `envp` pointer arrays, each ended by a null pointer. Checks that
     /// `gettid` returns what `getpid` does, that `getrandom` fills the 16 bytes below its
-    /// stack pointer (not with zeros) and that `prlimit64` reports the stack's limits as 8 MiB
-    /// soft and unlimited hard into the 16 below those, then writes each argument string, then each
-    /// environment string, to standard output with `writev` from an iovec on its stack, then
-    /// calls `exit_group(argc)`; `exit_group(255)` if the stack pointer is not 16-byte
-    /// aligned, the ids differ, or `getrandom` or `prlimit64` failed.
+    /// stack pointer (not with zeros), that `prlimit64` reports the stack's limits as 8 MiB
+    /// soft and unlimited hard into the 16 below those, that `rt_sigaction` reads `SIGPIPE`'s
+    /// action back as `SIG_IGN` once set, and that `sigaltstack` reports no alternate stack
+    /// (each through the 128 bytes below the stack pointer), then writes each argument string,
+    /// then each environment string, to standard output with `writev` from an iovec on its
+    /// stack, then calls `exit_group(argc)`; `exit_group(255)` if the stack pointer is not
+    /// 16-byte aligned, the ids differ, or any of those calls failed.
     pub linux_start: usize,
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.

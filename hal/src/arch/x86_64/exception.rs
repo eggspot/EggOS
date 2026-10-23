@@ -343,12 +343,14 @@ x86_64_user_test_linux_hello:
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .global x86_64_user_test_linux_start
 x86_64_user_test_linux_start:
-    // Linux's x86_64 numbers: writev 20, getpid 39, gettid 186, exit_group 231, prlimit64
-    // 302, getrandom 318. rbx is argc, r12 walks argv and envp, r13 counts the two lists, r14
-    // holds the process id. Each string is written by writev from one iovec on the stack. Ends with
-    // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
-    // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
-    // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
+    // Linux's x86_64 numbers: rt_sigaction 13, writev 20, getpid 39, sigaltstack 131, gettid
+    // 186, exit_group 231, prlimit64 302, getrandom 318. rbx is argc, r12 walks argv and envp,
+    // r13 counts the two lists, r14 holds the process id. Each string is written by writev
+    // from one iovec on the stack. Ends with exit_group(255) if the stack is misaligned, the
+    // thread's id is not the process's, getrandom does not fill the 16 bytes below the stack
+    // pointer with something not zero, prlimit64 does not report the stack's limits as 8 MiB
+    // soft and unlimited hard, SIGPIPE's action does not read back as SIG_IGN once set, or
+    // sigaltstack does not report no alternate stack.
     movl    $255, %edi
     testq   $15, %rsp
     jnz     9f
@@ -383,6 +385,39 @@ x86_64_user_test_linux_start:
     cmpq    $0x800000, -32(%rsp)
     jne     9f
     cmpq    $-1, -24(%rsp)
+    jne     9f
+    movq    $1, -64(%rsp)           // SIG_IGN
+    movq    $0, -56(%rsp)
+    movq    $0, -48(%rsp)
+    movq    $0, -40(%rsp)
+    movl    $13, %edi               // SIGPIPE
+    leaq    -64(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $13, %eax
+    syscall
+    movl    $255, %edi
+    testq   %rax, %rax
+    jnz     9f
+    movl    $13, %edi
+    xorl    %esi, %esi
+    leaq    -96(%rsp), %rdx
+    movl    $8, %r10d
+    movl    $13, %eax
+    syscall
+    movl    $255, %edi
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $1, -96(%rsp)
+    jne     9f
+    xorl    %edi, %edi
+    leaq    -128(%rsp), %rsi
+    movl    $131, %eax
+    syscall
+    movl    $255, %edi
+    testq   %rax, %rax
+    jnz     9f
+    cmpl    $2, -120(%rsp)          // SS_DISABLE
     jne     9f
     movq    (%rsp), %rbx
     leaq    8(%rsp), %r12

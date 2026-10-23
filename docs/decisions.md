@@ -2131,3 +2131,69 @@ switch-path cost; this entry follows it.)
   QEMU, on aarch64, riscv64 and x86_64: the ELF-started
   test program calls `prlimit64(0, RLIMIT_STACK, NULL, old)` with the architecture's number
   and checks 8 MiB soft and unlimited hard.
+
+## D60 Signal state: `rt_sigaction`, `rt_sigprocmask`, `sigaltstack`; actions per process copied on first change, mask and alternate stack per thread; nothing delivered yet — Decided by the build loop (design and Linux's rules decided by research)
+- **Why now.** The signal calls are the next startup calls on M6: Rust's std sets `SIGPIPE` to
+  `SIG_IGN` (a failure is fatal to it), reads `SIGSEGV`'s and `SIGBUS`'s actions and, when
+  they are `SIG_DFL`, installs its stack-overflow handlers on an alternate stack; glibc blocks
+  and unblocks signals around thread creation, `abort` and more. With `ENOSYS` every Rust
+  program would stop at startup. Numbers: x86_64 13, 14, 131; the generic table AArch64 and
+  RISC-V use, 134, 135, 132.
+- **Where the state lives** (research; `linux::signals::Signals`, in `Process::signals`
+  behind its own `SpinLock`, never held while user memory is copied): the actions are the
+  process's, the blocked mask and the alternate stack its thread's (`ThreadSignals`, a type
+  of its own now so it moves to each thread as a unit when `clone` exists, with D55's
+  `set_tid_address` and robust-list state). The 64 actions are `None` (all `SIG_DFL`) until
+  the first change that changes anything makes the process's own 2 KiB table, allocated
+  fallibly (`ENOMEM`), as D59 did for the limits: a process costs a word for its actions.
+- **The kernel's `struct sigaction`** per architecture: handler, flags, restorer, mask (32
+  bytes) on x86_64 and AArch64, which define `SA_RESTORER`; handler, flags, mask (24 bytes)
+  on RISC-V, which has no `sa_restorer` (its handlers return through the vDSO). `stack_t` is
+  the base, an `int` of flags, 4 bytes of padding (written as zero) and the size.
+- **Linux's rules** (research, from the man pages; error order to check by observation):
+  - `rt_sigaction`: `EINVAL` for a `sigsetsize` other than 8 (all 64 bits compared); `EFAULT`
+    for an unreadable new action; `EINVAL` for a number outside 1 to 64 (the register's low
+    32 bits) or a new action for `SIGKILL` or `SIGSTOP` (theirs may still be read); then the
+    old action copied out, `EFAULT` keeping the new one, as D59. Unknown flags are cleared,
+    as since Linux 5.11, so `SA_UNSUPPORTED` reads back clear and a program learns which
+    flags the kernel lacks; `SIGKILL` and `SIGSTOP` are left out of the handler's mask. The
+    handler's address is not checked.
+  - `rt_sigprocmask`: `EINVAL` for a bad `sigsetsize`; `EFAULT` for an unreadable set;
+    `EINVAL` for a `how` other than block, unblock or set, looked at only with a set;
+    `SIGKILL` and `SIGSTOP` silently never blocked; then the old mask copied out.
+  - `sigaltstack`: `EFAULT`; `EPERM` while the thread's stack pointer is on its alternate
+    stack (never with `SS_AUTODISARM`, which disarms it under a handler); `EINVAL` for flags
+    other than 0, `SS_ONSTACK` (taken as 0) or `SS_DISABLE`, each with or without
+    `SS_AUTODISARM`; `ENOMEM` below `MINSIGSTKSZ` (2048, 5120 on AArch64); a disabled stack
+    keeps no base or size. The old stack reports `SS_DISABLE`, `SS_ONSTACK` or 0, with
+    `SS_AUTODISARM` if it was set.
+- **Handlers are accepted before delivery exists** (research): refusing them would break
+  every Rust program. A fault still ends the process with its signal whatever the action
+  and mask say. That is what Linux does for a fault whose signal is blocked or ignored, and
+  what std's handler ends in (it restores the default and the fault repeats). A runtime that
+  recovers from faults (a JVM, Go, a garbage collector's write barrier) dies until delivery
+  exists. Delivery is the next step: signal frames per architecture, `rt_sigreturn` (with a
+  restorer on x86_64 and AArch64, a vDSO trampoline on RISC-V), `kill`, `tgkill`, pending
+  sets checked on the way back to user mode, and `AT_MINSIGSTKSZ` (D51).
+- **For later**, recorded so they are not lost: `execve` resets handled signals to
+  `SIG_DFL` and keeps `SIG_IGN` and the mask, and removes the alternate stack; `fork` copies
+  everything; a thread made by `clone` starts with no alternate stack. `SIGPIPE` ignored
+  makes writes to a closed pipe `EPIPE` (M7); `SIGCHLD` ignored, or `SA_NOCLDWAIT`, reaps
+  children (`wait4`, M10); setting `SIG_IGN` discards that signal's pending instances.
+- **Cost** (same Mac, QEMU `-icount`; research: a delta inside the gate is not a regression,
+  as D27 defines it and PRs #48, #50 and #52 merged). `Process` grows by 48 bytes (184 to
+  232 on the host), still in the heap's 256-byte class with its `Arc`. `linux_exec_load`
+  against `main`: +0.09% on aarch64 from the kernel change alone (about 32 instructions per
+  `exec`, the larger `Process` moved), +0.17% aarch64, +0.16% riscv64 and +0.05% x86_64 with
+  the start test program's new checks, which the benchmark loads (a larger image, not a
+  slower kernel). The system-call, switch, page-fault and `mmap` benchmarks are unchanged.
+  `linux_exec_load` has now used about 0.4% of its 1% allowance on riscv64 against an
+  unchanged baseline: the next change on the `exec` path has less room.
+- **Tests.** Host tests: the default actions, the change rules (no table made for a change
+  that changes nothing, `SIGKILL` and `SIGSTOP` refused, unknown flags cleared, the mask
+  cleaned), the structures' layouts and the alternate stack's reported flags; the three
+  calls through the dispatcher with user memory (upper halves ignored, every error, a change
+  kept when the old value cannot be copied out, `EPERM` on the alternate stack, a second
+  process starting from the defaults). QEMU, on aarch64, riscv64 and x86_64: the ELF-started
+  test program sets `SIGPIPE` to `SIG_IGN`, reads it back, and checks that `sigaltstack`
+  reports no alternate stack, with each architecture's numbers and structure.

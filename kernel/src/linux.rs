@@ -15,16 +15,18 @@
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
 //! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
 //! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57), and the
-//! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59). Every other
+//! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59), and the signal
+//! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60). Every other
 //! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
 //! call carries on. The next calls are the rest of what a static program's startup needs
-//! (signals, `poll`, `ioctl`, ...), then the file system's (M7).
+//! (signal delivery, `poll`, `ioctl`, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
 pub mod limits;
 pub mod memory;
 pub mod random;
+pub mod signals;
 pub mod thread_pointer;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
@@ -46,6 +48,8 @@ pub mod number {
         pub const MPROTECT: u64 = 10;
         pub const MUNMAP: u64 = 11;
         pub const BRK: u64 = 12;
+        pub const RT_SIGACTION: u64 = 13;
+        pub const RT_SIGPROCMASK: u64 = 14;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const GETPID: u64 = 39;
@@ -53,6 +57,7 @@ pub mod number {
         pub const UNAME: u64 = 63;
         pub const GETRLIMIT: u64 = 97;
         pub const GETPPID: u64 = 110;
+        pub const SIGALTSTACK: u64 = 131;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
         pub const GETTID: u64 = 186;
@@ -73,6 +78,9 @@ pub mod number {
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const SET_ROBUST_LIST: u64 = 99;
         pub const SCHED_YIELD: u64 = 124;
+        pub const SIGALTSTACK: u64 = 132;
+        pub const RT_SIGACTION: u64 = 134;
+        pub const RT_SIGPROCMASK: u64 = 135;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
@@ -115,6 +123,9 @@ pub mod number {
             GETRLIMIT,
             SETRLIMIT,
             PRLIMIT64,
+            RT_SIGACTION,
+            RT_SIGPROCMASK,
+            SIGALTSTACK,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -136,8 +147,9 @@ pub mod number {
 pub struct Errno(pub u16);
 
 impl Errno {
-    /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), or
-    /// a hard resource limit raised (`setrlimit`, `prlimit64`).
+    /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), a
+    /// hard resource limit raised (`setrlimit`, `prlimit64`), or the alternate signal stack
+    /// changed while the thread runs on it (`sigaltstack`).
     pub const EPERM: Self = Self(1);
     /// No such file: here, a program's interpreter (`execve`).
     pub const ENOENT: Self = Self(2);
@@ -163,7 +175,8 @@ impl Errno {
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
-    /// address or an empty range (the memory calls).
+    /// address or an empty range (the memory calls), or a bad signal number, set size or flag
+    /// (the signal calls).
     pub const EINVAL: Self = Self(22);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
@@ -176,13 +189,15 @@ impl Errno {
     }
 }
 
-/// Linux's signal numbers, as far as the kernel sends them.
+/// Linux's signal numbers, as far as the kernel sends or checks them (the generic ones, which
+/// AArch64, RISC-V and x86_64 share).
 pub mod signal {
     pub const SIGILL: u32 = 4;
     pub const SIGTRAP: u32 = 5;
     pub const SIGBUS: u32 = 7;
     pub const SIGKILL: u32 = 9;
     pub const SIGSEGV: u32 = 11;
+    pub const SIGSTOP: u32 = 19;
 }
 
 /// The most `write` copies at a time, through a buffer on the kernel stack.
@@ -347,6 +362,9 @@ fn out_of_line_call<P: Platform>(
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
         number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
+        number::RT_SIGACTION => signals::rt_sigaction(process, first, second, third, fourth),
+        number::RT_SIGPROCMASK => signals::rt_sigprocmask(process, first, second, third, fourth),
+        number::SIGALTSTACK => signals::sigaltstack(process, first, second, context.stack()),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)
@@ -1006,6 +1024,206 @@ mod tests {
             other.resource_limits().lock().get(resource::NOFILE),
             Some(limits::DEFAULTS[resource::NOFILE as usize])
         );
+    }
+
+    #[test]
+    fn signal_state_is_kept_through_user_memory() {
+        use signals::{Action, IGNORE, flag};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let writable = DATA + 4096;
+        let read_only = DATA;
+        let unmapped = DATA + 2 * 4096;
+        let words = |address, count: usize| {
+            let mut bytes = alloc::vec![0u8; count * 8];
+            process.read_user_memory(address, &mut bytes).unwrap();
+            bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|&word| u64::from_ne_bytes(word))
+                .collect::<alloc::vec::Vec<_>>()
+        };
+        let store = |address, words: &[u64]| {
+            let bytes: alloc::vec::Vec<u8> =
+                words.iter().flat_map(|word| word.to_ne_bytes()).collect();
+            process.write_user_memory(address, &bytes).unwrap();
+        };
+        let action = |address| {
+            let mut bytes = [0u8; 32];
+            process.read_user_memory(address, &mut bytes).unwrap();
+            let word = |i: usize| u64::from_ne_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+            if cfg!(target_arch = "riscv64") {
+                Action {
+                    handler: word(0),
+                    flags: word(1),
+                    restorer: 0,
+                    mask: word(2),
+                }
+            } else {
+                Action {
+                    handler: word(0),
+                    flags: word(1),
+                    restorer: word(2),
+                    mask: word(3),
+                }
+            }
+        };
+        let (sigpipe, sigsegv) = (13, 11);
+        let [sigkill, sigstop] = [signal::SIGKILL, signal::SIGSTOP].map(u64::from);
+        let einval = Errno::EINVAL.result();
+        let efault = Errno::EFAULT.result();
+
+        // `rt_sigaction`: `SIGPIPE` ignored (the upper half of the number ignored), read back.
+        store(writable, &[IGNORE, 0, 0, 0]);
+        let sigaction = |arguments: [u64; 4]| {
+            let [signal, new, old, size] = arguments;
+            call(
+                &process,
+                number::RT_SIGACTION,
+                [signal, new, old, size, 0, 0],
+            )
+        };
+        assert_eq!(sigaction([1 << 32 | sigpipe, writable, 0, 8]), 0);
+        assert_eq!(sigaction([sigpipe, 0, writable + 64, 8]), 0);
+        assert_eq!(
+            action(writable + 64),
+            Action {
+                handler: IGNORE,
+                ..Action::default()
+            }
+        );
+        // A handler for `SIGSEGV`: unknown flags cleared, `SIGKILL` and `SIGSTOP` out of its
+        // mask, and the old action reported in the same call.
+        store(
+            writable,
+            &if cfg!(target_arch = "riscv64") {
+                [
+                    0x40_1000,
+                    flag::SIGINFO | flag::ONSTACK | flag::UNSUPPORTED,
+                    u64::MAX,
+                    0,
+                ]
+            } else {
+                [
+                    0x40_1000,
+                    flag::SIGINFO | flag::ONSTACK | flag::UNSUPPORTED,
+                    0,
+                    u64::MAX,
+                ]
+            },
+        );
+        assert_eq!(sigaction([sigsegv, writable, writable + 64, 8]), 0);
+        assert_eq!(action(writable + 64), Action::default());
+        assert_eq!(sigaction([sigsegv, 0, writable + 64, 8]), 0);
+        let installed = action(writable + 64);
+        assert_eq!(installed.handler, 0x40_1000);
+        assert_eq!(installed.flags, flag::SIGINFO | flag::ONSTACK);
+        assert_eq!(installed.mask, !(1 << (sigkill - 1) | 1 << (sigstop - 1)));
+        // Errors: the set size, numbers outside 1..=64, a new action for `SIGKILL` or
+        // `SIGSTOP` (theirs can be read), and buffers that are not the program's.
+        assert_eq!(sigaction([sigpipe, 0, writable + 64, 4]), einval);
+        assert_eq!(sigaction([sigpipe, 0, writable + 64, 1 << 32 | 8]), einval);
+        for signal in [0, 65] {
+            assert_eq!(sigaction([signal, 0, writable + 64, 8]), einval);
+        }
+        for signal in [sigkill, sigstop] {
+            assert_eq!(sigaction([signal, writable, 0, 8]), einval);
+            assert_eq!(sigaction([signal, 0, writable + 64, 8]), 0);
+            assert_eq!(action(writable + 64), Action::default());
+        }
+        assert_eq!(sigaction([sigpipe, unmapped, 0, 8]), efault);
+        // A bad new action wins over a bad number, as on Linux.
+        assert_eq!(sigaction([0, unmapped, 0, 8]), efault);
+        // The action is read from read-only memory, but the old one cannot be written there:
+        // `EFAULT`, with the new action kept.
+        store(writable, &[0; 4]);
+        assert_eq!(sigaction([sigpipe, read_only, read_only, 8]), efault);
+        assert_eq!(sigaction([sigpipe, 0, writable + 64, 8]), 0);
+        assert_eq!(
+            action(writable + 64).handler,
+            u64::from_ne_bytes(*b"ab\0\0\0\0\0\0")
+        );
+
+        // `rt_sigprocmask`: block, unblock and set, `SIGKILL` and `SIGSTOP` never blocked.
+        let sigprocmask = |how, set, old, size| {
+            call(
+                &process,
+                number::RT_SIGPROCMASK,
+                [how, set, old, size, 0, 0],
+            )
+        };
+        let mask = |signals: &[u64]| signals.iter().fold(0u64, |set, s| set | 1 << (s - 1));
+        store(writable, &[mask(&[sigpipe, sigkill, sigstop])]);
+        assert_eq!(sigprocmask(0, writable, writable + 8, 8), 0);
+        assert_eq!(words(writable + 8, 1), [0]);
+        store(writable, &[mask(&[sigsegv])]);
+        assert_eq!(sigprocmask(1 << 32, writable, 0, 8), 0);
+        assert_eq!(sigprocmask(7, 0, writable + 8, 8), 0);
+        assert_eq!(words(writable + 8, 1), [mask(&[sigpipe, sigsegv])]);
+        store(writable, &[mask(&[sigpipe])]);
+        assert_eq!(sigprocmask(1, writable, 0, 8), 0);
+        assert_eq!(sigprocmask(0, 0, writable + 8, 8), 0);
+        assert_eq!(words(writable + 8, 1), [mask(&[sigsegv])]);
+        store(writable, &[u64::MAX]);
+        assert_eq!(sigprocmask(2, writable, 0, 8), 0);
+        assert_eq!(sigprocmask(0, 0, writable + 8, 8), 0);
+        assert_eq!(words(writable + 8, 1), [!mask(&[sigkill, sigstop])]);
+        // Errors: the set size, an unknown `how` with a set, a set that is not the
+        // program's, and an old set that cannot be written (the change kept).
+        assert_eq!(sigprocmask(0, writable, 0, 16), einval);
+        assert_eq!(sigprocmask(3, writable, 0, 8), einval);
+        assert_eq!(sigprocmask(3, unmapped, 0, 8), efault);
+        store(writable, &[0]);
+        assert_eq!(sigprocmask(2, writable, read_only, 8), efault);
+        assert_eq!(sigprocmask(0, 0, writable + 8, 8), 0);
+        assert_eq!(words(writable + 8, 1), [0]);
+
+        // `sigaltstack`: none at first, then one, reported as in use when the stack pointer
+        // is on it, where it cannot change.
+        let sigaltstack = |new, old, stack| {
+            let mut context = UserContext::new(0x40_0000, stack);
+            context.simulate_syscall(number::SIGALTSTACK, [new, old, 0, 0, 0, 0], 0x40_0004);
+            assert_eq!(
+                handle(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            context.syscall_result()
+        };
+        let flags = |words: &[u64]| words[1] as u32;
+        assert_eq!(sigaltstack(0, writable + 64, 0x7fff_0000), 0);
+        assert_eq!(words(writable + 64, 3), [0, 2, 0]);
+        let (base, size) = (0x7000_0000, 0x4000);
+        store(writable, &[base, 0, 5120 - 1]);
+        assert_eq!(sigaltstack(writable, 0, 0), Errno::ENOMEM.result());
+        for bad in [4, 3, 1 << 30] {
+            store(writable, &[base, bad, size]);
+            assert_eq!(sigaltstack(writable, 0, 0), einval);
+        }
+        store(writable, &[base, 1, size]);
+        assert_eq!(sigaltstack(writable, writable + 64, 0x7fff_0000), 0);
+        assert_eq!(flags(&words(writable + 64, 3)), 2);
+        assert_eq!(sigaltstack(0, writable + 64, base + 0x100), 0);
+        assert_eq!(words(writable + 64, 3), [base, 1, size]);
+        assert_eq!(sigaltstack(0, writable + 64, base + size), 0);
+        assert_eq!(words(writable + 64, 3), [base, 0, size]);
+        store(writable, &[0, 2, 0]);
+        assert_eq!(
+            sigaltstack(writable, 0, base + 0x100),
+            Errno::EPERM.result()
+        );
+        assert_eq!(sigaltstack(unmapped, 0, 0), efault);
+        // Disabled, with `SS_AUTODISARM` kept and reported; no base or size remains.
+        store(writable, &[base, 2 | 1 << 31, size]);
+        assert_eq!(sigaltstack(writable, read_only, 0), efault);
+        assert_eq!(sigaltstack(0, writable + 64, 0), 0);
+        assert_eq!(words(writable + 64, 3), [0, 2 | 1 << 31, 0]);
+
+        // Another process starts with the defaults.
+        let other = process_with_iovecs(&kernel, b"ab", &[]);
+        assert_eq!(other.signals().lock().action(13), Some(Action::default()));
+        assert_eq!(other.signals().lock().thread(), Default::default());
     }
 
     #[test]

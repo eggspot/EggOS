@@ -366,12 +366,14 @@ riscv64_user_test_linux_hello:
     .balign 4
     .global riscv64_user_test_linux_start
 riscv64_user_test_linux_start:
-    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, prlimit64
-    // 261, getrandom 278. s1 is argc, s2 walks argv and envp, s3 counts the two lists, s4
-    // holds the process id. Each string is written by writev from one iovec on the stack. Ends with
-    // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
-    // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
-    // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
+    // Linux's generic numbers: writev 66, exit_group 94, sigaltstack 132, rt_sigaction 134,
+    // getpid 172, gettid 178, prlimit64 261, getrandom 278. s1 is argc, s2 walks argv and
+    // envp, s3 counts the two lists, s4 holds the process id. Each string is written by writev
+    // from one iovec on the stack. Ends with exit_group(255) if the stack is misaligned, the
+    // thread's id is not the process's, getrandom does not fill the 16 bytes below the stack
+    // pointer with something not zero, prlimit64 does not report the stack's limits as 8 MiB
+    // soft and unlimited hard, SIGPIPE's action does not read back as SIG_IGN once set, or
+    // sigaltstack does not report no alternate stack.
     andi    t0, sp, 15
     li      a0, 255
     bnez    t0, 9f
@@ -410,6 +412,41 @@ riscv64_user_test_linux_start:
     bne     t0, t1, 9f
     ld      t0, -24(sp)
     li      t1, -1
+    bne     t0, t1, 9f
+    li      t0, 1                   // SIG_IGN
+    sd      t0, -64(sp)
+    sd      zero, -56(sp)
+    sd      zero, -48(sp)
+    li      a0, 13                  // SIGPIPE
+    addi    a1, sp, -64
+    li      a2, 0
+    li      a3, 8
+    li      a7, 134
+    ecall
+    mv      t0, a0
+    li      a0, 255
+    bnez    t0, 9f
+    li      a0, 13
+    li      a1, 0
+    addi    a2, sp, -96
+    li      a3, 8
+    li      a7, 134
+    ecall
+    mv      t0, a0
+    li      a0, 255
+    bnez    t0, 9f
+    ld      t0, -96(sp)
+    li      t1, 1
+    bne     t0, t1, 9f
+    li      a0, 0
+    addi    a1, sp, -128
+    li      a7, 132
+    ecall
+    mv      t0, a0
+    li      a0, 255
+    bnez    t0, 9f
+    lw      t0, -120(sp)
+    li      t1, 2                   // SS_DISABLE
     bne     t0, t1, 9f
     ld      s1, 0(sp)
     addi    s2, sp, 8
