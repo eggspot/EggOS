@@ -3505,3 +3505,67 @@ the license, by an explicit instruction recorded here.
 - **Follow-ups.** `XSAVE` frames with AVX state (the `fx_sw_bytes` magic, `XSTATE` records)
   when AVX comes (D54); SVE, SME and V records with their resets; `fork` and `clone` copying
   the FP/SIMD state (D54).
+
+## D83 Review of D54, D77 and D82: x86_64 clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR` whatever firmware left; `mremap` with `MREMAP_FIXED` checks the old range's end before moving; `MADV_POPULATE_WRITE` skips mapped pages — Decided by the build loop
+- **Why.** The review step after three feature PRs (#47, #72, #77). The switch path's owner
+  check (thread ids are never reused, so a stale owner cannot match), the preemption and
+  interrupt masking around `start_fp`, `with_running_fp` and `CpuFp::switch`, RISC-V's
+  Clean/Dirty skip, the FP-free kernel targets, x86_64's `fnclex` before the loads and the
+  `MXCSR` check against the mask `FXSAVE64` just wrote, every signal frame's FP/SIMD layout,
+  how handlers start, `madvise`'s checks and holes, and `mremap`'s moves, rollbacks and error
+  order all check out. Three things change.
+- **x86_64 clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR` on every CPU, whatever firmware left.**
+  D54 said `OSXSAVE` "stays clear", but `set_up_user_mode` only set bits in CR4 and cleared
+  `FSGSBASE`, and the boot CPU keeps the loader's CR4. A loader that hands over with
+  `OSXSAVE` set (UEFI loaders often do) would let programs use AVX and AVX-512, whose upper
+  register halves and mask registers `FXSAVE64` neither saves nor clears: one program would
+  see another's (LazyFP, CVE-2018-3665, again), and a thread that checked `CPUID` on the boot
+  CPU would get `SIGILL` on another. With `PKE` left set, `WRPKRU` works in ring 3 and PKRU
+  is never switched, so one program could take pkey 0 away from the next. Shadow stacks
+  and indirect-branch tracking (`CET`, with `IA32_U_CET` and the ring-3 shadow-stack
+  pointer) and user interrupts need state that is never switched too; the kernel uses
+  neither (no `-Zcf-protection`). Clearing them takes away nothing the kernel uses;
+  `CPUID` then tells programs there is no `XSAVE` and no protection keys (Intel SDM Vol. 1
+  §13 and Vol. 3A §2.5). AArch64 writes `CPACR_EL1` outright and RISC-V clears `sstatus.VS`,
+  so neither has the problem. The `FSGSBASE` reason (D49, D57) is unchanged: the way in
+  loads the FS base only when it changed, and a program-chosen GS base needs the SWAPGS
+  fence first.
+- **`mremap` with `MREMAP_FIXED` or `MREMAP_DONTUNMAP` and an old size larger than the new
+  one checks that the old range ends inside user space before it moves anything**
+  (`EINVAL`, before the target's `EPERM`, as Linux's `munmap` of the tail comes first). It checked that only when unmapping the tail, after the move, so such a call
+  moved the pages, replaced what was at the target, and then failed: the program's data was
+  at the target while the call said nothing happened. Linux unmaps the tail first, under
+  `munmap`'s rule that a range past user space is `EINVAL`, so its old range is intact. This
+  keeps D77's promise that a call that fails a check unmaps nothing.
+- **`MADV_POPULATE_WRITE` leaves pages that are already mapped for the access alone.** It
+  took, zeroed and freed a frame for each of them (the fault path's order, D53, where a page
+  is almost never mapped yet), so populating 1 GiB that a program had touched zeroed 1 GiB.
+  It now walks the tables first, as Linux does. No result changes; there is no benchmark
+  for `madvise` (it is not on a hot path, D77).
+- **Recorded, not changed** (follow-ups in the roadmap):
+  - Regions do not say what backs them, so `madvise` and `mremap` treat the program's ELF
+    segments and the signal trampoline's page as anonymous memory: `MADV_DONTNEED` on
+    `.data` reads zeros where Linux reads the file's contents again, `MADV_FREE` there
+    succeeds where Linux says `EINVAL`, and moving the trampoline's page leaves the recorded
+    return address behind (Linux updates the vDSO's). Fixed with file mappings (M7), when
+    regions learn their backing.
+  - Frames of threads without FP/SIMD registers carry an `MXCSR_MASK` of 0 on x86_64
+    (meaning `0xFFBF`) where Linux writes the CPU's own mask; the kernel's own check uses the
+    thread's saved mask, so only a program reading the field sees the difference.
+  - AArch64's trapped floating-point exceptions (EC 0x2C) end the program with `SIGILL`
+    where Linux sends `SIGFPE`; QEMU never raises them.
+  - Tests to add: a build check that the kernel image has FP/SIMD instructions only in the
+    HAL's `fp` code and the test programs; a QEMU test that `rt_sigreturn` with reserved
+    `MXCSR` bits is `SIGSEGV` with no kernel fault.
+- **Cost.** One more bit pattern in a CR4 write at each CPU's start; `mremap`'s check is one
+  compare on a cold path; `MADV_POPULATE_WRITE` skips the zeroing of a frame for each mapped
+  page, and pays one more table walk for each unmapped one, small next to zeroing its frame.
+  No benchmark changes.
+- **Tests.** QEMU: `processes_keep_their_fp_registers_across_switches` first checks, in the
+  kernel (not in host tests, which run on the host's CPU), that `CPUID` reports neither
+  `OSXSAVE` nor `OSPKE` on x86_64. Under `-cpu max` with CR4's `OSXSAVE` and `PKE` set before
+  `set_up_user_mode`, as such a loader would leave them, it fails without the fix and passes
+  with it (QEMU's PVH boot leaves them clear, so in CI it guards against a regression). Host:
+  `mremap` with `MREMAP_FIXED` and an old size reaching past user space is `EINVAL` with the
+  region and its contents where they were (fails without the fix); `MADV_POPULATE_WRITE` over
+  populated pages keeps their frames and contents.
