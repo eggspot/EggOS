@@ -106,9 +106,20 @@ impl Blake2s {
         for (bytes, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(self.state) {
             *bytes = word.to_le_bytes();
         }
-        // The state goes with `self`; the buffer held input, which may be secret.
-        self.buffer.fill(0);
         digest
+    }
+}
+
+/// Wipes the state and the buffer, which may hold secret input or be derived from it (seed
+/// material, keys): with volatile stores, which the compiler cannot drop as it may drop a
+/// plain store to a value about to go away.
+impl Drop for Blake2s {
+    fn drop(&mut self) {
+        for word in &mut self.state {
+            // SAFETY: `word` is a valid, aligned, exclusive reference.
+            unsafe { core::ptr::write_volatile(word, 0) };
+        }
+        eggos_hal::random::wipe(&mut self.buffer);
     }
 }
 

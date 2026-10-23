@@ -380,7 +380,8 @@ fn write<P: Platform>(
 /// the array is not the program's memory or a buffer does not end within user space (all
 /// checked before anything is written); then at most [`MAX_RW_COUNT`] bytes in all, stopping
 /// at the first byte that is not the program's memory. The array is copied once, so the
-/// program changing it meanwhile changes nothing.
+/// program changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is:
+/// the register's upper half is ignored.
 #[inline(never)]
 fn writev<P: Platform>(
     process: &Process<P>,
@@ -391,6 +392,7 @@ fn writev<P: Platform>(
     if !is_console(fd) {
         return Err(Errno::EBADF);
     }
+    let count = u64::from(count as u32);
     if count > MAX_IOVECS {
         return Err(Errno::EINVAL);
     }
@@ -449,12 +451,13 @@ fn is_console(fd: u64) -> bool {
     matches!(fd as u32, 1 | 2)
 }
 
-/// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space (any
-/// address does for none). A range that does not is `EFAULT` before anything is copied, even
-/// if its start is the program's memory.
+/// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space. For
+/// none, whether `buffer` is at most the end of user space: a kernel address is `EFAULT`
+/// even with nothing to copy, as on Linux (D58). A range that does not is `EFAULT` before
+/// anything is copied, even if its start is the program's memory.
 fn ends_in_user_space<P: Platform>(buffer: u64, count: u64) -> bool {
     let user_end = <P::PageTableFormat as Format>::USER_END;
-    count == 0 || buffer.checked_add(count).is_some_and(|end| end <= user_end)
+    buffer.checked_add(count).is_some_and(|end| end <= user_end)
 }
 
 /// Copies `count` bytes of the program's memory from `buffer`, a range that ends within user
@@ -572,10 +575,15 @@ mod tests {
         for buffer in [0, 0xffff_ffff_8000_0000, u64::MAX - 1] {
             assert_eq!(write(1, buffer, 2), Errno::EFAULT.result(), "{buffer:#x}");
         }
-        // Nothing to write: no check, as on Linux.
-        assert_eq!(write(1, 0, 0), 0);
-        // A range that does not end within user space: nothing is written.
+        // Nothing to write: any address up to the end of user space, unmapped or not; past
+        // it, `EFAULT`, as on Linux.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(write(1, 0, 0), 0);
+        assert_eq!(write(1, user_end, 0), 0);
+        for buffer in [user_end + 1, 0xffff_ffff_8000_0000, u64::MAX] {
+            assert_eq!(write(1, buffer, 0), Errno::EFAULT.result(), "{buffer:#x}");
+        }
+        // A range that does not end within user space: nothing is written.
         assert_eq!(write(1, DATA + 4095, user_end), Errno::EFAULT.result());
         // Only standard output and standard error so far.
         assert_eq!(write(0, DATA + 4095, 2), Errno::EBADF.result());
@@ -660,8 +668,9 @@ mod tests {
         assert_eq!(getrandom(writable, 1000, 1 << 32), 1000);
         assert!(read(0, 1000).chunks(16).all(|chunk| chunk != [0; 16]));
         assert_eq!(read(1000, 16), [0; 16]);
-        // No bytes: 0, whatever the address.
+        // No bytes: 0 within user space, mapped or not; `EFAULT` past it.
         assert_eq!(getrandom(0, 0, 0), 0);
+        assert_eq!(getrandom(u64::MAX, 0, 0), Errno::EFAULT.result());
         // Up to the end of the writable page, then unmapped memory: the bytes before.
         assert_eq!(getrandom(writable + 4096 - 100, 200, 0), 100);
         // Read-only memory, or a range past user space: EFAULT.
@@ -710,6 +719,12 @@ mod tests {
         // A length negative as a `ssize_t`, even after a good buffer, or one past user space.
         assert_eq!(writev(&[(0, 2), (0, 1 << 63)], 1), Errno::EINVAL.result());
         assert_eq!(writev(&[(0, 2), (0, user_end)], 1), Errno::EFAULT.result());
+        // An empty buffer at a kernel address fails the whole call too, as on Linux.
+        let kernel_address = 0xffff_ffff_8000_0000u64.wrapping_sub(DATA);
+        assert_eq!(
+            writev(&[(0, 2), (kernel_address, 0)], 1),
+            Errno::EFAULT.result()
+        );
         assert!(console_output().is_empty());
         // Past the readable page: what came before, else `EFAULT`.
         assert_eq!(writev(&[(0, 2), (4096 * 2, 2)], 1), 2);
@@ -731,6 +746,14 @@ mod tests {
             Errno::EFAULT.result()
         );
         assert!(console_output().is_empty());
+        // The count's upper half is ignored: none, then one buffer.
+        for (count, written) in [(1 << 32, 0), (1 << 32 | 1, 2)] {
+            assert_eq!(
+                call(&process, number::WRITEV, [1, DATA + 4096, count, 0, 0, 0]),
+                written
+            );
+        }
+        assert_eq!(console_output(), b"ab");
     }
 
     #[test]
