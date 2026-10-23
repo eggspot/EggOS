@@ -20,6 +20,7 @@ pub mod auxv {
     pub const CLKTCK: usize = 17;
     pub const SECURE: usize = 23;
     pub const RANDOM: usize = 25;
+    pub const MINSIGSTKSZ: usize = 51;
 }
 
 /// ELF program header types the runtime looks for.

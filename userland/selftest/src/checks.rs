@@ -7,6 +7,7 @@ pub const PASSED_LINE: &[u8] =
 
 const PAGE: usize = 4096;
 const STACK_LIMIT: u64 = 8 << 20;
+const ENOMEM: isize = 12;
 const EINVAL: isize = 22;
 
 const PROT_NONE: usize = 0;
@@ -30,7 +31,7 @@ const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 /// A start-up check: what it checks, and the check.
 type Check = (&'static str, fn(&Startup) -> bool);
 
-static CHECKS: [Check; 17] = [
+static CHECKS: [Check; 18] = [
     (
         "the stack holds the arguments and the environment",
         arguments,
@@ -46,6 +47,10 @@ static CHECKS: [Check; 17] = [
     ("the stack limit is 8 MiB", stack_limit),
     ("descriptors 0 to 2 are open", standard_descriptors),
     ("SIGPIPE can be ignored", ignore_sigpipe),
+    (
+        "a stack of AT_MINSIGSTKSZ bytes is accepted",
+        smallest_alternate_stack,
+    ),
     ("an alternate signal stack is taken", alternate_stack),
     (
         "a fault runs its handler on the alternate stack",
@@ -328,6 +333,40 @@ fn map(length: usize, protection: usize) -> Option<usize> {
         ],
     );
     (address > 0 && (address as usize).is_multiple_of(PAGE)).then_some(address as usize)
+}
+
+fn smallest_alternate_stack(startup: &Startup) -> bool {
+    const MINSIGSTKSZ: usize = 2048;
+    let Some(size) = startup
+        .auxiliary_value(auxv::MINSIGSTKSZ)
+        .filter(|&size| size >= MINSIGSTKSZ)
+    else {
+        return false;
+    };
+    let Some(mapping) = map(size, PROT_READ | PROT_WRITE) else {
+        return false;
+    };
+    let smallest = SignalStack {
+        base: mapping,
+        flags: 0,
+        size,
+    };
+    let too_small = SignalStack {
+        size: size - 1,
+        ..smallest
+    };
+    let disabled = SignalStack {
+        flags: SS_DISABLE,
+        ..SignalStack::default()
+    };
+    let set = |stack: &SignalStack| {
+        call(
+            number::SIGALTSTACK,
+            [&raw const *stack as usize, 0, 0, 0, 0, 0],
+        )
+    };
+    let accepted = set(&too_small) == -ENOMEM && set(&smallest) == 0 && set(&disabled) == 0;
+    accepted && call(number::MUNMAP, [mapping, size, 0, 0, 0, 0]) == 0
 }
 
 fn alternate_stack(_: &Startup) -> bool {

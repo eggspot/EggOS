@@ -125,8 +125,28 @@ pub const RED_ZONE: u64 = arch::RED_ZONE;
 
 /// The lowest address of the frame [`write()`] puts below `top`: where the stack pointer must
 /// stay above, on an alternate stack.
-pub fn lowest_address(top: u64) -> u64 {
+pub const fn lowest_address(top: u64) -> u64 {
     arch::place(top)
+}
+
+/// The most stack one frame takes below the top of an alternate stack, whatever that top's
+/// alignment: the frame, its FP/SIMD part and the padding that aligns them.
+pub const LARGEST_FRAME_SPACE: u64 = largest_frame_space();
+
+const fn largest_frame_space() -> u64 {
+    const ALIGNED_TOP: u64 = 1 << 20;
+    const LARGEST_ALIGNMENT: u64 = 64;
+    let mut largest = 0;
+    let mut misalignment = 0;
+    while misalignment < LARGEST_ALIGNMENT {
+        let top = ALIGNED_TOP + misalignment;
+        let space = top - lowest_address(top);
+        if space > largest {
+            largest = space;
+        }
+        misalignment += 1;
+    }
+    largest
 }
 
 /// `rt_sigreturn`'s side: reads the frame of the handler that returned, whose registers are
@@ -259,11 +279,11 @@ mod arch {
 
     /// The FP/SIMD image, then the frame, so that `(rsp + 8) % 16 == 0` when the handler
     /// starts, as after a `call`.
-    fn fp_image(top: u64) -> u64 {
+    const fn fp_image(top: u64) -> u64 {
         top.wrapping_sub(FP_SIZE) & !63
     }
 
-    pub fn place(top: u64) -> u64 {
+    pub const fn place(top: u64) -> u64 {
         (fp_image(top).wrapping_sub(WRITTEN as u64) & !15).wrapping_sub(8)
     }
 
@@ -499,7 +519,7 @@ mod arch {
     pub const RED_ZONE: u64 = 0;
 
     /// The frame record 16-byte aligned below `top`, the frame below it.
-    pub fn place(top: u64) -> u64 {
+    pub const fn place(top: u64) -> u64 {
         (top.wrapping_sub(RECORD) & !15).wrapping_sub(SIZE)
     }
 
@@ -676,7 +696,7 @@ mod arch {
     }
 
     /// 16-byte aligned below `top`.
-    pub fn place(top: u64) -> u64 {
+    pub const fn place(top: u64) -> u64 {
         top.wrapping_sub(SIZE) & !15
     }
 
@@ -795,6 +815,21 @@ mod tests {
             state.set_fcsr(2 << 5 | 1);
         }
         state
+    }
+
+    #[test]
+    fn the_largest_frame_space_is_the_frame_its_fp_part_and_their_padding() {
+        let expected = if cfg!(target_arch = "x86_64") {
+            512 + 63 + 448 + 8
+        } else if cfg!(target_arch = "aarch64") {
+            16 + 15 + 4688
+        } else {
+            1088 + 15
+        };
+        assert_eq!(LARGEST_FRAME_SPACE, expected);
+        for top in (1 << 20)..(1 << 20) + 256 {
+            assert!(top - lowest_address(top) <= LARGEST_FRAME_SPACE);
+        }
     }
 
     #[test]
