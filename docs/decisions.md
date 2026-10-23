@@ -2728,3 +2728,38 @@ switch-path cost; this entry follows it.)
   `SIGTRAP` handlers get the PC in `si_addr`, no fault address and no `esr_context`, and return.
   All three fail without the fixes. `cargo xtask qemu --arch all` passes on aarch64, riscv64
   and x86_64.
+
+## D69 Fast to get: download in seconds, install in seconds, ready right away — Decided (owner, 2026-10-23)
+A must-have, with the same weight as the fastest (D13) and the lightest (D24): getting EggOS is
+faster than getting any other OS. The user downloads it in seconds, installs it in seconds, and is at
+a usable system right after.
+
+- **Download in seconds.** The installer image carries only the base (D18), compressed, so it
+  downloads in seconds on a typical home connection. Optional components are not in it; the
+  component manager fetches them when the user picks them, at setup or later, in parallel with the
+  rest of the install.
+- **Install in seconds.** Installing writes a ready-made base image to the disk instead of
+  unpacking and configuring packages one by one: no dependency resolution and no long
+  post-install scripts at install time. The installer detects the hardware, asks only what it
+  cannot decide itself (everything else gets a sensible default the user can change later), and
+  the base installs fully offline from the image. The image carries the base's drivers compactly,
+  and hardware detection at install time picks the ones the machine needs (D18's "drivers for the
+  hardware present").
+- **Ready right away.** The first boot goes straight to a usable system (D24's boot budget).
+  Anything that can wait (component downloads, indexing, updates) runs in the background and never
+  blocks the user.
+- **Updates the same way.** The base updates with small deltas applied atomically (the running
+  system is never left half-updated), with no "installing updates" screen at boot. Optional
+  components update, install and remove one by one, as D18 says.
+
+**Order.** M10's first installer installs the base only; components on demand arrive with the
+component manager (M14).
+
+**Measured like D24.** Every release measures and publishes the installer image's download size, the
+time from starting the install to the first usable boot, and the first boot's time to a usable CLI
+and GUI, on QEMU and on reference hardware once there is some. The numbers may only go down; any
+growth needs a stated reason in the PR and is handled like a performance regression. Concrete
+budgets are set when the base first installs (M10), from measurements against current Linux,
+Windows and macOS installers on the same hardware and connection.
+
+The installer is something users see, so its design comes from Claude Fable (D16).
