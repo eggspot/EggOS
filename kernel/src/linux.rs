@@ -11,11 +11,14 @@
 //! out its stack as Linux does.
 //!
 //! So far: `write` to standard output and standard error (the console), `exit` and
-//! `exit_group`. Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a
-//! program that probes for a call carries on. The next calls are the rest of what a static
-//! hello-world needs (`brk`, `mmap`, `uname`, ...), then the file system's (M7).
+//! `exit_group`, and the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
+//! ([`memory`], D53). Every other number returns `ENOSYS`, as Linux does for a call it lacks,
+//! so a program that probes for a call carries on. The next calls are the rest of what a
+//! static hello-world needs (`uname`, `writev`, `set_tid_address`, ...), then the file
+//! system's (M7).
 
 pub mod exec;
+pub mod memory;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
@@ -32,14 +35,26 @@ pub mod number {
     #[cfg(target_arch = "x86_64")]
     mod table {
         pub const WRITE: u64 = 1;
+        pub const MMAP: u64 = 9;
+        pub const MPROTECT: u64 = 10;
+        pub const MUNMAP: u64 = 11;
+        pub const BRK: u64 = 12;
         pub const EXIT: u64 = 60;
         pub const EXIT_GROUP: u64 = 231;
+        /// The highest number above.
+        pub const LAST: u64 = EXIT_GROUP;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
         pub const WRITE: u64 = 64;
         pub const EXIT: u64 = 93;
         pub const EXIT_GROUP: u64 = 94;
+        pub const BRK: u64 = 214;
+        pub const MUNMAP: u64 = 215;
+        pub const MMAP: u64 = 222;
+        pub const MPROTECT: u64 = 226;
+        /// The highest number above.
+        pub const LAST: u64 = MPROTECT;
     }
     pub use table::*;
 }
@@ -61,12 +76,19 @@ impl Errno {
     pub const EBADF: Self = Self(9);
     /// Out of memory.
     pub const ENOMEM: Self = Self(12);
+    /// Permission denied: here, memory both writable and executable (`mmap`, `mprotect`).
+    pub const EACCES: Self = Self(13);
     /// Bad address: a buffer that is not the program's memory.
     pub const EFAULT: Self = Self(14);
-    /// An invalid argument: here, a segment outside user space (`execve`).
+    /// Exists already: here, a mapping in the way of `MAP_FIXED_NOREPLACE`.
+    pub const EEXIST: Self = Self(17);
+    /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
+    /// address or an empty range (the memory calls).
     pub const EINVAL: Self = Self(22);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
+    /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`).
+    pub const EOPNOTSUPP: Self = Self(95);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {
@@ -98,8 +120,10 @@ pub fn spawn<P: Platform>(
 /// What a Linux program's thread does with an exit from user mode: see the module
 /// documentation. Breaks when the thread is to end. Inlined into the thread's loop: the
 /// common paths (a system call that returns, an interrupt) stay short, and everything with a
-/// frame of its own (`write`, ending the process) is out of line.
-#[inline]
+/// frame of its own (`write`, the memory calls, ending the process) is out of line. Always
+/// inlined: as a call of its own, the loop's state spills around it (+11% on the system-call
+/// round trip when the memory calls' dispatch made it too large for the inliner).
+#[inline(always)]
 pub fn handle<P: Platform>(
     process: &Arc<Process<P>>,
     context: &mut UserContext,
@@ -167,13 +191,38 @@ fn kill<P: Platform>(process: &Process<P>, kind: ExceptionKind) -> ControlFlow<(
 #[inline]
 fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
     let [first, second, third, ..] = context.syscall_arguments();
-    let result = match context.syscall_number() {
-        number::WRITE => write::<P>(process, first, second, third),
-        number::EXIT | number::EXIT_GROUP => return exit(process, first),
-        _ => Err(Errno::ENOSYS),
+    let number = context.syscall_number();
+    // Past every call there is: one compare, however many calls the match below grows.
+    let result = if number > number::LAST {
+        Err(Errno::ENOSYS)
+    } else {
+        match number {
+            number::WRITE => write::<P>(process, first, second, third),
+            number::EXIT | number::EXIT_GROUP => return exit(process, first),
+            number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
+                memory_call::<P>(process, number, context.syscall_arguments())
+            }
+            _ => Err(Errno::ENOSYS),
+        }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
     ControlFlow::Continue(())
+}
+
+/// Memory call `number` with `arguments` ([`memory`]): out of line, with the arguments it
+/// needs read there, so the other calls' path stays as short as it was.
+#[inline(never)]
+fn memory_call<P: Platform>(
+    process: &Process<P>,
+    number: u64,
+    [first, second, third, fourth, _, sixth]: [u64; 6],
+) -> Result<u64, Errno> {
+    match number {
+        number::BRK => Ok(memory::brk::<P>(process, first)),
+        number::MMAP => memory::mmap::<P>(process, first, second, third, fourth, sixth),
+        number::MUNMAP => memory::munmap::<P>(process, first, second),
+        _ => memory::mprotect::<P>(process, first, second, third),
+    }
 }
 
 /// `exit(status)` and `exit_group(status)`: with one thread per process, ending the thread

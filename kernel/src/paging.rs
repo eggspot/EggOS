@@ -163,14 +163,14 @@ impl<F: Format> PageTables<F> {
         let root = self.roots[user_root];
         let top = F::LEVELS - 1;
         let user_entries = kernel_half_root_entries::<F>().start;
-        for index in 0..user_entries {
-            let virt = index as u64 * paging::leaf_size(top);
-            match F::decode(self.entry(root, virt, top).read(), top) {
+        self.for_each_used_entry(root, 0..user_entries, |entry| {
+            match F::decode(entry, top) {
                 Entry::Table(next) => self.free_table_tree(next, top - 1, frames, &mut leaf),
                 Entry::Leaf(phys, _) => leaf(frames, phys, top),
-                Entry::Empty => {}
+                // Only at level 0.
+                Entry::Kept(_) | Entry::Empty => {}
             }
-        }
+        });
         // SAFETY: the root came from `frames` in `new_sharing_kernel_half`, and nothing walks
         // it any more (the caller guarantees it is not active, and that `self` is not used
         // again).
@@ -186,16 +186,16 @@ impl<F: Format> PageTables<F> {
         frames: &mut FrameAllocator,
         leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
     ) {
-        for index in 0..paging::ENTRIES {
-            let virt = index as u64 * paging::leaf_size(level);
-            match F::decode(self.entry(table, virt, level).read(), level) {
+        self.for_each_used_entry(table, 0..paging::ENTRIES, |entry| {
+            match F::decode(entry, level) {
                 Entry::Table(next) if level > 0 => {
                     self.free_table_tree(next, level - 1, frames, leaf)
                 }
                 Entry::Leaf(phys, _) => leaf(frames, phys, level),
+                Entry::Kept(phys) => leaf(frames, phys, 0),
                 _ => {}
             }
-        }
+        });
         // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
         // (a table hangs from one entry), and walked by nothing any more (see `free_user_half`).
         unsafe { frames.free(table) };
@@ -303,6 +303,67 @@ impl<F: Format> PageTables<F> {
         Ok(())
     }
 
+    /// For a user address space's tables (D53): makes of every 4 KiB page in `virt..virt +
+    /// length` that is mapped, or kept ([`Entry::Kept`]), what `change` says, given its frame
+    /// and its attributes (`None` for a kept page); each frame unmapped is handed to
+    /// `unmapped` once its entry no longer refers to it. Parts of the range that map nothing are
+    /// skipped a table at a time, so a large range costs a walk per table, not per page. A
+    /// large leaf in the range is [`MapError::PartOfLargePage`] (a process maps 4 KiB pages
+    /// only). The tables may be in use: the caller drops what CPUs cached of the old entries
+    /// ([`crate::address_space::AddressSpace`] does). On an error, part of the range may have
+    /// been changed.
+    pub fn change_user_pages(
+        &mut self,
+        mut virt: u64,
+        length: u64,
+        mut change: impl FnMut(u64, Option<Attributes>) -> PageChange,
+        mut unmapped: impl FnMut(u64),
+    ) -> Result<(), MapError> {
+        if !self.user_half_only {
+            return Err(MapError::NotUser);
+        }
+        self.check_user_half(virt, length)?;
+        if !(virt | length).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        let end = virt + length;
+        'pages: while virt < end {
+            let mut table = self.roots[F::root(virt).ok_or(MapError::InvalidAddress)?];
+            for level in (0..F::LEVELS).rev() {
+                let entry = self.entry(table, virt, level);
+                let (phys, attributes) = match F::decode(entry.read(), level) {
+                    Entry::Table(next) if level > 0 => {
+                        table = next;
+                        continue;
+                    }
+                    Entry::Leaf(phys, attributes) if level == 0 => (phys, Some(attributes)),
+                    Entry::Kept(phys) => (phys, None),
+                    Entry::Leaf(..) => return Err(MapError::PartOfLargePage),
+                    Entry::Empty | Entry::Table(_) => {
+                        // Nothing mapped up to the end of what this entry covers.
+                        let size = paging::leaf_size(level);
+                        virt = (virt & !(size - 1)).saturating_add(size);
+                        continue 'pages;
+                    }
+                };
+                match change(phys, attributes) {
+                    PageChange::Unmap => {
+                        entry.write(0);
+                        unmapped(phys);
+                    }
+                    PageChange::Map(attributes) if attributes.user => {
+                        entry.write(F::leaf(phys, 0, attributes))
+                    }
+                    PageChange::Map(_) => return Err(MapError::NotUser),
+                    PageChange::Inaccessible => entry.write(F::kept(phys)),
+                }
+                break;
+            }
+            virt += FRAME_SIZE;
+        }
+        Ok(())
+    }
+
     /// For a user address space's tables, whether `virt..virt + length` lies in the low half.
     fn check_user_half(&self, virt: u64, length: u64) -> Result<(), MapError> {
         match virt.checked_add(length) {
@@ -318,7 +379,7 @@ impl<F: Format> PageTables<F> {
         for level in (0..F::LEVELS).rev() {
             let entry = self.entry(table, virt, level);
             match F::decode(entry.read(), level) {
-                Entry::Empty => break,
+                Entry::Empty | Entry::Kept(_) => break,
                 Entry::Table(next) => table = next,
                 Entry::Leaf(..) => return Ok((entry, level)),
             }
@@ -331,7 +392,7 @@ impl<F: Format> PageTables<F> {
         let mut table = self.roots[F::root(virt)?];
         for level in (0..F::LEVELS).rev() {
             match F::decode(self.entry(table, virt, level).read(), level) {
-                Entry::Empty => return None,
+                Entry::Empty | Entry::Kept(_) => return None,
                 Entry::Table(next) => table = next,
                 Entry::Leaf(phys, attributes) => {
                     return Some((phys + virt % paging::leaf_size(level), attributes));
@@ -359,7 +420,7 @@ impl<F: Format> PageTables<F> {
             let entry = self.entry(table, virt, level);
             table = match F::decode(entry.read(), level) {
                 Entry::Table(next) => next,
-                Entry::Leaf(..) => return Err(MapError::AlreadyMapped),
+                Entry::Leaf(..) | Entry::Kept(_) => return Err(MapError::AlreadyMapped),
                 Entry::Empty => {
                     let next = new_table(frames)?;
                     // As above: the zeros before the entry that links the table in.
@@ -370,7 +431,8 @@ impl<F: Format> PageTables<F> {
             };
         }
         let entry = self.entry(table, virt, leaf_level);
-        if F::decode(entry.read(), leaf_level) != Entry::Empty {
+        // Anything but an empty entry, a kept page included: one compare, not a decode.
+        if entry.read() != 0 {
             return Err(MapError::AlreadyMapped);
         }
         entry.write(F::leaf(phys, leaf_level, attributes));
@@ -379,9 +441,61 @@ impl<F: Format> PageTables<F> {
 
     /// The entry for `virt` in the table at physical `table`, which is at `level`.
     fn entry(&self, table: u64, virt: u64, level: usize) -> TableEntry {
-        let table = (table as usize).wrapping_add(self.physical_memory_offset) as *mut u64;
-        TableEntry(table.wrapping_add(paging::index(virt, level)))
+        self.entry_at(table, paging::index(virt, level))
     }
+
+    /// Hands every entry of `indices` in the table at physical `table` that is not 0 to
+    /// `used`, in order. Tables being freed are mostly empty, so the scan is what freeing
+    /// costs: four entries a step, a step of zeros skipped with one test (D53).
+    #[inline(always)]
+    fn for_each_used_entry(
+        &self,
+        table: u64,
+        indices: core::ops::Range<usize>,
+        mut used: impl FnMut(u64),
+    ) {
+        let mut index = indices.start;
+        while index + 4 <= indices.end {
+            let entries = [
+                self.entry_at(table, index).read(),
+                self.entry_at(table, index + 1).read(),
+                self.entry_at(table, index + 2).read(),
+                self.entry_at(table, index + 3).read(),
+            ];
+            if entries[0] | entries[1] | entries[2] | entries[3] != 0 {
+                for entry in entries {
+                    if entry != 0 {
+                        used(entry);
+                    }
+                }
+            }
+            index += 4;
+        }
+        for index in index..indices.end {
+            let entry = self.entry_at(table, index).read();
+            if entry != 0 {
+                used(entry);
+            }
+        }
+    }
+
+    /// Entry `index` (below [`paging::ENTRIES`]) of the table at physical `table`.
+    fn entry_at(&self, table: u64, index: usize) -> TableEntry {
+        let table = (table as usize).wrapping_add(self.physical_memory_offset) as *mut u64;
+        TableEntry(table.wrapping_add(index))
+    }
+}
+
+/// What [`PageTables::change_user_pages`] makes of a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageChange {
+    /// Maps nothing there any more: the frame goes back to the caller.
+    Unmap,
+    /// Maps the same frame with these attributes, a user mapping.
+    Map(Attributes),
+    /// Keeps the frame in an entry that translates nothing ([`Entry::Kept`]): the program may
+    /// not touch the page, and its contents stay (`PROT_NONE`).
+    Inaccessible,
 }
 
 /// One entry of a table this module allocated.

@@ -232,6 +232,8 @@ pub fn load<P: Platform>(
             map_segment(process, image, &header, bias)?;
         }
     }
+    // Linux starts the break at the page-aligned end of the last segment.
+    process.set_program_break(mapped_end);
     process
         .add_region(
             user_end - STACK_RESERVE,
@@ -647,7 +649,7 @@ mod tests {
                 Some(Region {
                     start: reserve,
                     end: USER_END,
-                    attributes: Attributes::USER_READ_WRITE
+                    attributes: Some(Attributes::USER_READ_WRITE)
                 })
             );
             assert_eq!(process.region(reserve - 1), None);
@@ -657,7 +659,7 @@ mod tests {
             assert!(space.translate(reserve).is_some());
             // The segments are regions too, as mapped.
             assert_eq!(
-                process.region(text).map(|region| region.attributes),
+                process.region(text).and_then(|region| region.attributes),
                 Some(Attributes::USER_TEXT)
             );
 

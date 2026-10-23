@@ -28,6 +28,8 @@ const NO_EXECUTE: u64 = 1 << 63;
 /// Physical address bits 51:12. In a large-page entry bit 12 is the PAT bit, which is never set.
 const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 const LARGE_PAT: u64 = 1 << 12;
+/// In an entry without [`PRESENT`], whose other bits the CPU ignores: [`Format::kept`]'s mark.
+const KEPT: u64 = 1 << 9;
 
 impl Format for X86_64 {
     const LEVELS: usize = 4;
@@ -71,9 +73,17 @@ impl Format for X86_64 {
         entry
     }
 
+    fn kept(phys: u64) -> u64 {
+        phys & ADDRESS | KEPT
+    }
+
     fn decode(entry: u64, level: usize) -> Entry {
         if entry & PRESENT == 0 {
-            return Entry::Empty;
+            return if entry & KEPT != 0 {
+                Entry::Kept(entry & ADDRESS)
+            } else {
+                Entry::Empty
+            };
         }
         let is_leaf = level == 0 || (level <= 2 && entry & PAGE_SIZE != 0);
         if !is_leaf {

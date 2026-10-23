@@ -48,7 +48,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 22] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 23] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -102,6 +102,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 22] {
         (
             "linux_stacks_grow_on_demand",
             linux_stacks_grow_on_demand::<P>,
+        ),
+        (
+            "linux_memory_calls_take_effect_at_once",
+            linux_memory_calls_take_effect_at_once::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1077,6 +1081,114 @@ fn linux_stacks_grow_on_demand<P: Platform>(memory: &mut Memory<P>) -> Result<()
     let freed = || free_frames() == Some(before);
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the stack's frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// The memory calls change what a running program reaches at once (D53), what its CPU cached
+/// included. The program walks down an `mmap`ed range, storing to every page (the test
+/// program's `stack_growth`, its stack pointer at the range's top), until it runs off the
+/// bottom; then, through the Linux calls, the kernel unmaps the upper half, maps it again and
+/// makes the range read-only, then writable again, running the walk from the top after each.
+/// The first store must fault at the top page while it is unmapped or read-only (a store that
+/// went through a stale translation would walk on), and the walk must cover the whole range
+/// when it is writable; the mapped-again half must read as zero, and every frame be freed.
+fn linux_memory_calls_take_effect_at_once<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    use linux::memory::{map, prot};
+    const PAGES: u64 = 8;
+    const HALF: u64 = PAGES / 2 * FRAME_SIZE;
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    {
+        let image = linux_start_image::<P>();
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::new(&memory.page_tables) }?;
+        exec::load(&mut process, &image, b"/selftest", &[], &[])
+            .map_err(|_| "the loader refused a valid ELF image")?;
+        let process = Arc::new(process);
+        let read_write = prot::READ | prot::WRITE;
+        let anonymous = map::PRIVATE | map::ANONYMOUS;
+        let start = linux::memory::mmap(&process, 0, 2 * HALF, read_write, anonymous, 0)
+            .map_err(|_| "mmap refused an anonymous mapping")?;
+        let top = start + 2 * HALF;
+        let entry = Process::<P>::test_program_context(|program| program.stack_growth).pc();
+        let walk = move || UserContext::new(entry, top - 16);
+        // Where each walk stopped, and the first thing that went wrong.
+        let stops = Arc::new(SpinLock::new(Vec::new()));
+        let failure = Arc::new(SpinLock::new(None));
+        let handler = {
+            let (stops, failure) = (stops.clone(), failure.clone());
+            let mut walks = 0;
+            move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
+                let fail = |reason| {
+                    failure.lock().get_or_insert(reason);
+                    ControlFlow::Break(())
+                };
+                let exception = match exit {
+                    UserExit::Interrupt => return ControlFlow::Continue(()),
+                    UserExit::Syscall => return fail("the walk made a system call"),
+                    UserExit::Exception(exception) => exception,
+                };
+                let (Some(fault), Some(address)) = (
+                    P::page_fault(exception.kind, exception.code),
+                    exception.address,
+                ) else {
+                    return fail("the walk took an exception that is not a page fault");
+                };
+                if process.resolve_page_fault(address, fault).is_ok() {
+                    return ControlFlow::Continue(());
+                }
+                stops.lock().push(address & !(FRAME_SIZE - 1));
+                let changed = match walks {
+                    0 => linux::memory::munmap(process, start + HALF, HALF),
+                    1 => {
+                        let fixed = anonymous | map::FIXED;
+                        let remapped =
+                            linux::memory::mmap(process, start + HALF, HALF, read_write, fixed, 0);
+                        let mut word = [1; 8];
+                        if remapped != Ok(start + HALF)
+                            || process.read_user_memory(top - 8, &mut word).is_err()
+                            || word != [0; 8]
+                        {
+                            return fail("the upper half was not mapped again, zeroed");
+                        }
+                        linux::memory::mprotect(process, start, 2 * HALF, prot::READ)
+                    }
+                    2 => linux::memory::mprotect(process, start, 2 * HALF, read_write),
+                    _ => return ControlFlow::Break(()),
+                };
+                if changed.is_err() {
+                    return fail("a memory call refused a valid range");
+                }
+                walks += 1;
+                *context = walk();
+                ControlFlow::Continue(())
+            }
+        };
+        process::spawn::<P, _>(process.clone(), walk(), handler)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        if let Some(reason) = *failure.lock() {
+            return Err(reason);
+        }
+        let last = top - FRAME_SIZE;
+        if *stops.lock() != [start - FRAME_SIZE, last, last, start - FRAME_SIZE] {
+            return Err("a walk went through a page unmapped or read-only, or stopped short");
+        }
+        for page in (start..top).step_by(FRAME_SIZE as usize) {
+            let mut word = [0; 8];
+            process
+                .read_user_memory(page, &mut word)
+                .map_err(|_| "a page of the range is not mapped")?;
+            if u64::from_ne_bytes(word) != page {
+                return Err("a page does not hold what the program stored there");
+            }
+        }
+    }
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the range's frames and the program's were not all freed");
     }
     Ok(())
 }

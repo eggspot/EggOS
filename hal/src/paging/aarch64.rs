@@ -38,6 +38,9 @@ const PRIVILEGED_NO_EXECUTE: u64 = 1 << 53;
 const USER_NO_EXECUTE: u64 = 1 << 54;
 /// Output address bits 47:12.
 const ADDRESS: u64 = 0x0000_ffff_ffff_f000;
+/// In an invalid descriptor, whose other bits the MMU ignores: [`Format::kept`]'s mark (a bit
+/// left to software in valid ones too).
+const KEPT: u64 = 1 << 55;
 
 impl Format for Aarch64 {
     const LEVELS: usize = 4;
@@ -63,9 +66,17 @@ impl Format for Aarch64 {
         leaf(phys, level, attributes)
     }
 
+    fn kept(phys: u64) -> u64 {
+        phys & ADDRESS | KEPT
+    }
+
     fn decode(entry: u64, level: usize) -> Entry {
         if entry & VALID == 0 {
-            return Entry::Empty;
+            return if entry & KEPT != 0 {
+                Entry::Kept(entry & ADDRESS)
+            } else {
+                Entry::Empty
+            };
         }
         let is_page_or_table = entry & PAGE_OR_TABLE != 0;
         if level > 0 && is_page_or_table {

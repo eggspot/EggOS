@@ -22,9 +22,17 @@
 //! was invalid, which AArch64 and x86 never cache, and a RISC-V hart that did faults once, and
 //! the fault handler drops the stale entry ([`Platform::drop_user_translations`]); the
 //! frame's contents and new tables are ordered before the entry that makes them reachable.
-//! Removing or changing a mapping ([`AddressSpace::unmap`]) still takes `&mut self`, so it
-//! never happens while the address space is active or loaded anywhere: nothing cached of it
-//! outlives the change.
+//!
+//! Removing or changing mappings of a live address space ([`AddressSpace::change_pages`], the
+//! memory calls, D53) leaves translations CPUs may have cached behind: the CPU that changes
+//! them drops its own, and marks every other CPU that keeps the address space loaded
+//! ([`Cpu::mark_stale`]), so that CPU switches to it again, dropping what it cached, before
+//! it next uses it. No interrupt to the other CPUs: while a process has one thread, the one
+//! changing its mappings, no other CPU uses its address space meanwhile, and the thread
+//! reaches another CPU only through the scheduler's locks, after the mark. A second user at
+//! the same time (`clone`, or [`AddressSpace::with_active`] on another CPU) needs a
+//! shootdown first (roadmap). [`AddressSpace::unmap`] takes `&mut self`, for an address space
+//! not shared yet.
 //!
 //! The frames user pages map belong to whoever mapped them, unless the address space was made
 //! to own them ([`AddressSpace::new_owning_frames`], as a process's is): then it frees them
@@ -32,12 +40,13 @@
 
 use crate::cpu::{self, Cpu};
 use crate::memory;
-use crate::paging::{MAX_ROOTS, MapError, PageTables};
+use crate::paging::{MAX_ROOTS, MapError, PageChange, PageTables};
 use crate::sync::SpinLock;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::marker::PhantomData;
 use core::ptr;
+use core::sync::atomic::{Ordering, fence};
 use eggos_hal::Platform;
 use eggos_hal::paging::{Attributes, Format};
 
@@ -120,14 +129,53 @@ impl<P: Platform> AddressSpace<P> {
 
     /// Unmaps user `virt..virt + length`, in the low half ([`MapError::NotUser`] otherwise).
     /// As [`PageTables::unmap`] otherwise. Not for an address space that owns its frames
-    /// ([`Self::new_owning_frames`]): an unmapped frame would leak (its owner frees the pages it
-    /// unmaps, with the memory calls, M6).
+    /// ([`Self::new_owning_frames`]): an unmapped frame would leak (its owner unmaps through
+    /// [`Self::change_pages`], which hands the frames back, D53).
     pub fn unmap(&mut self, virt: u64, length: u64) -> Result<(), MapError> {
         assert!(
             !self.owns_frames,
             "an address space that owns its frames is unmapped through its owner"
         );
         self.tables.get_mut().unmap(virt, length)
+    }
+
+    /// Changes every 4 KiB page of user `virt..virt + length` that is mapped, or kept with no
+    /// access ([`eggos_hal::paging::Entry::Kept`]), to what `change` says (see
+    /// [`PageTables::change_user_pages`]), handing each frame unmapped to `unmapped`; then
+    /// makes sure no CPU goes on using what it cached of the old entries (see the module
+    /// documentation). Allowed while the address space is loaded on any CPU, but used on at
+    /// most this one: call it with interrupts masked, from the process's only thread or with
+    /// the address space not in use, and do not block until it returns.
+    pub fn change_pages(
+        &self,
+        virt: u64,
+        length: u64,
+        change: impl FnMut(u64, Option<Attributes>) -> PageChange,
+        unmapped: impl FnMut(u64),
+    ) -> Result<(), MapError> {
+        let result = self
+            .tables
+            .lock()
+            .change_user_pages(virt, length, change, unmapped);
+        // Even after an error: part of the range may have changed.
+        self.drop_old_translations(virt, length);
+        result
+    }
+
+    /// After mappings in user `virt..virt + length` were removed or changed: drops this
+    /// CPU's cached translations of them if it has the address space loaded, and marks every
+    /// other CPU that keeps it loaded stale ([`Cpu::mark_stale`]). Increases too: a stale
+    /// entry with less access raises a permission fault that is never retried (D52).
+    fn drop_old_translations(&self, virt: u64, length: u64) {
+        let here = cpu::current::<P>();
+        let root = self.root();
+        if here.active_address_space() == root {
+            P::drop_user_translations(virt, length);
+        }
+        // The entries before any look at another CPU's record (`mark_stale` explains why a
+        // record read before a switch is fine).
+        fence(Ordering::SeqCst);
+        mark_stale_elsewhere(cpu::CPUS.all(), here, root);
     }
 
     /// The physical address `virt` translates to in this address space and the mapping's
@@ -192,9 +240,9 @@ impl<P: Platform> AddressSpace<P> {
     /// thread of the same process runs without a switch.
     ///
     /// # Safety
-    /// `owner` must own this address space and, for as long as it lives, never remove or
-    /// change a mapping in it (nothing reaches it through `&mut`); mappings may be added
-    /// ([`Self::map`]).
+    /// `owner` must own this address space and, for as long as it lives, remove or change
+    /// mappings in it only through [`Self::change_pages`] (nothing reaches it through `&mut`);
+    /// mappings may be added ([`Self::map`]).
     #[inline]
     pub unsafe fn load_lazily<O: Any + Send + Sync>(&self, owner: &Arc<O>) {
         let here = cpu::current::<P>();
@@ -223,7 +271,8 @@ impl<P: Platform> AddressSpace<P> {
         here.set_active_address_space(root);
         // SAFETY: interrupts are masked (the caller's duty). The tables are in `P`'s format,
         // built by `PageTables`, and share the kernel's active half (`new`'s contract). `owner`
-        // keeps them allocated, with no mapping removed or changed (the caller's duty), and is
+        // keeps them allocated, with mappings removed or changed only through `change_pages`,
+        // which marks this CPU if it is still loaded here (the caller's duty), and is
         // kept below until the CPU switches away from them. The previous address space, if
         // any, is no longer used: `with_active` never runs around this call (checked above),
         // and the kernel reaches user pages only after loading the address space it means.
@@ -242,7 +291,8 @@ impl<P: Platform> AddressSpace<P> {
         drop(previous);
     }
 
-    /// Whether this address space is the one active or loaded on this CPU.
+    /// Whether this address space is the one active or loaded on this CPU, and not marked
+    /// stale ([`Cpu::mark_stale`]).
     #[inline]
     pub fn is_loaded_here(&self) -> bool {
         cpu::current::<P>().active_address_space() == self.root()
@@ -273,11 +323,9 @@ impl LazilyLoaded {
     fn only_cpus_hold_it(&self, here: &'static Cpu, root: u64) -> bool {
         let cpus = cpu::CPUS.all();
         let holding = if cpus.is_empty() {
-            usize::from(here.active_address_space() == root)
+            usize::from(here.holds(root))
         } else {
-            cpus.iter()
-                .filter(|cpu| cpu.active_address_space() == root)
-                .count()
+            cpus.iter().filter(|cpu| cpu.holds(root)).count()
         };
         Arc::strong_count(&self.owner) <= holding
     }
@@ -309,7 +357,7 @@ pub(crate) fn release_unused<P: Platform>(here: &'static Cpu) {
 #[cold]
 #[inline(never)]
 fn release_unused_cold<P: Platform>(here: &'static Cpu) {
-    let root = here.active_address_space();
+    let root = here.active_address_space() & !cpu::STALE;
     let loaded = {
         let mut slot = here.lazily_loaded.lock();
         if !slot
@@ -330,7 +378,7 @@ fn release_unused_cold<P: Platform>(here: &'static Cpu) {
 /// hold it ([`release_unused`]), and has every other CPU that keeps it loaded look again, so
 /// an idle one lets it go too (D48).
 pub(crate) fn release_ended<P: Platform>(here: &'static Cpu, root: u64) {
-    if here.active_address_space() == root {
+    if here.holds(root) {
         release_unused_cold::<P>(here);
     } else {
         wake_cpus_holding::<P>(here, root);
@@ -343,8 +391,18 @@ pub(crate) fn release_ended<P: Platform>(here: &'static Cpu, root: u64) {
 /// look at most.
 fn wake_cpus_holding<P: Platform>(here: &'static Cpu, root: u64) {
     for &other in cpu::CPUS.all() {
-        if !ptr::eq(other, here) && other.active_address_space() == root {
+        if !ptr::eq(other, here) && other.holds(root) {
             cpu::wake::<P>(other);
+        }
+    }
+}
+
+/// Marks every CPU of `cpus` but `here` that keeps the address space whose first root is
+/// `root` loaded stale ([`Cpu::mark_stale`]).
+fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
+    for &other in cpus {
+        if !ptr::eq(other, here) && other.active_address_space() == root {
+            other.mark_stale(root);
         }
     }
 }
@@ -353,7 +411,7 @@ fn wake_cpus_holding<P: Platform>(here: &'static Cpu, root: u64) {
 /// and drops the CPU's reference to it; if only CPUs held it, has the others that keep it
 /// loaded look again ([`release_unused`]).
 fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
-    let root = here.active_address_space();
+    let root = here.active_address_space() & !cpu::STALE;
     let ended = loaded.only_cpus_hold_it(here, root);
     // SAFETY: interrupts are masked (the callers' duty); back to the kernel's own tables, which
     // stay allocated for as long as the kernel runs (`AddressSpace::new`'s contract). The
@@ -629,5 +687,137 @@ mod tests {
             space.map(virt, virt, FRAME_SIZE, attributes).unwrap();
             assert_eq!(space.translate(virt), Some((virt, attributes)));
         }
+    }
+
+    #[test]
+    fn changing_pages_marks_the_other_cpus_that_keep_the_address_space_loaded_stale() {
+        let (here, keeping, other, idle) = (
+            Cpu::for_test(0),
+            Cpu::for_test(1),
+            Cpu::for_test(2),
+            Cpu::for_test(3),
+        );
+        let root = 0x8_0000;
+        for cpu in [here, keeping] {
+            cpu.set_active_address_space(root);
+        }
+        other.set_active_address_space(0x9_0000);
+        mark_stale_elsewhere(&[here, keeping, other, idle], here, root);
+        assert_eq!(here.active_address_space(), root, "this CPU drops its own");
+        assert_eq!(keeping.active_address_space(), root | cpu::STALE);
+        assert_eq!(other.active_address_space(), 0x9_0000);
+        assert_eq!(idle.active_address_space(), cpu::NO_ADDRESS_SPACE);
+        // Still holding it, for the counts that let it go; marked once.
+        assert!(keeping.holds(root));
+        assert!(!idle.holds(root) && !other.holds(root));
+        mark_stale_elsewhere(&[here, keeping], here, root);
+        assert_eq!(keeping.active_address_space(), root | cpu::STALE);
+    }
+
+    #[test]
+    fn a_stale_address_space_is_switched_to_again_before_it_is_used() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let owner = Arc::new(new_space(&kernel).unwrap());
+        // SAFETY: the test platform's switch only records roots; the owner is the space
+        // itself, which changes mappings only through `change_pages`.
+        unsafe { owner.load_lazily(&owner) };
+        assert!(owner.is_loaded_here());
+        crate::tests::set_active_root(0);
+        cpu::current::<P>().mark_stale(owner.root());
+        assert!(!owner.is_loaded_here());
+        // SAFETY: as above.
+        unsafe { owner.load_lazily(&owner) };
+        assert_eq!(active_root(), owner.root(), "switched again");
+        assert!(owner.is_loaded_here());
+        unload_lazily_loaded::<P>(cpu::current::<P>());
+        assert_eq!(active_root(), kernel.roots()[0]);
+    }
+
+    #[test]
+    fn changed_pages_take_effect_and_kept_frames_are_freed_with_the_tables() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free_frames();
+        {
+            // SAFETY: as in `new_space`.
+            let space = unsafe { AddressSpace::<P>::new_owning_frames(&kernel) }.unwrap();
+            let frames: Vec<u64> = (0..3)
+                .map(|_| FRAMES.lock().as_mut().unwrap().allocate().unwrap())
+                .collect();
+            for (i, &frame) in frames.iter().enumerate() {
+                let virt = USER_VIRT + i as u64 * FRAME_SIZE;
+                space
+                    .map(virt, frame, FRAME_SIZE, Attributes::USER_READ_WRITE)
+                    .unwrap();
+            }
+            // Across a large unmapped stretch too, which is skipped a table at a time.
+            let mut seen = Vec::new();
+            space
+                .change_pages(
+                    0,
+                    1 << 30,
+                    |frame, attributes| {
+                        seen.push((frame, attributes));
+                        match seen.len() {
+                            1 => PageChange::Inaccessible,
+                            2 => PageChange::Map(Attributes::USER_READ_ONLY),
+                            _ => PageChange::Unmap,
+                        }
+                    },
+                    |frame| {
+                        assert_eq!(frame, frames[2]);
+                        // SAFETY: allocated above, and no entry maps it any more.
+                        unsafe { FRAMES.lock().as_mut().unwrap().free(frame) };
+                    },
+                )
+                .unwrap();
+            let rw = Some(Attributes::USER_READ_WRITE);
+            assert_eq!(seen, [(frames[0], rw), (frames[1], rw), (frames[2], rw)]);
+            assert_eq!(space.translate(USER_VIRT), None);
+            assert_eq!(
+                space.translate(USER_VIRT + FRAME_SIZE),
+                Some((frames[1], Attributes::USER_READ_ONLY))
+            );
+            assert_eq!(space.translate(USER_VIRT + 2 * FRAME_SIZE), None);
+            // A kept page is seen as such, and can be mapped again; nothing maps over it.
+            assert_eq!(
+                space.map(
+                    USER_VIRT,
+                    frames[2],
+                    FRAME_SIZE,
+                    Attributes::USER_READ_WRITE
+                ),
+                Err(MapError::AlreadyMapped)
+            );
+            let mut kept = Vec::new();
+            space
+                .change_pages(
+                    USER_VIRT,
+                    FRAME_SIZE,
+                    |frame, attributes| {
+                        kept.push((frame, attributes));
+                        PageChange::Inaccessible
+                    },
+                    |_| unreachable!(),
+                )
+                .unwrap();
+            assert_eq!(kept, [(frames[0], None)]);
+            assert_eq!(
+                space.change_pages(KERNEL_VIRT, FRAME_SIZE, |_, _| PageChange::Unmap, |_| ()),
+                Err(MapError::NotUser)
+            );
+            assert_eq!(
+                space.change_pages(
+                    USER_VIRT,
+                    FRAME_SIZE,
+                    |_, _| PageChange::Map(Attributes::READ_WRITE),
+                    |_| ()
+                ),
+                Err(MapError::NotUser)
+            );
+        }
+        // The kept frame and the read-only one go with the tables.
+        assert_eq!(free_frames(), before);
     }
 }

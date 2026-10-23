@@ -53,7 +53,11 @@ pub struct Cpu {
     /// The first root of the user address space active on this CPU, made active by
     /// [`crate::address_space::AddressSpace::with_active`] or loaded lazily for a process
     /// (D48), or [`NO_ADDRESS_SPACE`] while the kernel's empty low half is active (D46). Always
-    /// what the CPU has loaded. Changed only by the CPU itself.
+    /// what the CPU has loaded, with [`STALE`] set once another CPU has removed or changed
+    /// mappings of it (D53): loaded, but with translations the CPU may have cached that are
+    /// no longer right, so it switches again before it uses it. Changed only by the CPU itself,
+    /// but for that mark ([`Cpu::mark_stale`]); the CPU stores a root without it only along
+    /// with dropping every user translation it has cached (a switch).
     active_address_space: AtomicU64,
     /// What keeps the address space a process loaded here lazily ([`AddressSpace::load_lazily`])
     /// alive while it stays loaded, after its threads have left the CPU (D48); `None` while
@@ -74,6 +78,11 @@ const _: () = assert!(core::mem::offset_of!(Cpu, _hal) == HAL_CPU_LOCAL_OFFSET);
 /// [`Cpu::active_address_space`] while no user address space is active: not a table's address,
 /// which is frame-aligned.
 pub(crate) const NO_ADDRESS_SPACE: u64 = u64::MAX;
+
+/// Set in [`Cpu::active_address_space`] by another CPU ([`Cpu::mark_stale`]): the address space
+/// is loaded, but its mappings changed since. Bit 0, never set in a root, which is
+/// frame-aligned.
+pub(crate) const STALE: u64 = 1;
 
 impl Cpu {
     const fn new(index: usize) -> Self {
@@ -181,9 +190,31 @@ impl Cpu {
         self.active_address_space.load(Ordering::Relaxed)
     }
 
+    /// Whether the user address space whose first root is `root` is the one active or loaded
+    /// on this CPU, stale ([`STALE`]) or not.
+    pub(crate) fn holds(&self, root: u64) -> bool {
+        self.active_address_space() & !STALE == root
+    }
+
+    /// From another CPU, which has just removed or changed mappings of the address space whose
+    /// first root is `root`: if this CPU still keeps it loaded, marks it [`STALE`], so the
+    /// CPU switches to it again, dropping what it cached, before it next uses it
+    /// ([`crate::address_space::AddressSpace::load_lazily`] finds the record different). A CPU
+    /// that switched away meanwhile has dropped it anyway: the exchange then fails, and that
+    /// is fine.
+    pub(crate) fn mark_stale(&self, root: u64) {
+        let _ = self.active_address_space.compare_exchange(
+            root,
+            root | STALE,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
     /// For this CPU, with interrupts masked: records `root` as the first root of the user
-    /// address space now active here ([`NO_ADDRESS_SPACE`] for none). Only the CPU itself reads
-    /// and writes the record, so a plain store does.
+    /// address space now active here ([`NO_ADDRESS_SPACE`] for none). Only the CPU itself
+    /// stores to the record, and other CPUs only mark it ([`Self::mark_stale`]), so a plain
+    /// store does.
     pub(crate) fn set_active_address_space(&self, root: u64) {
         self.active_address_space.store(root, Ordering::Relaxed);
     }

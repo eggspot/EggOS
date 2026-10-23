@@ -199,6 +199,10 @@ pub enum Entry {
     Table(u64),
     /// Maps [`leaf_size`] bytes starting at this physical address.
     Leaf(u64, Attributes),
+    /// Translates nothing, but holds on to the 4 KiB frame at this physical address for its
+    /// owner: a user page the program may not touch (`PROT_NONE`) whose contents stay. Only
+    /// at level 0 ([`Format::kept`]).
+    Kept(u64),
 }
 
 /// One architecture's page-table format. See the module documentation.
@@ -230,9 +234,17 @@ pub trait Format {
     /// aligned to that size.
     fn leaf(phys: u64, level: usize, attributes: Attributes) -> u64;
 
+    /// A level-0 entry that translates nothing (its valid bit clear, so the hardware ignores
+    /// the rest and never caches it) but records the 4 KiB frame at physical `phys`, which
+    /// decodes as [`Entry::Kept`]: a page whose contents stay while the program may not touch
+    /// it (D53).
+    fn kept(phys: u64) -> u64;
+
     /// Decodes an entry found at `level`. A leaf's attributes are what the hardware will
     /// enforce; where an architecture cannot express a [`MemoryType`] in the entry (RISC-V
-    /// without Svpbmt), it decodes as [`MemoryType::Normal`].
+    /// without Svpbmt), it decodes as [`MemoryType::Normal`]. An invalid entry is
+    /// [`Entry::Empty`] unless it is one [`Format::kept`] made (only ever at level 0, so the
+    /// level is not checked: one test fewer on the page-fault path).
     fn decode(entry: u64, level: usize) -> Entry;
 }
 
@@ -279,6 +291,9 @@ pub(crate) mod tests {
         }
         for level in 0..F::LEVELS {
             assert_eq!(F::decode(0, level), Entry::Empty);
+        }
+        for phys in [0, 0x1234_5000, 0xf_ffff_f000] {
+            assert_eq!(F::decode(F::kept(phys), 0), Entry::Kept(phys));
         }
     }
 
