@@ -198,8 +198,6 @@ pub mod number {
     }
     pub use table::*;
 
-    // The dispatch answers `ENOSYS` above `LAST` without looking further: no call may be
-    // above it.
     const _: () = {
         let all = [
             WRITE,
@@ -464,7 +462,6 @@ fn signal_fault<P: Platform>(process: &Process<P>, context: &mut UserContext) ->
 fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
     let [first, second, third, ..] = context.syscall_arguments();
     let number = context.syscall_number();
-    // Past every call there is: one compare, however many calls the match below grows.
     let result = if number > number::LAST {
         Err(Errno::ENOSYS)
     } else {
@@ -628,7 +625,8 @@ fn exit<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
 
 /// `write(fd, buffer, count)`: the standard descriptors go to the console. Returns
 /// the bytes written; if part of the buffer is not the program's memory, the bytes before
-/// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes.
+/// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes,
+/// after the whole range is checked against user space, as on Linux.
 #[inline(never)]
 fn write<P: Platform>(
     process: &Process<P>,
@@ -642,7 +640,6 @@ fn write<P: Platform>(
     if !ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    // Linux checks the whole range first, then caps the count.
     let count = count.min(MAX_RW_COUNT);
     let written = write_to_console(process, buffer, count);
     if written == 0 && count > 0 {
@@ -740,7 +737,6 @@ fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, coun
     }
     for index in 0..count {
         let mut entry = [0; IOVEC_SIZE];
-        // Within user space, checked above: no overflow.
         let address = buffers + index * IOVEC_SIZE as u64;
         if process.read_user_memory(address, &mut entry).is_err() {
             break;
@@ -777,7 +773,6 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
     let mut chunk = [0u8; WRITE_CHUNK];
     let mut written = 0;
     while written < count {
-        // Cannot wrap: the range ends within user space.
         let address = buffer.wrapping_add(written);
         let length = (count - written)
             .min(WRITE_CHUNK as u64)
@@ -788,7 +783,6 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         }
         P::console_write(bytes);
         written += length as u64;
-        // System calls may pass one ([`handle`]).
         thread::preemption_point::<P>();
     }
     written
@@ -853,7 +847,6 @@ mod tests {
         let process = process_with_data(&kernel, text);
         let start = DATA + 4096 - (text.len() / 2) as u64;
         console_output();
-        // Standard input too: the console is open for reading and writing (D61).
         for fd in [0, 1, 2] {
             let mut context = called(number::WRITE, [fd, start, text.len() as u64, 0, 0, 0]);
             assert_eq!(
@@ -880,28 +873,21 @@ mod tests {
             context.syscall_result()
         };
         console_output();
-        // Unmapped, kernel, past user space, wrapping around.
         for buffer in [0, 0xffff_ffff_8000_0000, u64::MAX - 1] {
             assert_eq!(write(1, buffer, 2), Errno::EFAULT.result(), "{buffer:#x}");
         }
-        // Nothing to write: any address up to the end of user space, unmapped or not; past
-        // it, `EFAULT`, as on Linux.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         assert_eq!(write(1, 0, 0), 0);
         assert_eq!(write(1, user_end, 0), 0);
         for buffer in [user_end + 1, 0xffff_ffff_8000_0000, u64::MAX] {
             assert_eq!(write(1, buffer, 0), Errno::EFAULT.result(), "{buffer:#x}");
         }
-        // A range that does not end within user space: nothing is written.
         assert_eq!(write(1, DATA + 4095, user_end), Errno::EFAULT.result());
-        // Only the standard descriptors so far, and only the descriptor's low 32 bits count,
-        // as on Linux.
         assert_eq!(write(3, DATA + 4095, 2), Errno::EBADF.result());
         assert_eq!(write(1 << 32 | 3, DATA + 4095, 2), Errno::EBADF.result());
         assert_eq!(write(u64::MAX, DATA + 4095, 2), Errno::EBADF.result());
         assert_eq!(write(1 << 32 | 1, DATA + 4095, 0), 0);
         assert!(console_output().is_empty());
-        // Past the second page: everything up to it is written, then it stops.
         let readable = 1 + 4096;
         assert_eq!(
             write(1, DATA + 4095, readable + 2 * WRITE_CHUNK as u64),
@@ -972,17 +958,12 @@ mod tests {
             16
         );
         assert_ne!(read(0, 16), first);
-        // A long call, with the flags' upper half ignored: every byte is written, and the
-        // bytes after are not.
         assert_eq!(getrandom(writable, 1000, 1 << 32), 1000);
         assert!(read(0, 1000).chunks(16).all(|chunk| chunk != [0; 16]));
         assert_eq!(read(1000, 16), [0; 16]);
-        // No bytes: 0 within user space, mapped or not; `EFAULT` past it.
         assert_eq!(getrandom(0, 0, 0), 0);
         assert_eq!(getrandom(u64::MAX, 0, 0), Errno::EFAULT.result());
-        // Up to the end of the writable page, then unmapped memory: the bytes before.
         assert_eq!(getrandom(writable + 4096 - 100, 200, 0), 100);
-        // Read-only memory, or a range past user space: EFAULT.
         assert_eq!(getrandom(DATA, 16, 0), Errno::EFAULT.result());
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         assert_eq!(getrandom(user_end - 8, 16, 0), Errno::EFAULT.result());
@@ -994,7 +975,6 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let text = b"hello, writev\n";
-        // Out of order, an empty one, and more than fit on the stack.
         let mut buffers = alloc::vec![(7, 6), (5, 2), (0, 5), (3, 0), (13, 1)];
         let process = process_with_iovecs(&kernel, text, &buffers);
         console_output();
@@ -1025,21 +1005,17 @@ mod tests {
         };
         console_output();
         assert_eq!(writev(&[(0, 2)], 3), Errno::EBADF.result());
-        // A length negative as a `ssize_t`, even after a good buffer, or one past user space.
         assert_eq!(writev(&[(0, 2), (0, 1 << 63)], 1), Errno::EINVAL.result());
         assert_eq!(writev(&[(0, 2), (0, user_end)], 1), Errno::EFAULT.result());
-        // An empty buffer at a kernel address fails the whole call too, as on Linux.
         let kernel_address = 0xffff_ffff_8000_0000u64.wrapping_sub(DATA);
         assert_eq!(
             writev(&[(0, 2), (kernel_address, 0)], 1),
             Errno::EFAULT.result()
         );
         assert!(console_output().is_empty());
-        // Past the readable page: what came before, else `EFAULT`.
         assert_eq!(writev(&[(0, 2), (4096 * 2, 2)], 1), 2);
         assert_eq!(writev(&[(4096 * 2, 2), (0, 2)], 1), Errno::EFAULT.result());
         assert_eq!(console_output(), b"ab");
-        // Too many buffers, and an array that is not the program's.
         let process = process_with_iovecs(&kernel, b"ab", &[(0, 2)]);
         let too_many = MAX_IOVECS + 1;
         assert_eq!(
@@ -1054,8 +1030,6 @@ mod tests {
             call(&process, number::WRITEV, [1, 0, 1, 0, 0, 0]),
             Errno::EFAULT.result()
         );
-        // An array that runs off its page: its entries are read in order, so a negative
-        // length before the unreadable one is `EINVAL`, as on Linux (D62); none, `EFAULT`.
         let last_entry = DATA + 2 * 4096 - IOVEC_SIZE as u64;
         for (length, error) in [(1 << 63, Errno::EINVAL), (2, Errno::EFAULT)] {
             let mut buffers = alloc::vec![(0, 2); 4096 / IOVEC_SIZE];
@@ -1065,14 +1039,11 @@ mod tests {
                 call(&full_page, number::WRITEV, [1, last_entry, 2, 0, 0, 0]),
                 error.result()
             );
-            // Only the unreadable entry: `EFAULT`.
             assert_eq!(
                 call(&full_page, number::WRITEV, [1, last_entry + 16, 1, 0, 0, 0]),
                 Errno::EFAULT.result()
             );
         }
-        // An array that does not end within user space: `EFAULT` before any entry is read,
-        // even a readable one with a negative length in user space's last page.
         // SAFETY: test tables, never active; the test platform's switch only records roots.
         let mut at_the_end = unsafe { Process::<P>::new(&kernel) }.unwrap();
         let mut entry = [0u8; IOVEC_SIZE];
@@ -1094,7 +1065,6 @@ mod tests {
             Errno::EFAULT.result()
         );
         assert!(console_output().is_empty());
-        // The count's upper half is ignored: none, then one buffer.
         for (count, written) in [(1 << 32, 0), (1 << 32 | 1, 2)] {
             assert_eq!(
                 call(&process, number::WRITEV, [1, DATA + 4096, count, 0, 0, 0]),
@@ -1128,8 +1098,6 @@ mod tests {
             call(&process, number::SET_ROBUST_LIST, [DATA, 16, 0, 0, 0, 0]),
             Errno::EINVAL.result()
         );
-        // `uname` fills the writable page; not the read-only one, nor across into the unmapped
-        // one after it.
         assert_eq!(
             call(&process, number::UNAME, [DATA + 4096, 0, 0, 0, 0, 0]),
             0
@@ -1176,7 +1144,6 @@ mod tests {
             0
         );
         assert_eq!(read(writable), limits::DEFAULTS[resource::STACK as usize]);
-        // Lower the open-file limit with `setrlimit`, reading the old one with `prlimit64`.
         let lowered = Limit {
             soft: 256,
             hard: 512,
@@ -1190,7 +1157,6 @@ mod tests {
             ),
             0
         );
-        // pid 0 or the caller's own, with only the low 32 bits of it and of the resource.
         for (pid, resource) in [
             (0, nofile),
             (pid, 1 << 32 | nofile),
@@ -1206,7 +1172,6 @@ mod tests {
             );
             assert_eq!(read(writable + 64), lowered);
         }
-        // Set and read the old limits in one call: what it had.
         store(
             writable + 32,
             Limit {
@@ -1254,8 +1219,6 @@ mod tests {
             ),
             Errno::EINVAL.result()
         );
-        // Another process, an unknown resource, memory that is not the program's (or not
-        // writable): nothing changes.
         store(
             writable + 32,
             Limit {
@@ -1307,7 +1270,6 @@ mod tests {
                 hard: 512
             })
         );
-        // An old limit that cannot be copied out is `EFAULT`, with the new one set, as Linux.
         assert_eq!(
             call(
                 &process,
@@ -1327,8 +1289,6 @@ mod tests {
                 hard: 256
             })
         );
-        // `setrlimit` and `getrlimit` take no null pointer; `prlimit64` takes two, and only
-        // checks.
         for number in [number::GETRLIMIT, number::SETRLIMIT] {
             assert_eq!(
                 call(&process, number, [nofile, 0, 0, 0, 0, 0]),
@@ -1339,7 +1299,6 @@ mod tests {
             call(&process, number::PRLIMIT64, [0, nofile, 0, 0, 0, 0]),
             0
         );
-        // Another process starts from the defaults.
         let other = process_with_iovecs(&kernel, b"ab", &[]);
         assert_eq!(
             other
@@ -1658,7 +1617,6 @@ mod tests {
         let einval = Errno::EINVAL.result();
         let efault = Errno::EFAULT.result();
 
-        // `rt_sigaction`: `SIGPIPE` ignored (the upper half of the number ignored), read back.
         store(writable, &[IGNORE, 0, 0, 0]);
         let sigaction = |arguments: [u64; 4]| {
             let [signal, new, old, size] = arguments;
@@ -1677,8 +1635,6 @@ mod tests {
                 ..Action::default()
             }
         );
-        // A handler for `SIGSEGV`: unknown flags cleared, `SIGKILL` and `SIGSTOP` out of its
-        // mask, and the old action reported in the same call.
         store(
             writable,
             &if cfg!(target_arch = "riscv64") {
@@ -1704,8 +1660,6 @@ mod tests {
         assert_eq!(installed.handler, 0x40_1000);
         assert_eq!(installed.flags, flag::SIGINFO | flag::ONSTACK);
         assert_eq!(installed.mask, !(1 << (sigkill - 1) | 1 << (sigstop - 1)));
-        // Errors: the set size, numbers outside 1..=64, a new action for `SIGKILL` or
-        // `SIGSTOP` (theirs can be read), and buffers that are not the program's.
         assert_eq!(sigaction([sigpipe, 0, writable + 64, 4]), einval);
         assert_eq!(sigaction([sigpipe, 0, writable + 64, 1 << 32 | 8]), einval);
         for signal in [0, 65] {
@@ -1717,10 +1671,7 @@ mod tests {
             assert_eq!(action(writable + 64), Action::default());
         }
         assert_eq!(sigaction([sigpipe, unmapped, 0, 8]), efault);
-        // A bad new action wins over a bad number, as on Linux.
         assert_eq!(sigaction([0, unmapped, 0, 8]), efault);
-        // The action is read from read-only memory, but the old one cannot be written there:
-        // `EFAULT`, with the new action kept.
         store(writable, &[0; 4]);
         assert_eq!(sigaction([sigpipe, read_only, read_only, 8]), efault);
         assert_eq!(sigaction([sigpipe, 0, writable + 64, 8]), 0);
@@ -1729,7 +1680,6 @@ mod tests {
             u64::from_ne_bytes(*b"ab\0\0\0\0\0\0")
         );
 
-        // `rt_sigprocmask`: block, unblock and set, `SIGKILL` and `SIGSTOP` never blocked.
         let sigprocmask = |how, set, old, size| {
             call(
                 &process,
@@ -1753,8 +1703,6 @@ mod tests {
         assert_eq!(sigprocmask(2, writable, 0, 8), 0);
         assert_eq!(sigprocmask(0, 0, writable + 8, 8), 0);
         assert_eq!(words(writable + 8, 1), [!mask(&[sigkill, sigstop])]);
-        // Errors: the set size, an unknown `how` with a set, a set that is not the
-        // program's, and an old set that cannot be written (the change kept).
         assert_eq!(sigprocmask(0, writable, 0, 16), einval);
         assert_eq!(sigprocmask(3, writable, 0, 8), einval);
         assert_eq!(sigprocmask(3, unmapped, 0, 8), efault);
@@ -1763,8 +1711,6 @@ mod tests {
         assert_eq!(sigprocmask(0, 0, writable + 8, 8), 0);
         assert_eq!(words(writable + 8, 1), [0]);
 
-        // `sigaltstack`: none at first, then one, reported as in use when the stack pointer
-        // is on it, where it cannot change.
         let sigaltstack = |new, old, stack| {
             let mut context = UserContext::new(0x40_0000, stack);
             context.simulate_syscall(number::SIGALTSTACK, [new, old, 0, 0, 0, 0], 0x40_0004);
@@ -1803,13 +1749,11 @@ mod tests {
             Errno::EPERM.result()
         );
         assert_eq!(sigaltstack(unmapped, 0, 0), efault);
-        // Disabled, with `SS_AUTODISARM` kept and reported; no base or size remains.
         store(writable, &[base, 2 | 1 << 31, size]);
         assert_eq!(sigaltstack(writable, read_only, 0), efault);
         assert_eq!(sigaltstack(0, writable + 64, 0), 0);
         assert_eq!(words(writable + 64, 3), [0, 2 | 1 << 31, 0]);
 
-        // Another process starts with the defaults.
         let other = process_with_iovecs(&kernel, b"ab", &[]);
         assert_eq!(other.signals().lock().action(13), Some(Action::default()));
         assert_eq!(other.signals().lock().thread(), Default::default());
@@ -1832,7 +1776,6 @@ mod tests {
         use poll::event::{IN, NVAL, OUT, WRNORM};
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        // The read-only page: a `struct pollfd`, and at 1024 a timeout of one second.
         let mut contents = pollfds(&[(1, OUT)]);
         contents.resize(1024, 0);
         contents.extend_from_slice(&1i64.to_ne_bytes());
@@ -1864,14 +1807,10 @@ mod tests {
         };
         set_timeout(0, 0);
         process.write_user_memory(mask, &[0xff; 8]).unwrap();
-        // Rust's std at startup: descriptors 0 to 2, no events asked for, no wait.
         let entries = pollfds(&[(0, 0), (1, 0), (2, 0)]);
         process.write_user_memory(writable, &entries).unwrap();
         assert_eq!(ppoll(writable, 3, timeout, 0, 0), 0);
         assert_eq!(returned(3), [0, 0, 0]);
-        // Room to write on the console, never data to read; `POLLNVAL` for a closed
-        // descriptor, whatever was asked; a negative one skipped. The count's upper half is
-        // ignored, and so is the size of a signal set that is not there.
         let entries = pollfds(&[
             (0, IN),
             (1, OUT),
@@ -1882,16 +1821,13 @@ mod tests {
         process.write_user_memory(writable, &entries).unwrap();
         assert_eq!(ppoll(writable, 1 << 32 | 5, timeout, 0, 4), 3);
         assert_eq!(returned(5), [0, OUT, OUT | WRNORM, NVAL, 0]);
-        // A signal mask is read, then changes nothing (no signal is delivered yet).
         assert_eq!(ppoll(writable, 5, timeout, mask, 8), 3);
-        // More than fit on the kernel stack.
         let many = alloc::vec![(1, OUT); 20];
         process
             .write_user_memory(writable, &pollfds(&many))
             .unwrap();
         assert_eq!(ppoll(writable, 20, timeout, 0, 0), 20);
         assert_eq!(returned(20), [OUT; 20]);
-        // No descriptors and no wait, with any address up to the end of user space.
         assert_eq!(ppoll(0, 0, timeout, 0, 0), 0);
         #[cfg(target_arch = "x86_64")]
         {
@@ -1899,8 +1835,6 @@ mod tests {
             process.write_user_memory(writable, &entries).unwrap();
             assert_eq!(call(&process, number::POLL, [writable, 2, 0, 0, 0, 0]), 2);
             assert_eq!(returned(2), [OUT, NVAL]);
-            // The timeout is an `int`: the upper half is ignored, so nothing ready means no
-            // wait here, not 2^32 milliseconds.
             process
                 .write_user_memory(writable, &pollfds(&[(0, IN)]))
                 .unwrap();
@@ -1911,8 +1845,6 @@ mod tests {
             assert_eq!(returned(1), [0]);
         }
 
-        // The errors, in Linux's order: the timeout's address, then its value, then the
-        // signal set's size and address, then the count, then the array.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         let unmapped = DATA + 3 * 4096;
         let efault = Errno::EFAULT.result();
@@ -1930,14 +1862,11 @@ mod tests {
         assert_eq!(ppoll(unmapped, 1, timeout, mask, 4), einval);
         assert_eq!(ppoll(unmapped, 1, timeout, unmapped, 8), efault);
         assert_eq!(ppoll(unmapped, 1025, timeout, 0, 0), einval);
-        // Unmapped, past the writable page, past user space, read-only: `EFAULT`.
         assert_eq!(ppoll(unmapped, 1, timeout, 0, 0), efault);
         assert_eq!(ppoll(writable, 1024, timeout, 0, 0), efault);
         assert_eq!(ppoll(user_end + 1, 0, timeout, 0, 0), efault);
         assert_eq!(ppoll(user_end - 4, 1, timeout, 0, 0), efault);
         assert_eq!(ppoll(read_only, 1, timeout, 0, 0), efault);
-        // Ready at once: the time not slept is written back, a little less than all of it
-        // (the test clock moves a microsecond each read), as Linux does (D62).
         process
             .write_user_memory(writable, &pollfds(&[(1, OUT)]))
             .unwrap();
@@ -1952,18 +1881,15 @@ mod tests {
         let (seconds, nanoseconds) = read_timeout();
         assert_eq!(seconds, 4);
         assert!(nanoseconds > 999_000_000, "{nanoseconds}");
-        // Written back after an error too, once the timeout was read.
         set_timeout(5, 0);
         assert_eq!(ppoll(unmapped, 1, timeout, 0, 0), efault);
         assert_eq!(read_timeout().0, 4);
-        // A wait that ends with its timeout leaves none of it.
         process
             .write_user_memory(writable, &pollfds(&[(0, IN)]))
             .unwrap();
         set_timeout(0, 1000);
         assert_eq!(ppoll(writable, 1, timeout, 0, 0), 0);
         assert_eq!(read_timeout(), (0, 0));
-        // One too long to count in nanoseconds is left as it was.
         set_timeout(i64::MAX, 999_999_999);
         process
             .write_user_memory(writable, &pollfds(&[(1, OUT)]))
@@ -1971,7 +1897,6 @@ mod tests {
         assert_eq!(ppoll(writable, 1, timeout, 0, 0), 1);
         assert_eq!(read_timeout(), (i64::MAX, 999_999_999));
         set_timeout(0, 0);
-        // A timeout the program cannot write is no error.
         let read_only_timeout = read_only + 1024;
         assert_eq!(ppoll(writable, 1, read_only_timeout, 0, 0), 1);
         let mut left = [0u8; 16];
@@ -1980,7 +1905,6 @@ mod tests {
             .unwrap();
         assert_eq!(left[..8], 1i64.to_ne_bytes());
 
-        // The count is checked against the open-file limit's soft value, as `prlimit64` set it.
         let lowered = writable + 2048 + 64;
         let mut limit = [0u8; 16];
         limit[..8].copy_from_slice(&2u64.to_ne_bytes());
@@ -2017,24 +1941,19 @@ mod tests {
             process.read_user_memory(writable, &mut bytes).unwrap();
             bytes
         };
-        // The settings, on each standard descriptor; the descriptor's upper half ignored.
         for fd in [0, 1, 2, 1 << 32 | 1] {
             process.write_user_memory(writable, &[0xff; 64]).unwrap();
             assert_eq!(ioctl(fd, request::TCGETS, writable), 0);
             assert_eq!(read(36), TERMIOS);
             assert_eq!(read(37)[36], 0xff);
         }
-        // With the speeds: 115200 baud each way.
         assert_eq!(ioctl(1, request::TCGETS2, writable), 0);
         let settings = read(44);
         assert_eq!(settings[..36], TERMIOS);
         assert_eq!(settings[36..40], 115_200u32.to_ne_bytes());
         assert_eq!(settings[40..], 115_200u32.to_ne_bytes());
-        // Nothing waits to be read.
         assert_eq!(ioctl(0, request::FIONREAD, writable), 0);
         assert_eq!(read(4), [0; 4]);
-        // The window size: zero, as on a serial line, until a program sets it (24 by 80, from
-        // the read-only page).
         assert_eq!(ioctl(1, request::TIOCGWINSZ, writable), 0);
         assert_eq!(read(8), [0; 8]);
         assert_eq!(ioctl(2, request::TIOCSWINSZ, DATA), 0);
@@ -2043,9 +1962,6 @@ mod tests {
         process.write_user_memory(writable, &[0; 8]).unwrap();
         assert_eq!(ioctl(2, request::TIOCSWINSZ, writable), 0);
 
-        // `EBADF` before the request is looked at; then `ENOTTY` for a request the console
-        // does not answer (setting the settings, job control, the descriptor's flags), and the
-        // request's upper half ignored; then `EFAULT`.
         assert_eq!(ioctl(3, request::TCGETS, writable), Errno::EBADF.result());
         assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());
         for unknown in [
@@ -2104,14 +2020,11 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, 0);
         assert_eq!(context.thread_pointer(), 0);
         let mut prctl = |code: u64, address| arch_prctl::<P>(&process, &mut context, code, address);
-        // Any user address, mapped or not; nothing at or above the end of user space.
         let end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         assert_eq!(prctl(set_fs, end - 1), Ok(0));
         assert_eq!(prctl(set_fs, end), Err(Errno::EPERM));
         assert_eq!(prctl(set_fs, u64::MAX), Err(Errno::EPERM));
-        // Only the code's low 32 bits count, as for Linux's `int`.
         assert_eq!(prctl(1 << 32 | set_fs, 0x7000_1000).map(|_| ()), Ok(()));
-        // Read back into the writable page; not into the read-only one or past the end.
         assert_eq!(prctl(get_fs, DATA + 4096 + 8), Ok(0));
         assert_eq!(prctl(get_gs, DATA + 4096 + 16), Ok(0));
         for address in [DATA, DATA + 8192 - 4, 0] {
@@ -2120,7 +2033,6 @@ mod tests {
         }
         assert_eq!(prctl(get_cpuid, 0), Ok(1));
         assert_eq!(prctl(set_cpuid, 0), Err(Errno::ENODEV));
-        // The GS base waits for the SWAPGS fence (D49); unknown codes are refused too.
         for unknown in [code::ARCH_SET_GS.into(), 0x3001, 0x5001, 0x1023, 0] {
             assert_eq!(prctl(unknown, 0x7000_2000), Err(Errno::EINVAL));
         }
@@ -2142,9 +2054,6 @@ mod tests {
         let process = process_with_iovecs(&kernel, b"ab", &[]);
         let pid = u64::from(process.id().get());
         let writable = DATA + 4096;
-        // The targets: the caller, its group (0, minus its id), nothing else; the target is
-        // found before the signal is checked. Signal 0 only checks.
-        // (Minus 1 is every other process, never process 1's group.)
         let own_group = (pid > 1).then(|| pid.wrapping_neg());
         for target in [pid, 0, 1 << 32 | pid].into_iter().chain(own_group) {
             assert_eq!(call(&process, number::KILL, [target, 0, 0, 0, 0, 0]), 0);
@@ -2184,7 +2093,6 @@ mod tests {
                 result
             );
         }
-        // A blocked signal is pending, and `rt_sigpending` reports it, in up to 8 bytes.
         process
             .write_user_memory(writable, &(1u64 << (sigusr1 - 1)).to_ne_bytes())
             .unwrap();
@@ -2222,7 +2130,6 @@ mod tests {
                 result
             );
         }
-        // Unblocked, it ends the process before `rt_sigprocmask` returns.
         let mut context = called(number::RT_SIGPROCMASK, [1, writable, 0, 8, 0, 0]);
         assert_eq!(
             handle(&process, &mut context, UserExit::Syscall),
@@ -2234,7 +2141,6 @@ mod tests {
                 signal: sigusr1 as u32
             })
         );
-        // `abort()`: `SIGABRT` to itself ends the process with it before `tgkill` returns.
         let process = process_with_iovecs(&kernel, b"ab", &[]);
         let pid = u64::from(process.id().get());
         let mut context = called(number::TGKILL, [pid, pid, sigabrt, 0, 0, 0]);
@@ -2268,7 +2174,6 @@ mod tests {
                 handle(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Break(())
             );
-            // Linux keeps the status's low 8 bits.
             assert_eq!(process.exit_status(), Some(ProcessExit::Exited(0x45)));
         }
     }
@@ -2299,7 +2204,6 @@ mod tests {
                 .unwrap();
             Arc::new(process)
         };
-        // A read in the region maps the page and resumes; a write there is SIGSEGV.
         let process = with_region(1);
         assert_eq!(fault(&process, region + 8, 0), ControlFlow::Continue(()));
         assert!(process.address_space().translate(region).is_some());
@@ -2314,7 +2218,6 @@ mod tests {
                 signal: signal::SIGSEGV
             })
         );
-        // Outside every region: SIGSEGV.
         let process = with_region(1);
         assert_eq!(fault(&process, region + 4096, 0), ControlFlow::Break(()));
         assert_eq!(
@@ -2323,7 +2226,6 @@ mod tests {
                 signal: signal::SIGSEGV
             })
         );
-        // No frame left for the page: SIGKILL, as Linux's out-of-memory killer.
         let pages = free() + 1;
         let process = with_region(pages);
         let mut page = 0;
@@ -2368,8 +2270,6 @@ mod tests {
             handle(&process, &mut context, UserExit::Interrupt),
             ControlFlow::Continue(())
         );
-        // Exceptions as each architecture reports them (the class is x86_64's vector,
-        // AArch64's `ESR_EL1.EC`, RISC-V's `scause`), with the signal Linux sends for each.
         use ExceptionKind::*;
         #[cfg(target_arch = "x86_64")]
         let faults = [
@@ -2390,7 +2290,6 @@ mod tests {
             (InstructionFault, 0x20, 0, signal::SIGSEGV),
             (Alignment, 0x22, 0, signal::SIGBUS),
             (DataFault, 0x24, 0, signal::SIGSEGV),
-            // An alignment fault and a synchronous external abort, by their status codes.
             (DataFault, 0x24, 0x21, signal::SIGBUS),
             (DataFault, 0x24, 0x10, signal::SIGBUS),
             (Alignment, 0x26, 0, signal::SIGBUS),
@@ -2417,7 +2316,6 @@ mod tests {
                 "{kind:?} {class:#x}"
             );
             assert_eq!(process.exit_status(), Some(ProcessExit::Killed { signal }));
-            // The first way to end wins.
             process.exit(ProcessExit::Exited(0));
             assert_eq!(process.exit_status(), Some(ProcessExit::Killed { signal }));
         }
@@ -2506,7 +2404,6 @@ mod tests {
         }
         #[cfg(not(target_arch = "x86_64"))]
         let _ = stack;
-        // A handler may change any register.
         #[cfg(target_arch = "aarch64")]
         {
             registers.x[19] = 0xdead;
@@ -2538,7 +2435,6 @@ mod tests {
                 0
             };
         set_handler(&process, sigusr1, flags, bit(sigusr2));
-        // The program, with a register it keeps across calls set, sends itself SIGUSR1.
         let stack = HANDLER_STACK_TOP - 0x30;
         let mut context = UserContext::new(0x40_0000, stack);
         let mut registers = context.registers();
@@ -2562,8 +2458,6 @@ mod tests {
             handle(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
-        // The handler runs with the signal, its siginfo and its ucontext, on a frame below the
-        // stack pointer (and x86_64's red zone), aligned as after a call.
         assert_eq!(context.pc(), HANDLER);
         let [signal, info, ucontext, ..] = context.syscall_arguments();
         assert_eq!(signal, sigusr1);
@@ -2587,7 +2481,6 @@ mod tests {
         let mut mask = [0; 8];
         process.read_user_memory(sigmask, &mut mask).unwrap();
         assert_eq!(u64::from_ne_bytes(mask), 0, "the mask before the handler");
-        // It returns to its restorer, or to the trampoline, which `rt_sigreturn`s.
         let (to, _) = return_point(&process, &context);
         if signals::HAS_RESTORER {
             assert_eq!(to, RESTORER);
@@ -2599,11 +2492,8 @@ mod tests {
                 Some(Attributes::USER_TEXT)
             );
         }
-        // While it runs, its mask and its signal are blocked.
         let blocked = || process.signals().lock().thread().blocked;
         assert_eq!(blocked(), bit(sigusr1) | bit(sigusr2));
-        // It returns: the program goes on as it was after `tgkill`, with the mask the frame
-        // holds (here changed by the handler to block SIGUSR2).
         process
             .write_user_memory(sigmask, &bit(sigusr2).to_ne_bytes())
             .unwrap();
@@ -2613,9 +2503,6 @@ mod tests {
         );
         assert_eq!(context.registers(), interrupted.registers());
         assert_eq!(blocked(), bit(sigusr2));
-        // Two due at once: one frame each, the last one's handler first. Both blocked, sent,
-        // then unblocked together: SIGUSR1 (lower) gets the first frame, then SIGUSR2 one on
-        // top of it, which runs first.
         set_handler(&process, sigusr1, flags, 0);
         set_handler(&process, sigusr2, flags, 0);
         let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE + 64;
@@ -2646,7 +2533,6 @@ mod tests {
             handler_returns(&process, &mut context),
             ControlFlow::Continue(())
         );
-        // Back in SIGUSR1's handler, as it was entered.
         assert_eq!(context.pc(), HANDLER);
         assert_eq!(context.syscall_arguments()[0], sigusr1);
         assert!(context.stack() > first_frame);
@@ -2671,8 +2557,6 @@ mod tests {
         } else {
             0
         };
-        // An alternate stack with SS_AUTODISARM: the handler starts at its top, and it is
-        // disabled while the handler runs, then restored.
         let size = 2 * FRAME_SIZE;
         let base = ALTERNATE_STACK_TOP - size;
         let stack_t = HANDLER_STACK_TOP - 3 * FRAME_SIZE + 128;
@@ -2704,10 +2588,8 @@ mod tests {
         );
         assert_eq!((alternate().base, alternate().size), (base, size));
         assert!(alternate().autodisarm);
-        // A frame that is not the program's memory: SIGSEGV, here by its default action.
         let mut context = UserContext::new(0x40_0000, 0x10_0000);
         context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
-        // Without SA_ONSTACK, below an unmapped stack pointer.
         set_handler(&process, sigusr1, restorer, 0);
         assert_eq!(
             handle(&process, &mut context, UserExit::Syscall),
@@ -2719,7 +2601,6 @@ mod tests {
                 signal: signal::SIGSEGV
             })
         );
-        // `rt_sigreturn` with no frame where the stack pointer is: SIGSEGV too, even blocked.
         let (process, _) = process_with_stacks(&kernel);
         let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
         process
@@ -2741,7 +2622,6 @@ mod tests {
                 signal: signal::SIGSEGV
             })
         );
-        // x86_64: a handler without SA_RESTORER cannot return, so it never runs: SIGSEGV.
         if cfg!(target_arch = "x86_64") {
             let (process, pid) = process_with_stacks(&kernel);
             set_handler(&process, sigusr1, 0, 0);
@@ -2770,7 +2650,6 @@ mod tests {
         };
         let mut status = if write { crate::tests::FAULT_WRITE } else { 0 };
         if cfg!(target_arch = "aarch64") {
-            // The instruction length bit, which a sanitized syndrome keeps.
             status |= 1 << 25;
         }
         exception(ExceptionKind::DataFault, class, status, Some(address))
@@ -2833,8 +2712,6 @@ mod tests {
             };
         set_handler(&process, sigsegv, flags, 0);
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
-        // A read where nothing is mapped, a write to the read-only region and a read in the
-        // kernel's half: SEGV_MAPERR, SEGV_ACCERR, SEGV_MAPERR.
         for (address, write, code) in [
             (0x1000, false, fault::code::SEGV_MAPERR),
             (READ_ONLY + 8, true, fault::code::SEGV_ACCERR),
@@ -2877,7 +2754,6 @@ mod tests {
             }
             #[cfg(target_arch = "riscv64")]
             let _ = (reported, kernel_half);
-            // Its signal is blocked while it runs; it returns to the faulting instruction.
             assert_eq!(
                 process.signals().lock().thread().blocked,
                 1 << (sigsegv - 1)
@@ -2888,7 +2764,6 @@ mod tests {
             );
             assert_eq!(context.registers(), interrupted.registers());
         }
-        // A signal that is not a fault's reports no exception.
         let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
         context.simulate_syscall(number::TGKILL, [pid, pid, sigsegv, 0, 0, 0], 0x40_0004);
         assert_eq!(
@@ -2898,7 +2773,6 @@ mod tests {
         assert_eq!(context.pc(), HANDLER);
         assert_eq!(reported_trap(&process, &context), [0; 3]);
         assert_eq!(process.exit_status(), None);
-        // With no stack to write the frame on: SIGSEGV by its default action.
         let mut context = UserContext::new(0x40_0000, 0x10_0000);
         let exception = page_fault_exception(0x1000, false);
         assert_eq!(
