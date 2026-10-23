@@ -1737,7 +1737,8 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   calls that remove and reduce mappings of a live address space, so they bring the TLB work
   D45 and D52 left for them.
 - **The calls** (`kernel::linux::memory`), anonymous mappings only until there are files
-  (M7). Arguments are checked in Linux's order with Linux's error numbers (an unaligned
+  (M7). Arguments are checked as Linux's man pages and observed behaviour say, with Linux's
+  error numbers (an unaligned
   offset `EINVAL` first; a map type other than shared, private or shared-validate `EINVAL`;
   unknown flags `EOPNOTSUPP` only with `MAP_SHARED_VALIDATE`, ignored otherwise; length 0
   `EINVAL`; a length that wraps when rounded up `ENOMEM`; a file mapping `EBADF`;

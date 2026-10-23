@@ -31,15 +31,6 @@ pub struct Region {
     pub attributes: Option<Attributes>,
 }
 
-impl Region {
-    /// Whether the region's attributes allow `access` by the program.
-    #[inline]
-    pub fn allows(&self, access: Access) -> bool {
-        self.attributes
-            .is_some_and(|attributes| access.allowed_by(attributes))
-    }
-}
-
 /// Why a region could not be added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionError {

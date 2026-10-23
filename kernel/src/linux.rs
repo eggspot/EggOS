@@ -57,6 +57,24 @@ pub mod number {
         pub const LAST: u64 = MPROTECT;
     }
     pub use table::*;
+
+    // The dispatch answers `ENOSYS` above `LAST` without looking further: no call may be
+    // above it.
+    const _: () = {
+        let all = [WRITE, EXIT, EXIT_GROUP, BRK, MMAP, MUNMAP, MPROTECT];
+        let mut i = 0;
+        let mut highest = 0;
+        while i < all.len() {
+            if all[i] > highest {
+                highest = all[i];
+            }
+            i += 1;
+        }
+        assert!(
+            highest == LAST,
+            "number::LAST is not the highest call number"
+        );
+    };
 }
 
 /// A Linux error number, returned to the program as `-errno`.

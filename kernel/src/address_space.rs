@@ -207,9 +207,9 @@ impl<P: Platform> AddressSpace<P> {
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
         // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
         // which `new_sharing_kernel_half` shared (it refuses tables not marked active, which
-        // never change); `&self` keeps them allocated, with no mapping removed or changed (that
-        // takes `&mut`; added ones are allowed, see the module documentation), until the
-        // switch back below. Nothing points into the kernel's low half, which is empty.
+        // never change); `&self` keeps them allocated, with mappings removed or changed only
+        // through `change_pages`, which drops this CPU's translations of them (added ones are
+        // allowed, see the module documentation), until the switch back below. Nothing points into the kernel's low half, which is empty.
         unsafe { P::switch_address_space(self.roots()) };
         let result = active();
         assert!(

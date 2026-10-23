@@ -213,13 +213,6 @@ impl<P: Platform> Process<P> {
         *self.program_break.get_mut() = Some(ProgramBreak { start, end: start });
     }
 
-    /// The program break's end, or 0 if the program has none.
-    pub fn program_break(&self) -> u64 {
-        self.program_break
-            .lock()
-            .map_or(0, |program_break| program_break.end)
-    }
-
     /// Moves the program break's end to `requested` (Linux's `brk`) and returns where it is
     /// then: `requested`, or where it was if the move is refused, because `requested` is
     /// below the break's start or above `limit`, or the pages it adds are in another region
@@ -506,8 +499,9 @@ impl<P: Platform> Process<P> {
     /// interrupts masked, as the kernel runs.
     #[inline]
     pub fn load_here(self: &Arc<Self>) {
-        // SAFETY: the process owns its address space, and the `Arc` freezes it: `&mut` access
-        // needs the process unshared.
+        // SAFETY: the process owns its address space, and while it is shared (the `Arc`) its
+        // mappings are removed or changed only through `AddressSpace::change_pages` (the
+        // memory calls): `&mut` access needs the process unshared.
         unsafe { self.address_space().load_lazily(self) };
     }
 
@@ -685,9 +679,10 @@ where
         thread::preemption_point_before_user_mode::<P>();
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
-        // loaded on this CPU and shares the kernel's half (`Process::new`'s contract), and the
-        // `Arc` keeps it allocated and unchanged. Nothing switches this CPU's threads or
-        // address space before `run_user` returns.
+        // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
+        // contract); the `Arc` keeps it allocated, and its mappings change only in the handler
+        // below, on this thread (`AddressSpace::change_pages`). Nothing switches this CPU's
+        // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
         if handler(&process, &mut context, exit).is_break() {
             break;

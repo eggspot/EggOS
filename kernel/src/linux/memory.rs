@@ -9,8 +9,8 @@
 //! with `EACCES`, as Linux's `PR_SET_MDWE` and SELinux's `execmem` do (decided by research,
 //! D52); turning a writable mapping executable is allowed, so JITs and loaders work.
 //!
-//! Every call checks its arguments as Linux does, in Linux's order, so a program sees the same
-//! error number for the same mistake.
+//! Every call checks its arguments as Linux's man pages and observed behaviour say, with
+//! Linux's error numbers, so a program sees the same error for the same mistake.
 
 use super::Errno;
 use super::exec::{MINIMUM_ADDRESS, STACK_GUARD_GAP, STACK_RESERVE};
