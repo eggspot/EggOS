@@ -2864,3 +2864,40 @@ they are next in M6 after D68's queued signals.
   x86_64.
 - **For later.** `ppoll`'s and `pselect6`'s signal masks during the wait use the same
   "mask to restore" handoff (the frame saves the caller's mask when the wait is interrupted).
+
+## D71 `ppoll`'s signal mask applies during the call — Decided by the build loop
+D61 only checked `ppoll`'s `sigmask`. Programs pass one so that a signal they keep blocked
+elsewhere can interrupt the wait: the race-free way to wait for descriptors or a signal, the
+reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
+
+- **The mask applies for the whole call.** After the timeout's and the mask's checks (unchanged:
+  D61's order), the set at `sigmask` is blocked instead of the thread's mask (never `SIGKILL` or
+  `SIGSTOP`). A null `sigmask` leaves the thread's mask alone.
+- **Interrupted when nothing is ready.** If no descriptor reports events and a signal is due
+  under the call's mask, the wait does not start, even with a zero timeout (Linux checks
+  `signal_pending` before its `timed_out` exit). The returned events and the time left are
+  written back as for any other return, then the signal is delivered. Once a handler starts,
+  the call fails with `EINTR` (Linux's `-ERESTARTNOHAND`, whatever `SA_RESTART` says), and the
+  first frame saves the thread's own mask, which `rt_sigreturn` restores. A signal that ends the
+  process ends it there. A signal its action ignores is discarded and the call goes on, the way
+  Linux restarts it, and waits out what is left of its timeout.
+- **Otherwise the thread's mask is back when the call returns**, with any result: descriptors
+  ready, the timeout passed, or an error such as `EFAULT` for the array. A signal the call's mask
+  unblocked while descriptors were ready stays pending, as on Linux.
+- **x86_64's `poll`** has no mask, and every signal due under the thread's own mask was
+  delivered before the call, so it is not interrupted.
+- **Shared with D70.** `signals` gains `replace_blocked`, `is_due` and `deliver_restoring_mask`,
+  which `rt_sigsuspend`, `pause` and `ppoll` use. The mask to restore stays on the call's stack,
+  with no new state per process or thread.
+- **Cost.** `ppoll` moved to the early match in `out_of_line_call`, next to `rt_sigsuspend`, so
+  the inlined system-call path is unchanged. The benchmarks are the same as `main`'s.
+- **Tests.** Host, through the dispatcher: a ready descriptor returns 1 with the mask back and
+  the signals still pending; with nothing to poll, the mask unblocks a handled `SIGUSR1`, whose
+  handler starts with a frame saving the thread's mask, then `EINTR` with every register as it
+  was, and the `SIGCHLD` due with it discarded; an ignored signal alone lets a 2 ms wait run out
+  (result 0, a zero time left written back); a default Term action ends the process even with a
+  zero timeout; an error after the mask was set (more descriptors than the open-file limit)
+  restores the thread's mask. In QEMU, the frames and the handoff are D70's, already covered by
+  `linux_signal_suspend`, and `linux_poll` checks `ppoll` without a mask on every architecture.
+- **For later.** `pselect6` with the same handoff (M7, with `select`); signals sent during a
+  wait waking it, once a sender from outside the thread exists.
