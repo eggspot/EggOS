@@ -63,9 +63,11 @@ pub struct Trap {
     /// x86_64's `trapno`: the vector.
     pub number: u64,
     /// x86_64's `err` (the error code the CPU pushed) and AArch64's `esr_context` (`ESR_EL1`),
-    /// each with nothing about the kernel's mappings for an address outside user space.
+    /// each with nothing about the kernel's mappings for an address outside user space. On
+    /// AArch64, only aborts and alignment faults report one: 0 (no `esr_context`) for the rest.
     pub cause: u64,
-    /// x86_64's `cr2` (page faults only) and AArch64's `fault_address` (`si_addr`).
+    /// x86_64's `cr2` (page faults only) and AArch64's `fault_address` (`si_addr` for aborts
+    /// and alignment faults, 0 for the rest, as on Linux).
     pub address: u64,
 }
 
@@ -249,14 +251,18 @@ mod arch {
             | ExceptionKind::Interrupt
             | ExceptionKind::Other => (signal::SIGILL, code::ILL_ILLOPC, pc),
         };
-        let reported = match exception.address {
-            Some(far) if !in_user_space(far) => sanitized(esr),
-            _ => esr,
-        };
-        let trap = Trap {
-            number: 0,
-            cause: reported,
-            address,
+        let trap = match exception.kind {
+            ExceptionKind::DataFault
+            | ExceptionKind::InstructionFault
+            | ExceptionKind::Alignment => Trap {
+                number: 0,
+                cause: match exception.address {
+                    Some(far) if !in_user_space(far) => sanitized(esr),
+                    _ => esr,
+                },
+                address,
+            },
+            _ => Trap::default(),
         };
         fault((signal, code, address), trap)
     }

@@ -19,7 +19,8 @@
 //!
 //! A fault's frame (D65) also reports the exception ([`Trap`]): x86_64's `err`, `trapno` and
 //! `cr2` in the `sigcontext`, AArch64's `fault_address` and an `esr_context` record after the
-//! FP/SIMD one. Other signals' frames hold zeros there and no `esr_context`.
+//! FP/SIMD one (aborts and alignment faults only, D67). Other signals' frames hold zeros
+//! there and no `esr_context`.
 
 use super::fault::{Fault, Trap};
 use super::signals::Origin;
@@ -446,7 +447,7 @@ mod arch {
         frame[..INFO_SIZE].copy_from_slice(info);
         frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE].copy_from_slice(&saved.alternate_stack);
         put(&mut frame, SIGMASK, saved.blocked);
-        if let Some(trap) = trap {
+        if let Some(trap) = trap.filter(|trap| trap.cause != 0) {
             put(&mut frame, FAULT_ADDRESS, trap.address);
             let esr = RESERVED + FPSIMD_SIZE;
             frame[esr..][..4].copy_from_slice(&ESR_MAGIC.to_ne_bytes());
