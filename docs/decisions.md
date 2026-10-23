@@ -2645,7 +2645,8 @@ switch-path cost; this entry follows it.)
     sanitized syndrome), with `si_addr`, the machine context's fault fields, its signal
     blocked, and a return to the faulting instruction; a `tgkill`'s frame reports no fault;
     a frame below an unmapped stack pointer ends the process with `SIGSEGV`; AArch64's
-    syndrome sanitizing.
+    syndrome sanitizing; the HAL's `last_exception` after a simulated exit, kept across a
+    system call's.
   - QEMU, on aarch64, riscv64 and x86_64: the test program `linux_fault_handler` installs a
     `SIGSEGV` handler with `SA_SIGINFO`, maps a `PROT_NONE` page, reads an unmapped address
     and then that page; the handler checks the signal, `si_code` and `si_addr` against
