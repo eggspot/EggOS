@@ -213,10 +213,12 @@ grouping.
 Comment cleanup (D66): code keeps only `// SAFETY:`, lint directives and rustdoc on public
 items, which `cargo xtask docs` checks in CI (done, PR #59). Done: drivers; xtask's `bench`,
 `elf` and `qemu`; the Cargo, CI, Dependabot and funding files, whose notes are now in
-`docs/build.md`. Next: the HAL, then the kernel's modules, a few hundred lines per PR. Last:
-the files PR #47 changes (`xtask/src/main.rs` and `rust-toolchain.toml` among them), after it
-merges. The CI image's `Dockerfile` and `ci-image.yml` go with the next change to the image,
-since any change to them rebuilds the image on the PR.
+`docs/build.md`; the kernel's `linux.rs`, whose test comments only repeated their assertions
+or what D50–D75 record (PR #71, after PR #70 touched it). Next: the HAL, then the kernel's
+other modules, a few hundred lines per PR. Last: the files PR #47 changes (`xtask/src/main.rs`
+and `rust-toolchain.toml` among them), after it merges. The CI image's `Dockerfile` and
+`ci-image.yml` go with the next change to the image, since any change to them rebuilds the
+image on the PR.
 
 Setup follow-ups from the 2026-10-22 review (all done: exception vectors in D25, the benchmark harness
 in D27):
