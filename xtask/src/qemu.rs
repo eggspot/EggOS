@@ -25,8 +25,17 @@ const ELF_START_LINE: &str =
 const RUST_PROGRAM_LINE: &str =
     "EGGOS-USER: a program built from Rust source passed its startup checks";
 
+/// Must match `PASSED_LINE` in `userland/std-selftest`: the line our own program built with
+/// Rust's standard library writes when every check passed (D86).
+const STD_PROGRAM_LINE: &str = "EGGOS-USER: a std program built from Rust source ran its checks";
+
 /// The lines the Linux test programs write, which a passing boot must show whole.
-const USER_LINES: [&str; 3] = [USER_HELLO, ELF_START_LINE, RUST_PROGRAM_LINE];
+const USER_LINES: [&str; 4] = [
+    USER_HELLO,
+    ELF_START_LINE,
+    RUST_PROGRAM_LINE,
+    STD_PROGRAM_LINE,
+];
 
 /// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";

@@ -32,5 +32,9 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-std-selftest"
+version = "0.2.0"
+
+[[package]]
 name = "xtask"
 version = "0.2.0"
