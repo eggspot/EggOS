@@ -89,11 +89,20 @@ impl UserContext {
 
     /// Sets the program's thread pointer, as x86_64's `arch_prctl(ARCH_SET_FS)` and `clone`'s
     /// `CLONE_SETTLS` do (on AArch64 and RISC-V the program can also set it itself). It takes
-    /// effect when the program runs again.
-    pub fn set_thread_pointer(&mut self, value: u64) {
-        self.arch.set_thread_pointer(value);
+    /// effect when the program runs again. On x86_64 it must be below the end of user space
+    /// ([`crate::paging::Format::USER_END`]): above, the FS base would be the kernel's half or
+    /// non-canonical, and loading it would fault in the kernel; such a value is refused and
+    /// the thread pointer left as it was. Any value is accepted elsewhere, as the program
+    /// itself could set it.
+    pub fn set_thread_pointer(&mut self, value: u64) -> Result<(), InvalidThreadPointer> {
+        self.arch.set_thread_pointer(value)
     }
 }
+
+/// [`UserContext::set_thread_pointer`]'s value is not a user address, where the architecture
+/// needs one (x86_64).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidThreadPointer;
 
 /// Host builds only: for a test platform that stands in for the CPU in the kernel's host tests.
 #[cfg(not(target_os = "none"))]
@@ -236,8 +245,12 @@ pub(crate) mod aarch64 {
         pub(crate) fn thread_pointer(&self) -> u64 {
             self.tpidr
         }
-        pub(crate) fn set_thread_pointer(&mut self, value: u64) {
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
             self.tpidr = value;
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.elr
@@ -301,8 +314,12 @@ pub(crate) mod riscv64 {
         pub(crate) fn thread_pointer(&self) -> u64 {
             self.x[4]
         }
-        pub(crate) fn set_thread_pointer(&mut self, value: u64) {
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
             self.x[4] = value;
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.pc
@@ -429,9 +446,17 @@ pub(crate) mod x86_64 {
         pub(crate) fn thread_pointer(&self) -> u64 {
             self.fs_base
         }
-        pub(crate) fn set_thread_pointer(&mut self, value: u64) {
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            use crate::paging::Format;
+            if value >= crate::paging::x86_64::X86_64::USER_END {
+                return Err(super::InvalidThreadPointer);
+            }
             self.fs_base = value;
             self.fs_base_id = NEXT_FS_BASE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.rip
@@ -464,6 +489,27 @@ pub(crate) mod x86_64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_thread_pointer_starts_at_zero_and_takes_user_addresses() {
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        assert_eq!(context.thread_pointer(), 0);
+        assert_eq!(context.set_thread_pointer(0x7000_1000), Ok(()));
+        assert_eq!(context.thread_pointer(), 0x7000_1000);
+        // Only x86_64's FS base must stay a user address; elsewhere the program could set
+        // anything itself.
+        let kernel = 0xffff_8000_0000_0000;
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(
+                context.set_thread_pointer(kernel),
+                Err(InvalidThreadPointer)
+            );
+            assert_eq!(context.thread_pointer(), 0x7000_1000);
+        } else {
+            assert_eq!(context.set_thread_pointer(kernel), Ok(()));
+            assert_eq!(context.thread_pointer(), kernel);
+        }
+    }
 
     #[test]
     fn a_new_context_starts_at_its_entry_with_its_stack() {

@@ -27,6 +27,9 @@ pub mod code {
     pub const ARCH_SET_CPUID: u32 = 0x1012;
 }
 
+// The HAL's test program sets its FS base with this code.
+const _: () = assert!(eggos_hal::user::TestProgram::LINUX_ARCH_SET_FS == code::ARCH_SET_FS as u64);
+
 /// `arch_prctl(code, address)` (x86_64): sets or reads the calling thread's FS base, its
 /// thread pointer, which takes effect when the program runs again. `code` is a C `int`, so
 /// only its low 32 bits count.
@@ -38,15 +41,13 @@ pub fn arch_prctl<P: Platform>(
     address: u64,
 ) -> Result<u64, Errno> {
     match code as u32 {
-        code::ARCH_SET_FS => {
-            // Any user address, mapped or not; above user space, the FS base would point
-            // into the kernel's half or be non-canonical (a `#GP` on the way in).
-            if address >= <P::PageTableFormat as Format>::USER_END {
-                return Err(Errno::EPERM);
-            }
-            context.set_thread_pointer(address);
-            Ok(0)
-        }
+        // Any user address, mapped or not; nothing above, where the FS base would point into
+        // the kernel's half or be non-canonical (the HAL refuses those too).
+        code::ARCH_SET_FS if address < <P::PageTableFormat as Format>::USER_END => context
+            .set_thread_pointer(address)
+            .map(|()| 0)
+            .map_err(|_| Errno::EPERM),
+        code::ARCH_SET_FS => Err(Errno::EPERM),
         code::ARCH_GET_FS => write_word(process, address, context.thread_pointer()),
         // No program can set its GS base, which starts at zero (the HAL's promise).
         code::ARCH_GET_GS => write_word(process, address, 0),

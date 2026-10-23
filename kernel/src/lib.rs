@@ -420,7 +420,9 @@ pub(crate) mod tests {
                         }
                         step => {
                             if step == 1 {
-                                context.set_thread_pointer(context.syscall_result() << 12);
+                                context
+                                    .set_thread_pointer(context.syscall_result() << 12)
+                                    .expect("a process id shifted is a user address");
                             } else if pointer == 0 || !pointer.is_multiple_of(4096) {
                                 WRONG.store(1, Ordering::Relaxed);
                             }

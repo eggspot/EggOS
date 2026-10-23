@@ -5,8 +5,8 @@
 //! of four types (synchronous, IRQ, FIQ, SError). Every entry from EL1 saves the general-purpose
 //! registers, `ELR_EL1` and `SPSR_EL1` on the current stack, then calls [`aarch64_exception`]
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
-//! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` included, into its
-//! `UserContext`, where `SP_EL1` points while it runs, and returns from [`run_user`] instead.
+//! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` and its thread pointer
+//! `TPIDR_EL0` (D57) included, into its `UserContext`, where `SP_EL1` points while it runs, and returns from [`run_user`] instead.
 //! The kernel uses no FP/SIMD registers (D10), so they are not saved, and programs may not use
 //! them either: `CPACR_EL1` traps them at EL0 (D49).
 

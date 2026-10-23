@@ -1992,7 +1992,10 @@ switch-path cost; this entry follows it.)
     base was loaded for (a per-CPU word) and runs `wrmsr` only when they differ, so a
     program that keeps its CPU pays one load and compare per entry and no MSR write. The id,
     not the value, is compared: a program that loads FS with a selector (base 0) cannot make
-    another program with the same value keep that zero. The `sysretq` path now loads the
+    another program with the same value keep that zero. `set_thread_pointer` refuses a
+    value at or above the end of user space on x86_64 (`InvalidThreadPointer`), whoever
+    calls it (`clone`'s `CLONE_SETTLS` later): loading a non-canonical FS base would fault
+    in the kernel. The `sysretq` path now loads the
     registers from the context with moves instead of pops and skips the two that `sysretq`
     overwrites, which pays for the check. The FS base and the user GS base
     (`IA32_KERNEL_GS_BASE`) are zeroed at CPU start.
