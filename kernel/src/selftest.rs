@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 30] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 31] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -136,6 +136,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 30] {
         (
             "linux_programs_queue_signals_with_their_info",
             linux_programs_queue_signals_with_their_info::<P>,
+        ),
+        (
+            "linux_programs_wait_for_signals_with_sigsuspend",
+            linux_programs_wait_for_signals_with_sigsuspend::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1486,6 +1490,24 @@ fn linux_programs_queue_signals_with_their_info<P: Platform>(
             "a queued signal was not taken in order with its siginfo, or a signal call failed"
         }
         HandlingFailure::Killed => "the queueing program was killed by a signal it blocked",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program's `rt_sigsuspend` must run the handler of the signal its mask unblocks,
+/// on a frame that saved the mask from before the call, then fail with `EINTR` with that mask
+/// restored (D70): the test program's `linux_signal_suspend` must exit with 0 (see
+/// [`eggos_hal::user::TestProgram`]). It runs twice, and everything the second run took must
+/// be freed, as in [`linux_programs_run_signal_handlers`].
+fn linux_programs_wait_for_signals_with_sigsuspend<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_signal_suspend).map_err(|failure| match failure {
+        HandlingFailure::Failed => {
+            "rt_sigsuspend did not run the handler with the mask saved, or a signal call failed"
+        }
+        HandlingFailure::Killed => "the suspending program was killed",
         HandlingFailure::Other(error) => error,
     })
 }

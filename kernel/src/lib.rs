@@ -342,6 +342,8 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_fault_handler as u64;
             let linux_signal_queue =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_queue as u64;
+            let linux_signal_suspend =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_suspend as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -542,6 +544,11 @@ pub(crate) mod tests {
                 pc if (linux_signal_queue..linux_signal_queue + 10).contains(&pc) => {
                     signal_queue_program(context, linux_signal_queue)
                 }
+                pc if (linux_signal_suspend..linux_signal_suspend + 7).contains(&pc)
+                    || pc == linux_signal_suspend + SIGNAL_HANDLER =>
+                {
+                    signal_suspend_program(context, linux_signal_suspend)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -593,6 +600,7 @@ pub(crate) mod tests {
                 linux_signal_handler: 340,
                 linux_fault_handler: 400,
                 linux_signal_queue: 460,
+                linux_signal_suspend: 520,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -787,6 +795,93 @@ pub(crate) mod tests {
                 [PID.load(Ordering::Relaxed), signal, 0, 0, 0, 0],
             ),
             5..=8 => wait,
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
+    /// Plays `linux_signal_suspend` (at `start`) for the test platform: `rt_sigaction` for
+    /// `SIGUSR1` below a stack pointer it moves down, `rt_sigprocmask` blocking it, `getpid`,
+    /// `tgkill`, then `rt_sigsuspend` with an empty set, whose handler (at [`SIGNAL_HANDLER`])
+    /// checks the mask its frame saved, changes the frame and returns with `rt_sigreturn`;
+    /// then `rt_sigprocmask` reads the mask back, and `exit_group(0)` if every check passed.
+    /// Each call's result is checked as the program checks it.
+    fn signal_suspend_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{Errno, number, signal_frame, signals};
+        use eggos_hal::user::UserExit;
+        let usr1 = 1u64 << 9;
+        let pc = context.pc();
+        let word = |address: u64| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        if pc == start + SIGNAL_HANDLER {
+            let [signal, _, ucontext, ..] = context.syscall_arguments();
+            let sigmask = ucontext - signal_frame::layout::UCONTEXT as u64
+                + signal_frame::layout::SIGMASK as u64;
+            if signal == 10 && word(sigmask) == usr1 {
+                write_user_bytes(ucontext + CHANGED_IN_UCONTEXT, &2u64.to_ne_bytes());
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut registers = context.registers();
+                registers.rsp += 8;
+                context.set_registers(&registers);
+            }
+            context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
+            return UserExit::Syscall;
+        }
+        if pc == start {
+            *context = eggos_hal::user::UserContext::new(pc, context.stack() - 64);
+        }
+        let stack = context.stack();
+        let (action, set, empty, old) = (stack, stack + 32, stack + 40, stack + 48);
+        let result = context.syscall_result();
+        let step = pc - start;
+        let mut registers = context.registers();
+        let [_, changed] = kept_and_changed(&mut registers);
+        let passed = match step {
+            0 | 3 => true,
+            1 | 2 | 4 => result == 0,
+            5 => result == Errno::EINTR.result() && *changed == 2,
+            _ => result == 0 && word(old) == usr1,
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => {
+                let flags = signals::flag::SIGINFO
+                    | if cfg!(target_arch = "x86_64") {
+                        signals::flag::RESTORER
+                    } else {
+                        0
+                    };
+                let handler = start + SIGNAL_HANDLER;
+                let words = if signals::HAS_RESTORER {
+                    [handler, flags, start + SIGNAL_HANDLER + 10, 0]
+                } else {
+                    [handler, flags, 0, 0]
+                };
+                write_user_bytes(action, &words.map(u64::to_ne_bytes).concat());
+                (number::RT_SIGACTION, [10, action, 0, 8, 0, 0])
+            }
+            1 => {
+                write_user_bytes(set, &usr1.to_ne_bytes());
+                write_user_bytes(empty, &0u64.to_ne_bytes());
+                (number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0])
+            }
+            2 => (number::GETPID, [0; 6]),
+            3 => (number::TGKILL, [result, result, 10, 0, 0, 0]),
+            4 => {
+                *changed = 1;
+                context.set_registers(&registers);
+                (number::RT_SIGSUSPEND, [empty, 8, 0, 0, 0, 0])
+            }
+            5 => (number::RT_SIGPROCMASK, [0, 0, old, 8, 0, 0]),
             _ => (number::EXIT_GROUP, [0; 6]),
         };
         context.simulate_syscall(number, arguments, pc + 1);

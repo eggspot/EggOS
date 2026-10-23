@@ -843,6 +843,72 @@ riscv64_user_test_linux_signal_queue:
     ld      t1, 24(s4)
     bne     t1, s3, 9b
     ret
+    .global riscv64_user_test_linux_signal_suspend
+riscv64_user_test_linux_signal_suspend:
+    addi    sp, sp, -64
+    lla     t0, 5f
+    sd      t0, 0(sp)
+    li      t0, 4
+    sd      t0, 8(sp)
+    sd      zero, 16(sp)
+    li      a0, 10
+    mv      a1, sp
+    li      a2, 0
+    li      a3, 8
+    li      a7, 134
+    ecall
+    bnez    a0, 9f
+    li      t0, 512
+    sd      t0, 32(sp)
+    sd      zero, 40(sp)
+    li      a0, 0
+    addi    a1, sp, 32
+    li      a2, 0
+    li      a3, 8
+    li      a7, 135
+    ecall
+    bnez    a0, 9f
+    li      a7, 172
+    ecall
+    mv      a1, a0
+    li      a2, 10
+    li      a7, 131
+    ecall
+    bnez    a0, 9f
+    li      s2, 1
+    addi    a0, sp, 40
+    li      a1, 8
+    li      a7, 133
+    ecall
+    li      t0, -4
+    bne     a0, t0, 9f
+    li      t0, 2
+    bne     s2, t0, 9f
+    li      a0, 0
+    li      a1, 0
+    addi    a2, sp, 48
+    li      a3, 8
+    li      a7, 135
+    ecall
+    bnez    a0, 9f
+    ld      t0, 48(sp)
+    li      t1, 512
+    bne     t0, t1, 9f
+    li      a0, 0
+    li      a7, 94
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
+5:  li      t0, 10
+    bne     a0, t0, 7f
+    ld      t0, {uc_sigmask}(a2)
+    li      t1, 512
+    bne     t0, t1, 7f
+    li      t0, 2
+    sd      t0, {saved_s2}(a2)
+7:  ret
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -867,6 +933,7 @@ riscv64_user_test_end:
     saved_pc = const 176,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
     queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    uc_sigmask = const 40,
     first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
@@ -961,6 +1028,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_signal_handler: u8;
     static riscv64_user_test_linux_fault_handler: u8;
     static riscv64_user_test_linux_signal_queue: u8;
+    static riscv64_user_test_linux_signal_suspend: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -1028,6 +1096,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_handler: (&raw const riscv64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const riscv64_user_test_linux_fault_handler) as usize - start,
         linux_signal_queue: (&raw const riscv64_user_test_linux_signal_queue) as usize - start,
+        linux_signal_suspend: (&raw const riscv64_user_test_linux_signal_suspend) as usize - start,
     }
 }
 

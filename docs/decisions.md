@@ -2825,3 +2825,42 @@ budgets are set when the base first installs (M10), from measurements against cu
 Windows and macOS installers on the same hardware and connection.
 
 The installer is something users see, so its design comes from Claude Fable (D16).
+
+## D70 Waiting for a signal: `rt_sigsuspend` and `pause` — Decided by the build loop
+The C libraries' `sigsuspend` and `pause` are these calls, and programs that wait for a signal
+in a loop (shells waiting for children, daemons waiting for `SIGTERM` or `SIGHUP`) use them, so
+they are next in M6 after D68's queued signals.
+
+- **`rt_sigsuspend(mask, sigsetsize)`** replaces the thread's blocked mask with the set at `mask`
+  (never `SIGKILL` or `SIGSTOP`), then delivers what is due under it until a signal starts its
+  handler, and fails with `EINTR`. As on Linux, the first handler's frame saves the mask from
+  before the call, so `rt_sigreturn` puts it back; a second handler's frame, stacked on top,
+  saves the mask the first one runs with. A due signal whose action ignores it, or that stops
+  the thread, does not end the wait: Linux restarts the call after one (`-ERESTARTNOHAND` with
+  no handler). A signal whose default action ends the process ends it there. Errors as Linux,
+  with the mask unchanged: `EINVAL` if `sigsetsize` is not 8, then `EFAULT` for the set.
+- **`pause()`** (x86_64 only; the generic table has no number for it, and AArch64's and RISC-V's
+  C libraries call `rt_sigsuspend` with the current mask) waits the same way with the thread's
+  own mask.
+- **No new state.** The mask to restore stays on the kernel stack of the call: the delivery loop
+  (`deliver_with`) takes it as an argument and hands it to the first frame it writes, so
+  `Process` and `Signals` keep their sizes (256 and 48 bytes).
+- **Waiting.** Nothing can send the thread a signal while it waits yet (one thread per process,
+  no other process can reach it), so with nothing due under the new mask the wait lasts for good,
+  as on Linux when no signal comes, the same as `rt_sigtimedwait` with a null timeout (D68). Waking
+  the waiter comes with the first sender from outside the thread (other processes, `clone`,
+  timers).
+- **Cost.** The two calls sit in `out_of_line_call`, checked before the other calls' match, so the
+  system-call path's inlined part is unchanged. The benchmarks are the same as `main`'s.
+- **Tests.** Host, through the dispatcher: two blocked, pending signals unblocked by the call's
+  mask each get a frame, the lower one's saving the mask from before the call and the upper
+  one's the mask its handler runs under, `EINTR` returned with every register as it was and
+  the old mask back after both handlers return; the errors in Linux's order with the mask
+  unchanged; a pending `SIGTERM` unblocked by the mask ending the process. QEMU: a new test
+  program, `linux_signal_suspend`, blocks `SIGUSR1`, sends it to itself and calls
+  `rt_sigsuspend` with an empty set; its handler checks that the frame saved `SIGUSR1` as the
+  old mask and changes a register in the frame; the call must fail with `EINTR`, the register
+  must hold the change and `SIGUSR1` must be blocked again. It passes on aarch64, riscv64 and
+  x86_64.
+- **For later.** `ppoll`'s and `pselect6`'s signal masks during the wait use the same
+  "mask to restore" handoff (the frame saves the caller's mask when the wait is interrupted).

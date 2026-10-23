@@ -2,7 +2,8 @@
 //! sending and delivering them, `kill`, `tkill`, `tgkill` and `rt_sigpending` (D63), their
 //! handlers, which run on Linux's signal frames and return with `rt_sigreturn` (D64), and
 //! their `siginfo_t`, queued with each pending signal, several instances of a real-time signal
-//! at once, with `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait` (D68). Rust's
+//! at once, with `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait` (D68), and
+//! waiting for one to be handled with `rt_sigsuspend` and `pause` (D70). Rust's
 //! std ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
 //! startup, glibc blocks and unblocks signals around much of its work, and `abort()` sends
 //! itself `SIGABRT` and expects to die of it.
@@ -1118,14 +1119,7 @@ pub fn rt_sigtimedwait<P: Platform>(
     timeout: u64,
     set_size: u64,
 ) -> Result<u64, Errno> {
-    if set_size != SET_SIZE {
-        return Err(Errno::EINVAL);
-    }
-    let mut bytes = [0; SET_SIZE as usize];
-    process
-        .read_user_memory(set, &mut bytes)
-        .map_err(|_| Errno::EFAULT)?;
-    let wanted = u64::from_ne_bytes(bytes) & !UNBLOCKABLE;
+    let wanted = read_set(process, set, set_size)? & !UNBLOCKABLE;
     let deadline = match pointer(timeout) {
         None => Some(u64::MAX),
         Some(address) => super::poll::deadline_in::<P>(
@@ -1147,6 +1141,73 @@ pub fn rt_sigtimedwait<P: Platform>(
             .map_err(|_| Errno::EFAULT)?;
     }
     Ok(u64::from(taken.signal()))
+}
+
+/// The signal set at `address`, of `sigsetsize` bytes, as the calls that take one with no
+/// `how` read it: `EINVAL` if the size is not 8, then `EFAULT` if the set is not the program's
+/// memory.
+fn read_set<P: Platform>(process: &Process<P>, address: u64, set_size: u64) -> Result<u64, Errno> {
+    if set_size != SET_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0; SET_SIZE as usize];
+    process
+        .read_user_memory(address, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(u64::from_ne_bytes(bytes))
+}
+
+/// `rt_sigsuspend(mask, sigsetsize)`, with the program's registers `context`: blocks the
+/// signals in the set at `mask` instead of the thread's (never `SIGKILL` or `SIGSTOP`) until a
+/// signal starts its handler, then fails with `EINTR`. The handler's frame holds the mask the
+/// thread had before, which `rt_sigreturn` restores, as on Linux. A signal its action ignores
+/// is taken and the wait goes on, as Linux restarts the call after one. Nothing can send the
+/// thread a signal while it waits yet, so with none due under the new mask it waits for good,
+/// as on Linux when none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is
+/// not 8, then `EFAULT` if the set is not the program's memory. Sets the call's result;
+/// breaks when a signal ends the process.
+pub fn rt_sigsuspend<P: Platform>(
+    process: &Process<P>,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [mask, set_size, ..] = context.syscall_arguments();
+    match read_set(process, mask, set_size) {
+        Ok(mask) => suspend(process, context, Some(mask)),
+        Err(errno) => {
+            context.set_syscall_result(errno.result());
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+/// `pause()`, with the program's registers `context`: waits, with the thread's mask, until a
+/// signal starts its handler, then fails with `EINTR`, as [`rt_sigsuspend`] does. x86_64 only:
+/// AArch64's and RISC-V's C libraries call `rt_sigsuspend` with the current mask instead.
+#[cfg(target_arch = "x86_64")]
+pub fn pause<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+    suspend(process, context, None)
+}
+
+/// What [`rt_sigsuspend`] and x86_64's `pause` share: blocks `mask`, if any, instead of the thread's
+/// mask, then delivers what is due until a handler starts, waiting between rounds.
+fn suspend<P: Platform>(
+    process: &Process<P>,
+    context: &mut UserContext,
+    mask: Option<u64>,
+) -> ControlFlow<()> {
+    context.set_syscall_result(Errno::EINTR.result());
+    let before = {
+        let mut signals = process.signals().lock();
+        let before = signals.thread.blocked;
+        if let Some(mask) = mask {
+            signals.thread.blocked = mask & !UNBLOCKABLE;
+        }
+        before
+    };
+    while !deliver_with(process, context, None, Some(before))? {
+        thread::sleep_until::<P>(u64::MAX);
+    }
+    ControlFlow::Continue(())
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
@@ -1180,7 +1241,8 @@ pub fn rt_sigpending<P: Platform>(
 /// the system-call path pays nothing; signals from other processes and timers will need a
 /// check on the way back to user mode.
 pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
-    deliver_with(process, context, None)
+    deliver_with(process, context, None, None)?;
+    ControlFlow::Continue(())
 }
 
 /// Sends `fault`'s signal from the kernel, forced as Linux forces a fault's: a program that
@@ -1194,16 +1256,21 @@ pub fn deliver_fault<P: Platform>(
     fault: &Fault,
 ) -> ControlFlow<()> {
     process.signals().lock().force(fault.signal);
-    deliver_with(process, context, Some(fault))
+    deliver_with(process, context, Some(fault), None)?;
+    ControlFlow::Continue(())
 }
 
 /// [`deliver`], with `fault` the fault whose signal is due, if one is: its handler's frame
-/// describes it.
+/// describes it. The first frame written saves `mask_to_restore`, if any, instead of the
+/// thread's mask, as Linux's does after `rt_sigsuspend` changed it. Continues with whether a
+/// handler started.
 fn deliver_with<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
     mut fault: Option<&Fault>,
-) -> ControlFlow<()> {
+    mut mask_to_restore: Option<u64>,
+) -> ControlFlow<(), bool> {
+    let mut started_handler = false;
     loop {
         // The lock is never held across a copy to the program's memory.
         let (delivery, thread) = {
@@ -1211,7 +1278,7 @@ fn deliver_with<P: Platform>(
             (signals.next_delivery(), signals.thread)
         };
         match delivery {
-            None => return ControlFlow::Continue(()),
+            None => return ControlFlow::Continue(started_handler),
             Some(Delivery::Kill(signal)) => {
                 process.exit(ProcessExit::Killed { signal });
                 return ControlFlow::Break(());
@@ -1225,10 +1292,17 @@ fn deliver_with<P: Platform>(
                 info,
             }) => {
                 let described = fault.take_if(|fault| fault.signal == signal);
-                let started = start_handler(process, context, &thread, &action, &info, described);
+                let saved_mask = mask_to_restore.unwrap_or(thread.blocked);
+                let started = start_handler(
+                    process, context, &thread, saved_mask, &action, &info, described,
+                );
                 let mut signals = process.signals().lock();
                 match started {
-                    Ok(()) => signals.enter_handler(signal, &action),
+                    Ok(()) => {
+                        signals.enter_handler(signal, &action);
+                        started_handler = true;
+                        mask_to_restore = None;
+                    }
                     // As Linux: `SIGSEGV`, by its default action if it was the signal whose
                     // frame failed.
                     Err(BadFrame) => {
@@ -1244,7 +1318,8 @@ fn deliver_with<P: Platform>(
 }
 
 /// Writes `action`'s frame for the signal `info` describes (or for `fault`, if the signal is a
-/// fault's) and points `context` at its handler, for a thread whose signal state is `thread`:
+/// fault's), saving `saved_mask` as the mask to restore, and points `context` at its handler,
+/// for a thread whose signal state is `thread`:
 /// on the alternate stack with [`flag::ONSTACK`], if it has one and is not on it already (then
 /// the frame goes below the stack pointer, as it does without the flag). [`BadFrame`] if the
 /// frame's memory is not the program's, if it would run off the bottom of the alternate stack
@@ -1253,6 +1328,7 @@ fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
     thread: &ThreadSignals,
+    saved_mask: u64,
     action: &Action,
     info: &Info,
     fault: Option<&Fault>,
@@ -1278,7 +1354,7 @@ fn start_handler<P: Platform>(
     }
     let saved = Saved {
         registers,
-        blocked: thread.blocked,
+        blocked: saved_mask,
         alternate_stack: alternate.to_bytes(stack),
     };
     let (info, trap) = match fault {
