@@ -21,7 +21,7 @@ pub mod exec;
 pub mod memory;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
-use crate::thread::{JoinHandle, SpawnError};
+use crate::thread::{self, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
@@ -125,6 +125,10 @@ pub mod signal {
 
 /// The most `write` copies at a time, through a buffer on the kernel stack.
 const WRITE_CHUNK: usize = 256;
+
+/// The most one `write` transfers, as on Linux (`write(2)`: 0x7ffff000 bytes, `INT_MAX`
+/// rounded down to a page); a larger count writes this much and returns it.
+const MAX_RW_COUNT: u64 = 0x7fff_f000;
 
 /// Starts a thread of `process` that runs its Linux program from `context` (see [`handle`]).
 /// Until `clone` exists, a process has this one thread.
@@ -254,7 +258,8 @@ fn exit<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
 /// `write(fd, buffer, count)`: standard output and standard error go to the console. Returns
 /// the bytes written; if part of the buffer is not the program's memory, the bytes before
 /// that part, or `EFAULT` if there are none, as Linux does. Chunks never cross a page, so the
-/// count is exact.
+/// count is exact. At most [`MAX_RW_COUNT`] bytes, with a preemption point after each chunk, so
+/// a long write does not keep its CPU from the threads waiting for it.
 #[inline(never)]
 fn write<P: Platform>(
     process: &Process<P>,
@@ -272,6 +277,8 @@ fn write<P: Platform>(
     if count > 0 && buffer.checked_add(count).is_none_or(|end| end > user_end) {
         return Err(Errno::EFAULT);
     }
+    // Linux checks the whole range first, then caps the count.
+    let count = count.min(MAX_RW_COUNT);
     let mut chunk = [0u8; WRITE_CHUNK];
     let mut written = 0;
     while written < count {
@@ -290,6 +297,8 @@ fn write<P: Platform>(
         }
         P::console_write(bytes);
         written += length as u64;
+        // System calls run with interrupts masked and no lock held (`handle`).
+        thread::preemption_point::<P>();
     }
     Ok(written)
 }

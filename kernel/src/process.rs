@@ -28,7 +28,7 @@
 
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
-use crate::memory;
+use crate::memory::{self, FreedFrames};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
 use crate::sync::SpinLock;
@@ -311,22 +311,34 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
+        let mut unmapped = FreedFrames::new(self.frame_offset);
         // Every page, not only those in the regions taken out: the HAL's test program has
         // none (roadmap).
-        self.space
-            .change_pages(
-                start,
-                end - start,
-                |_, _| PageChange::Unmap,
-                |frame| {
-                    // SAFETY: the address space owns its frames (`Process::new`), and this one's
-                    // entry no longer refers to it, so nothing reaches it any more but CPUs'
-                    // cached translations, which no program runs with before they are dropped
-                    // (`AddressSpace::change_pages`).
-                    unsafe { free_owned_frame(frame) }
-                },
-            )
-            .map_err(|_| RegionError::Invalid)
+        let result = self.space.change_pages(
+            start,
+            end - start,
+            |_, _| PageChange::Unmap,
+            |frame| {
+                // SAFETY: the address space owns its frames (`Process::new`), so this one came
+                // from the frame allocator, whose offset `frame_offset` is; its entry no longer
+                // refers to it, and no program runs with what CPUs cached of the entry before
+                // `change_pages` returns, so nothing writes it any more.
+                unsafe { unmapped.push(frame) }
+            },
+        );
+        // Only now, with this CPU's translations of the range dropped and the others marked
+        // stale, may the frames go to someone else. Even after an error: those unmapped are no
+        // longer the address space's.
+        if unmapped.count() > 0 {
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames
+                .as_mut()
+                .expect("the frames came from the frame allocator");
+            // SAFETY: the frames came from this allocator (above), and nothing refers to them
+            // any more: their entries are cleared and no CPU uses translations of them.
+            unsafe { frames.free_all(unmapped) };
+        }
+        result.map_err(|_| RegionError::Invalid)
     }
 
     /// Gives user addresses `start..end`, page-aligned, `attributes` (`None`: the program may
@@ -641,22 +653,6 @@ impl<P: Platform> core::fmt::Debug for Process<P> {
             .field("regions", &*self.regions.lock())
             .finish_non_exhaustive()
     }
-}
-
-/// Gives a frame the process's address space owned and no longer maps back to the kernel's
-/// frame allocator.
-///
-/// # Safety
-/// The frame must be one the address space owned ([`AddressSpace::new_owning_frames`]) and
-/// whose entry is gone, so nothing frees it again.
-unsafe fn free_owned_frame(frame: u64) {
-    let mut frames = memory::FRAMES.lock();
-    let frames = frames
-        .as_mut()
-        .expect("the frame came from the frame allocator");
-    // SAFETY: an owned frame came from this allocator (`new_owning_frames`' contract), and the
-    // caller guarantees nothing maps or frees it any more.
-    unsafe { frames.free(frame) };
 }
 
 /// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
