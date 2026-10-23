@@ -2729,6 +2729,62 @@ switch-path cost; this entry follows it.)
   All three fail without the fixes. `cargo xtask qemu --arch all` passes on aarch64, riscv64
   and x86_64.
 
+## D68 Real-time signals queued with their `siginfo_t`; `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait` — Decided by the build loop (the queue's shape, the limit and Linux's rules decided by research)
+- **Why.** M6's next signal step. Until now a pending signal was one bit plus an origin
+  (`kill`, `tkill` or the kernel), so a handler's `siginfo_t` could only say who sent it, a
+  real-time signal sent twice was delivered once, and nothing could wait for a signal. glibc's
+  `sigqueue`, `sigwaitinfo` and `sigtimedwait`, and every program that passes data with
+  `si_value`, need the real thing.
+- **One queue per process, in send order** (research). The out-of-line block a process gets on
+  its first action change (D60) now also holds a `VecDeque` of 48-byte `siginfo_t` records
+  (`si_signo`, `si_errno`, `si_code` and the union after them; a program always gets the rest of
+  the 128 bytes as zeros); it is renamed `ActionsAndQueue`. A standard signal already pending is
+  not queued again and keeps the info it was first sent with; each instance of a real-time
+  signal (32 to 64) gets its own record, taken in the order sent. The pending bitmask stays the
+  fast check; a signal's bit clears when its last record is taken. `Origin` and the two origin
+  masks are gone: the record's `si_code` says it all, and the synchronous signals the kernel
+  raised are those with a positive `si_code`. `Signals` stays 48 bytes, so `Process` stays in
+  its heap size class (D64).
+- **When info is kept** (research). A signal's info is kept if the signal is blocked or the
+  process has its own block. A process with every action at `SIG_DFL` whose signal is not
+  blocked delivers it by its default action before any program code could read the info, so it
+  allocates nothing; a blocked signal in such a process allocates the block. A signal pending
+  without a record is taken as Linux takes one: `SI_USER` from pid 0.
+- **`RLIMIT_SIGPENDING` is enforced** (research), with one global counter of queued records,
+  since every process runs as one user until processes have credentials (D59). As on Linux: a
+  standard signal sent with `kill` or by the kernel (`si_code` 0 or more) is queued past the
+  limit; any other signal at the limit, or with no memory for a record, is a problem only for a
+  real-time signal not sent with `kill`, which fails with `EAGAIN` (`rt_sigqueueinfo`, `tkill`,
+  `tgkill`); the others stay pending without their info. The counter moves with the records:
+  queued, taken, discarded, and dropped with the process.
+- **The calls.** `rt_sigqueueinfo(tgid, sig, info)` and `rt_tgsigqueueinfo(tgid, tid, sig, info)`
+  read the program's `siginfo_t` and send it with `si_signo` set to `sig`, in Linux's error
+  order: `EFAULT` for the buffer; for `rt_tgsigqueueinfo` `EINVAL` for an id that is not
+  positive; `EPERM` for a `si_code` only the kernel and `kill` send (0 or more, or `SI_TKILL`)
+  to anyone but the caller; `ESRCH` for any target but the caller (the only one it can reach
+  yet); then `EINVAL` for a signal outside 0 to 64, and `EAGAIN` at the limit.
+  `rt_sigtimedwait(set, info, timeout, sigsetsize)` takes the first pending signal in the set,
+  blocked or not, in delivery order, copies its `siginfo_t` out and returns its number; with
+  none pending it sleeps until the timeout (the `struct timespec` parsing is shared with
+  `ppoll`), for good with a null one and not at all with a zero one, then fails with `EAGAIN`.
+  Linux's order: `EINVAL` for `sigsetsize`, `EFAULT` for the set, `EFAULT` or `EINVAL` for the
+  timeout, then `EFAULT` for `info` after the signal was taken (it is lost, as on Linux).
+  `SIGKILL` and `SIGSTOP` in the set are ignored. Nothing can send the waiting thread a signal
+  until there are other processes or threads, so a wait is slept out.
+- **Known deviation** (research): Linux's `E2BIG` for a queued `siginfo_t` whose unknown
+  `si_code` layout has non-zero bytes past the kept part is not checked; those bytes are dropped.
+- **Cost.** Nothing on the system-call, switch or fault paths changes: the queue is touched only
+  by the calls that send, take or discard a signal. The benchmarks show no change beyond noise.
+- **Tests.** Host: queueing order, standard signals kept once with their first info, the limit's
+  charge and refund, discards (`SIGCONT`, `SIG_IGN`) dropping records, `rt_sigtimedwait` taking
+  synchronous signals first and never `SIGKILL` or `SIGSTOP`; through the dispatcher, both
+  queueing calls' errors in Linux's order, `rt_sigtimedwait`'s errors, timeout and lost signal,
+  a full queue refusing real-time signals but `kill`'s, and a handler getting a queued signal's
+  `si_value`. QEMU: a new test program, `linux_signal_queue`, blocks signal 40, queues it twice
+  with `rt_sigqueueinfo` and sends it once with `kill`, then `rt_sigtimedwait` must return the
+  three in order with their `siginfo_t` and a fourth call `EAGAIN`; it passes on aarch64,
+  riscv64 and x86_64.
+
 ## D69 Fast to get: download in seconds, install in seconds, ready right away — Decided (owner, 2026-10-23)
 A must-have, with the same weight as the fastest (D13) and the lightest (D24): getting EggOS is
 faster than getting any other OS. The user downloads it in seconds, installs it in seconds, and is at

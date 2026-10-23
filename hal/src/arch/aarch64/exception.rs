@@ -658,6 +658,7 @@ aarch64_user_test_linux_signal_queue:
     sub     x22, sp, #288
     mov     x9, #(1 << ({queued_signal} - 1))
     str     x9, [x22, #272]
+    stp     xzr, xzr, [x22, #256]
     mov     x0, #0
     add     x1, x22, #272
     mov     x2, #0

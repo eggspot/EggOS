@@ -1693,6 +1693,26 @@ mod tests {
     }
 
     #[test]
+    fn a_standard_signal_keeps_its_first_info_and_sigcont_drops_queued_stop_signals() {
+        const SIGUSR1: u32 = 10;
+        const SIGTSTP: u32 = 20;
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(SIGUSR1) | bit(SIGTSTP) | bit(SIGCONT);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGTSTP), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
+        let [block] = signals.actions_and_queue.as_deref().unwrap();
+        assert_eq!(
+            block.queue.iter().copied().collect::<Vec<_>>(),
+            [by_tkill(SIGUSR1), by_kill(SIGCONT)]
+        );
+        let taken: Vec<Info> = core::iter::from_fn(|| signals.take_waited(!UNBLOCKABLE)).collect();
+        assert_eq!(taken, [by_tkill(SIGUSR1), by_kill(SIGCONT)]);
+        assert_eq!(signals.thread.pending, 0);
+    }
+
+    #[test]
     fn ignoring_a_real_time_signal_discards_every_instance() {
         const RT: u32 = 50;
         let mut signals = Signals::new();
@@ -1771,7 +1791,7 @@ mod tests {
         signals.send(queued(40, 1), NO_LIMIT).unwrap();
         signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         signals.send(by_kill(SIGTRAP), NO_LIMIT).unwrap();
-        let everything = u64::MAX & !UNBLOCKABLE;
+        let everything = !UNBLOCKABLE;
         let order: Vec<u32> = core::iter::from_fn(|| signals.take_waited(everything))
             .map(|info| info.signal())
             .collect();
