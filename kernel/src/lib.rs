@@ -78,22 +78,22 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
 }
 
 /// Prints how the random number generator was seeded (D56).
-fn report_random<W: Write>(console: &mut W, seeds: random::BootSeeds) -> core::fmt::Result {
+fn report_random<W: Write>(console: &mut W, boot_seeds: random::BootSeeds) -> core::fmt::Result {
     let random::BootSeeds {
-        pieces,
+        seeds,
         credited_bits,
         seeded,
-    } = seeds;
-    let plural = if pieces == 1 { "" } else { "s" };
+    } = boot_seeds;
+    let plural = if seeds == 1 { "" } else { "s" };
     if seeded {
         writeln!(
             console,
-            "random: seeded, {credited_bits} bits from {pieces} source{plural}"
+            "random: seeded, {credited_bits} bits credited from {seeds} seed{plural}"
         )
     } else {
         writeln!(
             console,
-            "random: NOT SEEDED ({credited_bits} of {} bits from {pieces} source{plural}): \
+            "random: NOT SEEDED ({credited_bits} of {} bits credited from {seeds} seed{plural}): \
              getrandom waits, AT_RANDOM is guessable",
             random::SEEDED_BITS
         )
@@ -576,7 +576,7 @@ pub(crate) mod tests {
         assert!(out.starts_with(&format!(
             "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
              memory: 16384 KiB free in 1 range\n  0x100000..0x1100000\n\
-             random: seeded, 256 bits from 1 source\n\
+             random: seeded, 256 bits credited from 1 seed\n\
              paging: kernel page tables active, direct map at {:#x}\n",
             TestPlatform::direct_map_offset()
         )));

@@ -16,7 +16,7 @@ const RDRAND_TRIES: usize = 10;
 /// Fills `seed` from `RDSEED`, else `RDRAND`; false if the CPU has neither or the one it has
 /// does not deliver. A sample of all ones, or equal to the one before, is thrown away and
 /// counts as a failed try: some CPUs have reported success with stuck values (AMD's RDRAND
-/// after resume on some Zen 2 parts, all ones). The caller hashes the words with its other
+/// after resume on some Zen 2 parts, all ones). The caller hashes the bytes with its other
 /// inputs, so a CPU source that is weak, or worse, cannot undo them.
 pub(super) fn fill(seed: &mut [u8; SEED_SIZE]) -> bool {
     let max_leaf = __cpuid(0).eax;

@@ -159,7 +159,7 @@ pub fn reseed<P: Platform>() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootSeeds {
     /// Pieces of seed material the machine offered.
-    pub pieces: usize,
+    pub seeds: usize,
     /// Bits they were credited with.
     pub credited_bits: u32,
     /// Whether that seeded the generator.
@@ -170,16 +170,16 @@ pub struct BootSeeds {
 /// clock. Called once at boot, on the boot CPU, before any other CPU starts and before
 /// anything draws.
 pub fn seed_at_boot<P: Platform>() -> BootSeeds {
-    let mut pieces = 0;
+    let mut seeds = 0;
     let mut credited_bits = 0u32;
     P::random_seeds(&mut |source, bytes| {
         add_seed(source, bytes);
-        pieces += 1;
+        seeds += 1;
         credited_bits = credited_bits.saturating_add(credit(source, bytes));
     });
     let seeded = reseed::<P>();
     BootSeeds {
-        pieces,
+        seeds,
         credited_bits,
         seeded,
     }
@@ -269,7 +269,8 @@ pub fn fill_with<P: Platform>(
 }
 
 /// Secret bytes (keys, output not handed out yet), wiped when dropped: 8-byte aligned, so the
-/// wipe is one store per 8 bytes, not one per byte.
+/// wipe is one store per 8 bytes, not one per byte. Best effort, as everywhere in Rust and C:
+/// a copy the compiler makes when it moves one (a return, a spill) is not wiped.
 #[repr(C, align(8))]
 struct Secret<const N: usize>([u8; N]);
 
