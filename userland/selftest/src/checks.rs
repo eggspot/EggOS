@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use eggos_runtime::startup::{Startup, auxv};
 use eggos_runtime::syscall::{self, number};
 
@@ -7,8 +7,12 @@ pub const PASSED_LINE: &[u8] =
 
 const PAGE: usize = 4096;
 const STACK_LIMIT: u64 = 8 << 20;
+const EAGAIN: isize = 11;
 const ENOMEM: isize = 12;
+const EFAULT: isize = 14;
 const EINVAL: isize = 22;
+const ENOSYS: isize = 38;
+const ETIMEDOUT: isize = 110;
 
 const PROT_NONE: usize = 0;
 const PROT_READ: usize = 1;
@@ -30,7 +34,7 @@ const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 
 type Check = (&'static str, fn(&Startup) -> bool);
 
-static CHECKS: [Check; 18] = [
+static CHECKS: [Check; 19] = [
     (
         "the stack holds the arguments and the environment",
         arguments,
@@ -61,6 +65,10 @@ static CHECKS: [Check; 18] = [
     ("floating-point arithmetic is IEEE double", floating_point),
     ("the console is a terminal and a character device", console),
     ("the monotonic clock and uname answer", clock_and_uname),
+    (
+        "futex waits, times out and wakes with Linux's errors",
+        futex_waits_and_times_out,
+    ),
 ];
 
 /// Runs every check in order and returns the exit status: 0 if all passed.
@@ -585,4 +593,66 @@ fn clock_and_uname(_: &Startup) -> bool {
         && (0..1_000_000_000).contains(&first[1])
         && call(number::UNAME, [names.as_mut_ptr() as usize, 0, 0, 0, 0, 0]) == 0
         && names[..FIELD].starts_with(b"Linux\0")
+}
+
+fn futex_waits_and_times_out(_: &Startup) -> bool {
+    const WAIT: usize = 0;
+    const WAKE: usize = 1;
+    const WAIT_BITSET: usize = 9;
+    const WAKE_BITSET: usize = 10;
+    const PRIVATE: usize = 128;
+    const CLOCK_REALTIME: usize = 256;
+    const UNKNOWN: usize = 99;
+    const CLOCK_MONOTONIC: usize = 1;
+    const MILLISECOND: i64 = 1_000_000;
+    static WORD: AtomicU32 = AtomicU32::new(7);
+    let word = WORD.as_ptr() as usize;
+    let futex = |address: usize, op: usize, value: usize, timeout: usize, bitset: usize| {
+        call(number::FUTEX, [address, op, value, timeout, 0, bitset])
+    };
+    let now = || {
+        let mut time = [0i64; 2];
+        call(
+            number::CLOCK_GETTIME,
+            [CLOCK_MONOTONIC, time.as_mut_ptr() as usize, 0, 0, 0, 0],
+        );
+        time[0] * 1_000 * MILLISECOND + time[1]
+    };
+    let one_millisecond = [0i64, MILLISECOND];
+    let bad_nanoseconds = [0i64, 1_000 * MILLISECOND];
+    let past = [0i64, 1];
+    let start = now();
+    let timed_out = futex(
+        word,
+        WAIT | PRIVATE,
+        7,
+        one_millisecond.as_ptr() as usize,
+        0,
+    ) == -ETIMEDOUT
+        && now() - start >= MILLISECOND;
+    timed_out
+        && futex(word, WAIT | PRIVATE, 8, 0, 0) == -EAGAIN
+        && futex(word, WAIT, 8, 0, 0) == -EAGAIN
+        && futex(word, WAIT_BITSET | PRIVATE, 7, past.as_ptr() as usize, 1) == -ETIMEDOUT
+        && futex(
+            word,
+            WAIT_BITSET | PRIVATE | CLOCK_REALTIME,
+            7,
+            past.as_ptr() as usize,
+            1,
+        ) == -ETIMEDOUT
+        && futex(
+            word,
+            WAIT | PRIVATE,
+            7,
+            bad_nanoseconds.as_ptr() as usize,
+            0,
+        ) == -EINVAL
+        && futex(word + 1, WAIT | PRIVATE, 7, 0, 0) == -EINVAL
+        && futex(word, WAIT_BITSET | PRIVATE, 7, 0, 0) == -EINVAL
+        && futex(word, WAKE | PRIVATE, 1, 0, 0) == 0
+        && futex(word, WAKE_BITSET | PRIVATE, 1, 0, 0) == -EINVAL
+        && futex(word, WAKE | PRIVATE | CLOCK_REALTIME, 1, 0, 0) == -ENOSYS
+        && futex(word, UNKNOWN, 0, 0, 0) == -ENOSYS
+        && futex(0, WAIT | PRIVATE, 0, 0, 0) == -EFAULT
 }

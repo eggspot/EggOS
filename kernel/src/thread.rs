@@ -413,6 +413,33 @@ impl ThreadList {
     }
 }
 
+impl ThreadList {
+    fn remove(&mut self, thread: NonNull<Thread>) -> Option<ThreadBox> {
+        let mut previous: Option<NonNull<Thread>> = None;
+        let mut following = self.head;
+        while let Some(candidate) = following {
+            // SAFETY: a thread the list owns; the reference ends before anything is written.
+            let next = unsafe { candidate.as_ref() }.next;
+            if candidate == thread {
+                match previous {
+                    // SAFETY: a thread the list owns; no reference to it is live.
+                    Some(previous) => unsafe { (*previous.as_ptr()).next = next },
+                    None => self.head = next,
+                }
+                if let (None, Some(previous)) = (next, previous) {
+                    self.tail = previous;
+                }
+                // SAFETY: from `into_raw` in `push_back` or `insert_by_wake_at`, and unlinked
+                // here.
+                return Some(unsafe { ThreadBox::from_raw(candidate) });
+            }
+            previous = following;
+            following = next;
+        }
+        None
+    }
+}
+
 impl Drop for ThreadList {
     fn drop(&mut self) {
         // A thread in a list is waiting to run; dropping it would free a stack it may still
@@ -518,6 +545,108 @@ impl WaitQueue {
             woken += 1;
         }
         woken
+    }
+}
+
+/// A place one thread parks in until a deadline or until another thread unparks it: the
+/// timed wait futexes and other blocking calls build on. The parked thread sleeps with the
+/// sleepers of its CPU, so the timer wakes it at its deadline; [`Self::unpark`] takes it out
+/// of them early. Whoever unparks must keep the `Parker` alive until the call returns, and the
+/// parked thread must not drop it before the unparker is done with it (a lock both hold).
+pub struct Parker {
+    state: UnsafeCell<ParkerState>,
+}
+
+struct ParkerState {
+    unparked: bool,
+    parked: Option<(NonNull<Thread>, &'static Cpu)>,
+}
+
+// SAFETY: the state is only reached with the scheduler's lock held (`state` takes the lock's
+// `Schedulers` by `&mut`), which serialises every use of it; the thread pointer is only
+// compared with the threads in a sleepers list, never followed.
+unsafe impl Sync for Parker {}
+
+impl fmt::Debug for Parker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Parker").finish_non_exhaustive()
+    }
+}
+
+impl Default for Parker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How [`Parker::park_until`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unparked {
+    /// [`Parker::unpark`] was called, before or during the park.
+    ByAnotherThread,
+    /// The clock reached the deadline first.
+    AtDeadline,
+}
+
+impl Parker {
+    pub const fn new() -> Self {
+        Self {
+            state: UnsafeCell::new(ParkerState {
+                unparked: false,
+                parked: None,
+            }),
+        }
+    }
+
+    fn state<'a>(&'a self, _schedulers: &'a mut Schedulers) -> &'a mut ParkerState {
+        // SAFETY: every reference to the state is made here, each borrowing the one
+        // `Schedulers` mutably for its whole life, so they never overlap.
+        unsafe { &mut *self.state.get() }
+    }
+
+    /// Returns once [`Self::unpark`] has been called or the clock reaches `deadline`
+    /// ([`Platform::clock_ticks`]; `u64::MAX` waits for the unpark alone), running other
+    /// threads meanwhile. An unpark that came before the call ends it at once. Call it as
+    /// [`yield_now`] is called: with interrupts masked and no lock held.
+    pub fn park_until<P: Platform>(&self, deadline: u64) -> Unparked {
+        loop {
+            let mut schedulers = SCHEDULER.lock();
+            let state = self.state(&mut schedulers);
+            state.parked = None;
+            if state.unparked {
+                return Unparked::ByAnotherThread;
+            }
+            if P::clock_ticks() >= deadline {
+                return Unparked::AtDeadline;
+            }
+            start_here_or_panic::<P>(&mut schedulers);
+            block::<P>(schedulers, |schedulers, here, thread| {
+                self.state(schedulers).parked = Some((thread.0, here));
+                let scheduler = schedulers.of(here);
+                scheduler.sleeping.insert_by_wake_at(thread, deadline);
+                scheduler.update_timer::<P>();
+            });
+        }
+    }
+
+    /// Ends the park in [`Self::park_until`], or the next one if no thread is parked. The
+    /// parked thread runs on its own CPU; that CPU's timer may still fire at the deadline,
+    /// and finds nothing due.
+    pub fn unpark<P: Platform>(&self) {
+        let mut schedulers = SCHEDULER.lock();
+        let state = self.state(&mut schedulers);
+        state.unparked = true;
+        let Some((thread, cpu)) = state.parked.take() else {
+            return;
+        };
+        let Some(thread) = schedulers.of(cpu).sleeping.remove(thread) else {
+            return;
+        };
+        let wake = make_ready::<P>(&mut schedulers, thread);
+        drop(schedulers);
+        if let Some(cpu) = wake {
+            cpu::wake::<P>(cpu);
+        }
     }
 }
 

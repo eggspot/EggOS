@@ -37,6 +37,7 @@
 pub mod credentials;
 pub mod exec;
 pub mod fault;
+pub mod futex;
 pub mod identity;
 pub mod limits;
 pub mod memory;
@@ -116,6 +117,7 @@ pub mod number {
         pub const GETTID: u64 = 186;
         pub const TKILL: u64 = 200;
         pub const TIME: u64 = 201;
+        pub const FUTEX: u64 = 202;
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const CLOCK_SETTIME: u64 = 227;
         pub const CLOCK_GETTIME: u64 = 228;
@@ -145,6 +147,7 @@ pub mod number {
         pub const EXIT: u64 = 93;
         pub const EXIT_GROUP: u64 = 94;
         pub const SET_TID_ADDRESS: u64 = 96;
+        pub const FUTEX: u64 = 98;
         pub const SET_ROBUST_LIST: u64 = 99;
         pub const NANOSLEEP: u64 = 101;
         pub const CLOCK_SETTIME: u64 = 112;
@@ -339,6 +342,8 @@ impl Errno {
     pub const ENAMETOOLONG: Self = Self(36);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
+    /// Timed out: a wait's deadline came first (`futex`).
+    pub const ETIMEDOUT: Self = Self(110);
     /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`), or a clock
     /// `clock_nanosleep` cannot sleep on.
     pub const EOPNOTSUPP: Self = Self(95);
@@ -549,7 +554,7 @@ fn out_of_line_result<P: Platform>(
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
     use credentials::Kind::{Group, User};
-    let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
+    let [first, second, third, fourth, fifth, sixth] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -581,6 +586,7 @@ fn out_of_line_result<P: Platform>(
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
         number::NANOSLEEP => time::nanosleep(process, first),
+        number::FUTEX => futex::futex::<P>(process, first, second, third, fourth, sixth),
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, first, second, third),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
