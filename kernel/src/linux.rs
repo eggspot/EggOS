@@ -10,14 +10,16 @@
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
 //!
-//! So far: `write` to standard output and standard error (the console), `exit` and
-//! `exit_group`, and the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
-//! ([`memory`], D53). Every other number returns `ENOSYS`, as Linux does for a call it lacks,
-//! so a program that probes for a call carries on. The next calls are the rest of what a
-//! static hello-world needs (`uname`, `writev`, `set_tid_address`, ...), then the file
-//! system's (M7).
+//! So far: `write` and `writev` to standard output and standard error (the console), `exit`
+//! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
+//! ([`memory`], D53), and `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
+//! `set_robust_list` ([`identity`], D55). Every other number returns `ENOSYS`, as Linux does
+//! for a call it lacks, so a program that probes for a call carries on. The next calls are the
+//! rest of what a static program's startup needs (`arch_prctl` and the thread pointer,
+//! signals, `getrandom`, ...), then the file system's (M7).
 
 pub mod exec;
+pub mod identity;
 pub mod memory;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
@@ -39,16 +41,30 @@ pub mod number {
         pub const MPROTECT: u64 = 10;
         pub const MUNMAP: u64 = 11;
         pub const BRK: u64 = 12;
+        pub const WRITEV: u64 = 20;
+        pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
+        pub const UNAME: u64 = 63;
+        pub const GETPPID: u64 = 110;
+        pub const GETTID: u64 = 186;
+        pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
+        pub const SET_ROBUST_LIST: u64 = 273;
         /// The highest number above.
-        pub const LAST: u64 = EXIT_GROUP;
+        pub const LAST: u64 = SET_ROBUST_LIST;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
         pub const WRITE: u64 = 64;
+        pub const WRITEV: u64 = 66;
         pub const EXIT: u64 = 93;
         pub const EXIT_GROUP: u64 = 94;
+        pub const SET_TID_ADDRESS: u64 = 96;
+        pub const SET_ROBUST_LIST: u64 = 99;
+        pub const UNAME: u64 = 160;
+        pub const GETPID: u64 = 172;
+        pub const GETPPID: u64 = 173;
+        pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
         pub const MUNMAP: u64 = 215;
         pub const MMAP: u64 = 222;
@@ -61,7 +77,22 @@ pub mod number {
     // The dispatch answers `ENOSYS` above `LAST` without looking further: no call may be
     // above it.
     const _: () = {
-        let all = [WRITE, EXIT, EXIT_GROUP, BRK, MMAP, MUNMAP, MPROTECT];
+        let all = [
+            WRITE,
+            WRITEV,
+            EXIT,
+            EXIT_GROUP,
+            BRK,
+            MMAP,
+            MUNMAP,
+            MPROTECT,
+            GETPID,
+            GETPPID,
+            GETTID,
+            UNAME,
+            SET_TID_ADDRESS,
+            SET_ROBUST_LIST,
+        ];
         let mut i = 0;
         let mut highest = 0;
         while i < all.len() {
@@ -126,9 +157,19 @@ pub mod signal {
 /// The most `write` copies at a time, through a buffer on the kernel stack.
 const WRITE_CHUNK: usize = 256;
 
-/// The most one `write` transfers, as on Linux (`write(2)`: 0x7ffff000 bytes, `INT_MAX`
-/// rounded down to a page); a larger count writes this much and returns it.
+/// The most one `write` or `writev` transfers, as on Linux (`write(2)`: 0x7ffff000 bytes,
+/// `INT_MAX` rounded down to a page); a larger count writes this much and returns it.
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
+
+/// The most buffers one `writev` takes: Linux's limit (`IOV_MAX` in C).
+const MAX_IOVECS: u64 = 1024;
+
+/// How many of `writev`'s buffers it reads onto the kernel stack: C libraries pass two
+/// (their buffer and the new data). More go through the heap.
+const STACK_IOVECS: usize = 8;
+
+/// The size of a `struct iovec`: a base address and a length.
+const IOVEC_SIZE: usize = 16;
 
 /// Starts a thread of `process` that runs its Linux program from `context` (see [`handle`]).
 /// Until `clone` exists, a process has this one thread.
@@ -212,8 +253,10 @@ fn kill<P: Platform>(process: &Process<P>, kind: ExceptionKind) -> ControlFlow<(
     ControlFlow::Break(())
 }
 
-/// Runs the system call the program made and sets its result.
-#[inline]
+/// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
+/// as a call of its own, the loop's state spills around it (+8 to +10% on the system-call
+/// round trip when D55's calls tipped the inliner).
+#[inline(always)]
 fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
     let [first, second, third, ..] = context.syscall_arguments();
     let number = context.syscall_number();
@@ -227,7 +270,7 @@ fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) ->
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
-            _ => Err(Errno::ENOSYS),
+            _ => out_of_line_call::<P>(process, number, first, second, third),
         }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -250,6 +293,30 @@ fn memory_call<P: Platform>(
     }
 }
 
+/// Every call up to [`number::LAST`] but `write`, `exit` and the memory calls, with its first
+/// three arguments: `ENOSYS` for a number with no call. One out-of-line function for all of
+/// them, as [`memory_call`]: each call [`syscall`]'s own match grows by adds to the thread
+/// loop that it is inlined into (the loop's registers spill, and every system call pays).
+#[inline(never)]
+fn out_of_line_call<P: Platform>(
+    process: &Process<P>,
+    number: u64,
+    first: u64,
+    second: u64,
+    third: u64,
+) -> Result<u64, Errno> {
+    match number {
+        number::WRITEV => writev::<P>(process, first, second, third),
+        number::GETPID => Ok(identity::getpid(process)),
+        number::GETPPID => Ok(identity::getppid()),
+        number::GETTID => Ok(identity::gettid(process)),
+        number::UNAME => identity::uname(process, first),
+        number::SET_TID_ADDRESS => Ok(identity::set_tid_address(process, first)),
+        number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
+        _ => Err(Errno::ENOSYS),
+    }
+}
+
 /// `exit(status)` and `exit_group(status)`: with one thread per process, ending the thread
 /// ends the process. Linux keeps the status's low 8 bits.
 #[inline(never)]
@@ -260,9 +327,7 @@ fn exit<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
 
 /// `write(fd, buffer, count)`: standard output and standard error go to the console. Returns
 /// the bytes written; if part of the buffer is not the program's memory, the bytes before
-/// that part, or `EFAULT` if there are none, as Linux does. Chunks never cross a page, so the
-/// count is exact. At most [`MAX_RW_COUNT`] bytes, with a preemption point after each chunk, so
-/// a long write does not keep its CPU from the threads waiting for it.
+/// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes.
 #[inline(never)]
 fn write<P: Platform>(
     process: &Process<P>,
@@ -270,40 +335,129 @@ fn write<P: Platform>(
     buffer: u64,
     count: u64,
 ) -> Result<u64, Errno> {
-    // `fd` is an `unsigned int`: Linux ignores the register's upper half.
-    if !matches!(fd as u32, 1 | 2) {
+    if !is_console(fd) {
         return Err(Errno::EBADF);
     }
-    // As Linux's `access_ok`: a range that does not end within user space is `EFAULT` before
-    // anything is written, even if its start is the program's memory.
-    let user_end = <P::PageTableFormat as Format>::USER_END;
-    if count > 0 && buffer.checked_add(count).is_none_or(|end| end > user_end) {
+    if !ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
     // Linux checks the whole range first, then caps the count.
     let count = count.min(MAX_RW_COUNT);
-    let mut chunk = [0u8; WRITE_CHUNK];
+    let written = write_to_console(process, buffer, count);
+    if written == 0 && count > 0 {
+        Err(Errno::EFAULT)
+    } else {
+        Ok(written)
+    }
+}
+
+/// `writev(fd, buffers, count)`: as [`write`], for `count` buffers one after another, each a
+/// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux: `EINVAL` for
+/// more than [`MAX_IOVECS`] buffers or a length that is negative as a `ssize_t`, `EFAULT` if
+/// the array is not the program's memory or a buffer does not end within user space (all
+/// checked before anything is written); then at most [`MAX_RW_COUNT`] bytes in all, stopping
+/// at the first byte that is not the program's memory. The array is copied once, so the
+/// program changing it meanwhile changes nothing.
+#[inline(never)]
+fn writev<P: Platform>(
+    process: &Process<P>,
+    fd: u64,
+    buffers: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    if !is_console(fd) {
+        return Err(Errno::EBADF);
+    }
+    if count > MAX_IOVECS {
+        return Err(Errno::EINVAL);
+    }
+    let bytes = count as usize * IOVEC_SIZE;
+    let mut on_stack = [0u8; STACK_IOVECS * IOVEC_SIZE];
+    let mut on_heap = alloc::vec::Vec::new();
+    let array = if bytes <= on_stack.len() {
+        &mut on_stack[..bytes]
+    } else {
+        on_heap
+            .try_reserve_exact(bytes)
+            .map_err(|_| Errno::ENOMEM)?;
+        on_heap.resize(bytes, 0);
+        &mut on_heap[..]
+    };
+    process
+        .read_user_memory(buffers, array)
+        .map_err(|_| Errno::EFAULT)?;
+    let (entries, _) = array.as_chunks::<IOVEC_SIZE>();
+    let iovec = |entry: &[u8; IOVEC_SIZE]| {
+        let (base, length) = entry.split_at(8);
+        (
+            u64::from_ne_bytes(base.try_into().unwrap()),
+            u64::from_ne_bytes(length.try_into().unwrap()),
+        )
+    };
+    if entries.iter().any(|entry| iovec(entry).1 > i64::MAX as u64) {
+        return Err(Errno::EINVAL);
+    }
+    if !entries.iter().all(|entry| {
+        let (base, length) = iovec(entry);
+        ends_in_user_space::<P>(base, length)
+    }) {
+        return Err(Errno::EFAULT);
+    }
     let mut written = 0;
-    while written < count {
-        // Cannot wrap: every chunk so far ended within user space.
-        let address = buffer.wrapping_add(written);
-        let length = (count - written)
-            .min(WRITE_CHUNK as u64)
-            .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
-        let bytes = &mut chunk[..length];
-        if process.read_user_memory(address, bytes).is_err() {
+    for entry in entries {
+        let (base, length) = iovec(entry);
+        let length = length.min(MAX_RW_COUNT - written);
+        let done = write_to_console(process, base, length);
+        written += done;
+        if done < length {
             return if written > 0 {
                 Ok(written)
             } else {
                 Err(Errno::EFAULT)
             };
         }
+    }
+    Ok(written)
+}
+
+/// Whether `fd` is standard output or standard error, the console's for now. `fd` is an
+/// `unsigned int`: Linux ignores the register's upper half.
+fn is_console(fd: u64) -> bool {
+    matches!(fd as u32, 1 | 2)
+}
+
+/// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space (any
+/// address does for none). A range that does not is `EFAULT` before anything is copied, even
+/// if its start is the program's memory.
+fn ends_in_user_space<P: Platform>(buffer: u64, count: u64) -> bool {
+    let user_end = <P::PageTableFormat as Format>::USER_END;
+    count == 0 || buffer.checked_add(count).is_some_and(|end| end <= user_end)
+}
+
+/// Copies `count` bytes of the program's memory from `buffer`, a range that ends within user
+/// space, to the console, and returns how many it copied: fewer if it reached a byte that is
+/// not the program's memory. Chunks never cross a page, so the count is exact, and a
+/// preemption point follows each, so a long write does not keep its CPU from the threads
+/// waiting for it.
+fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> u64 {
+    let mut chunk = [0u8; WRITE_CHUNK];
+    let mut written = 0;
+    while written < count {
+        // Cannot wrap: the range ends within user space.
+        let address = buffer.wrapping_add(written);
+        let length = (count - written)
+            .min(WRITE_CHUNK as u64)
+            .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
+        let bytes = &mut chunk[..length];
+        if process.read_user_memory(address, bytes).is_err() {
+            break;
+        }
         P::console_write(bytes);
         written += length as u64;
         // System calls may pass one ([`handle`]).
         thread::preemption_point::<P>();
     }
-    Ok(written)
+    written
 }
 
 #[cfg(test)]
@@ -414,6 +568,144 @@ mod tests {
             readable
         );
         assert_eq!(console_output().len() as u64, readable);
+    }
+
+    /// A process with [`DATA`]'s first page readable, holding `contents` at its start, and the
+    /// second writable, holding the `struct iovec`s for `buffers` (offsets into `contents` and
+    /// lengths), as `writev` reads them.
+    fn process_with_iovecs(
+        kernel: &PageTables<<P as Platform>::PageTableFormat>,
+        contents: &[u8],
+        buffers: &[(u64, u64)],
+    ) -> Arc<Process<P>> {
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let mut process = unsafe { Process::<P>::new(kernel) }.unwrap();
+        process
+            .map_new_page(DATA, Attributes::USER_READ_ONLY, contents)
+            .unwrap();
+        let mut array = alloc::vec::Vec::new();
+        for &(offset, length) in buffers {
+            array.extend_from_slice(&(DATA + offset).to_ne_bytes());
+            array.extend_from_slice(&length.to_ne_bytes());
+        }
+        process
+            .map_new_page(DATA + 4096, Attributes::USER_READ_WRITE, &array)
+            .unwrap();
+        Arc::new(process)
+    }
+
+    fn call(process: &Arc<Process<P>>, number: u64, arguments: [u64; 6]) -> u64 {
+        let mut context = called(number, arguments);
+        assert_eq!(
+            handle(process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        context.syscall_result()
+    }
+
+    #[test]
+    fn writev_writes_each_buffer_in_turn() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let text = b"hello, writev\n";
+        // Out of order, an empty one, and more than fit on the stack.
+        let mut buffers = alloc::vec![(7, 6), (5, 2), (0, 5), (3, 0), (13, 1)];
+        let process = process_with_iovecs(&kernel, text, &buffers);
+        console_output();
+        let writev = |count| call(&process, number::WRITEV, [1, DATA + 4096, count, 0, 0, 0]);
+        assert_eq!(writev(5), 14);
+        assert_eq!(console_output(), b"writev, hello\n");
+        assert_eq!(writev(0), 0);
+        assert!(console_output().is_empty());
+        buffers.resize(STACK_IOVECS + 3, (0, 1));
+        let process = process_with_iovecs(&kernel, text, &buffers);
+        let count = buffers.len() as u64;
+        assert_eq!(
+            call(&process, number::WRITEV, [2, DATA + 4096, count, 0, 0, 0]),
+            14 + 6
+        );
+        assert_eq!(console_output(), b"writev, hello\nhhhhhh");
+    }
+
+    #[test]
+    fn writev_checks_every_buffer_before_writing() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        let writev = |buffers: &[(u64, u64)], fd| {
+            let process = process_with_iovecs(&kernel, b"ab", buffers);
+            let count = buffers.len() as u64;
+            call(&process, number::WRITEV, [fd, DATA + 4096, count, 0, 0, 0])
+        };
+        console_output();
+        assert_eq!(writev(&[(0, 2)], 0), Errno::EBADF.result());
+        // A length negative as a `ssize_t`, even after a good buffer, or one past user space.
+        assert_eq!(writev(&[(0, 2), (0, 1 << 63)], 1), Errno::EINVAL.result());
+        assert_eq!(writev(&[(0, 2), (0, user_end)], 1), Errno::EFAULT.result());
+        assert!(console_output().is_empty());
+        // Past the readable page: what came before, else `EFAULT`.
+        assert_eq!(writev(&[(0, 2), (4096 * 2, 2)], 1), 2);
+        assert_eq!(writev(&[(4096 * 2, 2), (0, 2)], 1), Errno::EFAULT.result());
+        assert_eq!(console_output(), b"ab");
+        // Too many buffers, and an array that is not the program's.
+        let process = process_with_iovecs(&kernel, b"ab", &[(0, 2)]);
+        let too_many = MAX_IOVECS + 1;
+        assert_eq!(
+            call(
+                &process,
+                number::WRITEV,
+                [1, DATA + 4096, too_many, 0, 0, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::WRITEV, [1, 0, 1, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert!(console_output().is_empty());
+    }
+
+    #[test]
+    fn identity_calls_name_the_process_and_the_system() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let other = process_with_iovecs(&kernel, b"ab", &[]);
+        let pid = call(&process, number::GETPID, [0; 6]);
+        assert_eq!(pid, u64::from(process.id().get()));
+        assert!(pid > 0);
+        assert_ne!(call(&other, number::GETPID, [0; 6]), pid);
+        assert_eq!(call(&process, number::GETTID, [0; 6]), pid);
+        assert_eq!(call(&process, number::GETPPID, [0; 6]), 0);
+        assert_eq!(
+            call(&process, number::SET_TID_ADDRESS, [DATA, 0, 0, 0, 0, 0]),
+            pid
+        );
+        assert_eq!(
+            call(&process, number::SET_ROBUST_LIST, [DATA, 24, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::SET_ROBUST_LIST, [DATA, 16, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        // `uname` fills the writable page; not the read-only one, nor across into the unmapped
+        // one after it.
+        assert_eq!(
+            call(&process, number::UNAME, [DATA + 4096, 0, 0, 0, 0, 0]),
+            0
+        );
+        let mut utsname = [0u8; 6 * identity::utsname::FIELD];
+        process.read_user_memory(DATA + 4096, &mut utsname).unwrap();
+        assert_eq!(&utsname[..6], b"Linux\0");
+        let machine = 4 * identity::utsname::FIELD;
+        assert!(utsname[machine..].starts_with(identity::utsname::MACHINE.as_bytes()));
+        for buffer in [DATA, DATA + 8192 - 100] {
+            assert_eq!(
+                call(&process, number::UNAME, [buffer, 0, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
     }
 
     #[test]

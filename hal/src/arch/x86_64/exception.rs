@@ -328,11 +328,21 @@ x86_64_user_test_linux_hello:
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .global x86_64_user_test_linux_start
 x86_64_user_test_linux_start:
-    // Linux's x86_64 numbers: write 1, exit_group 231. rbx is argc, r12 walks argv and envp,
-    // r13 counts the two lists.
+    // Linux's x86_64 numbers: writev 20, getpid 39, gettid 186, exit_group 231. rbx is argc,
+    // r12 walks argv and envp, r13 counts the two lists, r14 holds the process id. Each string
+    // is written by writev from one iovec on the stack. Ends with exit_group(255) if the stack
+    // is misaligned or the thread's id is not the process's.
     movl    $255, %edi
     testq   $15, %rsp
     jnz     9f
+    movl    $39, %eax
+    syscall
+    movq    %rax, %r14
+    movl    $186, %eax
+    syscall
+    movl    $255, %edi
+    cmpq    %rax, %r14
+    jne     9f
     movq    (%rsp), %rbx
     leaq    8(%rsp), %r12
     movl    $2, %r13d
@@ -345,9 +355,14 @@ x86_64_user_test_linux_start:
     je      5f
     incq    %rdx
     jmp     7b
-5:  movl    $1, %edi
-    movl    $1, %eax
+5:  pushq   %rdx
+    pushq   %rsi
+    movl    $1, %edi
+    movq    %rsp, %rsi
+    movl    $1, %edx
+    movl    $20, %eax
     syscall
+    addq    $16, %rsp
     jmp     6b
 8:  decl    %r13d
     jnz     6b

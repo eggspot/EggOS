@@ -35,6 +35,7 @@ use crate::sync::SpinLock;
 use crate::thread::{self, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
+use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
@@ -116,6 +117,31 @@ pub struct Process<P: Platform> {
     frame_offset: usize,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
     exit: SpinLock<Option<ProcessExit>>,
+    /// Its id, unique while the kernel runs ([`Self::id`]).
+    id: ProcessId,
+}
+
+/// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
+/// positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProcessId(u32);
+
+impl ProcessId {
+    /// The value Linux programs see.
+    pub fn get(self) -> u32 {
+        self.0
+    }
+
+    /// The next unused id, or `None` once every id up to `i32::MAX` has been given out
+    /// (reusing ended processes' ids waits for a process table, with `wait4`).
+    fn allocate() -> Option<Self> {
+        static NEXT: AtomicU32 = AtomicU32::new(1);
+        NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+            (id <= i32::MAX as u32).then_some(id + 1)
+        })
+        .ok()
+        .map(Self)
+    }
 }
 
 impl<P: Platform> Process<P> {
@@ -133,13 +159,20 @@ impl<P: Platform> Process<P> {
             .as_ref()
             .ok_or("there is no frame allocator")?
             .physical_memory_offset();
+        let id = ProcessId::allocate().ok_or("out of process ids")?;
         Ok(Self {
             space,
             regions: SpinLock::new(Regions::new()),
             program_break: SpinLock::new(None),
             frame_offset,
             exit: SpinLock::new(None),
+            id,
         })
+    }
+
+    /// Its id, given when it was created.
+    pub fn id(&self) -> ProcessId {
+        self.id
     }
 
     /// A process whose address space maps the HAL's test program

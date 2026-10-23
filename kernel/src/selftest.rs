@@ -979,8 +979,10 @@ pub fn linux_start_image<P: Platform>() -> Vec<u8> {
 }
 
 /// A Linux program started from an ELF image (M6, D51) must find its arguments and its
-/// environment on its stack, as Linux lays them out, and write them ([`LINUX_START_LINE`],
-/// which the QEMU runner checks reached the console), then end with `exit_group(argc)`. Its
+/// environment on its stack, as Linux lays them out, find its thread's id is its process's
+/// (`getpid`, `gettid`, D55), and write them with `writev` from its stack
+/// ([`LINUX_START_LINE`], which the QEMU runner checks reached the console), then end with
+/// `exit_group(argc)`. Its
 /// initialized data must be in place and its `.bss` zero, though the frames held other data
 /// before. Everything it took must be freed.
 fn linux_programs_start_from_elf_images<P: Platform>(
