@@ -365,8 +365,11 @@ fn smallest_alternate_stack(startup: &Startup) -> bool {
             [&raw const *stack as usize, 0, 0, 0, 0, 0],
         )
     };
-    let accepted = set(&too_small) == -ENOMEM && set(&smallest) == 0 && set(&disabled) == 0;
-    accepted && call(number::MUNMAP, [mapping, size, 0, 0, 0, 0]) == 0
+    let one_byte_less_refused = set(&too_small) == -ENOMEM;
+    let smallest_accepted = set(&smallest) == 0;
+    let disabled_again = set(&disabled) == 0;
+    let unmapped = call(number::MUNMAP, [mapping, size, 0, 0, 0, 0]) == 0;
+    one_byte_less_refused && smallest_accepted && disabled_again && unmapped
 }
 
 fn alternate_stack(_: &Startup) -> bool {

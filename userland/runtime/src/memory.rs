@@ -9,13 +9,9 @@ unsafe extern "C" fn memcpy(
     source: *const c_void,
     count: usize,
 ) -> *mut c_void {
-    let (to, from) = (destination.cast::<u8>(), source.cast::<u8>());
-    for index in 0..count {
-        // SAFETY: the caller's `count` readable bytes at `source`.
-        let byte = unsafe { from.wrapping_add(index).read() };
-        // SAFETY: the caller's `count` writable bytes at `destination`.
-        unsafe { to.wrapping_add(index).write(byte) };
-    }
+    // SAFETY: the caller's `count` readable bytes at `source` and writable bytes at
+    // `destination`, which `memcpy`'s contract keeps apart.
+    unsafe { copy_upwards(destination.cast(), source.cast(), count) };
     destination
 }
 
@@ -26,8 +22,10 @@ unsafe extern "C" fn memmove(
     count: usize,
 ) -> *mut c_void {
     if destination.addr() <= source.addr() {
-        // SAFETY: copying upwards, each byte is read before a write can reach it.
-        return unsafe { memcpy(destination, source, count) };
+        // SAFETY: the caller's `count` bytes at each end; copying upwards one byte at a time,
+        // each byte is read before a write can reach it.
+        unsafe { copy_upwards(destination.cast(), source.cast(), count) };
+        return destination;
     }
     let (to, from) = (destination.cast::<u8>(), source.cast::<u8>());
     for index in (0..count).rev() {
@@ -37,6 +35,16 @@ unsafe extern "C" fn memmove(
         unsafe { to.wrapping_add(index).write(byte) };
     }
     destination
+}
+
+#[inline(always)]
+unsafe fn copy_upwards(to: *mut u8, from: *const u8, count: usize) {
+    for index in 0..count {
+        // SAFETY: the caller's `count` readable bytes at `from`.
+        let byte = unsafe { from.wrapping_add(index).read() };
+        // SAFETY: the caller's `count` writable bytes at `to`.
+        unsafe { to.wrapping_add(index).write(byte) };
+    }
 }
 
 #[unsafe(no_mangle)]

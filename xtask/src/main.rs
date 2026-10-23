@@ -16,7 +16,9 @@ commands:
   ci                     every check CI runs, cheapest first: fmt, clippy (host and kernel
                          targets), docs, host tests, QEMU boot tests and benchmarks on
                          every architecture
-  clippy-targets         clippy -D warnings on the kernel crates for every kernel target
+  clippy-targets         clippy -D warnings on the user crates for their Linux targets
+                         and the kernel crates for every kernel target, with the user
+                         programs built for the test kernels
   docs                   build the workspace's API docs with rustdoc, warnings as errors
   build --arch <arch>    build the kernel image for <arch>
   qemu  --arch <arch>    boot the kernel in QEMU headless and check its self-test verdict,
@@ -78,8 +80,8 @@ struct UserProgram {
     package: &'static str,
     /// The environment variable that names the program's path to the kernel build.
     variable: &'static str,
-    /// The flags that replace `.cargo/config.toml`'s for the target, if any.
-    rustflags: Option<&'static [&'static str]>,
+    /// The flags that replace `.cargo/config.toml`'s and any `RUSTFLAGS` for the target.
+    rustflags: &'static [&'static str],
 }
 
 /// The programs the `qemu-test` kernels run: one on our own runtime (D85), one on Rust's
@@ -88,14 +90,18 @@ const USER_PROGRAMS: [UserProgram; 2] = [
     UserProgram {
         package: "eggos-selftest",
         variable: "EGGOS_USERLAND_SELFTEST",
-        rustflags: None,
+        rustflags: RUNTIME_PROGRAM_RUSTFLAGS,
     },
     UserProgram {
         package: "eggos-std-selftest",
         variable: "EGGOS_USERLAND_STD_SELFTEST",
-        rustflags: Some(STD_PROGRAM_RUSTFLAGS),
+        rustflags: STD_PROGRAM_RUSTFLAGS,
     },
 ];
+
+/// A program on our own runtime links no C library or start files, as a static PIE (D85).
+const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] =
+    &["-C", "link-self-contained=no", "-C", "relocation-model=pie"];
 
 /// A program on Rust's standard library links the toolchain's own musl and start files,
 /// statically, as a static PIE where the target has one, with no debug information or
@@ -221,9 +227,10 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     Ok(())
 }
 
-/// Lints the kernel crates as compiled for each bare-metal target, where the architecture
-/// modules (invisible to a host build) are compiled. Without features and with each test
-/// feature, since they change code paths.
+/// Lints the user crates as compiled for each Linux target and the kernel crates as compiled
+/// for each bare-metal target, where the architecture modules (invisible to a host build) are
+/// compiled: without features and with each test feature, since they change code paths, with
+/// the user programs the test kernels embed built first.
 fn clippy_targets() -> Result<(), String> {
     for arch in ARCHES {
         let mut args = vec!["clippy", "--target", arch.user_target];
@@ -276,14 +283,10 @@ pub fn build_user_programs(arch: &Arch) -> Result<Vec<(&'static str, String)>, S
     USER_PROGRAMS
         .iter()
         .map(|program| {
-            let rustflags = program.rustflags.map(|flags| flags.join("\x1f"));
-            let env: Vec<(&str, &str)> = rustflags
-                .iter()
-                .map(|flags| ("CARGO_ENCODED_RUSTFLAGS", flags.as_str()))
-                .collect();
+            let rustflags = program.rustflags.join("\x1f");
             let path = build_executable(
                 &["build", "-p", program.package, "--target", arch.user_target],
-                &env,
+                &[("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str())],
                 &format!("{} executable for {}", program.package, arch.user_target),
             )?;
             Ok((program.variable, path.to_string_lossy().into_owned()))
