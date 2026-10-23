@@ -2886,7 +2886,7 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   unblocked while descriptors were ready stays pending, as on Linux.
 - **x86_64's `poll`** has no mask, and every signal due under the thread's own mask was
   delivered before the call, so it is not interrupted.
-- **Shared with D70.** `signals` gains `replace_blocked`, `is_due` and `deliver_after_wait`,
+- **Shared with D70.** `signals` gains `replace_blocked`, `is_due` and `deliver_restoring_mask`,
   which `rt_sigsuspend`, `pause` and `ppoll` use. The mask to restore stays on the call's stack,
   with no new state per process or thread.
 - **Cost.** `ppoll` moved to the early match in `out_of_line_call`, next to `rt_sigsuspend`, so
@@ -2895,8 +2895,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   the signals still pending; with nothing to poll, the mask unblocks a handled `SIGUSR1`, whose
   handler starts with a frame saving the thread's mask, then `EINTR` with every register as it
   was, and the `SIGCHLD` due with it discarded; an ignored signal alone lets a 2 ms wait run out
-  (result 0, no time left written back); a default Term action ends the process even with a
-  zero timeout. In QEMU, the frames and the handoff are D70's, already covered by
+  (result 0, a zero time left written back); a default Term action ends the process even with a
+  zero timeout; an error after the mask was set (more descriptors than the open-file limit)
+  restores the thread's mask. In QEMU, the frames and the handoff are D70's, already covered by
   `linux_signal_suspend`, and `linux_poll` checks `ppoll` without a mask on every architecture.
 - **For later.** `pselect6` with the same handoff (M7, with `select`); signals sent during a
   wait waking it, once a sender from outside the thread exists.

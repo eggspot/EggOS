@@ -1205,7 +1205,7 @@ fn suspend<P: Platform>(
         Some(mask) => replace_blocked(process, mask),
         None => process.signals().lock().thread.blocked,
     };
-    while !deliver_after_wait(process, context, Some(thread_mask))? {
+    while !deliver_restoring_mask(process, context, Some(thread_mask))? {
         thread::sleep_until::<P>(u64::MAX);
     }
     ControlFlow::Continue(())
@@ -1227,10 +1227,10 @@ pub fn is_due<P: Platform>(process: &Process<P>) -> bool {
     signals.thread.pending & !signals.thread.blocked != 0
 }
 
-/// Delivers the signals due at the end of a wait that blocked a mask of its own, as
-/// [`deliver`] does, the first frame written saving `thread_mask`, the mask the thread had
-/// before the call, if the call changed it. Continues with whether a handler started.
-pub fn deliver_after_wait<P: Platform>(
+/// Delivers the signals due during a call that blocks a mask of its own, as [`deliver`] does,
+/// the first frame written saving `thread_mask`, the mask the thread had before the call, if
+/// the call changed it. Continues with whether a handler started.
+pub fn deliver_restoring_mask<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
     thread_mask: Option<u64>,

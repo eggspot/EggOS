@@ -161,7 +161,7 @@ pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
         let result = match polled {
             Ok(Polled::Interrupted) => {
                 context.set_syscall_result(Errno::EINTR.result());
-                if signals::deliver_after_wait(process, context, thread_mask)? {
+                if signals::deliver_restoring_mask(process, context, thread_mask)? {
                     return ControlFlow::Continue(());
                 }
                 continue;

@@ -3013,6 +3013,15 @@ mod tests {
         );
         assert_eq!(context.registers(), interrupted.registers());
         assert_eq!(thread().blocked, before);
+        assert_eq!(
+            call(
+                &process,
+                number::PPOLL,
+                [fds, u64::MAX, timeout, mask, 8, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(thread().blocked, before);
     }
 
     #[test]
