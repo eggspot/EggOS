@@ -78,8 +78,8 @@ exit status `exit_group` records: done, D50); signal handlers; a process's threa
 and `wait4`; user-memory copies at user addresses with fault fixups with `clone` (D52 moved
 D50's trigger there: the regions lock keeps pages from being unmapped during a copy, but a
 plain copy racing another thread's writes to the same page is undefined in Rust: volatile or
-per-architecture copy routines); a cap per `write` call (Linux's `MAX_RW_COUNT`) or a preemption point per
-chunk, so one large write cannot hold its CPU.
+per-architecture copy routines); (a cap per `write` call, Linux's `MAX_RW_COUNT`, and a preemption
+point per chunk, so one large write cannot hold its CPU: done, PR #46).
 
 Exec follow-ups (D51): a kernel random number generator (ChaCha20 or BLAKE2s, seeded from
 RDRAND/RDSEED, RNDR, Zkr, virtio-rng) for `AT_RANDOM`, **before any program not built by us
@@ -100,9 +100,9 @@ Memory-call follow-ups (D53): a "shared" mark on `MAP_SHARED` anonymous regions 
 private pages), `mremap`, `MAP_POPULATE` and `MAP_GROWSDOWN` when a program needs them;
 `PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; file mappings (M7);
 `RLIMIT_DATA` and `RLIMIT_AS` for `brk` and `mmap`; randomized `mmap` base and break with the
-random number generator; from PR #45's independent review: `munmap`
-frees its frames after the translations are dropped, taking the frame allocator's lock once
-(before `clone`), and anonymous `MAP_SHARED_VALIDATE` and `MAP_SHARED | MAP_GROWSDOWN`
+random number generator; from PR #45's independent review: (`munmap` and a shrinking `brk`
+free their frames after the translations are dropped, taking the frame allocator's lock once:
+done, PR #46), and anonymous `MAP_SHARED_VALIDATE` and `MAP_SHARED | MAP_GROWSDOWN`
 checked against Linux's observed behaviour (`EINVAL` there, possibly, where we accept or say
 `EOPNOTSUPP`).
 

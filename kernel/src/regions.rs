@@ -156,9 +156,25 @@ impl Regions {
             start: end,
             ..self.regions[last - 1]
         };
-        let kept = [below, above];
-        let kept = kept.iter().filter(|part| part.start < part.end).copied();
-        self.regions.splice(first..last, kept);
+        // Written out rather than a `splice`, whose general machinery costs more than the
+        // whole of `munmap`'s usual case (one region removed whole).
+        let keeps_below = below.start < below.end;
+        let keeps_above = above.start < above.end;
+        let kept_from = first + usize::from(keeps_below);
+        let kept_to = last - usize::from(keeps_above);
+        if keeps_below {
+            self.regions[first] = below;
+        }
+        if kept_from <= kept_to {
+            if keeps_above {
+                self.regions[last - 1] = above;
+            }
+            self.regions.drain(kept_from..kept_to);
+        } else {
+            // The range is inside one region, which leaves two parts: the region now holds
+            // the lower one.
+            self.regions.insert(last, above);
+        }
         Ok(())
     }
 
@@ -372,6 +388,16 @@ mod tests {
             .remove(30 * PAGE, 40 * PAGE, |part| removed.push(part))
             .unwrap();
         assert!(removed.is_empty());
+        // One region's bottom, one whole, one's top, then everything.
+        regions.remove(2 * PAGE, 3 * PAGE, |_| ()).unwrap();
+        assert_eq!(layout(&regions), [(3, 4, text), (21, 22, None)]);
+        regions.remove(21 * PAGE, 22 * PAGE, |_| ()).unwrap();
+        assert_eq!(layout(&regions), [(3, 4, text)]);
+        regions.insert(6 * PAGE, 10 * PAGE, data).unwrap();
+        regions.remove(9 * PAGE, 10 * PAGE, |_| ()).unwrap();
+        assert_eq!(layout(&regions), [(3, 4, text), (6, 9, data)]);
+        regions.remove(PAGE, 40 * PAGE, |_| ()).unwrap();
+        assert!(layout(&regions).is_empty());
         for (start, end) in [(PAGE, PAGE), (PAGE + 1, 2 * PAGE), (3 * PAGE, PAGE)] {
             assert_eq!(
                 regions.remove(start, end, |_| ()),

@@ -289,10 +289,128 @@ impl FrameAllocator {
         self.free_frames += 1;
     }
 
+    /// Gives back every frame in `chain` at once: the chain joins the free stack whole, in
+    /// constant time, so the frame allocator's lock is held no longer for a million frames than
+    /// for one ([`FramesToFree::chain`] walked it before the lock was taken).
+    ///
+    /// # Safety
+    /// Every frame in `chain` must have come from [`Self::allocate`] on this allocator and not
+    /// been freed since, nothing may use them any more, and the chain must have been linked
+    /// through this allocator's physical memory offset ([`FramesToFree::push`]).
+    pub unsafe fn free_chain(&mut self, chain: FrameChain) {
+        if chain.count == 0 {
+            return;
+        }
+        // SAFETY: `chain.last` is the chain's last frame, linked through this allocator's
+        // offset; the caller gives every frame up, so its link is ours to write.
+        unsafe { self.link(chain.last).write(self.free_stack) };
+        self.free_stack = chain.first;
+        self.free_frames += chain.count;
+    }
+
     /// Where the kernel reaches the first word of `frame`, the free-stack link.
     fn link(&self, frame: u64) -> *mut u64 {
         (frame as usize).wrapping_add(self.physical_memory_offset) as *mut u64
     }
+}
+
+/// Frames to give back to the frame allocator together and later, once nothing can reach them:
+/// `munmap` collects them while it clears their entries and frees them after the CPU's
+/// translations are dropped ([`Self::chain`], then [`FrameAllocator::free_chain`]). Linked
+/// through their first words, as the free stack is, so collecting them allocates nothing and
+/// costs no lock, and only the chain's first frame is kept here: one register in the page-table
+/// walk that collects them. Dropped without being given back, they leak.
+#[derive(Debug)]
+#[must_use = "the frames leak unless they go to `FrameAllocator::free_chain`"]
+pub struct FramesToFree {
+    /// The frame pushed last, or [`NO_FRAME`].
+    first: u64,
+}
+
+impl FramesToFree {
+    /// No frames yet.
+    pub const fn new() -> Self {
+        Self { first: NO_FRAME }
+    }
+
+    /// Adds `frame`, which the kernel reaches at physical address + `physical_memory_offset`
+    /// (the frame allocator's, [`FrameAllocator::physical_memory_offset`]).
+    ///
+    /// # Safety
+    /// `frame` must be a frame of the frame allocator's that is in use, owned by the caller
+    /// and in no other `FramesToFree`, and nothing may write it any more: its first word is
+    /// overwritten now.
+    #[inline]
+    pub unsafe fn push(&mut self, frame: u64, physical_memory_offset: usize) {
+        debug_assert!(
+            frame.is_multiple_of(FRAME_SIZE),
+            "freeing an unaligned frame"
+        );
+        let link = (frame as usize).wrapping_add(physical_memory_offset) as *mut u64;
+        // SAFETY: the caller gives up `frame`, so its first word is ours to write; it is reached
+        // through the allocator's physical memory offset and aligned.
+        unsafe { link.write(self.first) };
+        self.first = frame;
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.first == NO_FRAME
+    }
+
+    /// The frames as a chain [`FrameAllocator::free_chain`] takes in constant time: a walk down
+    /// the links, whose frames were just written, to count them and find the last one, done
+    /// here so that no lock is held meanwhile.
+    ///
+    /// # Safety
+    /// `physical_memory_offset` must be the one every frame was given to [`Self::push`] with.
+    pub unsafe fn chain(self, physical_memory_offset: usize) -> FrameChain {
+        if self.first == NO_FRAME {
+            return FrameChain {
+                first: NO_FRAME,
+                last: NO_FRAME,
+                count: 0,
+            };
+        }
+        let mut last = self.first;
+        let mut count = 1;
+        loop {
+            let link = (last as usize).wrapping_add(physical_memory_offset) as *const u64;
+            // SAFETY: `last` is in the chain, which `push` linked through the frames' first
+            // words at this offset (the caller's promise), and whose frames nothing else uses
+            // any more (`push`'s contract).
+            let next = unsafe { link.read() };
+            if next == NO_FRAME {
+                break;
+            }
+            last = next;
+            count += 1;
+        }
+        FrameChain {
+            first: self.first,
+            last,
+            count,
+        }
+    }
+}
+
+impl Default for FramesToFree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Frames linked through their first words, with both ends and the count known
+/// ([`FramesToFree::chain`]), for [`FrameAllocator::free_chain`].
+#[derive(Debug)]
+#[must_use = "the frames leak unless they go to `FrameAllocator::free_chain`"]
+pub struct FrameChain {
+    /// The chain's first frame, or [`NO_FRAME`].
+    first: u64,
+    /// Its last frame, whose link is [`NO_FRAME`], or [`NO_FRAME`].
+    last: u64,
+    /// How many frames it has.
+    count: u64,
 }
 
 /// Largest block the buddy allocator manages: 2^`MAX_ORDER` frames (4 MiB).
@@ -553,6 +671,41 @@ mod tests {
         // Then untouched memory again.
         assert_eq!(frames.allocate(), Some(b + 4 * K));
         assert_eq!(frames.free_frames(), 4);
+    }
+
+    #[test]
+    fn frames_freed_together_join_the_free_stack_at_once() {
+        let mut arena = Arena::new(0x10_0000, 8);
+        let b = arena.base;
+        let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 8 * K)]), arena.offset());
+        let taken: [u64; 3] = core::array::from_fn(|_| frames.allocate().unwrap());
+        let kept = frames.allocate().unwrap();
+        // SAFETY: the frame came from this allocator and is not used any more.
+        unsafe { frames.free(kept) };
+        let free = frames.free_frames();
+        // SAFETY: an empty chain links nothing.
+        let empty = unsafe { FramesToFree::new().chain(arena.offset()) };
+        // SAFETY: nothing is freed.
+        unsafe { frames.free_chain(empty) };
+        assert_eq!(frames.free_frames(), free);
+        let mut freed = FramesToFree::new();
+        for frame in taken {
+            // SAFETY: the frame came from this allocator, is in use and is not used any more.
+            unsafe { freed.push(frame, arena.offset()) };
+        }
+        assert!(!freed.is_empty());
+        // SAFETY: every frame was pushed with the arena's offset.
+        let chain = unsafe { freed.chain(arena.offset()) };
+        // SAFETY: every frame in `chain` came from this allocator and is not used any more.
+        unsafe { frames.free_chain(chain) };
+        assert_eq!(frames.free_frames(), free + 3);
+        // Last pushed first, as if freed one by one, then what was on the free stack before,
+        // then untouched memory (the top frame holds the buddy allocator's bitmap).
+        assert_eq!(frames.allocate(), Some(taken[2]));
+        assert_eq!(frames.allocate(), Some(taken[1]));
+        assert_eq!(frames.allocate(), Some(taken[0]));
+        assert_eq!(frames.allocate(), Some(kept));
+        assert_eq!(frames.allocate(), Some(b + 2 * K));
     }
 
     /// Writes `block`'s frames through the arena and checks none is the buddy bitmap.
