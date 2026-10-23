@@ -10,19 +10,21 @@ use crate::io::RegisterIo;
 /// The 8254's input clock in Hz (the PC's 14.31818 MHz crystal divided by 12).
 pub const FREQUENCY_HZ: u64 = 1_193_182;
 
-/// Channel 2 counter register (ports 0x40-0x43: counters 0-2, then the mode register).
-const CHANNEL2: usize = 2;
-/// Mode/command register.
-const MODE: usize = 3;
-/// Channel 2 (bits 7:6 = 10), low byte then high byte (5:4 = 11), mode 0 "interrupt on
-/// terminal count" (3:1 = 000), binary (0 = 0).
-const MODE_CHANNEL2_ONE_SHOT: u8 = 0b1011_0000;
+const CHANNEL2_COUNTER: usize = 2;
+const MODE_COMMAND: usize = 3;
+const MODE_SELECT_CHANNEL2: u8 = 0b10 << 6;
+const MODE_ACCESS_LOW_THEN_HIGH_BYTE: u8 = 0b11 << 4;
+const MODE_0_INTERRUPT_ON_TERMINAL_COUNT: u8 = 0b000 << 1;
+const MODE_BINARY_COUNT: u8 = 0;
+const MODE_CHANNEL2_ONE_SHOT: u8 = MODE_SELECT_CHANNEL2
+    | MODE_ACCESS_LOW_THEN_HIGH_BYTE
+    | MODE_0_INTERRUPT_ON_TERMINAL_COUNT
+    | MODE_BINARY_COUNT;
 
-/// Port 0x61: bit 0 gates channel 2, bit 1 connects it to the PC speaker, bit 5 reads
-/// channel 2's output.
-const CONTROL_GATE2: u8 = 1 << 0;
-const CONTROL_SPEAKER: u8 = 1 << 1;
-const CONTROL_OUT2: u8 = 1 << 5;
+const SYSTEM_CONTROL_PORT_B: usize = 0;
+const CONTROL_GATE_CHANNEL2: u8 = 1 << 0;
+const CONTROL_SPEAKER_ENABLE: u8 = 1 << 1;
+const CONTROL_CHANNEL2_OUTPUT: u8 = 1 << 5;
 
 /// Size of the 8254's register block (ports 0x40-0x43).
 pub const REGISTER_BLOCK_SIZE: usize = 4;
@@ -53,26 +55,30 @@ impl<R: RegisterIo> Pit<R> {
         on_start: impl FnOnce(),
         mut timed_out: impl FnMut() -> bool,
     ) -> bool {
-        let control = self.control.read8(0) & !(CONTROL_SPEAKER | CONTROL_GATE2);
-        // Gate low while the count is loaded, so counting starts only when it goes high.
-        self.control.write8(0, control);
-        self.regs.write8(MODE, MODE_CHANNEL2_ONE_SHOT);
+        let gate_low = self.control.read8(SYSTEM_CONTROL_PORT_B)
+            & !(CONTROL_SPEAKER_ENABLE | CONTROL_GATE_CHANNEL2);
+        self.control.write8(SYSTEM_CONTROL_PORT_B, gate_low);
+        self.regs.write8(MODE_COMMAND, MODE_CHANNEL2_ONE_SHOT);
         let [low, high] = count.to_le_bytes();
-        self.regs.write8(CHANNEL2, low);
-        self.regs.write8(CHANNEL2, high);
-        self.control.write8(0, control | CONTROL_GATE2);
+        self.regs.write8(CHANNEL2_COUNTER, low);
+        self.regs.write8(CHANNEL2_COUNTER, high);
+        self.control
+            .write8(SYSTEM_CONTROL_PORT_B, gate_low | CONTROL_GATE_CHANNEL2);
         on_start();
-        // In mode 0 the output goes high when the count reaches zero.
         let mut counted_down = true;
-        while self.control.read8(0) & CONTROL_OUT2 == 0 {
+        while !self.channel2_output_high_at_terminal_count() {
             if timed_out() {
                 counted_down = false;
                 break;
             }
             core::hint::spin_loop();
         }
-        self.control.write8(0, control);
+        self.control.write8(SYSTEM_CONTROL_PORT_B, gate_low);
         counted_down
+    }
+
+    fn channel2_output_high_at_terminal_count(&self) -> bool {
+        self.control.read8(SYSTEM_CONTROL_PORT_B) & CONTROL_CHANNEL2_OUTPUT != 0
     }
 }
 
@@ -84,15 +90,27 @@ mod tests {
     #[test]
     fn channel2_is_loaded_with_the_gate_low_then_started_and_polled() {
         let pit = Pit::new(FakeRegs::default(), FakeRegs::default());
-        // Speaker bit set by firmware; output low twice, then high.
-        pit.control
-            .script_reads(0, &[0b11, 0, 0, CONTROL_OUT2 as u32]);
+        let speaker_and_gate_left_on_by_firmware = 0b11;
+        let output_low = 0;
+        pit.control.script_reads(
+            0,
+            &[
+                speaker_and_gate_left_on_by_firmware,
+                output_low,
+                output_low,
+                CONTROL_CHANNEL2_OUTPUT as u32,
+            ],
+        );
         let mut started = false;
         assert!(pit.run_channel2(0x1234, || started = true, || false));
         assert!(started);
         assert_eq!(
             pit.regs.writes(),
-            vec![(MODE, 0b1011_0000), (CHANNEL2, 0x34), (CHANNEL2, 0x12)]
+            vec![
+                (MODE_COMMAND, 0b1011_0000),
+                (CHANNEL2_COUNTER, 0x34),
+                (CHANNEL2_COUNTER, 0x12)
+            ]
         );
         assert_eq!(pit.control.writes(), vec![(0, 0), (0, 1), (0, 0)]);
         assert_eq!(pit.control.reads_of(0), 4);

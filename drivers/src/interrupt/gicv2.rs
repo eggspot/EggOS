@@ -7,42 +7,26 @@
 
 use crate::io::RegisterIo;
 
-/// Distributor control register.
 const GICD_CTLR: usize = 0x000;
-/// Interrupt set-enable registers, one bit per interrupt ID.
 const GICD_ISENABLER: usize = 0x100;
-/// Interrupt priority registers, one byte per interrupt ID.
 const GICD_IPRIORITYR: usize = 0x400;
-/// Interrupt processor targets registers, one byte per interrupt ID. The bytes of IDs 0-31 are
-/// banked and read-only: each names the reading CPU's own interface.
 const GICD_ITARGETSR: usize = 0x800;
-/// Software generated interrupt register: writing it sends an SGI.
 const GICD_SGIR: usize = 0xf00;
+const BANKED_TARGET_BYTE_OF_SGI_0: usize = GICD_ITARGETSR;
 
-/// CPU interface control register.
 const GICC_CTLR: usize = 0x000;
-/// Priority mask register: only interrupts with a numerically lower priority are signalled.
 const GICC_PMR: usize = 0x004;
-/// Interrupt acknowledge register.
 const GICC_IAR: usize = 0x00c;
-/// End of interrupt register.
 const GICC_EOIR: usize = 0x010;
 
-/// `GICD_CTLR` / `GICC_CTLR` bit 0: enable (Group 0 forwarding / signalling).
-const CTLR_ENABLE: u32 = 1;
-/// Lets every priority through (the lowest priority a GIC implements reads back as 0xff or
-/// with its unimplemented low bits clear).
-const PMR_ALLOW_ALL: u32 = 0xff;
-/// `GICC_IAR` bits 9:0: the interrupt ID.
-const IAR_INTERRUPT_ID: u32 = 0x3ff;
-/// Interrupt IDs 1020-1023 are special; 1022 and 1023 mean "nothing to acknowledge".
-const FIRST_SPECIAL_ID: u32 = 1020;
-/// The architecture's largest interrupt ID.
+const CTLR_ENABLE_GROUP_0: u32 = 1;
+const PMR_ALLOW_EVERY_PRIORITY: u32 = 0xff;
+const IAR_INTERRUPT_ID_MASK: u32 = 0x3ff;
+const FIRST_SPECIAL_INTERRUPT_ID: u32 = 1020;
 const MAX_INTERRUPT_ID: u32 = 1019;
-/// The largest SGI ID.
 const MAX_SGI_ID: u32 = 15;
-/// `GICD_SGIR` bits 23:16: the CPU target list.
 const SGIR_TARGET_LIST_SHIFT: u32 = 16;
+const SGIR_FILTER_TO_TARGET_LIST: u32 = 0b00 << 24;
 
 /// Size of the distributor's register block in bytes.
 pub const DISTRIBUTOR_BLOCK_SIZE: usize = 0x1000;
@@ -53,14 +37,13 @@ pub const CPU_INTERFACE_BLOCK_SIZE: usize = 0x2000;
 /// [`Gicv2CpuInterface::end_of_interrupt`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Acknowledged {
-    /// The raw `GICC_IAR` value (interrupt ID plus, for SGIs, the source CPU).
-    iar: u32,
+    raw_iar: u32,
 }
 
 impl Acknowledged {
     /// The interrupt ID: 0-15 SGIs, 16-31 PPIs (per CPU), 32-1019 SPIs.
     pub const fn id(self) -> u32 {
-        self.iar & IAR_INTERRUPT_ID
+        self.raw_iar & IAR_INTERRUPT_ID_MASK
     }
 }
 
@@ -77,7 +60,7 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
 
     /// Starts forwarding enabled interrupts to the CPU interfaces.
     pub fn enable(&self) {
-        self.regs.write32(GICD_CTLR, CTLR_ENABLE);
+        self.regs.write32(GICD_CTLR, CTLR_ENABLE_GROUP_0);
     }
 
     /// Sets `id`'s priority (0 is the highest) and enables it. For SGIs and PPIs (IDs 0-31)
@@ -86,7 +69,6 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
         assert!(id <= MAX_INTERRUPT_ID, "GIC interrupt ID {id} out of range");
         let id = id as usize;
         self.regs.write8(GICD_IPRIORITYR + id, priority);
-        // Writing 0 bits to ISENABLER has no effect, so no read-modify-write is needed.
         self.regs
             .write32(GICD_ISENABLER + id / 32 * 4, 1 << (id % 32));
     }
@@ -94,17 +76,17 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
     /// The calling CPU's interface, as a target list with one bit set (bit n for CPU interface
     /// n), for [`Self::send_sgi`]. 0 on a uniprocessor GIC, which has no targets to name.
     pub fn this_cpu_target(&self) -> u8 {
-        // SGI 0's byte; any byte of IDs 0-31 names this CPU's interface.
-        self.regs.read8(GICD_ITARGETSR)
+        self.regs.read8(BANKED_TARGET_BYTE_OF_SGI_0)
     }
 
     /// Sends SGI `id` to the CPU interfaces in `targets` (a target list from
     /// [`Self::this_cpu_target`] on each target CPU).
     pub fn send_sgi(&self, id: u32, targets: u8) {
         assert!(id <= MAX_SGI_ID, "GIC SGI ID {id} out of range");
-        // Target list filter (bits 25:24) 0: the CPUs in the list.
-        self.regs
-            .write32(GICD_SGIR, u32::from(targets) << SGIR_TARGET_LIST_SHIFT | id);
+        self.regs.write32(
+            GICD_SGIR,
+            SGIR_FILTER_TO_TARGET_LIST | u32::from(targets) << SGIR_TARGET_LIST_SHIFT | id,
+        );
     }
 }
 
@@ -122,22 +104,22 @@ impl<R: RegisterIo> Gicv2CpuInterface<R> {
 
     /// Lets interrupts of every priority through and starts signalling them to this CPU.
     pub fn enable(&self) {
-        self.regs.write32(GICC_PMR, PMR_ALLOW_ALL);
-        self.regs.write32(GICC_CTLR, CTLR_ENABLE);
+        self.regs.write32(GICC_PMR, PMR_ALLOW_EVERY_PRIORITY);
+        self.regs.write32(GICC_CTLR, CTLR_ENABLE_GROUP_0);
     }
 
     /// Acknowledges the highest-priority pending interrupt, or returns `None` if there is
     /// none (a spurious interrupt, ID 1023 or 1022). Each `Some` must be passed to
     /// [`Self::end_of_interrupt`].
     pub fn acknowledge(&self) -> Option<Acknowledged> {
-        let iar = self.regs.read32(GICC_IAR);
-        let acknowledged = Acknowledged { iar };
-        (acknowledged.id() < FIRST_SPECIAL_ID).then_some(acknowledged)
+        let raw_iar = self.regs.read32(GICC_IAR);
+        let acknowledged = Acknowledged { raw_iar };
+        (acknowledged.id() < FIRST_SPECIAL_INTERRUPT_ID).then_some(acknowledged)
     }
 
     /// Ends `interrupt`, so the GIC can signal it (and anything it held back) again.
     pub fn end_of_interrupt(&self, interrupt: Acknowledged) {
-        self.regs.write32(GICC_EOIR, interrupt.iar);
+        self.regs.write32(GICC_EOIR, interrupt.raw_iar);
     }
 }
 
@@ -146,8 +128,10 @@ mod tests {
     use super::*;
     use crate::io::fake::FakeRegs;
 
+    const IAR_SOURCE_CPU_SHIFT: u32 = 10;
+
     #[test]
-    fn enabling_a_ppi_sets_its_priority_byte_and_enable_bit() {
+    fn enabling_a_ppi_sets_its_priority_byte_and_writes_only_its_enable_bit() {
         let gicd = Gicv2Distributor::new(FakeRegs::default());
         gicd.enable();
         gicd.enable_interrupt(27, 0x80);
@@ -155,6 +139,7 @@ mod tests {
             gicd.regs.writes(),
             vec![(GICD_CTLR, 1), (0x400 + 27, 0x80), (0x100, 1 << 27)]
         );
+        assert_eq!(gicd.regs.reads_of(GICD_ISENABLER), 0);
     }
 
     #[test]
@@ -200,12 +185,12 @@ mod tests {
     #[test]
     fn acknowledge_then_end_of_interrupt_writes_back_the_raw_iar() {
         let gicc = Gicv2CpuInterface::new(FakeRegs::default());
-        // An SGI from CPU 2 (bits 12:10) with ID 5.
-        gicc.regs.script_reads(GICC_IAR, &[2 << 10 | 5]);
+        let sgi_5_from_cpu_2 = 2 << IAR_SOURCE_CPU_SHIFT | 5;
+        gicc.regs.script_reads(GICC_IAR, &[sgi_5_from_cpu_2]);
         let interrupt = gicc.acknowledge().expect("pending interrupt");
         assert_eq!(interrupt.id(), 5);
         gicc.end_of_interrupt(interrupt);
-        assert_eq!(gicc.regs.writes(), vec![(GICC_EOIR, 2 << 10 | 5)]);
+        assert_eq!(gicc.regs.writes(), vec![(GICC_EOIR, sgi_5_from_cpu_2)]);
     }
 
     #[test]

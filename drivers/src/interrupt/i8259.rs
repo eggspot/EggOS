@@ -7,23 +7,15 @@
 
 use crate::io::RegisterIo;
 
-/// Command register (ICW1, OCW2, OCW3).
 const COMMAND: usize = 0;
-/// Data register (ICW2-4, OCW1 = the interrupt mask).
 const DATA: usize = 1;
 
-/// ICW1: initialisation, ICW4 follows, cascade mode, edge triggered.
-const ICW1_INIT_WITH_ICW4: u8 = 0x11;
-/// ICW3 for the primary: the secondary is on input 2.
+const ICW1_INIT_CASCADE_EDGE_TRIGGERED_WITH_ICW4: u8 = 0x11;
 const ICW3_PRIMARY_SECONDARY_ON_IRQ2: u8 = 1 << 2;
-/// ICW3 for the secondary: its cascade identity, 2.
-const ICW3_SECONDARY_IDENTITY: u8 = 2;
-/// ICW4: 8086 mode, normal end of interrupt.
-const ICW4_8086: u8 = 0x01;
-/// OCW1 masking all eight inputs.
-const MASK_ALL: u8 = 0xff;
-/// OCW2: non-specific end of interrupt.
-const OCW2_END_OF_INTERRUPT: u8 = 0x20;
+const ICW3_SECONDARY_CASCADE_IDENTITY: u8 = 2;
+const ICW4_8086_MODE_NORMAL_END_OF_INTERRUPT: u8 = 0x01;
+const OCW1_MASK_ALL_INPUTS: u8 = 0xff;
+const OCW2_NON_SPECIFIC_END_OF_INTERRUPT: u8 = 0x20;
 
 /// Each 8259's register block: two consecutive ports.
 pub const REGISTER_BLOCK_SIZE: usize = 2;
@@ -48,23 +40,28 @@ impl<R: RegisterIo> LegacyPic<R> {
             vector_base.is_multiple_of(8) && vector_base <= 0xf0,
             "8259 vector base {vector_base:#x} must be a multiple of 8 below 0xf8"
         );
-        self.primary.write8(COMMAND, ICW1_INIT_WITH_ICW4);
-        self.secondary.write8(COMMAND, ICW1_INIT_WITH_ICW4);
+        self.primary
+            .write8(COMMAND, ICW1_INIT_CASCADE_EDGE_TRIGGERED_WITH_ICW4);
+        self.secondary
+            .write8(COMMAND, ICW1_INIT_CASCADE_EDGE_TRIGGERED_WITH_ICW4);
         self.primary.write8(DATA, vector_base);
         self.secondary.write8(DATA, vector_base + 8);
         self.primary.write8(DATA, ICW3_PRIMARY_SECONDARY_ON_IRQ2);
-        self.secondary.write8(DATA, ICW3_SECONDARY_IDENTITY);
-        self.primary.write8(DATA, ICW4_8086);
-        self.secondary.write8(DATA, ICW4_8086);
-        self.primary.write8(DATA, MASK_ALL);
-        self.secondary.write8(DATA, MASK_ALL);
+        self.secondary.write8(DATA, ICW3_SECONDARY_CASCADE_IDENTITY);
+        self.primary
+            .write8(DATA, ICW4_8086_MODE_NORMAL_END_OF_INTERRUPT);
+        self.secondary
+            .write8(DATA, ICW4_8086_MODE_NORMAL_END_OF_INTERRUPT);
+        self.primary.write8(DATA, OCW1_MASK_ALL_INPUTS);
+        self.secondary.write8(DATA, OCW1_MASK_ALL_INPUTS);
     }
 
     /// Ends a spurious interrupt that arrived through the secondary: the primary saw a real
     /// request on its cascade input and must be told it is over. (A spurious interrupt from
     /// the primary itself needs no end of interrupt.)
     pub fn end_secondary_spurious(&self) {
-        self.primary.write8(COMMAND, OCW2_END_OF_INTERRUPT);
+        self.primary
+            .write8(COMMAND, OCW2_NON_SPECIFIC_END_OF_INTERRUPT);
     }
 }
 
