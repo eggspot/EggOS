@@ -1,5 +1,5 @@
 //! `futex`: threads wait until a 32-bit word in their memory changes, and are woken by
-//! whoever changes it (D89). Waiters are kept per word in a fixed table of
+//! whoever changes it (D89, D90). Waiters are kept per word in a fixed table of
 //! buckets, each a list of waiters on their own stacks, so waiting and waking never allocate.
 
 use super::Errno;
@@ -17,6 +17,8 @@ use eggos_hal::paging::Format;
 pub mod op {
     pub const WAIT: u32 = 0;
     pub const WAKE: u32 = 1;
+    pub const REQUEUE: u32 = 3;
+    pub const CMP_REQUEUE: u32 = 4;
     pub const WAIT_BITSET: u32 = 9;
     pub const WAKE_BITSET: u32 = 10;
     pub const PRIVATE_FLAG: u32 = 128;
@@ -60,7 +62,9 @@ struct Bucket {
 }
 
 // SAFETY: the waiters a bucket links are reached only with the bucket's lock held, and each
-// stays in place until its thread has taken that lock and unlinked it or found it unlinked.
+// stays in place while it is linked: its thread returns only once it is unlinked, either by a
+// waker that then unparks it and touches it no more, or by the thread itself with the lock
+// held.
 unsafe impl Send for Bucket {}
 
 struct Waiter {
@@ -140,7 +144,7 @@ impl Bucket {
 }
 
 /// Waits on `key` until a [`wake`] whose bitset shares a bit with `bitset` takes this
-/// waiter, or the clock reaches `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none).
+/// waiter (on `key`, or on the word a [`requeue`] moved it to), or the clock reaches `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none).
 /// `still_expected` runs first, with the word's bucket locked so no wake can slip in between:
 /// its error, such as `EAGAIN` when the word no longer holds the expected value, ends the
 /// call at once. `ETIMEDOUT` at the deadline. Call it as a blocking system call runs: with
@@ -168,14 +172,14 @@ pub fn wait<P: Platform>(
         still_expected()?;
         bucket.push_back(pointer, key);
     }
-    let park_end = waiter.parker.park_until::<P>(deadline);
+    if waiter.parker.park_until::<P>(deadline) == ParkEnd::Unparked {
+        return Ok(0);
+    }
     let mut bucket = waiter.lock_current_bucket();
     if !bucket.link(pointer).queued {
         return Ok(0);
     }
     bucket.remove(pointer);
-    drop(bucket);
-    debug_assert_eq!(park_end, ParkEnd::DeadlineReached);
     Err(Errno::ETIMEDOUT)
 }
 
@@ -267,18 +271,21 @@ pub fn requeue<P: Platform>(
 }
 
 /// `futex(uaddr, op, val, timeout, uaddr2, val3)`: `FUTEX_WAIT`, `FUTEX_WAKE`,
-/// `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, private or shared, with Linux's checks in
-/// Linux's order: a wait's timeout first, then the operation and its flags (`ENOSYS`), the
-/// bitset and the word's alignment (`EINVAL`), the word itself (`EFAULT`, then `EAGAIN`). A
-/// waiting thread cannot be interrupted by a signal yet: only its own process could send one,
-/// and its only thread is waiting. The other operations are `ENOSYS`.
+/// `FUTEX_REQUEUE`, `FUTEX_CMP_REQUEUE`, `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, private
+/// or shared, with Linux's checks in Linux's order: a wait's timeout first, then the operation
+/// and its flags (`ENOSYS`), a requeue's negative counts, the bitset and each word's alignment
+/// (`EINVAL`), then the words themselves (`EFAULT`, then `EAGAIN`). A requeue's second count
+/// is the `timeout` argument's low 32 bits, and it returns how many it woke and moved
+/// together. A waiting thread cannot be interrupted by a signal yet: only its own process
+/// could send one, and its only thread is waiting. The other operations are `ENOSYS`.
 pub fn futex<P: Platform>(
     process: &Process<P>,
     address: u64,
     operation: u64,
     value: u64,
     timeout: u64,
-    bitset: u64,
+    second_address: u64,
+    third_value: u64,
 ) -> Result<u64, Errno> {
     let operation = operation as u32;
     let command = operation & !(op::PRIVATE_FLAG | op::CLOCK_REALTIME);
@@ -289,34 +296,75 @@ pub fn futex<P: Platform>(
         _ => u64::MAX,
     };
     let bitset = match command {
-        op::WAIT | op::WAKE => MATCH_ANY,
-        op::WAIT_BITSET | op::WAKE_BITSET => bitset as u32,
+        op::WAIT | op::WAKE | op::REQUEUE | op::CMP_REQUEUE => MATCH_ANY,
+        op::WAIT_BITSET | op::WAKE_BITSET => third_value as u32,
         _ => return Err(Errno::ENOSYS),
     };
     if operation & op::CLOCK_REALTIME != 0 && command != op::WAIT_BITSET {
         return Err(Errno::ENOSYS);
     }
-    if bitset == 0 || !address.is_multiple_of(WORD_SIZE) {
+    if bitset == 0 {
         return Err(Errno::EINVAL);
     }
     let shared = operation & op::PRIVATE_FLAG == 0;
-    let key = Key::new(process.id().get(), address, shared);
+    let key = |address| Key::new(process.id().get(), address, shared);
     match command {
         op::WAKE | op::WAKE_BITSET => {
-            if address > <P::PageTableFormat as Format>::USER_END - WORD_SIZE {
-                return Err(Errno::EFAULT);
-            }
-            if shared {
-                read_word(process, address)?;
-            }
-            Ok(u64::from(wake::<P>(key, bitset, wake_limit(value))))
+            check_word(process, address, shared)?;
+            Ok(u64::from(wake::<P>(
+                key(address),
+                bitset,
+                wake_limit(value),
+            )))
         }
-        _ => wait::<P>(key, bitset, deadline, || {
-            match read_word(process, address)? == value as u32 {
-                true => Ok(()),
-                false => Err(Errno::EAGAIN),
+        op::REQUEUE | op::CMP_REQUEUE => {
+            let (Ok(wake_limit), Ok(requeue_limit)) =
+                (u32::try_from(value as i32), u32::try_from(timeout as i32))
+            else {
+                return Err(Errno::EINVAL);
+            };
+            check_word(process, address, shared)?;
+            check_word(process, second_address, shared)?;
+            let (woken, requeued) = requeue::<P>(
+                key(address),
+                key(second_address),
+                wake_limit,
+                requeue_limit,
+                || match command {
+                    op::CMP_REQUEUE => expect_word(process, address, third_value),
+                    _ => Ok(()),
+                },
+            )?;
+            Ok(u64::from(woken) + u64::from(requeued))
+        }
+        _ => {
+            if !address.is_multiple_of(WORD_SIZE) {
+                return Err(Errno::EINVAL);
             }
-        }),
+            wait::<P>(key(address), bitset, deadline, || {
+                expect_word(process, address, value)
+            })
+        }
+    }
+}
+
+fn check_word<P: Platform>(process: &Process<P>, address: u64, shared: bool) -> Result<(), Errno> {
+    if !address.is_multiple_of(WORD_SIZE) {
+        return Err(Errno::EINVAL);
+    }
+    if address > <P::PageTableFormat as Format>::USER_END - WORD_SIZE {
+        return Err(Errno::EFAULT);
+    }
+    if shared {
+        read_word(process, address)?;
+    }
+    Ok(())
+}
+
+fn expect_word<P: Platform>(process: &Process<P>, address: u64, value: u64) -> Result<(), Errno> {
+    match read_word(process, address)? == value as u32 {
+        true => Ok(()),
+        false => Err(Errno::EAGAIN),
     }
 }
 

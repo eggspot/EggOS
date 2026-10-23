@@ -34,7 +34,7 @@ const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 
 type Check = (&'static str, fn(&Startup) -> bool);
 
-static CHECKS: [Check; 19] = [
+static CHECKS: [Check; 20] = [
     (
         "the stack holds the arguments and the environment",
         arguments,
@@ -68,6 +68,10 @@ static CHECKS: [Check; 19] = [
     (
         "futex waits, times out and wakes with Linux's errors",
         futex_waits_and_times_out,
+    ),
+    (
+        "futex requeues with Linux's checks and errors",
+        futex_requeues,
     ),
 ];
 
@@ -666,4 +670,28 @@ fn futex_waits_and_times_out(_: &Startup) -> bool {
         && futex(0, WAKE, 1, 0, 0) == -EFAULT
         && futex(word, UNKNOWN, 0, 0, 0) == -ENOSYS
         && futex(0, WAIT | PRIVATE, 0, 0, 0) == -EFAULT
+}
+
+fn futex_requeues(_: &Startup) -> bool {
+    const REQUEUE: usize = 3;
+    const CMP_REQUEUE: usize = 4;
+    const PRIVATE: usize = 128;
+    const CLOCK_REALTIME: usize = 256;
+    const NEGATIVE: usize = 0xffff_ffff;
+    static WORDS: [AtomicU32; 2] = [AtomicU32::new(7), AtomicU32::new(9)];
+    let (first, second) = (WORDS[0].as_ptr() as usize, WORDS[1].as_ptr() as usize);
+    let futex = |op: usize, wake: usize, requeue: usize, to: usize, expected: usize| {
+        call(number::FUTEX, [first, op, wake, requeue, to, expected])
+    };
+    futex(REQUEUE | PRIVATE, 1, 1, second, 0) == 0
+        && futex(REQUEUE, 0, 1, second, 0) == 0
+        && futex(CMP_REQUEUE | PRIVATE, 1, 1, second, 7) == 0
+        && futex(CMP_REQUEUE | PRIVATE, 1, 1, second, 8) == -EAGAIN
+        && futex(CMP_REQUEUE | PRIVATE, 1, 1, second + 2, 8) == -EINVAL
+        && futex(REQUEUE | PRIVATE, NEGATIVE, 1, second, 0) == -EINVAL
+        && futex(REQUEUE | PRIVATE, 1, 1 << 31, second, 0) == -EINVAL
+        && futex(REQUEUE | PRIVATE | CLOCK_REALTIME, 1, 1, second, 0) == -ENOSYS
+        && futex(REQUEUE | PRIVATE, 1, 1, 0, 0) == 0
+        && futex(REQUEUE, 1, 1, 0, 0) == -EFAULT
+        && futex(REQUEUE | PRIVATE, 1, 1 << 32 | 1, first, 0) == 0
 }

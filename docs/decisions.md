@@ -3774,3 +3774,45 @@ the license, by an explicit instruction recorded here.
   `FUTEX_REQUEUE`), then `clone` for threads with `CLONE_CHILD_CLEARTID`'s shared wake and the
   robust list. Later: `FUTEX_WAKE_OP`, the PI operations, `futex_waitv`, and keys by physical
   page for memory shared between processes.
+
+## D90 `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** musl's condition variables hand their waiters over to the mutex with
+  `FUTEX_REQUEUE` (`futex(l, FUTEX_REQUEUE | FUTEX_PRIVATE, 0, 1, r)` in `unlock_requeue`); a
+  requeue that fails leaves that waiter asleep for good, so C programs with condition
+  variables need it before musl's threads run (D89's "Next"). `FUTEX_CMP_REQUEUE` is the same
+  path with one comparison more. Rust's std uses neither, and glibc's condition variables
+  stopped using requeue in 2.25.
+- **What, as on Linux** (research: the man pages, LTP's `futex_cmp_requeue01` and `02`, the
+  CVE-2018-6927 fix's description, musl's sources): `val` waiters of `uaddr` are woken, oldest
+  first, and the next `val2` (the `timeout` argument's low 32 bits, as an `int`) are moved, in
+  their order, behind `uaddr2`'s own waiters, whatever their bitsets, which they keep for later
+  `FUTEX_WAKE_BITSET`s. Both operations return how many were woken and moved together (the
+  man page's "woken" for `FUTEX_REQUEUE` understates what Linux returns). A `val` of 0 wakes
+  nobody (the "at least one" of `FUTEX_WAKE` is its own). Negative counts are `EINVAL`;
+  `FUTEX_CLOCK_REALTIME` is `ENOSYS`, as for every operation but `FUTEX_WAIT_BITSET`; each
+  word is checked like `FUTEX_WAKE`'s (misaligned `EINVAL`, past user space `EFAULT`, and for
+  a shared futex unreadable `EFAULT`), `uaddr` before `uaddr2`; `FUTEX_CMP_REQUEUE` then reads
+  `uaddr` with both buckets locked, `EFAULT` or `EAGAIN` if it does not hold `val3`. A requeue
+  to the same futex is allowed: it wakes as asked and leaves the others where they are,
+  counted as moved. A moved waiter that times out leaves `uaddr2`'s queue with `ETIMEDOUT`.
+- **Check order, where research and structure differ.** Research put negative counts before
+  the clock flag's `ENOSYS`, with medium confidence; we keep D89's order (the operation and
+  its flags first, for every operation), which only differs for a call that has both errors.
+- **How.** A waiter now records its key in its link and the index of the bucket it is in; a
+  requeue locks both buckets in index order (one when they are the same), checks the word,
+  wakes, then relinks the moved waiters into the second bucket and updates their index. A
+  waiter that wakes at its deadline finds its current bucket by locking the one its index
+  names and checking the index again. A waiter that was unparked returns at once without
+  taking any lock: its waker unlinked it before unparking it, and `Parker::unpark` touches the
+  `Parker` last (D89's handshake is kept only for the timed-out case).
+- **Cost.** `futex_wait_wake_round_trip` −1.5% on aarch64, −0.7% on riscv64, +0.4% on x86_64
+  (within the gate): the bucket index and the key in the link cost about what skipping the
+  second bucket lock after an unpark saves. Nothing else moves.
+- **Tests.** Kernel self-test `futex_waiters_are_requeued_in_order` (five waiters: a check's
+  error moves nothing, one woken and two moved, the third left behind, the moved ones behind
+  the second futex's own waiter in their order with their bitsets, a requeue to the same
+  futex, and a moved waiter with a deadline timing out from its new bucket); the runtime test
+  program's check of the requeue errors from user mode on aarch64, riscv64 and x86_64.
+- **Next.** `clone` for threads (`CLONE_VM | CLONE_THREAD | ...`, `CLONE_SETTLS`,
+  `CLONE_CHILD_CLEARTID`'s shared wake, `CLONE_PARENT_SETTID`), with a futex wait interrupted
+  by a signal handler then returning `EINTR`.
