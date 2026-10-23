@@ -1,14 +1,17 @@
-//! Signal state (M6, D60): `rt_sigaction`, `rt_sigprocmask` and `sigaltstack`. Rust's std
-//! ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
-//! startup, glibc blocks and unblocks signals around much of its work, and a failed call is
-//! fatal to some of them, so the calls work and keep their state before signals are delivered.
+//! Signals (M6): their state, `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` (D60), and
+//! sending and delivering them, `kill`, `tkill`, `tgkill` and `rt_sigpending` (D63). Rust's
+//! std ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
+//! startup, glibc blocks and unblocks signals around much of its work, and `abort()` sends
+//! itself `SIGABRT` and expects to die of it.
 //!
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
-//! which makes its own table on the heap. Its thread has a blocked mask and an alternate stack
-//! ([`ThreadSignals`]), which move to each thread when `clone` exists. Nothing is delivered
-//! yet: a fault still ends the process with its signal whatever the actions and the mask say,
-//! which is also what Linux does for a fault whose signal is blocked or ignored. Delivery
-//! (signal frames, `rt_sigreturn`, `kill`) is the next step.
+//! which makes its own table on the heap. Its thread has a blocked mask, pending signals and
+//! an alternate stack ([`ThreadSignals`]), which move to each thread when `clone` exists. A
+//! signal a call makes due (sent to the caller, or unblocked) is delivered before the call
+//! returns ([`deliver`]): by its default action or `SIG_IGN`; one with a handler stays
+//! pending until signal frames and `rt_sigreturn` exist (part 2). A fault still ends the
+//! process with its signal whatever the actions and the mask say, which is also what Linux
+//! does for a fault whose signal is blocked or ignored.
 
 use super::Errno;
 use super::signal::{SIGKILL, SIGSTOP};

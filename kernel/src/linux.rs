@@ -18,9 +18,11 @@
 //! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59), and the signal
 //! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60), and, on the
 //! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
-//! ([`terminal`], D61). Every other number returns `ENOSYS`, as Linux does for a call it
-//! lacks, so a program that probes for a call carries on. The next calls are the rest of what
-//! a static program's startup needs (signal delivery, ...), then the file system's (M7).
+//! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
+//! `rt_sigpending`, and delivery by their default actions ([`signals`], D63). Every other
+//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
+//! call carries on. The next calls are the rest of what a static program's startup needs
+//! (signal handlers, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
@@ -378,7 +380,7 @@ fn out_of_line_call<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
-    let result = signal_or_other_call(process, number, context);
+    let result = out_of_line_result(process, number, context);
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
     match number {
         number::KILL
@@ -390,9 +392,9 @@ fn out_of_line_call<P: Platform>(
     }
 }
 
-/// [`out_of_line_call`]'s calls, by number.
+/// The result of [`out_of_line_call`]'s call `number`.
 #[inline(always)]
-fn signal_or_other_call<P: Platform>(
+fn out_of_line_result<P: Platform>(
     process: &Process<P>,
     number: u64,
     context: &mut UserContext,
