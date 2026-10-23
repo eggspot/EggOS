@@ -2551,3 +2551,107 @@ switch-path cost; this entry follows it.)
   `esr_context`, Rust's stack-overflow handler); real-time signals queued with their
   `siginfo` (`rt_sigqueueinfo`, `rt_sigtimedwait`); `rt_sigsuspend`; `ppoll`'s mask with
   `EINTR` and `SA_RESTART`; the FP/SIMD registers saved in frames once D54 lands; the vDSO.
+
+## D65 Faults delivered to signal handlers: Linux's `si_code` and `si_addr`, x86_64's `err`, `trapno` and `cr2`, AArch64's `fault_address` and `esr_context` — Decided by the build loop (Linux's rules and the fault path's shape decided by research)
+- **Why now.** Rust's std installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
+  startup to report stack overflows, and crash reporters, JITs, garbage collectors and
+  language runtimes (Java, Go, .NET, JavaScript engines) catch `SIGSEGV`, `SIGBUS`, `SIGILL`,
+  `SIGFPE` and `SIGTRAP` to work at all. Until now every fault ended the process by its
+  signal's default action, whatever the program's handlers (D50, D64).
+- **What a fault sends** (`linux::fault::classify`, research Q1): the signal, `si_code` and
+  `si_addr` Linux gives for it, per architecture.
+  - x86_64: `#PF` `SIGSEGV` with `SEGV_MAPERR` or `SEGV_ACCERR` at CR2; `#GP` `SIGSEGV`
+    `SI_KERNEL` with no address; `#UD` `SIGILL` `ILL_ILLOPN` at `rip`; `#DE` `SIGFPE`
+    `FPE_INTDIV` at `rip`; `int3` `SIGTRAP` `SI_KERNEL` with no address (`rip` is past it, so
+    a handler that returns goes on); `int1` (`#DB`) `SIGTRAP` `TRAP_BRKPT`; `#NP` and `#SS`
+    (a push with a non-canonical stack pointer) `SIGBUS` `SI_KERNEL`; `#AC` `SIGBUS`
+    `BUS_ADRALN`.
+  - AArch64: translation, access-flag and permission faults `SIGSEGV` at the FAR; alignment
+    faults (data, PC, SP) `SIGBUS` `BUS_ADRALN` at the FAR, the PC or the stack pointer (the
+    FAR is unknown after an SP alignment fault); synchronous external aborts `SIGBUS`
+    `BUS_OBJERR`; `brk` `SIGTRAP` `TRAP_BRKPT` at the PC; undefined instructions, the FP/SIMD
+    trap and every other class `SIGILL` `ILL_ILLOPC` at the PC.
+  - RISC-V: page and access faults `SIGSEGV` at `stval`; misaligned accesses `SIGBUS`
+    `BUS_ADRALN` at `stval`; `ebreak` `SIGTRAP` `TRAP_BRKPT` at the PC; illegal instructions
+    and the rest `SIGILL` `ILL_ILLOPC` at the PC. Research was unsure whether Linux reports
+    `sepc` or `stval` for access faults and misaligned accesses; sigaction(2)'s rule decides
+    (`si_addr` is the faulting memory address for `SIGSEGV` and `SIGBUS`).
+- **`SEGV_MAPERR` or `SEGV_ACCERR`** (research Q2) by the process's regions alone: an address
+  in a region whose protection forbids the access (`PROT_NONE` included) is `SEGV_ACCERR`,
+  any other, the stack's guard gap and the kernel's half included, `SEGV_MAPERR`. Looked up
+  only once the page fault is known to be the program's, so demand paging pays nothing.
+- **The machine context reports the exception** (research Q3; `linux::fault::Trap`):
+  - x86_64's `sigcontext` has `err` (the error code), `trapno` (the vector) and `cr2`
+    (page faults only). For an address outside user space, `err` always has the protection
+    bit, mapped or not, as Linux does, so a program cannot learn what the kernel has mapped.
+  - AArch64's has `fault_address` (`si_addr`) and an `esr_context` record (magic
+    `0x45535201`, 16 bytes) after the FP/SIMD one, holding `ESR_EL1`. For an address outside
+    user space the syndrome is sanitized as Linux does: the class and instruction length, and
+    for an abort a level 0 translation fault (with, for a data abort, `WnR` and `CM`); 0 for
+    any other class.
+  - RISC-V's frame has no such fields.
+  - Signals that are not faults report zeros there and no `esr_context` (Linux leaves the
+    last fault's values, stale).
+- **New HAL exception kinds**, so the HAL tells apart every vector a program can raise without
+  costing anything (the kind is chosen per vector already): `Arithmetic` (`#DE`, and `#MF`
+  and `#XM`), `Debug` (`#DB`) and `Segment` (`#NP`, `#SS`), all `Other` before. `trapno`
+  comes from the kind: it cannot tell `#MF` and `#XM` from `#DE` (they cannot happen while
+  programs have no FP/SIMD registers), `#NP` from `#SS` or `#NM` from `#UD` (D54 turns `#NM`
+  into a first use). A first version added the vector to `Exception` (an extra field, then
+  packed above x86_64's error code); either cost the kernel's own exception path 1 or 2
+  instructions (`breakpoint_round_trip` +2 ns on AArch64, x86_64 59 to 61 ns), so neither
+  was kept.
+- **The fault path reads the exception back from the thread's context** (research, after
+  measuring five shapes). Delivering a fault needs, after demand paging failed to resolve
+  it, the program's registers, the raw cause and the unmasked address; keeping them in
+  registers across the page's mapping cost the successful page fault too (up to +1% on
+  `linux_page_fault`), and passing the `Exception` by reference made the thread's loop copy
+  it on every exit (+3.9%) or moved the system-call round trips (+2.4% to +3.2%). So
+  `run_user`'s way out of user mode, on its exception branch only, keeps the cause in the
+  `UserContext` (x86_64: `CR2` in a padding word, the vector and error code being saved by
+  the entry code already; AArch64: `ESR_EL1` and `FAR_EL1`; RISC-V: `scause` and `stval`),
+  and the cold fault path decodes it again with `UserContext::last_exception`. That holds
+  across preemption, a move to another CPU and the kernel's own exceptions (the CPU's cause
+  registers would not, once a page-in can block). Only `context` stays live across the
+  mapping, in place of the `kind` that ending the process needed before. x86_64's exit for a
+  program counter outside user space is kept as the fetch's page fault (named `#PF` now).
+  Host test platforms record theirs with `UserContext::simulate_exception`.
+- **Forced, as Linux forces a fault's signal** (research Q4): a program that blocks or ignores
+  it gets `SIG_DFL` and dies of it (`Signals::force`, D64), so does a fault inside a handler
+  that blocks its own signal; a handler that returns without curing the fault runs again on
+  the re-executed instruction, as on Linux; a frame that cannot be written (a stack overflow
+  without an alternate stack) ends the process with `SIGSEGV`. Nothing else is due when a
+  program faults (every due signal was delivered before it ran again), so the fault's signal
+  is the one delivered and its frame is the one that describes it; no state is kept for it,
+  and `Process` and `Signals` keep their sizes.
+- **Out-of-memory page faults** still end the process with `SIGKILL`, as Linux's OOM killer.
+- **Cost** (same Mac, QEMU `-icount`, against `main`'s CI run): `linux_page_fault` +0.12%
+  on AArch64 (1375.25 to 1376.94), +0.20% on RISC-V (1401.51 to 1404.35) and +0.49% on
+  x86_64 (1129.98 to 1135.48): the stores of the cause on the way out and the context
+  passed to the fault path, all within the gate (1% + 0.5 ns), so the baseline is unchanged.
+  Every other benchmark within ±0.05% (riscv64's two SBI timer benchmarks differ between
+  local QEMU and CI on `main` too). The kernel's own exception path is unchanged
+  (`breakpoint_round_trip` as on `main`), and so are the system-call paths.
+- **Follow-ups:** `AT_MINSIGSTKSZ`; `#MF`, `#XM` and AArch64's trapped FP exceptions with
+  D54; AArch64's top byte in `si_addr` with TBI; RISC-V misaligned accesses emulated as Linux
+  does; `BUS_ADRERR` for file mappings (M7); `TRAP_TRACE` and `TRAP_HWBKPT` with
+  `ptrace`; `/proc/self/maps` and `RLIMIT_STACK` for glibc's `pthread_getattr_np` (Rust's
+  std then names a stack overflow).
+- **Tests.**
+  - Host: per architecture, every kind of exception ends a process without handlers with its
+    Linux signal; a fault's signal blocked or ignored ends the process even with a handler;
+    a handler runs for an unmapped read (`SEGV_MAPERR`), a write to a read-only region
+    (`SEGV_ACCERR`) and a read in the kernel's half (`SEGV_MAPERR`, protection bit or
+    sanitized syndrome), with `si_addr`, the machine context's fault fields, its signal
+    blocked, and a return to the faulting instruction; a `tgkill`'s frame reports no fault;
+    a frame below an unmapped stack pointer ends the process with `SIGSEGV`; AArch64's
+    syndrome sanitizing; the HAL's `last_exception` after a simulated exit (on the CPU, the
+    next exit of any kind replaces it).
+  - QEMU, on aarch64, riscv64 and x86_64: the test program `linux_fault_handler` installs a
+    `SIGSEGV` handler with `SA_SIGINFO`, maps a `PROT_NONE` page, reads an unmapped address
+    and then that page; the handler checks the signal, `si_code` and `si_addr` against
+    registers the program set (and `fault_address` with the `esr_context` record, or `cr2`
+    with `trapno` 14), counts the fault in its frame and resumes the program past it by
+    setting the frame's program counter. The self-test `linux_programs_handle_their_faults`
+    runs it twice and requires an exit of 0 and every frame of the second run freed. With
+    `si_addr` off by one it fails on all three.

@@ -11,10 +11,12 @@
 //! exists. A signal a call makes due (sent to the caller, unblocked, or no longer caught) is
 //! delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
-//! still ends the process with its signal whatever the actions and the mask say, which is also
-//! what Linux does for a fault whose signal is blocked or ignored; faults go to handlers next.
+//! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
+//! with the fault's `siginfo_t`, or, as on Linux, by the default action if the program blocks
+//! or ignores it.
 
 use super::Errno;
+use super::fault::Fault;
 use super::signal::{SIGKILL, SIGSEGV, SIGSTOP};
 use super::signal_frame::{self, BadFrame, STACK_SIZE, Saved};
 use crate::process::{Process, ProcessExit};
@@ -877,6 +879,30 @@ pub fn rt_sigpending<P: Platform>(
 /// the system-call path pays nothing; signals from other processes and timers will need a
 /// check on the way back to user mode.
 pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+    deliver_with(process, context, None)
+}
+
+/// Sends `fault`'s signal from the kernel, forced as Linux forces a fault's: a program that
+/// blocks or ignores it gets `SIG_DFL` and dies of it. Then delivers it as [`deliver`] does,
+/// its handler, if any, starting with the fault's `siginfo_t` and machine context. Nothing else
+/// is due when a program faults (every due signal was delivered before it ran again, and
+/// starting a handler only blocks more), so the fault's signal is the one delivered.
+pub fn deliver_fault<P: Platform>(
+    process: &Process<P>,
+    context: &mut UserContext,
+    fault: &Fault,
+) -> ControlFlow<()> {
+    process.signals().lock().force(fault.signal);
+    deliver_with(process, context, Some(fault))
+}
+
+/// [`deliver`], with `fault` the fault whose signal is due, if one is: its handler's frame
+/// describes it.
+fn deliver_with<P: Platform>(
+    process: &Process<P>,
+    context: &mut UserContext,
+    mut fault: Option<&Fault>,
+) -> ControlFlow<()> {
     loop {
         // The lock is never held across a copy to the program's memory.
         let (delivery, thread) = {
@@ -897,7 +923,10 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
                 action,
                 origin,
             }) => {
-                let started = start_handler(process, context, &thread, signal, &action, origin);
+                let described = fault.take_if(|fault| fault.signal == signal);
+                let started = start_handler(
+                    process, context, &thread, signal, &action, origin, described,
+                );
                 let mut signals = process.signals().lock();
                 match started {
                     Ok(()) => signals.enter_handler(signal, &action),
@@ -915,11 +944,12 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
     }
 }
 
-/// Writes `action`'s frame for `signal` from `origin` and points `context` at its handler, for a
-/// thread whose signal state is `thread`: on the alternate stack with [`flag::ONSTACK`], if it has
-/// one and is not on it already (then the frame goes below the stack pointer, as it does without
-/// the flag). [`BadFrame`] if the frame's memory is not the program's, if it would run off the
-/// bottom of the alternate stack the thread is on, or if the handler has no way to return.
+/// Writes `action`'s frame for `signal` from `origin` (or for `fault`, if the signal is a
+/// fault's) and points `context` at its handler, for a thread whose signal state is `thread`:
+/// on the alternate stack with [`flag::ONSTACK`], if it has one and is not on it already (then
+/// the frame goes below the stack pointer, as it does without the flag). [`BadFrame`] if the
+/// frame's memory is not the program's, if it would run off the bottom of the alternate stack
+/// the thread is on, or if the handler has no way to return.
 fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -927,6 +957,7 @@ fn start_handler<P: Platform>(
     signal: u32,
     action: &Action,
     origin: Origin,
+    fault: Option<&Fault>,
 ) -> Result<(), BadFrame> {
     let restorer = if action.flags & flag::RESTORER != 0 {
         action.restorer
@@ -952,13 +983,19 @@ fn start_handler<P: Platform>(
         blocked: thread.blocked,
         alternate_stack: alternate.to_bytes(stack),
     };
-    let info = signal_frame::info(signal, origin, own_id(process) as u32);
+    let (info, trap) = match fault {
+        Some(fault) => (signal_frame::fault_info(fault), Some(&fault.trap)),
+        None => (
+            signal_frame::info(signal, origin, own_id(process) as u32),
+            None,
+        ),
+    };
     let handler = signal_frame::Handler {
         entry: action.handler,
         restorer,
         signal,
     };
-    signal_frame::write(process, top, &saved, &info, &handler, &mut registers)?;
+    signal_frame::write(process, top, &saved, &info, trap, &handler, &mut registers)?;
     context.set_registers(&registers);
     Ok(())
 }

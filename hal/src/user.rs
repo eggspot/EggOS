@@ -43,6 +43,10 @@ pub struct UserContext {
     pub(crate) arch: riscv64::Registers,
     #[cfg(target_arch = "x86_64")]
     pub(crate) arch: x86_64::Registers,
+    /// Host builds: the exception a test platform's `run_user` last returned
+    /// ([`Self::simulate_exception`]), which [`Self::last_exception`] reports.
+    #[cfg(not(target_os = "none"))]
+    simulated_exception: Option<Exception>,
 }
 
 impl UserContext {
@@ -51,6 +55,8 @@ impl UserContext {
     pub fn new(pc: u64, stack: u64) -> Self {
         Self {
             arch: Registers::new(pc, stack),
+            #[cfg(not(target_os = "none"))]
+            simulated_exception: None,
         }
     }
 
@@ -104,6 +110,24 @@ impl UserContext {
         self.arch.registers()
     }
 
+    /// After [`UserExit::Exception`]: that exception, as `run_user` returned it, decoded again
+    /// from what its way out of user mode kept in the context (the cause and the faulting
+    /// address, stored only for an exception, so a system call's exit pays nothing). The
+    /// program counter is the context's: read it before changing the registers. Only the next
+    /// `run_user` with this context replaces it, so it holds across preemption, a move to
+    /// another CPU and the kernel's own exceptions, unlike the CPU's cause registers.
+    pub fn last_exception(&self) -> Exception {
+        #[cfg(target_os = "none")]
+        {
+            self.arch.last_exception()
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            self.simulated_exception
+                .expect("the test platform's run_user returned no exception")
+        }
+    }
+
     /// Sets every register [`Self::registers`] returns, as returning from a signal handler
     /// does: the program runs on with exactly these, the ones a system call's return would
     /// otherwise overwrite (x86_64's `rcx` and `r11`) included. Only the flags a program may
@@ -130,6 +154,14 @@ impl UserContext {
     /// instruction at `pc`.
     pub fn simulate_syscall(&mut self, number: u64, arguments: [u64; 6], pc: u64) {
         self.arch.simulate_syscall(number, arguments, pc);
+    }
+
+    /// As if the program had run on and raised `exception`: what the test platform's
+    /// `run_user` returns for it, kept for [`Self::last_exception`] as the CPU's way out keeps
+    /// it.
+    pub fn simulate_exception(&mut self, exception: Exception) -> UserExit {
+        self.simulated_exception = Some(exception);
+        UserExit::Exception(exception)
     }
 }
 
@@ -225,6 +257,20 @@ pub struct TestProgram {
     /// clobbered register restored, the changed one 2, and nothing blocked:
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_signal_handler: usize,
+    /// A Linux program whose faults go to its `SIGSEGV` handler (D65): it installs one with
+    /// `SA_SIGINFO` (x86_64 with its own restorer, the others returning through the kernel's
+    /// trampoline) and maps a `PROT_NONE` page with `mmap`, then reads
+    /// [`Self::LINUX_FAULT_ADDRESS`], where nothing is mapped, and the `PROT_NONE` page. Before
+    /// each read it sets three registers to the `si_addr` and `si_code` (`SEGV_MAPERR`, then
+    /// `SEGV_ACCERR`) the handler must see and to where the handler resumes it (`x21` to `x23`,
+    /// `s3` to `s5`, `r13` to `r15`). The handler checks the signal and its `siginfo_t`
+    /// against those registers in its frame, and the fault address its machine context reports
+    /// (AArch64's `fault_address` and `esr_context` record, x86_64's `cr2` and `trapno` 14),
+    /// counts each fault that passed in a fourth register in its frame (`x20`, `s2`, `r12`),
+    /// sets the frame's program counter to the resume point, and returns. The program then
+    /// requires the count to be 2: `exit_group(0)`, or `exit_group(1)` if any check or call
+    /// failed.
+    pub linux_fault_handler: usize,
 }
 
 impl TestProgram {
@@ -246,6 +292,9 @@ impl TestProgram {
     /// How long [`Self::linux_poll`] waits in `ppoll`, in nanoseconds: 2 ms, a few timer
     /// ticks on every architecture.
     pub const LINUX_POLL_WAIT_NS: u64 = 2_000_000;
+    /// Where [`Self::linux_fault_handler`] first faults: an address in no mapping (below
+    /// Linux's lowest `mmap` address), not page-aligned.
+    pub const LINUX_FAULT_ADDRESS: u64 = 0x1230;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -272,6 +321,10 @@ pub(crate) mod aarch64 {
         pub(crate) kernel_sp: u64,
         /// The exception vector entry (0-15) that took the CPU back to the kernel.
         pub(crate) vector: u64,
+        /// After an exception, `ESR_EL1` and `FAR_EL1`, kept by the way out of `run_user` for
+        /// [`super::UserContext::last_exception`].
+        pub(crate) esr: u64,
+        pub(crate) far: u64,
     }
 
     /// Bytes the lower-EL entry code stores below `SP_EL1`: `x`, `elr`, `spsr`, `sp` and
@@ -305,6 +358,8 @@ pub(crate) mod aarch64 {
                 _pad: 0,
                 kernel_sp: 0,
                 vector: 0,
+                esr: 0,
+                far: 0,
             }
         }
         pub(crate) fn thread_pointer(&self) -> u64 {
@@ -375,6 +430,10 @@ pub(crate) mod riscv64 {
         pub(crate) pc: u64,
         /// The kernel's stack pointer while the program runs.
         pub(crate) kernel_sp: u64,
+        /// After an exception, `scause` and `stval`, kept by the way out of `run_user` for
+        /// [`super::UserContext::last_exception`].
+        pub(crate) scause: u64,
+        pub(crate) stval: u64,
     }
 
     /// [`super::UserContext::registers`] on RISC-V.
@@ -396,6 +455,8 @@ pub(crate) mod riscv64 {
                 x,
                 pc,
                 kernel_sp: 0,
+                scause: 0,
+                stval: 0,
             }
         }
         /// `tp` (`x4`), an ordinary register for the trap entry: saved and loaded with the rest.
@@ -491,7 +552,9 @@ pub(crate) mod x86_64 {
         /// new number, from [`NEXT_FS_BASE_ID`], each time it is set. The way in compares it
         /// with the one this CPU's FS base was last loaded for (`X86Tables::fs_base_id`).
         pub(crate) fs_base_id: u64,
-        _pad: u64,
+        /// After a page fault, the faulting address (`CR2`), kept by the way out of `run_user`
+        /// for [`super::UserContext::last_exception`] (with `vector` and `error_code`).
+        pub(crate) fault_address: u64,
     }
 
     /// The next [`Registers::fs_base_id`]: never 0, never reused (2^64 settings).
@@ -567,7 +630,7 @@ pub(crate) mod x86_64 {
                 kernel_rsp: 0,
                 fs_base: 0,
                 fs_base_id: 0,
-                _pad: 0,
+                fault_address: 0,
             }
         }
         pub(crate) fn thread_pointer(&self) -> u64 {
@@ -684,6 +747,23 @@ mod tests {
             assert_eq!(context.set_thread_pointer(kernel), Ok(()));
             assert_eq!(context.thread_pointer(), kernel);
         }
+    }
+
+    #[test]
+    fn the_last_exception_is_the_one_the_exit_returned() {
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        let exception = Exception {
+            kind: crate::ExceptionKind::DataFault,
+            name: "test page fault",
+            code: 2,
+            pc: 0x40_0000,
+            address: Some(0x1230),
+        };
+        assert_eq!(
+            context.simulate_exception(exception),
+            UserExit::Exception(exception)
+        );
+        assert_eq!(context.last_exception(), exception);
     }
 
     #[test]

@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 28] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 29] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -128,6 +128,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 28] {
         (
             "linux_programs_run_signal_handlers",
             linux_programs_run_signal_handlers::<P>,
+        ),
+        (
+            "linux_programs_handle_their_faults",
+            linux_programs_handle_their_faults::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1442,6 +1446,50 @@ fn linux_programs_signal_themselves<P: Platform>(
 fn linux_programs_run_signal_handlers<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_signal_handler).map_err(|failure| match failure {
+        HandlingFailure::Failed => {
+            "a signal call failed, or the handler or rt_sigreturn went wrong"
+        }
+        HandlingFailure::Killed => "the handling program was killed",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program's faults must go to its `SIGSEGV` handler with Linux's `si_code`,
+/// `si_addr` and machine context, and the handler must resume it where its frame says (D65):
+/// the test program's `linux_fault_handler` must exit with 0 (see
+/// [`eggos_hal::user::TestProgram`]), after a fault where nothing is mapped and one on a
+/// `PROT_NONE` page. It runs twice, and everything the second run took must be freed, as in
+/// [`linux_programs_run_signal_handlers`].
+fn linux_programs_handle_their_faults<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_fault_handler).map_err(|failure| match failure {
+        HandlingFailure::Failed => "a call failed, or a fault's handler saw the wrong fault",
+        HandlingFailure::Killed => "the faulting program was killed: its handler did not run",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// How a run of [`run_handling_program`] went wrong.
+enum HandlingFailure {
+    /// The program exited with a status other than 0.
+    Failed,
+    /// The program was killed by a signal.
+    Killed,
+    Other(&'static str),
+}
+
+/// Runs the test program's Linux program at `offset`, which handles signals, twice, on three
+/// writable pages below its stack pointer, and requires it to exit with 0 and the second run
+/// to leave every frame it took freed.
+fn run_handling_program<P: Platform>(
+    memory: &mut Memory<P>,
+    offset: usize,
+) -> Result<(), HandlingFailure> {
+    use HandlingFailure::{Failed, Killed, Other};
     // Three pages below the stack pointer: the program's structures, then its alternate stack,
     // which holds the handler's frame.
     const STACK_TOP: u64 = 0x70_0000;
@@ -1449,40 +1497,39 @@ fn linux_programs_run_signal_handlers<P: Platform>(
     for round in 0..2 {
         if round == 1 {
             if !release_loaded_address_spaces::<P>(|| true) {
-                return Err("a CPU kept an ended process's address space loaded");
+                return Err(Other("a CPU kept an ended process's address space loaded"));
             }
-            before = Some(free_frames().ok_or("there is no frame allocator")?);
+            before = Some(free_frames().ok_or(Other("there is no frame allocator"))?);
         }
         // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
-        let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+        let mut process =
+            unsafe { Process::<P>::with_test_program(&memory.page_tables) }.map_err(Other)?;
         for page in 1..=3 {
-            process.map_new_page(
-                STACK_TOP - page * FRAME_SIZE,
-                Attributes::USER_READ_WRITE,
-                &[],
-            )?;
+            process
+                .map_new_page(
+                    STACK_TOP - page * FRAME_SIZE,
+                    Attributes::USER_READ_WRITE,
+                    &[],
+                )
+                .map_err(Other)?;
         }
         let process = Arc::new(process);
-        let program = P::user_test_program();
-        let context = UserContext::new(
-            process::TEST_PROGRAM_ADDRESS + program.linux_signal_handler as u64,
-            STACK_TOP,
-        );
+        let context = UserContext::new(process::TEST_PROGRAM_ADDRESS + offset as u64, STACK_TOP);
         linux::spawn::<P>(process.clone(), context)
-            .map_err(|_| "could not start a Linux program's thread")?
+            .map_err(|_| Other("could not start a Linux program's thread"))?
             .join::<P>();
         match process.exit_status() {
             Some(ProcessExit::Exited(0)) => {}
-            Some(ProcessExit::Exited(_)) => {
-                return Err("a signal call failed, or the handler or rt_sigreturn went wrong");
-            }
-            Some(ProcessExit::Killed { .. }) => return Err("the handling program was killed"),
-            None => return Err("a Linux program's thread ended without ending it"),
+            Some(ProcessExit::Exited(_)) => return Err(Failed),
+            Some(ProcessExit::Killed { .. }) => return Err(Killed),
+            None => return Err(Other("a Linux program's thread ended without ending it")),
         }
     }
     let freed = || free_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
-        return Err("the handling program's frames and tables were not all freed");
+        return Err(Other(
+            "the handling program's frames and tables were not all freed",
+        ));
     }
     Ok(())
 }

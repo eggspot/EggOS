@@ -75,6 +75,9 @@ mod tests {
             ExceptionKind::InstructionFault,
             ExceptionKind::DataFault,
             ExceptionKind::Alignment,
+            ExceptionKind::Arithmetic,
+            ExceptionKind::Debug,
+            ExceptionKind::Segment,
             ExceptionKind::Interrupt,
             ExceptionKind::Other,
         ] {

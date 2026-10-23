@@ -16,7 +16,12 @@
 //! `fpsimd_context` record and RISC-V's D-extension state. Programs and crash reporters that
 //! read them find them, and saving the real registers later changes only what is written.
 //! `rt_sigreturn` checks the records' shape and ignores their values.
+//!
+//! A fault's frame (D65) also reports the exception ([`Trap`]): x86_64's `err`, `trapno` and
+//! `cr2` in the `sigcontext`, AArch64's `fault_address` and an `esr_context` record after the
+//! FP/SIMD one. Other signals' frames hold zeros there and no `esr_context`.
 
+use super::fault::{Fault, Trap};
 use super::signals::Origin;
 use crate::process::Process;
 use eggos_hal::Platform;
@@ -53,6 +58,16 @@ pub fn info(signal: u32, origin: Origin, pid: u32) -> [u8; INFO_SIZE] {
     info
 }
 
+/// The `siginfo_t` of `fault`: `si_signo`, `si_errno` 0, `si_code` and `si_addr`, the
+/// sender's fields' place.
+pub fn fault_info(fault: &Fault) -> [u8; INFO_SIZE] {
+    let mut info = [0; INFO_SIZE];
+    info[..4].copy_from_slice(&(fault.signal as i32).to_ne_bytes());
+    info[8..12].copy_from_slice(&fault.code.to_ne_bytes());
+    info[16..24].copy_from_slice(&fault.address.to_ne_bytes());
+    info
+}
+
 /// What a frame saves of the interrupted thread and `rt_sigreturn` restores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Saved {
@@ -80,18 +95,20 @@ pub struct Handler {
 
 /// Writes the frame for `handler` below stack pointer `top` (already on the alternate stack if
 /// the handler runs there) and sets `registers` to start the handler with it: on success the
-/// program's next instruction is the handler's first. `saved` is what the frame keeps. Its
-/// padding and unused fields are written as zeros (but AArch64's `__reserved` after the
-/// terminating record, which Linux leaves as it was too).
+/// program's next instruction is the handler's first. `saved` is what the frame keeps, `trap`
+/// the exception it reports for a fault's signal. Its padding and unused fields are written as
+/// zeros (but AArch64's `__reserved` after the terminating record, which Linux leaves as it
+/// was too).
 pub fn write<P: Platform>(
     process: &Process<P>,
     top: u64,
     saved: &Saved,
     info: &[u8; INFO_SIZE],
+    trap: Option<&Trap>,
     handler: &Handler,
     registers: &mut UserRegisters,
 ) -> Result<(), BadFrame> {
-    let (address, bytes) = arch::build(top, saved, info, handler.restorer);
+    let (address, bytes) = arch::build(top, saved, info, trap, handler.restorer);
     process
         .write_user_memory(address, &bytes)
         .map_err(|_| BadFrame)?;
@@ -155,7 +172,7 @@ mod ucontext {
 mod arch {
     //! `struct rt_sigframe { char *pretcode; ucontext_t uc; siginfo_t info; }`, the
     //! `ucontext_t` holding `uc_mcontext` (`struct sigcontext`) before `uc_sigmask`.
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, put, ucontext, word};
+    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
     use eggos_hal::user::UserRegisters;
 
     const UCONTEXT: usize = 8;
@@ -185,7 +202,10 @@ mod arch {
     /// `struct sigcontext`'s fields, from `uc_mcontext`, in the order of `regs`' below.
     const REGISTERS: usize = 18;
     const SELECTORS: usize = 144;
+    const ERR: usize = 152;
+    const TRAPNO: usize = 160;
     const OLDMASK: usize = 168;
+    const CR2: usize = 176;
     const FPSTATE: usize = 184;
     // Linux's offsets from the frame, written out: what programs read.
     const _: () = assert!(UCONTEXT == 8 && MCONTEXT == 48 && SIGMASK == 304 && INFO == 312);
@@ -235,10 +255,16 @@ mod arch {
         top: u64,
         saved: &Saved,
         info: &[u8; INFO_SIZE],
+        trap: Option<&Trap>,
         restorer: u64,
     ) -> (u64, [u8; WRITTEN]) {
         let mut frame = [0; WRITTEN];
         put(&mut frame, 0, restorer);
+        if let Some(trap) = trap {
+            put(&mut frame, MCONTEXT + ERR, trap.cause);
+            put(&mut frame, MCONTEXT + TRAPNO, trap.number);
+            put(&mut frame, MCONTEXT + CR2, trap.address);
+        }
         put(&mut frame, UCONTEXT, FLAGS);
         frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE].copy_from_slice(&saved.alternate_stack);
         for (index, value) in regs(&saved.registers).into_iter().enumerate() {
@@ -342,6 +368,9 @@ mod arch {
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
         pub const UCONTEXT: usize = super::UCONTEXT;
+        pub const ERR: usize = super::MCONTEXT + super::ERR;
+        pub const TRAPNO: usize = super::MCONTEXT + super::TRAPNO;
+        pub const CR2: usize = super::MCONTEXT + super::CR2;
     }
 }
 
@@ -363,13 +392,15 @@ mod generic {
 mod arch {
     //! `uc_mcontext` is `struct sigcontext { u64 fault_address; u64 regs[31]; u64 sp, pc,
     //! pstate; u8 __reserved[4096]; }`; `__reserved` holds records, each a magic number and a
-    //! size: here the FP/SIMD one (`fpsimd_context`), which Linux requires, then the
-    //! terminating null one. Above the frame is a frame record (`x29`, `x30`) that `x29`
-    //! points at, so a backtrace from the handler walks into the interrupted code.
+    //! size: here the FP/SIMD one (`fpsimd_context`), which Linux requires, for a fault's
+    //! signal an `esr_context` with the syndrome, then the terminating null one. Above the
+    //! frame is a frame record (`x29`, `x30`) that `x29` points at, so a backtrace from the
+    //! handler walks into the interrupted code.
     use super::generic::{MCONTEXT, SIGMASK, UCONTEXT};
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, put, ucontext, word};
+    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
     use eggos_hal::user::UserRegisters;
 
+    const FAULT_ADDRESS: usize = MCONTEXT;
     const REGS: usize = MCONTEXT + 8;
     const SP: usize = MCONTEXT + 256;
     const PC: usize = MCONTEXT + 264;
@@ -384,14 +415,16 @@ mod arch {
     /// all zero in the initial state.
     const FPSIMD_MAGIC: u32 = 0x4650_8001;
     const FPSIMD_SIZE: usize = 528;
-    /// `esr_context`, which Linux adds after a fault: skipped when read back.
+    /// `esr_context`, after a fault's: its magic number and size, then `ESR_EL1`. Skipped
+    /// when read back.
     const ESR_MAGIC: u32 = 0x4553_5201;
     const ESR_SIZE: usize = 16;
-    /// What the kernel writes of the frame: up to the terminating record (8 bytes, zero).
+    /// What the kernel writes of the frame: up to the terminating record (8 bytes, zero),
+    /// with room for an `esr_context` before it (zeros after the terminator without one).
     /// The rest of `__reserved` is left as it was, as Linux leaves it.
-    pub const WRITTEN: usize = RESERVED + FPSIMD_SIZE + 8;
-    /// What `rt_sigreturn` reads: room for an `esr_context` too.
-    pub const READ: usize = WRITTEN + ESR_SIZE;
+    pub const WRITTEN: usize = RESERVED + FPSIMD_SIZE + ESR_SIZE + 8;
+    /// What `rt_sigreturn` reads: all of that.
+    pub const READ: usize = WRITTEN;
     /// The frame record above the frame.
     const RECORD: u64 = 16;
     /// No red zone in the ABI.
@@ -406,12 +439,20 @@ mod arch {
         top: u64,
         saved: &Saved,
         info: &[u8; INFO_SIZE],
+        trap: Option<&Trap>,
         _restorer: u64,
     ) -> (u64, [u8; WRITTEN]) {
         let mut frame = [0; WRITTEN];
         frame[..INFO_SIZE].copy_from_slice(info);
         frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE].copy_from_slice(&saved.alternate_stack);
         put(&mut frame, SIGMASK, saved.blocked);
+        if let Some(trap) = trap {
+            put(&mut frame, FAULT_ADDRESS, trap.address);
+            let esr = RESERVED + FPSIMD_SIZE;
+            frame[esr..][..4].copy_from_slice(&ESR_MAGIC.to_ne_bytes());
+            frame[esr + 4..][..4].copy_from_slice(&(ESR_SIZE as u32).to_ne_bytes());
+            put(&mut frame, esr + 8, trap.cause);
+        }
         let registers = &saved.registers;
         for (index, &value) in registers.x.iter().enumerate() {
             put(&mut frame, REGS + index * 8, value);
@@ -493,6 +534,9 @@ mod arch {
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
         pub const UCONTEXT: usize = super::UCONTEXT;
+        pub const FAULT_ADDRESS: usize = super::FAULT_ADDRESS;
+        /// The record after the FP/SIMD one.
+        pub const ESR: usize = super::RESERVED + super::FPSIMD_SIZE;
     }
 }
 
@@ -504,7 +548,7 @@ mod arch {
     //! at its end the header of the extensions that follow, here none (a reserved word and
     //! an end header, all zero).
     use super::generic::{MCONTEXT, SIGMASK, UCONTEXT};
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, put, ucontext, word};
+    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
     use eggos_hal::user::UserRegisters;
 
     /// The whole frame: the `ucontext_t` is 960 bytes.
@@ -525,10 +569,12 @@ mod arch {
         top.wrapping_sub(SIZE) & !15
     }
 
+    /// No exception is reported beyond the `siginfo_t`: `trap` is unused.
     pub fn build(
         top: u64,
         saved: &Saved,
         info: &[u8; INFO_SIZE],
+        _trap: Option<&Trap>,
         _restorer: u64,
     ) -> (u64, [u8; WRITTEN]) {
         let mut frame = [0; WRITTEN];

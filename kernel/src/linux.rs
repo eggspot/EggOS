@@ -5,7 +5,8 @@
 //! dispatched by its Linux number on the architecture ([`number`]) and returns its result, or
 //! `-errno`, in the result register; an interrupt resumes the program; a page fault the
 //! process resolves (a page of one of its regions touched for the first time, D52) resumes it
-//! too; any other exception ends the process with the signal Linux would send for it.
+//! too; any other exception sends the program the signal Linux would send for it, which its
+//! handler may catch ([`fault`], D65).
 //!
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
@@ -20,12 +21,14 @@
 //! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
 //! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
 //! `rt_sigpending`, and delivery by their default actions ([`signals`], D63), and signal
-//! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64).
+//! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64), and
+//! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
 pub mod exec;
+pub mod fault;
 pub mod identity;
 pub mod limits;
 pub mod memory;
@@ -229,6 +232,7 @@ pub mod signal {
     pub const SIGILL: u32 = 4;
     pub const SIGTRAP: u32 = 5;
     pub const SIGBUS: u32 = 7;
+    pub const SIGFPE: u32 = 8;
     pub const SIGKILL: u32 = 9;
     pub const SIGSEGV: u32 = 11;
     pub const SIGSTOP: u32 = 19;
@@ -278,32 +282,41 @@ pub fn handle<P: Platform>(
     match exit {
         UserExit::Syscall => syscall(process, context),
         UserExit::Interrupt => ControlFlow::Continue(()),
-        UserExit::Exception(exception) => {
-            user_exception(process, exception.kind, exception.code, exception.address)
-        }
+        UserExit::Exception(exception) => user_exception(
+            process,
+            context,
+            exception.kind,
+            exception.code,
+            exception.address,
+        ),
     }
 }
 
 /// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
-/// any. A page fault resumes the program if the process resolves it (demand paging); otherwise
-/// the process ends: `SIGKILL` when there was no memory for the page, as Linux's out-of-memory
-/// killer would, else the signal Linux sends for the exception ([`kill`]). Out of line and laid
-/// out away from the system-call path, which stays as short as it was (the exception's parts
-/// passed alone keep the loop's state in registers): a fault costs a frame's zeroing anyway.
+/// any. A page fault resumes the program if the process resolves it (demand paging); with no
+/// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
+/// would; any other fault sends the program the signal Linux sends for it
+/// ([`signal_fault`]). Out of line and laid out away from the system-call path, which stays
+/// as short as it was (the exception's parts passed alone keep the loop's state in
+/// registers). Only `context` stays live across the page's mapping for the fault's sake, in
+/// place of the `kind` that ending the process needed before D65: the fault reads the rest
+/// back from it ([`UserContext::last_exception`]). Keeping the raw cause and the address too
+/// cost up to +1% on `linux_page_fault`.
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
     process: &Process<P>,
+    context: &mut UserContext,
     kind: ExceptionKind,
     code: u64,
     address: Option<u64>,
 ) -> ControlFlow<()> {
-    let (Some(fault), Some(address)) = (P::page_fault(kind, code), address) else {
-        return kill(process, kind);
+    let (Some(page_fault), Some(address)) = (P::page_fault(kind, code), address) else {
+        return signal_fault(process, context);
     };
-    match process.resolve_page_fault(address, fault) {
+    match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
-        Err(UnresolvedFault::NotAllowed) => kill(process, kind),
+        Err(UnresolvedFault::NotAllowed) => signal_fault(process, context),
         Err(UnresolvedFault::OutOfMemory) => {
             process.exit(ProcessExit::Killed {
                 signal: signal::SIGKILL,
@@ -313,25 +326,16 @@ fn user_exception<P: Platform>(
     }
 }
 
-/// Ends the process after an exception of `kind` in its program, with the signal Linux sends
-/// for it, by its default action whatever the program's handlers: faults go to handlers in the
-/// next part of D64's work.
+/// Sends the program, whose registers are `context` after the exception it raised, the
+/// signal Linux sends for that exception ([`fault::classify`]), forced: its handler runs if it
+/// has one and neither blocks nor ignores the signal, else the process ends with it
+/// ([`signals::deliver_fault`]). Breaks when the process ends.
 #[cold]
 #[inline(never)]
-fn kill<P: Platform>(process: &Process<P>, kind: ExceptionKind) -> ControlFlow<()> {
-    let signal = match kind {
-        ExceptionKind::IllegalInstruction => signal::SIGILL,
-        ExceptionKind::Breakpoint => signal::SIGTRAP,
-        ExceptionKind::Alignment => signal::SIGBUS,
-        ExceptionKind::DataFault
-        | ExceptionKind::InstructionFault
-        // Never from user mode (interrupts come back as `UserExit::Interrupt`); listed so a
-        // new kind is a compile error here.
-        | ExceptionKind::Interrupt
-        | ExceptionKind::Other => signal::SIGSEGV,
-    };
-    process.exit(ProcessExit::Killed { signal });
-    ControlFlow::Break(())
+fn signal_fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+    let exception = context.last_exception();
+    let fault = fault::classify(process, &exception, context.stack());
+    signals::deliver_fault(process, context, &fault)
 }
 
 /// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
@@ -1842,7 +1846,8 @@ mod tests {
                 pc: 0x40_0000,
                 address: Some(address),
             };
-            handle(process, &mut context, UserExit::Exception(exception))
+            let exit = context.simulate_exception(exception);
+            handle(process, &mut context, exit)
         };
         let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
         let with_region = |pages: u64| {
@@ -1893,8 +1898,27 @@ mod tests {
         );
     }
 
+    /// An exception of `kind` at 0x40_0000, with the faulting address `address`, if any, whose
+    /// raw cause is `status` with the architecture's `class` in it as the HAL reports it:
+    /// AArch64's `ESR_EL1.EC`, RISC-V's `scause`; x86_64's error code is `status` alone (the
+    /// kind tells its vectors apart).
+    fn exception(kind: ExceptionKind, class: u64, status: u64, address: Option<u64>) -> Exception {
+        let code = match () {
+            _ if cfg!(target_arch = "x86_64") => status,
+            _ if cfg!(target_arch = "aarch64") => class << 26 | status,
+            _ => class | status,
+        };
+        Exception {
+            kind,
+            name: "test exception",
+            code,
+            pc: 0x40_0000,
+            address,
+        }
+    }
+
     #[test]
-    fn exceptions_kill_the_process_with_linux_signals_and_interrupts_resume() {
+    fn faults_without_handlers_end_the_process_with_linux_signals_and_interrupts_resume() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let mut context = called(1000, [0; 6]);
@@ -1903,25 +1927,53 @@ mod tests {
             handle(&process, &mut context, UserExit::Interrupt),
             ControlFlow::Continue(())
         );
-        for (kind, signal) in [
-            (ExceptionKind::IllegalInstruction, signal::SIGILL),
-            (ExceptionKind::Breakpoint, signal::SIGTRAP),
-            (ExceptionKind::Alignment, signal::SIGBUS),
-            (ExceptionKind::DataFault, signal::SIGSEGV),
-            (ExceptionKind::InstructionFault, signal::SIGSEGV),
-            (ExceptionKind::Other, signal::SIGSEGV),
-        ] {
+        // Exceptions as each architecture reports them (the class is x86_64's vector,
+        // AArch64's `ESR_EL1.EC`, RISC-V's `scause`), with the signal Linux sends for each.
+        use ExceptionKind::*;
+        #[cfg(target_arch = "x86_64")]
+        let faults = [
+            (Arithmetic, 0, 0, signal::SIGFPE),
+            (Debug, 1, 0, signal::SIGTRAP),
+            (Breakpoint, 3, 0, signal::SIGTRAP),
+            (IllegalInstruction, 6, 0, signal::SIGILL),
+            (Segment, 12, 0, signal::SIGBUS),
+            (Other, 13, 0, signal::SIGSEGV),
+            (DataFault, 14, 0, signal::SIGSEGV),
+            (InstructionFault, 14, 0x10, signal::SIGSEGV),
+            (Alignment, 17, 0, signal::SIGBUS),
+        ];
+        #[cfg(target_arch = "aarch64")]
+        let faults = [
+            (IllegalInstruction, 0x00, 0, signal::SIGILL),
+            (Other, 0x0e, 0, signal::SIGILL),
+            (InstructionFault, 0x20, 0, signal::SIGSEGV),
+            (Alignment, 0x22, 0, signal::SIGBUS),
+            (DataFault, 0x24, 0, signal::SIGSEGV),
+            // An alignment fault and a synchronous external abort, by their status codes.
+            (DataFault, 0x24, 0x21, signal::SIGBUS),
+            (DataFault, 0x24, 0x10, signal::SIGBUS),
+            (Alignment, 0x26, 0, signal::SIGBUS),
+            (Breakpoint, 0x3c, 0, signal::SIGTRAP),
+        ];
+        #[cfg(target_arch = "riscv64")]
+        let faults = [
+            (Alignment, 0, 0, signal::SIGBUS),
+            (InstructionFault, 1, 0, signal::SIGSEGV),
+            (IllegalInstruction, 2, 0, signal::SIGILL),
+            (Breakpoint, 3, 0, signal::SIGTRAP),
+            (DataFault, 13, 0, signal::SIGSEGV),
+            (Other, 9, 0, signal::SIGILL),
+        ];
+        for (kind, class, status, signal) in faults {
             let process = process_with_data(&kernel, b"ab");
-            let exception = Exception {
-                kind,
-                name: "test exception",
-                code: 0,
-                pc: 0x40_0000,
-                address: None,
-            };
+            let exception = exception(kind, class, status, None);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Exception(exception)),
-                ControlFlow::Break(())
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
+                ControlFlow::Break(()),
+                "{kind:?} {class:#x}"
             );
             assert_eq!(process.exit_status(), Some(ProcessExit::Killed { signal }));
             // The first way to end wins.
@@ -1931,7 +1983,8 @@ mod tests {
     }
 
     /// A process with the stack pages below [`HANDLER_STACK_TOP`] and an alternate stack's
-    /// below [`ALTERNATE_STACK_TOP`], writable, and its pid.
+    /// below [`ALTERNATE_STACK_TOP`], writable, a read-only region at [`READ_ONLY`] with no
+    /// page mapped yet, and its pid.
     fn process_with_stacks(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
     ) -> (Arc<Process<P>>, u64) {
@@ -1944,6 +1997,13 @@ mod tests {
                     .unwrap();
             }
         }
+        process
+            .add_region(
+                READ_ONLY,
+                READ_ONLY + FRAME_SIZE,
+                Attributes::USER_READ_ONLY,
+            )
+            .unwrap();
         let process = Arc::new(process);
         let pid = u64::from(process.id().get());
         (process, pid)
@@ -1951,6 +2011,7 @@ mod tests {
 
     const HANDLER_STACK_TOP: u64 = 0x70_0000;
     const ALTERNATE_STACK_TOP: u64 = 0x60_0000;
+    const READ_ONLY: u64 = 0x50_0000;
     const HANDLER: u64 = 0x40_1000;
     const RESTORER: u64 = 0x40_2000;
 
@@ -2247,6 +2308,200 @@ mod tests {
             context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
             assert_eq!(
                 handle(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Break(())
+            );
+            assert_eq!(
+                process.exit_status(),
+                Some(ProcessExit::Killed {
+                    signal: signal::SIGSEGV
+                })
+            );
+        }
+    }
+    /// The exception class of a page fault (x86_64's `#PF`, AArch64's data abort from EL0,
+    /// RISC-V's store page fault) and its code for a `write`, as the test platform encodes it
+    /// (with AArch64's class in it).
+    fn page_fault_exception(address: u64, write: bool) -> Exception {
+        let class = match () {
+            _ if cfg!(target_arch = "x86_64") => 14,
+            _ if cfg!(target_arch = "aarch64") => 0x24,
+            _ => 15,
+        };
+        let mut status = if write { crate::tests::FAULT_WRITE } else { 0 };
+        if cfg!(target_arch = "aarch64") {
+            // The instruction length bit, which a sanitized syndrome keeps.
+            status |= 1 << 25;
+        }
+        exception(ExceptionKind::DataFault, class, status, Some(address))
+    }
+
+    /// Sets `signal`'s action to `SIG_IGN` with `rt_sigaction`.
+    fn ignore(process: &Arc<Process<P>>, signal: u64) {
+        let action = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
+        let words = [signals::IGNORE, 0, 0, 0];
+        process
+            .write_user_memory(action, &words.map(u64::to_ne_bytes).concat())
+            .unwrap();
+        assert_eq!(
+            call(process, number::RT_SIGACTION, [signal, action, 0, 8, 0, 0]),
+            0
+        );
+    }
+
+    /// The signal's frame's machine context, for the handler `context` starts: x86_64's
+    /// `err`, `trapno` and `cr2`; AArch64's `fault_address`, then the record after the FP/SIMD
+    /// one (its magic number and size) and the syndrome it holds; RISC-V's nothing.
+    fn reported_trap(process: &Process<P>, context: &UserContext) -> [u64; 3] {
+        let [_, _, ucontext, ..] = context.syscall_arguments();
+        let frame = ucontext - signal_frame::layout::UCONTEXT as u64;
+        let word = |offset: usize| {
+            let mut bytes = [0; 8];
+            process
+                .read_user_memory(frame + offset as u64, &mut bytes)
+                .unwrap();
+            u64::from_ne_bytes(bytes)
+        };
+        #[cfg(target_arch = "x86_64")]
+        {
+            use signal_frame::layout::{CR2, ERR, TRAPNO};
+            [word(ERR), word(TRAPNO), word(CR2)]
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            use signal_frame::layout::{ESR, FAULT_ADDRESS};
+            [word(FAULT_ADDRESS), word(ESR), word(ESR + 8)]
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            let _ = word;
+            [0; 3]
+        }
+    }
+
+    #[test]
+    fn faults_run_handlers_with_their_address_and_return_to_the_faulting_instruction() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let sigsegv = u64::from(signal::SIGSEGV);
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        set_handler(&process, sigsegv, flags, 0);
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        // A read where nothing is mapped, a write to the read-only region and a read in the
+        // kernel's half: SEGV_MAPERR, SEGV_ACCERR, SEGV_MAPERR.
+        for (address, write, code) in [
+            (0x1000, false, fault::code::SEGV_MAPERR),
+            (READ_ONLY + 8, true, fault::code::SEGV_ACCERR),
+            (user_end + 0x1000, false, fault::code::SEGV_MAPERR),
+        ] {
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            let interrupted = context.clone();
+            let exception = page_fault_exception(address, write);
+            assert_eq!(
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            let [signal, info, ..] = context.syscall_arguments();
+            assert_eq!(signal, sigsegv);
+            let mut bytes = [0; 24];
+            process.read_user_memory(info, &mut bytes).unwrap();
+            let int = |at: usize| i32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+            assert_eq!((int(0), int(8)), (sigsegv as i32, code), "{address:#x}");
+            assert_eq!(u64::from_ne_bytes(bytes[16..].try_into().unwrap()), address);
+            let kernel_half = address >= user_end;
+            let reported = reported_trap(&process, &context);
+            #[cfg(target_arch = "x86_64")]
+            assert_eq!(
+                reported,
+                [exception.code | u64::from(kernel_half), 14, address],
+                "err (protection set past user space), trapno, cr2"
+            );
+            #[cfg(target_arch = "aarch64")]
+            {
+                let esr = if kernel_half {
+                    fault::sanitized_syndrome(exception.code)
+                } else {
+                    exception.code
+                };
+                assert_eq!(reported, [address, 0x10_4553_5201, esr]);
+            }
+            #[cfg(target_arch = "riscv64")]
+            let _ = (reported, kernel_half);
+            // Its signal is blocked while it runs; it returns to the faulting instruction.
+            assert_eq!(
+                process.signals().lock().thread().blocked,
+                1 << (sigsegv - 1)
+            );
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.registers(), interrupted.registers());
+        }
+        // A signal that is not a fault's reports no exception.
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+        context.simulate_syscall(number::TGKILL, [pid, pid, sigsegv, 0, 0, 0], 0x40_0004);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(reported_trap(&process, &context), [0; 3]);
+        assert_eq!(process.exit_status(), None);
+        // With no stack to write the frame on: SIGSEGV by its default action.
+        let mut context = UserContext::new(0x40_0000, 0x10_0000);
+        let exception = page_fault_exception(0x1000, false);
+        assert_eq!(
+            {
+                let exit = context.simulate_exception(exception);
+                handle(&process, &mut context, exit)
+            },
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+    }
+
+    #[test]
+    fn a_fault_s_signal_blocked_or_ignored_ends_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let sigsegv = u64::from(signal::SIGSEGV);
+        for blocked in [true, false] {
+            let (process, _) = process_with_stacks(&kernel);
+            if blocked {
+                set_handler(&process, sigsegv, signals::flag::SIGINFO, 0);
+                let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE + 64;
+                process
+                    .write_user_memory(set, &(1u64 << (sigsegv - 1)).to_ne_bytes())
+                    .unwrap();
+                assert_eq!(
+                    call(&process, number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]),
+                    0
+                );
+            } else {
+                ignore(&process, sigsegv);
+            }
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            let exception = page_fault_exception(0x1000, false);
+            assert_eq!(
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
                 ControlFlow::Break(())
             );
             assert_eq!(

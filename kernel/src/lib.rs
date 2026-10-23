@@ -338,6 +338,8 @@ pub(crate) mod tests {
             let linux_signals = crate::process::TEST_PROGRAM_ADDRESS + program.linux_signals as u64;
             let linux_signal_handler =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_handler as u64;
+            let linux_fault_handler =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_fault_handler as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -360,7 +362,7 @@ pub(crate) mod tests {
                             );
                         }
                         _ => {
-                            return UserExit::Exception(Exception {
+                            return context.simulate_exception(Exception {
                                 kind: ExceptionKind::DataFault,
                                 name: "test page fault",
                                 code: FAULT_WRITE,
@@ -380,14 +382,14 @@ pub(crate) mod tests {
                     context.simulate_syscall(TestProgram::SYSCALL_REPORT, arguments, pc + 4);
                     UserExit::Syscall
                 }
-                pc if pc == checks + 8 => UserExit::Exception(Exception {
+                pc if pc == checks + 8 => context.simulate_exception(Exception {
                     kind: ExceptionKind::DataFault,
                     name: "test page fault",
                     code: 0,
                     pc,
                     address: Some(context.syscall_result()),
                 }),
-                pc if pc == floating_point => UserExit::Exception(Exception {
+                pc if pc == floating_point => context.simulate_exception(Exception {
                     kind: ExceptionKind::IllegalInstruction,
                     name: "test floating-point trap",
                     code: 0,
@@ -530,6 +532,11 @@ pub(crate) mod tests {
                 {
                     signal_handler_program(context, linux_signal_handler)
                 }
+                pc if (linux_fault_handler..linux_fault_handler + 5).contains(&pc)
+                    || pc == linux_fault_handler + SIGNAL_HANDLER =>
+                {
+                    fault_handler_program(context, linux_fault_handler)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -579,6 +586,7 @@ pub(crate) mod tests {
                 linux_poll: 264,
                 linux_signals: 300,
                 linux_signal_handler: 340,
+                linux_fault_handler: 400,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -814,6 +822,172 @@ pub(crate) mod tests {
             }
             4 => (number::RT_SIGPROCMASK, [0, 0, stack - 72, 8, 0, 0]),
             _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
+    /// The four registers the simulated `linux_fault_handler` sets before each fault: the
+    /// faults its handler counted, the `si_addr` and `si_code` the handler must see, and where
+    /// it resumes the program (`x20` to `x23`, `s2` to `s5`, `r12` to `r15`), with their
+    /// offsets in the `ucontext`, then the program counter's.
+    #[cfg(target_arch = "aarch64")]
+    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
+        let [.., count, address, code, resume, _, _, _, _, _, _, _] = &mut registers.x;
+        [count, address, code, resume]
+    }
+    #[cfg(target_arch = "aarch64")]
+    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] = [
+        176 + 8 + 20 * 8,
+        176 + 8 + 21 * 8,
+        176 + 8 + 22 * 8,
+        176 + 8 + 23 * 8,
+        176 + 264,
+    ];
+    #[cfg(target_arch = "riscv64")]
+    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
+        let [count, address, code, resume] = &mut registers.x[18..22] else {
+            unreachable!()
+        };
+        [count, address, code, resume]
+    }
+    #[cfg(target_arch = "riscv64")]
+    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] =
+        [176 + 18 * 8, 176 + 19 * 8, 176 + 20 * 8, 176 + 21 * 8, 176];
+    #[cfg(target_arch = "x86_64")]
+    fn fault_registers(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 4] {
+        [
+            &mut registers.r12,
+            &mut registers.r13,
+            &mut registers.r14,
+            &mut registers.r15,
+        ]
+    }
+    #[cfg(target_arch = "x86_64")]
+    const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] =
+        [40 + 4 * 8, 40 + 5 * 8, 40 + 6 * 8, 40 + 7 * 8, 40 + 16 * 8];
+
+    /// Whether the machine context at `ucontext` reports a fault at `address` as the
+    /// simulated `linux_fault_handler`'s handler checks it: AArch64's `fault_address` and
+    /// `esr_context` record, x86_64's `cr2` and `trapno` 14, nothing on RISC-V.
+    fn reports_fault(ucontext: u64, address: u64) -> bool {
+        let word = |at: u64| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(ucontext + at, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        match () {
+            _ if cfg!(target_arch = "aarch64") => {
+                word(176) == address && word(176 + 288 + 528) == 0x10_4553_5201
+            }
+            _ if cfg!(target_arch = "x86_64") => word(40 + 176) == address && word(40 + 160) == 14,
+            _ => true,
+        }
+    }
+
+    /// Plays `linux_fault_handler` (at `start`) for the test platform: `rt_sigaction` for
+    /// `SIGSEGV`, `mmap` of a `PROT_NONE` page, a read of `LINUX_FAULT_ADDRESS`, then of that
+    /// page, each a fault whose handler (at [`SIGNAL_HANDLER`]) checks its `siginfo_t` and
+    /// machine context against the registers the frame holds, counts it, resumes the program
+    /// past it and returns with `rt_sigreturn`; then `exit_group(0)` if both were counted.
+    fn fault_handler_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{fault, number, signals};
+        use eggos_hal::user::UserExit;
+        static MAPPED: AtomicU64 = AtomicU64::new(0);
+        let pc = context.pc();
+        let stack = context.stack();
+        let word = |address: u64| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        if pc == start + SIGNAL_HANDLER {
+            let [signal, info, ucontext, ..] = context.syscall_arguments();
+            let [count, address, code, resume, pc_at] =
+                FAULT_REGISTERS_IN_UCONTEXT.map(|offset| ucontext + offset);
+            let (signo, si_code, si_addr) =
+                (word(info) as u32, word(info + 8) as u32, word(info + 16));
+            if signal == 11
+                && signo == 11
+                && u64::from(si_code) == word(code)
+                && si_addr == word(address)
+                && reports_fault(ucontext, si_addr)
+            {
+                write_user_bytes(count, &(word(count) + 1).to_ne_bytes());
+            }
+            write_user_bytes(pc_at, &word(resume).to_ne_bytes());
+            // Its return: x86_64's `ret` pops the restorer.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut registers = context.registers();
+                registers.rsp += 8;
+                context.set_registers(&registers);
+            }
+            context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
+            return UserExit::Syscall;
+        }
+        let result = context.syscall_result();
+        let step = pc - start;
+        let fault = |context: &mut eggos_hal::user::UserContext, address, code, resume| {
+            let mut registers = context.registers();
+            let [_, expected_address, expected_code, resume_at] = fault_registers(&mut registers);
+            (*expected_address, *expected_code, *resume_at) = (address, code, resume);
+            context.set_registers(&registers);
+            // A read, as the test platform encodes it, with the architecture's class in it
+            // (AArch64's data abort, RISC-V's load page fault).
+            let code = match () {
+                _ if cfg!(target_arch = "x86_64") => 0,
+                _ if cfg!(target_arch = "aarch64") => 0x24 << 26,
+                _ => 13,
+            };
+            context.simulate_exception(Exception {
+                kind: ExceptionKind::DataFault,
+                name: "test page fault",
+                code,
+                pc,
+                address: Some(address),
+            })
+        };
+        let (number, arguments) = match step {
+            0 => {
+                let flags = signals::flag::SIGINFO
+                    | if cfg!(target_arch = "x86_64") {
+                        signals::flag::RESTORER
+                    } else {
+                        0
+                    };
+                let handler = start + SIGNAL_HANDLER;
+                let action = if signals::HAS_RESTORER {
+                    [handler, flags, start + SIGNAL_HANDLER + 10, 0]
+                } else {
+                    [handler, flags, 0, 0]
+                };
+                write_user_bytes(stack - 64, &action.map(u64::to_ne_bytes).concat());
+                (number::RT_SIGACTION, [11, stack - 64, 0, 8, 0, 0])
+            }
+            1 if result != 0 => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            1 => (number::MMAP, [0, 4096, 0, 0x22, u64::MAX, 0]),
+            2 if result > u64::MAX - 4095 => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            2 => {
+                MAPPED.store(result, Ordering::Relaxed);
+                let mut registers = context.registers();
+                *fault_registers(&mut registers)[0] = 0;
+                context.set_registers(&registers);
+                let code = fault::code::SEGV_MAPERR as u64;
+                return fault(context, TestProgram::LINUX_FAULT_ADDRESS, code, pc + 1);
+            }
+            3 => {
+                let code = fault::code::SEGV_ACCERR as u64;
+                return fault(context, MAPPED.load(Ordering::Relaxed), code, pc + 1);
+            }
+            _ => {
+                let mut registers = context.registers();
+                let counted = *fault_registers(&mut registers)[0];
+                (number::EXIT_GROUP, [u64::from(counted != 2), 0, 0, 0, 0, 0])
+            }
         };
         context.simulate_syscall(number, arguments, pc + 1);
         UserExit::Syscall

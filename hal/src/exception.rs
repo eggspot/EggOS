@@ -19,6 +19,15 @@ pub enum ExceptionKind {
     DataFault,
     /// A misaligned instruction, data or stack access.
     Alignment,
+    /// An arithmetic error the CPU traps: integer division by zero or overflow (x86_64's
+    /// `#DE`), or an unmasked floating-point exception (`#MF`, `#XM`).
+    Arithmetic,
+    /// A debug exception: a hardware breakpoint or watchpoint, a single step, or x86_64's
+    /// `int1`.
+    Debug,
+    /// A segment check failed: a segment not present, or a stack access outside its segment,
+    /// such as a push with a non-canonical stack pointer (x86_64's `#NP` and `#SS`).
+    Segment,
     /// An interrupt arrived that the kernel does not handle yet.
     Interrupt,
     /// Anything else; [`Exception::name`] says what.
