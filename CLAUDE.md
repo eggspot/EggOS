@@ -101,7 +101,7 @@ Every change is judged against it:
   - the baseline lines for exactly the affected benchmarks are updated in the same PR;
   - the PR merges.
 
-  This doesn't wait for the owner, who can overrule it later. (Owner, 2026-10-23.)
+  This doesn't wait for the owner, who can overrule it later. (D78)
 - **Design for speed from the start**, not as a later optimisation pass: choose data structures and
   algorithms for their real cost (cache misses, allocations, locks, copies, context switches), avoid
   allocation and locking on hot paths, prefer zero-copy, and keep per-CPU state per-CPU.
