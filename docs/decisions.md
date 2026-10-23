@@ -1817,3 +1817,64 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `set_tid_address`, `arch_prctl`, `rt_sigprocmask`, ...), FP/SIMD state per thread, and a
   first program built from our own Rust source; the shootdown with `clone`; `madvise`
   (`MADV_DONTNEED` zeroes private pages), `mremap` and `MAP_POPULATE` when a program needs them.
+
+## D55 Linux startup calls, first part: `writev`, `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`; processes get ids — Decided by the build loop (`uname`'s values decided by research)
+(D54, FP/SIMD state per thread, is taken by PR #47, which waits for the owner's OK on its
+switch-path cost; this entry follows it.)
+- **Why now.** M6's next step: what a static C or Rust program calls at startup before
+  `main`. musl and glibc call `set_tid_address` and `set_robust_list` first thing, stdio
+  flushes with `writev` (its buffer and the new data in one call), and libraries and build
+  scripts ask `uname` what they run on. These need no FP/SIMD state, so they do not wait for
+  PR #47. The rest of the startup calls (`arch_prctl` and the thread pointer, which belong in
+  the switch path with FP/SIMD; signals; `getrandom` with the random number generator;
+  `prlimit64`, `poll`, `ioctl`) come next.
+- **Processes get ids** (`process::ProcessId`): from 1 up, from one atomic counter, never
+  reused, at most `i32::MAX` (a Linux `pid_t` is positive); `Process::new` fails with "out of
+  process ids" past that. Reuse waits for a process table with `wait4`. A process has one
+  thread until `clone`, and its first thread's id is the process's, as on Linux, so `gettid`
+  returns the process id. `getppid` returns 0, as for a process the kernel started itself
+  (Linux's `init`), until `fork` and `clone` give processes parents.
+- **`set_tid_address` and `set_robust_list` remember nothing yet.** Linux keeps both
+  addresses to act at thread exit (clear the word and wake a futex there; release the robust
+  futexes) for the process's other threads and processes sharing its memory. A process has
+  neither yet, and its memory ends with it, so nothing could observe those writes.
+  `set_tid_address` returns the thread id; `set_robust_list` returns `EINVAL` unless the
+  length is 24 (`struct robust_list_head` on 64-bit), as Linux does. Both start storing their
+  addresses with `clone`.
+- **`writev`** (to standard output and standard error, the console, as `write`): `EBADF`
+  first; more than 1024 buffers (`IOV_MAX`) `EINVAL`; the `struct iovec` array copied into
+  the kernel once (on the stack for up to 8 entries, C libraries pass 2, on the heap above;
+  `ENOMEM` if that fails), so the program changing it meanwhile changes nothing; an
+  unreadable array `EFAULT`; then every length checked (negative as a `ssize_t`: `EINVAL`)
+  and every buffer checked to end within user space (`EFAULT`), before anything is written,
+  as Linux's `access_ok`; then the buffers in order, at most `MAX_RW_COUNT` bytes in all,
+  stopping at the first byte that is not the program's memory (the bytes before, or
+  `EFAULT` for none). `write` and `writev` share one copy loop (page-bounded chunks, a
+  preemption point after each).
+- **`uname`** (research: gVisor, WSL1 and FreeBSD's Linux layer all do the same): `sysname`
+  "Linux", so build scripts and libraries that look at `uname -s` take their Linux path;
+  `release` "6.1.0-eggos", a long-term release above every C library's minimum kernel on
+  every architecture (loongarch64 needs 5.19), low enough to limit what programs assume, with
+  EggOS's suffix; `version` "#1 SMP EggOS <workspace version>" (no build date, for
+  reproducible builds; "PREEMPT" only once the kernel itself is preemptible); `machine`
+  Linux's name for the architecture; `nodename` "localhost" until `sethostname` (Linux's
+  "(none)" breaks local host lookups); `domainname` "(none)". The structure is built at
+  compile time and copied out in one call. Consequence: some programs pick features by kernel
+  version instead of trying them (Go, the JDK, systemd, Docker), so every 6.1-era call we
+  have not written must keep returning `ENOSYS`, never a wrong result; the release is raised
+  only by a recorded decision; `/proc/sys/kernel/osrelease` and `/proc/version` will report
+  the same when procfs exists.
+- **Dispatch cost.** Every new call goes behind one out-of-line function (`other_call`), so
+  the thread loop's inlined dispatch keeps three arms and its `number > LAST` compare.
+  Growing it still tipped LLVM into calling `linux::syscall` instead of inlining it (+8 to
+  +10% on `linux_syscall_round_trip`, found by diffing the loop's disassembly); `syscall` is
+  now `#[inline(always)]`, as `handle` was, and every benchmark is back within the gate.
+- **Tests.** Host tests: `writev` in order, empty buffers, more than the stack holds, every
+  error before anything is written, partial writes; the identity calls through the
+  dispatcher, two processes with different ids, `uname` into writable memory and `EFAULT`
+  into read-only memory or across into it; the `utsname` layout. QEMU, on aarch64, riscv64
+  and x86_64: the ELF-started test program now checks `gettid == getpid` and writes its
+  arguments and environment with `writev` from an iovec on its stack, so both run with each
+  architecture's real numbers and the runner checks the line reached the console.
+- **Follow-ups:** a `writev` benchmark once a sink faster than the console's UART exists
+  (pipes, files: M7); `getpid`'s round trip as the cheapest real call, with the next batch.

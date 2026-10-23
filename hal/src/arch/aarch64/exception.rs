@@ -255,11 +255,21 @@ aarch64_user_test_linux_hello:
     .balign 4
     .global aarch64_user_test_linux_start
 aarch64_user_test_linux_start:
-    // Linux's generic numbers: write 64, exit_group 94. x19 is argc, x20 walks argv and envp,
-    // x21 counts the two lists.
+    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178. x19 is argc,
+    // x20 walks argv and envp, x21 counts the two lists, x22 holds the process id. Each string
+    // is written by writev from one iovec on the stack. Ends with exit_group(255) if the stack
+    // is misaligned or the thread's id is not the process's.
     mov     x9, sp
     mov     x0, #255
     tst     x9, #15
+    b.ne    9f
+    mov     x8, #172
+    svc     #0
+    mov     x22, x0
+    mov     x8, #178
+    svc     #0
+    cmp     x0, x22
+    mov     x0, #255
     b.ne    9f
     ldr     x19, [sp]
     add     x20, sp, #8
@@ -271,9 +281,13 @@ aarch64_user_test_linux_start:
     cbz     w3, 5f
     add     x2, x2, #1
     b       7b
-5:  mov     x0, #1
-    mov     x8, #64
+5:  stp     x1, x2, [sp, #-16]!
+    mov     x0, #1
+    mov     x1, sp
+    mov     x2, #1
+    mov     x8, #66
     svc     #0
+    add     sp, sp, #16
     b       6b
 8:  subs    x21, x21, #1
     b.ne    6b
