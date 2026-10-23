@@ -290,9 +290,9 @@ impl KernelHeap {
         self.heap.lock()
     }
 
-    /// The frame allocator's free frames plus [`Heap::slab_frames`], read together: a count
-    /// that frames the size classes take do not change, so code that gives back every frame
-    /// it took leaves it as it was even when a size class grew meanwhile.
+    /// The frame allocator's free frames plus [`Heap::slab_frames`], read together; `None`
+    /// before there is a frame allocator. A size class taking a frame leaves the sum as it is,
+    /// so code that gives back every frame it took leaves it unchanged even if a class grew.
     pub fn free_and_slab_frames(&self) -> Option<u64> {
         let heap = self.lock();
         let free = memory::FRAMES.lock().as_ref()?.free_frames();
