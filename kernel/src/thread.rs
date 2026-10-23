@@ -549,10 +549,10 @@ impl WaitQueue {
 }
 
 /// A place one thread parks in until a deadline or until another thread unparks it: the
-/// timed wait futexes and other blocking calls build on. A parked thread with a deadline
-/// sleeps with the sleepers of its CPU, so the timer wakes it then, and [`Self::unpark`] takes
-/// it out of them early; one without waits in the `Parker` alone. Whoever unparks must keep the `Parker` alive until the call returns, and the
-/// parked thread must not drop it before the unparker is done with it (a lock both hold).
+/// timed wait futexes and other blocking calls build on. A parked thread with a deadline sleeps
+/// with the sleepers of its CPU, so the timer wakes it then, and [`Self::unpark`] takes it out
+/// of them early; one without waits in the `Parker` alone. `unpark` touches the `Parker` last
+/// when it marks it unparked, so the parked thread may drop it once `park_until` returns.
 pub struct Parker {
     unparked: AtomicBool,
     parked: UnsafeCell<Option<Parked>>,
@@ -649,8 +649,9 @@ impl Parker {
     /// and finds nothing due.
     pub fn unpark<P: Platform>(&self) {
         let mut schedulers = SCHEDULER.lock();
+        let parked = self.parked(&mut schedulers).take();
         self.unparked.store(true, Ordering::Release);
-        let thread = match self.parked(&mut schedulers).take() {
+        let thread = match parked {
             Some(Parked::Untimed(thread)) => thread,
             Some(Parked::Sleeping(thread, cpu)) => {
                 let Some(thread) = schedulers.of(cpu).sleeping.remove(thread) else {
