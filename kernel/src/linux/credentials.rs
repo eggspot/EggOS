@@ -409,15 +409,18 @@ pub fn getgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
         let mut bytes = [0u8; GROUPS_PER_COPY * 4];
         let chunk = {
             let state = process.credentials_and_limits().lock();
-            let groups = state.credentials.groups();
-            let chunk = &groups[copied.min(groups.len())..][..GROUPS_PER_COPY.min(count - copied)];
+            let groups = state.credentials.groups().get(copied..count).unwrap_or(&[]);
+            let chunk = &groups[..groups.len().min(GROUPS_PER_COPY)];
             for (word, group) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(chunk) {
                 *word = group.to_ne_bytes();
             }
             chunk.len()
         };
+        if chunk == 0 {
+            break;
+        }
         process
-            .write_user_memory(list + copied as u64 * 4, &bytes[..chunk * 4])
+            .write_user_memory(list.wrapping_add(copied as u64 * 4), &bytes[..chunk * 4])
             .map_err(|_| Errno::EFAULT)?;
         copied += chunk;
     }
@@ -429,14 +432,14 @@ pub fn getgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
 /// `size` above [`MAX_GROUPS`] (an `int`: negative ones too); `ENOMEM`; `EFAULT` if `list` is
 /// not the program's memory. A `size` of 0 empties the list without reading `list`.
 pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Result<u64, Errno> {
-    let privileged = || {
+    let is_privileged = || {
         process
             .credentials_and_limits()
             .lock()
             .credentials
             .is_privileged()
     };
-    if !privileged() {
+    if !is_privileged() {
         return Err(Errno::EPERM);
     }
     let size = size as u32;
@@ -451,7 +454,10 @@ pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
         let chunk = GROUPS_PER_COPY.min(size as usize - groups.len());
         let mut bytes = [0u8; GROUPS_PER_COPY * 4];
         process
-            .read_user_memory(list + groups.len() as u64 * 4, &mut bytes[..chunk * 4])
+            .read_user_memory(
+                list.wrapping_add(groups.len() as u64 * 4),
+                &mut bytes[..chunk * 4],
+            )
             .map_err(|_| Errno::EFAULT)?;
         groups.extend(
             bytes[..chunk * 4]

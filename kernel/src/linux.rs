@@ -324,7 +324,8 @@ impl Errno {
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
     /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
-    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`).
+    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`), or an id of -1 (`setuid`,
+    /// `setgid`), a list too small or too long (`getgroups`, `setgroups`).
     pub const EINVAL: Self = Self(22);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
@@ -1436,6 +1437,32 @@ mod tests {
             Errno::EFAULT.result()
         );
         assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 3);
+        let many: alloc::vec::Vec<u32> = (0..100).rev().collect();
+        store(writable + 1024, &many);
+        assert_eq!(
+            call(
+                &process,
+                number::SETGROUPS,
+                [100, writable + 1024, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::GETGROUPS,
+                [128, writable + 2048, 0, 0, 0, 0]
+            ),
+            100
+        );
+        assert_eq!(
+            words(writable + 2048, 100),
+            (0..100).collect::<alloc::vec::Vec<u32>>()
+        );
+        assert_eq!(
+            call(&process, number::SETGROUPS, [3, writable + 64, 0, 0, 0, 0]),
+            0
+        );
 
         assert_eq!(call(&process, number::SETRESGID, [5, 6, 7, 0, 0, 0]), 0);
         assert_eq!(call(&process, number::GETGID, [0; 6]), 5);
