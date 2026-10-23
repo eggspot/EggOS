@@ -23,15 +23,16 @@
 use super::Errno;
 use super::fault::Fault;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
-use super::signal_frame::{self, BadFrame, INFO_SIZE, STACK_SIZE, Saved};
+use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
 use crate::process::{Process, ProcessExit};
-use crate::thread;
+use crate::thread::{self, FpStart};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
+use eggos_hal::fp::FpState;
 use eggos_hal::user::UserContext;
 
 /// How many signals there are: 1 to 64 (`_NSIG`).
@@ -1417,6 +1418,8 @@ fn start_handler<P: Platform>(
         registers,
         blocked: saved_mask,
         alternate_stack: alternate.to_bytes(stack),
+        fp: thread::with_running_fp::<P, _>(|state| signal_frame::fp_part(state))
+            .unwrap_or_else(signal_frame::initial_fp_part),
     };
     let (info, trap) = match fault {
         Some(fault) => (signal_frame::fault_info(fault), Some(&fault.trap)),
@@ -1428,21 +1431,49 @@ fn start_handler<P: Platform>(
         signal: u32::from_ne_bytes(info[..4].try_into().unwrap()),
     };
     signal_frame::write(process, top, &saved, &info, trap, &handler, &mut registers)?;
+    if signal_frame::HANDLER_STARTS_WITH_INITIAL_FP {
+        thread::with_running_fp::<P, _>(|state| *state = FpState::new());
+    }
     context.set_registers(&registers);
     Ok(())
 }
 
+/// Gives the running thread the FP/SIMD registers a returning handler's frame holds (D82),
+/// first giving it FP/SIMD registers if it has none and the frame holds other values than a
+/// new program's. [`BadFrame`], changing nothing, if a load would fault on them, or if there
+/// is no memory for them.
+fn load_frame_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
+    let load = |state: &mut FpState| signal_frame::load_fp_part(part, state);
+    if let Some(loaded) = thread::with_running_fp::<P, _>(load) {
+        return loaded;
+    }
+    if *part == signal_frame::initial_fp_part() {
+        return Ok(());
+    }
+    match thread::start_fp::<P>() {
+        FpStart::Started => thread::with_running_fp::<P, _>(load)
+            .expect("a thread that just got FP/SIMD registers has them"),
+        FpStart::AlreadyHad => unreachable!("with_running_fp found no FP/SIMD registers"),
+        FpStart::KernelThread => Ok(()),
+        FpStart::OutOfMemory => Err(BadFrame),
+    }
+}
+
 /// `rt_sigreturn()`: a handler returned. Restores the registers, blocked mask and alternate stack
-/// its frame saved (see [`signal_frame`]), and returns the restored result register, which the
-/// dispatcher writes back unchanged. A frame that is not the program's memory, or whose FP/SIMD
-/// records are not in Linux's shape, sends `SIGSEGV` (whatever the program blocked or ignored), as
-/// on Linux, and changes nothing else. The signals the restored mask unblocks are delivered next.
+/// its frame saved (see [`signal_frame`]), its FP/SIMD registers too, and returns the restored
+/// result register, which the dispatcher writes back unchanged. A frame that is not the program's
+/// memory, whose FP/SIMD records are not in Linux's shape, or whose FP/SIMD values a load would
+/// fault on, sends `SIGSEGV` (whatever the program blocked or ignored), as on Linux, and changes
+/// nothing else. The signals the restored mask unblocks are delivered next.
 pub fn rt_sigreturn<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
     let current = context.registers();
-    match signal_frame::read(process, &current) {
+    match signal_frame::read(process, &current).and_then(|saved| {
+        load_frame_fp::<P>(&saved.fp)?;
+        Ok(saved)
+    }) {
         Ok(saved) => {
             context.set_registers(&saved.registers);
             process

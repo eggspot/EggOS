@@ -2651,6 +2651,105 @@ mod tests {
             );
         }
     }
+    /// Where the FP/SIMD part of the frame whose `ucontext_t` is at `ucontext` is: x86_64's
+    /// image where `fpstate` points, the others' in the frame.
+    fn fp_part_address(process: &Process<P>, ucontext: u64) -> u64 {
+        let frame = ucontext - signal_frame::layout::UCONTEXT as u64;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut pointer = [0; 8];
+            process
+                .read_user_memory(frame + signal_frame::layout::FPSTATE as u64, &mut pointer)
+                .unwrap();
+            u64::from_ne_bytes(pointer)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = process;
+            frame + signal_frame::layout::FP as u64
+        }
+    }
+
+    #[test]
+    fn frames_hold_the_fp_simd_registers_and_rt_sigreturn_loads_them() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        thread::start::<P>().unwrap();
+        let sigusr1 = 10u64;
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        let start_handler = |process: &Arc<Process<P>>, pid: u64| {
+            set_handler(process, sigusr1, flags, 0);
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
+            context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
+            assert_eq!(
+                handle(process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            let [_, _, ucontext, ..] = context.syscall_arguments();
+            (context, ucontext)
+        };
+        let (process, pid) = process_with_stacks(&kernel);
+        let (mut context, ucontext) = start_handler(&process, pid);
+        let fp = fp_part_address(&process, ucontext);
+        let mut part = signal_frame::initial_fp_part();
+        part.fill(0xa5);
+        process.read_user_memory(fp, &mut part).unwrap();
+        assert_eq!(part, signal_frame::initial_fp_part());
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(fp % 64, 0);
+            assert_eq!(u16::from_ne_bytes([part[0], part[1]]), 0x037f);
+            assert_eq!(u32::from_ne_bytes(part[24..28].try_into().unwrap()), 0x1f80);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let mut header = [0; 8];
+            process.read_user_memory(fp - 8, &mut header).unwrap();
+            assert_eq!(header, [0x01, 0x80, 0x50, 0x46, 0x10, 0x02, 0, 0]);
+        }
+        part[part.len() - 1] = 1;
+        process.write_user_memory(fp, &part).unwrap();
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(process.exit_status(), None);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let fpstate = ucontext - signal_frame::layout::UCONTEXT as u64
+                + signal_frame::layout::FPSTATE as u64;
+            let (process, pid) = process_with_stacks(&kernel);
+            let (mut context, _) = start_handler(&process, pid);
+            process.write_user_memory(fpstate, &[0; 8]).unwrap();
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(process.exit_status(), None);
+            let (process, pid) = process_with_stacks(&kernel);
+            let (mut context, _) = start_handler(&process, pid);
+            let misaligned = fp + 8;
+            process
+                .write_user_memory(fpstate, &misaligned.to_ne_bytes())
+                .unwrap();
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Break(())
+            );
+            assert_eq!(
+                process.exit_status(),
+                Some(ProcessExit::Killed {
+                    signal: signal::SIGSEGV
+                })
+            );
+        }
+    }
+
     /// The exception class of a page fault (x86_64's `#PF`, AArch64's data abort from EL0,
     /// RISC-V's store page fault) and its code for a `write`, as the test platform encodes it
     /// (with AArch64's class in it).

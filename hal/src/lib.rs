@@ -286,7 +286,7 @@ pub trait Platform: 'static {
     /// # Safety
     /// Interrupts must be masked, the registers must be on ([`Self::set_user_fp`]), and
     /// `state` must be valid for a read and hold what [`Self::save_fp`] or
-    /// [`fp::FpState::new`] wrote.
+    /// [`fp::FpState::new`] wrote, changed only through [`fp::FpState`]'s methods.
     unsafe fn restore_fp(state: *const fp::FpState);
 
     /// Calls `cpu` with the hardware id of every CPU the firmware describes as usable, the

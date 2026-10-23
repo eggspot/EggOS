@@ -1197,6 +1197,26 @@ pub(crate) mod tests {
     #[cfg(target_arch = "x86_64")]
     const CHANGED_IN_UCONTEXT: u64 = 40 + 4 * 8;
 
+    /// Where the simulated `linux_signal_handler`'s handler sets an FP/SIMD register in its
+    /// frame whose `ucontext_t` is at `ucontext` (`v9`, `f9`, `xmm9`), as the program does: the
+    /// thread has none until then, so `rt_sigreturn` must give it some.
+    fn fp_changed_in_frame(ucontext: u64) -> u64 {
+        #[cfg(target_arch = "aarch64")]
+        {
+            ucontext + 176 + 288 + 16 + 9 * 16
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            ucontext + 176 + 256 + 9 * 8
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut image = [0u8; 8];
+            read_user_bytes(ucontext + 40 + 184, &mut image);
+            u64::from_ne_bytes(image) + 160 + 9 * 16
+        }
+    }
+
     /// Plays `linux_signal_handler` (at `start`) for the test platform: `sigaltstack`,
     /// `rt_sigaction` for `SIGUSR1`, `getpid`, then `tgkill`, whose handler (at
     /// [`SIGNAL_HANDLER`]) checks its arguments and stack, changes the frame and returns with
@@ -1221,6 +1241,8 @@ pub(crate) mod tests {
             let (base, size) = (word(ucontext + 16), word(ucontext + 32));
             if signal == 10 && signo == 10 && code == -6 && (base..base + size).contains(&stack) {
                 write_user_bytes(ucontext + CHANGED_IN_UCONTEXT, &2u64.to_ne_bytes());
+                let changed = eggos_hal::user::TestProgram::LINUX_SIGNAL_FP_CHANGED;
+                write_user_bytes(fp_changed_in_frame(ucontext), &changed.to_ne_bytes());
             }
             let mut registers = context.registers();
             *kept_and_changed(&mut registers)[0] = 0;

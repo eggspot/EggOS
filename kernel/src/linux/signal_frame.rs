@@ -10,12 +10,12 @@
 //! `rt_sigreturn` (x86_64 and AArch64), or the kernel's own return trampoline
 //! ([`super::trampoline`]).
 //!
-//! Programs get no FP/SIMD registers until they are saved per thread (D54), but every frame
-//! has its FP/SIMD part in Linux's shape all the same, holding the architecture's initial
-//! state, which is all a program can have: x86_64's `FXSAVE` image below the frame, AArch64's
-//! `fpsimd_context` record and RISC-V's D-extension state. Programs and crash reporters that
-//! read them find them, and saving the real registers later changes only what is written.
-//! `rt_sigreturn` checks the records' shape and ignores their values.
+//! Every frame has its FP/SIMD part in Linux's shape (D64): x86_64's `FXSAVE` image above the
+//! frame, which `fpstate` points at, AArch64's `fpsimd_context` record and RISC-V's
+//! D-extension state. It holds the thread's registers as the interrupted code left them, or
+//! the architecture's initial state for a thread that has none (D82). `rt_sigreturn` checks
+//! the records' shape and loads the registers from them, so a handler that changes them in the
+//! frame changes them for the interrupted code, as on Linux.
 //!
 //! A fault's frame (D65) also reports the exception ([`Trap`]): x86_64's `err`, `trapno` and
 //! `cr2` in the `sigcontext`, AArch64's `fault_address` and an `esr_context` record after the
@@ -25,7 +25,10 @@
 use super::fault::{Fault, Trap};
 use crate::process::Process;
 use eggos_hal::Platform;
+use eggos_hal::fp::FpState;
 use eggos_hal::user::UserRegisters;
+
+pub use arch::FpPart;
 
 /// The size of a `siginfo_t`.
 pub const INFO_SIZE: usize = 128;
@@ -51,7 +54,30 @@ pub struct Saved {
     pub blocked: u64,
     /// Its alternate stack, a `stack_t`.
     pub alternate_stack: [u8; STACK_SIZE],
+    /// Its FP/SIMD registers, as the frame holds them ([`fp_part`]).
+    pub fp: FpPart,
 }
+
+/// The FP/SIMD part of a frame holding `state`'s registers.
+pub fn fp_part(state: &FpState) -> FpPart {
+    arch::fp_part(state)
+}
+
+/// The FP/SIMD part of a frame for a thread that has no FP/SIMD registers: the initial state,
+/// what it would start with.
+pub fn initial_fp_part() -> FpPart {
+    arch::fp_part(&FpState::new())
+}
+
+/// Sets `state`'s registers to those `part` holds. [`BadFrame`], changing nothing, if a load
+/// would fault on them (x86_64's reserved `MXCSR` bits), as Linux's `rt_sigreturn` refuses them.
+pub fn load_fp_part(part: &FpPart, state: &mut FpState) -> Result<(), BadFrame> {
+    arch::load_fp_part(part, state)
+}
+
+/// Whether a handler starts with the initial FP/SIMD state rather than the interrupted code's,
+/// as on Linux: x86_64 only.
+pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = arch::HANDLER_STARTS_WITH_INITIAL_FP;
 
 /// Why a frame could not be written or read: its memory is not the program's (or, for a
 /// handler with no way to return, there is none). Linux then sends `SIGSEGV`.
@@ -87,7 +113,7 @@ pub fn write<P: Platform>(
     process
         .write_user_memory(address, &bytes)
         .map_err(|_| BadFrame)?;
-    arch::write_extra(process, top, address, saved).map_err(|_| BadFrame)?;
+    arch::write_extra(process, top, address, saved)?;
     arch::enter(registers, address, handler);
     Ok(())
 }
@@ -114,7 +140,9 @@ pub fn read<P: Platform>(
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| BadFrame)?;
-    arch::parse(&bytes, registers).ok_or(BadFrame)
+    let mut saved = arch::parse(&bytes, registers).ok_or(BadFrame)?;
+    arch::read_extra(process, &bytes, &mut saved)?;
+    Ok(saved)
 }
 
 /// The value in the system-call result register of `registers`, which the dispatcher writes
@@ -147,7 +175,11 @@ mod ucontext {
 mod arch {
     //! `struct rt_sigframe { char *pretcode; ucontext_t uc; siginfo_t info; }`, the
     //! `ucontext_t` holding `uc_mcontext` (`struct sigcontext`) before `uc_sigmask`.
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
+    use super::{
+        BadFrame, FpState, Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word,
+    };
+    use crate::process::Process;
+    use eggos_hal::Platform;
     use eggos_hal::user::UserRegisters;
 
     const UCONTEXT: usize = 8;
@@ -157,18 +189,27 @@ mod arch {
     /// The whole frame.
     pub const WRITTEN: usize = INFO + INFO_SIZE;
     const _: () = assert!(WRITTEN == 440);
-    /// What `rt_sigreturn` reads: the frame, not the FP/SIMD image its `fpstate` points at,
-    /// whose values it ignores (any pointer is accepted, null included, as on Linux).
+    /// What `rt_sigreturn` reads first: the frame, then the FP/SIMD image its `fpstate` points
+    /// at ([`read_extra`]).
     pub const READ: usize = WRITTEN;
 
     /// The `FXSAVE` image (`struct _fpstate`): 512 bytes, 64-byte aligned, above the frame.
     const FP_SIZE: u64 = 512;
-    /// Its initial state, as `FNINIT` and the reset value of `MXCSR` leave it: the x87 control
-    /// word 0x037f (every exception masked, double-extended precision, round to nearest) and
-    /// `MXCSR` 0x1f80 (every SSE exception masked, round to nearest); everything else zero,
-    /// the software-reserved bytes too (no `XSAVE` state follows).
-    const FP_CONTROL_WORD: u16 = 0x037f;
-    const FP_MXCSR: u32 = 0x1f80;
+    /// The image, its software-reserved bytes from 464 zero: no `XSAVE` state follows.
+    pub type FpPart = [u8; FP_SIZE as usize];
+    const FP_SOFTWARE: usize = 464;
+
+    pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = true;
+
+    pub fn fp_part(state: &FpState) -> FpPart {
+        let mut part = *state.fxsave_image();
+        part[FP_SOFTWARE..].fill(0);
+        part
+    }
+
+    pub fn load_fp_part(part: &FpPart, state: &mut FpState) -> Result<(), BadFrame> {
+        state.set_fxsave_image(part).map_err(|_| BadFrame)
+    }
 
     /// `uc_flags`: `UC_SIGCONTEXT_SS` and `UC_STRICT_RESTORE_SS`, as Linux sets them for
     /// every 64-bit frame (the saved `ss` is the real one).
@@ -255,16 +296,35 @@ mod arch {
     }
 
     /// The FP/SIMD image above the frame.
-    pub fn write_extra<P: eggos_hal::Platform>(
-        process: &crate::process::Process<P>,
+    pub fn write_extra<P: Platform>(
+        process: &Process<P>,
         top: u64,
         _frame: u64,
-        _saved: &Saved,
-    ) -> Result<(), crate::process::InvalidUserAddress> {
-        let mut image = [0; FP_SIZE as usize];
-        image[..2].copy_from_slice(&FP_CONTROL_WORD.to_ne_bytes());
-        image[24..28].copy_from_slice(&FP_MXCSR.to_ne_bytes());
-        process.write_user_memory(fp_image(top), &image)
+        saved: &Saved,
+    ) -> Result<(), BadFrame> {
+        process
+            .write_user_memory(fp_image(top), &saved.fp)
+            .map_err(|_| BadFrame)
+    }
+
+    /// The FP/SIMD image `fpstate` points at; the initial state if it is null. One that is
+    /// not 16-byte aligned, as `FXRSTOR64` needs, is refused, as on Linux, which loads it from
+    /// the program's memory.
+    pub fn read_extra<P: Platform>(
+        process: &Process<P>,
+        frame: &[u8; READ],
+        saved: &mut Saved,
+    ) -> Result<(), BadFrame> {
+        match word(frame, MCONTEXT + FPSTATE) {
+            0 => {
+                saved.fp = fp_part(&FpState::new());
+                Ok(())
+            }
+            image if image.is_multiple_of(16) => process
+                .read_user_memory(image, &mut saved.fp)
+                .map_err(|_| BadFrame),
+            _ => Err(BadFrame),
+        }
     }
 
     pub fn enter(registers: &mut UserRegisters, frame: u64, handler: &Handler) {
@@ -332,6 +392,7 @@ mod arch {
             alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
                 .try_into()
                 .unwrap(),
+            fp: [0; FP_SIZE as usize],
         })
     }
 
@@ -343,6 +404,7 @@ mod arch {
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
         pub const UCONTEXT: usize = super::UCONTEXT;
+        pub const FPSTATE: usize = super::MCONTEXT + super::FPSTATE;
         pub const ERR: usize = super::MCONTEXT + super::ERR;
         pub const TRAPNO: usize = super::MCONTEXT + super::TRAPNO;
         pub const CR2: usize = super::MCONTEXT + super::CR2;
@@ -372,7 +434,11 @@ mod arch {
     //! frame is a frame record (`x29`, `x30`) that `x29` points at, so a backtrace from the
     //! handler walks into the interrupted code.
     use super::generic::{MCONTEXT, SIGMASK, UCONTEXT};
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
+    use super::{
+        BadFrame, FpState, Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word,
+    };
+    use crate::process::Process;
+    use eggos_hal::Platform;
     use eggos_hal::user::UserRegisters;
 
     const FAULT_ADDRESS: usize = MCONTEXT;
@@ -386,10 +452,37 @@ mod arch {
     /// The whole frame: the `ucontext_t` is 4560 bytes.
     const SIZE: u64 = (UCONTEXT + 4560) as u64;
     const _: () = assert!(SIZE == 4688);
-    /// `fpsimd_context`: its magic number and size, then `fpsr`, `fpcr` and `v0` to `v31`,
-    /// all zero in the initial state.
+    /// `fpsimd_context`: its magic number and size, then `fpsr`, `fpcr` and `v0` to `v31`.
     const FPSIMD_MAGIC: u32 = 0x4650_8001;
     const FPSIMD_SIZE: usize = 528;
+    /// What follows the record's magic number and size: `fpsr` (32 bits), `fpcr` (32 bits),
+    /// then `v0` to `v31` (128 bits each).
+    pub type FpPart = [u8; FPSIMD_SIZE - 8];
+    const FP_PART: usize = RESERVED + 8;
+    const FP_V: usize = 8;
+    const _: () = assert!(FP_PART + FP_V == 608);
+
+    pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = false;
+
+    pub fn fp_part(state: &FpState) -> FpPart {
+        let mut part = [0; FPSIMD_SIZE - 8];
+        part[..4].copy_from_slice(&state.fpsr().to_ne_bytes());
+        part[4..8].copy_from_slice(&state.fpcr().to_ne_bytes());
+        for (index, v) in state.v().iter().enumerate() {
+            part[FP_V + index * 16..][..16].copy_from_slice(&v.to_ne_bytes());
+        }
+        part
+    }
+
+    /// Every value as it is, as on Linux: the reserved bits of `FPCR` and `FPSR` ignore writes.
+    pub fn load_fp_part(part: &FpPart, state: &mut FpState) -> Result<(), BadFrame> {
+        let half = |at: usize| u32::from_ne_bytes(part[at..at + 4].try_into().unwrap());
+        state.set_fpcr_and_fpsr(half(4), half(0));
+        for (index, v) in state.v_mut().iter_mut().enumerate() {
+            *v = u128::from_ne_bytes(part[FP_V + index * 16..][..16].try_into().unwrap());
+        }
+        Ok(())
+    }
     /// `esr_context`, after a fault's: its magic number and size, then `ESR_EL1`. Skipped
     /// when read back.
     const ESR_MAGIC: u32 = 0x4553_5201;
@@ -437,20 +530,23 @@ mod arch {
         put(&mut frame, PSTATE, registers.pstate);
         frame[RESERVED..][..4].copy_from_slice(&FPSIMD_MAGIC.to_ne_bytes());
         frame[RESERVED + 4..][..4].copy_from_slice(&(FPSIMD_SIZE as u32).to_ne_bytes());
+        frame[FP_PART..][..saved.fp.len()].copy_from_slice(&saved.fp);
         (place(top), frame)
     }
 
     /// The frame record: the interrupted `x29` and `x30`.
-    pub fn write_extra<P: eggos_hal::Platform>(
-        process: &crate::process::Process<P>,
+    pub fn write_extra<P: Platform>(
+        process: &Process<P>,
         _top: u64,
         frame: u64,
         saved: &Saved,
-    ) -> Result<(), crate::process::InvalidUserAddress> {
+    ) -> Result<(), BadFrame> {
         let mut record = [0; RECORD as usize];
         put(&mut record, 0, saved.registers.x[29]);
         put(&mut record, 8, saved.registers.x[30]);
-        process.write_user_memory(frame + SIZE, &record)
+        process
+            .write_user_memory(frame + SIZE, &record)
+            .map_err(|_| BadFrame)
     }
 
     pub fn enter(registers: &mut UserRegisters, frame: u64, handler: &Handler) {
@@ -498,7 +594,17 @@ mod arch {
             alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
                 .try_into()
                 .unwrap(),
+            fp: frame[FP_PART..][..FPSIMD_SIZE - 8].try_into().unwrap(),
         })
+    }
+
+    /// Nothing outside the frame.
+    pub fn read_extra<P: Platform>(
+        _: &Process<P>,
+        _: &[u8; READ],
+        _: &mut Saved,
+    ) -> Result<(), BadFrame> {
+        Ok(())
     }
 
     pub fn result(registers: &UserRegisters) -> u64 {
@@ -509,6 +615,8 @@ mod arch {
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
         pub const UCONTEXT: usize = super::UCONTEXT;
+        /// `fpsimd_context`'s `fpsr`.
+        pub const FP: usize = super::FP_PART;
         pub const FAULT_ADDRESS: usize = super::FAULT_ADDRESS;
         /// The record after the FP/SIMD one.
         pub const ESR: usize = super::RESERVED + super::FPSIMD_SIZE;
@@ -519,11 +627,14 @@ mod arch {
 mod arch {
     //! `uc_mcontext` is `struct sigcontext { struct user_regs_struct sc_regs; union
     //! __riscv_fp_state sc_fpregs; }`, the registers `pc` then `x1` to `x31`, the FP part 528
-    //! bytes: the D extension's `f0` to `f31` and `fcsr`, all zero in the initial state, and
-    //! at its end the header of the extensions that follow, here none (a reserved word and
-    //! an end header, all zero).
+    //! bytes: the D extension's `f0` to `f31` and `fcsr`, and at its end the header of the
+    //! extensions that follow, here none (a reserved word and an end header, all zero).
     use super::generic::{MCONTEXT, SIGMASK, UCONTEXT};
-    use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
+    use super::{
+        BadFrame, FpState, Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word,
+    };
+    use crate::process::Process;
+    use eggos_hal::Platform;
     use eggos_hal::user::UserRegisters;
 
     /// The whole frame: the `ucontext_t` is 960 bytes.
@@ -538,6 +649,31 @@ mod arch {
     /// extension's magic number and size, 0 for none.
     const EXTENSIONS: usize = WRITTEN - 12;
     const _: () = assert!(EXTENSIONS == 1076);
+    /// `struct __riscv_d_ext_state`: `f0` to `f31` (64 bits each), then `fcsr` (32 bits).
+    pub type FpPart = [u8; 260];
+    const FP_PART: usize = MCONTEXT + 256;
+    const FCSR: usize = 256;
+    const _: () = assert!(FP_PART == 560);
+
+    pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = false;
+
+    pub fn fp_part(state: &FpState) -> FpPart {
+        let mut part = [0; 260];
+        for (index, f) in state.f().iter().enumerate() {
+            part[index * 8..][..8].copy_from_slice(&f.to_ne_bytes());
+        }
+        part[FCSR..].copy_from_slice(&state.fcsr().to_ne_bytes());
+        part
+    }
+
+    /// Every value as it is, as on Linux: `fcsr`'s reserved bits ignore writes.
+    pub fn load_fp_part(part: &FpPart, state: &mut FpState) -> Result<(), BadFrame> {
+        for (index, f) in state.f_mut().iter_mut().enumerate() {
+            *f = word(part, index * 8);
+        }
+        state.set_fcsr(u32::from_ne_bytes(part[FCSR..].try_into().unwrap()));
+        Ok(())
+    }
 
     /// 16-byte aligned below `top`.
     pub fn place(top: u64) -> u64 {
@@ -560,16 +696,26 @@ mod arch {
         for index in 1..32 {
             put(&mut frame, MCONTEXT + index * 8, saved.registers.x[index]);
         }
+        frame[FP_PART..][..saved.fp.len()].copy_from_slice(&saved.fp);
         (place(top), frame)
     }
 
     /// Nothing outside the frame.
-    pub fn write_extra<P: eggos_hal::Platform>(
-        _: &crate::process::Process<P>,
+    pub fn write_extra<P: Platform>(
+        _: &Process<P>,
         _: u64,
         _: u64,
         _: &Saved,
-    ) -> Result<(), crate::process::InvalidUserAddress> {
+    ) -> Result<(), BadFrame> {
+        Ok(())
+    }
+
+    /// Nothing outside the frame.
+    pub fn read_extra<P: Platform>(
+        _: &Process<P>,
+        _: &[u8; READ],
+        _: &mut Saved,
+    ) -> Result<(), BadFrame> {
         Ok(())
     }
 
@@ -605,6 +751,7 @@ mod arch {
             alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
                 .try_into()
                 .unwrap(),
+            fp: frame[FP_PART..][..260].try_into().unwrap(),
         })
     }
 
@@ -616,5 +763,93 @@ mod arch {
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
         pub const UCONTEXT: usize = super::UCONTEXT;
+        /// `f0`.
+        pub const FP: usize = super::FP_PART;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_values() -> FpState {
+        let mut state = FpState::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut image = *state.fxsave_image();
+            image[24..28].copy_from_slice(&0x3f80u32.to_le_bytes());
+            image[160 + 8 * 16] = 0x23;
+            image[160 + 15 * 16 + 15] = 0x45;
+            state.set_fxsave_image(&image).unwrap();
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            state.v_mut()[8] = 0x0123_4567_89ab_cdef_0011_2233_4455_6677;
+            state.v_mut()[31] = u128::MAX;
+            state.set_fpcr_and_fpsr(1 << 22, 1);
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            state.f_mut()[8] = 0x0123_4567_89ab_cdef;
+            state.f_mut()[31] = u64::MAX;
+            state.set_fcsr(2 << 5 | 1);
+        }
+        state
+    }
+
+    #[test]
+    fn a_frame_s_fp_simd_part_loads_back_into_the_same_registers() {
+        let part = fp_part(&state_with_values());
+        assert_ne!(part, initial_fp_part());
+        let mut loaded = FpState::new();
+        load_fp_part(&part, &mut loaded).unwrap();
+        assert_eq!(fp_part(&loaded), part);
+    }
+
+    #[test]
+    fn the_initial_part_is_a_new_program_s_registers() {
+        let part = initial_fp_part();
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(u16::from_ne_bytes([part[0], part[1]]), 0x037f);
+            assert_eq!(u32::from_ne_bytes(part[24..28].try_into().unwrap()), 0x1f80);
+            assert!(
+                part.iter()
+                    .enumerate()
+                    .all(|(offset, &byte)| matches!(offset, 0 | 1 | 24 | 25) || byte == 0)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        assert!(part.iter().all(|&byte| byte == 0));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_s_part_is_fpsr_fpcr_then_the_v_registers() {
+        let part = fp_part(&state_with_values());
+        assert_eq!(part[..8], [1, 0, 0, 0, 0, 0, 0x40, 0]);
+        assert_eq!(
+            part[8 + 8 * 16..][..16],
+            0x0123_4567_89ab_cdef_0011_2233_4455_6677u128.to_ne_bytes()
+        );
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[test]
+    fn riscv_s_part_is_the_f_registers_then_fcsr() {
+        let part = fp_part(&state_with_values());
+        assert_eq!(part[64..72], 0x0123_4567_89ab_cdefu64.to_ne_bytes());
+        assert_eq!(part[256..], (2u32 << 5 | 1).to_ne_bytes());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_64_s_part_leaves_the_software_bytes_zero_and_refuses_reserved_mxcsr_bits() {
+        let mut part = fp_part(&state_with_values());
+        assert!(part[464..].iter().all(|&byte| byte == 0));
+        part[24..28].copy_from_slice(&(0x1f80u32 | 1 << 16).to_le_bytes());
+        let mut state = state_with_values();
+        assert_eq!(load_fp_part(&part, &mut state), Err(BadFrame));
+        assert_eq!(fp_part(&state), fp_part(&state_with_values()));
     }
 }

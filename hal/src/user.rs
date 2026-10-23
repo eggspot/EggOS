@@ -264,7 +264,18 @@ pub struct TestProgram {
     /// `si_signo`, `si_code` `SI_TKILL`) and that its stack is the alternate stack its
     /// `ucontext` names, then sets one register in its frame (`x20`, `s2`, `r12`) to 2 and
     /// clobbers another (`x19`, `s1`, `rbx`), and returns. `tgkill` must then return 0 with the
-    /// clobbered register restored, the changed one 2, and nothing blocked:
+    /// clobbered register restored, the changed one 2, and nothing blocked.
+    ///
+    /// The same for FP/SIMD registers (D82): before `tgkill` the program sets one
+    /// (`d8`, `fs0`, `xmm8`) to [`Self::LINUX_SIGNAL_FP_KEPT`] and the rounding mode to another
+    /// than the initial one (`FPCR`, `frm` and `MXCSR` round up, down and down). The handler
+    /// checks that its frame's FP/SIMD part holds both, and that it starts with the register
+    /// (AArch64, RISC-V) or with the initial state (x86_64: the register zero and `MXCSR`
+    /// `0x1F80`), as on Linux; then it sets the next register (`d9`, `fs1`, `xmm9`) to
+    /// [`Self::LINUX_SIGNAL_FP_CHANGED`] in its frame and clobbers the first (not on x86_64,
+    /// where it is zero already). After `tgkill` both registers and the rounding mode must
+    /// be as the frame held them.
+    ///
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_signal_handler: usize,
     /// A Linux program whose faults go to its `SIGSEGV` handler (D65): it installs one with
@@ -355,6 +366,10 @@ impl TestProgram {
     pub const LINUX_QUEUED_SIGNAL: u32 = 40;
     /// The `si_value`s [`Self::linux_signal_queue`] queues its signal with, in order.
     pub const LINUX_QUEUED_VALUES: [u64; 2] = [0x5151, 0x5252];
+    /// The FP/SIMD register value [`Self::linux_signal_handler`] keeps across its handler.
+    pub const LINUX_SIGNAL_FP_KEPT: u64 = 0x123;
+    /// The FP/SIMD register value [`Self::linux_signal_handler`]'s handler sets in its frame.
+    pub const LINUX_SIGNAL_FP_CHANGED: u64 = 0x456;
 }
 
 #[cfg(target_arch = "aarch64")]

@@ -1562,6 +1562,40 @@ mod tests {
     }
 
     #[test]
+    fn the_running_thread_s_fp_registers_are_saved_for_a_change_and_loaded_again() {
+        use crate::tests::{FpCall, fp_calls};
+        use eggos_hal::fp::FpState;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        thread::start::<P>().unwrap();
+        static SEEN: AtomicU64 = AtomicU64::new(0);
+        SEEN.store(0, Ordering::Relaxed);
+        assert!(thread::with_running_fp::<P, _>(|_| ()).is_none());
+        // SAFETY: as above.
+        let process = Arc::new(unsafe { Process::<P>::with_test_program(&kernel) }.unwrap());
+        let context = Process::<P>::test_program_context(|program| program.illegal_instruction);
+        let thread = spawn::<P, _>(process, context, move |_, _, exit| {
+            let UserExit::Exception(exception) = exit else {
+                panic!("not an exception: {exit:?}");
+            };
+            assert!(thread::with_running_fp::<P, _>(|_| ()).is_none());
+            assert!(first_fp_use::<P>(exception.kind));
+            fp_calls();
+            let state = thread::with_running_fp::<P, _>(|state: &mut FpState| {
+                *state = FpState::new();
+                &raw mut *state as usize
+            })
+            .unwrap();
+            SEEN.store(state as u64, Ordering::Relaxed);
+            assert_eq!(fp_calls(), [FpCall::Save(state), FpCall::Restore(state)]);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        thread.join::<P>();
+        assert_ne!(SEEN.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn a_stale_fault_on_a_mapped_page_resumes_with_no_frame_left() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
