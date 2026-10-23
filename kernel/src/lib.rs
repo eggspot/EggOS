@@ -336,6 +336,8 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_thread_pointer as u64;
             let linux_poll = crate::process::TEST_PROGRAM_ADDRESS + program.linux_poll as u64;
             let linux_signals = crate::process::TEST_PROGRAM_ADDRESS + program.linux_signals as u64;
+            let linux_signal_handler =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_handler as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -523,6 +525,11 @@ pub(crate) mod tests {
                     context.simulate_syscall(number, arguments, pc + 1);
                     UserExit::Syscall
                 }
+                pc if (linux_signal_handler..linux_signal_handler + 6).contains(&pc)
+                    || pc == linux_signal_handler + SIGNAL_HANDLER =>
+                {
+                    signal_handler_program(context, linux_signal_handler)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -571,6 +578,7 @@ pub(crate) mod tests {
                 linux_thread_pointer: 200,
                 linux_poll: 264,
                 linux_signals: 300,
+                linux_signal_handler: 340,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -699,6 +707,116 @@ pub(crate) mod tests {
             // SAFETY: as in `write_user_bytes`.
             *byte = unsafe { user_byte(address + i as u64).read() };
         }
+    }
+
+    /// Where the simulated `linux_signal_handler` program's handler is, from its start.
+    const SIGNAL_HANDLER: u64 = 20;
+
+    /// The two registers the simulated `linux_signal_handler` sets before its `tgkill`: one
+    /// the handler clobbers, which `rt_sigreturn` must restore, and one it sets to 2 in its
+    /// frame (`x19` and `x20`, `s1` and `s2`, `rbx` and `r12`), with the latter's offset in the
+    /// `ucontext`.
+    #[cfg(target_arch = "aarch64")]
+    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
+        let [.., kept, changed, _, _, _, _, _, _, _, _, _, _] = &mut registers.x;
+        [kept, changed]
+    }
+    #[cfg(target_arch = "aarch64")]
+    const CHANGED_IN_UCONTEXT: u64 = 176 + 8 + 20 * 8;
+    #[cfg(target_arch = "riscv64")]
+    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
+        let (low, high) = registers.x.split_at_mut(18);
+        [&mut low[9], &mut high[0]]
+    }
+    #[cfg(target_arch = "riscv64")]
+    const CHANGED_IN_UCONTEXT: u64 = 176 + 18 * 8;
+    #[cfg(target_arch = "x86_64")]
+    fn kept_and_changed(registers: &mut eggos_hal::user::UserRegisters) -> [&mut u64; 2] {
+        [&mut registers.rbx, &mut registers.r12]
+    }
+    #[cfg(target_arch = "x86_64")]
+    const CHANGED_IN_UCONTEXT: u64 = 40 + 4 * 8;
+
+    /// Plays `linux_signal_handler` (at `start`) for the test platform: `sigaltstack`,
+    /// `rt_sigaction` for `SIGUSR1`, `getpid`, then `tgkill`, whose handler (at
+    /// [`SIGNAL_HANDLER`]) checks its arguments and stack, changes the frame and returns with
+    /// `rt_sigreturn`; then `rt_sigprocmask` reads the mask back, and `exit_group(0)` if every
+    /// check passed. Each call's result is checked as the program checks it.
+    fn signal_handler_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{number, signals};
+        use eggos_hal::user::UserExit;
+        let pc = context.pc();
+        let stack = context.stack();
+        let word = |address: u64| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        if pc == start + SIGNAL_HANDLER {
+            let [signal, info, ucontext, ..] = context.syscall_arguments();
+            let (signo, code) = (word(info) as u32, word(info + 8) as u32 as i32);
+            let (base, size) = (word(ucontext + 16), word(ucontext + 32));
+            if signal == 10 && signo == 10 && code == -6 && (base..base + size).contains(&stack) {
+                write_user_bytes(ucontext + CHANGED_IN_UCONTEXT, &2u64.to_ne_bytes());
+            }
+            let mut registers = context.registers();
+            *kept_and_changed(&mut registers)[0] = 0;
+            // Its return: x86_64's `ret` pops the restorer.
+            #[cfg(target_arch = "x86_64")]
+            {
+                registers.rsp += 8;
+            }
+            context.set_registers(&registers);
+            context.simulate_syscall(number::RT_SIGRETURN, [0; 6], pc + 1);
+            return UserExit::Syscall;
+        }
+        let result = context.syscall_result();
+        let step = pc - start;
+        let mut registers = context.registers();
+        let [kept, changed] = kept_and_changed(&mut registers);
+        let failed = match step {
+            1 | 2 | 5 => result != 0,
+            4 => result != 0 || *kept != 0x5a5 || *changed != 2,
+            _ => false,
+        } || step == 5 && word(stack - 72) != 0;
+        let (number, arguments) = match step {
+            _ if failed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => {
+                let stack_t = [stack - 0x2800, 0, 0x2000];
+                write_user_bytes(stack - 32, &stack_t.map(u64::to_ne_bytes).concat());
+                (number::SIGALTSTACK, [stack - 32, 0, 0, 0, 0, 0])
+            }
+            1 => {
+                let flags = signals::flag::SIGINFO
+                    | signals::flag::ONSTACK
+                    | if cfg!(target_arch = "x86_64") {
+                        signals::flag::RESTORER
+                    } else {
+                        0
+                    };
+                let handler = start + SIGNAL_HANDLER;
+                let action = if signals::HAS_RESTORER {
+                    [handler, flags, start + SIGNAL_HANDLER + 10, 0]
+                } else {
+                    [handler, flags, 0, 0]
+                };
+                write_user_bytes(stack - 64, &action.map(u64::to_ne_bytes).concat());
+                (number::RT_SIGACTION, [10, stack - 64, 0, 8, 0, 0])
+            }
+            2 => (number::GETPID, [0; 6]),
+            3 => {
+                (*kept, *changed) = (0x5a5, 1);
+                context.set_registers(&registers);
+                (number::TGKILL, [result, result, 10, 0, 0, 0])
+            }
+            4 => (number::RT_SIGPROCMASK, [0, 0, stack - 72, 8, 0, 0]),
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
     }
 
     /// Where the test platform's test program keeps the line its Linux program writes.

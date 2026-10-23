@@ -580,6 +580,7 @@ mod tests {
                 linux_thread_pointer: 0,
                 linux_poll: 0,
                 linux_signals: 0,
+                linux_signal_handler: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

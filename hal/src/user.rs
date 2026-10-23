@@ -97,6 +97,20 @@ impl UserContext {
     pub fn set_thread_pointer(&mut self, value: u64) -> Result<(), InvalidThreadPointer> {
         self.arch.set_thread_pointer(value)
     }
+
+    /// Every register of the program's that user mode can change, but the thread pointer where
+    /// it is a system register (`TPIDR_EL0`, the FS base): what a signal frame saves (M6).
+    pub fn registers(&self) -> UserRegisters {
+        self.arch.registers()
+    }
+
+    /// Sets every register [`Self::registers`] returns, as returning from a signal handler
+    /// does: the program runs on with exactly these, the ones a system call's return would
+    /// otherwise overwrite (x86_64's `rcx` and `r11`) included. Only the flags a program may
+    /// set are kept (the rest are the kernel's to choose when it enters user mode).
+    pub fn set_registers(&mut self, registers: &UserRegisters) {
+        self.arch.set_registers(registers);
+    }
 }
 
 /// [`UserContext::set_thread_pointer`]'s value is not a user address, where the architecture
@@ -121,10 +135,16 @@ impl UserContext {
 
 #[cfg(target_arch = "aarch64")]
 use aarch64::Registers;
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::UserRegisters;
 #[cfg(target_arch = "riscv64")]
 use riscv64::Registers;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64::UserRegisters;
 #[cfg(target_arch = "x86_64")]
 use x86_64::Registers;
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::UserRegisters;
 
 /// A tiny position-independent program in the architecture's machine code, for the kernel's
 /// boot self-tests and benchmarks of user mode, run from one page mapped
@@ -195,6 +215,16 @@ pub struct TestProgram {
     /// `SIGUSR1` before `rt_sigprocmask` returns. `exit_group(1)` if any call failed or
     /// returned.
     pub linux_signals: usize,
+    /// A Linux program whose signal handler runs on an alternate stack (D64): it sets one up
+    /// with `sigaltstack`, installs a `SIGUSR1` handler with `SA_SIGINFO` and `SA_ONSTACK`
+    /// (x86_64 with its own restorer, the others returning through the kernel's trampoline),
+    /// and sends itself `SIGUSR1` with `tgkill`. The handler checks its arguments (the signal,
+    /// `si_signo`, `si_code` `SI_TKILL`) and that its stack is the alternate stack its
+    /// `ucontext` names, then sets one register in its frame (`x20`, `s2`, `r12`) to 2 and
+    /// clobbers another (`x19`, `s1`, `rbx`), and returns. `tgkill` must then return 0 with the
+    /// clobbered register restored, the changed one 2, and nothing blocked:
+    /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
+    pub linux_signal_handler: usize,
 }
 
 impl TestProgram {
@@ -247,6 +277,18 @@ pub(crate) mod aarch64 {
     /// Bytes the lower-EL entry code stores below `SP_EL1`: `x`, `elr`, `spsr`, `sp` and
     /// `tpidr`, and a word that keeps `SP_EL1` 16-byte aligned.
     pub(crate) const SAVED_SIZE: usize = 36 * 8;
+    /// [`super::UserContext::registers`] on AArch64.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        /// `x0` to `x30`.
+        pub x: [u64; 31],
+        pub sp: u64,
+        pub pc: u64,
+        /// `PSTATE` as `SPSR_EL1` holds it: only its condition flags (N, Z, C, V) are the
+        /// program's.
+        pub pstate: u64,
+    }
+
     const _: () = assert!(core::mem::offset_of!(Registers, elr) == 248);
     const _: () = assert!(core::mem::offset_of!(Registers, tpidr) == 272);
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == SAVED_SIZE);
@@ -292,6 +334,21 @@ pub(crate) mod aarch64 {
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[0] = value;
         }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                x: self.x,
+                sp: self.sp,
+                pc: self.elr,
+                pstate: self.spsr,
+            }
+        }
+        /// `run_user` keeps only `spsr`'s condition flags.
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.x = registers.x;
+            self.sp = registers.sp;
+            self.elr = registers.pc;
+            self.spsr = registers.pstate;
+        }
         #[cfg(not(target_os = "none"))]
         pub(crate) fn result(&self) -> u64 {
             self.x[0]
@@ -318,6 +375,14 @@ pub(crate) mod riscv64 {
         pub(crate) pc: u64,
         /// The kernel's stack pointer while the program runs.
         pub(crate) kernel_sp: u64,
+    }
+
+    /// [`super::UserContext::registers`] on RISC-V.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub pc: u64,
+        /// `x0` to `x31` by register number; `x[0]` is always zero.
+        pub x: [u64; 32],
     }
 
     const _: () = assert!(core::mem::offset_of!(Registers, pc) == 256);
@@ -360,6 +425,16 @@ pub(crate) mod riscv64 {
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[10] = value;
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            let mut x = self.x;
+            x[0] = 0;
+            UserRegisters { pc: self.pc, x }
+        }
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.x = registers.x;
+            self.x[0] = 0;
+            self.pc = registers.pc;
         }
         #[cfg(not(target_os = "none"))]
         pub(crate) fn result(&self) -> u64 {
@@ -425,8 +500,37 @@ pub(crate) mod x86_64 {
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
     pub(crate) const SYSCALL_VECTOR: u64 = 0x100;
-    /// [`Registers::vector`] for a program that has not run yet: entered with `iretq`.
-    pub(crate) const NOT_RUN_VECTOR: u64 = u64::MAX;
+    /// [`Registers::vector`] for a context entered with `iretq`, which loads every register:
+    /// a program that has not run yet, or one whose registers were all set
+    /// ([`Registers::set_registers`]).
+    pub(crate) const RESTORE_ALL_VECTOR: u64 = u64::MAX;
+
+    /// [`super::UserContext::registers`] on x86_64.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct UserRegisters {
+        pub r8: u64,
+        pub r9: u64,
+        pub r10: u64,
+        pub r11: u64,
+        pub r12: u64,
+        pub r13: u64,
+        pub r14: u64,
+        pub r15: u64,
+        pub rdi: u64,
+        pub rsi: u64,
+        pub rbp: u64,
+        pub rbx: u64,
+        pub rdx: u64,
+        pub rax: u64,
+        pub rcx: u64,
+        pub rsp: u64,
+        pub rip: u64,
+        /// Only the flags a program may set are kept.
+        pub rflags: u64,
+        /// The code and stack segment selectors the program runs with: reported, never set.
+        pub cs: u16,
+        pub ss: u16,
+    }
 
     const _: () = assert!(core::mem::offset_of!(Registers, vector) == 15 * 8);
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) == 22 * 8);
@@ -453,7 +557,7 @@ pub(crate) mod x86_64 {
                 rcx: 0,
                 rbx: 0,
                 rax: 0,
-                vector: NOT_RUN_VECTOR,
+                vector: RESTORE_ALL_VECTOR,
                 error_code: 0,
                 rip: pc,
                 cs: 0,
@@ -495,6 +599,54 @@ pub(crate) mod x86_64 {
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.rax = value;
+        }
+        pub(crate) fn registers(&self) -> UserRegisters {
+            UserRegisters {
+                r8: self.r8,
+                r9: self.r9,
+                r10: self.r10,
+                r11: self.r11,
+                r12: self.r12,
+                r13: self.r13,
+                r14: self.r14,
+                r15: self.r15,
+                rdi: self.rdi,
+                rsi: self.rsi,
+                rbp: self.rbp,
+                rbx: self.rbx,
+                rdx: self.rdx,
+                rax: self.rax,
+                rcx: self.rcx,
+                rsp: self.rsp,
+                rip: self.rip,
+                rflags: self.rflags,
+                cs: self.cs as u16,
+                ss: self.ss as u16,
+            }
+        }
+        /// Entered with `iretq` next, which loads `rcx` and `r11` too (`sysretq` would take
+        /// them for `rip` and `rflags`); `run_user` keeps only the flags a program may set
+        /// and refuses a `rip` outside user space.
+        pub(crate) fn set_registers(&mut self, registers: &UserRegisters) {
+            self.r8 = registers.r8;
+            self.r9 = registers.r9;
+            self.r10 = registers.r10;
+            self.r11 = registers.r11;
+            self.r12 = registers.r12;
+            self.r13 = registers.r13;
+            self.r14 = registers.r14;
+            self.r15 = registers.r15;
+            self.rdi = registers.rdi;
+            self.rsi = registers.rsi;
+            self.rbp = registers.rbp;
+            self.rbx = registers.rbx;
+            self.rdx = registers.rdx;
+            self.rax = registers.rax;
+            self.rcx = registers.rcx;
+            self.rsp = registers.rsp;
+            self.rip = registers.rip;
+            self.rflags = registers.rflags;
+            self.vector = RESTORE_ALL_VECTOR;
         }
         #[cfg(not(target_os = "none"))]
         pub(crate) fn result(&self) -> u64 {
@@ -549,5 +701,58 @@ mod tests {
         } else {
             assert_eq!(context.syscall_arguments(), [42, 0, 0, 0, 0, 0]);
         }
+    }
+
+    #[test]
+    fn every_register_is_read_and_set_at_once() {
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        context.set_syscall_result(7);
+        let mut registers = context.registers();
+        assert_eq!((context.pc(), context.stack()), (0x40_0000, 0x7000));
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(
+                (registers.pc, registers.sp, registers.x[0]),
+                (0x40_0000, 0x7000, 7)
+            );
+            registers.x[30] = 0x40_1000;
+            registers.pc = 0x40_2000;
+            registers.sp = 0x6000;
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            assert_eq!(
+                (registers.pc, registers.x[2], registers.x[10]),
+                (0x40_0000, 0x7000, 7)
+            );
+            registers.x[0] = 1;
+            registers.x[1] = 0x40_1000;
+            registers.pc = 0x40_2000;
+            registers.x[2] = 0x6000;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(
+                (registers.rip, registers.rsp, registers.rax),
+                (0x40_0000, 0x7000, 7)
+            );
+            assert_eq!(context.arch.vector, x86_64::RESTORE_ALL_VECTOR);
+            // After a system call the way back would load `rcx` and `r11` from `rip` and
+            // `rflags`; setting every register makes it load them too.
+            context.arch.vector = x86_64::SYSCALL_VECTOR;
+            registers.rcx = 0x40_1000;
+            registers.rip = 0x40_2000;
+            registers.rsp = 0x6000;
+        }
+        context.set_registers(&registers);
+        assert_eq!((context.pc(), context.stack()), (0x40_2000, 0x6000));
+        #[cfg(target_arch = "riscv64")]
+        {
+            // `x0` is always zero.
+            registers.x[0] = 0;
+        }
+        assert_eq!(context.registers(), registers);
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(context.arch.vector, x86_64::RESTORE_ALL_VECTOR);
     }
 }

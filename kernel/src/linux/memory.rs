@@ -91,7 +91,7 @@ pub mod map {
 
 /// Where `mmap` places what it is free to place: from below the stack's reserve and the guard
 /// gap under it, down to [`MINIMUM_ADDRESS`].
-fn mmap_top<P: Platform>() -> u64 {
+pub(super) fn mmap_top<P: Platform>() -> u64 {
     <P::PageTableFormat as Format>::USER_END - STACK_RESERVE - STACK_GUARD_GAP
 }
 

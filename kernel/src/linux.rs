@@ -19,10 +19,11 @@
 //! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60), and, on the
 //! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
 //! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
-//! `rt_sigpending`, and delivery by their default actions ([`signals`], D63). Every other
-//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
-//! call carries on. The next calls are the rest of what a static program's startup needs
-//! (signal handlers, ...), then the file system's (M7).
+//! `rt_sigpending`, and delivery by their default actions ([`signals`], D63), and signal
+//! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64).
+//! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
+//! probes for a call carries on. The next calls are the rest of what a static program's
+//! startup needs, then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
@@ -30,9 +31,11 @@ pub mod limits;
 pub mod memory;
 pub mod poll;
 pub mod random;
+pub mod signal_frame;
 pub mod signals;
 pub mod terminal;
 pub mod thread_pointer;
+pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{self, JoinHandle, SpawnError};
@@ -56,6 +59,7 @@ pub mod number {
         pub const BRK: u64 = 12;
         pub const RT_SIGACTION: u64 = 13;
         pub const RT_SIGPROCMASK: u64 = 14;
+        pub const RT_SIGRETURN: u64 = 15;
         pub const IOCTL: u64 = 16;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
@@ -99,6 +103,7 @@ pub mod number {
         pub const RT_SIGACTION: u64 = 134;
         pub const RT_SIGPROCMASK: u64 = 135;
         pub const RT_SIGPENDING: u64 = 136;
+        pub const RT_SIGRETURN: u64 = 139;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
@@ -144,6 +149,7 @@ pub mod number {
             RT_SIGACTION,
             RT_SIGPROCMASK,
             RT_SIGPENDING,
+            RT_SIGRETURN,
             SIGALTSTACK,
             KILL,
             TKILL,
@@ -308,7 +314,8 @@ fn user_exception<P: Platform>(
 }
 
 /// Ends the process after an exception of `kind` in its program, with the signal Linux sends
-/// for it: no signal handlers yet, so the default action, which for these ends the process.
+/// for it, by its default action whatever the program's handlers: faults go to handlers in the
+/// next part of D64's work.
 #[cold]
 #[inline(never)]
 fn kill<P: Platform>(process: &Process<P>, kind: ExceptionKind) -> ControlFlow<()> {
@@ -373,7 +380,8 @@ fn memory_call<P: Platform>(
 /// grows by adds to the thread loop that it is inlined into (the loop's registers spill, and
 /// every system call pays). After a call that can make a signal due, the signal is delivered
 /// before the program runs again ([`signals::deliver`]), which may end the process: then it
-/// breaks.
+/// breaks. `rt_sigreturn` sets every register itself and returns the restored result
+/// register's value, so writing the result back changes nothing.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Process<P>,
@@ -387,7 +395,8 @@ fn out_of_line_call<P: Platform>(
         | number::TKILL
         | number::TGKILL
         | number::RT_SIGPROCMASK
-        | number::RT_SIGACTION => signals::deliver(process),
+        | number::RT_SIGACTION
+        | number::RT_SIGRETURN => signals::deliver(process, context),
         _ => ControlFlow::Continue(()),
     }
 }
@@ -416,6 +425,7 @@ fn out_of_line_result<P: Platform>(
         number::RT_SIGPROCMASK => signals::rt_sigprocmask(process, first, second, third, fourth),
         number::SIGALTSTACK => signals::sigaltstack(process, first, second, context.stack()),
         number::RT_SIGPENDING => signals::rt_sigpending(process, first, second),
+        number::RT_SIGRETURN => signals::rt_sigreturn(process, context),
         number::KILL => signals::kill(process, first, second),
         number::TKILL => signals::tkill(process, first, second),
         number::TGKILL => signals::tgkill(process, first, second, third),
@@ -1779,39 +1789,6 @@ mod tests {
                 signal: sigusr1 as u32
             })
         );
-        // A caught signal stays pending (handlers come with signal frames); `rt_sigaction`
-        // restoring its default action makes it due, before the call returns.
-        let process = process_with_iovecs(&kernel, b"ab", &[]);
-        let pid = u64::from(process.id().get());
-        let sigusr2 = 12;
-        process
-            .write_user_memory(
-                writable,
-                &[0x40_1000u64, 0, 0, 0].map(u64::to_ne_bytes).concat(),
-            )
-            .unwrap();
-        assert_eq!(
-            call(
-                &process,
-                number::RT_SIGACTION,
-                [sigusr2, writable, 0, 8, 0, 0]
-            ),
-            0
-        );
-        assert_eq!(call(&process, number::KILL, [pid, sigusr2, 0, 0, 0, 0]), 0);
-        assert_eq!(process.exit_status(), None);
-        process.write_user_memory(writable, &[0; 32]).unwrap();
-        let mut context = called(number::RT_SIGACTION, [sigusr2, writable, 0, 8, 0, 0]);
-        assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
-            ControlFlow::Break(())
-        );
-        assert_eq!(
-            process.exit_status(),
-            Some(ProcessExit::Killed {
-                signal: sigusr2 as u32
-            })
-        );
         // `abort()`: `SIGABRT` to itself ends the process with it before `tgkill` returns.
         let process = process_with_iovecs(&kernel, b"ab", &[]);
         let pid = u64::from(process.id().get());
@@ -1950,6 +1927,334 @@ mod tests {
             // The first way to end wins.
             process.exit(ProcessExit::Exited(0));
             assert_eq!(process.exit_status(), Some(ProcessExit::Killed { signal }));
+        }
+    }
+
+    /// A process with the stack pages below [`HANDLER_STACK_TOP`] and an alternate stack's
+    /// below [`ALTERNATE_STACK_TOP`], writable, and its pid.
+    fn process_with_stacks(
+        kernel: &PageTables<<P as Platform>::PageTableFormat>,
+    ) -> (Arc<Process<P>>, u64) {
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let mut process = unsafe { Process::<P>::new(kernel) }.unwrap();
+        for top in [HANDLER_STACK_TOP, ALTERNATE_STACK_TOP] {
+            for page in 1..=3 {
+                process
+                    .map_new_page(top - page * FRAME_SIZE, Attributes::USER_READ_WRITE, &[])
+                    .unwrap();
+            }
+        }
+        let process = Arc::new(process);
+        let pid = u64::from(process.id().get());
+        (process, pid)
+    }
+
+    const HANDLER_STACK_TOP: u64 = 0x70_0000;
+    const ALTERNATE_STACK_TOP: u64 = 0x60_0000;
+    const HANDLER: u64 = 0x40_1000;
+    const RESTORER: u64 = 0x40_2000;
+
+    /// Sets `signal`'s action with `rt_sigaction` through [`DATA`]'s page of `process`.
+    fn set_handler(process: &Arc<Process<P>>, signal: u64, flags: u64, mask: u64) {
+        let words = if signals::HAS_RESTORER {
+            [HANDLER, flags, RESTORER, mask]
+        } else {
+            [HANDLER, flags, mask, 0]
+        };
+        let action = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
+        process
+            .write_user_memory(action, &words.map(u64::to_ne_bytes).concat())
+            .unwrap();
+        assert_eq!(
+            call(process, number::RT_SIGACTION, [signal, action, 0, 8, 0, 0]),
+            0
+        );
+    }
+
+    /// Where the handler that `context` starts returns to, and its stack pointer as it
+    /// returns there: x86_64's `ret` pops the return address from the stack.
+    fn return_point(process: &Process<P>, context: &UserContext) -> (u64, u64) {
+        let registers = context.registers();
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut bytes = [0; 8];
+            process.read_user_memory(registers.rsp, &mut bytes).unwrap();
+            (u64::from_ne_bytes(bytes), registers.rsp + 8)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = process;
+            (registers.x[30], registers.sp)
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            let _ = process;
+            (registers.x[1], registers.x[2])
+        }
+    }
+
+    /// The handler `context` runs returns: at its return point, as `rt_sigreturn` (what the
+    /// restorer and the trampoline do).
+    fn handler_returns(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
+        let (to, stack) = return_point(process, context);
+        let mut registers = context.registers();
+        #[cfg(target_arch = "x86_64")]
+        {
+            registers.rsp = stack;
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = stack;
+        // A handler may change any register.
+        #[cfg(target_arch = "aarch64")]
+        {
+            registers.x[19] = 0xdead;
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            registers.x[9] = 0xdead;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            registers.rbx = 0xdead;
+        }
+        context.set_registers(&registers);
+        context.simulate_syscall(number::RT_SIGRETURN, [0; 6], to + 4);
+        handle(process, context, UserExit::Syscall)
+    }
+
+    #[test]
+    fn handlers_run_on_linux_s_frames_and_return_with_rt_sigreturn() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (sigusr1, sigusr2) = (10u64, 12u64);
+        let bit = |signal: u64| 1u64 << (signal - 1);
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        set_handler(&process, sigusr1, flags, bit(sigusr2));
+        // The program, with a register it keeps across calls set, sends itself SIGUSR1.
+        let stack = HANDLER_STACK_TOP - 0x30;
+        let mut context = UserContext::new(0x40_0000, stack);
+        let mut registers = context.registers();
+        #[cfg(target_arch = "aarch64")]
+        {
+            registers.x[19] = 0x1919;
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            registers.x[9] = 0x1919;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            registers.rbx = 0x1919;
+        }
+        context.set_registers(&registers);
+        context.simulate_syscall(number::TGKILL, [pid, pid, sigusr1, 0, 0, 0], 0x40_0004);
+        let mut interrupted = context.clone();
+        interrupted.set_syscall_result(0);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        // The handler runs with the signal, its siginfo and its ucontext, on a frame below the
+        // stack pointer (and x86_64's red zone), aligned as after a call.
+        assert_eq!(context.pc(), HANDLER);
+        let [signal, info, ucontext, ..] = context.syscall_arguments();
+        assert_eq!(signal, sigusr1);
+        let frame = context.stack();
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!((frame + 8) % 16, 0);
+            assert!(frame + 128 < stack);
+        } else {
+            assert_eq!(frame % 16, 0);
+            assert!(frame < stack);
+        }
+        let mut bytes = [0; 128];
+        process.read_user_memory(info, &mut bytes).unwrap();
+        let int =
+            |bytes: &[u8], at: usize| i32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(int(&bytes, 0), sigusr1 as i32);
+        assert_eq!(int(&bytes, 8), -6, "SI_TKILL");
+        assert_eq!(int(&bytes, 16), pid as i32);
+        let sigmask =
+            ucontext - signal_frame::layout::UCONTEXT as u64 + signal_frame::layout::SIGMASK as u64;
+        let mut mask = [0; 8];
+        process.read_user_memory(sigmask, &mut mask).unwrap();
+        assert_eq!(u64::from_ne_bytes(mask), 0, "the mask before the handler");
+        // It returns to its restorer, or to the trampoline, which `rt_sigreturn`s.
+        let (to, _) = return_point(&process, &context);
+        if signals::HAS_RESTORER {
+            assert_eq!(to, RESTORER);
+        } else {
+            let trampoline = process.signals().lock().trampoline();
+            assert_eq!(to, trampoline + 4);
+            assert_eq!(
+                process.region(trampoline).unwrap().attributes,
+                Some(Attributes::USER_TEXT)
+            );
+        }
+        // While it runs, its mask and its signal are blocked.
+        let blocked = || process.signals().lock().thread().blocked;
+        assert_eq!(blocked(), bit(sigusr1) | bit(sigusr2));
+        // It returns: the program goes on as it was after `tgkill`, with the mask the frame
+        // holds (here changed by the handler to block SIGUSR2).
+        process
+            .write_user_memory(sigmask, &bit(sigusr2).to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.registers(), interrupted.registers());
+        assert_eq!(blocked(), bit(sigusr2));
+        // Two due at once: one frame each, the last one's handler first. Both blocked, sent,
+        // then unblocked together: SIGUSR1 (lower) gets the first frame, then SIGUSR2 one on
+        // top of it, which runs first.
+        set_handler(&process, sigusr1, flags, 0);
+        set_handler(&process, sigusr2, flags, 0);
+        let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE + 64;
+        let both = bit(sigusr1) | bit(sigusr2);
+        process.write_user_memory(set, &both.to_ne_bytes()).unwrap();
+        assert_eq!(
+            call(&process, number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]),
+            0
+        );
+        for signal in [sigusr2, sigusr1] {
+            assert_eq!(
+                call(&process, number::TGKILL, [pid, pid, signal, 0, 0, 0]),
+                0
+            );
+        }
+        let mut context = UserContext::new(0x40_0000, stack);
+        context.simulate_syscall(number::RT_SIGPROCMASK, [1, set, 0, 8, 0, 0], 0x40_0004);
+        let mut interrupted = context.clone();
+        interrupted.set_syscall_result(0);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.syscall_arguments()[0], sigusr2);
+        assert_eq!(blocked(), both);
+        let first_frame = context.stack();
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        // Back in SIGUSR1's handler, as it was entered.
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(context.syscall_arguments()[0], sigusr1);
+        assert!(context.stack() > first_frame);
+        assert_eq!(blocked(), bit(sigusr1));
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.registers(), interrupted.registers());
+        assert_eq!(blocked(), 0);
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn handlers_start_on_the_alternate_stack_and_bad_frames_are_sigsegv() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let sigusr1 = 10u64;
+        let restorer = if signals::HAS_RESTORER {
+            signals::flag::RESTORER
+        } else {
+            0
+        };
+        // An alternate stack with SS_AUTODISARM: the handler starts at its top, and it is
+        // disabled while the handler runs, then restored.
+        let size = 2 * FRAME_SIZE;
+        let base = ALTERNATE_STACK_TOP - size;
+        let stack_t = HANDLER_STACK_TOP - 3 * FRAME_SIZE + 128;
+        let words = [base, 1 << 31, size];
+        process
+            .write_user_memory(stack_t, &words.map(u64::to_ne_bytes).concat())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::SIGALTSTACK, [stack_t, 0, 0, 0, 0, 0]),
+            0
+        );
+        set_handler(&process, sigusr1, signals::flag::ONSTACK | restorer, 0);
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
+        context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert!((base..ALTERNATE_STACK_TOP).contains(&context.stack()));
+        let [_, info, ..] = context.syscall_arguments();
+        let mut code = [0; 4];
+        process.read_user_memory(info + 8, &mut code).unwrap();
+        assert_eq!(i32::from_ne_bytes(code), 0, "SI_USER");
+        let alternate = || process.signals().lock().thread().alternate_stack;
+        assert_eq!(alternate().size, 0);
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!((alternate().base, alternate().size), (base, size));
+        assert!(alternate().autodisarm);
+        // A frame that is not the program's memory: SIGSEGV, here by its default action.
+        let mut context = UserContext::new(0x40_0000, 0x10_0000);
+        context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
+        // Without SA_ONSTACK, below an unmapped stack pointer.
+        set_handler(&process, sigusr1, restorer, 0);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // `rt_sigreturn` with no frame where the stack pointer is: SIGSEGV too, even blocked.
+        let (process, _) = process_with_stacks(&kernel);
+        let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
+        process
+            .write_user_memory(set, &(1u64 << (signal::SIGSEGV - 1)).to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]),
+            0
+        );
+        let mut context = UserContext::new(0x40_0000, 0x10_0000);
+        context.simulate_syscall(number::RT_SIGRETURN, [0; 6], 0x40_0004);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+        // x86_64: a handler without SA_RESTORER cannot return, so it never runs: SIGSEGV.
+        if cfg!(target_arch = "x86_64") {
+            let (process, pid) = process_with_stacks(&kernel);
+            set_handler(&process, sigusr1, 0, 0);
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
+            context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
+            assert_eq!(
+                handle(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Break(())
+            );
+            assert_eq!(
+                process.exit_status(),
+                Some(ProcessExit::Killed {
+                    signal: signal::SIGSEGV
+                })
+            );
         }
     }
 }
