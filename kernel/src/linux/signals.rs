@@ -3,7 +3,8 @@
 //! handlers, which run on Linux's signal frames and return with `rt_sigreturn` (D64), and
 //! their `siginfo_t`, queued with each pending signal, several instances of a real-time signal
 //! at once, with `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait` (D68), and
-//! waiting for one to be handled with `rt_sigsuspend` and `pause` (D70). Rust's
+//! waiting for one to be handled with `rt_sigsuspend` and `pause` (D70) or during `ppoll`
+//! with its mask (D71). Rust's
 //! std ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
 //! startup, glibc blocks and unblocks signals around much of its work, and `abort()` sends
 //! itself `SIGABRT` and expects to die of it.
@@ -1146,7 +1147,11 @@ pub fn rt_sigtimedwait<P: Platform>(
 /// The signal set at `address`, of `sigsetsize` bytes, as the calls that take one with no
 /// `how` read it: `EINVAL` if the size is not 8, then `EFAULT` if the set is not the program's
 /// memory.
-fn read_set<P: Platform>(process: &Process<P>, address: u64, set_size: u64) -> Result<u64, Errno> {
+pub fn read_set<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    set_size: u64,
+) -> Result<u64, Errno> {
     if set_size != SET_SIZE {
         return Err(Errno::EINVAL);
     }
@@ -1188,26 +1193,49 @@ pub fn pause<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
     suspend(process, context, None)
 }
 
-/// What [`rt_sigsuspend`] and x86_64's `pause` share: blocks `mask`, if any, instead of the thread's
-/// mask, then delivers what is due until a handler starts, waiting between rounds.
+/// What [`rt_sigsuspend`] and x86_64's `pause` share: blocks `mask`, if any, instead of the
+/// thread's mask, then delivers what is due until a handler starts, waiting between rounds.
 fn suspend<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
     mask: Option<u64>,
 ) -> ControlFlow<()> {
     context.set_syscall_result(Errno::EINTR.result());
-    let before = {
-        let mut signals = process.signals().lock();
-        let before = signals.thread.blocked;
-        if let Some(mask) = mask {
-            signals.thread.blocked = mask & !UNBLOCKABLE;
-        }
-        before
+    let thread_mask = match mask {
+        Some(mask) => replace_blocked(process, mask),
+        None => process.signals().lock().thread.blocked,
     };
-    while !deliver_with(process, context, None, Some(before))? {
+    while !deliver_after_wait(process, context, Some(thread_mask))? {
         thread::sleep_until::<P>(u64::MAX);
     }
     ControlFlow::Continue(())
+}
+
+/// Blocks the signals in `mask` (never `SIGKILL` or `SIGSTOP`) instead of the thread's, for a
+/// call that waits with a mask of its own, and returns the mask the thread had.
+pub fn replace_blocked<P: Platform>(process: &Process<P>, mask: u64) -> u64 {
+    core::mem::replace(
+        &mut process.signals().lock().thread.blocked,
+        mask & !UNBLOCKABLE,
+    )
+}
+
+/// Whether a signal is pending and not blocked: due, so a wait that has not started yet does
+/// not start, as on Linux.
+pub fn is_due<P: Platform>(process: &Process<P>) -> bool {
+    let signals = process.signals().lock();
+    signals.thread.pending & !signals.thread.blocked != 0
+}
+
+/// Delivers the signals due at the end of a wait that blocked a mask of its own, as
+/// [`deliver`] does, the first frame written saving `thread_mask`, the mask the thread had
+/// before the call, if the call changed it. Continues with whether a handler started.
+pub fn deliver_after_wait<P: Platform>(
+    process: &Process<P>,
+    context: &mut UserContext,
+    thread_mask: Option<u64>,
+) -> ControlFlow<(), bool> {
+    deliver_with(process, context, None, thread_mask)
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the

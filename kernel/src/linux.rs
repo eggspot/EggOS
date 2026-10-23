@@ -24,7 +24,8 @@
 //! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64), and
 //! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65), and real-time signals
 //! queued with `rt_sigqueueinfo` and `rt_tgsigqueueinfo` and taken with `rt_sigtimedwait`
-//! (D68), and waits for a handler with `rt_sigsuspend` and, on x86_64, `pause` (D70).
+//! (D68), and waits for a handler with `rt_sigsuspend` and, on x86_64, `pause` (D70), and
+//! `ppoll`'s signal mask during the call (D71).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -418,6 +419,7 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGSUSPEND => return signals::rt_sigsuspend(process, context),
         #[cfg(target_arch = "x86_64")]
         number::PAUSE => return signals::pause(process, context),
+        number::PPOLL => return poll::ppoll::<P>(process, context),
         _ => {}
     }
     let result = out_of_line_result(process, number, context);
@@ -442,7 +444,7 @@ fn out_of_line_result<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
-    let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
+    let [first, second, third, fourth, ..] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -470,7 +472,6 @@ fn out_of_line_result<P: Platform>(
         number::RT_SIGTIMEDWAIT => signals::rt_sigtimedwait(process, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
         number::POLL => poll::poll::<P>(process, first, second, third),
-        number::PPOLL => poll::ppoll::<P>(process, first, second, third, fourth, fifth),
         number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
@@ -2955,6 +2956,105 @@ mod tests {
                 signal: sigterm as u32
             })
         );
+    }
+
+    #[test]
+    fn ppoll_s_mask_lets_a_signal_it_unblocks_interrupt_a_wait_that_finds_nothing_ready() {
+        use poll::event::OUT;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let bit = |signal: u64| 1u64 << (signal - 1);
+        let (sigusr1, sigchld) = (10u64, 17u64);
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        set_handler(&process, sigusr1, flags, 0);
+        let before = bit(sigusr1) | bit(sigchld);
+        block_signals(&process, before);
+        for signal in [sigchld, sigusr1] {
+            assert_eq!(
+                call(&process, number::TGKILL, [pid, pid, signal, 0, 0, 0]),
+                0
+            );
+        }
+        let (fds, mask, timeout) = (SCRATCH + 0x100, SCRATCH + 0x200, SCRATCH + 0x280);
+        process
+            .write_user_memory(fds, &pollfds(&[(1, OUT)]))
+            .unwrap();
+        process
+            .write_user_memory(mask, &0u64.to_ne_bytes())
+            .unwrap();
+        process.write_user_memory(timeout, &[0; 16]).unwrap();
+        let thread = || process.signals().lock().thread();
+        assert_eq!(
+            call(&process, number::PPOLL, [fds, 1, timeout, mask, 8, 0]),
+            1
+        );
+        assert_eq!((thread().blocked, thread().pending), (before, before));
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+        context.simulate_syscall(number::PPOLL, [0, 0, timeout, mask, 8, 0], 0x40_0004);
+        let mut interrupted = context.clone();
+        interrupted.set_syscall_result(Errno::EINTR.result());
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(context.syscall_arguments()[0], sigusr1);
+        assert_eq!(saved_mask(&process, &context), before);
+        assert_eq!((thread().blocked, thread().pending), (bit(sigusr1), 0));
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.registers(), interrupted.registers());
+        assert_eq!(thread().blocked, before);
+    }
+
+    #[test]
+    fn ppoll_s_mask_lets_an_ignored_signal_go_and_a_default_action_end_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (sigchld, sigterm) = (17u64, 15u64);
+        for (signal, wait_nanoseconds) in [(sigchld, 2_000_000u64), (sigterm, 0)] {
+            let (process, pid) = process_with_stacks(&kernel);
+            let before = 1 << (signal - 1);
+            block_signals(&process, before);
+            assert_eq!(
+                call(&process, number::TGKILL, [pid, pid, signal, 0, 0, 0]),
+                0
+            );
+            let (mask, timeout) = (SCRATCH + 0x200, SCRATCH + 0x280);
+            process
+                .write_user_memory(mask, &0u64.to_ne_bytes())
+                .unwrap();
+            let mut wait = [0u8; 16];
+            wait[8..].copy_from_slice(&wait_nanoseconds.to_ne_bytes());
+            process.write_user_memory(timeout, &wait).unwrap();
+            let mut context = called(number::PPOLL, [0, 0, timeout, mask, 8, 0]);
+            let flow = handle(&process, &mut context, UserExit::Syscall);
+            if signal == sigchld {
+                assert_eq!(flow, ControlFlow::Continue(()));
+                assert_eq!(context.syscall_result(), 0);
+                let mut left = [0xffu8; 16];
+                process.read_user_memory(timeout, &mut left).unwrap();
+                assert_eq!(left, [0; 16]);
+                let thread = process.signals().lock().thread();
+                assert_eq!((thread.blocked, thread.pending), (before, 0));
+            } else {
+                assert_eq!(flow, ControlFlow::Break(()));
+                assert_eq!(
+                    process.exit_status(),
+                    Some(ProcessExit::Killed {
+                        signal: signal as u32
+                    })
+                );
+            }
+        }
     }
 
     #[test]
