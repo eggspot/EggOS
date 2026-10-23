@@ -105,9 +105,11 @@ impl Ids {
         })
     }
 
-    /// `setresuid(real, effective, saved)`, each [`UNCHANGED`] to keep it. Unless
-    /// `privileged`, each given id must be the real, effective or saved id: `EPERM`. The file
-    /// system id follows the effective id.
+    /// `setresuid(real, effective, saved)`, each [`UNCHANGED`] to keep it. A call that changes
+    /// nothing (each id unchanged or the one it has, the effective one also the file system
+    /// id) leaves every id as it is, as Linux has since 6.4 and 6.1.y. Otherwise, unless
+    /// `privileged`, each given id must be the real, effective or saved id: `EPERM`; and the
+    /// file system id follows the effective id.
     pub fn set_real_effective_and_saved(
         self,
         real: u32,
@@ -115,6 +117,14 @@ impl Ids {
         saved: u32,
         privileged: bool,
     ) -> Result<Self, Errno> {
+        let keeps = |given: u32, current: u32| given == UNCHANGED || given == current;
+        if keeps(real, self.real)
+            && (effective == UNCHANGED
+                || (effective == self.effective && effective == self.filesystem))
+            && keeps(saved, self.saved)
+        {
+            return Ok(self);
+        }
         if !privileged
             && [real, effective, saved]
                 .into_iter()
@@ -429,8 +439,9 @@ pub fn getgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
 
 /// `setgroups(size, list)`: sets the supplementary groups to the `size` 32-bit words at
 /// `list`, kept sorted. As Linux: `EPERM` unless the process is privileged; `EINVAL` for a
-/// `size` above [`MAX_GROUPS`] (an `int`: negative ones too); `ENOMEM`; `EFAULT` if `list` is
-/// not the program's memory. A `size` of 0 empties the list without reading `list`.
+/// `size` above [`MAX_GROUPS`] (an `int`: negative ones too); `ENOMEM`; then, word by word in
+/// order, `EFAULT` for one that is not the program's memory and `EINVAL` for [`UNCHANGED`],
+/// which is no group. A `size` of 0 empties the list without reading `list`.
 pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Result<u64, Errno> {
     let is_privileged = || {
         process
@@ -453,19 +464,23 @@ pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
     while groups.len() < size as usize {
         let chunk = GROUPS_PER_COPY.min(size as usize - groups.len());
         let mut bytes = [0u8; GROUPS_PER_COPY * 4];
-        process
-            .read_user_memory(
-                list.wrapping_add(groups.len() as u64 * 4),
-                &mut bytes[..chunk * 4],
-            )
-            .map_err(|_| Errno::EFAULT)?;
-        groups.extend(
-            bytes[..chunk * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|word| u32::from_ne_bytes(*word)),
-        );
+        let at = list.wrapping_add(groups.len() as u64 * 4);
+        let readable = match process.read_user_memory(at, &mut bytes[..chunk * 4]) {
+            Ok(()) => chunk,
+            Err(_) => readable_groups(process, at, &mut bytes[..chunk * 4]),
+        };
+        let read = bytes[..readable * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_ne_bytes(*word));
+        if read.clone().any(|group| group == UNCHANGED) {
+            return Err(Errno::EINVAL);
+        }
+        if readable < chunk {
+            return Err(Errno::EFAULT);
+        }
+        groups.extend(read);
     }
     let mut state = process.credentials_and_limits().lock();
     if !state.credentials.is_privileged() {
@@ -473,6 +488,21 @@ pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
     }
     state.credentials.set_groups(groups)?;
     Ok(0)
+}
+
+/// Reads the 32-bit words at `address` into `bytes` one at a time, after a copy of them all
+/// failed, and returns how many were read before the first that is not the program's memory.
+#[cold]
+fn readable_groups<P: Platform>(process: &Process<P>, address: u64, bytes: &mut [u8]) -> usize {
+    let mut read = 0;
+    for word in bytes.as_chunks_mut::<4>().0 {
+        let at = address.wrapping_add(read as u64 * 4);
+        if process.read_user_memory(at, word).is_err() {
+            break;
+        }
+        read += 1;
+    }
+    read
 }
 
 #[cfg(test)]
@@ -543,9 +573,24 @@ mod tests {
     #[test]
     fn setresuid_moves_ids_among_the_held_ones_unless_privileged() {
         let user = ids(1, 2, 3, 9);
+        for (real, effective, saved) in [(UNCHANGED, UNCHANGED, UNCHANGED), (1, UNCHANGED, 3)] {
+            assert_eq!(
+                user.set_real_effective_and_saved(real, effective, saved, false),
+                Ok(user)
+            );
+        }
         assert_eq!(
-            user.set_real_effective_and_saved(UNCHANGED, UNCHANGED, UNCHANGED, false),
+            user.set_real_effective_and_saved(UNCHANGED, 2, UNCHANGED, false),
             Ok(ids(1, 2, 3, 2))
+        );
+        assert_eq!(
+            user.set_real_effective_and_saved(1, 2, 3, false),
+            Ok(ids(1, 2, 3, 2))
+        );
+        let aligned = ids(1, 2, 3, 2);
+        assert_eq!(
+            aligned.set_real_effective_and_saved(1, 2, 3, false),
+            Ok(aligned)
         );
         assert_eq!(
             user.set_real_effective_and_saved(3, 1, 2, false),

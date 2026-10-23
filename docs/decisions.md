@@ -3137,3 +3137,36 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   a new test program, `linux_credentials`, checks `geteuid()` is 0, `setuid(1000)` succeeds,
   `getuid()` is then 1000 and `setuid(0)` fails with `EPERM`; it passes on aarch64, riscv64 and
   x86_64.
+
+## D76 Review of D73–D75: `setgroups` refuses group id -1; `setresuid` that changes nothing keeps the file system id; `newfstatat` takes `statx`'s synchronisation flags — Decided by the build loop (each Linux behaviour decided by research)
+- **Why.** The review step after three feature PRs (#67, #68, #69). The system-call numbers on
+  both tables, the clocks' error orders and rounding, the `struct stat` and `struct statx`
+  layouts, the path lookup, `lseek`, the id rules of `setuid`, `setreuid` and `setfsuid`, the
+  privilege model, `AT_SECURE`, `si_uid` and root's hard limits all check out. Three things
+  change, two of them the "to confirm" items D74 and D75 left.
+- **`setgroups` refuses (gid_t) -1** with `EINVAL`, as Linux does: -1 is no group in any user
+  namespace (`user_namespaces(7)`), and Linux's id check fails for it. The words are checked
+  in list order, so a -1 before a word that is not the program's memory is `EINVAL` and one
+  after it `EFAULT`. Words are still copied 64 at a time; only when a copy fails are its words
+  copied one by one, to find the first that cannot be read. Here -1 was accepted as a group.
+- **`setresuid` and `setresgid` that change nothing leave every id as it is.** Since Linux 6.4,
+  backported to 6.1.y (research, from the patch's description and the stable trees), a call
+  whose every id is -1 or the one it has, with the effective id also equal to the file system
+  id, returns 0 before anything else. So `setresuid(-1, -1, -1)` keeps a file system id
+  `setfsuid` set; here it reset it to the effective id. `setuid` and `setreuid` have no such
+  shortcut on Linux: they still reset it.
+- **`newfstatat` takes `AT_STATX_FORCE_SYNC` and `AT_STATX_DONT_SYNC`**, either or both, as
+  Linux has since 4.11, when `fstatat` began to share `statx`'s flag check (research); only
+  `statx` refuses both at once. `fstatat(2)` does not list them; this refused them with
+  `EINVAL`. They change nothing here: there is no remote file system to ask.
+- **For `execve` (M7 and later).** `exec::load` applies the after-exec ids (saved and file
+  system ids from the effective one) before the stack and segments are mapped. That is sound
+  while a failed load drops the process, as every caller does today; an `execve` system call
+  that returns to the old program on failure must apply them only once it cannot fail.
+- **Cost.** None of these paths is hot; `setgroups`' copies are unchanged unless one fails.
+- **Tests.** Host: `setgroups` with -1 first, -1 in the middle, -1 just before an unmapped
+  page and a word straddling one (`EINVAL`, `EINVAL`, `EFAULT`), the groups unchanged after
+  each; `setresuid` no-ops keeping a different file system id, and the effective id given
+  equal to it but unequal to the file system id resetting it; `setresuid(-1, -1, -1)` through
+  the dispatcher after `setfsuid`; `newfstatat` with 0x2000, 0x4000 and 0x6000 writing the
+  same bytes as `fstat`. Each fails without its fix.
