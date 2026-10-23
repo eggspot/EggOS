@@ -7,7 +7,8 @@
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
 //! which makes its own table on the heap. Its thread has a blocked mask, pending signals and
 //! an alternate stack ([`ThreadSignals`]), which move to each thread when `clone` exists. A
-//! signal a call makes due (sent to the caller, or unblocked) is delivered before the call
+//! signal a call makes due (sent to the caller, unblocked, or no longer caught) is delivered
+//! before the call
 //! returns ([`deliver`]): by its default action or `SIG_IGN`; one with a handler stays
 //! pending until signal frames and `rt_sigreturn` exist (part 2). A fault still ends the
 //! process with its signal whatever the actions and the mask say, which is also what Linux
@@ -26,7 +27,7 @@ use eggos_hal::Platform;
 pub const COUNT: usize = 64;
 
 /// The size of a signal set (`sigset_t` as the kernel takes it): the calls' `sigsetsize`
-/// must be this.
+/// must be this, but `rt_sigpending`'s may be smaller.
 pub const SET_SIZE: u64 = 8;
 
 /// `SIG_DFL`: the signal's default action.
@@ -137,7 +138,7 @@ pub struct Signals {
     thread: ThreadSignals,
 }
 
-/// A thread's signal state: what it blocks and its alternate stack.
+/// A thread's signal state: what it blocks, what is pending and its alternate stack.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadSignals {
     /// The blocked signals, bit `n - 1` for signal `n`; never [`UNBLOCKABLE`]'s.

@@ -2405,6 +2405,10 @@ switch-path cost; this entry follows it.)
     process could send either, so for good, as on Linux when no one does.
   - Lowest number first, and `SIGKILL` whatever the mask (it can never be blocked). A
     signal with a handler stays pending until part 2 delivers it.
+- **Process 1 is not protected yet.** On Linux, `init` receives only the signals it has a
+  handler for, so a self-sent `SIGABRT` would be dropped there. Here process 1 is just the
+  first program started, not `init`, so it dies like any other. The protection comes with
+  `init` (M10), deliberately not before.
 - **Faults** still end the process with their signal whatever its actions (D60), which is
   Linux's behaviour for a blocked or ignored fault signal. Faults go to a handler in part 2.
 - **Follow-ups.**

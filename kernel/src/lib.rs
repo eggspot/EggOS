@@ -506,13 +506,13 @@ pub(crate) mod tests {
                     } || step == 5 && {
                         let mut bytes = [0u8; 8];
                         read_user_bytes(pending, &mut bytes);
-                        u64::from_le_bytes(bytes) != usr1
+                        u64::from_ne_bytes(bytes) != usr1
                     };
                     let (number, arguments) = match step {
                         _ if failed || step == 6 => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
                         0 => (number::KILL, [0, 17, 0, 0, 0, 0]),
                         1 => {
-                            write_user_bytes(set, &usr1.to_le_bytes());
+                            write_user_bytes(set, &usr1.to_ne_bytes());
                             (number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0])
                         }
                         2 => (number::GETPID, [0; 6]),

@@ -1779,6 +1779,39 @@ mod tests {
                 signal: sigusr1 as u32
             })
         );
+        // A caught signal stays pending (handlers come with signal frames); `rt_sigaction`
+        // restoring its default action makes it due, before the call returns.
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let pid = u64::from(process.id().get());
+        let sigusr2 = 12;
+        process
+            .write_user_memory(
+                writable,
+                &[0x40_1000u64, 0, 0, 0].map(u64::to_ne_bytes).concat(),
+            )
+            .unwrap();
+        assert_eq!(
+            call(
+                &process,
+                number::RT_SIGACTION,
+                [sigusr2, writable, 0, 8, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(call(&process, number::KILL, [pid, sigusr2, 0, 0, 0, 0]), 0);
+        assert_eq!(process.exit_status(), None);
+        process.write_user_memory(writable, &[0; 32]).unwrap();
+        let mut context = called(number::RT_SIGACTION, [sigusr2, writable, 0, 8, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: sigusr2 as u32
+            })
+        );
         // `abort()`: `SIGABRT` to itself ends the process with it before `tgkill` returns.
         let process = process_with_iovecs(&kernel, b"ab", &[]);
         let pid = u64::from(process.id().get());
