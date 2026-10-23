@@ -74,7 +74,7 @@ const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 /// Crates compiled for the architectures' Linux targets: our own Linux programs.
 const USER_CRATES: &[&str] = &["eggos-runtime", "eggos-selftest"];
 
-/// The program the `qemu-test` kernels run (D84), and the variable that names it to them.
+/// The program the `qemu-test` kernels run (D85), and the variable that names it to them.
 const USER_SELFTEST: &str = "eggos-selftest";
 const USER_SELFTEST_VARIABLE: &str = "EGGOS_USERLAND_SELFTEST";
 

@@ -21,7 +21,7 @@ const ELF_START_LINE: &str =
     "EGGOS-USER: started from an ELF image with arguments and an environment";
 
 /// Must match `PASSED_LINE` in `userland/selftest`, without its newline: the line our own
-/// program built from Rust source writes when every start-up check passed (D84).
+/// program built from Rust source writes when every start-up check passed (D85).
 const RUST_PROGRAM_LINE: &str =
     "EGGOS-USER: a program built from Rust source passed its startup checks";
 
