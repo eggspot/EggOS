@@ -428,13 +428,15 @@ fn write<P: Platform>(
 }
 
 /// `writev(fd, buffers, count)`: as [`write`], for `count` buffers one after another, each a
-/// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux: `EINVAL` for
-/// more than [`MAX_IOVECS`] buffers or a length that is negative as a `ssize_t`, `EFAULT` if
-/// the array is not the program's memory or a buffer does not end within user space (all
-/// checked before anything is written); then at most [`MAX_RW_COUNT`] bytes in all, stopping
-/// at the first byte that is not the program's memory. The array is copied once, so the
-/// program changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is:
-/// the register's upper half is ignored.
+/// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux, all before
+/// anything is written: `EINVAL` for more than [`MAX_IOVECS`] buffers; `EFAULT` if the array
+/// does not end within user space; then, entry by entry, `EFAULT` for one that is not the
+/// program's memory and `EINVAL` for a length that is
+/// negative as a `ssize_t` (see [`unreadable_iovecs_error`]); then `EFAULT` if a buffer does
+/// not end within user space; then at most [`MAX_RW_COUNT`] bytes in all, stopping at the
+/// first byte that is not the program's memory. The array is copied once, so the program
+/// changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is: the
+/// register's upper half is ignored.
 #[inline(never)]
 fn writev<P: Platform>(
     process: &Process<P>,
@@ -461,17 +463,10 @@ fn writev<P: Platform>(
         on_heap.resize(bytes, 0);
         &mut on_heap[..]
     };
-    process
-        .read_user_memory(buffers, array)
-        .map_err(|_| Errno::EFAULT)?;
+    if process.read_user_memory(buffers, array).is_err() {
+        return Err(unreadable_iovecs_error(process, buffers, count));
+    }
     let (entries, _) = array.as_chunks::<IOVEC_SIZE>();
-    let iovec = |entry: &[u8; IOVEC_SIZE]| {
-        let (base, length) = entry.split_at(8);
-        (
-            u64::from_ne_bytes(base.try_into().unwrap()),
-            u64::from_ne_bytes(length.try_into().unwrap()),
-        )
-    };
     if entries.iter().any(|entry| iovec(entry).1 > i64::MAX as u64) {
         return Err(Errno::EINVAL);
     }
@@ -496,6 +491,40 @@ fn writev<P: Platform>(
         }
     }
     Ok(written)
+}
+
+/// A `struct iovec`'s base and length.
+fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
+    let (base, length) = entry.split_at(8);
+    (
+        u64::from_ne_bytes(base.try_into().unwrap()),
+        u64::from_ne_bytes(length.try_into().unwrap()),
+    )
+}
+
+/// [`writev`]'s error when its array of `count` `struct iovec`s at `buffers` is not all the
+/// program's memory. As Linux reads the entries one at a time: `EFAULT` if the array does not
+/// end within user space, before any is read; otherwise `EINVAL` if an entry read before the
+/// first unreadable one has a negative length, `EFAULT` if none has (D62). Cold: a program
+/// passes a readable array.
+#[cold]
+#[inline(never)]
+fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Errno {
+    if !ends_in_user_space::<P>(buffers, count * IOVEC_SIZE as u64) {
+        return Errno::EFAULT;
+    }
+    for index in 0..count {
+        let mut entry = [0; IOVEC_SIZE];
+        // Within user space, checked above: no overflow.
+        let address = buffers + index * IOVEC_SIZE as u64;
+        if process.read_user_memory(address, &mut entry).is_err() {
+            break;
+        }
+        if iovec(&entry).1 > i64::MAX as u64 {
+            return Errno::EINVAL;
+        }
+    }
+    Errno::EFAULT
 }
 
 /// Whether `fd` is one of the standard descriptors, 0 to 2, the only ones so far: the
@@ -798,6 +827,45 @@ mod tests {
         );
         assert_eq!(
             call(&process, number::WRITEV, [1, 0, 1, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        // An array that runs off its page: its entries are read in order, so a negative
+        // length before the unreadable one is `EINVAL`, as on Linux (D62); none, `EFAULT`.
+        let last_entry = DATA + 2 * 4096 - IOVEC_SIZE as u64;
+        for (length, error) in [(1 << 63, Errno::EINVAL), (2, Errno::EFAULT)] {
+            let mut buffers = alloc::vec![(0, 2); 4096 / IOVEC_SIZE];
+            *buffers.last_mut().unwrap() = (0, length);
+            let full_page = process_with_iovecs(&kernel, b"ab", &buffers);
+            assert_eq!(
+                call(&full_page, number::WRITEV, [1, last_entry, 2, 0, 0, 0]),
+                error.result()
+            );
+            // Only the unreadable entry: `EFAULT`.
+            assert_eq!(
+                call(&full_page, number::WRITEV, [1, last_entry + 16, 1, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        // An array that does not end within user space: `EFAULT` before any entry is read,
+        // even a readable one with a negative length in user space's last page.
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let mut at_the_end = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        let mut entry = [0u8; IOVEC_SIZE];
+        entry[8..].copy_from_slice(&(1u64 << 63).to_ne_bytes());
+        let last_page = user_end - 4096;
+        let mut page = alloc::vec![0u8; 4096];
+        page[4096 - IOVEC_SIZE..].copy_from_slice(&entry);
+        at_the_end
+            .map_new_page(last_page, Attributes::USER_READ_ONLY, &page)
+            .unwrap();
+        let at_the_end = Arc::new(at_the_end);
+        let last_entry = user_end - IOVEC_SIZE as u64;
+        assert_eq!(
+            call(&at_the_end, number::WRITEV, [1, last_entry, 1, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&at_the_end, number::WRITEV, [1, last_entry, 2, 0, 0, 0]),
             Errno::EFAULT.result()
         );
         assert!(console_output().is_empty());
@@ -1269,7 +1337,11 @@ mod tests {
         use poll::event::{IN, NVAL, OUT, WRNORM};
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        let process = process_with_iovecs(&kernel, &pollfds(&[(1, OUT)]), &[]);
+        // The read-only page: a `struct pollfd`, and at 1024 a timeout of one second.
+        let mut contents = pollfds(&[(1, OUT)]);
+        contents.resize(1024, 0);
+        contents.extend_from_slice(&1i64.to_ne_bytes());
+        let process = process_with_iovecs(&kernel, &contents, &[]);
         let read_only = DATA;
         let writable = DATA + 4096;
         let timeout = writable + 2048;
@@ -1369,12 +1441,49 @@ mod tests {
         assert_eq!(ppoll(user_end + 1, 0, timeout, 0, 0), efault);
         assert_eq!(ppoll(user_end - 4, 1, timeout, 0, 0), efault);
         assert_eq!(ppoll(read_only, 1, timeout, 0, 0), efault);
-        // A timeout the program cannot write is no error.
+        // Ready at once: the time not slept is written back, a little less than all of it
+        // (the test clock moves a microsecond each read), as Linux does (D62).
         process
             .write_user_memory(writable, &pollfds(&[(1, OUT)]))
             .unwrap();
+        let read_timeout = || {
+            let mut bytes = [0u8; 16];
+            process.read_user_memory(timeout, &mut bytes).unwrap();
+            let word = |at: usize| i64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap());
+            (word(0), word(8))
+        };
+        set_timeout(5, 0);
+        assert_eq!(ppoll(writable, 1, timeout, 0, 0), 1);
+        let (seconds, nanoseconds) = read_timeout();
+        assert_eq!(seconds, 4);
+        assert!(nanoseconds > 999_000_000, "{nanoseconds}");
+        // Written back after an error too, once the timeout was read.
+        set_timeout(5, 0);
+        assert_eq!(ppoll(unmapped, 1, timeout, 0, 0), efault);
+        assert_eq!(read_timeout().0, 4);
+        // A wait that ends with its timeout leaves none of it.
+        process
+            .write_user_memory(writable, &pollfds(&[(0, IN)]))
+            .unwrap();
+        set_timeout(0, 1000);
+        assert_eq!(ppoll(writable, 1, timeout, 0, 0), 0);
+        assert_eq!(read_timeout(), (0, 0));
+        // One too long to count in nanoseconds is left as it was.
+        set_timeout(i64::MAX, 999_999_999);
+        process
+            .write_user_memory(writable, &pollfds(&[(1, OUT)]))
+            .unwrap();
+        assert_eq!(ppoll(writable, 1, timeout, 0, 0), 1);
+        assert_eq!(read_timeout(), (i64::MAX, 999_999_999));
+        set_timeout(0, 0);
+        // A timeout the program cannot write is no error.
         let read_only_timeout = read_only + 1024;
         assert_eq!(ppoll(writable, 1, read_only_timeout, 0, 0), 1);
+        let mut left = [0u8; 16];
+        process
+            .read_user_memory(read_only_timeout, &mut left)
+            .unwrap();
+        assert_eq!(left[..8], 1i64.to_ne_bytes());
 
         // The count is checked against the open-file limit's soft value, as `prlimit64` set it.
         let lowered = writable + 2048 + 64;

@@ -529,6 +529,8 @@ pub(crate) mod tests {
                 spin: 16,
                 linux_hello: 21,
                 linux_start: 100,
+                // The whole code: the simulated programs run at their offsets, past it.
+                linux_start_end: 64,
                 linux_unknown_syscalls: 26,
                 stack_growth: 27,
                 linux_thread_pointer: 200,

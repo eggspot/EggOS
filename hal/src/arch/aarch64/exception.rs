@@ -360,6 +360,8 @@ aarch64_user_test_linux_start:
 9:  mov     x8, #94
     svc     #0
 4:  b       4b
+    .global aarch64_user_test_linux_start_end
+aarch64_user_test_linux_start_end:
     .global aarch64_user_test_linux_unknown_syscalls
 aarch64_user_test_linux_unknown_syscalls:
     mov     x8, #{unknown_syscall}
@@ -541,6 +543,7 @@ unsafe extern "C" {
     static aarch64_user_test_spin: u8;
     static aarch64_user_test_linux_hello: u8;
     static aarch64_user_test_linux_start: u8;
+    static aarch64_user_test_linux_start_end: u8;
     static aarch64_user_test_linux_unknown_syscalls: u8;
     static aarch64_user_test_stack_growth: u8;
     static aarch64_user_test_linux_thread_pointer: u8;
@@ -598,6 +601,7 @@ pub(super) fn user_test_program() -> TestProgram {
         spin: (&raw const aarch64_user_test_spin) as usize - start,
         linux_hello: (&raw const aarch64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const aarch64_user_test_linux_start) as usize - start,
+        linux_start_end: (&raw const aarch64_user_test_linux_start_end) as usize - start,
         linux_unknown_syscalls: (&raw const aarch64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const aarch64_user_test_stack_growth) as usize - start,

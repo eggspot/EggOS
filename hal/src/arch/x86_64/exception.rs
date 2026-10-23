@@ -446,6 +446,8 @@ x86_64_user_test_linux_start:
 9:  movl    $231, %eax
     syscall
 4:  jmp     4b
+    .global x86_64_user_test_linux_start_end
+x86_64_user_test_linux_start_end:
     .global x86_64_user_test_linux_unknown_syscalls
 x86_64_user_test_linux_unknown_syscalls:
 5:  movl    ${unknown_syscall}, %eax
@@ -861,6 +863,7 @@ unsafe extern "C" {
     static x86_64_user_test_spin: u8;
     static x86_64_user_test_linux_hello: u8;
     static x86_64_user_test_linux_start: u8;
+    static x86_64_user_test_linux_start_end: u8;
     static x86_64_user_test_linux_unknown_syscalls: u8;
     static x86_64_user_test_stack_growth: u8;
     static x86_64_user_test_linux_thread_pointer: u8;
@@ -1025,6 +1028,7 @@ pub(super) fn user_test_program() -> TestProgram {
         spin: (&raw const x86_64_user_test_spin) as usize - start,
         linux_hello: (&raw const x86_64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const x86_64_user_test_linux_start) as usize - start,
+        linux_start_end: (&raw const x86_64_user_test_linux_start_end) as usize - start,
         linux_unknown_syscalls: (&raw const x86_64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const x86_64_user_test_stack_growth) as usize - start,

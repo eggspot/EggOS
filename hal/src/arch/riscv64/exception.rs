@@ -476,6 +476,8 @@ riscv64_user_test_linux_start:
 9:  li      a7, 94
     ecall
 4:  j       4b
+    .global riscv64_user_test_linux_start_end
+riscv64_user_test_linux_start_end:
     .global riscv64_user_test_linux_unknown_syscalls
 riscv64_user_test_linux_unknown_syscalls:
     li      a7, {unknown_syscall}
@@ -669,6 +671,7 @@ unsafe extern "C" {
     static riscv64_user_test_spin: u8;
     static riscv64_user_test_linux_hello: u8;
     static riscv64_user_test_linux_start: u8;
+    static riscv64_user_test_linux_start_end: u8;
     static riscv64_user_test_linux_unknown_syscalls: u8;
     static riscv64_user_test_stack_growth: u8;
     static riscv64_user_test_linux_thread_pointer: u8;
@@ -719,6 +722,7 @@ pub(super) fn user_test_program() -> TestProgram {
         spin: (&raw const riscv64_user_test_spin) as usize - start,
         linux_hello: (&raw const riscv64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const riscv64_user_test_linux_start) as usize - start,
+        linux_start_end: (&raw const riscv64_user_test_linux_start_end) as usize - start,
         linux_unknown_syscalls: (&raw const riscv64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const riscv64_user_test_stack_growth) as usize - start,
