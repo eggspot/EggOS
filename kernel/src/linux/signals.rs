@@ -22,7 +22,7 @@ pub const COUNT: usize = 64;
 
 /// The size of a signal set (`sigset_t` as the kernel takes it): the calls' `sigsetsize`
 /// must be this.
-const SET_SIZE: u64 = 8;
+pub const SET_SIZE: u64 = 8;
 
 /// `SIG_DFL`: the signal's default action.
 pub const DEFAULT: u64 = 0;

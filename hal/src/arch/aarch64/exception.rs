@@ -398,6 +398,60 @@ aarch64_user_test_linux_thread_pointer:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_linux_poll
+aarch64_user_test_linux_poll:
+    // Linux's generic numbers: ioctl 29, ppoll 73, exit_group 94. x19 is the exit status
+    // until every check passed. The three `struct pollfd`s are at sp-32, the window size at
+    // sp-64, the timeout at sp-48.
+    mov     x19, #1
+    mov     x10, #0                 // fd 0, no events
+    mov     x11, #1
+    movk    x11, #4, lsl #32        // fd 1, POLLOUT
+    mov     x12, #2                 // fd 2, no events
+    stp     x10, x11, [sp, #-32]
+    str     x12, [sp, #-16]
+    stp     xzr, xzr, [sp, #-48]
+    sub     x0, sp, #32
+    mov     x1, #3
+    sub     x2, sp, #48
+    mov     x3, #0
+    mov     x4, #0
+    mov     x8, #73
+    svc     #0
+    cmp     x0, #1
+    b.ne    9f
+    ldurh   w9, [sp, #-26]
+    cbnz    w9, 9f
+    ldurh   w9, [sp, #-18]
+    cmp     w9, #4
+    b.ne    9f
+    ldurh   w9, [sp, #-10]
+    cbnz    w9, 9f
+    mov     x0, #1
+    mov     x1, #0x5413             // TIOCGWINSZ
+    sub     x2, sp, #64
+    mov     x8, #29
+    svc     #0
+    cbnz    x0, 9f
+    movz    x9, #({poll_wait} & 0xffff)
+    movk    x9, #({poll_wait} >> 16), lsl #16
+    stp     xzr, x9, [sp, #-48]
+    mov     x0, #0
+    mov     x1, #0
+    sub     x2, sp, #48
+    mov     x3, #0
+    mov     x4, #0
+    mov     x8, #73
+    svc     #0
+    cbnz    x0, 9f
+    ldp     x9, x10, [sp, #-48]
+    orr     x9, x9, x10
+    cbnz    x9, 9f
+    mov     x19, #0
+9:  mov     x0, x19
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -410,6 +464,7 @@ aarch64_user_test_end:
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     handler = sym aarch64_exception,
 );
 
@@ -489,6 +544,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_unknown_syscalls: u8;
     static aarch64_user_test_stack_growth: u8;
     static aarch64_user_test_linux_thread_pointer: u8;
+    static aarch64_user_test_linux_poll: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -546,6 +602,7 @@ pub(super) fn user_test_program() -> TestProgram {
             - start,
         stack_growth: (&raw const aarch64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const aarch64_user_test_linux_thread_pointer) as usize - start,
+        linux_poll: (&raw const aarch64_user_test_linux_poll) as usize - start,
     }
 }
 

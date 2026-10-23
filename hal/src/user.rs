@@ -178,6 +178,13 @@ pub struct TestProgram {
     /// `arch_prctl(ARCH_SET_FS)`. Then `exit_group(0)`, or `exit_group(1)` if any check or
     /// call failed.
     pub linux_thread_pointer: usize,
+    /// A Linux program that polls descriptors 0 to 2 with no wait, as Rust's std does at
+    /// startup but asking for room to write on 1 (only 1 may report, with `POLLOUT`), reads
+    /// the console's window size with `ioctl(TIOCGWINSZ)`, then waits on no descriptors for
+    /// [`Self::LINUX_POLL_WAIT_NS`] with `ppoll`, which must return 0 and write a zero
+    /// remaining time back. x86_64 polls first with `poll`, the others with `ppoll`. Then
+    /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
+    pub linux_poll: usize,
 }
 
 impl TestProgram {
@@ -196,6 +203,9 @@ impl TestProgram {
     pub const LINUX_THREAD_POINTER_MARKER: u64 = u64::from_le_bytes(*b"EGGOSTLS");
     /// x86_64: `arch_prctl`'s code for setting the FS base.
     pub const LINUX_ARCH_SET_FS: u64 = 0x1002;
+    /// How long [`Self::linux_poll`] waits in `ppoll`, in nanoseconds: 2 ms, a few timer
+    /// ticks on every architecture.
+    pub const LINUX_POLL_WAIT_NS: u64 = 2_000_000;
 }
 
 #[cfg(target_arch = "aarch64")]

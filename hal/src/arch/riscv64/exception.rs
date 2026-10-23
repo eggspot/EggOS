@@ -513,6 +513,64 @@ riscv64_user_test_linux_thread_pointer:
     li      a7, 94
     ecall
 8:  j       8b
+    .global riscv64_user_test_linux_poll
+riscv64_user_test_linux_poll:
+    // Linux's generic numbers: ioctl 29, ppoll 73, exit_group 94. s1 is the exit status until
+    // every check passed. The three `struct pollfd`s are at sp-32, the window size at sp-64,
+    // the timeout at sp-48.
+    li      s1, 1
+    sd      zero, -32(sp)           // fd 0, no events
+    li      t0, 1
+    sw      t0, -24(sp)             // fd 1, POLLOUT
+    li      t0, 4
+    sh      t0, -20(sp)
+    sh      zero, -18(sp)
+    li      t0, 2
+    sd      t0, -16(sp)             // fd 2, no events
+    sd      zero, -48(sp)
+    sd      zero, -40(sp)
+    addi    a0, sp, -32
+    li      a1, 3
+    addi    a2, sp, -48
+    li      a3, 0
+    li      a4, 0
+    li      a7, 73
+    ecall
+    li      t0, 1
+    bne     a0, t0, 9f
+    lhu     t0, -26(sp)
+    bnez    t0, 9f
+    lhu     t0, -18(sp)
+    li      t1, 4
+    bne     t0, t1, 9f
+    lhu     t0, -10(sp)
+    bnez    t0, 9f
+    li      a0, 1
+    li      a1, 0x5413              // TIOCGWINSZ
+    addi    a2, sp, -64
+    li      a7, 29
+    ecall
+    bnez    a0, 9f
+    li      t0, {poll_wait}
+    sd      zero, -48(sp)
+    sd      t0, -40(sp)
+    li      a0, 0
+    li      a1, 0
+    addi    a2, sp, -48
+    li      a3, 0
+    li      a4, 0
+    li      a7, 73
+    ecall
+    bnez    a0, 9f
+    ld      t0, -48(sp)
+    ld      t1, -40(sp)
+    or      t0, t0, t1
+    bnez    t0, 9f
+    li      s1, 0
+9:  mv      a0, s1
+    li      a7, 94
+    ecall
+8:  j       8b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -527,6 +585,7 @@ riscv64_user_test_end:
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
 );
 
 /// The registers saved by the entry code, in the order it stores them.
@@ -613,6 +672,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_unknown_syscalls: u8;
     static riscv64_user_test_stack_growth: u8;
     static riscv64_user_test_linux_thread_pointer: u8;
+    static riscv64_user_test_linux_poll: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -663,6 +723,7 @@ pub(super) fn user_test_program() -> TestProgram {
             - start,
         stack_growth: (&raw const riscv64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const riscv64_user_test_linux_thread_pointer) as usize - start,
+        linux_poll: (&raw const riscv64_user_test_linux_poll) as usize - start,
     }
 }
 
