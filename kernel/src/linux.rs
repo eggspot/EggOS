@@ -586,7 +586,7 @@ fn out_of_line_result<P: Platform>(
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
         number::NANOSLEEP => time::nanosleep(process, first),
-        number::FUTEX => futex::futex::<P>(process, first, second, third, fourth, sixth),
+        number::FUTEX => futex::futex::<P>(process, first, second, third, fourth, fifth, sixth),
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, first, second, third),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
