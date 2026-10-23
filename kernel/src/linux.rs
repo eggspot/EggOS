@@ -940,6 +940,7 @@ mod tests {
             ),
             Errno::ESRCH.result()
         );
+        assert_eq!(read(writable), limits::DEFAULTS[resource::STACK as usize]);
         for resource in [resource::COUNT as u64, u64::from(u32::MAX)] {
             assert_eq!(
                 call(

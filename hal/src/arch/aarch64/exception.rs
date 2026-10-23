@@ -257,8 +257,8 @@ aarch64_user_test_linux_hello:
     .global aarch64_user_test_linux_start
 aarch64_user_test_linux_start:
     // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, prlimit64
-    // 261, getrandom 278. x19 is argc, x20 walks argv and envp, x21 counts the two lists, x22 holds the
-    // process id. Each string is written by writev from one iovec on the stack. Ends with
+    // 261, getrandom 278. x19 is argc, x20 walks argv and envp, x21 counts the two lists, x22
+    // holds the process id. Each string is written by writev from one iovec on the stack. Ends with
     // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
     // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
     // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
