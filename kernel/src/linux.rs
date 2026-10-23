@@ -1436,7 +1436,28 @@ mod tests {
             call(&process, number::SETGROUPS, [1, unmapped, 0, 0, 0, 0]),
             Errno::EFAULT.result()
         );
-        assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 3);
+        store(writable + 512, &[5, credentials::UNCHANGED, 7]);
+        assert_eq!(
+            call(&process, number::SETGROUPS, [3, writable + 512, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        store(unmapped - 8, &[42, credentials::UNCHANGED]);
+        for (size, list, error) in [
+            (3, unmapped - 8, Errno::EINVAL),
+            (2, unmapped - 4, Errno::EINVAL),
+            (2, unmapped - 2, Errno::EFAULT),
+        ] {
+            assert_eq!(
+                call(&process, number::SETGROUPS, [size, list, 0, 0, 0, 0]),
+                error.result(),
+                "{size} groups at {list:#x}"
+            );
+        }
+        assert_eq!(
+            call(&process, number::GETGROUPS, [3, writable, 0, 0, 0, 0]),
+            3
+        );
+        assert_eq!(words(writable, 3), [100, 200, 300]);
         let many: alloc::vec::Vec<u32> = (0..100).rev().collect();
         store(writable + 1024, &many);
         assert_eq!(
@@ -1471,6 +1492,19 @@ mod tests {
             call(&process, number::SETFSGID, [unchanged, 0, 0, 0, 0, 0]),
             6
         );
+        assert_eq!(call(&process, number::SETFSGID, [9, 0, 0, 0, 0, 0]), 6);
+        assert_eq!(
+            call(
+                &process,
+                number::SETRESGID,
+                [unchanged, unchanged, unchanged, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(&process, number::SETFSGID, [unchanged, 0, 0, 0, 0, 0]),
+            9
+        );
 
         assert_eq!(
             call(
@@ -1492,6 +1526,18 @@ mod tests {
         assert_eq!(
             call(&process, number::SETFSUID, [1000, 0, 0, 0, 0, 0]),
             1001
+        );
+        assert_eq!(
+            call(&process, number::SETFSUID, [unchanged, 0, 0, 0, 0, 0]),
+            1000
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::SETRESUID,
+                [unchanged, unchanged, unchanged, 0, 0, 0]
+            ),
+            0
         );
         assert_eq!(
             call(&process, number::SETFSUID, [unchanged, 0, 0, 0, 0, 0]),
@@ -3835,11 +3881,17 @@ mod tests {
             assert_eq!(double_word(&bytes, 48), 0);
             assert_eq!(word(&bytes, 56), 4096);
             assert!(bytes[64..].iter().all(|&byte| byte == 0));
-            for path in [EMPTY, 0] {
+            for (path, sync) in [
+                (EMPTY, 0),
+                (0, 0),
+                (EMPTY, 0x2000),
+                (EMPTY, 0x4000),
+                (0, 0x6000),
+            ] {
                 process
                     .write_user_memory(STAT_BUFFER, &[0xff; stat::STAT_SIZE])
                     .unwrap();
-                let flags = stat::at::EMPTY_PATH | stat::at::SYMLINK_NOFOLLOW;
+                let flags = stat::at::EMPTY_PATH | stat::at::SYMLINK_NOFOLLOW | sync;
                 assert_eq!(
                     call(
                         &process,

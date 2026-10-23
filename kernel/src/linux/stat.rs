@@ -9,7 +9,8 @@
 //! (D73). Paths wait for the file system (M7): a call that names a file, rather than a
 //! descriptor with `AT_EMPTY_PATH`, finds none.
 //!
-//! `newfstatat` and `statx` look up what `dirfd` and `path` name as Linux does. The path is
+//! `newfstatat` and `statx` look up what `dirfd` and `path` name as Linux does. Their
+//! synchronisation flags change nothing: there is no remote file system to ask. The path is
 //! copied first: `EFAULT` if a byte up to its end is not the program's memory, `ENAMETOOLONG`
 //! if it has no end within `PATH_MAX` (4096) bytes. A null path with `AT_EMPTY_PATH` is not
 //! read, as Linux has accepted since 6.11. Then an empty path is `ENOENT` without
@@ -291,8 +292,10 @@ fn lookup<P: Platform>(
 
 /// `newfstatat(dirfd, path, statbuf, flags)` (`fstatat` in the generic table): as [`fstat`]
 /// for `dirfd` with an empty path and [`at::EMPTY_PATH`] (the module documentation's lookup).
-/// As Linux: `EINVAL` for a flag other than `AT_SYMLINK_NOFOLLOW`, `AT_NO_AUTOMOUNT` and
-/// `AT_EMPTY_PATH`, first, and `EFAULT` for `statbuf` last; `flags` is an `int`.
+/// As Linux: `EINVAL` for a flag other than `AT_SYMLINK_NOFOLLOW`, `AT_NO_AUTOMOUNT`,
+/// `AT_EMPTY_PATH` and `statx`'s synchronisation bits (either or both, which Linux has taken
+/// since 4.11 though `fstatat(2)` does not list them), first, and `EFAULT` for `statbuf` last;
+/// `flags` is an `int`.
 pub fn newfstatat<P: Platform>(
     process: &Process<P>,
     dirfd: u64,
@@ -301,7 +304,8 @@ pub fn newfstatat<P: Platform>(
     flags: u64,
 ) -> Result<u64, Errno> {
     let flags = u64::from(flags as u32);
-    if flags & !(at::SYMLINK_NOFOLLOW | at::NO_AUTOMOUNT | at::EMPTY_PATH) != 0 {
+    let known = at::SYMLINK_NOFOLLOW | at::NO_AUTOMOUNT | at::EMPTY_PATH | at::STATX_SYNC_TYPE;
+    if flags & !known != 0 {
         return Err(Errno::EINVAL);
     }
     let status = lookup(process, dirfd, path, flags)?;
