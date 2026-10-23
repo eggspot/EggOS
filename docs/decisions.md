@@ -1818,7 +1818,7 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   first program built from our own Rust source; the shootdown with `clone`; `madvise`
   (`MADV_DONTNEED` zeroes private pages), `mremap` and `MAP_POPULATE` when a program needs them.
 
-## D54 FP/SIMD registers per thread: given on first use, saved on every switch away, loaded again only when the CPU no longer holds them; the RISC-V kernel builds soft-float — Decided by the build loop (save/restore design decided by research; first-use allocation and the switch-path check chosen by the build loop, owner to accept their cost)
+## D54 FP/SIMD registers per thread: given on first use, saved on every switch away, loaded again only when the CPU no longer holds them; the RISC-V kernel builds soft-float — Decided by the build loop (save/restore design decided by research; first-use allocation and the switch-path check chosen by the build loop; their cost accepted by research under D78)
 - **Why now.** M6's next step: every compiled program uses FP/SIMD within its first
   instructions (SSE2 is part of the x86_64 ABI, NEON of AArch64's, F and D of RV64GC's, and
   libc's and Rust's `memcpy` use them), and since D49 they trapped and ended the program.
@@ -1849,19 +1849,33 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   never runs with registers another left, not even with FP/SIMD off (no LazyFP,
   CVE-2018-3665: Linux, FreeBSD and macOS all switched to eager saving for it). On AMD CPUs that leave the x87 error pointers alone in
   `FXRSTOR` (CVE-2006-1056), an x87 load before every load resets them to the kernel's.
-- **The switch-path cost: owner to accept.** Every switch now looks at one per-CPU flag (does
-  the running thread have FP/SIMD registers?) and the next thread's `user` flag, both on cache
-  lines the switch reads anyway, and goes to an out-of-line copy of the switch only when
-  FP/SIMD work may be needed. In QEMU's instruction counts that is about five instructions
-  per switch: `thread_yield_round_trip` +8.0 to +10.9%, `thread_wait_wake_round_trip` +6.7 to
-  +7.2%, `process_switch_round_trip` +2.6 to +4.4% (two more loads for a user thread). The
-  system-call and page-fault paths are unchanged (the first-use check sits in the Linux
-  layer's cold exception path, not in the thread loop). Alternatives rejected: trapping on
-  every switch back (lazy restore) leaves the previous owner's values in the registers, the
-  LazyFP leak; folding the flag into `finish_switch`'s existing exited-slot check would leave
-  the benchmarks flat but only because they run with no FP/SIMD owner on the CPU, while every
-  real workload would still pay. This is the one part of D54 that needs the owner: by the
-  performance rule, a slower benchmark waits for the owner's OK.
+- **The switch-path cost: accepted by research (D78, 2026-10-23).** Every switch now looks at
+  one per-CPU flag (does the running thread have FP/SIMD registers?) and the next thread's
+  `user` flag, both on cache lines the switch reads anyway, and goes to an out-of-line copy of
+  the switch only when FP/SIMD work may be needed. In QEMU's instruction counts that is about
+  five instructions per switch: `thread_yield_round_trip` +8.0 to +10.9%,
+  `thread_wait_wake_round_trip` +6.7 to +7.2%, `process_switch_round_trip` +3.2 to +4.4% (two
+  more loads for a user thread). The system-call paths are unchanged; x86_64's
+  `linux_page_fault` measures 1137.57 against `main`'s 1135.70 on the same machine (+0.16%,
+  about two instructions, with no change on the fault path: the first-use check sits in
+  `signal_fault`, which page faults reach only when they are not resolved). Alternatives
+  rejected: trapping on every switch back (lazy restore) leaves the previous owner's values in
+  the registers, the LazyFP leak; folding the flag into `finish_switch`'s existing exited-slot
+  check would leave the benchmarks flat but only because they run with no FP/SIMD owner on the
+  CPU, while every real workload would still pay; one combined flag byte saves no instruction
+  on AArch64 and RISC-V (still two loads, an or and a branch) and one on x86_64. The research
+  found one further cut: test only the outgoing thread's flag on the switch, and load or clear
+  the incoming program's registers on its way back to user mode, behind the address space's
+  existing compare (Linux's shape, with a pending bit in the same word as the active address
+  space so system calls keep one compare), on the condition that the system-call paths stay
+  flat. Built and measured, it cut `thread_yield_round_trip` to +3.3 to +5.5% and
+  `thread_wait_wake_round_trip` to +2.4 to +3.6%, but made `process_switch_round_trip` +11.6
+  to +15.1%, `fp_process_switch_round_trip` +6 to +7% and x86_64's `linux_syscall_round_trip`
+  +1.6%, so by the research's own condition it was dropped. What remains is the price of
+  eager saving, which LazyFP requires: Linux tests every outgoing task's FP state on every
+  switch, kernel threads included, and FreeBSD (FreeBSD-SA-18:07), Windows (ADV180016) and
+  macOS moved to eager handling for the same CVE. The baseline lines of these nine
+  benchmarks and x86_64's `linux_page_fault` were updated to the numbers above, no others.
 - **The kernel stays FP-free on every architecture.** AArch64 and x86_64 were already
   soft-float targets. RISC-V moves from `riscv64gc-unknown-none-elf` (hard-float ABI, which
   may use FP registers in kernel code, which would now silently corrupt a program's) to
