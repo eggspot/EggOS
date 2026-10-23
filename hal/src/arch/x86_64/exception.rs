@@ -248,6 +248,7 @@ x86_64_enter_user:
     movl    ${ia32_fs_base}, %ecx
     wrmsr
     jmp     3b
+    int3
     .popsection
 
     // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no

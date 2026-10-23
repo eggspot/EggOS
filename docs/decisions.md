@@ -1992,7 +1992,8 @@ switch-path cost; this entry follows it.)
     base was loaded for (a per-CPU word) and runs `wrmsr` only when they differ, so a
     program that keeps its CPU pays one load and compare per entry and no MSR write. The id,
     not the value, is compared: a program that loads FS with a selector (base 0) cannot make
-    another program with the same value keep that zero. `set_thread_pointer` refuses a
+    another program with the same value keep that zero (until `fork`/`clone` copy a context
+    with its id: then a fresh id for the copy, a follow-up). `set_thread_pointer` refuses a
     value at or above the end of user space on x86_64 (`InvalidThreadPointer`), whoever
     calls it (`clone`'s `CLONE_SETTLS` later): loading a non-canonical FS base would fault
     in the kernel. The `sysretq` path now loads the
@@ -2028,9 +2029,13 @@ switch-path cost; this entry follows it.)
   AArch64 load or the x86_64 `wrmsr` removed (checked).
 - **Follow-ups:** a per-CPU "last context" check on AArch64 instead of the unconditional
   `msr` once a real CPU shows `TPIDR_EL0` writes cost more than QEMU's count; with `clone`,
-  `CLONE_SETTLS` through `set_thread_pointer`; the FS and GS selectors a program loads stay
-  for the next program on its CPU (a 16-bit channel between programs; their bases do not
-  leak): save and reset them as Linux does; the GS base
+  `CLONE_SETTLS` through `set_thread_pointer`, and a fresh `fs_base_id` for any context
+  `fork` or `clone` copies (from PR #50's independent review); the DS, ES, FS and GS
+  selectors a program loads stay for the next program on its CPU (16-bit channels between
+  programs; the FS and GS bases do not leak), and a program that loaded FS sees base 0 only
+  on that CPU: save and reset them as Linux does; a `process_switch_round_trip` variant with
+  the FS base set (every real program has one, so real switches pay the `wrmsr`), and the
+  `wrmsr` and `msr tpidr_el0` measured on real hardware (M13); the GS base
   per thread with `ARCH_SET_GS` and the SWAPGS fence (D49); FSGSBASE for programs (Linux
   5.9+, `AT_HWCAP2`), which needs the FS base saved on the way out; `set_thread_area` and
   32-bit programs.

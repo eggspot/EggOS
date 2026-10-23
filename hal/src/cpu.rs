@@ -124,7 +124,7 @@ pub(crate) struct X86Tables {
     /// The program's `rsp` for the moment between `syscall` and its frame being pushed.
     pub(crate) user_rsp: u64,
     /// The `fs_base_id` of the user context this CPU's FS base was last loaded for: 0, the FS
-    /// base zeroed by `set_cpu_local`, until a program with one set runs here.
+    /// base zeroed by `set_up_user_mode`, until a program with one set runs here.
     pub(crate) fs_base_id: u64,
 }
 
