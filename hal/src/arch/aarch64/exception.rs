@@ -532,12 +532,27 @@ aarch64_user_test_linux_signal_handler:
     mov     x2, #10
     mov     x19, #0x5a5             // kept across the handler, which clobbers it
     mov     x20, #1                 // the handler sets it to 2 in its frame
+    .arch_extension fp
+    mov     x9, #{signal_fp_kept}
+    fmov    d8, x9
+    mov     x9, #{signal_fpcr}
+    msr     fpcr, x9
     mov     x8, #131
     svc     #0                      // the handler runs before this returns
     cbnz    x0, 9f
     cmp     x19, #0x5a5
     b.ne    9f
     cmp     x20, #2
+    b.ne    9f
+    fmov    x9, d8
+    cmp     x9, #{signal_fp_kept}
+    b.ne    9f
+    fmov    x9, d9
+    cmp     x9, #{signal_fp_changed}
+    b.ne    9f
+    mrs     x9, fpcr
+    mov     x10, #{signal_fpcr}
+    cmp     x9, x10
     b.ne    9f
     mov     x0, #0                  // the mask is back: nothing blocked
     mov     x1, #0
@@ -573,10 +588,24 @@ aarch64_user_test_linux_signal_handler:
     add     x9, x9, x11
     cmp     x10, x9
     b.hs    7f
+    fmov    x9, d8
+    cmp     x9, #{signal_fp_kept}
+    b.ne    7f
+    ldr     x9, [x2, #{saved_v8}]
+    cmp     x9, #{signal_fp_kept}
+    b.ne    7f
+    ldr     w9, [x2, #{saved_fpcr}]
+    mov     w10, #{signal_fpcr}
+    cmp     w9, w10
+    b.ne    7f
+    mov     x9, #{signal_fp_changed}
+    str     x9, [x2, #{saved_v9}]
+    fmov    d8, xzr
     mov     x9, #2
     str     x9, [x2, #{saved_x20}]
 7:  mov     x19, #0
     ret
+    .arch_extension nofp
     .global aarch64_user_test_linux_fault_handler
 aarch64_user_test_linux_fault_handler:
     // Linux's generic numbers: exit_group 94, rt_sigaction 134, mmap 222. Its `struct
@@ -1067,6 +1096,12 @@ aarch64_user_test_end:
     clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
     // `uc_mcontext.regs[20]` in the ucontext: the sigcontext at 176, its registers at 8.
     saved_x20 = const 176 + 8 + 20 * 8,
+    saved_fpcr = const 176 + 288 + 12,
+    saved_v8 = const 176 + 288 + 16 + 8 * 16,
+    saved_v9 = const 176 + 288 + 16 + 9 * 16,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_fpcr = const 1 << 22,
     saved_x21 = const 176 + 8 + 21 * 8,
     saved_x22 = const 176 + 8 + 22 * 8,
     saved_x23 = const 176 + 8 + 23 * 8,

@@ -3447,3 +3447,61 @@ the license, by an explicit instruction recorded here.
 - **Tests.** 40 x86_64 boots in a row pass (before: about 1 failure in 16). The diagnosis
   used temporary prints of the count, the live processes and each CPU's slot; they are not
   kept.
+
+## D82 Signal frames hold the thread's FP/SIMD registers, and `rt_sigreturn` loads them — Decided by the build loop (Linux's rules decided by research); completes D64's FP/SIMD parts and one of D54's follow-ups
+- **Why now.** D64 gave every frame an FP/SIMD part in Linux's shape holding only the initial
+  state, and `rt_sigreturn` ignored its values: all a program could have before D54. Since
+  D54, programs have FP/SIMD registers, so a handler saw the wrong values in its frame, a
+  handler that changed them there changed nothing, and on AArch64 and RISC-V, where a
+  handler starts with the interrupted code's registers, whatever the handler left in them
+  leaked back into the interrupted code. C libraries' `swapcontext`-style code, Rust's and
+  Go's runtimes, and crash reporters read or edit these parts.
+- **What a frame holds.** The running thread's registers as its program left them
+  (`thread::with_running_fp`: under the scheduler's lock, saved from the CPU, read or
+  changed, loaded again), or the initial state for a thread that has none: x86_64's
+  `FXSAVE64` image where `fpstate` points (bytes 464 to 511, where Linux puts the `XSAVE`
+  magic when it uses `XSAVE`, zero), AArch64's `fpsimd_context` (`fpsr`, `fpcr`, `v0` to
+  `v31`) and RISC-V's D state (`f0` to `f31`, `fcsr`). The layouts are D64's.
+- **How a handler starts (research).** On x86_64 with the initial state (x87 control word
+  `0x037F`, `MXCSR` `0x1F80`, registers zero) once its frame is written, as Linux does; on
+  AArch64 and RISC-V with the interrupted code's registers, as Linux does (it resets only
+  SVE, SME and V state there, which EggOS does not have yet).
+- **What `rt_sigreturn` loads (research).** The frame's values, before anything else is
+  restored, so a refused frame changes nothing:
+  - x86_64: a null `fpstate` means the initial state; one not 16-byte aligned (Linux runs
+    `FXRSTOR64` on the program's memory, which needs it), or unreadable, is `SIGSEGV`. An
+    image setting an `MXCSR` bit outside the CPU's `MXCSR_MASK` (`0xFFBF` when the CPU stores
+    0) is `SIGSEGV`, as on Linux since 5.14; the image's own `MXCSR_MASK` and bytes 464 on
+    are never used. The mask comes from the thread's own state, which `FXSAVE64` wrote just
+    before (`FpState::set_fxsave_image`), so a bad value never reaches the kernel's
+    `FXRSTOR64`, which would fault in ring 0.
+  - AArch64 and RISC-V: every value as it is, as on Linux; the reserved bits of `FPCR`,
+    `FPSR` and `fcsr` ignore writes. The records' shape is still checked as in D64.
+  - A thread with no FP/SIMD registers gets them (`thread::start_fp`) when the frame holds
+    anything but the initial state, so a handler's change is not lost; with the initial
+    state it stays without, costing nothing. No memory for them is `SIGSEGV`, as a failed
+    `rt_sigreturn` is on Linux. (A thread that has registers by then always loads the
+    frame's, initial or not, so a handler's own values never leak back.) A kernel thread
+    running a program directly (self-tests and benchmarks only) ignores the frame's values,
+    as D54 says it gets whatever the CPU has.
+- **The HAL** gains accessors on `FpState`: `fxsave_image` and `set_fxsave_image` (with the
+  `MXCSR` check) on x86_64, `v`, `v_mut`, `fpcr`, `fpsr` and `set_fpcr_and_fpsr` on AArch64,
+  `f`, `f_mut`, `fcsr` and `set_fcsr` on RISC-V. `restore_fp`'s contract now allows states
+  changed through them.
+- **Cost.** Signal delivery and `rt_sigreturn` save and load the registers once more under
+  the scheduler's lock, out of line (`#[cold]`); x86_64 delivery pays one more for the reset.
+  Nothing changes on the system-call, page-fault or switch paths (benchmarks in the PR).
+- **Tests.** QEMU, on aarch64, riscv64 and x86_64: `linux_signal_handler` now sets `d8`, `fs0`
+  or `xmm8` and a non-initial rounding mode before `tgkill`; its handler checks the frame's
+  FP/SIMD part holds both and that it starts as Linux's would (inherited, or x86_64's initial
+  state), sets `d9`, `fs1` or `xmm9` in the frame and clobbers the first; after the return
+  both registers and the rounding mode must be the frame's. With `rt_sigreturn`'s load taken
+  out, the self-test fails. Host: the parts' layouts and round trip per architecture,
+  x86_64's software bytes and `MXCSR` refusal, `set_fxsave_image`'s mask rules,
+  `with_running_fp`'s save and load of the running thread's state, a frame's FP/SIMD part
+  for a thread without registers through the dispatcher, x86_64's null `fpstate` accepted and
+  misaligned one `SIGSEGV`, and the simulated test program changing a register in its frame
+  (so a thread without registers gets them on `rt_sigreturn`).
+- **Follow-ups.** `XSAVE` frames with AVX state (the `fx_sw_bytes` magic, `XSTATE` records)
+  when AVX comes (D54); SVE, SME and V records with their resets; `fork` and `clone` copying
+  the FP/SIMD state (D54).

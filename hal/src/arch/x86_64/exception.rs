@@ -633,6 +633,10 @@ x86_64_user_test_linux_signal_handler:
     movl    $10, %edx
     movl    $0x5a5, %ebx            // kept across the handler, which clobbers it
     movl    $1, %r12d               // the handler sets it to 2 in its frame
+    movl    ${signal_fp_kept}, %eax
+    movq    %rax, %xmm8
+    movl    ${signal_mxcsr}, -80(%rsp)
+    ldmxcsr -80(%rsp)
     movl    $234, %eax
     syscall                         // the handler runs before this returns
     testq   %rax, %rax
@@ -640,6 +644,15 @@ x86_64_user_test_linux_signal_handler:
     cmpq    $0x5a5, %rbx
     jne     9f
     cmpq    $2, %r12
+    jne     9f
+    movq    %xmm8, %rax
+    cmpq    ${signal_fp_kept}, %rax
+    jne     9f
+    movq    %xmm9, %rax
+    cmpq    ${signal_fp_changed}, %rax
+    jne     9f
+    stmxcsr -80(%rsp)
+    cmpl    ${signal_mxcsr}, -80(%rsp)
     jne     9f
     xorl    %edi, %edi              // the mask is back: nothing blocked
     xorl    %esi, %esi
@@ -672,6 +685,18 @@ x86_64_user_test_linux_signal_handler:
     addq    32(%rdx), %rax          // uc_stack.ss_size
     cmpq    %rax, %rsp
     jae     7f
+    movq    %xmm8, %rax
+    testq   %rax, %rax
+    jnz     7f
+    stmxcsr -8(%rsp)
+    cmpl    ${initial_mxcsr}, -8(%rsp)
+    jne     7f
+    movq    {saved_fpstate}(%rdx), %rax
+    cmpl    ${signal_mxcsr}, {fxsave_mxcsr}(%rax)
+    jne     7f
+    cmpq    ${signal_fp_kept}, {fxsave_xmm8}(%rax)
+    jne     7f
+    movq    ${signal_fp_changed}, {fxsave_xmm9}(%rax)
     movq    $2, {saved_r12}(%rdx)
 7:  xorl    %ebx, %ebx
     ret
@@ -1187,6 +1212,14 @@ x86_64_user_test_end:
     clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
     // `uc_mcontext.r12` in the ucontext: the sigcontext at 40, r8 to r15 from its start.
     saved_r12 = const 40 + 4 * 8,
+    saved_fpstate = const 40 + 184,
+    fxsave_mxcsr = const 24,
+    fxsave_xmm8 = const 160 + 8 * 16,
+    fxsave_xmm9 = const 160 + 9 * 16,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_mxcsr = const 0x3f80,
+    initial_mxcsr = const 0x1f80,
     saved_r13 = const 40 + 5 * 8,
     saved_r14 = const 40 + 6 * 8,
     saved_r15 = const 40 + 7 * 8,

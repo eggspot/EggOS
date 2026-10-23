@@ -656,6 +656,12 @@ riscv64_user_test_linux_signal_handler:
     li      a2, 10
     li      s1, 0x5a5               // kept across the handler, which clobbers it
     li      s2, 1                   // the handler sets it to 2 in its frame
+    .option push
+    .option arch, +d
+    li      t0, {signal_fp_kept}
+    fmv.d.x fs0, t0
+    li      t0, {signal_frm}
+    fsrm    t0
     li      a7, 131
     ecall                           // the handler runs before this returns
     bnez    a0, 9f
@@ -663,6 +669,16 @@ riscv64_user_test_linux_signal_handler:
     bne     s1, t0, 9f
     li      t0, 2
     bne     s2, t0, 9f
+    fmv.x.d t0, fs0
+    li      t1, {signal_fp_kept}
+    bne     t0, t1, 9f
+    fmv.x.d t0, fs1
+    li      t1, {signal_fp_changed}
+    bne     t0, t1, 9f
+    frrm    t0
+    li      t1, {signal_frm}
+    bne     t0, t1, 9f
+    .option pop
     li      a0, 0                   // the mask is back: nothing blocked
     li      a1, 0
     addi    a2, sp, -72
@@ -693,6 +709,20 @@ riscv64_user_test_linux_signal_handler:
     ld      t1, 32(a2)              // uc_stack.ss_size
     add     t0, t0, t1
     bgeu    sp, t0, 7f
+    .option push
+    .option arch, +d
+    li      t1, {signal_fp_kept}
+    fmv.x.d t0, fs0
+    bne     t0, t1, 7f
+    ld      t0, {saved_f8}(a2)
+    bne     t0, t1, 7f
+    lw      t0, {saved_fcsr}(a2)
+    li      t1, {signal_frm} << 5
+    bne     t0, t1, 7f
+    li      t0, {signal_fp_changed}
+    sd      t0, {saved_f9}(a2)
+    fmv.d.x fs0, zero
+    .option pop
     li      t0, 2
     sd      t0, {saved_s2}(a2)
 7:  li      s1, 0
@@ -1169,6 +1199,12 @@ riscv64_user_test_end:
     clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
     // `uc_mcontext`'s s2 (x18) in the ucontext: the sigcontext at 176, register n at 8n.
     saved_s2 = const 176 + 18 * 8,
+    saved_f8 = const 176 + 256 + 8 * 8,
+    saved_f9 = const 176 + 256 + 9 * 8,
+    saved_fcsr = const 176 + 256 + 32 * 8,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_frm = const 2,
     saved_s3 = const 176 + 19 * 8,
     saved_s4 = const 176 + 20 * 8,
     saved_s5 = const 176 + 21 * 8,

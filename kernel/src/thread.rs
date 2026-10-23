@@ -1181,9 +1181,9 @@ pub(crate) enum FpStart {
 }
 
 /// Gives the running thread, a user thread whose program just trapped on an illegal
-/// instruction, FP/SIMD registers if it has none yet (D54): a new program's values
-/// ([`FpState::new`]), loaded and on for user mode on this CPU, so the instruction can run
-/// again. Call it with interrupts masked and no lock held. Once per thread at most; a thread
+/// instruction (or returned from a signal handler with FP/SIMD values in its frame, D82),
+/// FP/SIMD registers if it has none yet (D54): a new program's values ([`FpState::new`]),
+/// loaded and on for user mode on this CPU, so the instruction can run again. Call it with interrupts masked and no lock held. Once per thread at most; a thread
 /// that never uses them costs nothing.
 #[cold]
 #[inline(never)]
@@ -1222,6 +1222,35 @@ pub(crate) fn start_fp<P: Platform>() -> FpStart {
     let registers = running.fp.get_or_init(|| registers);
     scheduler.fp.load::<P>(running.id, registers, here);
     FpStart::Started
+}
+
+/// Calls `f` with the running thread's FP/SIMD registers, as its program left them, if it has
+/// any ([`start_fp`]); the thread then runs with what `f` left in them. `None`, without calling
+/// `f`, if it has none. Call it with interrupts masked and no lock held. For signal frames
+/// (D82): not on a hot path, it saves and loads the registers every time.
+#[cold]
+#[inline(never)]
+pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R) -> Option<R> {
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    let scheduler = schedulers.of(here);
+    if !scheduler.fp.running_has_fp {
+        return None;
+    }
+    let running = scheduler.current.as_ref()?.get();
+    let registers = running.fp.get()?;
+    debug_assert_eq!(scheduler.fp.owner, Some(running.id));
+    let state = registers.state.as_ptr();
+    // SAFETY: interrupts are masked and the registers on: the running thread has FP
+    // registers, which are this CPU's (`running_has_fp`). `state` is allocated, and only the
+    // scheduler, whose lock is held, and the running thread, which is here, follow it.
+    unsafe { P::save_fp(state) };
+    // SAFETY: as above; nothing else uses `*state` until the lock is dropped.
+    let result = f(unsafe { &mut *state });
+    // SAFETY: as above. `*state` holds what the save wrote, changed only through `FpState`'s
+    // own methods, which keep it loadable.
+    unsafe { P::restore_fp(state) };
+    Some(result)
 }
 
 /// Lets the next ready thread run, if there is one; returns when this thread's turn comes

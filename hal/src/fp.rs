@@ -68,6 +68,91 @@ impl FpState {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+impl FpState {
+    /// The registers as `FXSAVE64` stores them: Linux's `struct _fpstate` in a signal frame.
+    pub fn fxsave_image(&self) -> &[u8; 512] {
+        &self.arch.image
+    }
+
+    /// Takes the registers from `image`, an `FXSAVE64` image a program wrote, unless it sets
+    /// an `MXCSR` bit this state's `MXCSR_MASK` does not allow (the CPU's, once a save wrote
+    /// it; else `0xFFBF`, every CPU's), which a load would fault on: then nothing changes, as
+    /// Linux's `rt_sigreturn` refuses such an image. `MXCSR_MASK` and the bytes software may use
+    /// (464 on) stay this state's.
+    pub fn set_fxsave_image(&mut self, image: &[u8; 512]) -> Result<(), ReservedMxcsrBits> {
+        let mask = match X86_64State::field(&self.arch.image, X86_64State::MXCSR_MASK) {
+            0 => X86_64State::DEFAULT_MXCSR_MASK,
+            mask => mask,
+        };
+        if X86_64State::field(image, X86_64State::MXCSR) & !mask != 0 {
+            return Err(ReservedMxcsrBits);
+        }
+        self.arch.image[..X86_64State::MXCSR_MASK]
+            .copy_from_slice(&image[..X86_64State::MXCSR_MASK]);
+        self.arch.image[X86_64State::MXCSR_MASK + 4..X86_64State::SOFTWARE]
+            .copy_from_slice(&image[X86_64State::MXCSR_MASK + 4..X86_64State::SOFTWARE]);
+        Ok(())
+    }
+}
+
+/// An `FXSAVE64` image that sets `MXCSR` bits the CPU reserves ([`FpState::set_fxsave_image`]).
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedMxcsrBits;
+
+#[cfg(target_arch = "aarch64")]
+impl FpState {
+    /// `V0`-`V31`.
+    pub fn v(&self) -> &[u128; 32] {
+        &self.arch.v
+    }
+
+    /// `V0`-`V31`, to change.
+    pub fn v_mut(&mut self) -> &mut [u128; 32] {
+        &mut self.arch.v
+    }
+
+    /// `FPCR`, whose bits from 32 up are reserved.
+    pub fn fpcr(&self) -> u32 {
+        self.arch.fpcr as u32
+    }
+
+    /// `FPSR`, whose bits from 32 up are reserved.
+    pub fn fpsr(&self) -> u32 {
+        self.arch.fpsr as u32
+    }
+
+    /// Sets `FPCR` and `FPSR`.
+    pub fn set_fpcr_and_fpsr(&mut self, fpcr: u32, fpsr: u32) {
+        self.arch.fpcr = fpcr.into();
+        self.arch.fpsr = fpsr.into();
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+impl FpState {
+    /// `f0`-`f31`.
+    pub fn f(&self) -> &[u64; 32] {
+        &self.arch.f
+    }
+
+    /// `f0`-`f31`, to change.
+    pub fn f_mut(&mut self) -> &mut [u64; 32] {
+        &mut self.arch.f
+    }
+
+    /// `fcsr`: the accrued exceptions and the rounding mode.
+    pub fn fcsr(&self) -> u32 {
+        self.arch.fcsr as u32
+    }
+
+    /// Sets `fcsr`.
+    pub fn set_fcsr(&mut self, fcsr: u32) {
+        self.arch.fcsr = fcsr.into();
+    }
+}
+
 impl Default for FpState {
     fn default() -> Self {
         Self::new()
@@ -113,6 +198,16 @@ impl X86_64State {
     const FCW: usize = 0;
     /// Offset of `MXCSR` in the image.
     const MXCSR: usize = 24;
+    /// Offset of `MXCSR_MASK`, the `MXCSR` bits the CPU supports, which `FXSAVE64` writes.
+    const MXCSR_MASK: usize = 28;
+    /// `MXCSR_MASK` on CPUs that store 0 there.
+    const DEFAULT_MXCSR_MASK: u32 = 0xffbf;
+    /// Where the bytes start that `FXRSTOR64` ignores and software may use.
+    const SOFTWARE: usize = 464;
+
+    fn field(image: &[u8; 512], offset: usize) -> u32 {
+        u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +244,40 @@ mod tests {
             assert!(state.arch.v.iter().all(|&v| v == 0));
             assert_eq!((state.arch.fpcr, state.arch.fpsr), (0, 0));
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn an_image_with_mxcsr_bits_the_cpu_reserves_is_refused() {
+        let mut image = [0; 512];
+        image[24..28].copy_from_slice(&0x1fc0u32.to_le_bytes());
+        let mut state = FpState::new();
+        assert_eq!(state.set_fxsave_image(&image), Err(ReservedMxcsrBits));
+        assert_eq!(
+            state.fxsave_image(),
+            FpState::new().fxsave_image(),
+            "nothing changed"
+        );
+        state.arch.image[28..32].copy_from_slice(&0xffffu32.to_le_bytes());
+        assert_eq!(state.set_fxsave_image(&image), Ok(()));
+        image[24..28].copy_from_slice(&0x1_0000u32.to_le_bytes());
+        assert_eq!(state.set_fxsave_image(&image), Err(ReservedMxcsrBits));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn an_image_keeps_the_state_s_mxcsr_mask_and_software_bytes() {
+        let mut state = FpState::new();
+        state.arch.image[28..32].copy_from_slice(&0xffffu32.to_le_bytes());
+        state.arch.image[500] = 7;
+        let mut image = [0x11; 512];
+        image[24..28].copy_from_slice(&0x3f80u32.to_le_bytes());
+        state.set_fxsave_image(&image).unwrap();
+        let loaded = state.fxsave_image();
+        assert_eq!(loaded[..24], image[..24]);
+        assert_eq!(loaded[24..28], 0x3f80u32.to_le_bytes());
+        assert_eq!(loaded[28..32], 0xffffu32.to_le_bytes());
+        assert_eq!(loaded[32..464], image[32..464]);
+        assert_eq!(loaded[500], 7);
     }
 }
