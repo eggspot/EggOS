@@ -3050,8 +3050,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
 - **Cost.** The calls sit in `out_of_line_result`; `number::LAST` rises to `statx` (332 on
   x86_64, 291 in the generic table), still one compare. The system-call path's inlined part is
   unchanged, and every benchmark matches `main`'s CI run within 0.3 ns.
-- **Tests.** Host, through the dispatcher: both `struct stat` layouts field by field on 0, 1
-  and 2 (and a descriptor with its upper half set), `newfstatat` with an empty and a null path
+- **Tests.** Host, through the dispatcher: the host's `struct stat` layout field by field
+  (x86_64's in CI's `check` job, the generic one on an AArch64 host) on 0, 1 and 2 (and a
+  descriptor with its upper half set), `newfstatat` with an empty and a null path
   writing the same bytes as `fstat`, `statx`'s fields and mask whatever was asked, every error
   in Linux's order (Rust's probe included), paths read to their end and no further,
   `ENAMETOOLONG` at 4096 bytes, `lseek`'s three answers, and the `dev_t` encoding of large

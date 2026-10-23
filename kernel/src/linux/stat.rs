@@ -4,9 +4,10 @@
 //! asks `statx` first for a file's metadata, falling back to `fstatat`.
 //!
 //! The console answers as Linux's `/dev/console` does for `init`: a character device, major 5
-//! minor 1, owned by root with mode `0600`, empty, on a device file system ([`CONSOLE`]). Its
-//! times are the Unix epoch, when the wall clock starts (D73). Paths wait for the file system
-//! (M7): a call that names a file, rather than a descriptor with `AT_EMPTY_PATH`, finds none.
+//! minor 1, owned by root with mode `0600`, empty, with the page size as its block size, on a
+//! device file system ([`CONSOLE`]). Its times are the Unix epoch, when the wall clock starts
+//! (D73). Paths wait for the file system (M7): a call that names a file, rather than a
+//! descriptor with `AT_EMPTY_PATH`, finds none.
 //!
 //! `newfstatat` and `statx` look up what `dirfd` and `path` name as Linux does. The path is
 //! copied first: `EFAULT` if a byte up to its end is not the program's memory, `ENAMETOOLONG`
@@ -47,15 +48,25 @@ pub mod statx_mask {
 /// A file's status, as the calls report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Status {
+    /// The device that holds the file (`st_dev`).
     pub device: Device,
+    /// Its inode number on that device (`st_ino`).
     pub inode: u64,
+    /// Its type and permission bits (`st_mode`).
     pub mode: u32,
+    /// How many hard links it has (`st_nlink`).
     pub links: u32,
+    /// The user that owns it (`st_uid`).
     pub owner: u32,
+    /// Its group (`st_gid`).
     pub group: u32,
+    /// The device a device file represents (`st_rdev`).
     pub represented_device: Device,
+    /// Its size in bytes (`st_size`).
     pub size: u64,
+    /// The block size for efficient input and output (`st_blksize`).
     pub block_size: u32,
+    /// How many 512-byte blocks it takes (`st_blocks`).
     pub blocks: u64,
 }
 
@@ -99,7 +110,7 @@ pub const CONSOLE: Status = Status {
     group: 0,
     represented_device: Device { major: 5, minor: 1 },
     size: 0,
-    block_size: 4096,
+    block_size: FRAME_SIZE as u32,
     blocks: 0,
 };
 
@@ -241,9 +252,9 @@ fn read_path<P: Platform>(process: &Process<P>, address: u64) -> Result<Path, Er
         process
             .read_user_memory(at, bytes)
             .map_err(|_| Errno::EFAULT)?;
-        let first = *first.get_or_insert(bytes[0]);
+        let first_byte = *first.get_or_insert(bytes[0]);
         if bytes.contains(&0) {
-            return Ok(match first {
+            return Ok(match first_byte {
                 0 => Path::Empty,
                 b'/' => Path::Absolute,
                 _ => Path::Relative,
@@ -297,11 +308,11 @@ pub fn newfstatat<P: Platform>(
 
 /// `statx(dirfd, path, flags, mask, statxbuf)`: writes the `struct statx` of what `dirfd` and
 /// `path` name (the module documentation's lookup) to `statxbuf`, with every basic field
-/// whatever `mask` asks, as Linux may. As Linux, before the path is read: `EINVAL` for [`statx_mask::RESERVED`] in
-/// `mask`, for both synchronisation bits at once, and for a flag other than `newfstatat`'s and
-/// the synchronisation choice; `EFAULT` for `statxbuf` last. `flags` and `mask` are 32-bit.
-/// Rust's std probes for the call with a null path and buffer and no flags, and takes only
-/// `EFAULT` to mean it exists.
+/// whatever `mask` asks, as Linux may. As Linux, before the path is read: `EINVAL` for
+/// [`statx_mask::RESERVED`] in `mask`, for both synchronisation bits at once, and for a flag
+/// other than `newfstatat`'s and the synchronisation choice; `EFAULT` for `statxbuf` last.
+/// `flags` and `mask` are 32-bit. Rust's std probes for the call with a null path and buffer
+/// and no flags, and takes only `EFAULT` to mean it exists.
 pub fn statx<P: Platform>(
     process: &Process<P>,
     dirfd: u64,

@@ -268,7 +268,8 @@ impl Errno {
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
-    /// clock the time calls do not answer for or a bad time (the time calls).
+    /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
+    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`).
     pub const EINVAL: Self = Self(22);
     /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
     /// `statx`).
