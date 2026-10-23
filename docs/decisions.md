@@ -2742,12 +2742,18 @@ a usable system right after.
   unpacking and configuring packages one by one: no dependency resolution and no long
   post-install scripts at install time. The installer detects the hardware, asks only what it
   cannot decide itself (everything else gets a sensible default the user can change later), and
-  the base installs fully offline from the image.
+  the base installs fully offline from the image. The image carries the base's drivers compactly,
+  and hardware detection at install time picks the ones the machine needs (D18's "drivers for the
+  hardware present").
 - **Ready right away.** The first boot goes straight to a usable system (D24's boot budget).
   Anything that can wait (component downloads, indexing, updates) runs in the background and never
   blocks the user.
-- **Updates the same way.** Small delta updates, applied atomically (the running system is never
-  left half-updated), with no "installing updates" screen at boot.
+- **Updates the same way.** The base updates with small deltas applied atomically (the running
+  system is never left half-updated), with no "installing updates" screen at boot. Optional
+  components update, install and remove one by one, as D18 says.
+
+**Order.** M10's first installer installs the base only; components on demand arrive with the
+component manager (M14).
 
 **Measured like D24.** Every release measures and publishes the installer image's download size, the
 time from starting the install to the first usable boot, and the first boot's time to a usable CLI
