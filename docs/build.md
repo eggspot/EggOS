@@ -31,6 +31,11 @@ holds what used to be written in them.
   address (the target defaults to static PIE). A `RUSTFLAGS` environment variable replaces
   these flags, so `kernel/build.rs` also passes `--no-pie` to the linker: the kernel still links,
   as non-PIE, when `RUSTFLAGS` is set.
+- **Linux test-program targets: `rust-lld`, `link-self-contained=no`, `relocation-model=pie`**
+  (D85), for programs on our own runtime, which links no C library or start files. `cargo
+  xtask` passes each test program's flags in `CARGO_ENCODED_RUSTFLAGS` (D86, D88), which
+  `RUSTFLAGS` cannot override, so its builds do not depend on these lines or on the
+  environment.
 
 ## Kernel features (`kernel/Cargo.toml`)
 - **`qemu-test`**: power the machine off after boot, so the QEMU test runner sees the verdict.

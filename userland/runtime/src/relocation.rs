@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_table_size_that_is_not_whole_entries() {
+    fn refuses_a_size_that_is_not_whole_entries_or_has_no_table() {
         let mut word = 0usize;
         let bias = &raw mut word as usize;
         let relocations = [Rela {
@@ -164,6 +164,10 @@ mod tests {
         let dynamic = [[tag::RELA, table], [tag::RELASZ, 25], [tag::NULL, 0]];
         // SAFETY: the table is refused before anything is written.
         let result = unsafe { relocate(bias, dynamic.as_ptr()) };
+        assert_eq!(result, Err(RelocationError::TableSize));
+        let without_table = [[tag::RELASZ, size_of::<Rela>()], [tag::NULL, 0]];
+        // SAFETY: the size without a table is refused before anything is read.
+        let result = unsafe { relocate(bias, without_table.as_ptr()) };
         assert_eq!(result, Err(RelocationError::TableSize));
         assert_eq!(word, 0);
     }
