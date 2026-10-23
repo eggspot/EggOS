@@ -2436,3 +2436,105 @@ switch-path cost; this entry follows it.)
     `kill(0, SIGCHLD)` is ignored, then blocks `SIGUSR1`, sends it with `tgkill`, checks
     `rt_sigpending` and unblocks it. The self-test `linux_programs_signal_themselves` requires
     the process to be killed by `SIGUSR1`, and every frame of its second run to be freed.
+
+## D64 Signal handlers, part 2 of delivery: Linux's frames, `rt_sigreturn`, `SA_ONSTACK`, `SA_NODEFER`, `SA_RESETHAND`; a return trampoline for AArch64 and RISC-V — Decided by the build loop (the trampoline, the FP/SIMD parts and Linux's rules decided by research)
+- **Why now.** Rust's std installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
+  startup, C programs catch `SIGINT`, `SIGTERM`, `SIGCHLD` and `SIGALRM`, and `raise()` with
+  a handler must run it. Until now a caught signal stayed pending for ever (D63).
+- **Frames are Linux's `struct rt_sigframe`** on each architecture, every offset from the
+  architecture's ABI (`linux::signal_frame`):
+  - x86_64: `pretcode` (the restorer), the `ucontext_t` (`uc_mcontext` before `uc_sigmask`),
+    then the `siginfo_t`; 440 bytes. It goes below the 128-byte red zone and a 512-byte
+    `FXSAVE` image (64-byte aligned), so that `(rsp + 8) % 16 == 0` at the handler, as after
+    a `call`. `uc_flags` is `UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS`.
+  - AArch64: the `siginfo_t`, then the `ucontext_t`, 4688 bytes, with a frame record
+    (`x29`, `x30`) above it that the handler's `x29` points at, so backtraces walk out of the
+    handler.
+  - RISC-V: the `siginfo_t`, then the `ucontext_t`, 1088 bytes.
+- **The handler starts** with the signal, the `siginfo_t` and the `ucontext_t` in its first
+  three argument registers (always, a harmless superset of Linux, which skips them on
+  AArch64 without `SA_SIGINFO`), its return address the restorer (`x30`, `ra`, or the
+  stack's top word on x86_64), and on x86_64 `rax` 0 and the trap, direction and resume
+  flags clear. The frame saves the registers, the blocked mask from before the handler, and
+  the alternate stack as it was set (with `SS_AUTODISARM` if so, never `SS_ONSTACK`).
+- **The HAL** gains `UserContext::registers` and `set_registers` (`UserRegisters`, each
+  architecture's own set). Setting them makes x86_64 enter with `iretq`, so `rcx` and `r11`
+  come back too (`sysretq` would take them for `rip` and `rflags`). The HAL's entry to user
+  mode already keeps only the flags a program may set (AArch64's NZCV, x86_64's user flags)
+  and refuses a `rip` outside user space, so a forged frame cannot raise privilege.
+- **`rt_sigreturn`** reads the frame at the stack pointer (x86_64: 8 below it, since the
+  handler's `ret` popped `pretcode`; AArch64: it must be 16-byte aligned), restores the
+  registers, the mask (never `SIGKILL` or `SIGSTOP`) and the alternate stack with
+  `sigaltstack`'s rules, errors other than an unreadable frame ignored, as on Linux. It
+  returns the restored result register, so the dispatcher's write changes nothing. A frame
+  that is not the program's memory, or whose FP/SIMD records are not in Linux's shape, sends
+  `SIGSEGV`.
+- **Delivery** (research, Q4): every due signal with a handler gets a frame, each on top of
+  the one before, the last one's handler running first, as Linux's return-to-user loop does;
+  each handler blocks its `sa_mask` and, unless `SA_NODEFER`, its own signal, so a signal
+  the first handler blocks stays pending. `SA_RESETHAND` makes the action `SIG_DFL` as the
+  signal is taken. `SA_ONSTACK` starts the frame at the alternate stack's top if the thread
+  has one and is not on it; a nested frame that would run off the alternate stack's bottom
+  fails. After `rt_sigreturn`, the signals the restored mask unblocks are delivered.
+- **A frame that cannot be written** sends `SIGSEGV` from the kernel (`SI_KERNEL`), as
+  Linux's `force_sigsegv`: delivered whatever the program blocked or ignored (its action
+  becomes `SIG_DFL` then), and by `SIG_DFL` if `SIGSEGV`'s own frame failed.
+- **`siginfo_t`** (research, Q3): `si_signo`, `si_code` `SI_USER` for `kill`, `SI_TKILL` for
+  `tkill` and `tgkill`, `SI_KERNEL` for the kernel's; `si_pid` the sender's process id and
+  `si_uid` 0, as every process runs as root until credentials exist (M10). A signal pending
+  twice keeps its first origin, as Linux keeps a standard signal's first `siginfo`.
+- **The return trampoline** (research, Q1). RISC-V's `struct sigaction` has no restorer and
+  glibc on AArch64 passes none (Rust's std inherits this), so Linux returns their handlers
+  through the vDSO. EggOS has no vDSO yet, so `linux::trampoline` maps a private page the
+  first time a handler needs it: read-only and executable, where `mmap` would put it, holding
+  a `nop` then `rt_sigreturn`'s call (handlers return to the call; unwinders and gdb know
+  these instructions, and some look one byte before the return address). Mapped at the first
+  delivery, not at exec or `rt_sigaction` (Rust's std calls that at every startup), so a
+  process that never runs a handler pays nothing, `linux_exec_load` included. A private page
+  needs no "shared frame" exemption in teardown, `munmap` or `mprotect`. 4 KiB per process
+  that runs a handler; the real vDSO, shared and mapped at exec, will take it over.
+  x86_64 has none: as on Linux, a handler without `SA_RESTORER` cannot return, so it never
+  runs and the process gets `SIGSEGV` (musl and glibc always set it there).
+- **FP/SIMD parts** (research, Q2). Programs get no FP/SIMD registers until D54 (PR #47),
+  but every frame has its FP/SIMD part in Linux's shape, holding the initial state (all a
+  program can have): x86_64's `FXSAVE` image (x87 control word 0x037f, `MXCSR` 0x1f80, its
+  `fpstate` pointer set; Linux never passes a null one to 64-bit programs and crash
+  reporters rely on it), AArch64's `fpsimd_context` record (which Linux's `rt_sigreturn`
+  requires) and terminator, RISC-V's D state and an empty extensions header. `rt_sigreturn`
+  checks the records' shape (AArch64: the FP/SIMD record, an optional `esr_context`, the
+  terminator; RISC-V: no extensions) and ignores their values. With D54 the frames save the
+  thread's real registers instead: a change to what is written, not to the layout.
+- **Kept out of `Process`.** `Process` is 240 bytes, 256 with its `Arc`, exactly a heap size
+  class: one more word moves every process to the 512-byte class (D59's lesson). So the
+  signals' origins and the trampoline's address live in the out-of-line block that already
+  held the action table (`Caught`), made by a process's first action change. Only a handler
+  sees an origin, so a signal sent before the process first changed an action reports
+  `SI_USER`; they move to each thread with the pending signals when `clone` exists.
+- **Cost** (same Mac, QEMU `-icount`, against `main`'s CI run): every benchmark within
+  ±0.02%, apart from riscv64's two SBI timer benchmarks, which differ between local QEMU and
+  CI on `main` too. Nothing was added to the system-call, page-fault or switch paths; the new
+  test program is after `linux_start` (D62), so `linux_exec_load` does not copy it.
+- **Tests.**
+  - Host: the HAL's register get/set (x86_64's `iretq` re-entry); the signal state's rules
+    (origins kept and dropped, the handler's mask, `SA_NODEFER`, `SA_RESETHAND`,
+    `SS_AUTODISARM` disarming only on the alternate stack, `rt_sigreturn`'s restore with
+    Linux's ignored errors, forced signals); the trampoline's instructions; through the
+    dispatcher, a handler's frame (arguments, `SI_TKILL`, the saved mask, alignment, the
+    restorer or trampoline), `rt_sigreturn` restoring every register and the mask the frame
+    holds, two signals stacked (the last one's handler first, back into the first's), the
+    alternate stack with `SS_AUTODISARM` and `SI_USER`, `SIGSEGV` for a frame below an
+    unmapped stack pointer and for `rt_sigreturn` without a frame (even blocked), and on
+    x86_64 for a handler without `SA_RESTORER`.
+  - QEMU, on aarch64, riscv64 and x86_64: the test program `linux_signal_handler` sets an
+    alternate stack, installs a `SIGUSR1` handler with `SA_SIGINFO | SA_ONSTACK` (x86_64 with
+    its restorer, the others through the trampoline) and sends itself `SIGUSR1`. The handler
+    checks its arguments and that it runs on the alternate stack, sets a register in its
+    frame and clobbers another; the program checks `tgkill` returned 0 with one register
+    restored and the other changed, and nothing blocked. The self-test
+    `linux_programs_run_signal_handlers` runs it twice and requires every frame of the second
+    run freed (the trampoline's page too). With `rt_sigreturn`'s register restore broken, it
+    fails (checked on x86_64).
+- **Follow-ups** (the rest of D63's part 2): faults delivered to a handler (`si_addr`,
+  `esr_context`, Rust's stack-overflow handler); real-time signals queued with their
+  `siginfo` (`rt_sigqueueinfo`, `rt_sigtimedwait`); `rt_sigsuspend`; `ppoll`'s mask with
+  `EINTR` and `SA_RESTART`; the FP/SIMD registers saved in frames once D54 lands; the vDSO.
