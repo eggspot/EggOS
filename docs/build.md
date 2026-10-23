@@ -1,8 +1,20 @@
 # Build, test and CI configuration
 
 What the configuration files do and why. They carry no comments themselves (D66); this page
-holds what used to be written in them. (The CI image's `Dockerfile` and `ci-image.yml` lose
-theirs with the next change to the image, which rebuilds it anyway.)
+holds what used to be written in them.
+
+## Toolchain (`rust-toolchain.toml`)
+- **Pinned** so every host (macOS, Windows, CI) builds the kernel with the same compiler and
+  lints.
+- **Kernel targets**: `aarch64-unknown-none-softfloat`, `riscv64imac-unknown-none-elf` and
+  `x86_64-unknown-none`, none of which lets the compiler use FP/SIMD registers in the kernel
+  (D54).
+- **Test-program targets** (D84): `aarch64-unknown-linux-musl`, `riscv64gc-unknown-linux-musl`
+  and `x86_64-unknown-linux-musl` build Linux programs from our own Rust source, with Rust's std,
+  for the QEMU tests: static executables linked by `rust-lld` with the targets' own
+  self-contained C library and start files (`-C linker=rust-lld -C link-self-contained=yes -C
+  target-feature=+crt-static`), so they link the same way on macOS, Windows and Linux with no C
+  toolchain. They are test fixtures, never part of EggOS.
 
 ## Cargo workspace (`Cargo.toml`)
 - **Lints.** `clippy::undocumented_unsafe_blocks` is denied, so every `unsafe` block carries a

@@ -1,4 +1,3 @@
-# Pinned so every host (macOS, Windows, CI) builds the kernel with the same compiler and lints.
 [toolchain]
 channel = "1.99.1"
 components = ["rustfmt", "clippy"]
@@ -6,5 +5,8 @@ targets = [
     "aarch64-unknown-none-softfloat",
     "riscv64imac-unknown-none-elf",
     "x86_64-unknown-none",
+    "aarch64-unknown-linux-musl",
+    "riscv64gc-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
 ]
 profile = "minimal"
