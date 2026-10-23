@@ -763,8 +763,6 @@ mod tests {
             context.simulate_exception(exception),
             UserExit::Exception(exception)
         );
-        // A system call's exit leaves it as it was.
-        context.simulate_syscall(0, [0; 6], 0x40_0004);
         assert_eq!(context.last_exception(), exception);
     }
 

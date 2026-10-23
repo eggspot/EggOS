@@ -152,7 +152,8 @@ mod arch {
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, 0),
             // `#DE` (`#MF` and `#XM` take their `si_code` from the FP status with D54).
             ExceptionKind::Arithmetic => (signal::SIGFPE, code::FPE_INTDIV, pc),
-            // `int1` (`icebp`): programs cannot set the trap flag or debug registers yet.
+            // `int1` (`icebp`), and a single step a program set up itself with `popf` (Linux
+            // says `TRAP_TRACE` for that one); programs have no debug registers yet.
             ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
             // `#NP` and `#SS`.
             ExceptionKind::Segment => (signal::SIGBUS, code::SI_KERNEL, 0),

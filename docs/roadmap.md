@@ -75,7 +75,14 @@ trapped FP exceptions, with D54; AArch64's top byte cleared from `si_addr` unles
 as Linux does (QEMU's harts do them in hardware); `SIGBUS` `BUS_ADRERR` past the end of a
 file mapping (M7); `TRAP_TRACE` and `TRAP_HWBKPT` with single-step and debug registers
 (`ptrace`); `/proc/self/maps` and `RLIMIT_STACK` for glibc's `pthread_getattr_np`, so Rust's
-std finds the main thread's guard page and reports an overflow by name.
+std finds the main thread's guard page and reports an overflow by name. From PR #58's
+independent review: RISC-V's `si_addr` (`sepc` or `stval`) and `si_code` for access faults
+and misaligned accesses checked against a real Linux under QEMU; `TRAP_TRACE` for a single
+step a program set with `popf`; a non-canonical `rip` (only through `rt_sigreturn`) reported
+as `#GP` (`SI_KERNEL`, `trapno` 13) rather than a fetch page fault; NMIs and machine checks
+from user mode handled by the kernel instead of becoming the program's `SIGSEGV`; AArch64's
+`fault_address` 0 for `SIGILL` and `SIGTRAP`; a QEMU test of `SIGILL` and `SIGTRAP` handlers
+(`ud2`, `brk`, `ebreak`) with their `si_addr` and resume point.
 
 Process follow-ups (D48): preemption on whenever user programs run (with it off, as for kernel
 threads, a program that never traps keeps its CPU); waking CPUs that keep an ended process's
