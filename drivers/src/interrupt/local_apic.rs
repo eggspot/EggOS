@@ -1,46 +1,32 @@
 //! x86 local APIC in xAPIC mode, memory-mapped (Intel SDM vol. 3A, chapter 11): each CPU's
 //! interrupt controller, its timer, and the inter-processor interrupts that start and wake the
-//! other CPUs.
+//! other CPUs, sent through the interrupt command register (SDM 11.6.1).
 
 use crate::io::RegisterIo;
 
-/// Local APIC ID register: the id in bits 24-31.
 const ID: usize = 0x020;
-/// Task priority register.
-const TPR: usize = 0x080;
-/// End of interrupt register.
-const EOI: usize = 0x0b0;
-/// Spurious interrupt vector register.
-const SVR: usize = 0x0f0;
-/// Interrupt command register, low and high halves (SDM 11.6.1). Writing the low half sends.
+const ID_SHIFT: u32 = 24;
+const TASK_PRIORITY: usize = 0x080;
+const END_OF_INTERRUPT: usize = 0x0b0;
+const SPURIOUS_INTERRUPT_VECTOR: usize = 0x0f0;
 const ICR_LOW: usize = 0x300;
 const ICR_HIGH: usize = 0x310;
-/// LVT timer register.
 const LVT_TIMER: usize = 0x320;
-/// Timer initial count register.
 const TIMER_INITIAL_COUNT: usize = 0x380;
-/// Timer current count register.
 const TIMER_CURRENT_COUNT: usize = 0x390;
-/// Timer divide configuration register.
-const TIMER_DIVIDE: usize = 0x3e0;
+const TIMER_DIVIDE_CONFIGURATION: usize = 0x3e0;
 
-/// SVR bit 8: APIC software enable.
-const SVR_ENABLE: u32 = 1 << 8;
-/// LVT bit 16: masked.
+const SVR_APIC_SOFTWARE_ENABLE: u32 = 1 << 8;
 const LVT_MASKED: u32 = 1 << 16;
-/// Divide configuration 0b1011: divide the timer's input clock by 1.
+const LVT_TIMER_MODE_ONE_SHOT: u32 = 0b00 << 17;
 const DIVIDE_BY_1: u32 = 0b1011;
 
-/// ICR delivery modes (bits 8-10): INIT and start-up.
-const ICR_INIT: u32 = 0b101 << 8;
-const ICR_STARTUP: u32 = 0b110 << 8;
-/// ICR bit 12: the previous interrupt has not been accepted yet (read-only).
+const ICR_DELIVERY_FIXED: u32 = 0b000 << 8;
+const ICR_DELIVERY_INIT: u32 = 0b101 << 8;
+const ICR_DELIVERY_STARTUP: u32 = 0b110 << 8;
 const ICR_SEND_PENDING: u32 = 1 << 12;
-/// ICR bit 14: level assert, which INIT and start-up interrupts require.
-const ICR_ASSERT: u32 = 1 << 14;
-/// ICR destination shorthand (bits 18-19): every local APIC but the sender's.
+const ICR_LEVEL_ASSERT: u32 = 1 << 14;
 const ICR_ALL_EXCLUDING_SELF: u32 = 0b11 << 18;
-/// ICR high half: the destination APIC id in bits 24-31.
 const ICR_DESTINATION_SHIFT: u32 = 24;
 
 /// Size of the local APIC's register block in bytes.
@@ -60,21 +46,29 @@ impl<R: RegisterIo> LocalApic<R> {
     /// Enables the APIC with `spurious_vector` for spurious interrupts, and accepts
     /// interrupts of every priority.
     pub fn enable(&self, spurious_vector: u8) {
-        self.regs.write32(TPR, 0);
-        self.regs
-            .write32(SVR, SVR_ENABLE | u32::from(spurious_vector));
+        self.regs.write32(TASK_PRIORITY, 0);
+        self.regs.write32(
+            SPURIOUS_INTERRUPT_VECTOR,
+            SVR_APIC_SOFTWARE_ENABLE | u32::from(spurious_vector),
+        );
     }
 
     /// Sets the timer up in one-shot mode, counting at the APIC's input clock, raising
     /// `vector` when it reaches zero (or nothing, when `masked`). The timer stays stopped
-    /// until [`Self::start_timer`].
+    /// until [`Self::start_timer`]. It is stopped first, since changing a running timer's LVT is
+    /// not defined to stop it.
     pub fn configure_one_shot_timer(&self, vector: u8, masked: bool) {
-        // Stop it first: changing the LVT of a running timer is not defined to stop it.
-        self.regs.write32(TIMER_INITIAL_COUNT, 0);
-        self.regs.write32(TIMER_DIVIDE, DIVIDE_BY_1);
+        self.stop_timer_before_changing_its_lvt();
+        self.regs.write32(TIMER_DIVIDE_CONFIGURATION, DIVIDE_BY_1);
         let mask = if masked { LVT_MASKED } else { 0 };
-        // Mode bits 18:17 = 00: one-shot.
-        self.regs.write32(LVT_TIMER, mask | u32::from(vector));
+        self.regs.write32(
+            LVT_TIMER,
+            LVT_TIMER_MODE_ONE_SHOT | mask | u32::from(vector),
+        );
+    }
+
+    fn stop_timer_before_changing_its_lvt(&self) {
+        self.regs.write32(TIMER_INITIAL_COUNT, 0);
     }
 
     /// Starts the timer counting down from `count`; 0 stops it.
@@ -89,20 +83,19 @@ impl<R: RegisterIo> LocalApic<R> {
 
     /// Signals the end of the interrupt being handled.
     pub fn end_of_interrupt(&self) {
-        self.regs.write32(EOI, 0);
+        self.regs.write32(END_OF_INTERRUPT, 0);
     }
 
     /// This CPU's local APIC id.
     pub fn id(&self) -> u8 {
-        (self.regs.read32(ID) >> 24) as u8
+        (self.regs.read32(ID) >> ID_SHIFT) as u8
     }
 
     /// Sends INIT to every other CPU, which resets it into waiting for a start-up interrupt
     /// (SDM 9.4.4.1). Waits until any earlier interrupt was accepted first.
     pub fn send_init_to_others(&self) {
         self.wait_until_sent();
-        self.regs
-            .write32(ICR_LOW, ICR_ALL_EXCLUDING_SELF | ICR_ASSERT | ICR_INIT);
+        self.send(ICR_ALL_EXCLUDING_SELF | ICR_LEVEL_ASSERT | ICR_DELIVERY_INIT);
     }
 
     /// Sends a start-up interrupt to the CPU whose local APIC id is `destination`: a CPU
@@ -111,8 +104,7 @@ impl<R: RegisterIo> LocalApic<R> {
         self.wait_until_sent();
         self.regs
             .write32(ICR_HIGH, u32::from(destination) << ICR_DESTINATION_SHIFT);
-        self.regs
-            .write32(ICR_LOW, ICR_ASSERT | ICR_STARTUP | u32::from(page));
+        self.send(ICR_LEVEL_ASSERT | ICR_DELIVERY_STARTUP | u32::from(page));
     }
 
     /// Sends the interrupt `vector` to the CPU whose local APIC id is `destination` (fixed
@@ -121,11 +113,13 @@ impl<R: RegisterIo> LocalApic<R> {
         self.wait_until_sent();
         self.regs
             .write32(ICR_HIGH, u32::from(destination) << ICR_DESTINATION_SHIFT);
-        // Delivery mode (bits 8-10) 000: fixed.
-        self.regs.write32(ICR_LOW, ICR_ASSERT | u32::from(vector));
+        self.send(ICR_LEVEL_ASSERT | ICR_DELIVERY_FIXED | u32::from(vector));
     }
 
-    /// Waits until the last interrupt this CPU sent was accepted, so the ICR can be written.
+    fn send(&self, command: u32) {
+        self.regs.write32(ICR_LOW, command);
+    }
+
     fn wait_until_sent(&self) {
         while self.regs.read32(ICR_LOW) & ICR_SEND_PENDING != 0 {
             core::hint::spin_loop();
@@ -142,7 +136,10 @@ mod tests {
     fn enable_accepts_every_priority_and_sets_the_spurious_vector() {
         let apic = LocalApic::new(FakeRegs::default());
         apic.enable(0xff);
-        assert_eq!(apic.regs.writes(), vec![(TPR, 0), (SVR, 0x1ff)]);
+        assert_eq!(
+            apic.regs.writes(),
+            vec![(TASK_PRIORITY, 0), (SPURIOUS_INTERRUPT_VECTOR, 0x1ff)]
+        );
     }
 
     #[test]
@@ -154,10 +151,10 @@ mod tests {
             apic.regs.writes(),
             vec![
                 (TIMER_INITIAL_COUNT, 0),
-                (TIMER_DIVIDE, 0b1011),
+                (TIMER_DIVIDE_CONFIGURATION, 0b1011),
                 (LVT_TIMER, 0x30),
                 (TIMER_INITIAL_COUNT, 0),
-                (TIMER_DIVIDE, 0b1011),
+                (TIMER_DIVIDE_CONFIGURATION, 0b1011),
                 (LVT_TIMER, 1 << 16 | 0x30),
             ]
         );
@@ -171,9 +168,8 @@ mod tests {
     }
 
     #[test]
-    fn init_and_startup_wait_for_the_previous_interrupt_then_send() {
+    fn init_waits_through_two_pending_reads_then_startup_through_none() {
         let apic = LocalApic::new(FakeRegs::default());
-        // The first send waits through two pending reads.
         apic.regs
             .script_reads(ICR_LOW, &[ICR_SEND_PENDING, ICR_SEND_PENDING, 0, 0]);
         apic.send_init_to_others();
@@ -206,7 +202,7 @@ mod tests {
         apic.end_of_interrupt();
         assert_eq!(
             apic.regs.writes(),
-            vec![(TIMER_INITIAL_COUNT, 5000), (EOI, 0)]
+            vec![(TIMER_INITIAL_COUNT, 5000), (END_OF_INTERRUPT, 0)]
         );
     }
 }

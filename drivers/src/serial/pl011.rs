@@ -6,12 +6,9 @@
 use super::Uart;
 use crate::io::RegisterIo;
 
-/// Data register.
-const DR: usize = 0x00;
-/// Flag register.
-const FR: usize = 0x18;
-/// FR: transmit FIFO full.
-const FR_TXFF: u32 = 1 << 5;
+const DATA: usize = 0x00;
+const FLAGS: usize = 0x18;
+const FR_TRANSMIT_FIFO_FULL: u32 = 1 << 5;
 
 /// Size of the PL011 register block in bytes.
 pub const REGISTER_BLOCK_SIZE: usize = 0x1000;
@@ -30,10 +27,10 @@ impl<R: RegisterIo> Pl011<R> {
 impl<R: RegisterIo> Uart for Pl011<R> {
     #[inline]
     fn put_byte(&self, byte: u8) {
-        while self.regs.read32(FR) & FR_TXFF != 0 {
+        while self.regs.read32(FLAGS) & FR_TRANSMIT_FIFO_FULL != 0 {
             core::hint::spin_loop();
         }
-        self.regs.write32(DR, byte.into());
+        self.regs.write32(DATA, byte.into());
     }
 }
 
@@ -46,16 +43,17 @@ mod tests {
     fn writes_bytes_to_data_register_translating_newlines() {
         let uart = Pl011::new(FakeRegs::default());
         uart.write_bytes(b"a\nb");
-        let expected: Vec<(usize, u32)> = b"a\r\nb".iter().map(|&b| (DR, b.into())).collect();
+        let expected: Vec<(usize, u32)> = b"a\r\nb".iter().map(|&b| (DATA, b.into())).collect();
         assert_eq!(uart.regs.writes(), expected);
     }
 
     #[test]
     fn waits_while_transmit_fifo_is_full() {
         let uart = Pl011::new(FakeRegs::default());
-        uart.regs.script_reads(FR, &[FR_TXFF, FR_TXFF, 0]);
+        uart.regs
+            .script_reads(FLAGS, &[FR_TRANSMIT_FIFO_FULL, FR_TRANSMIT_FIFO_FULL, 0]);
         uart.put_byte(b'x');
-        assert_eq!(uart.regs.reads_of(FR), 3);
-        assert_eq!(uart.regs.writes(), vec![(DR, u32::from(b'x'))]);
+        assert_eq!(uart.regs.reads_of(FLAGS), 3);
+        assert_eq!(uart.regs.writes(), vec![(DATA, u32::from(b'x'))]);
     }
 }

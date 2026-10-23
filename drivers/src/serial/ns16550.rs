@@ -6,12 +6,9 @@
 use super::Uart;
 use crate::io::RegisterIo;
 
-/// Transmit holding register (write).
-const THR: usize = 0;
-/// Line status register.
-const LSR: usize = 5;
-/// LSR: transmit holding register empty.
-const LSR_THRE: u8 = 1 << 5;
+const TRANSMIT_HOLDING: usize = 0;
+const LINE_STATUS: usize = 5;
+const LSR_TRANSMIT_HOLDING_EMPTY: u8 = 1 << 5;
 
 #[derive(Debug)]
 pub struct Ns16550<R: RegisterIo> {
@@ -38,10 +35,10 @@ impl<R: RegisterIo> Ns16550<R> {
 impl<R: RegisterIo> Uart for Ns16550<R> {
     #[inline]
     fn put_byte(&self, byte: u8) {
-        while self.regs.read8(self.offset(LSR)) & LSR_THRE == 0 {
+        while self.regs.read8(self.offset(LINE_STATUS)) & LSR_TRANSMIT_HOLDING_EMPTY == 0 {
             core::hint::spin_loop();
         }
-        self.regs.write8(self.offset(THR), byte);
+        self.regs.write8(self.offset(TRANSMIT_HOLDING), byte);
     }
 }
 
@@ -50,23 +47,26 @@ mod tests {
     use super::*;
     use crate::io::fake::FakeRegs;
 
-    const EMPTY: u32 = LSR_THRE as u32;
+    const EMPTY: u32 = LSR_TRANSMIT_HOLDING_EMPTY as u32;
 
     #[test]
     fn waits_for_empty_holding_register_then_writes() {
         let uart = Ns16550::new(FakeRegs::default(), 0);
-        uart.regs.script_reads(LSR, &[0, 0, EMPTY]);
+        uart.regs.script_reads(LINE_STATUS, &[0, 0, EMPTY]);
         uart.put_byte(b'x');
-        assert_eq!(uart.regs.reads_of(LSR), 3);
-        assert_eq!(uart.regs.writes(), vec![(THR, u32::from(b'x'))]);
+        assert_eq!(uart.regs.reads_of(LINE_STATUS), 3);
+        assert_eq!(
+            uart.regs.writes(),
+            vec![(TRANSMIT_HOLDING, u32::from(b'x'))]
+        );
     }
 
     #[test]
     fn honours_register_shift() {
         let uart = Ns16550::new(FakeRegs::default(), 2);
-        uart.regs.script_reads(LSR << 2, &[EMPTY, EMPTY]);
+        uart.regs.script_reads(LINE_STATUS << 2, &[EMPTY, EMPTY]);
         uart.write_bytes(b"\n");
-        assert_eq!(uart.regs.reads_of(LSR << 2), 2);
+        assert_eq!(uart.regs.reads_of(LINE_STATUS << 2), 2);
         assert_eq!(
             uart.regs.writes(),
             vec![(0, u32::from(b'\r')), (0, u32::from(b'\n'))]

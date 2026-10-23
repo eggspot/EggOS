@@ -13,7 +13,11 @@ pub trait RegisterIo {
     fn write32(&self, offset: usize, value: u32);
 }
 
-/// A memory-mapped register block.
+/// A memory-mapped register block. Every access checks its offset against the block's size and
+/// its width's alignment, in release builds too, and panics on a bad one before touching
+/// memory: [`RegisterIo`] is a safe trait, so no offset from safe code may reach a volatile
+/// access outside the block. The check is a few compares next to a device access that costs
+/// hundreds of cycles.
 #[derive(Debug)]
 pub struct Mmio {
     base: usize,
@@ -31,11 +35,8 @@ impl Mmio {
         Self { base, size }
     }
 
-    /// Checked in release builds too: `RegisterIo` is a safe trait, so an out-of-bounds or
-    /// unaligned offset from safe code must panic, never reach the volatile access. The
-    /// compares are a few cycles next to a device access that costs hundreds.
     #[inline]
-    fn address(&self, offset: usize, width: usize) -> usize {
+    fn checked_address(&self, offset: usize, width: usize) -> usize {
         assert!(
             offset
                 .checked_add(width)
@@ -54,36 +55,35 @@ impl Mmio {
 impl RegisterIo for Mmio {
     #[inline]
     fn read8(&self, offset: usize) -> u8 {
-        let address = self.address(offset, 1);
+        let address = self.checked_address(offset, 1);
         // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register, and
-        // `address` has checked the bounds.
+        // `checked_address` has checked the bounds.
         unsafe { core::ptr::read_volatile(address as *const u8) }
     }
 
     #[inline]
     fn write8(&self, offset: usize, value: u8) {
-        let address = self.address(offset, 1);
+        let address = self.checked_address(offset, 1);
         // SAFETY: as in `read8`.
         unsafe { core::ptr::write_volatile(address as *mut u8, value) }
     }
 
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
-        let address = self.address(offset, 4);
+        let address = self.checked_address(offset, 4);
         // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
-        // and `address` has checked bounds and 4-byte alignment.
+        // and `checked_address` has checked bounds and 4-byte alignment.
         unsafe { core::ptr::read_volatile(address as *const u32) }
     }
 
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
-        let address = self.address(offset, 4);
+        let address = self.checked_address(offset, 4);
         // SAFETY: as in `read32`.
         unsafe { core::ptr::write_volatile(address as *mut u32, value) }
     }
 }
 
-/// Fake registers for host unit tests: records every write, and answers reads from a script.
 #[cfg(test)]
 pub(crate) mod fake {
     use super::RegisterIo;
@@ -98,14 +98,13 @@ pub(crate) mod fake {
 
     #[derive(Debug, Default)]
     pub struct FakeRegs {
-        /// Values returned by successive reads of an offset; when exhausted, reads return 0.
-        pub reads: RefCell<HashMap<usize, VecDeque<u32>>>,
+        pub scripted_reads_then_zero: RefCell<HashMap<usize, VecDeque<u32>>>,
         pub log: RefCell<Vec<Access>>,
     }
 
     impl FakeRegs {
         pub fn script_reads(&self, offset: usize, values: &[u32]) {
-            self.reads
+            self.scripted_reads_then_zero
                 .borrow_mut()
                 .entry(offset)
                 .or_default()
@@ -133,7 +132,7 @@ pub(crate) mod fake {
 
         fn read(&self, offset: usize) -> u32 {
             self.log.borrow_mut().push(Access::Read(offset));
-            self.reads
+            self.scripted_reads_then_zero
                 .borrow_mut()
                 .get_mut(&offset)
                 .and_then(VecDeque::pop_front)
