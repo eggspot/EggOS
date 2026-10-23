@@ -19,6 +19,7 @@ pub mod number {
     pub const SIGALTSTACK: usize = 131;
     pub const ARCH_PRCTL: usize = 158;
     pub const GETTID: usize = 186;
+    pub const FUTEX: usize = 202;
     pub const SET_TID_ADDRESS: usize = 218;
     pub const CLOCK_GETTIME: usize = 228;
     pub const EXIT_GROUP: usize = 231;
@@ -37,6 +38,7 @@ pub mod number {
     pub const FSTAT: usize = 80;
     pub const EXIT_GROUP: usize = 94;
     pub const SET_TID_ADDRESS: usize = 96;
+    pub const FUTEX: usize = 98;
     pub const SET_ROBUST_LIST: usize = 99;
     pub const CLOCK_GETTIME: usize = 113;
     pub const SIGALTSTACK: usize = 132;

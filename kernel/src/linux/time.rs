@@ -105,6 +105,28 @@ fn first_tick_at(nanoseconds: u64, per_tick: u64) -> u64 {
     mul_div_ceil(nanoseconds, 1 << 32, per_tick)
 }
 
+/// The clock tick a wait for the `struct timespec` timeout at `address` ends at, measured
+/// from now: `u64::MAX` for one too long to count. Errors as [`poll::read_timeout`]'s.
+pub fn deadline_after<P: Platform>(process: &Process<P>, address: u64) -> Result<u64, Errno> {
+    Ok(match poll::read_timeout(process, address)? {
+        Some(duration) => first_tick_at(
+            monotonic_nanoseconds::<P>().saturating_add(duration),
+            nanoseconds_per_tick::<P>(),
+        ),
+        None => u64::MAX,
+    })
+}
+
+/// The clock tick a wait until the `struct timespec` at `address` ends at, a time on the
+/// monotonic clock or the realtime clock, which reads the same until it can be set: `u64::MAX`
+/// for one too late to count. Errors as [`poll::read_timeout`]'s.
+pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u64, Errno> {
+    Ok(match poll::read_timeout(process, address)? {
+        Some(time) => first_tick_at(time, nanoseconds_per_tick::<P>()),
+        None => u64::MAX,
+    })
+}
+
 fn sleep_until_nanoseconds<P: Platform>(deadline: u64) {
     thread::sleep_until::<P>(first_tick_at(deadline, nanoseconds_per_tick::<P>()));
 }

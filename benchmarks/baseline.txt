@@ -15,6 +15,8 @@ aarch64 fp_process_switch_round_trip 1107.98
 aarch64 frame_allocate_untouched 17.15
 aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
+aarch64 futex_wait_wake_round_trip 473.05
+aarch64 futex_wake_empty 20.00
 aarch64 heap_allocate_free_small 50.00
 aarch64 linux_clock_monotonic_read 12.00
 aarch64 linux_exec_load 36511.47
@@ -39,6 +41,8 @@ riscv64 fp_process_switch_round_trip 1041.02
 riscv64 frame_allocate_untouched 16.16
 riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
+riscv64 futex_wait_wake_round_trip 567.06
+riscv64 futex_wake_empty 27.00
 riscv64 heap_allocate_free_small 57.00
 riscv64 linux_clock_monotonic_read 15.00
 riscv64 linux_exec_load 31638.49
@@ -63,6 +67,8 @@ x86_64 fp_process_switch_round_trip 798.34
 x86_64 frame_allocate_untouched 14.06
 x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06
+x86_64 futex_wait_wake_round_trip 480.03
+x86_64 futex_wake_empty 25.00
 x86_64 heap_allocate_free_small 48.00
 x86_64 linux_clock_monotonic_read 19.00
 x86_64 linux_exec_load 28334.01

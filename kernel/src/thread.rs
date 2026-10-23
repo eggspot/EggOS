@@ -413,6 +413,33 @@ impl ThreadList {
     }
 }
 
+impl ThreadList {
+    fn remove(&mut self, thread: NonNull<Thread>) -> Option<ThreadBox> {
+        let mut previous: Option<NonNull<Thread>> = None;
+        let mut following = self.head;
+        while let Some(candidate) = following {
+            // SAFETY: a thread the list owns; the reference ends before anything is written.
+            let next = unsafe { candidate.as_ref() }.next;
+            if candidate == thread {
+                match previous {
+                    // SAFETY: a thread the list owns; no reference to it is live.
+                    Some(previous) => unsafe { (*previous.as_ptr()).next = next },
+                    None => self.head = next,
+                }
+                if let (None, Some(previous)) = (next, previous) {
+                    self.tail = previous;
+                }
+                // SAFETY: from `into_raw` in `push_back` or `insert_by_wake_at`, and unlinked
+                // here.
+                return Some(unsafe { ThreadBox::from_raw(candidate) });
+            }
+            previous = following;
+            following = next;
+        }
+        None
+    }
+}
+
 impl Drop for ThreadList {
     fn drop(&mut self) {
         // A thread in a list is waiting to run; dropping it would free a stack it may still
@@ -518,6 +545,127 @@ impl WaitQueue {
             woken += 1;
         }
         woken
+    }
+}
+
+/// A place one thread parks in until a deadline or until another thread unparks it: the
+/// timed wait futexes and other blocking calls build on. A parked thread with a deadline sleeps
+/// with the sleepers of its CPU, so the timer wakes it then, and [`Self::unpark`] takes it out
+/// of them early; one without waits in the `Parker` alone. `unpark` touches the `Parker` last
+/// when it marks it unparked, so the parked thread may drop it once `park_until` returns.
+pub struct Parker {
+    unparked: AtomicBool,
+    parked: UnsafeCell<Option<Parked>>,
+}
+
+enum Parked {
+    Untimed(ThreadBox),
+    Sleeping(NonNull<Thread>, &'static Cpu),
+}
+
+// SAFETY: `parked` is only reached with the scheduler's lock held (`parked` takes the lock's
+// `Schedulers` by `&mut`), which serialises every use of it; an untimed parked thread is owned
+// there as a ready list would own it, and a sleeping one's pointer is only compared with the
+// threads in a sleepers list, never followed. `unparked` is atomic.
+unsafe impl Sync for Parker {}
+
+impl fmt::Debug for Parker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Parker").finish_non_exhaustive()
+    }
+}
+
+impl Default for Parker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How [`Parker::park_until`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkEnd {
+    /// [`Parker::unpark`] was called, before or during the park.
+    Unparked,
+    /// The clock reached the deadline first.
+    DeadlineReached,
+}
+
+impl Parker {
+    pub const fn new() -> Self {
+        Self {
+            unparked: AtomicBool::new(false),
+            parked: UnsafeCell::new(None),
+        }
+    }
+
+    fn parked<'a>(&'a self, _schedulers: &'a mut Schedulers) -> &'a mut Option<Parked> {
+        // SAFETY: every reference to `parked` is made here, each borrowing the one
+        // `Schedulers` mutably for its whole life, so they never overlap.
+        unsafe { &mut *self.parked.get() }
+    }
+
+    /// Returns once [`Self::unpark`] has been called or the clock reaches `deadline`
+    /// ([`Platform::clock_ticks`]; `u64::MAX` waits for the unpark alone), running other
+    /// threads meanwhile. An unpark that came before the call ends it at once. Call it as
+    /// [`yield_now`] is called: with interrupts masked and no lock held.
+    pub fn park_until<P: Platform>(&self, deadline: u64) -> ParkEnd {
+        loop {
+            let mut schedulers = SCHEDULER.lock();
+            if let Some(Parked::Sleeping(..)) = self.parked(&mut schedulers) {
+                *self.parked(&mut schedulers) = None;
+            }
+            if self.unparked.load(Ordering::Relaxed) {
+                return ParkEnd::Unparked;
+            }
+            if deadline != u64::MAX && P::clock_ticks() >= deadline {
+                return ParkEnd::DeadlineReached;
+            }
+            start_here_or_panic::<P>(&mut schedulers);
+            if deadline == u64::MAX {
+                block::<P>(schedulers, |schedulers, _, thread| {
+                    *self.parked(schedulers) = Some(Parked::Untimed(thread));
+                });
+            } else {
+                self.park_sleeping::<P>(schedulers, deadline);
+            }
+            if self.unparked.load(Ordering::Acquire) {
+                return ParkEnd::Unparked;
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn park_sleeping<P: Platform>(&self, schedulers: SpinLockGuard<'_, Schedulers>, deadline: u64) {
+        block::<P>(schedulers, |schedulers, here, thread| {
+            *self.parked(schedulers) = Some(Parked::Sleeping(thread.0, here));
+            let scheduler = schedulers.of(here);
+            scheduler.sleeping.insert_by_wake_at(thread, deadline);
+            scheduler.update_timer::<P>();
+        });
+    }
+
+    /// Ends the park in [`Self::park_until`], or the next one if no thread is parked. The
+    /// parked thread runs on its own CPU; that CPU's timer may still fire at the deadline,
+    /// and finds nothing due.
+    pub fn unpark<P: Platform>(&self) {
+        let mut schedulers = SCHEDULER.lock();
+        let parked = self.parked(&mut schedulers).take();
+        self.unparked.store(true, Ordering::Release);
+        let thread = match parked {
+            Some(Parked::Untimed(thread)) => thread,
+            Some(Parked::Sleeping(thread, cpu)) => {
+                let Some(thread) = schedulers.of(cpu).sleeping.remove(thread) else {
+                    return;
+                };
+                thread
+            }
+            None => return,
+        };
+        let wake = make_ready::<P>(&mut schedulers, thread);
+        drop(schedulers);
+        if let Some(cpu) = wake {
+            cpu::wake::<P>(cpu);
+        }
     }
 }
 

@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 38] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 39] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -88,6 +88,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 38] {
         }),
         ("threads_sleep_wait_and_run_tickless", |_| {
             threads_sleep_wait_and_run_tickless::<P>()
+        }),
+        ("futex_waiters_wake_in_order_and_time_out", |_| {
+            futex_waiters_wake_in_order_and_time_out::<P>()
         }),
         (
             "processes_keep_their_own_memory_across_switches",
@@ -2094,6 +2097,79 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     }
     if interrupt::timer_interrupts::<P>() == ticks_before {
         return Err("a thread was preempted without a timer tick");
+    }
+    Ok(())
+}
+
+fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'static str> {
+    use linux::futex::{self, Key};
+    static QUEUED: AtomicUsize = AtomicUsize::new(0);
+    const KEY: Key = Key::new(u32::MAX, 0x1000, false);
+    const OTHER_SPACE: Key = Key::new(u32::MAX - 1, 0x1000, false);
+    const SHARED: Key = Key::new(u32::MAX, 0x1000, true);
+    let millisecond = P::clock_frequency() / 1000;
+    let wait_forever = |bitset: u32| {
+        futex::wait::<P>(KEY, bitset, u64::MAX, || {
+            QUEUED.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+    };
+    QUEUED.store(0, Ordering::Relaxed);
+    let mut waiters = Vec::new();
+    for index in 0..3 {
+        let waiter = thread::spawn::<P, _>(move || {
+            assert_eq!(
+                wait_forever(1 << index),
+                Ok(0),
+                "a futex waiter was not woken"
+            );
+        })
+        .map_err(|_| "could not start three futex waiters")?;
+        while QUEUED.load(Ordering::Relaxed) == index {
+            thread::yield_now::<P>();
+        }
+        waiters.push(waiter);
+    }
+    if futex::wake::<P>(OTHER_SPACE, u32::MAX, 3) != 0 {
+        return Err("a futex wake woke a waiter on another address space's word");
+    }
+    if futex::wake::<P>(SHARED, u32::MAX, 3) != 0 {
+        return Err("a shared futex wake woke private waiters on the same word");
+    }
+    if futex::wake::<P>(KEY, 0b100, 0) != 0 {
+        return Err("a futex wake woke more waiters than its limit");
+    }
+    if futex::wake::<P>(KEY, u32::MAX, 2) != 2 {
+        return Err("a futex wake did not wake the two waiters it was allowed");
+    }
+    if futex::wake::<P>(KEY, 0b011, 2) != 0 {
+        return Err("futex waiters were not woken in the order they began to wait");
+    }
+    if futex::wake::<P>(KEY, 0b100, 2) != 1 {
+        return Err("a futex wake missed the waiter whose bitset it named");
+    }
+    for waiter in waiters {
+        waiter.join::<P>();
+    }
+    if futex::wait::<P>(KEY, u32::MAX, u64::MAX, || Err(linux::Errno::EAGAIN))
+        != Err(linux::Errno::EAGAIN)
+    {
+        return Err("a futex wait did not end with the word's error");
+    }
+    let deadline = P::clock_ticks() + millisecond;
+    if futex::wait::<P>(KEY, u32::MAX, deadline, || Ok(())) != Err(linux::Errno::ETIMEDOUT) {
+        return Err("a futex wait with a deadline did not time out");
+    }
+    if P::clock_ticks() < deadline {
+        return Err("a futex wait timed out before its deadline");
+    }
+    if futex::wake::<P>(KEY, u32::MAX, u32::MAX) != 0 {
+        return Err("a futex waiter that timed out was left queued");
+    }
+    let parker = thread::Parker::new();
+    parker.unpark::<P>();
+    if parker.park_until::<P>(u64::MAX) != thread::ParkEnd::Unparked {
+        return Err("an unpark before the park did not end it at once");
     }
     Ok(())
 }

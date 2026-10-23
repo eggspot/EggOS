@@ -7,7 +7,9 @@
 //! is what lets CI compare it against a committed baseline (D27).
 
 use crate::HEAP;
+use crate::linux::Errno;
 use crate::linux::exec;
+use crate::linux::futex::{self, Key};
 use crate::memory::{FRAMES, FrameAllocator, Memory};
 use crate::process::{self, Process};
 use crate::{cpu, linux, random, selftest, thread};
@@ -35,7 +37,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 24] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 26] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -70,6 +72,10 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 24] {
         }),
         ("thread_wait_wake_round_trip", |_, n| {
             thread_wait_wake_round_trip::<P>(n)
+        }),
+        ("futex_wake_empty", |_, n| futex_wake_empty::<P>(n)),
+        ("futex_wait_wake_round_trip", |_, n| {
+            futex_wait_wake_round_trip::<P>(n)
         }),
         ("random_fill_16", |_, n| random_fill::<P, 16>(n)),
         ("random_fill_4096", |_, n| random_fill::<P, 4096>(n)),
@@ -309,6 +315,45 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
         TURN.store(2 * turn + 1, Ordering::Relaxed);
         OTHER.wake_one::<P>();
         BOOT.wait_until::<P>(|| TURN.load(Ordering::Relaxed) == 2 * turn + 2);
+    }
+    other.join::<P>();
+}
+
+fn futex_wake_empty<P: Platform>(n: u64) {
+    const KEY: Key = Key::new(u32::MAX, 0x1000, false);
+    for _ in 0..n {
+        black_box(futex::wake::<P>(black_box(KEY), u32::MAX, 1));
+    }
+}
+
+fn futex_wait_wake_round_trip<P: Platform>(n: u64) {
+    const BOOT: Key = Key::new(u32::MAX, 0x1000, false);
+    const OTHER: Key = Key::new(u32::MAX, 0x2000, false);
+    static TURN: AtomicU64 = AtomicU64::new(0);
+    fn wait_for_turn<P: Platform>(key: Key, turn: u64) {
+        while TURN.load(Ordering::Relaxed) != turn {
+            let _ = futex::wait::<P>(key, u32::MAX, u64::MAX, || {
+                match TURN.load(Ordering::Relaxed) == turn {
+                    true => Err(Errno::EAGAIN),
+                    false => Ok(()),
+                }
+            });
+        }
+    }
+    TURN.store(0, Ordering::Relaxed);
+    let Ok(other) = thread::spawn::<P, _>(move || {
+        for turn in 0..n {
+            wait_for_turn::<P>(OTHER, 2 * turn + 1);
+            TURN.store(2 * turn + 2, Ordering::Relaxed);
+            futex::wake::<P>(BOOT, u32::MAX, 1);
+        }
+    }) else {
+        return;
+    };
+    for turn in 0..n {
+        TURN.store(2 * turn + 1, Ordering::Relaxed);
+        futex::wake::<P>(OTHER, u32::MAX, 1);
+        wait_for_turn::<P>(BOOT, 2 * turn + 2);
     }
     other.join::<P>();
 }
