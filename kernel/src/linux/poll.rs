@@ -54,6 +54,8 @@ pub mod event {
 /// events.
 const POLLFD_SIZE: usize = 8;
 
+const _: () = assert!(limits::MAX_OPEN_FILES * POLLFD_SIZE as u64 <= usize::MAX as u64);
+
 /// How many `struct pollfd`s the calls read onto the kernel stack: Rust's std polls three.
 /// More go through the heap.
 const STACK_POLLFDS: usize = 8;
@@ -274,7 +276,6 @@ fn poll_fds<P: Platform>(
     if count > open_files {
         return Err(Errno::EINVAL);
     }
-    // At most the open-file limit's 2^20 (`limits::MAX_OPEN_FILES`) entries: no overflow.
     let bytes = count as usize * POLLFD_SIZE;
     if !ends_in_user_space::<P>(fds, bytes as u64) {
         return Err(Errno::EFAULT);
@@ -320,15 +321,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptors_report_linux_s_events() {
-        let all = u16::MAX;
-        // Skipped.
-        assert_eq!(events(-1, all), 0);
-        assert_eq!(events(i32::MIN, all), 0);
-        // Closed: reported whatever was asked.
+    fn negative_descriptors_are_skipped() {
+        assert_eq!(events(-1, u16::MAX), 0);
+        assert_eq!(events(i32::MIN, u16::MAX), 0);
+    }
+
+    #[test]
+    fn closed_descriptors_report_pollnval_whatever_was_asked() {
         assert_eq!(events(3, 0), event::NVAL);
         assert_eq!(events(i32::MAX, event::IN), event::NVAL);
-        // The console: room to write, when asked; never data to read.
+    }
+
+    #[test]
+    fn the_console_has_room_to_write_when_asked_and_never_data_to_read() {
+        let all = u16::MAX;
         for fd in 0..=2 {
             assert_eq!(events(fd, 0), 0);
             assert_eq!(events(fd, event::IN | event::RDNORM | event::PRI), 0);
