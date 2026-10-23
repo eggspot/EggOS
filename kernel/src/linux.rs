@@ -3154,7 +3154,7 @@ mod tests {
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
         let tp = SCRATCH + 0x100;
-        let mut last = 0;
+        let mut last = None;
         for id in [
             clock::REALTIME,
             clock::MONOTONIC,
@@ -3172,8 +3172,8 @@ mod tests {
             let (seconds, nanoseconds) = read_timespec(&process, tp);
             assert!(nanoseconds < 1_000_000_000);
             let now = self::nanoseconds((seconds, nanoseconds));
-            assert!(now > last, "clock {id}");
-            last = now;
+            assert!(last.is_none_or(|last| now > last), "clock {id}");
+            last = Some(now);
             assert_eq!(
                 call(&process, number::CLOCK_GETRES, [id, tp, 0, 0, 0, 0]),
                 0

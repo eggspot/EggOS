@@ -35,10 +35,13 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 22] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 23] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
+        ("linux_clock_monotonic_read", |_, n| {
+            linux_clock_monotonic_read::<P>(n)
+        }),
         ("breakpoint_round_trip", |_, n| {
             breakpoint_round_trip::<P>(n)
         }),
@@ -114,6 +117,14 @@ fn empty_loop(n: u64) {
 fn clock_read<P: Platform>(n: u64) {
     for _ in 0..n {
         black_box(P::clock_ticks());
+    }
+}
+
+/// What `clock_gettime(CLOCK_MONOTONIC)` and every other clock read cost beyond the system-call
+/// round trip (D73): the clock read and its conversion to nanoseconds.
+fn linux_clock_monotonic_read<P: Platform>(n: u64) {
+    for _ in 0..n {
+        black_box(linux::time::monotonic_nanoseconds::<P>());
     }
 }
 
@@ -584,6 +595,7 @@ mod tests {
                 linux_fault_handler: 0,
                 linux_signal_queue: 0,
                 linux_signal_suspend: 0,
+                linux_clock: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

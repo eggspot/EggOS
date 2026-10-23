@@ -289,6 +289,12 @@ pub struct TestProgram {
     /// `EINTR`, the register must be 2, and `SIGUSR1` must be blocked again: `exit_group(0)`,
     /// or `exit_group(1)` if any check or call failed.
     pub linux_signal_suspend: usize,
+    /// A Linux program that reads the clocks and sleeps (D73): `clock_gettime(CLOCK_MONOTONIC)`,
+    /// `nanosleep` for [`Self::LINUX_CLOCK_WAIT_NS`], `clock_gettime(CLOCK_MONOTONIC)` again,
+    /// which must be at least that much later, then `clock_gettime` of
+    /// `CLOCK_PROCESS_CPUTIME_ID`, which must fail with `EINVAL` until there is CPU time.
+    /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
+    pub linux_clock: usize,
 }
 
 impl TestProgram {
@@ -310,6 +316,8 @@ impl TestProgram {
     /// How long [`Self::linux_poll`] waits in `ppoll`, in nanoseconds: 2 ms, a few timer
     /// ticks on every architecture.
     pub const LINUX_POLL_WAIT_NS: u64 = 2_000_000;
+    /// How long [`Self::linux_clock`] sleeps with `nanosleep`, in nanoseconds: 1 ms.
+    pub const LINUX_CLOCK_WAIT_NS: u64 = 1_000_000;
     /// Where [`Self::linux_fault_handler`] first faults: an address in no mapping (below
     /// Linux's lowest `mmap` address), not page-aligned.
     pub const LINUX_FAULT_ADDRESS: u64 = 0x1230;

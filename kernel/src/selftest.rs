@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 31] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 32] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -140,6 +140,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 31] {
         (
             "linux_programs_wait_for_signals_with_sigsuspend",
             linux_programs_wait_for_signals_with_sigsuspend::<P>,
+        ),
+        (
+            "linux_programs_read_clocks_and_sleep",
+            linux_programs_read_clocks_and_sleep::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1508,6 +1512,23 @@ fn linux_programs_wait_for_signals_with_sigsuspend<P: Platform>(
             "rt_sigsuspend did not run the handler with the mask saved, or a signal call failed"
         }
         HandlingFailure::Killed => "the suspending program was killed",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program must read the monotonic clock and sleep with `nanosleep` for at least
+/// what it asked, and be refused the CPU-time clocks (D73): the test program's `linux_clock`
+/// must exit with 0 (see [`eggos_hal::user::TestProgram`]). It runs twice, and everything the
+/// second run took must be freed.
+fn linux_programs_read_clocks_and_sleep<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_clock).map_err(|failure| match failure {
+        HandlingFailure::Failed => {
+            "clock_gettime or nanosleep did not answer as on Linux, or the sleep ended early"
+        }
+        HandlingFailure::Killed => "the clock program was killed",
         HandlingFailure::Other(error) => error,
     })
 }

@@ -805,6 +805,51 @@ aarch64_user_test_linux_signal_suspend:
     mov     x9, #2
     str     x9, [x2, #{saved_x20}]
 7:  ret
+    .global aarch64_user_test_linux_clock
+aarch64_user_test_linux_clock:
+    sub     sp, sp, #64
+    mov     x0, #1
+    mov     x1, sp
+    mov     x8, #113
+    svc     #0
+    cbnz    x0, 9f
+    movz    x9, #({clock_wait} & 0xffff)
+    movk    x9, #({clock_wait} >> 16), lsl #16
+    stp     xzr, x9, [sp, #32]
+    add     x0, sp, #32
+    mov     x1, #0
+    mov     x8, #101
+    svc     #0
+    cbnz    x0, 9f
+    mov     x0, #1
+    add     x1, sp, #16
+    mov     x8, #113
+    svc     #0
+    cbnz    x0, 9f
+    ldp     x10, x11, [sp]
+    ldp     x12, x13, [sp, #16]
+    sub     x12, x12, x10
+    movz    x14, #0xca00
+    movk    x14, #0x3b9a, lsl #16
+    mul     x12, x12, x14
+    add     x12, x12, x13
+    sub     x12, x12, x11
+    ldr     x9, [sp, #40]
+    cmp     x12, x9
+    b.lo    9f
+    mov     x0, #2
+    add     x1, sp, #16
+    mov     x8, #113
+    svc     #0
+    cmn     x0, #22
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -818,6 +863,7 @@ aarch64_user_test_end:
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
     // `uc_mcontext.regs[20]` in the ucontext: the sigcontext at 176, its registers at 8.
     saved_x20 = const 176 + 8 + 20 * 8,
     saved_x21 = const 176 + 8 + 21 * 8,
@@ -918,6 +964,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_fault_handler: u8;
     static aarch64_user_test_linux_signal_queue: u8;
     static aarch64_user_test_linux_signal_suspend: u8;
+    static aarch64_user_test_linux_clock: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -993,6 +1040,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_fault_handler: (&raw const aarch64_user_test_linux_fault_handler) as usize - start,
         linux_signal_queue: (&raw const aarch64_user_test_linux_signal_queue) as usize - start,
         linux_signal_suspend: (&raw const aarch64_user_test_linux_signal_suspend) as usize - start,
+        linux_clock: (&raw const aarch64_user_test_linux_clock) as usize - start,
     }
 }
 

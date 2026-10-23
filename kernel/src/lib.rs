@@ -344,6 +344,7 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_queue as u64;
             let linux_signal_suspend =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_suspend as u64;
+            let linux_clock = crate::process::TEST_PROGRAM_ADDRESS + program.linux_clock as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -549,6 +550,9 @@ pub(crate) mod tests {
                 {
                     signal_suspend_program(context, linux_signal_suspend)
                 }
+                pc if (linux_clock..linux_clock + 5).contains(&pc) => {
+                    clock_program(context, linux_clock)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -601,6 +605,7 @@ pub(crate) mod tests {
                 linux_fault_handler: 400,
                 linux_signal_queue: 460,
                 linux_signal_suspend: 520,
+                linux_clock: 580,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -807,6 +812,58 @@ pub(crate) mod tests {
     /// checks the mask its frame saved, changes the frame and returns with `rt_sigreturn`;
     /// then `rt_sigprocmask` reads the mask back, and `exit_group(0)` if every check passed.
     /// Each call's result is checked as the program checks it.
+    /// Plays `linux_clock` (at `start`) for the test platform: `clock_gettime(CLOCK_MONOTONIC)`
+    /// below a stack pointer it moves down, `nanosleep` for
+    /// [`TestProgram::LINUX_CLOCK_WAIT_NS`], `clock_gettime(CLOCK_MONOTONIC)` again, then
+    /// `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)`, and `exit_group(0)` if each answered as the
+    /// program checks.
+    fn clock_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{Errno, number};
+        use eggos_hal::user::UserExit;
+        let pc = context.pc();
+        if pc == start {
+            *context = eggos_hal::user::UserContext::new(pc, context.stack() - 64);
+        }
+        let stack = context.stack();
+        let (first, second, request) = (stack, stack + 16, stack + 32);
+        let nanoseconds = |address: u64| {
+            let mut bytes = [0u8; 16];
+            read_user_bytes(address, &mut bytes);
+            let [seconds, nanoseconds] =
+                [&bytes[..8], &bytes[8..]].map(|half| u64::from_ne_bytes(half.try_into().unwrap()));
+            seconds * 1_000_000_000 + nanoseconds
+        };
+        let result = context.syscall_result();
+        let step = pc - start;
+        let passed = match step {
+            0 => true,
+            1 | 2 => result == 0,
+            3 => {
+                result == 0
+                    && nanoseconds(second) - nanoseconds(first) >= TestProgram::LINUX_CLOCK_WAIT_NS
+            }
+            _ => result == Errno::EINVAL.result(),
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => (number::CLOCK_GETTIME, [1, first, 0, 0, 0, 0]),
+            1 => {
+                let mut bytes = [0u8; 16];
+                bytes[8..].copy_from_slice(&TestProgram::LINUX_CLOCK_WAIT_NS.to_ne_bytes());
+                write_user_bytes(request, &bytes);
+                (number::NANOSLEEP, [request, 0, 0, 0, 0, 0])
+            }
+            2 => (number::CLOCK_GETTIME, [1, second, 0, 0, 0, 0]),
+            3 => (number::CLOCK_GETTIME, [2, second, 0, 0, 0, 0]),
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
     fn signal_suspend_program(
         context: &mut eggos_hal::user::UserContext,
         start: u64,
