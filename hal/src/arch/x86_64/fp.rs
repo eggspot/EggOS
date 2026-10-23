@@ -75,8 +75,9 @@ pub(super) unsafe fn save(state: *mut FpState) {
 
 /// [`crate::Platform::restore_fp`].
 pub(super) unsafe fn restore(state: *const FpState) {
-    // SAFETY: as in `save`, a read. The image came from `FXSAVE64` or `FpState::new`, so its
-    // `MXCSR` has no reserved bit set, which would raise #GP. The x87 load in the routine
+    // SAFETY: as in `save`, a read. The image came from `FXSAVE64`, `FpState::new` or
+    // `FpState::set_fxsave_image`, which refuses reserved `MXCSR` bits, so its `MXCSR` has none
+    // set, which would raise #GP. The x87 load in the routine
     // changes only x87 state, which `FXRSTOR64` then replaces. It overwrites `MXCSR` and the
     // x87 control word, which the System V ABI says a call preserves: sound only because the
     // kernel target has no SSE or x87 and holds nothing there.

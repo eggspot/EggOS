@@ -1183,8 +1183,9 @@ pub(crate) enum FpStart {
 /// Gives the running thread, a user thread whose program just trapped on an illegal
 /// instruction (or returned from a signal handler with FP/SIMD values in its frame, D82),
 /// FP/SIMD registers if it has none yet (D54): a new program's values ([`FpState::new`]),
-/// loaded and on for user mode on this CPU, so the instruction can run again. Call it with interrupts masked and no lock held. Once per thread at most; a thread
-/// that never uses them costs nothing.
+/// loaded and on for user mode on this CPU, so the instruction can run again. Call it with
+/// interrupts masked and no lock held. Once per thread at most; a thread that never uses them
+/// costs nothing.
 #[cold]
 #[inline(never)]
 pub(crate) fn start_fp<P: Platform>() -> FpStart {

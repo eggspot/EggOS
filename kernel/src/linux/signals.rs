@@ -1451,8 +1451,10 @@ fn load_frame_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
         return Ok(());
     }
     match thread::start_fp::<P>() {
-        FpStart::Started => thread::with_running_fp::<P, _>(load).unwrap_or(Ok(())),
-        FpStart::KernelThread | FpStart::AlreadyHad => Ok(()),
+        FpStart::Started => thread::with_running_fp::<P, _>(load)
+            .expect("a thread that just got FP/SIMD registers has them"),
+        FpStart::AlreadyHad => unreachable!("with_running_fp found no FP/SIMD registers"),
+        FpStart::KernelThread => Ok(()),
         FpStart::OutOfMemory => Err(BadFrame),
     }
 }
