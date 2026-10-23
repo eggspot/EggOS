@@ -1195,8 +1195,12 @@ mod tests {
         assert_eq!(sigaltstack(0, writable + 64, 0x7fff_0000), 0);
         assert_eq!(words(writable + 64, 3), [0, 2, 0]);
         let (base, size) = (0x7000_0000, 0x4000);
-        store(writable, &[base, 0, 5120 - 1]);
+        store(writable, &[base, 0, signals::MIN_STACK_SIZE - 1]);
         assert_eq!(sigaltstack(writable, 0, 0), Errno::ENOMEM.result());
+        store(writable, &[base, 0, signals::MIN_STACK_SIZE]);
+        assert_eq!(sigaltstack(writable, 0, 0), 0);
+        store(writable, &[0, 2, 0]);
+        assert_eq!(sigaltstack(writable, 0, 0), 0);
         for bad in [4, 3, 1 << 30] {
             store(writable, &[base, bad, size]);
             assert_eq!(sigaltstack(writable, 0, 0), einval);

@@ -164,7 +164,7 @@ const STACK_SIZE: usize = 24;
 
 /// The smallest alternate stack (`MINSIGSTKSZ`): room for the kernel's largest signal frame on
 /// the architecture.
-const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
+pub const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
     5120
 } else {
     2048
