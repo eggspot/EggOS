@@ -990,6 +990,67 @@ aarch64_user_test_fp_registers:
     .global aarch64_user_test_illegal_instruction
 aarch64_user_test_illegal_instruction:
     udf     #0
+    .global aarch64_user_test_linux_move_and_discard
+aarch64_user_test_linux_move_and_discard:
+    mov     x0, #0
+    mov     x1, #4096
+    mov     x2, #3
+    mov     x3, #0x22
+    mov     x4, #-1
+    mov     x5, #0
+    mov     x8, #222
+    svc     #0
+    cmn     x0, #4096
+    b.hs    9f
+    mov     x19, x0
+    mov     x1, #4096
+    mov     x2, #23
+    mov     x8, #233
+    svc     #0
+    cbnz    x0, 9f
+    movz    x9, #0x5678
+    movk    x9, #0x1234, lsl #16
+    str     x9, [x19]
+    sub     x20, x19, #0x100000
+    mov     x0, x19
+    mov     x1, #4096
+    mov     x2, #4096
+    mov     x3, #3
+    mov     x4, x20
+    mov     x8, #216
+    svc     #0
+    cmp     x0, x20
+    b.ne    9f
+    ldr     x10, [x20]
+    cmp     x10, x9
+    b.ne    9f
+    mov     x0, x19
+    mov     x1, #4096
+    mov     x2, #3
+    mov     x3, #0x32
+    mov     x4, #-1
+    mov     x5, #0
+    mov     x8, #222
+    svc     #0
+    cmp     x0, x19
+    b.ne    9f
+    ldr     x10, [x19]
+    cbnz    x10, 9f
+    mov     x0, x20
+    mov     x1, #4096
+    mov     x2, #4
+    mov     x8, #233
+    svc     #0
+    cbnz    x0, 9f
+    ldr     x10, [x20]
+    cbnz    x10, 9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -1109,6 +1170,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_clock: u8;
     static aarch64_user_test_linux_stat: u8;
     static aarch64_user_test_linux_credentials: u8;
+    static aarch64_user_test_linux_move_and_discard: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -1189,6 +1251,8 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_clock: (&raw const aarch64_user_test_linux_clock) as usize - start,
         linux_stat: (&raw const aarch64_user_test_linux_stat) as usize - start,
         linux_credentials: (&raw const aarch64_user_test_linux_credentials) as usize - start,
+        linux_move_and_discard: (&raw const aarch64_user_test_linux_move_and_discard) as usize
+            - start,
     }
 }
 

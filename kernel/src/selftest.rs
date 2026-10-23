@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 35] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 36] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -156,6 +156,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 35] {
         (
             "linux_programs_change_their_credentials",
             linux_programs_change_their_credentials::<P>,
+        ),
+        (
+            "linux_programs_move_and_discard_memory",
+            linux_programs_move_and_discard_memory::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1655,6 +1659,21 @@ fn linux_programs_change_their_credentials<P: Platform>(
     run_handling_program(memory, program.linux_credentials).map_err(|failure| match failure {
         HandlingFailure::Failed => "getuid, geteuid or setuid did not answer as on Linux",
         HandlingFailure::Killed => "the credentials program was killed",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program moves a page with `mremap`, its contents with it and nothing of it left
+/// at the old address, and discards it with `madvise` (D77): the test program's
+/// `linux_move_and_discard` must exit with 0 (see [`eggos_hal::user::TestProgram`]). It runs
+/// twice, and everything the second run took must be freed.
+fn linux_programs_move_and_discard_memory<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_move_and_discard).map_err(|failure| match failure {
+        HandlingFailure::Failed => "mremap or madvise did not move or discard memory as on Linux",
+        HandlingFailure::Killed => "the program moving memory was killed",
         HandlingFailure::Other(error) => error,
     })
 }

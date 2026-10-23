@@ -42,6 +42,8 @@ pub enum RegionError {
     NotCovered,
     /// No range of addresses free and large enough ([`Regions::free_below`]).
     NoRoom,
+    /// No frame for a page table (`Process::remap_region`).
+    OutOfMemory,
 }
 
 /// A process's regions, sorted and disjoint. See the module documentation.
@@ -59,13 +61,14 @@ impl Regions {
 
     /// Adds `start..end` with `attributes`, joined to a neighbour it touches with the same
     /// attributes (as Linux merges them), so the list stays short.
+    #[inline(always)]
     pub fn insert(
         &mut self,
         start: u64,
         end: u64,
         attributes: Option<Attributes>,
     ) -> Result<(), RegionError> {
-        if !is_range(start, end) || attributes.is_some_and(|attributes| !attributes.user) {
+        if !is_page_range(start, end) || attributes.is_some_and(|attributes| !attributes.user) {
             return Err(RegionError::Invalid);
         }
         // The first region that ends after `start`: the only one that could overlap from
@@ -115,6 +118,13 @@ impl Regions {
         self.regions.iter()
     }
 
+    /// The regions that hold part of `start..end`, in address order.
+    pub fn overlapping(&self, start: u64, end: u64) -> &[Region] {
+        let first = self.regions.partition_point(|region| region.end <= start);
+        let last = self.regions.partition_point(|region| region.start < end);
+        &self.regions[first..last.max(first)]
+    }
+
     /// Whether no region holds any of `start..end`.
     pub fn is_free(&self, start: u64, end: u64) -> bool {
         let at = self.regions.partition_point(|region| region.end <= start);
@@ -131,7 +141,7 @@ impl Regions {
         end: u64,
         mut removed: impl FnMut(Region),
     ) -> Result<(), RegionError> {
-        if !is_range(start, end) {
+        if !is_page_range(start, end) {
             return Err(RegionError::Invalid);
         }
         let first = self.regions.partition_point(|region| region.end <= start);
@@ -190,7 +200,7 @@ impl Regions {
         attributes: Option<Attributes>,
         changed: impl FnMut(Region),
     ) -> Result<(), RegionError> {
-        if !is_range(start, end) || attributes.is_some_and(|attributes| !attributes.user) {
+        if !is_page_range(start, end) || attributes.is_some_and(|attributes| !attributes.user) {
             return Err(RegionError::Invalid);
         }
         let first = self.regions.partition_point(|region| region.end <= start);
@@ -240,7 +250,7 @@ impl Regions {
 }
 
 /// Whether `start..end` is a non-empty, page-aligned range.
-fn is_range(start: u64, end: u64) -> bool {
+pub fn is_page_range(start: u64, end: u64) -> bool {
     start < end && (start | end).is_multiple_of(FRAME_SIZE)
 }
 

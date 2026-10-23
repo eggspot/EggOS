@@ -3266,6 +3266,114 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   the dispatcher after `setfsuid`; `newfstatat` with 0x2000, 0x4000 and 0x6000 writing the
   same bytes as `fstat`. Each fails without its fix.
 
+## D77 `madvise` and `mremap` on anonymous memory: pages discarded, populated and moved with their frames — Decided by the build loop (Linux's rules and the deviations decided by research)
+- **Why.** The calls memory allocators make while a program runs: glibc's `malloc`, musl's
+  mallocng, jemalloc and mimalloc give memory back with `madvise(MADV_DONTNEED)` or
+  `MADV_FREE`, and `realloc` of a large block grows it with `mremap` instead of copying.
+  Linux 6.1's numbers: `mremap` 25 and `madvise` 28 on x86_64, 216 and 233 on the generic
+  table.
+- **`madvise`** (research, Linux 6.1 with a distribution's configuration). Checked in Linux's
+  order: an advice Linux does not know (5–7, above 25 but 100 and 101), an unaligned address,
+  a length that wraps when rounded up to pages or past the end of the address space are all
+  `EINVAL` (unlike `mmap`, where a wrapping length is `ENOMEM`); then an empty range is 0.
+  A range partly in no region gets the advice where it has regions and fails with `ENOMEM`
+  afterwards, for every advice (`MADV_POPULATE_*` too: failing at the first hole came only in
+  2024). Each advice:
+  - `DONTNEED`, `DONTNEED_LOCKED` and `FREE` unmap the pages and free their frames, a
+    `PROT_NONE` region's kept frames too; the regions stay, and their pages are mapped,
+    zeroed, when next touched. `FREE` may discard later on Linux; with nothing to reclaim
+    memory here, now is the only time it goes back. Touching regions are freed as one run.
+  - `POPULATE_WRITE` maps a zeroed frame at every page of the range not mapped yet
+    (`ENOMEM` when frames run out, so a program learns it up front); `POPULATE_READ` only
+    checks, as an unmapped page reads zeros all the same, until there is a shared zero frame.
+    A region that does not allow the access stops the call with `EINVAL` (a `PROT_NONE`
+    region, or a write to a read-only one).
+  - `NORMAL`, `RANDOM`, `SEQUENTIAL`, `WILLNEED`, `COLD`, `PAGEOUT`, `MERGEABLE`,
+    `UNMERGEABLE`, `HUGEPAGE`, `NOHUGEPAGE`, `DONTDUMP`, `DODUMP`, `DONTFORK`, `DOFORK`,
+    `WIPEONFORK` and `KEEPONFORK` succeed and change nothing: there is no swap, no read-ahead,
+    no page merging, no huge page, no core dump and no `fork`. **`fork` must keep
+    `DONTFORK` and `WIPEONFORK` per region when it comes**; research suggested recording them
+    now, but with no `fork` nothing could observe or test them, so the region records them
+    with `fork` (roadmap).
+  - `REMOVE` needs memory a file backs (shared anonymous memory): `EINVAL`, as anonymous
+    memory is private here (D53). `COLLAPSE` needs huge pages: `EINVAL`. Both are `ENOMEM` for
+    a range with no region at all, as Linux finds no mapping first.
+  - `HWPOISON` and `SOFT_OFFLINE` are `EPERM` for a process that is not privileged (D75) and
+    `EINVAL` for root: no page is ever taken offline here, as on a kernel built without
+    memory-failure handling.
+- **`mremap`** (research). Checked in Linux's order: unknown flags, `MREMAP_FIXED` without
+  `MREMAP_MAYMOVE`, `MREMAP_DONTUNMAP` without it or with sizes that differ (before rounding),
+  an unaligned old address, a size that wraps or a new size of 0 once rounded up are
+  `EINVAL`; then an old address in no region is `EFAULT`.
+  - **Shrinking** unmaps the tail, holes and all, and returns the old address; the same size
+    returns it at once.
+  - **Growing** needs the old range in one region (`EFAULT` otherwise, as Linux needs it in
+    one mapping) and an old size that is not 0 (`EINVAL`: on Linux that duplicates a shared
+    mapping, and anonymous memory is private here). It grows in place when the range ends
+    its region and the addresses after it are free; otherwise `MREMAP_MAYMOVE` moves it to
+    where `mmap` would place it (top-down), else `ENOMEM`.
+  - **Moved, never copied.** A move relinks each page's entry, mapped or kept
+    (`PROT_NONE`), at the new address (`PageTables::move_user_pages`): the frame and its
+    contents go with it, and the old entries are dropped from the TLB as `munmap` drops them
+    (D53). If a table for the new place cannot be allocated, the pages moved so far go back
+    and the call fails with `ENOMEM`, the old range as it was (with `MREMAP_FIXED`, what was
+    at `new_address` is already unmapped, as on Linux), and every CPU drops what it may have
+    cached of the entries that held pages at the new place. The region keeps its attributes; what
+    it grew by is mapped, zeroed, when first touched.
+  - **`MREMAP_FIXED`** moves the first `new_size` bytes to `new_address`, replacing whatever
+    was there, and unmaps the rest of the old range; `MREMAP_DONTUNMAP` leaves the old range a
+    region with no pages, which read zeros when next touched, and takes `new_address` as a
+    hint. Either checks the new range first: unaligned, past user space or overlapping the
+    old range is `EINVAL`, below the lowest address a program may map `EPERM`.
+- **Deviations from Linux** (research):
+  - Linux's `MREMAP_FIXED` unmaps the target and the old range's tail before it checks the
+    old range, so a call that then fails with `EFAULT` has unmapped both. Here everything is
+    checked first and a call that fails a check unmaps nothing (only running out of frames
+    for page tables, after the target is unmapped, leaves it unmapped, as on Linux); no
+    program can depend on the half-done state.
+  - Growing in place stops below where `mmap` places mappings (the stack's reserve and guard
+    gap, D52), where Linux lets a mapping grow up to the stack. The stack is one fixed 8 MiB
+    region here, so the gap below it is what makes an overflow fault instead of running into
+    another mapping; a range that cannot grow there moves (`MREMAP_MAYMOVE`) or fails with
+    `ENOMEM`.
+  - Regions with the same attributes are joined more eagerly than Linux joins mappings, so
+    a range across two `mmap`s can be one region here and grow where Linux says `EFAULT`.
+- **Cost.** Both calls sit in `out_of_line_result`; the system-call, switch and page-fault
+  paths are unchanged. `PageTables::map_leaf` and `change_user_pages` now share their walks
+  with the move (`leaf_table_entry`, `for_each_user_page`, always inlined). New callers
+  of shared helpers changed how LLVM compiled `munmap` and `mmap`: `AddressSpace::change_pages`
+  became one out-of-line copy for `free_pages`' closures, called from both `munmap` and
+  `madvise`, and `Regions::insert` lost the specialisation it had with fewer callers. That made
+  `linux_mmap_munmap` 6 to 9% slower than `main` (x86_64 388 to 421 ns). `free_pages`,
+  `AddressSpace::change_pages`, `PageTables::change_user_pages` and `Regions::insert` are now
+  always inlined, which makes `linux_mmap_munmap` faster than on `main`: aarch64 356.52 to
+  335.52 ns (−5.9%), riscv64 385.10 to 362.11 ns (−6.0%), x86_64 388.08 to 360.09 ns (−7.2%).
+  Only those three baseline lines change. Other benchmarks are unchanged. Kernel text grows
+  by about 15 KiB per architecture: about 10 KiB for the two calls and about 5 KiB (2%) for
+  the inlining. That 5 KiB buys the 6–7% on every `mmap` and `munmap`; without it, the gain
+  is gone (`free_pages` out of line measures 388 ns on x86_64, the same as `main`).
+  Research accepted both parts of the size cost (D24, D78). The two calls are what every C
+  library's allocator uses: `MADV_DONTNEED` or `MADV_FREE` to give memory back, `mremap` to
+  grow a large block. Their scope is already cut to anonymous memory only. Windows and macOS
+  pay for the same thing too: `MEM_RESET`/`DiscardVirtualMemory`, and `MADV_FREE_REUSABLE`/
+  `mach_vm_remap`. Cutting the inlining would bring back a regression that can be avoided,
+  for 5 KiB.
+- **Tests.** Host: `move_user_pages` moving mapped and kept pages, refusing a target with a
+  page in it or overlapping the source, and putting every page back when tables run out;
+  `madvise`'s errors in Linux's order, every advice that changes nothing, `DONTNEED`, `FREE`
+  and `DONTNEED_LOCKED` freeing frames (kept ones too) with zeros read after and `ENOMEM` for a
+  hole, `POPULATE_WRITE` mapping frames and `POPULATE_READ` mapping none, `EINVAL` for a
+  region that does not allow the access, `EPERM` for an unprivileged `HWPOISON`; `mremap`'s
+  errors in Linux's order, shrinking, growing in place up to the next region and never into
+  the guard gap, moving `PROT_NONE` pages with their contents and dropping the old
+  translations, `MREMAP_FIXED` replacing the target and unmapping the tail, and
+  `MREMAP_DONTUNMAP` leaving an empty region at the hint's source. QEMU: a new test program,
+  `linux_move_and_discard`, populates a page with `MADV_POPULATE_WRITE`, writes a word, moves
+  the page 1 MiB down with `MREMAP_MAYMOVE | MREMAP_FIXED` and reads the word there, maps a
+  new page at the old address and reads 0 (no stale translation of the moved page), then
+  discards the moved page with `MADV_DONTNEED` and reads 0; it passes on aarch64, riscv64 and
+  x86_64.
+
 ## D78 Performance regressions are settled by research, not by waiting for the owner — Decided (owner, 2026-10-23); supersedes D13's "unless the owner explicitly accepts it"
 A PR that makes a benchmark slower is still blocked until the regression is fixed, or until a
 research subagent concludes the cost is unavoidable: the price of correctness, security or a

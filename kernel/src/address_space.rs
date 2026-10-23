@@ -146,6 +146,7 @@ impl<P: Platform> AddressSpace<P> {
     /// documentation). Allowed while the address space is loaded on any CPU, but used on at
     /// most this one: call it with interrupts masked, from the process's only thread or with
     /// the address space not in use, and do not block until it returns.
+    #[inline(always)]
     pub fn change_pages(
         &self,
         virt: u64,
@@ -159,6 +160,25 @@ impl<P: Platform> AddressSpace<P> {
             .change_user_pages(virt, length, change, unmapped);
         // Even after an error: part of the range may have changed.
         self.drop_old_translations(virt, length);
+        result
+    }
+
+    /// Moves every page of user `from..from + length` that is mapped or kept to the same
+    /// offset from `to`, frames and contents with them, as [`PageTables::move_user_pages`]
+    /// (nothing there may be mapped yet; on an error nothing has moved), then makes sure no CPU
+    /// goes on using what it cached of the entries at `from`, or, after an error, of the
+    /// entries at `to` that held pages until they went back. Used as [`Self::change_pages`].
+    pub fn move_pages(&self, from: u64, to: u64, length: u64) -> Result<(), MapError> {
+        let result = {
+            let mut tables = self.tables.lock();
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+            tables.move_user_pages(from, to, length, frames)
+        };
+        match result {
+            Ok(()) => self.drop_old_translations(from, length),
+            Err(_) => self.drop_old_translations(to, length),
+        }
         result
     }
 

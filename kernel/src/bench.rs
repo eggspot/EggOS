@@ -642,6 +642,7 @@ mod tests {
                 linux_clock: 0,
                 linux_stat: 0,
                 linux_credentials: 0,
+                linux_move_and_discard: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
