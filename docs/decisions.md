@@ -3569,3 +3569,38 @@ the license, by an explicit instruction recorded here.
   `mremap` with `MREMAP_FIXED` and an old size reaching past user space is `EINVAL` with the
   region and its contents where they were (fails without the fix); `MADV_POPULATE_WRITE` over
   populated pages keeps their frames and contents.
+
+## D84 Test programs built from our own Rust source with Rust's std, for the official `*-unknown-linux-musl` targets — Decided by the build loop (acceptability and approach decided by research; the owner can overrule it)
+- **Why.** M6's goal is that real static Linux programs run. So far every test program is a
+  few dozen instructions of HAL assembly wrapped in an ELF image (D51); none goes through a C
+  library's startup or Rust's std. Research traced what a static Rust std program (musl),
+  a static musl C program and a static glibc C program call from start to exit: every call is
+  either implemented or fails gracefully with `ENOSYS` (`rseq`, `readlink` of
+  `/proc/self/exe`, `/proc/self/maps` for std's main-thread guard on glibc), so the next step
+  is to run one, from our own source, on every architecture.
+- **How.** The pinned toolchain gains `aarch64-unknown-linux-musl`,
+  `riscv64gc-unknown-linux-musl` and `x86_64-unknown-linux-musl` (all tier 2 with std from
+  rustup in 1.99). The programs are linked as static executables by `rust-lld` with the
+  targets' self-contained musl and start files (`-C linker=rust-lld -C link-self-contained=yes
+  -C target-feature=+crt-static`; RISC-V's target is dynamic by default), so they link with no
+  C toolchain on macOS, Windows and Linux alike (checked on macOS: about 350–380 KiB each for a
+  std hello world with `opt-level = "s"`, LTO and `strip`).
+- **Why this fits "everything is ours, in Rust, no third-party crates"** (research): the
+  program's source is ours and in Rust; std and musl come pre-built in the pinned toolchain's
+  sysroot, as `core` and `alloc` already do for the kernel, and `Cargo.lock` still lists only
+  our crates. The binary is a Linux program for EggOS to run, the kind of foreign software the
+  OS exists for, so like firmware it is outside EggOS: it is a test fixture, built only for
+  the QEMU tests, never linked into the kernel's code, never shipped in a release image and
+  never committed: like firmware, nothing of it is copied into the repo.
+  Licences fit MIT OR Apache-2.0 (musl is MIT; LLVM's libunwind and start files are
+  Apache-2.0 with the LLVM exception). glibc programs cannot be built this way (rustup ships no
+  self-contained glibc) and are left to observed behaviour.
+- **Rejected:** `#![no_std]` programs of our own on the `*-unknown-none` targets. They are
+  allowed, but exercise no C library startup or std, and two of those targets cannot even
+  emit FP/SIMD code, so they would not move M6 toward "a real program runs".
+- **Cost.** The CI image grows by three `rust-std` components; CI's macOS and Windows host
+  jobs install three more targets with the toolchain (measured in the PR). Release and
+  benchmark kernels are unchanged: the programs go only into the `qemu-test` build.
+- **Next.** The first program (a std hello world that prints its arguments, uses a `HashMap`,
+  reads `Instant`, sleeps and exits with a status) runs in a QEMU self-test on aarch64, riscv64
+  and x86_64, with `AT_MINSIGSTKSZ` added to the auxiliary vector.
