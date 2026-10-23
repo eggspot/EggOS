@@ -2198,3 +2198,100 @@ switch-path cost; this entry follows it.)
   process starting from the defaults). QEMU, on aarch64, riscv64 and x86_64: the ELF-started
   test program sets `SIGPIPE` to `SIG_IGN`, reads it back, and checks that `sigaltstack`
   reports no alternate stack, with each architecture's numbers and structure.
+
+## D61 The standard descriptors: 0, 1 and 2 are the console; `poll`, `ppoll` and the console's `ioctl`s — Decided by the build loop (Linux's behaviour and the request set decided by research)
+- **Why now.** Rust's std polls descriptors 0, 1 and 2 at startup (`poll` with no events and
+  no wait) to learn whether they are open, and aborts when the call fails with anything but
+  `EINTR`, `EINVAL`, `EAGAIN` or `ENOMEM`: with `ENOSYS`, every Rust program would stop
+  before `main`, even once FP/SIMD state exists (D54). It then opens `/dev/null` over a
+  descriptor that reports `POLLNVAL`, which would fail too, so descriptor 0 must be open.
+  musl chooses line buffering for stdout and answers `isatty` with `TIOCGWINSZ`, glibc with
+  `TCGETS`. Numbers: x86_64 `poll` 7, `ioctl` 16, `ppoll` 271; the generic table, which has
+  no `poll`, `ioctl` 29, `ppoll` 73.
+- **Descriptor 0 joins the console** (research): 0, 1 and 2 are one console open for reading
+  and writing, as Linux starts `init` with `/dev/console` on all three and getty does with
+  its terminal, so `write(0, ...)` prints, as it does in a Linux terminal. `read` stays
+  `ENOSYS` until there is console input (M8). `is_console` became one compare.
+- **`poll` and `ppoll`** (`linux::poll`), from the man pages:
+  - the console is always writable (`POLLOUT`, `POLLWRNORM` when asked for) and never
+    readable; `POLLERR` and `POLLHUP` are never reported; a negative descriptor is skipped
+    (no events); any other descriptor is not open: `POLLNVAL`, whatever was asked. The
+    result is how many entries report anything; the array is copied in once and back once.
+  - checks, in this order (the order is to be confirmed by observation): `ppoll`'s timeout
+    `EFAULT`, then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; with
+    a signal mask, `EINVAL` unless `sigsetsize` is 8, then `EFAULT` (no mask: the size is not
+    looked at); `EINVAL` for more descriptors than `RLIMIT_NOFILE`'s soft limit (D59's
+    1024); `EFAULT` if the array does not end within user space or is not the program's
+    writable memory; `ENOMEM` if a large array finds no heap. `nfds` is an `unsigned int`,
+    `poll`'s timeout an `int` of milliseconds (negative: no limit).
+  - **waits sleep out their timeout.** Nothing becomes ready during a wait yet (the console's
+    readiness never changes), so a call that finds nothing ready sleeps until its deadline
+    (`thread::sleep_until`, rounded up, never early), or for good without a timeout, as Linux
+    does when no signal comes. `poll(NULL, 0, ms)` therefore sleeps, as programs use it to.
+    Waking a poller early comes with the first descriptor whose readiness changes.
+  - `ppoll` writes a zero remaining time back when its wait ended with the timeout, as
+    Linux's system call does (C libraries hide it), ignoring a timeout the program cannot
+    write. When something is ready at once, it leaves the timeout as it was: no time passed
+    that the kernel would report.
+  - the signal mask would apply during the wait; with nothing delivered (D60) it is checked
+    and changes nothing.
+- **The console's `ioctl`s** (`linux::terminal`; research: answer only what is true of the
+  console): `EBADF` for a descriptor that is not open, before the request; `ENOTTY` for every
+  request not answered, as Linux answers a request a terminal lacks; `EFAULT` for a bad
+  argument. Both `fd` and the request are 32-bit.
+  - `TCGETS` and `TCGETS2`: a Linux serial console's settings after boot (`stty -a`): `icrnl
+    ixon`, `opost onlcr` (the UART driver already writes `\n` as `\r\n`), `115200 cs8 cread
+    hupcl clocal`, `isig icanon iexten echo echoe echok echoctl echoke`, and the usual
+    control characters (^C, ^\, DEL, ^U, ^D, VMIN 1, VTIME 0, ...). `TCGETS2` adds both
+    speeds, 115200. The kernel's `struct termios` (36 bytes) and these request numbers are the
+    same on AArch64, RISC-V and x86_64; another architecture is a compile error until checked
+    (Alpha, MIPS, PowerPC and SPARC differ).
+  - `TIOCGWINSZ` and `TIOCSWINSZ`: one window size for the console, zero until a program
+    sets it, as on a Linux serial line, whose size the kernel cannot know.
+  - `FIONREAD`: 0, as there is no input.
+  - `ENOTTY` until their state exists: `TCSETS`, `TCSETSW` and `TCSETSF` (a line discipline,
+    with console input; storing settings nothing acts on would be dishonest), `TIOCGPGRP`
+    and `TIOCSPGRP` (Linux's answer when the terminal is not the caller's controlling one,
+    which is every case until sessions exist; shells then run without job control), and
+    `FIONBIO`, `FIOCLEX` and `FIONCLEX` (descriptor flags, with a descriptor table, M7).
+- **`fcntl` waits for the descriptor table** (research): Rust's std calls it only when `poll`
+  fails with `EINVAL`, `ENOMEM` or `EAGAIN`; glibc's and musl's standard-descriptor checks run
+  only for secure (setuid, `AT_SECURE`) programs.
+- **Not verified** (no Linux to observe from here), recorded as follow-ups: the order of
+  `ppoll`'s checks; whether `sigsetsize` is checked with no mask; `CLOCAL` on a serial
+  console; whether current glibc reads the settings with `TCGETS2`; whether `ppoll` writes
+  the remaining time back when something is ready at once (here the timeout is left as it
+  was); whether `poll` with no descriptors and an array address past user space is `EFAULT`,
+  as D58's rule for empty ranges makes it here.
+- **From PR #54's independent review**: a wait is decided by "nothing ready and a timeout
+  that is not zero", so a deadline that passes while the array is read still writes the zero
+  remaining time back; the self-test runs twice and counts frames after the first run, as
+  the other process self-tests do. Left for later: an array of up to 524288 entries (the
+  highest soft limit) is one 4 MiB heap allocation, held through an endless wait and copied
+  with no preemption point; copy it in pieces with a point between them, once programs poll
+  that many descriptors.
+- **Cost** (same Mac, QEMU `-icount`, against `main`). The new calls sit behind
+  `out_of_line_call`, so the system-call path is unchanged: `linux_syscall_round_trip` and
+  `process_syscall_round_trip` move by at most 0.01 ns, the switch, page-fault and `mmap`
+  benchmarks by as little. `linux_exec_load` rises +0.12% on aarch64, +0.37% on riscv64 and
+  +0.03% on x86_64. The cause is the new test program: the benchmark loads an image that holds
+  the whole HAL test program, so it copies more bytes. The kernel's exec path did not change.
+  This is inside the gate, so the baseline is unchanged. But riscv64's `linux_exec_load` now
+  stands at +0.71% of its 1% allowance against the baseline (from D60's +0.4%). The next
+  test program added to the HAL, or any change on the exec path, should first make the
+  benchmark load only the code `linux_start` needs, so the gate measures the kernel and not
+  the test image.
+- **Tests.** Host tests:
+  - the events per descriptor;
+  - the terminal settings' words;
+  - `ppoll` and (on x86_64) `poll` through the dispatcher with user memory: Rust's startup
+    poll, every event case, the heap path, the upper halves ignored, every error in order, a
+    read-only timeout accepted, and the count checked against a lowered `RLIMIT_NOFILE`;
+  - `ioctl`: every request on every standard descriptor, the window size set and read back,
+    `EBADF` before `ENOTTY`, `EFAULT`;
+  - `write` on descriptor 0.
+
+  QEMU, on aarch64, riscv64 and x86_64: a new test program (`linux_poll`) polls 0 to 2 as
+  Rust's std does but asking for `POLLOUT` on 1, reads the window size, then waits 2 ms in
+  `ppoll`. It checks the events and the zero remaining time. The self-test checks it ran at
+  least 2 ms and freed everything; it fails if the sleep is removed (checked on aarch64).

@@ -10,23 +10,26 @@
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
 //!
-//! So far: `write` and `writev` to standard output and standard error (the console), `exit`
+//! So far: `write` and `writev` to the standard descriptors (the console, D61), `exit`
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
 //! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
 //! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57), and the
 //! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59), and the signal
-//! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60). Every other
-//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
-//! call carries on. The next calls are the rest of what a static program's startup needs
-//! (signal delivery, `poll`, `ioctl`, ...), then the file system's (M7).
+//! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60), and, on the
+//! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
+//! ([`terminal`], D61). Every other number returns `ENOSYS`, as Linux does for a call it
+//! lacks, so a program that probes for a call carries on. The next calls are the rest of what
+//! a static program's startup needs (signal delivery, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
 pub mod limits;
 pub mod memory;
+pub mod poll;
 pub mod random;
 pub mod signals;
+pub mod terminal;
 pub mod thread_pointer;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
@@ -44,12 +47,14 @@ pub mod number {
     #[cfg(target_arch = "x86_64")]
     mod table {
         pub const WRITE: u64 = 1;
+        pub const POLL: u64 = 7;
         pub const MMAP: u64 = 9;
         pub const MPROTECT: u64 = 10;
         pub const MUNMAP: u64 = 11;
         pub const BRK: u64 = 12;
         pub const RT_SIGACTION: u64 = 13;
         pub const RT_SIGPROCMASK: u64 = 14;
+        pub const IOCTL: u64 = 16;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const GETPID: u64 = 39;
@@ -63,6 +68,7 @@ pub mod number {
         pub const GETTID: u64 = 186;
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
+        pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
@@ -71,6 +77,8 @@ pub mod number {
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
+        pub const IOCTL: u64 = 29;
+        pub const PPOLL: u64 = 73;
         pub const WRITE: u64 = 64;
         pub const WRITEV: u64 = 66;
         pub const EXIT: u64 = 93;
@@ -126,6 +134,10 @@ pub mod number {
             RT_SIGACTION,
             RT_SIGPROCMASK,
             SIGALTSTACK,
+            #[cfg(target_arch = "x86_64")]
+            POLL,
+            PPOLL,
+            IOCTL,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -175,9 +187,11 @@ impl Errno {
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
-    /// address or an empty range (the memory calls), or a bad signal number, set size or flag
-    /// (the signal calls).
+    /// address or an empty range (the memory calls), a bad signal number, set size or flag
+    /// (the signal calls), or a bad timeout or too many descriptors (`ppoll`, `poll`).
     pub const EINVAL: Self = Self(22);
+    /// Not a terminal: here, an `ioctl` request the console does not answer.
+    pub const ENOTTY: Self = Self(25);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
     /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`).
@@ -349,7 +363,7 @@ fn out_of_line_call<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
-    let [first, second, third, fourth, ..] = context.syscall_arguments();
+    let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -365,6 +379,10 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGACTION => signals::rt_sigaction(process, first, second, third, fourth),
         number::RT_SIGPROCMASK => signals::rt_sigprocmask(process, first, second, third, fourth),
         number::SIGALTSTACK => signals::sigaltstack(process, first, second, context.stack()),
+        #[cfg(target_arch = "x86_64")]
+        number::POLL => poll::poll::<P>(process, first, second, third),
+        number::PPOLL => poll::ppoll::<P>(process, first, second, third, fourth, fifth),
+        number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)
@@ -383,7 +401,7 @@ fn exit<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
     ControlFlow::Break(())
 }
 
-/// `write(fd, buffer, count)`: standard output and standard error go to the console. Returns
+/// `write(fd, buffer, count)`: the standard descriptors go to the console. Returns
 /// the bytes written; if part of the buffer is not the program's memory, the bytes before
 /// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes.
 #[inline(never)]
@@ -480,10 +498,11 @@ fn writev<P: Platform>(
     Ok(written)
 }
 
-/// Whether `fd` is standard output or standard error, the console's for now. `fd` is an
-/// `unsigned int`: Linux ignores the register's upper half.
+/// Whether `fd` is one of the standard descriptors, 0 to 2, the only ones so far: the
+/// console, open for reading and writing, as Linux starts `init` with `/dev/console` on all
+/// three (D61). `fd` is an `unsigned int`: Linux ignores the register's upper half.
 fn is_console(fd: u64) -> bool {
-    matches!(fd as u32, 1 | 2)
+    fd as u32 <= 2
 }
 
 /// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space. For
@@ -580,7 +599,8 @@ mod tests {
         let process = process_with_data(&kernel, text);
         let start = DATA + 4096 - (text.len() / 2) as u64;
         console_output();
-        for fd in [1, 2] {
+        // Standard input too: the console is open for reading and writing (D61).
+        for fd in [0, 1, 2] {
             let mut context = called(number::WRITE, [fd, start, text.len() as u64, 0, 0, 0]);
             assert_eq!(
                 handle(&process, &mut context, UserExit::Syscall),
@@ -620,12 +640,12 @@ mod tests {
         }
         // A range that does not end within user space: nothing is written.
         assert_eq!(write(1, DATA + 4095, user_end), Errno::EFAULT.result());
-        // Only standard output and standard error so far.
-        assert_eq!(write(0, DATA + 4095, 2), Errno::EBADF.result());
-        // Only the descriptor's low 32 bits count, as on Linux.
-        assert_eq!(write(1 << 32, DATA + 4095, 2), Errno::EBADF.result());
-        assert_eq!(write(1 << 32 | 1, DATA + 4095, 0), 0);
+        // Only the standard descriptors so far, and only the descriptor's low 32 bits count,
+        // as on Linux.
         assert_eq!(write(3, DATA + 4095, 2), Errno::EBADF.result());
+        assert_eq!(write(1 << 32 | 3, DATA + 4095, 2), Errno::EBADF.result());
+        assert_eq!(write(u64::MAX, DATA + 4095, 2), Errno::EBADF.result());
+        assert_eq!(write(1 << 32 | 1, DATA + 4095, 0), 0);
         assert!(console_output().is_empty());
         // Past the second page: everything up to it is written, then it stops.
         let readable = 1 + 4096;
@@ -750,7 +770,7 @@ mod tests {
             call(&process, number::WRITEV, [fd, DATA + 4096, count, 0, 0, 0])
         };
         console_output();
-        assert_eq!(writev(&[(0, 2)], 0), Errno::EBADF.result());
+        assert_eq!(writev(&[(0, 2)], 3), Errno::EBADF.result());
         // A length negative as a `ssize_t`, even after a good buffer, or one past user space.
         assert_eq!(writev(&[(0, 2), (0, 1 << 63)], 1), Errno::EINVAL.result());
         assert_eq!(writev(&[(0, 2), (0, user_end)], 1), Errno::EFAULT.result());
@@ -1230,6 +1250,237 @@ mod tests {
         let other = process_with_iovecs(&kernel, b"ab", &[]);
         assert_eq!(other.signals().lock().action(13), Some(Action::default()));
         assert_eq!(other.signals().lock().thread(), Default::default());
+    }
+
+    /// `struct pollfd`s for `entries` (descriptor, requested events), as the program passes
+    /// them, with garbage where the kernel writes the returned events.
+    fn pollfds(entries: &[(i32, u16)]) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec::Vec::new();
+        for &(fd, requested) in entries {
+            bytes.extend_from_slice(&fd.to_ne_bytes());
+            bytes.extend_from_slice(&requested.to_ne_bytes());
+            bytes.extend_from_slice(&0xaaaa_u16.to_ne_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn ppoll_reports_the_console_s_descriptors_ready_to_write() {
+        use poll::event::{IN, NVAL, OUT, WRNORM};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, &pollfds(&[(1, OUT)]), &[]);
+        let read_only = DATA;
+        let writable = DATA + 4096;
+        let timeout = writable + 2048;
+        let mask = writable + 2064;
+        let returned = |count: usize| {
+            let mut bytes = alloc::vec![0u8; count * 8];
+            process.read_user_memory(writable, &mut bytes).unwrap();
+            bytes
+                .chunks(8)
+                .map(|entry| u16::from_ne_bytes(entry[6..].try_into().unwrap()))
+                .collect::<alloc::vec::Vec<_>>()
+        };
+        let set_timeout = |seconds: i64, nanoseconds: i64| {
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&seconds.to_ne_bytes());
+            bytes[8..].copy_from_slice(&nanoseconds.to_ne_bytes());
+            process.write_user_memory(timeout, &bytes).unwrap();
+        };
+        let ppoll = |fds, count, timeout, mask, set_size| {
+            call(
+                &process,
+                number::PPOLL,
+                [fds, count, timeout, mask, set_size, 0],
+            )
+        };
+        set_timeout(0, 0);
+        process.write_user_memory(mask, &[0xff; 8]).unwrap();
+        // Rust's std at startup: descriptors 0 to 2, no events asked for, no wait.
+        let entries = pollfds(&[(0, 0), (1, 0), (2, 0)]);
+        process.write_user_memory(writable, &entries).unwrap();
+        assert_eq!(ppoll(writable, 3, timeout, 0, 0), 0);
+        assert_eq!(returned(3), [0, 0, 0]);
+        // Room to write on the console, never data to read; `POLLNVAL` for a closed
+        // descriptor, whatever was asked; a negative one skipped. The count's upper half is
+        // ignored, and so is the size of a signal set that is not there.
+        let entries = pollfds(&[
+            (0, IN),
+            (1, OUT),
+            (2, IN | OUT | WRNORM),
+            (3, IN),
+            (-1, OUT),
+        ]);
+        process.write_user_memory(writable, &entries).unwrap();
+        assert_eq!(ppoll(writable, 1 << 32 | 5, timeout, 0, 4), 3);
+        assert_eq!(returned(5), [0, OUT, OUT | WRNORM, NVAL, 0]);
+        // A signal mask is read, then changes nothing (no signal is delivered yet).
+        assert_eq!(ppoll(writable, 5, timeout, mask, 8), 3);
+        // More than fit on the kernel stack.
+        let many = alloc::vec![(1, OUT); 20];
+        process
+            .write_user_memory(writable, &pollfds(&many))
+            .unwrap();
+        assert_eq!(ppoll(writable, 20, timeout, 0, 0), 20);
+        assert_eq!(returned(20), [OUT; 20]);
+        // No descriptors and no wait, with any address up to the end of user space.
+        assert_eq!(ppoll(0, 0, timeout, 0, 0), 0);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let entries = pollfds(&[(2, OUT), (7, 0)]);
+            process.write_user_memory(writable, &entries).unwrap();
+            assert_eq!(call(&process, number::POLL, [writable, 2, 0, 0, 0, 0]), 2);
+            assert_eq!(returned(2), [OUT, NVAL]);
+            // The timeout is an `int`: the upper half is ignored, so nothing ready means no
+            // wait here, not 2^32 milliseconds.
+            process
+                .write_user_memory(writable, &pollfds(&[(0, IN)]))
+                .unwrap();
+            assert_eq!(
+                call(&process, number::POLL, [writable, 1, 1 << 32, 0, 0, 0]),
+                0
+            );
+            assert_eq!(returned(1), [0]);
+        }
+
+        // The errors, in Linux's order: the timeout's address, then its value, then the
+        // signal set's size and address, then the count, then the array.
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        let unmapped = DATA + 3 * 4096;
+        let efault = Errno::EFAULT.result();
+        let einval = Errno::EINVAL.result();
+        assert_eq!(ppoll(writable, 1, unmapped, 4, 4), efault);
+        for (seconds, nanoseconds) in [(-1, 0), (0, -1), (0, 1_000_000_000), (i64::MIN, 0)] {
+            set_timeout(seconds, nanoseconds);
+            assert_eq!(
+                ppoll(unmapped, 1, timeout, 4, 4),
+                einval,
+                "{seconds} {nanoseconds}"
+            );
+        }
+        set_timeout(0, 0);
+        assert_eq!(ppoll(unmapped, 1, timeout, mask, 4), einval);
+        assert_eq!(ppoll(unmapped, 1, timeout, unmapped, 8), efault);
+        assert_eq!(ppoll(unmapped, 1025, timeout, 0, 0), einval);
+        // Unmapped, past the writable page, past user space, read-only: `EFAULT`.
+        assert_eq!(ppoll(unmapped, 1, timeout, 0, 0), efault);
+        assert_eq!(ppoll(writable, 1024, timeout, 0, 0), efault);
+        assert_eq!(ppoll(user_end + 1, 0, timeout, 0, 0), efault);
+        assert_eq!(ppoll(user_end - 4, 1, timeout, 0, 0), efault);
+        assert_eq!(ppoll(read_only, 1, timeout, 0, 0), efault);
+        // A timeout the program cannot write is no error.
+        process
+            .write_user_memory(writable, &pollfds(&[(1, OUT)]))
+            .unwrap();
+        let read_only_timeout = read_only + 1024;
+        assert_eq!(ppoll(writable, 1, read_only_timeout, 0, 0), 1);
+
+        // The count is checked against the open-file limit's soft value, as `prlimit64` set it.
+        let lowered = writable + 2048 + 64;
+        let mut limit = [0u8; 16];
+        limit[..8].copy_from_slice(&2u64.to_ne_bytes());
+        limit[8..].copy_from_slice(&2u64.to_ne_bytes());
+        process.write_user_memory(lowered, &limit).unwrap();
+        let nofile = u64::from(limits::resource::NOFILE);
+        assert_eq!(
+            call(&process, number::PRLIMIT64, [0, nofile, lowered, 0, 0, 0]),
+            0
+        );
+        let entries = pollfds(&[(1, OUT), (-1, OUT), (2, OUT)]);
+        process.write_user_memory(writable, &entries).unwrap();
+        assert_eq!(ppoll(writable, 2, timeout, 0, 0), 1);
+        assert_eq!(ppoll(writable, 3, timeout, 0, 0), einval);
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn ioctl_answers_as_a_serial_console() {
+        use terminal::{TERMIOS, request};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"\x18\x00\x50\x00\x00\x00\x00\x00", &[]);
+        let writable = DATA + 4096;
+        let ioctl = |fd, request: u32, argument| {
+            call(
+                &process,
+                number::IOCTL,
+                [fd, u64::from(request), argument, 0, 0, 0],
+            )
+        };
+        let read = |length: usize| {
+            let mut bytes = alloc::vec![0u8; length];
+            process.read_user_memory(writable, &mut bytes).unwrap();
+            bytes
+        };
+        // The settings, on each standard descriptor; the descriptor's upper half ignored.
+        for fd in [0, 1, 2, 1 << 32 | 1] {
+            process.write_user_memory(writable, &[0xff; 64]).unwrap();
+            assert_eq!(ioctl(fd, request::TCGETS, writable), 0);
+            assert_eq!(read(36), TERMIOS);
+            assert_eq!(read(37)[36], 0xff);
+        }
+        // With the speeds: 115200 baud each way.
+        assert_eq!(ioctl(1, request::TCGETS2, writable), 0);
+        let settings = read(44);
+        assert_eq!(settings[..36], TERMIOS);
+        assert_eq!(settings[36..40], 115_200u32.to_ne_bytes());
+        assert_eq!(settings[40..], 115_200u32.to_ne_bytes());
+        // Nothing waits to be read.
+        assert_eq!(ioctl(0, request::FIONREAD, writable), 0);
+        assert_eq!(read(4), [0; 4]);
+        // The window size: zero, as on a serial line, until a program sets it (24 by 80, from
+        // the read-only page).
+        assert_eq!(ioctl(1, request::TIOCGWINSZ, writable), 0);
+        assert_eq!(read(8), [0; 8]);
+        assert_eq!(ioctl(2, request::TIOCSWINSZ, DATA), 0);
+        assert_eq!(ioctl(0, request::TIOCGWINSZ, writable), 0);
+        assert_eq!(read(8), b"\x18\x00\x50\x00\x00\x00\x00\x00");
+        process.write_user_memory(writable, &[0; 8]).unwrap();
+        assert_eq!(ioctl(2, request::TIOCSWINSZ, writable), 0);
+
+        // `EBADF` before the request is looked at; then `ENOTTY` for a request the console
+        // does not answer (setting the settings, job control, the descriptor's flags), and the
+        // request's upper half ignored; then `EFAULT`.
+        assert_eq!(ioctl(3, request::TCGETS, writable), Errno::EBADF.result());
+        assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());
+        for unknown in [
+            0,
+            0x5402,
+            0x540f,
+            0x5421,
+            0x5451,
+            request::TCGETS | 0x1_0000,
+        ] {
+            assert_eq!(
+                ioctl(1, unknown, writable),
+                Errno::ENOTTY.result(),
+                "{unknown:#x}"
+            );
+        }
+        assert_eq!(
+            call(
+                &process,
+                number::IOCTL,
+                [1, 1 << 32 | u64::from(request::TCGETS), writable, 0, 0, 0]
+            ),
+            0
+        );
+        for request in [
+            request::TCGETS,
+            request::TCGETS2,
+            request::TIOCGWINSZ,
+            request::FIONREAD,
+        ] {
+            assert_eq!(
+                ioctl(1, request, DATA),
+                Errno::EFAULT.result(),
+                "{request:#x}"
+            );
+            assert_eq!(ioctl(1, request, 0), Errno::EFAULT.result(), "{request:#x}");
+        }
+        assert_eq!(ioctl(1, request::TIOCSWINSZ, 0), Errno::EFAULT.result());
+        assert_eq!(process.exit_status(), None);
     }
 
     #[test]

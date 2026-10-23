@@ -498,6 +498,55 @@ x86_64_user_test_linux_thread_pointer:
 9:  jmp     9b
     .balign 8
 8:  .quad   {thread_pointer_marker}
+    .global x86_64_user_test_linux_poll
+x86_64_user_test_linux_poll:
+    // Linux's x86_64 numbers: poll 7, ioctl 16, exit_group 231, ppoll 271. ebx is the exit
+    // status until every check passed. The three `struct pollfd`s are at rsp-32, the window
+    // size at rsp-64, the timeout at rsp-48.
+    movl    $1, %ebx
+    movq    $0, -32(%rsp)           // fd 0, no events
+    movq    $1, -24(%rsp)           // fd 1, POLLOUT
+    movw    $4, -20(%rsp)
+    movq    $2, -16(%rsp)           // fd 2, no events
+    leaq    -32(%rsp), %rdi
+    movl    $3, %esi
+    xorl    %edx, %edx
+    movl    $7, %eax
+    syscall
+    cmpq    $1, %rax
+    jne     9f
+    cmpw    $0, -26(%rsp)
+    jne     9f
+    cmpw    $4, -18(%rsp)
+    jne     9f
+    cmpw    $0, -10(%rsp)
+    jne     9f
+    movl    $1, %edi
+    movl    $0x5413, %esi           // TIOCGWINSZ
+    leaq    -64(%rsp), %rdx
+    movl    $16, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    $0, -48(%rsp)
+    movq    ${poll_wait}, -40(%rsp)
+    xorl    %edi, %edi
+    xorl    %esi, %esi
+    leaq    -48(%rsp), %rdx
+    xorl    %r10d, %r10d
+    xorl    %r8d, %r8d
+    movl    $271, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    -48(%rsp), %rax
+    orq     -40(%rsp), %rax
+    jnz     9f
+    xorl    %ebx, %ebx
+9:  movl    %ebx, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -536,6 +585,7 @@ x86_64_user_test_end:
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
     arch_set_fs = const TestProgram::LINUX_ARCH_SET_FS,
     options(att_syntax)
@@ -814,6 +864,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_unknown_syscalls: u8;
     static x86_64_user_test_stack_growth: u8;
     static x86_64_user_test_linux_thread_pointer: u8;
+    static x86_64_user_test_linux_poll: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -978,6 +1029,7 @@ pub(super) fn user_test_program() -> TestProgram {
             - start,
         stack_growth: (&raw const x86_64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const x86_64_user_test_linux_thread_pointer) as usize - start,
+        linux_poll: (&raw const x86_64_user_test_linux_poll) as usize - start,
     }
 }
 

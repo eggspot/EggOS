@@ -334,6 +334,7 @@ pub(crate) mod tests {
             let stack_growth = crate::process::TEST_PROGRAM_ADDRESS + program.stack_growth as u64;
             let linux_thread_pointer =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_thread_pointer as u64;
+            let linux_poll = crate::process::TEST_PROGRAM_ADDRESS + program.linux_poll as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -437,6 +438,56 @@ pub(crate) mod tests {
                     context.simulate_syscall(number, arguments, pc + 1);
                     UserExit::Syscall
                 }
+                pc if (linux_poll..linux_poll + 4).contains(&pc) => {
+                    // ppoll of descriptors 0 to 2 (POLLOUT on 1) with no wait, ioctl(1,
+                    // TIOCGWINSZ), ppoll of nothing for LINUX_POLL_WAIT_NS, then exit_group(0)
+                    // if each answered as the program checks; its structures below the stack
+                    // pointer.
+                    use crate::linux::number;
+                    static WRONG: AtomicU64 = AtomicU64::new(0);
+                    let stack = context.stack();
+                    let (fds, timeout, size) = (stack - 32, stack - 48, stack - 64);
+                    let result = context.syscall_result();
+                    let (number, arguments) = match pc - linux_poll {
+                        0 => {
+                            let mut fds_bytes = [0u8; 24];
+                            fds_bytes[8] = 1;
+                            fds_bytes[12] = 4;
+                            fds_bytes[16] = 2;
+                            write_user_bytes(fds, &fds_bytes);
+                            write_user_bytes(timeout, &[0; 16]);
+                            (number::PPOLL, [fds, 3, timeout, 0, 0, 0])
+                        }
+                        1 => {
+                            let revents = |entry: u64| {
+                                let mut bytes = [0u8; 2];
+                                read_user_bytes(fds + 8 * entry + 6, &mut bytes);
+                                u16::from_le_bytes(bytes)
+                            };
+                            let answered =
+                                result == 1 && [revents(0), revents(1), revents(2)] == [0, 4, 0];
+                            WRONG.store(u64::from(!answered), Ordering::Relaxed);
+                            (number::IOCTL, [1, 0x5413, size, 0, 0, 0])
+                        }
+                        2 => {
+                            WRONG.fetch_or(u64::from(result != 0), Ordering::Relaxed);
+                            let mut wait = [0u8; 16];
+                            wait[8..]
+                                .copy_from_slice(&TestProgram::LINUX_POLL_WAIT_NS.to_le_bytes());
+                            write_user_bytes(timeout, &wait);
+                            (number::PPOLL, [0, 0, timeout, 0, 0, 0])
+                        }
+                        _ => {
+                            let mut remaining = [0xffu8; 16];
+                            read_user_bytes(timeout, &mut remaining);
+                            let wrong = WRONG.load(Ordering::Relaxed)
+                                | u64::from(result != 0 || remaining != [0; 16]);
+                            (number::EXIT_GROUP, [wrong, 0, 0, 0, 0, 0])
+                        }
+                    };
+                    context.simulate_syscall(number, arguments, pc + 1);
+                    UserExit::Syscall
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -481,6 +532,7 @@ pub(crate) mod tests {
                 linux_unknown_syscalls: 26,
                 stack_growth: 27,
                 linux_thread_pointer: 200,
+                linux_poll: 264,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -576,6 +628,39 @@ pub(crate) mod tests {
         }
         calls.push((number::EXIT_GROUP, [word(stack), 0, 0, 0, 0, 0]));
         calls
+    }
+
+    /// Where the kernel reaches the active address space's byte at user address `virt` on the
+    /// test platform: its frame in the test RAM, through its offset. Panics if `virt` is not
+    /// mapped.
+    fn user_byte(virt: u64) -> *mut u8 {
+        let tables =
+            crate::paging::PageTables::<<TestPlatform as Platform>::PageTableFormat>::view_for_test(
+                active_root(),
+                TestPlatform::physical_memory_offset(),
+            );
+        let (phys, _) = tables
+            .translate(virt)
+            .expect("the program's memory is mapped");
+        (phys as usize).wrapping_add(TestPlatform::physical_memory_offset()) as *mut u8
+    }
+
+    /// Writes `bytes` at user address `address` of the active address space, as the test
+    /// program's own stores would (see [`user_byte`]).
+    fn write_user_bytes(address: u64, bytes: &[u8]) {
+        for (i, &byte) in bytes.iter().enumerate() {
+            // SAFETY: a byte of a frame of the test RAM, mapped for the program.
+            unsafe { user_byte(address + i as u64).write(byte) };
+        }
+    }
+
+    /// Reads `bytes.len()` bytes at user address `address` of the active address space, as the
+    /// test program's own loads would.
+    fn read_user_bytes(address: u64, bytes: &mut [u8]) {
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            // SAFETY: as in `write_user_bytes`.
+            *byte = unsafe { user_byte(address + i as u64).read() };
+        }
     }
 
     /// Where the test platform's test program keeps the line its Linux program writes.
