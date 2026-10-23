@@ -2168,7 +2168,7 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
     }
     let parker = thread::Parker::new();
     parker.unpark::<P>();
-    if parker.park_until::<P>(u64::MAX) != thread::Unparked::ByAnotherThread {
+    if parker.park_until::<P>(u64::MAX) != thread::ParkEnd::Unparked {
         return Err("an unpark before the park did not end it at once");
     }
     Ok(())

@@ -583,11 +583,11 @@ impl Default for Parker {
 
 /// How [`Parker::park_until`] ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unparked {
+pub enum ParkEnd {
     /// [`Parker::unpark`] was called, before or during the park.
-    ByAnotherThread,
+    Unparked,
     /// The clock reached the deadline first.
-    AtDeadline,
+    DeadlineReached,
 }
 
 impl Parker {
@@ -608,17 +608,17 @@ impl Parker {
     /// ([`Platform::clock_ticks`]; `u64::MAX` waits for the unpark alone), running other
     /// threads meanwhile. An unpark that came before the call ends it at once. Call it as
     /// [`yield_now`] is called: with interrupts masked and no lock held.
-    pub fn park_until<P: Platform>(&self, deadline: u64) -> Unparked {
+    pub fn park_until<P: Platform>(&self, deadline: u64) -> ParkEnd {
         loop {
             let mut schedulers = SCHEDULER.lock();
             if let Some(Parked::Sleeping(..)) = self.parked(&mut schedulers) {
                 *self.parked(&mut schedulers) = None;
             }
             if self.unparked.load(Ordering::Relaxed) {
-                return Unparked::ByAnotherThread;
+                return ParkEnd::Unparked;
             }
             if deadline != u64::MAX && P::clock_ticks() >= deadline {
-                return Unparked::AtDeadline;
+                return ParkEnd::DeadlineReached;
             }
             start_here_or_panic::<P>(&mut schedulers);
             if deadline == u64::MAX {
@@ -629,7 +629,7 @@ impl Parker {
                 self.park_sleeping::<P>(schedulers, deadline);
             }
             if self.unparked.load(Ordering::Acquire) {
-                return Unparked::ByAnotherThread;
+                return ParkEnd::Unparked;
             }
         }
     }

@@ -6,7 +6,7 @@ use super::Errno;
 use super::time;
 use crate::process::Process;
 use crate::sync::SpinLock;
-use crate::thread::{Parker, Unparked};
+use crate::thread::{ParkEnd, Parker};
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use eggos_hal::Platform;
@@ -152,14 +152,14 @@ pub fn wait<P: Platform>(
         still_expected()?;
         bucket.push_back(pointer);
     }
-    let unparked = waiter.parker.park_until::<P>(deadline);
+    let park_end = waiter.parker.park_until::<P>(deadline);
     let mut bucket = bucket_lock.lock();
     if !bucket.link(pointer).queued {
         return Ok(0);
     }
     bucket.remove(pointer);
     drop(bucket);
-    debug_assert_eq!(unparked, Unparked::AtDeadline);
+    debug_assert_eq!(park_end, ParkEnd::DeadlineReached);
     Err(Errno::ETIMEDOUT)
 }
 
