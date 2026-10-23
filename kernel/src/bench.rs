@@ -35,7 +35,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 19] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 20] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -77,6 +77,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 19] {
         ("linux_syscall_round_trip", linux_syscall_round_trip::<P>),
         ("linux_exec_load", linux_exec_load::<P>),
         ("linux_page_fault", linux_page_fault::<P>),
+        ("linux_mmap_munmap", linux_mmap_munmap::<P>),
     ]
 }
 
@@ -412,6 +413,30 @@ fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
+/// `mmap` of 16 anonymous pages and `munmap` of them again (D53), as a program's allocator
+/// reserves and returns memory: the arguments checked, the region placed top-down, inserted
+/// and removed, the tables walked for pages to unmap (none: they were never touched), this
+/// CPU's translations of the range dropped (the address space is active, as for the program's
+/// own call) and the other CPUs' records looked at. Without the trap from user mode
+/// (`linux_syscall_round_trip` has it).
+fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::memory::{map, prot};
+    const LENGTH: u64 = 16 * FRAME_SIZE;
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let flags = map::PRIVATE | map::ANONYMOUS;
+    program.with_active(|| {
+        for _ in 0..n {
+            let start =
+                linux::memory::mmap(&program, 0, LENGTH, prot::READ | prot::WRITE, flags, 0)
+                    .expect("16 pages fit");
+            linux::memory::munmap(&program, core::hint::black_box(start), LENGTH)
+                .expect("the pages were just mapped");
+        }
+    });
+}
+
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
 /// (D48): per iteration two system calls, two thread switches and two address-space switches,
 /// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
@@ -606,8 +631,9 @@ mod tests {
                 (linux_syscall, _),
                 (linux_exec, _),
                 (linux_page_fault, _),
+                (linux_mmap_munmap, _),
             ],
-        ) = all.split_at(all.len() - 6)
+        ) = all.split_at(all.len() - 7)
         else {
             unreachable!()
         };
@@ -618,7 +644,8 @@ mod tests {
                 *process_switch,
                 *linux_syscall,
                 *linux_exec,
-                *linux_page_fault
+                *linux_page_fault,
+                *linux_mmap_munmap
             ],
             [
                 "syscall_round_trip",
@@ -626,7 +653,8 @@ mod tests {
                 "process_switch_round_trip",
                 "linux_syscall_round_trip",
                 "linux_exec_load",
-                "linux_page_fault"
+                "linux_page_fault",
+                "linux_mmap_munmap"
             ]
         );
         assert_eq!(

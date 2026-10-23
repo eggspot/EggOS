@@ -27,6 +27,9 @@ const DIRTY: u64 = 1 << 7;
 const PPN_SHIFT: u32 = 10;
 /// The physical page number, bits 53:10.
 const PPN: u64 = ((1 << 44) - 1) << PPN_SHIFT;
+/// In an entry without [`VALID`], whose other bits the hart ignores: [`Format::kept`]'s mark
+/// (one of the bits left to software, RSW, in valid ones).
+const KEPT: u64 = 1 << 8;
 
 impl Format for Riscv64Sv39 {
     const LEVELS: usize = 3;
@@ -50,9 +53,17 @@ impl Format for Riscv64Sv39 {
         leaf(phys, attributes)
     }
 
+    fn kept(phys: u64) -> u64 {
+        ((phys >> 12) << PPN_SHIFT) & PPN | KEPT
+    }
+
     fn decode(entry: u64, _level: usize) -> Entry {
         if entry & VALID == 0 {
-            return Entry::Empty;
+            return if entry & KEPT != 0 {
+                Entry::Kept(((entry & PPN) >> PPN_SHIFT) << 12)
+            } else {
+                Entry::Empty
+            };
         }
         let phys = ((entry & PPN) >> PPN_SHIFT) << 12;
         if entry & (READ | WRITE | EXECUTE) == 0 {

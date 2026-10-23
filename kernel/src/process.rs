@@ -3,9 +3,11 @@
 //! A [`Process`] owns a user address space, the frames its pages map and its [`Regions`]: what
 //! its program may use. It is built with `&mut` ([`Process::map_new_page`],
 //! [`Process::add_region`]), then shared as an `Arc` by the threads that run its program
-//! ([`spawn`]). From then on pages are only added: the first touch of a page in a region maps a
-//! zeroed frame there ([`Process::resolve_page_fault`], demand paging, D52), and nothing is
-//! removed or changed until the memory calls do it (M6). Each such thread runs in a loop
+//! ([`spawn`]). From then on the first touch of a page in a region maps a zeroed frame there
+//! ([`Process::resolve_page_fault`], demand paging, D52), and the memory calls (D53) add,
+//! remove and change regions with their pages: [`Process::map_region`] (`mmap`),
+//! [`Process::unmap_range`] (`munmap`), [`Process::protect_range`] (`mprotect`) and
+//! [`Process::move_program_break`] (`brk`). Each such thread runs in a loop
 //! (D47's "run until trap"): it loads the process's address space on its CPU if that is not
 //! already the one loaded there ([`AddressSpace::load_lazily`], D48), runs the program in user
 //! mode with [`Platform::run_user`] until a system call, an interrupt or an exception takes the
@@ -27,7 +29,7 @@
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
 use crate::memory;
-use crate::paging::PageTables;
+use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
 use crate::sync::SpinLock;
 use crate::thread::{self, JoinHandle, SpawnError};
@@ -66,17 +68,49 @@ pub enum UnresolvedFault {
     OutOfMemory,
 }
 
+/// Where [`Process::map_region`] puts a new region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// At this address, page-aligned, replacing whatever held part of the range before, pages
+    /// and all (Linux's `MAP_FIXED`).
+    Replace(u64),
+    /// At this address, page-aligned, if no region holds any of the range
+    /// ([`RegionError::Overlaps`] otherwise; Linux's `MAP_FIXED_NOREPLACE`).
+    Exactly(u64),
+    /// At `hint`, if it is given and the range there is free and within `floor..top`;
+    /// otherwise as high as a free range fits within `floor..top` ([`RegionError::NoRoom`] if
+    /// none does), as Linux places a mapping top-down.
+    Anywhere {
+        hint: Option<u64>,
+        floor: u64,
+        top: u64,
+    },
+}
+
+/// The program break (Linux's `brk`): where the heap a program grows with `brk` begins, and
+/// where it ends now. The heap is a region of its own from `start`, page-aligned, to `end`
+/// rounded up to a page, joined with the data segment below it as any touching region with
+/// the same attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProgramBreak {
+    start: u64,
+    end: u64,
+}
+
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
     /// Owns the frames its user pages map ([`AddressSpace::new_owning_frames`]), so they are
     /// freed with it.
     space: AddressSpace<P>,
-    /// What the program may use. Held while pages are mapped into the address space after it
-    /// is shared, and while the kernel copies user memory, so a copy never meets a page being
-    /// mapped (or, once the memory calls exist, unmapped). Taken before the address space's
-    /// own lock.
+    /// What the program may use. Held while pages are mapped, unmapped or changed in the
+    /// address space after it is shared (demand paging, the memory calls), and while the kernel
+    /// copies user memory, so a copy never meets a page being mapped or unmapped. Taken before
+    /// the address space's own lock.
     regions: SpinLock<Regions>,
+    /// The program break, once the program has one ([`Self::set_program_break`]). Taken
+    /// before the regions' lock.
+    program_break: SpinLock<Option<ProgramBreak>>,
     /// Where the kernel reaches the process's frames: the frame allocator's offset, which on
     /// the machine is the direct map's (a boot self-test checks it).
     frame_offset: usize,
@@ -102,6 +136,7 @@ impl<P: Platform> Process<P> {
         Ok(Self {
             space,
             regions: SpinLock::new(Regions::new()),
+            program_break: SpinLock::new(None),
             frame_offset,
             exit: SpinLock::new(None),
         })
@@ -150,8 +185,8 @@ impl<P: Platform> Process<P> {
         self.map_frame(virt, attributes, contents)
             .map(|_| ())
             .map_err(|error| match error {
-                UnresolvedFault::OutOfMemory => "no frame for a user page",
-                UnresolvedFault::NotAllowed => "not a user page",
+                MapError::OutOfMemory => "no frame for a user page",
+                _ => "not a user page",
             })
     }
 
@@ -167,23 +202,190 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
-        self.regions.get_mut().insert(start, end, attributes)
+        self.regions.get_mut().insert(start, end, Some(attributes))
+    }
+
+    /// Sets the program break's start and end to `start`, page-aligned: where the heap `brk`
+    /// grows begins (Linux: the end of the program's last segment). While the process is
+    /// built.
+    pub fn set_program_break(&mut self, start: u64) {
+        debug_assert!(start.is_multiple_of(FRAME_SIZE));
+        *self.program_break.get_mut() = Some(ProgramBreak { start, end: start });
+    }
+
+    /// Moves the program break's end to `requested` (Linux's `brk`) and returns where it is
+    /// then: `requested`, or where it was if the move is refused, because `requested` is
+    /// below the break's start or above `limit`, or the pages it adds are in another region
+    /// already. Pages the move gives up are unmapped and their frames freed; pages it adds
+    /// are mapped, zeroed, as the program first touches them.
+    pub fn move_program_break(&self, requested: u64, limit: u64) -> u64 {
+        let mut program_break = self.program_break.lock();
+        let Some(ProgramBreak { start, end }) = *program_break else {
+            return 0;
+        };
+        if requested < start || requested > limit.min(<P::PageTableFormat as Format>::USER_END) {
+            return end;
+        }
+        // Cannot wrap: both are below `USER_END`.
+        let (old, new) = (
+            end.next_multiple_of(FRAME_SIZE),
+            requested.next_multiple_of(FRAME_SIZE),
+        );
+        if new > old {
+            let added = self
+                .regions
+                .lock()
+                .insert(old, new, Some(Attributes::USER_READ_WRITE));
+            if added.is_err() {
+                return end;
+            }
+        } else if new < old {
+            self.unmap_range(new, old)
+                .expect("the break's pages are page-aligned and in user space");
+        }
+        *program_break = Some(ProgramBreak {
+            start,
+            end: requested,
+        });
+        requested
+    }
+
+    /// Adds a region of `length` bytes, page-aligned, with `attributes` (`None`: the program
+    /// may not touch it) where `placement` says (see [`Placement`]), and returns its start.
+    /// Its pages are mapped, zeroed, as the program first touches them.
+    pub fn map_region(
+        &self,
+        placement: Placement,
+        length: u64,
+        attributes: Option<Attributes>,
+    ) -> Result<u64, RegionError> {
+        let user_end = <P::PageTableFormat as Format>::USER_END;
+        if length == 0 || !length.is_multiple_of(FRAME_SIZE) {
+            return Err(RegionError::Invalid);
+        }
+        let within = |start: u64, floor: u64, top: u64| {
+            start >= floor && start.checked_add(length).is_some_and(|end| end <= top)
+        };
+        let mut regions = self.regions.lock();
+        let start = match placement {
+            Placement::Replace(start) | Placement::Exactly(start) => {
+                if !within(start, 0, user_end) {
+                    return Err(RegionError::Invalid);
+                }
+                if let Placement::Replace(_) = placement {
+                    self.unmap_locked(&mut regions, start, start + length)?;
+                }
+                start
+            }
+            Placement::Anywhere { hint, floor, top } => {
+                let top = top.min(user_end);
+                match hint {
+                    Some(hint)
+                        if hint.is_multiple_of(FRAME_SIZE)
+                            && within(hint, floor, top)
+                            && regions.is_free(hint, hint + length) =>
+                    {
+                        hint
+                    }
+                    _ => regions
+                        .free_below(top, floor, length)
+                        .ok_or(RegionError::NoRoom)?,
+                }
+            }
+        };
+        regions.insert(start, start + length, attributes)?;
+        Ok(start)
+    }
+
+    /// Takes user addresses `start..end`, page-aligned, out of the process's regions, and
+    /// unmaps the pages there, freeing their frames (Linux's `munmap`). Parts of the range in
+    /// no region are fine.
+    pub fn unmap_range(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        let mut regions = self.regions.lock();
+        self.unmap_locked(&mut regions, start, end)
+    }
+
+    /// [`Self::unmap_range`], with the regions' lock held (`regions`).
+    fn unmap_locked(&self, regions: &mut Regions, start: u64, end: u64) -> Result<(), RegionError> {
+        if end > <P::PageTableFormat as Format>::USER_END {
+            return Err(RegionError::Invalid);
+        }
+        regions.remove(start, end, |_| ())?;
+        // Every page, not only those in the regions taken out: the HAL's test program has
+        // none (roadmap).
+        self.space
+            .change_pages(
+                start,
+                end - start,
+                |_, _| PageChange::Unmap,
+                |frame| {
+                    // SAFETY: the address space owns its frames (`Process::new`), and this one's
+                    // entry no longer refers to it, so nothing reaches it any more but CPUs'
+                    // cached translations, which no program runs with before they are dropped
+                    // (`AddressSpace::change_pages`).
+                    unsafe { free_owned_frame(frame) }
+                },
+            )
+            .map_err(|_| RegionError::Invalid)
+    }
+
+    /// Gives user addresses `start..end`, page-aligned, `attributes` (`None`: the program may
+    /// not touch them; Linux's `mprotect`), the regions there and the pages mapped in them. A
+    /// page the program may not touch keeps its frame and contents ([`PageChange::Inaccessible`]);
+    /// one that becomes executable is made visible to instruction fetch. If part of the range
+    /// is in no region, what lies before that part changes and the error is
+    /// [`RegionError::NotCovered`], as on Linux.
+    pub fn protect_range(
+        &self,
+        start: u64,
+        end: u64,
+        attributes: Option<Attributes>,
+    ) -> Result<(), RegionError> {
+        if end > <P::PageTableFormat as Format>::USER_END {
+            return Err(RegionError::Invalid);
+        }
+        let mut regions = self.regions.lock();
+        let mut changed_end = start;
+        let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
+        if changed_end > start {
+            let frame_offset = self.frame_offset;
+            self.space
+                .change_pages(
+                    start,
+                    changed_end - start,
+                    |frame, old| match attributes {
+                        None => PageChange::Inaccessible,
+                        Some(new) => {
+                            if new.executable && !old.is_some_and(|old| old.executable) {
+                                // The program may have written it as data.
+                                let page = (frame as usize).wrapping_add(frame_offset);
+                                P::make_instructions_visible(page, FRAME_SIZE as usize);
+                            }
+                            PageChange::Map(new)
+                        }
+                    },
+                    |_| unreachable!("nothing is unmapped"),
+                )
+                .map_err(|_| RegionError::Invalid)?;
+        }
+        result
     }
 
     /// Maps a frame of its own at user address `virt` with `attributes`, holding `contents`
     /// (at most a page) and zero after them; an executable page is made visible to
     /// instruction fetch. Allowed while the process is shared: the caller holds its regions'
-    /// lock (or `&mut`), so nothing else maps the page meanwhile. Returns the frame.
+    /// lock (or `&mut`), so nothing else maps the page meanwhile. Returns the frame; if the
+    /// page is mapped already, or kept ([`MapError::AlreadyMapped`]), the frame goes back.
     fn map_frame(
         &self,
         virt: u64,
         attributes: Attributes,
         contents: &[u8],
-    ) -> Result<u64, UnresolvedFault> {
+    ) -> Result<u64, MapError> {
         let frame = {
             let mut frames = memory::FRAMES.lock();
-            let frames = frames.as_mut().ok_or(UnresolvedFault::OutOfMemory)?;
-            frames.allocate().ok_or(UnresolvedFault::OutOfMemory)?
+            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+            frames.allocate().ok_or(MapError::OutOfMemory)?
         };
         let page = (frame as usize).wrapping_add(self.frame_offset) as *mut u8;
         // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
@@ -207,10 +409,7 @@ impl<P: Platform> Process<P> {
             Ok(()) => Ok(frame),
             Err(error) => {
                 free_frame(frame);
-                Err(match error {
-                    crate::paging::MapError::OutOfMemory => UnresolvedFault::OutOfMemory,
-                    _ => UnresolvedFault::NotAllowed,
-                })
+                Err(error)
             }
         }
     }
@@ -240,6 +439,13 @@ impl<P: Platform> Process<P> {
     /// maps a zeroed frame there if its region allows the access and it is not mapped yet.
     /// A page already mapped for the access is ready only if `mapped_is_ready` (a fault that
     /// may be stale, or a kernel copy). Returns the frame and the mapping's attributes.
+    ///
+    /// When `mapped_is_ready`, the page is most likely not mapped (a first touch, or a kernel
+    /// copy that found it so), so it is mapped first and looked up only if that finds it
+    /// mapped: one walk of the tables, not two (D53). The frame zeroed for a page that turns
+    /// out to be mapped, a stale fault's, goes back; with no frame to try with, the page is
+    /// looked up all the same, so a stale fault on a mapped page resumes the program even
+    /// when memory is out.
     fn populate(
         &self,
         regions: &Regions,
@@ -248,19 +454,46 @@ impl<P: Platform> Process<P> {
         mapped_is_ready: bool,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
         let region = regions.find(page).ok_or(UnresolvedFault::NotAllowed)?;
-        if !access.allowed_by(region.attributes) {
-            return Err(UnresolvedFault::NotAllowed);
+        let attributes = region
+            .attributes
+            .filter(|&attributes| access.allowed_by(attributes))
+            .ok_or(UnresolvedFault::NotAllowed)?;
+        if mapped_is_ready {
+            match self.map_frame(page, attributes, &[]) {
+                Ok(frame) => return Ok((frame, attributes)),
+                Err(MapError::AlreadyMapped) => {}
+                Err(MapError::OutOfMemory) => return self.mapped_or_out_of_memory(page, access),
+                Err(_) => return Err(UnresolvedFault::NotAllowed),
+            }
         }
         match self.space.translate(page) {
-            Some((frame, attributes)) if mapped_is_ready && access.allowed_by(attributes) => {
-                Ok((frame, attributes))
+            Some((frame, mapped)) if mapped_is_ready && access.allowed_by(mapped) => {
+                Ok((frame, mapped))
             }
             Some(_) => Err(UnresolvedFault::NotAllowed),
-            None => {
-                let frame = self.map_frame(page, region.attributes, &[])?;
-                Ok((frame, region.attributes))
-            }
+            None => match self.map_frame(page, attributes, &[]) {
+                Ok(frame) => Ok((frame, attributes)),
+                Err(MapError::OutOfMemory) => Err(UnresolvedFault::OutOfMemory),
+                Err(_) => Err(UnresolvedFault::NotAllowed),
+            },
         }
+    }
+
+    /// For [`Self::populate`], when there was no frame to map page `page` with: the page's
+    /// frame and attributes if it is mapped for `access` already (a stale fault, which then
+    /// resumes), else [`UnresolvedFault::OutOfMemory`]. Cold and out of line, so the fault
+    /// path stays as it was.
+    #[cold]
+    #[inline(never)]
+    fn mapped_or_out_of_memory(
+        &self,
+        page: u64,
+        access: Access,
+    ) -> Result<(u64, Attributes), UnresolvedFault> {
+        self.space
+            .translate(page)
+            .filter(|&(_, mapped)| access.allowed_by(mapped))
+            .ok_or(UnresolvedFault::OutOfMemory)
     }
 
     /// The region that holds user address `address`, if any.
@@ -285,8 +518,9 @@ impl<P: Platform> Process<P> {
     /// interrupts masked, as the kernel runs.
     #[inline]
     pub fn load_here(self: &Arc<Self>) {
-        // SAFETY: the process owns its address space, and the `Arc` freezes it: `&mut` access
-        // needs the process unshared.
+        // SAFETY: the process owns its address space, and while it is shared (the `Arc`) its
+        // mappings are removed or changed only through `AddressSpace::change_pages` (the
+        // memory calls): `&mut` access needs the process unshared.
         unsafe { self.address_space().load_lazily(self) };
     }
 
@@ -409,6 +643,22 @@ impl<P: Platform> core::fmt::Debug for Process<P> {
     }
 }
 
+/// Gives a frame the process's address space owned and no longer maps back to the kernel's
+/// frame allocator.
+///
+/// # Safety
+/// The frame must be one the address space owned ([`AddressSpace::new_owning_frames`]) and
+/// whose entry is gone, so nothing frees it again.
+unsafe fn free_owned_frame(frame: u64) {
+    let mut frames = memory::FRAMES.lock();
+    let frames = frames
+        .as_mut()
+        .expect("the frame came from the frame allocator");
+    // SAFETY: an owned frame came from this allocator (`new_owning_frames`' contract), and the
+    // caller guarantees nothing maps or frees it any more.
+    unsafe { frames.free(frame) };
+}
+
 /// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
 fn free_frame(frame: u64) {
     let mut frames = memory::FRAMES.lock();
@@ -448,9 +698,10 @@ where
         thread::preemption_point_before_user_mode::<P>();
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
-        // loaded on this CPU and shares the kernel's half (`Process::new`'s contract), and the
-        // `Arc` keeps it allocated and unchanged. Nothing switches this CPU's threads or
-        // address space before `run_user` returns.
+        // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
+        // contract); the `Arc` keeps it allocated, and its mappings change only in the handler
+        // below, on this thread (`AddressSpace::change_pages`). Nothing switches this CPU's
+        // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
         if handler(&process, &mut context, exit).is_break() {
             break;
@@ -891,5 +1142,33 @@ mod tests {
         // The thread held the last reference: its CPU let the process go.
         assert_eq!(here.active_address_space(), cpu::NO_ADDRESS_SPACE);
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn a_stale_fault_on_a_mapped_page_resumes_with_no_frame_left() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        process
+            .add_region(DATA, DATA + 2 * FRAME_SIZE, Attributes::USER_READ_WRITE)
+            .unwrap();
+        let read = fault(ExceptionKind::DataFault, Some(DATA), false);
+        resolve(&process, &read).unwrap();
+        let mut taken = Vec::new();
+        while let Some(frame) = memory::FRAMES.lock().as_mut().unwrap().allocate() {
+            taken.push(frame);
+        }
+        // Mapped already: the stale fault resumes; untouched: out of memory.
+        assert_eq!(resolve(&process, &read), Ok(()));
+        let untouched = fault(ExceptionKind::DataFault, Some(DATA + FRAME_SIZE), true);
+        assert_eq!(
+            resolve(&process, &untouched),
+            Err(UnresolvedFault::OutOfMemory)
+        );
+        for frame in taken {
+            // SAFETY: allocated above and never used.
+            unsafe { memory::FRAMES.lock().as_mut().unwrap().free(frame) };
+        }
     }
 }

@@ -1730,3 +1730,90 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   meanwhile); kernel reads of untouched pages allocate zeroed frames where Linux maps its shared
   zero page; the HAL test program's code page has no region yet (a stale fault there on RISC-V
   would end the test).
+
+## D53 The Linux memory calls: `brk`, `mmap`, `munmap`, `mprotect` on the regions; changed mappings make CPUs that keep the address space loaded switch again — Decided by the build loop (design decided by research)
+- **Why now.** D52's "next": every C library and Rust's std allocate with `brk` or `mmap` at
+  startup, and loaders and JITs re-protect their pages with `mprotect`. These are the first
+  calls that remove and reduce mappings of a live address space, so they bring the TLB work
+  D45 and D52 left for them.
+- **The calls** (`kernel::linux::memory`), anonymous mappings only until there are files
+  (M7). Arguments are checked as Linux's man pages and observed behaviour say, with Linux's
+  error numbers (an unaligned
+  offset `EINVAL` first; a map type other than shared, private or shared-validate `EINVAL`;
+  unknown flags `EOPNOTSUPP` only with `MAP_SHARED_VALIDATE`, ignored otherwise; length 0
+  `EINVAL`; a length that wraps when rounded up `ENOMEM`; a file mapping `EBADF`;
+  `MAP_HUGETLB` `ENOMEM`, as on a Linux with no huge-page pool; writable and executable at
+  once `EACCES`, D52's research; `MAP_FIXED` unaligned `EINVAL`, past user space `ENOMEM`,
+  below `MINIMUM_ADDRESS` `EPERM`; `MAP_FIXED_NOREPLACE` over a mapping `EEXIST`). `mmap`
+  places top-down from below the stack's reserve and its 1 MiB guard gap, uses a free hint
+  (rounded up to a page), and `MAP_32BIT` (x86_64 only) in the second gigabyte. `MAP_SHARED`
+  anonymous memory behaves as private while no process can share it (`fork`: the region
+  needs a "shared" mark then, so `fork` shares instead of copying, from research). `munmap`
+  of a range with nothing mapped succeeds; unaligned, empty or past user space is `EINVAL`.
+  `mprotect` of a range with a hole changes what lies before the hole, then `ENOMEM`, as
+  Linux does (research); length 0 succeeds. `brk` returns the new break, or the current one
+  when the move is refused (below the start, past the `mmap` area, into a mapping); the break
+  starts at the page-aligned end of the last segment (`exec::load`). AArch64's `PROT_BTI` is
+  accepted and not enforced, as on a CPU without BTI, so a BTI-marked static glibc starts.
+- **Regions** gain `remove` (splitting the regions a range cuts), `protect` and `free_below`
+  (the top-down gap search, a linear walk over the sorted `Vec`; D52's gap-tracking tree past
+  about a thousand regions still stands). A region's attributes are an `Option`: `None` is a
+  `PROT_NONE` region the program may not touch.
+- **`PROT_NONE` pages that hold data keep their frame in an invalid entry** (research,
+  confirming D52's answer): `Format::kept(phys)` writes the frame with the valid bit clear and a
+  software mark (x86 bit 9, AArch64 bit 55, RISC-V RSW bit 8), which the hardware ignores and
+  never caches, and `decode` returns `Entry::Kept(phys)`. Translations, kernel copies and
+  faults see nothing there; the frame is freed with the tables or by `munmap`, and `mprotect`
+  back rewrites it as a leaf. Research rejected the alternative, a kernel-only leaf: on
+  AArch64 a leaf without the user bit is global (no `nG`), so it would survive the
+  address-space switch's `tlbi aside1` into the next process, and PAN would not catch stray
+  kernel accesses to it. The same encoding is the groundwork for swap and file-backed entries.
+- **Changing a live address space** (`AddressSpace::change_pages`, over
+  `PageTables::change_user_pages`, which skips unmapped stretches a table at a time): the
+  entries are rewritten under the tables' lock, frames unmapped are handed back after their
+  entry is cleared, this CPU's translations of the range are dropped if it has the address
+  space loaded, then (after a `SeqCst` fence) every other CPU that keeps it loaded is marked
+  stale: a compare-exchange of its `active_address_space` record from the root to the root
+  with bit 0 (`cpu::STALE`) set. Its next `load_lazily` finds the record different and
+  switches, dropping every user translation, before the program runs. Zero cost on the
+  system-call path (the check was already a load and a compare) and no interrupt. Sound
+  because a process has one thread, the one making the call, so no other CPU uses the address
+  space meanwhile, and the thread reaches another CPU only through the scheduler's locks, after
+  the mark (research, checked for AArch64, RISC-V including harts that cache invalid entries,
+  and x86_64; A/D and access-flag updates write table entries, never data frames, and table
+  frames are never freed before the address space). The invariant: a CPU stores a root without
+  the mark only along with a full switch. Code that counts or wakes the CPUs holding an address
+  space masks the bit (`Cpu::holds`). Increases are marked too: a stale entry with less access
+  raises a permission fault that is never retried (D52). A frame freed while a lazily-holding
+  CPU may still cache it is reachable there only speculatively from kernel code, the same
+  exposure other kernels accept for lazy TLB; PAN and SMAP will narrow it (roadmap). **Before
+  `clone`**, or anything else that uses an address space on two CPUs at once (`with_active` or
+  `with_user_memory` from another CPU), these changes need a shootdown: an interrupt to every
+  CPU running the address space, waiting for each to drop the range.
+- **Cost (D24).** New benchmark `linux_mmap_munmap`, 16 untouched pages mapped and unmapped
+  with the address space active: 378 (aarch64), 410 (riscv64), 407 (x86_64) instructions. On
+  the way, three regressions found and fixed before the PR: the bigger dispatch made LLVM stop
+  inlining the Linux handler into the thread's loop (+11–15% on `linux_syscall_round_trip`;
+  now `#[inline(always)]`, with the memory calls behind one out-of-line function and one
+  compare against the highest call number first, which makes it 3.4–4.1% faster than before);
+  the kept-entry test in every decode of an empty entry (+10% on x86_64 `linux_exec_load`:
+  freeing tables now tests raw entries for zero, four a step, and placing a leaf tests the raw
+  entry); and the fault path's extra work. Net, against `main`: `linux_exec_load` −20.4%
+  (aarch64), −31.9% (riscv64), −30.5% (x86_64), freeing mostly empty tables being most of it;
+  `linux_page_fault` −1.1%, −0.2%, −3.3%, because a fault that may be a first touch maps
+  first and walks for an existing entry only if the map finds one (one walk, not two); every
+  other benchmark unchanged.
+- **Testing.** Boot self-test `linux_memory_calls_take_effect_at_once` on aarch64, riscv64 and
+  x86_64: a program walks down an `mmap`ed range storing to every page, then the kernel (in the
+  program's thread, between runs) unmaps the upper half, maps it again (zeroed) and makes the
+  range read-only, then writable again; each walk must stop at the top page while it is
+  unmapped or read-only, cover the range when writable, and every frame must be freed. It fails
+  on aarch64 and x86_64 with this CPU's translation drop removed. Host tests: the regions'
+  remove, protect and gap search; `mmap` placement, hints, fixed and no-replace mappings and
+  every argument check; `munmap` splitting and freeing; `mprotect` with kept pages, the
+  writable-to-executable flip, `EACCES` and the hole; `brk` growing, shrinking and refusing;
+  kept entries round-tripping in every format; changed pages and stale marks.
+- **Next.** The rest of a static program's startup calls (`uname`, `writev`,
+  `set_tid_address`, `arch_prctl`, `rt_sigprocmask`, ...), FP/SIMD state per thread, and a
+  first program built from our own Rust source; the shootdown with `clone`; `madvise`
+  (`MADV_DONTNEED` zeroes private pages), `mremap` and `MAP_POPULATE` when a program needs them.
