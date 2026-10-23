@@ -1453,7 +1453,11 @@ mod tests {
                 "{size} groups at {list:#x}"
             );
         }
-        assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 3);
+        assert_eq!(
+            call(&process, number::GETGROUPS, [3, writable, 0, 0, 0, 0]),
+            3
+        );
+        assert_eq!(words(writable, 3), [100, 200, 300]);
         let many: alloc::vec::Vec<u32> = (0..100).rev().collect();
         store(writable + 1024, &many);
         assert_eq!(
@@ -1487,6 +1491,19 @@ mod tests {
         assert_eq!(
             call(&process, number::SETFSGID, [unchanged, 0, 0, 0, 0, 0]),
             6
+        );
+        assert_eq!(call(&process, number::SETFSGID, [9, 0, 0, 0, 0, 0]), 6);
+        assert_eq!(
+            call(
+                &process,
+                number::SETRESGID,
+                [unchanged, unchanged, unchanged, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(&process, number::SETFSGID, [unchanged, 0, 0, 0, 0, 0]),
+            9
         );
 
         assert_eq!(

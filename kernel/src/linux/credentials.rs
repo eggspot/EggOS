@@ -467,7 +467,7 @@ pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
         let at = list.wrapping_add(groups.len() as u64 * 4);
         let readable = match process.read_user_memory(at, &mut bytes[..chunk * 4]) {
             Ok(()) => chunk,
-            Err(_) => readable_groups(process, at, &mut bytes[..chunk * 4]),
+            Err(_) => count_readable_words_one_by_one(process, at, &mut bytes[..chunk * 4]),
         };
         let read = bytes[..readable * 4]
             .as_chunks::<4>()
@@ -490,10 +490,12 @@ pub fn setgroups<P: Platform>(process: &Process<P>, size: u64, list: u64) -> Res
     Ok(0)
 }
 
-/// Reads the 32-bit words at `address` into `bytes` one at a time, after a copy of them all
-/// failed, and returns how many were read before the first that is not the program's memory.
 #[cold]
-fn readable_groups<P: Platform>(process: &Process<P>, address: u64, bytes: &mut [u8]) -> usize {
+fn count_readable_words_one_by_one<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    bytes: &mut [u8],
+) -> usize {
     let mut read = 0;
     for word in bytes.as_chunks_mut::<4>().0 {
         let at = address.wrapping_add(read as u64 * 4);
