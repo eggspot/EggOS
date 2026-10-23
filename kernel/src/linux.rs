@@ -2863,14 +2863,14 @@ mod tests {
         let kernel = kernel_tables();
         let (process, pid) = process_with_stacks(&kernel);
         let bit = |signal: u64| 1u64 << (signal - 1);
-        let (sigusr1, sigusr2, sigterm, sigkill) = (10u64, 12u64, 15u64, 9u64);
+        let (sighup, sigkill, sigusr1, sigusr2, sigterm) = (1u64, 9u64, 10u64, 12u64, 15u64);
         let flags = signals::flag::SIGINFO
             | if signals::HAS_RESTORER {
                 signals::flag::RESTORER
             } else {
                 0
             };
-        set_handler(&process, sigusr1, flags, bit(sigterm));
+        set_handler(&process, sigusr1, flags, bit(sighup));
         set_handler(&process, sigusr2, flags, 0);
         let before = bit(sigusr1) | bit(sigusr2) | bit(sigterm);
         block_signals(&process, before);
@@ -2896,7 +2896,7 @@ mod tests {
         );
         assert_eq!(context.pc(), HANDLER);
         assert_eq!(context.syscall_arguments()[0], sigusr2);
-        let in_sigusr1 = during | bit(sigusr1);
+        let in_sigusr1 = during | bit(sighup) | bit(sigusr1);
         assert_eq!(saved_mask(&process, &context), in_sigusr1);
         assert_eq!(blocked(), in_sigusr1 | bit(sigusr2));
         assert_eq!(

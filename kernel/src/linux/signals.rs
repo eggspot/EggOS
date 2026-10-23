@@ -1188,7 +1188,7 @@ pub fn pause<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
     suspend(process, context, None)
 }
 
-/// What [`rt_sigsuspend`] and [`pause`] share: blocks `mask`, if any, instead of the thread's
+/// What [`rt_sigsuspend`] and x86_64's `pause` share: blocks `mask`, if any, instead of the thread's
 /// mask, then delivers what is due until a handler starts, waiting between rounds.
 fn suspend<P: Platform>(
     process: &Process<P>,
