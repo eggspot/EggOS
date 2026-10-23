@@ -146,6 +146,7 @@ impl<P: Platform> AddressSpace<P> {
     /// documentation). Allowed while the address space is loaded on any CPU, but used on at
     /// most this one: call it with interrupts masked, from the process's only thread or with
     /// the address space not in use, and do not block until it returns.
+    #[inline(always)]
     pub fn change_pages(
         &self,
         virt: u64,

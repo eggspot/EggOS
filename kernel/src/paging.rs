@@ -312,6 +312,7 @@ impl<F: Format> PageTables<F> {
     /// only). The tables may be in use: the caller drops what CPUs cached of the old entries
     /// ([`crate::address_space::AddressSpace`] does). On an error, part of the range may have
     /// been changed.
+    #[inline(always)]
     pub fn change_user_pages(
         &mut self,
         virt: u64,

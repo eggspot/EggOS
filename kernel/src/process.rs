@@ -452,6 +452,7 @@ impl<P: Platform> Process<P> {
     /// Unmaps every page of user addresses `start..end`, page-aligned, freeing the frames, as
     /// [`Self::unmap_range`] does with the regions there: with the regions' lock held. Every
     /// page, not only those in regions: the HAL's test program has none.
+    #[inline(always)]
     fn free_pages(&self, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
         let frame_offset = self.frame_offset;

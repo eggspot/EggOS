@@ -3337,7 +3337,18 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
     a range across two `mmap`s can be one region here and grow where Linux says `EFAULT`.
 - **Cost.** Both calls sit in `out_of_line_result`; the system-call, switch and page-fault
   paths are unchanged. `PageTables::map_leaf` and `change_user_pages` now share their walks
-  with the move (`leaf_table_entry`, `for_each_user_page`, always inlined): BENCH_NOTE
+  with the move (`leaf_table_entry`, `for_each_user_page`, always inlined). New callers
+  of shared helpers changed how LLVM compiled `munmap` and `mmap`: `AddressSpace::change_pages`
+  became one out-of-line copy for `free_pages`' closures, called from both `munmap` and
+  `madvise`, and `Regions::insert` lost the specialisation it had with fewer callers. That made
+  `linux_mmap_munmap` 6 to 9% slower than `main` (x86_64 388 to 421 ns). `free_pages`,
+  `AddressSpace::change_pages`, `PageTables::change_user_pages` and `Regions::insert` are now
+  always inlined, which makes `linux_mmap_munmap` faster than on `main`: aarch64 356.52 to
+  335.52 ns (−5.9%), riscv64 385.10 to 362.11 ns (−6.0%), x86_64 388.08 to 360.09 ns (−7.2%).
+  Only those three baseline lines change. Other benchmarks are unchanged. Kernel text grows
+  by about 15 KiB per architecture: about 10 KiB for the two calls and about 5 KiB (2%) for
+  the inlining. That 5 KiB buys the 6–7% on every `mmap` and `munmap`; without it, the gain
+  is gone (`free_pages` out of line measures 388 ns on x86_64, the same as `main`).
 - **Tests.** Host: `move_user_pages` moving mapped and kept pages, refusing a target with a
   page in it or overlapping the source, and putting every page back when tables run out;
   `madvise`'s errors in Linux's order, every advice that changes nothing, `DONTNEED`, `FREE`

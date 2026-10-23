@@ -61,6 +61,7 @@ impl Regions {
 
     /// Adds `start..end` with `attributes`, joined to a neighbour it touches with the same
     /// attributes (as Linux merges them), so the list stays short.
+    #[inline(always)]
     pub fn insert(
         &mut self,
         start: u64,
