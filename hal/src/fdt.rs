@@ -10,6 +10,7 @@
 //! architecture-independent and works on a byte slice.
 
 use crate::memory::PhysicalRange;
+use crate::random::SeedSource;
 
 /// The FDT header's magic number.
 pub const MAGIC: u32 = 0xd00d_feed;
@@ -340,6 +341,118 @@ impl Fdt<'_> {
             }
         }
     }
+}
+
+impl<'a> Fdt<'a> {
+    /// Calls `property` with the name and value of each property of `/chosen`, the node where
+    /// firmware passes the kernel its parameters (Devicetree Specification v0.4, section 3.6).
+    pub fn chosen(&self, property: &mut dyn FnMut(&'a [u8], &'a [u8])) -> Result<(), Error> {
+        let mut in_chosen = false;
+        let mut depth = 0usize;
+        let mut at = 0usize;
+        loop {
+            let token = be32(self.structure, at).ok_or(Error::Truncated)?;
+            at += 4;
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = cstr(self.structure, at).ok_or(Error::Truncated)?;
+                    at = align4(at + name.len() + 1);
+                    if depth == 1 && name == b"chosen" {
+                        in_chosen = true;
+                    }
+                    depth += 1;
+                }
+                FDT_END_NODE => {
+                    depth = depth.checked_sub(1).ok_or(Error::Malformed)?;
+                    if depth == 1 {
+                        in_chosen = false;
+                    }
+                }
+                FDT_PROP => {
+                    let length = be32(self.structure, at).ok_or(Error::Truncated)?;
+                    let name_offset = be32(self.structure, at + 4).ok_or(Error::Truncated)?;
+                    let length = usize::try_from(length).map_err(|_| Error::Truncated)?;
+                    let start = at + 8;
+                    let value = start
+                        .checked_add(length)
+                        .and_then(|end| self.structure.get(start..end))
+                        .ok_or(Error::Truncated)?;
+                    at = align4(start + length);
+                    if !(in_chosen && depth == 2) {
+                        continue;
+                    }
+                    let name = usize::try_from(name_offset)
+                        .ok()
+                        .and_then(|offset| cstr(self.strings, offset))
+                        .ok_or(Error::Malformed)?;
+                    property(name, value);
+                }
+                FDT_NOP => {}
+                FDT_END => {
+                    return if depth == 0 {
+                        Ok(())
+                    } else {
+                        Err(Error::Malformed)
+                    };
+                }
+                _ => return Err(Error::Malformed),
+            }
+        }
+    }
+}
+
+/// The `/chosen` properties that hold seed material, and what each is.
+const SEED_PROPERTIES: [(&[u8], SeedSource); 2] = [
+    (b"rng-seed", SeedSource::DeviceTreeRngSeed),
+    (b"kaslr-seed", SeedSource::DeviceTreeKaslrSeed),
+];
+
+/// The most seed properties [`take_seeds`] takes from one tree.
+const MAX_SEEDS: usize = 4;
+
+/// Hands each seed in `/chosen` of the tree at the start of `blob` (`rng-seed`, `kaslr-seed`)
+/// to `seed` with its source, then removes it from the tree: the whole property (its token,
+/// length, name and padded value) is overwritten with `FDT_NOP` tokens,
+/// which every reader skips (Devicetree Specification v0.4, section 5.4.1). So nothing that
+/// reads the tree later, a kernel started after this one included, sees the seed, or sees an
+/// empty one it might trust. Returns how many it took. A tree that is invalid or malformed
+/// anywhere is left as it is.
+pub fn take_seeds(
+    blob: &mut [u8],
+    seed: &mut dyn FnMut(SeedSource, &[u8]),
+) -> Result<usize, Error> {
+    // (source, offset of the value in `blob`, its length)
+    let mut found = [None; MAX_SEEDS];
+    {
+        let base = blob.as_ptr().addr();
+        let tree = Fdt::new(blob)?;
+        let mut count = 0;
+        tree.chosen(&mut |name, value| {
+            let source = SEED_PROPERTIES
+                .iter()
+                .find_map(|&(seed_name, source)| (seed_name == name).then_some(source));
+            if let Some(source) = source
+                && count < MAX_SEEDS
+            {
+                found[count] = Some((source, value.as_ptr().addr() - base, value.len()));
+                count += 1;
+            }
+        })?;
+    }
+    let mut taken = 0;
+    for (source, start, length) in found.into_iter().flatten() {
+        let value = start..start + length;
+        seed(source, &blob[value]);
+        // The property's token, length and name offset precede the value; the walk above read
+        // the token after its padding, so the padded end is within the structure block, whose
+        // offset in the blob is 4-byte aligned. The value's words are overwritten too.
+        let property = start - 12..align4(start + length);
+        for word in blob[property].as_chunks_mut::<4>().0 {
+            *word = FDT_NOP.to_be_bytes();
+        }
+        taken += 1;
+    }
+    Ok(taken)
 }
 
 /// Decodes a `reg` property: (address, size) pairs of `cells` 32-bit cells each.
@@ -788,5 +901,97 @@ mod tests {
         let mut b = Builder::default();
         b.begin("").begin("cpus");
         assert_eq!(cpus_of(&b.build()), Err(Error::Malformed));
+    }
+
+    /// A tree with QEMU `virt`'s `/chosen` seeds, the RNG seed of an odd length so its value
+    /// is padded, and a nested node with a property of the same name, which is not a seed.
+    fn with_seeds() -> Vec<u8> {
+        let mut b = Builder::default();
+        b.begin("")
+            .cells("#address-cells", &[2])
+            .cells("#size-cells", &[2])
+            .begin("chosen")
+            .prop("rng-seed", &[0xa5; 31])
+            .prop("bootargs", b"console=ttyS0\0")
+            .prop("kaslr-seed", &[0x5a; 8])
+            .begin("nested")
+            .prop("rng-seed", &[0x77; 4])
+            .end()
+            .end()
+            .begin("memory@80000000")
+            .prop("device_type", b"memory\0")
+            .cells("reg", &[0, 0x8000_0000, 0, 0x800_0000])
+            .end()
+            .end();
+        b.build()
+    }
+
+    fn chosen_of(blob: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut properties = Vec::new();
+        Fdt::new(blob)
+            .unwrap()
+            .chosen(&mut |name, value| properties.push((name.to_vec(), value.to_vec())))
+            .unwrap();
+        properties
+    }
+
+    #[test]
+    fn chosen_lists_only_its_own_properties() {
+        let names: Vec<_> = chosen_of(&with_seeds())
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, [&b"rng-seed"[..], b"bootargs", b"kaslr-seed"]);
+    }
+
+    #[test]
+    fn seeds_are_handed_over_then_removed_from_the_tree() {
+        let mut blob = with_seeds();
+        let mut seeds = Vec::new();
+        let taken = take_seeds(&mut blob, &mut |source, bytes| {
+            seeds.push((source, bytes.to_vec()));
+        });
+        assert_eq!(taken, Ok(2));
+        assert_eq!(
+            seeds,
+            [
+                (SeedSource::DeviceTreeRngSeed, vec![0xa5; 31]),
+                (SeedSource::DeviceTreeKaslrSeed, vec![0x5a; 8]),
+            ]
+        );
+        // The tree still reads, without the seeds; the rest is as it was.
+        assert_eq!(
+            chosen_of(&blob),
+            [(b"bootargs".to_vec(), b"console=ttyS0\0".to_vec())]
+        );
+        assert_eq!(
+            memory_of(&blob).unwrap().0,
+            [range(0x8000_0000, 0x800_0000)]
+        );
+        assert!(
+            !blob
+                .windows(8)
+                .any(|bytes| bytes == [0xa5; 8] || bytes == [0x5a; 8])
+        );
+        // The nested property is not a seed and stays.
+        assert!(blob.windows(4).any(|bytes| bytes == [0x77; 4]));
+        // Taking again finds nothing.
+        assert_eq!(
+            take_seeds(&mut blob, &mut |_, _| panic!("no seed left")),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn a_malformed_tree_keeps_its_seeds() {
+        let mut b = Builder::default();
+        b.begin("").begin("chosen").prop("rng-seed", &[0xa5; 32]);
+        let mut blob = b.build();
+        let before = blob.clone();
+        assert_eq!(
+            take_seeds(&mut blob, &mut |_, _| panic!("not handed over")),
+            Err(Error::Malformed)
+        );
+        assert_eq!(blob, before);
     }
 }

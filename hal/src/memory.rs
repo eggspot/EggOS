@@ -220,9 +220,84 @@ impl MemoryMap {
     }
 }
 
+/// Zeroes the `length` bytes at `start` the fastest way the CPU has (D56): frames and page
+/// tables the kernel hands out are zeroed with it. On x86_64, `rep stosq` (the compiler's
+/// `memset`); elsewhere, [`zero_by_lines`], where the compiler's `memset` is a loop of single
+/// word stores.
+///
+/// # Safety
+/// The range must be valid for writes and not used by anything else meanwhile.
+#[inline]
+pub unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    #[cfg(target_os = "none")]
+    unsafe {
+        crate::arch::zero(start, length)
+    };
+    // SAFETY: guaranteed by the caller.
+    #[cfg(not(target_os = "none"))]
+    unsafe {
+        zero_by_lines(start, length)
+    };
+}
+
+/// Zeroes the `length` bytes at `start` a 64-byte line at a time, with eight 8-byte stores,
+/// where the range is so aligned, and the ragged ends byte by byte: a frame costs about a
+/// quarter of what a loop of single word stores does. The stores are volatile only so that
+/// the compiler cannot turn the loop back into a `memset` call.
+///
+/// # Safety
+/// As for [`zero`].
+pub unsafe fn zero_by_lines(start: *mut u8, length: usize) {
+    const LINE: usize = 64;
+    let end = start.wrapping_add(length);
+    let head = (start.addr().next_multiple_of(LINE) - start.addr()).min(length);
+    // SAFETY: the first `head` bytes of the range, which the caller lets this code write.
+    unsafe { start.write_bytes(0, head) };
+    let mut line = start.wrapping_add(head);
+    while end.addr() - line.addr() >= LINE {
+        let words = line.cast::<u64>();
+        for word in 0..LINE / 8 {
+            // SAFETY: a word of a whole 64-byte line of the range, aligned to 64 bytes, so the
+            // word is aligned and written by this code alone.
+            unsafe { words.wrapping_add(word).write_volatile(0) };
+        }
+        line = line.wrapping_add(LINE);
+    }
+    // SAFETY: the bytes after the last whole line, the rest of the range.
+    unsafe { line.write_bytes(0, end.addr() - line.addr()) };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_by_lines_clears_exactly_its_range() {
+        for (start, length) in [
+            (0, 4096),
+            (0, 0),
+            (5, 3),
+            (1, 63),
+            (3, 200),
+            (64, 128),
+            (60, 4000),
+        ] {
+            let mut buffer = vec![0xa5u8; 4096 + 128];
+            // From a 64-byte boundary inside the buffer, so `start` sets the alignment.
+            let base = buffer.as_ptr().addr().next_multiple_of(64) - buffer.as_ptr().addr();
+            // SAFETY: the range is inside `buffer`, which nothing else uses.
+            unsafe { zero_by_lines(buffer.as_mut_ptr().wrapping_add(base + start), length) };
+            for (index, &byte) in buffer.iter().enumerate() {
+                let inside = (base + start..base + start + length).contains(&index);
+                assert_eq!(
+                    byte,
+                    if inside { 0 } else { 0xa5 },
+                    "{start}+{length} at {index}"
+                );
+            }
+        }
+    }
 
     const K: u64 = FRAME_SIZE;
 

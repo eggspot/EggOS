@@ -71,7 +71,7 @@ pub(crate) fn kernel_image_parts() -> KernelImage {
 /// `address` must be 0, or readable (at `address` + the physical memory offset) for
 /// [`fdt::HEADER_LENGTH`] bytes and, if those hold an FDT header, for as many bytes as it
 /// declares (up to [`MAX_DEVICE_TREE_SIZE`]): the firmware's device tree, which nothing writes
-/// while the kernel runs.
+/// while the kernel runs but [`device_tree_take_seeds`], once, at boot.
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     if address == 0 || !address.is_multiple_of(8) {
@@ -163,4 +163,27 @@ pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) 
     if tree.cpus(&mut |_| {}).is_ok() {
         let _ = tree.cpus(cpu);
     }
+}
+
+/// Hands the seeds in the device tree at `address` to `seed` and removes them from the tree
+/// ([`fdt::take_seeds`]); nothing if there is no valid tree there, or a malformed one.
+///
+/// # Safety
+/// As for [`device_tree`], and the tree must also be writable there; the call must come
+/// before anything else reads the tree on another CPU, and no reference to the tree may be
+/// alive (the boot CPU at boot, between the HAL's other reads).
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) unsafe fn device_tree_take_seeds(
+    address: usize,
+    seed: &mut dyn FnMut(crate::random::SeedSource, &[u8]),
+) {
+    // SAFETY: guaranteed by the caller.
+    let Some((_, size)) = (unsafe { device_tree(address) }) else {
+        return;
+    };
+    let virt = address.wrapping_add(CurrentPlatform::physical_memory_offset());
+    // SAFETY: `device_tree` checked the header and its size; the caller guarantees the
+    // `size` bytes there are writable and that nothing else reads or holds them meanwhile.
+    let blob = unsafe { core::slice::from_raw_parts_mut(virt as *mut u8, size) };
+    let _ = fdt::take_seeds(blob, seed);
 }

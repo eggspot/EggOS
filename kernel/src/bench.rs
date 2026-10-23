@@ -10,7 +10,7 @@ use crate::HEAP;
 use crate::linux::exec;
 use crate::memory::{FRAMES, FrameAllocator, Memory};
 use crate::process::{self, Process};
-use crate::{cpu, linux, selftest, thread};
+use crate::{cpu, linux, random, selftest, thread};
 use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
@@ -35,7 +35,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 20] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 22] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -68,6 +68,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 20] {
         ("thread_wait_wake_round_trip", |_, n| {
             thread_wait_wake_round_trip::<P>(n)
         }),
+        ("random_fill_16", |_, n| random_fill::<P, 16>(n)),
+        ("random_fill_4096", |_, n| random_fill::<P, 4096>(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -112,6 +114,17 @@ fn empty_loop(n: u64) {
 fn clock_read<P: Platform>(n: u64) {
     for _ in 0..n {
         black_box(P::clock_ticks());
+    }
+}
+
+/// `N` bytes from the random number generator (D56): with 16, one draw, what `AT_RANDOM`
+/// costs each program; with 4096, a stream from a draw's key, `getrandom`'s long path
+/// without the copy to the program.
+fn random_fill<P: Platform, const N: usize>(n: u64) {
+    let mut bytes = [0u8; N];
+    for _ in 0..n {
+        random::fill::<P>(&mut bytes);
+        black_box(&mut bytes);
     }
 }
 
@@ -568,6 +581,7 @@ mod tests {
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
+        fn random_seeds(_seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {}
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
         fn page_fault(

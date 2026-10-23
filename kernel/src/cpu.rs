@@ -8,6 +8,7 @@
 
 use crate::address_space::LazilyLoaded;
 use crate::heap::{FrameSource, GlobalFrames};
+use crate::random::CpuKey;
 use crate::sync::SpinLock;
 use crate::thread::{self, CpuScheduler, STACK_ORDER, STACK_SIZE};
 use alloc::boxed::Box;
@@ -67,6 +68,8 @@ pub struct Cpu {
     pub(crate) lazily_loaded: SpinLock<Option<LazilyLoaded>>,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
+    /// The CPU's key of the random number generator (D56). Only the CPU itself takes the lock.
+    pub(crate) random: SpinLock<CpuKey>,
 }
 
 /// The top bit of [`Cpu::unseen_by_scheduler`]: another CPU asks this CPU's scheduler to look at
@@ -98,6 +101,7 @@ impl Cpu {
             active_address_space: AtomicU64::new(NO_ADDRESS_SPACE),
             lazily_loaded: SpinLock::new(None),
             scheduler: CpuScheduler::new(),
+            random: SpinLock::new(CpuKey::new()),
         }
     }
 

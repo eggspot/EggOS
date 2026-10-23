@@ -528,12 +528,10 @@ fn kernel_half_root_entries<F: Format>() -> core::ops::Range<usize> {
 /// A zeroed table frame from `frames`.
 fn new_table(frames: &mut FrameAllocator) -> Result<u64, MapError> {
     let table = frames.allocate().ok_or(MapError::OutOfMemory)?;
-    let start = (table as usize).wrapping_add(frames.physical_memory_offset()) as *mut u64;
-    for i in 0..paging::ENTRIES {
-        // SAFETY: the frame was just allocated, so this code owns it; the allocator's offset
-        // reaches it, and entry `i` of 512 is inside it and aligned.
-        unsafe { start.wrapping_add(i).write_volatile(0) };
-    }
+    let start = (table as usize).wrapping_add(frames.physical_memory_offset()) as *mut u8;
+    // SAFETY: the frame was just allocated, so this code owns it; the allocator's offset
+    // reaches it. Linking it in orders these stores before the entry (`map`).
+    unsafe { eggos_hal::memory::zero(start, FRAME_SIZE as usize) };
     Ok(table)
 }
 

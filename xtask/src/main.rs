@@ -57,7 +57,8 @@ pub const ARCHES: &[Arch] = &[
         name: "x86_64",
         target: "x86_64-unknown-none",
         qemu: "qemu-system-x86_64",
-        machine_args: &["-machine", "q35"],
+        // `RDRAND` and `RDSEED` seed the random number generator (D56); nothing else changes.
+        machine_args: &["-machine", "q35", "-cpu", "qemu64,+rdrand,+rdseed"],
     },
 ];
 

@@ -12,6 +12,7 @@
 
 mod exception;
 mod port;
+mod random;
 mod thread;
 mod timer;
 
@@ -281,6 +282,17 @@ boot_pd:
 /// physical addresses map there through the boot tables' first gigabyte. `linker.ld` uses the
 /// same value and checks it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_8000_0000;
+
+/// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]): with the compiler's
+/// `memset`, which is `rep stosq` here, the CPU's own fast path for filling memory (D56).
+///
+/// # Safety
+/// As for [`crate::memory::zero`].
+#[inline]
+pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { start.write_bytes(0, length) }
+}
 
 /// Physical address of the PVH `hvm_start_info`, stored by the entry code. PVH loads the
 /// kernel below 4 GiB and passes a 32-bit address.
@@ -673,6 +685,14 @@ impl Platform for X86_64 {
 
     fn user_test_program() -> crate::user::TestProgram {
         exception::user_test_program()
+    }
+
+    fn random_seeds(seed: &mut dyn FnMut(crate::random::SeedSource, &[u8])) {
+        let mut bytes = [0u8; random::SEED_SIZE];
+        if random::fill(&mut bytes) {
+            seed(crate::random::SeedSource::CpuInstruction, &bytes);
+        }
+        crate::random::wipe(&mut bytes);
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {

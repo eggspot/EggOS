@@ -116,6 +116,7 @@ mod tests {
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
+        fn random_seeds(_seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {}
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
         fn page_fault(

@@ -12,15 +12,17 @@
 //!
 //! So far: `write` and `writev` to standard output and standard error (the console), `exit`
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
-//! ([`memory`], D53), and `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
-//! `set_robust_list` ([`identity`], D55). Every other number returns `ENOSYS`, as Linux does
-//! for a call it lacks, so a program that probes for a call carries on. The next calls are the
-//! rest of what a static program's startup needs (`arch_prctl` and the thread pointer,
-//! signals, `getrandom`, ...), then the file system's (M7).
+//! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
+//! `set_robust_list` ([`identity`], D55), and `getrandom` ([`random`], D56). Every other
+//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
+//! call carries on. The next calls are the rest of what a static program's startup needs
+//! (`arch_prctl` and the thread pointer, signals, `prlimit64`, ...), then the file system's
+//! (M7).
 
 pub mod exec;
 pub mod identity;
 pub mod memory;
+pub mod random;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{self, JoinHandle, SpawnError};
@@ -50,8 +52,9 @@ pub mod number {
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
         pub const SET_ROBUST_LIST: u64 = 273;
+        pub const GETRANDOM: u64 = 318;
         /// The highest number above.
-        pub const LAST: u64 = SET_ROBUST_LIST;
+        pub const LAST: u64 = GETRANDOM;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
@@ -69,8 +72,9 @@ pub mod number {
         pub const MUNMAP: u64 = 215;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const GETRANDOM: u64 = 278;
         /// The highest number above.
-        pub const LAST: u64 = MPROTECT;
+        pub const LAST: u64 = GETRANDOM;
     }
     pub use table::*;
 
@@ -92,6 +96,7 @@ pub mod number {
             UNAME,
             SET_TID_ADDRESS,
             SET_ROBUST_LIST,
+            GETRANDOM,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -123,6 +128,9 @@ impl Errno {
     pub const ENOEXEC: Self = Self(8);
     /// Bad file descriptor.
     pub const EBADF: Self = Self(9);
+    /// Try again: here, the random number generator is not seeded yet (`getrandom` with
+    /// `GRND_NONBLOCK`).
+    pub const EAGAIN: Self = Self(11);
     /// Out of memory.
     pub const ENOMEM: Self = Self(12);
     /// Permission denied: here, memory both writable and executable (`mmap`, `mprotect`).
@@ -313,6 +321,7 @@ fn out_of_line_call<P: Platform>(
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(process, first)),
         number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
+        number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         _ => Err(Errno::ENOSYS),
     }
 }
@@ -601,6 +610,51 @@ mod tests {
             ControlFlow::Continue(())
         );
         context.syscall_result()
+    }
+
+    #[test]
+    fn getrandom_fills_the_program_s_writable_memory() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::random::add_seed(eggos_hal::random::SeedSource::CpuInstruction, &[7; 32]);
+        assert!(crate::random::reseed::<P>());
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let getrandom = |buffer, length, flags| {
+            call(
+                &process,
+                number::GETRANDOM,
+                [buffer, length, flags, 0, 0, 0],
+            )
+        };
+        let writable = DATA + 4096;
+        let read = |offset, length| {
+            let mut bytes = vec![0u8; length];
+            process
+                .read_user_memory(writable + offset, &mut bytes)
+                .unwrap();
+            bytes
+        };
+        assert_eq!(getrandom(writable, 16, 0), 16);
+        let first = read(0, 16);
+        assert_eq!(
+            getrandom(writable, 16, u64::from(random::flags::INSECURE)),
+            16
+        );
+        assert_ne!(read(0, 16), first);
+        // A long call, with the flags' upper half ignored: every byte is written, and the
+        // bytes after are not.
+        assert_eq!(getrandom(writable, 1000, 1 << 32), 1000);
+        assert!(read(0, 1000).chunks(16).all(|chunk| chunk != [0; 16]));
+        assert_eq!(read(1000, 16), [0; 16]);
+        // No bytes: 0, whatever the address.
+        assert_eq!(getrandom(0, 0, 0), 0);
+        // Up to the end of the writable page, then unmapped memory: the bytes before.
+        assert_eq!(getrandom(writable + 4096 - 100, 200, 0), 100);
+        // Read-only memory, or a range past user space: EFAULT.
+        assert_eq!(getrandom(DATA, 16, 0), Errno::EFAULT.result());
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(getrandom(user_end - 8, 16, 0), Errno::EFAULT.result());
+        assert_eq!(getrandom(writable, 16, 8), Errno::EINVAL.result());
     }
 
     #[test]

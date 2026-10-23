@@ -1883,3 +1883,89 @@ switch-path cost; this entry follows it.)
   `EINVAL`), and a single oversized iovec running past user space (Linux may cap it before
   its range check). Self-test processes take ids, so the first real program is not pid 1:
   `init` gets pid 1 when it exists (M10).
+
+## D56 The kernel's random number generator: BLAKE2s input, ChaCha20 output with fast key erasure and per-CPU keys; `AT_RANDOM` and `getrandom` draw from it; frames zeroed a line at a time — Decided by the build loop (design and the benchmark offset decided by research)
+- **Why now.** D51's `AT_RANDOM` was a placeholder that had to go "before any program not
+  built by us runs": C libraries take their stack-protector canary and pointer guard from it.
+  `getrandom` is one of the startup calls left after D55 (Rust's std calls it with
+  `GRND_INSECURE` on first `HashMap` use). It is chosen ahead of `arch_prctl` and the thread
+  pointer, which D55 places in the thread switch next to FP/SIMD (PR #47, waiting for the
+  owner); the generator touches no switch path.
+- **Construction** (research: Linux since 5.17/5.18, Windows 10's per-processor generators,
+  Bernstein's fast-key-erasure note), all our own code from the RFCs, checked against their
+  test vectors (RFC 8439 sections 2.1.1, 2.3.2 and appendix A.1; RFC 7693 appendix B and
+  the reference keyed vector):
+  - **Input:** one BLAKE2s-256 state; each piece of seed material is hashed in after its
+    source's tag and its length, with a count of credited bits. Hashing, not XOR, so a weak
+    or hostile source cannot cancel the others.
+  - **Seeding** (`random::reseed`): `extracted = BLAKE2s(input)`, fed back into the next
+    input; `base = BLAKE2s(key: extracted, message: base)`; the base key's generation moves
+    on. Seeded at 256 credited bits, as Linux; seeded stays seeded.
+  - **Per-CPU keys** in each CPU's block, derived from the base key when its generation
+    moved on (one ChaCha20 block: next base key, CPU key), so the base key's lock is taken
+    once per CPU per generation, and only the CPU itself takes its key's lock.
+  - **Each draw:** one ChaCha20 block of the CPU key (nonce 0, counter 0); bytes 0–31
+    replace the key, 32–63 are the output. Up to 32 bytes (`AT_RANDOM`'s 16) come from it
+    directly; more stream from a key made of those 32, outside any lock, in 64-byte chunks.
+    Keys, blocks and output not handed out yet are 8-byte aligned and wiped on drop
+    (volatile word stores).
+- **Seed sources** (`Platform::random_seeds`, credit is the kernel's policy):
+
+  | Source | Where | Credit |
+  |---|---|---|
+  | Device tree `/chosen/rng-seed` (QEMU `virt` gives 32 bytes) | AArch64, RISC-V | full, as Linux's default `random.trust_bootloader` |
+  | Device tree `/chosen/kaslr-seed` (where the loader gives one: QEMU on AArch64) | AArch64, RISC-V | none |
+  | `RDSEED` (100 tries per word), else `RDRAND` (10 tries, Intel's guide); samples of all ones or equal to the one before are thrown away | x86_64 | full, as Linux's default `random.trust_cpu` |
+  | The clock, at every reseed | all | none |
+
+  A device-tree seed is removed from the tree once taken: the property is overwritten with
+  `FDT_NOP` tokens (Devicetree Specification 5.4.1), so nothing that reads the tree later, a
+  kernel started after this one included, sees it or an empty seed it might trust; a boot
+  self-test checks that asking again finds none. The x86_64 QEMU tests and benchmarks run
+  `-cpu qemu64,+rdrand,+rdseed` (not `max`, which would change other code paths), and the
+  benchmarks add `-seed 1` so QEMU's random values repeat.
+- **Unseeded** (no source: a plain `qemu64`, pre-2012 x86, a board without a seed): the
+  kernel boots and says so (`random: NOT SEEDED ...`). `AT_RANDOM` still comes from the
+  generator, keyed from whatever was hashed in (Linux does not wait there either);
+  `getrandom` without `GRND_INSECURE` waits on a wait queue that the reseed which seeds the
+  generator wakes, or with `GRND_NONBLOCK` returns `EAGAIN`. No timer-jitter source: under
+  `-icount` it would credit predictable data; jitter, UEFI's `EFI_RNG_PROTOCOL` and TPMs
+  come with real hardware (M13). No periodic reseeding yet: every source today exists only
+  at boot, and fast key erasure already protects earlier output.
+- **`getrandom(buffer, length, flags)`** (318 on x86_64, 278 on AArch64 and RISC-V), as
+  Linux: `EINVAL` for an unknown flag or `GRND_INSECURE | GRND_RANDOM`; the seeding check
+  next (so a call for no bytes with `GRND_NONBLOCK` tells whether it is seeded);
+  `GRND_RANDOM` means nothing more since Linux 5.6; at most `MAX_RW_COUNT` bytes, then
+  `EFAULT` if the range does not end within user space; the bytes written before the first
+  that is not the program's writable memory, or `EFAULT` for none; a preemption point every
+  4096 bytes. `flags` is an `unsigned int`.
+- **Performance.** One ChaCha20 block costs 1237 (x86_64), 1323 (AArch64) and 1998
+  (RISC-V) instructions under `-icount` (`random_fill_16`, new; `random_fill_4096`, the
+  long path, new): drawing `AT_RANDOM` alone made `linux_exec_load` 3.0%, 5.8% and 4.7%
+  slower (AArch64, RISC-V, x86_64), and no batching brings 16 bytes of ChaCha20 under the
+  gate's 1%. **Decided by research:** fix the exec path in the same PR rather than leave a
+  regression for the owner, reporting each part apart (D53 did the same). Frames and page
+  tables are now zeroed through `eggos_hal::memory::zero`: on AArch64 and RISC-V 64-byte
+  lines of eight word stores (the compiler's `memset` there is a loop of single word
+  stores, and page tables were zeroed one volatile entry at a time), on x86_64 `rep stosq`
+  (the compiler's `memset`, which is the CPU's own fast fill; a store loop there made
+  `linux_page_fault` 27% slower). Against `main`, with the generator: `linux_exec_load`
+  −26.7% (AArch64), −18.3% (RISC-V), −0.6% (x86_64, where the tables' zeroing pays for the
+  block); `linux_page_fault` −36.0% and −36.3% (AArch64, RISC-V), x86_64 unchanged. The
+  owner can overrule this and ask for the two to be split.
+- **Follow-ups:** RNDR/RNDRRS on AArch64 (FEAT_RNG, through `ID_AA64ISAR0_EL1`) and Zkr's
+  `seed` CSR on RISC-V (needs `mseccfg.SSEED` from M-mode firmware and a trap-safe probe);
+  timer jitter, UEFI and TPM seeds (M13); virtio-rng and reseeding at growing intervals,
+  then every minute, once a source keeps producing (M8); `/dev/random` and `/dev/urandom`
+  on the same generator (M7); `random.trust_cpu` and `random.trust_bootloader` boot
+  options; a reseed when a virtual machine is cloned (vmgenid); a vDSO `getrandom` (Linux
+  6.11); layout randomization (PIE base, stack, `mmap` area) from this generator (D51);
+  `getrandom` interrupted by a signal once signals exist (`EINTR` before any byte, the
+  partial count after; never for 256 bytes or fewer); `dc zva` on AArch64 and `cbo.zero`
+  (Zicboz) on RISC-V for zeroing, measured; confirm by observation on Linux whether
+  `getrandom` caps the length before or after its range check; an MCP and CLI capability
+  that reports whether the generator is seeded (D22). From PR #49's independent review:
+  `getrandom` copies 64 bytes at a time (a regions lock and a table walk each), far above
+  ChaCha20's own cost for large buffers: fill a page at a time and measure the copy; a
+  console line when a thread first waits for an unseeded generator (it waits for good
+  until a later source exists); wiping ChaCha20's and BLAKE2s's working state.

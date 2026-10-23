@@ -366,10 +366,11 @@ riscv64_user_test_linux_hello:
     .balign 4
     .global riscv64_user_test_linux_start
 riscv64_user_test_linux_start:
-    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178. s1 is argc,
-    // s2 walks argv and envp, s3 counts the two lists, s4 holds the process id. Each string is
-    // written by writev from one iovec on the stack. Ends with exit_group(255) if the stack is
-    // misaligned or the thread's id is not the process's.
+    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, getrandom
+    // 278. s1 is argc, s2 walks argv and envp, s3 counts the two lists, s4 holds the process
+    // id. Each string is written by writev from one iovec on the stack. Ends with
+    // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
+    // getrandom does not fill the 16 bytes below the stack pointer with something not zero.
     andi    t0, sp, 15
     li      a0, 255
     bnez    t0, 9f
@@ -381,6 +382,19 @@ riscv64_user_test_linux_start:
     mv      t0, a0
     li      a0, 255
     bne     t0, s4, 9f
+    addi    a0, sp, -16
+    li      a1, 16
+    li      a2, 0
+    li      a7, 278
+    ecall
+    mv      t0, a0
+    li      a0, 255
+    li      t1, 16
+    bne     t0, t1, 9f
+    ld      t0, -16(sp)
+    ld      t1, -8(sp)
+    or      t0, t0, t1
+    beqz    t0, 9f
     ld      s1, 0(sp)
     addi    s2, sp, 8
     li      s3, 2

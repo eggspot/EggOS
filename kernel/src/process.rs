@@ -443,9 +443,8 @@ impl<P: Platform> Process<P> {
         unsafe { core::ptr::copy_nonoverlapping(contents.as_ptr(), page, contents.len()) };
         // SAFETY: as above: the rest of the frame, after the contents.
         unsafe {
-            core::ptr::write_bytes(
+            eggos_hal::memory::zero(
                 page.wrapping_add(contents.len()),
-                0,
                 FRAME_SIZE as usize - contents.len(),
             )
         };

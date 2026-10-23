@@ -9,7 +9,7 @@ use crate::linux::exec;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::process::{self, Process, ProcessExit};
 use crate::sync::SpinLock;
-use crate::{cpu, exception, interrupt, linux, thread};
+use crate::{cpu, exception, interrupt, linux, random, thread};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
@@ -18,6 +18,7 @@ use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
+use eggos_hal::random::SeedSource;
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
@@ -48,11 +49,15 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 23] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 24] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
         ("timer_interrupt_fires", |_| timer_interrupt_fires::<P>()),
+        // Before the secondary CPUs start: it asks the HAL for seeds again.
+        ("random_generator_is_seeded", |_| {
+            random_generator_is_seeded::<P>()
+        }),
         ("frames_are_usable_ram", frames_are_usable_ram::<P>),
         (
             "contiguous_frames_are_aligned_and_merge_back",
@@ -158,6 +163,32 @@ pub fn run<W: Write, C>(
 /// kernel starts. The name must match `BSS_PROBE_SYMBOL` in `xtask`.
 #[unsafe(export_name = "eggos_selftest_bss_probe")]
 static BSS_PROBE: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// The random number generator was seeded at boot (D56): every QEMU machine the tests boot
+/// offers a seed (the device tree's `rng-seed`, or `RDSEED`). Its draws differ, and the
+/// device tree's seeds are gone once taken, so asking the HAL again finds none.
+fn random_generator_is_seeded<P: Platform>() -> Result<(), &'static str> {
+    if !random::is_seeded() {
+        return Err("the random number generator was not seeded: the machine offered no seed");
+    }
+    let mut first = [0u8; 32];
+    let mut second = [0u8; 32];
+    random::fill::<P>(&mut first);
+    random::fill::<P>(&mut second);
+    if first == second || first == [0; 32] {
+        return Err("two draws from the random number generator were the same");
+    }
+    let mut device_tree_seeds = 0;
+    P::random_seeds(&mut |source, _| {
+        if source != SeedSource::CpuInstruction {
+            device_tree_seeds += 1;
+        }
+    });
+    if device_tree_seeds > 0 {
+        return Err("the device tree still holds a seed the generator took");
+    }
+    Ok(())
+}
 
 fn bss_is_zeroed() -> Result<(), &'static str> {
     let all_zero = BSS_PROBE.iter().all(|word| {
@@ -1837,6 +1868,7 @@ mod tests {
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
+        fn random_seeds(_seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {}
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
         fn page_fault(
@@ -1955,6 +1987,7 @@ mod tests {
         fn linux_hardware_capabilities() -> [u64; 2] {
             [0, 0]
         }
+        fn random_seeds(_seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {}
         fn make_instructions_visible(_start: usize, _length: usize) {}
         fn drop_user_translations(_start: u64, _length: u64) {}
         fn page_fault(

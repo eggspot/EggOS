@@ -18,9 +18,9 @@
 use super::Errno;
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
+use crate::random;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format};
@@ -113,7 +113,7 @@ impl From<InvalidElf> for ExecError {
 /// Where a position-independent program goes in a user space that ends at `user_end`: two
 /// thirds of the way up, as Linux places one, leaving room below for `mmap` and above for the
 /// stack, aligned to 2 MiB or to the program's largest segment alignment `align` if larger.
-/// Fixed until address-space layout randomization comes with a random number generator.
+/// Fixed until address-space layout randomization draws from the random number generator (D56).
 pub fn pie_base(user_end: u64, align: u64) -> u64 {
     (user_end / 3 * 2) & !(align.max(PIE_ALIGN) - 1)
 }
@@ -224,7 +224,7 @@ pub fn load<P: Platform>(
         arguments,
         environment,
         &auxiliary,
-        &insecure_random_bytes::<P>(),
+        &random_bytes::<P>(),
     )?;
 
     for header in elf.program_headers() {
@@ -377,22 +377,11 @@ fn segment_attributes(flags: u32) -> Result<Attributes, ExecError> {
 }
 
 /// 16 bytes for `AT_RANDOM`, which C libraries take their stack-protector canary and pointer
-/// guard from. **Not secure** (D51): the clock and a count of programs started, mixed, so
-/// they at least differ between programs. Before any program not built by us runs, this must
-/// draw from the kernel's random number generator, which does not exist yet.
-fn insecure_random_bytes<P: Platform>() -> [u8; 16] {
-    static STARTED: AtomicU64 = AtomicU64::new(0);
-    let count = STARTED.fetch_add(1, Ordering::Relaxed);
-    let mut state = P::clock_ticks() ^ count.rotate_left(32);
+/// guard from: from the kernel's random number generator (D56), one draw. Linux does not wait
+/// for the generator to be seeded here either.
+fn random_bytes<P: Platform>() -> [u8; 16] {
     let mut bytes = [0; 16];
-    for half in bytes.as_chunks_mut::<8>().0 {
-        // SplitMix64's output step: every input bit reaches every output bit.
-        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut mixed = state;
-        mixed = (mixed ^ mixed >> 30).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        mixed = (mixed ^ mixed >> 27).wrapping_mul(0x94d0_49bb_1331_11eb);
-        *half = (mixed ^ mixed >> 31).to_le_bytes();
-    }
+    random::fill::<P>(&mut bytes);
     bytes
 }
 
@@ -924,6 +913,6 @@ mod tests {
 
     #[test]
     fn programs_do_not_get_the_same_random_bytes() {
-        assert_ne!(insecure_random_bytes::<P>(), insecure_random_bytes::<P>());
+        assert_ne!(random_bytes::<P>(), random_bytes::<P>());
     }
 }
