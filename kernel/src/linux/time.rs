@@ -206,9 +206,8 @@ pub fn clock_settime<P: Platform>(
 
 /// `settimeofday(tv, tz)`: as Linux, each unless null: `EFAULT` if `tv` is not the program's
 /// memory, `EINVAL` for microseconds outside 0 to 1000000, `EFAULT` if `tz` is not the
-/// program's memory, `EINVAL` for negative seconds, seconds past Linux's latest settable second or a
-/// whole second of microseconds, then
-/// `EPERM`, as for [`clock_settime`].
+/// program's memory, `EINVAL` for negative seconds, seconds past Linux's latest settable
+/// second or a whole second of microseconds, then `EPERM`, as for [`clock_settime`].
 pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Result<u64, Errno> {
     let mut seconds_and_microseconds = None;
     if tv != 0 {
@@ -250,8 +249,8 @@ pub fn nanosleep<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Err
 /// for, `EOPNOTSUPP` for one it cannot sleep on (the raw, coarse and thread CPU-time ones),
 /// then `EFAULT` if `req` is not the program's memory, then `EINVAL` for negative seconds or
 /// nanoseconds outside 0 to 999999999; the alarm clocks, which need a real-time clock device,
-/// are `EOPNOTSUPP` after those checks, as on Linux without one. Nothing can send the thread a signal while it sleeps yet, so the sleep is
-/// never interrupted and `rem` is never written.
+/// are `EOPNOTSUPP` after those checks, as on Linux without one. Nothing can send the thread
+/// a signal while it sleeps yet, so the sleep is never interrupted and `rem` is never written.
 pub fn clock_nanosleep<P: Platform>(
     process: &Process<P>,
     clock_id: u64,
