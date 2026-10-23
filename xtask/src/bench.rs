@@ -17,7 +17,9 @@ const MARKER: &str = "EGGOS-BENCH:";
 
 /// QEMU in deterministic instruction-counting mode: 2^0 ns of guest time per instruction, and
 /// an idle CPU skips straight to its next timer deadline instead of waiting in real time.
-pub const ICOUNT_ARGS: &[&str] = &["-icount", "shift=0,sleep=off"];
+/// `-seed` fixes what QEMU hands out as random (the device tree's `rng-seed`, `RDRAND` and
+/// `RDSEED`), so a path that ever depends on random values runs the same way each time (D56).
+pub const ICOUNT_ARGS: &[&str] = &["-icount", "shift=0,sleep=off", "-seed", "1"];
 
 /// Benchmarks run on one CPU: with `-icount`, QEMU runs every CPU in one thread in turn, so
 /// other CPUs' instructions would count against the measured ones (D40).

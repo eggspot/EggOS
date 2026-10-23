@@ -131,10 +131,11 @@ pub struct TestProgram {
     pub linux_hello: usize,
     /// A Linux program started as Linux starts one (D51): its stack pointer at `argc`, then
     /// the `argv` and `envp` pointer arrays, each ended by a null pointer. Checks that
-    /// `gettid` returns what `getpid` does, then writes each argument string, then each
+    /// `gettid` returns what `getpid` does and that `getrandom` fills the 16 bytes below its
+    /// stack pointer (not with zeros), then writes each argument string, then each
     /// environment string, to standard output with `writev` from an iovec on its stack, then
-    /// calls `exit_group(argc)`; `exit_group(255)` if the stack pointer is not 16-byte aligned
-    /// or the ids differ.
+    /// calls `exit_group(argc)`; `exit_group(255)` if the stack pointer is not 16-byte
+    /// aligned, the ids differ or `getrandom` failed.
     pub linux_start: usize,
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.

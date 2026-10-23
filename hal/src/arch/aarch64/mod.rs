@@ -198,6 +198,17 @@ eggos_secondary_start:
 /// it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_4000_0000;
 
+/// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]): in 64-byte lines of word
+/// stores, faster here than the compiler's `memset`, a loop of single word stores (D56).
+///
+/// # Safety
+/// As for [`crate::memory::zero`].
+#[inline]
+pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::memory::zero_by_lines(start, length) }
+}
+
 /// The physical memory the boot direct map covers, and so the most the kernel reaches before
 /// the driver model (M5): 256 GiB, all of one level-1 table's first half. QEMU `virt` puts
 /// at most 255 GiB of RAM from 1 GiB on, below its high device region.
@@ -573,6 +584,13 @@ impl Platform for Aarch64 {
         // calling convention requires a call to preserve, so to each thread the call is an
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    fn random_seeds(seed: &mut dyn FnMut(crate::random::SeedSource, &[u8])) {
+        // SAFETY: as in `memory_map`; the kernel calls this once at boot, on the boot CPU
+        // before any other starts and between the HAL's other reads of the tree, which the
+        // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
+        unsafe { boot_memory::device_tree_take_seeds(RAM_BASE, seed) };
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {

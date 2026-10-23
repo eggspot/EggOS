@@ -21,6 +21,7 @@ pub mod linux;
 pub mod memory;
 pub mod paging;
 pub mod process;
+pub mod random;
 pub mod regions;
 pub mod selftest;
 pub mod sync;
@@ -48,6 +49,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     let report = writeln!(console, "EggOS {VERSION} ({})", P::ARCH)
         .and_then(|()| writeln!(console, "clock: {} Hz", P::clock_frequency()))
         .and_then(|()| report_memory(console, &free_memory))
+        .and_then(|()| report_random(console, random::seed_at_boot::<P>()))
         .and_then(|()| match paging::enable::<P>(&free_memory) {
             Ok(mut memory) => {
                 writeln!(
@@ -72,6 +74,29 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     match report {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
+    }
+}
+
+/// Prints how the random number generator was seeded (D56).
+fn report_random<W: Write>(console: &mut W, seeds: random::BootSeeds) -> core::fmt::Result {
+    let random::BootSeeds {
+        pieces,
+        credited_bits,
+        seeded,
+    } = seeds;
+    let plural = if pieces == 1 { "" } else { "s" };
+    if seeded {
+        writeln!(
+            console,
+            "random: seeded, {credited_bits} bits from {pieces} source{plural}"
+        )
+    } else {
+        writeln!(
+            console,
+            "random: NOT SEEDED ({credited_bits} of {} bits from {pieces} source{plural}): \
+             getrandom waits, AT_RANDOM is guessable",
+            random::SEEDED_BITS
+        )
     }
 }
 
@@ -447,6 +472,9 @@ pub(crate) mod tests {
             // SAFETY: the caller's guarantees are the host switch's.
             unsafe { thread::host::switch_thread(save, resume) }
         }
+        fn random_seeds(seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {
+            seed(eggos_hal::random::SeedSource::CpuInstruction, &[0x5e; 32]);
+        }
         fn cpus(cpu: &mut dyn FnMut(u64)) {
             cpu(0);
         }
@@ -548,6 +576,7 @@ pub(crate) mod tests {
         assert!(out.starts_with(&format!(
             "EggOS {VERSION} (testarch)\nclock: 1000000 Hz\n\
              memory: 16384 KiB free in 1 range\n  0x100000..0x1100000\n\
+             random: seeded, 256 bits from 1 source\n\
              paging: kernel page tables active, direct map at {:#x}\n",
             TestPlatform::direct_map_offset()
         )));

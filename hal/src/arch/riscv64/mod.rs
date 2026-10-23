@@ -152,6 +152,17 @@ eggos_secondary_start:
 /// it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_0000_0000;
 
+/// Zeroes the `length` bytes at `start` ([`crate::memory::zero`]): in 64-byte lines of word
+/// stores, faster here than the compiler's `memset`, a loop of single word stores (D56).
+///
+/// # Safety
+/// As for [`crate::memory::zero`].
+#[inline]
+pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { crate::memory::zero_by_lines(start, length) }
+}
+
 /// The direct map: the start of Sv39's high half (D29). It holds 254 GiB: the top 2 GiB are
 /// the kernel's (D33).
 const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;
@@ -519,6 +530,13 @@ impl Platform for Riscv64 {
         // calling convention requires a call to preserve, so to each thread the call is an
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    fn random_seeds(seed: &mut dyn FnMut(crate::random::SeedSource, &[u8])) {
+        // SAFETY: as in `memory_map`; the kernel calls this once at boot, on the boot CPU
+        // before any other starts and between the HAL's other reads of the tree, which the
+        // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
+        unsafe { boot_memory::device_tree_take_seeds(device_tree(), seed) };
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {

@@ -15,6 +15,7 @@ pub mod fdt;
 mod interrupt;
 pub mod memory;
 pub mod paging;
+pub mod random;
 pub mod thread;
 pub mod time;
 pub mod user;
@@ -192,6 +193,17 @@ pub trait Platform: 'static {
     /// FXSR, SSE and SSE2 bits, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set
     /// their GS base, D49's trigger).
     fn linux_hardware_capabilities() -> [u64; 2];
+
+    /// Hands the kernel's random number generator (D56) the seed material the machine offers,
+    /// each piece to `seed` with its source: the device tree's `/chosen/rng-seed` and
+    /// `kaslr-seed` on AArch64 and RISC-V, 256 bits from `RDSEED` (or `RDRAND`) on x86_64.
+    /// Called on the boot CPU before any other CPU starts: at boot, and again by a boot
+    /// self-test that checks the device tree's seeds are gone. A device-tree seed is
+    /// removed from the tree once handed over (its bytes zeroed, the property overwritten with
+    /// `FDT_NOP` tokens), so nothing that reads the tree later sees it, and CPU samples are
+    /// wiped after the call: the kernel must not keep `seed`'s bytes either, beyond hashing
+    /// them. Nothing at all on a machine with no source.
+    fn random_seeds(seed: &mut dyn FnMut(random::SeedSource, &[u8]));
 
     /// Makes the instructions just written as data at kernel virtual addresses
     /// `start..start + length` visible to instruction fetch on this CPU, at any virtual address
