@@ -54,7 +54,7 @@
 //! (D45). It is taken before the
 //! heap's and the frame allocator's, never after; an exited thread's stack is freed after it
 //! is released. A switch is made holding it, and the lock is handed over to the thread the
-//! switch resumes, which releases it ([`finish_switch`]): from choosing the next thread until
+//! switch resumes, which releases it (`finish_switch`): from choosing the next thread until
 //! the previous one's context is saved, nothing else can take the scheduler, on this CPU or
 //! another.
 
@@ -994,7 +994,7 @@ pub(crate) fn run_idle<P: Platform>() -> ! {
 }
 
 /// Starts a thread that runs `function` on a stack of its own, after the threads already
-/// ready to run on the CPU it is placed on ([`Schedulers::place`]): an idle one if there is
+/// ready to run on the CPU it is placed on (`Schedulers::place`): an idle one if there is
 /// one. The caller keeps running.
 pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,

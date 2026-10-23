@@ -91,6 +91,10 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo xtask clippy-targets
 
+      - name: Docs (rustdoc, warnings as errors)
+        if: steps.changes.outputs.code == 'true'
+        run: cargo xtask docs
+
       - name: Unit tests (host)
         if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace

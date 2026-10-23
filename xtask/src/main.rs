@@ -14,9 +14,10 @@ usage: cargo xtask <command> [options]
 
 commands:
   ci                     every check CI runs, cheapest first: fmt, clippy (host and kernel
-                         targets), host tests, QEMU boot tests and benchmarks on every
-                         architecture
+                         targets), docs, host tests, QEMU boot tests and benchmarks on
+                         every architecture
   clippy-targets         clippy -D warnings on the kernel crates for every kernel target
+  docs                   build the workspace's API docs with rustdoc, warnings as errors
   build --arch <arch>    build the kernel image for <arch>
   qemu  --arch <arch>    boot the kernel in QEMU headless and check its self-test verdict,
                          then boot it again to check that writing read-only data faults
@@ -86,6 +87,7 @@ fn run(args: &[String]) -> Result<(), String> {
     match command {
         Some("ci") => ci(),
         Some("clippy-targets") => clippy_targets(),
+        Some("docs") => docs(),
         Some("build") => {
             for arch in arch()? {
                 build_kernel(arch, None)?;
@@ -147,6 +149,7 @@ fn ci() -> Result<(), String> {
         "warnings",
     ])?;
     clippy_targets()?;
+    docs()?;
     cargo(&["test", "--workspace"])?;
     for arch in ARCHES {
         boot_tests(arch)?;
@@ -270,12 +273,24 @@ pub fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+fn docs() -> Result<(), String> {
+    cargo_with_env(
+        &["doc", "--workspace", "--no-deps"],
+        &[("RUSTDOCFLAGS", "-D warnings")],
+    )
+}
+
 /// Runs `cargo <args>` in the workspace root with the toolchain that is running this xtask.
 fn cargo(args: &[&str]) -> Result<(), String> {
+    cargo_with_env(args, &[])
+}
+
+fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     eprintln!("xtask: cargo {}", args.join(" "));
     let status = Command::new(&cargo)
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(workspace_root())
         .status()
         .map_err(|e| format!("could not run {cargo}: {e}"))?;

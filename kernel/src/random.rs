@@ -109,7 +109,7 @@ fn credit(source: SeedSource, bytes: &[u8]) -> u32 {
     }
 }
 
-/// Hashes `bytes` from `source` into the input, credited as [`credit`] says. Takes effect at
+/// Hashes `bytes` from `source` into the input, credited as `credit` says. Takes effect at
 /// the next [`reseed`].
 pub fn add_seed(source: SeedSource, bytes: &[u8]) {
     add_input(source.tag(), bytes, credit(source, bytes));

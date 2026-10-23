@@ -2655,3 +2655,27 @@ switch-path cost; this entry follows it.)
     setting the frame's program counter. The self-test `linux_programs_handle_their_faults`
     runs it twice and requires an exit of 0 and every frame of the second run freed. With
     `si_addr` off by one it fails on all three.
+
+## D66 Comments: rustdoc on public items only, built in CI; the rest removed crate by crate — Decided by the build loop (the rule's reading decided by research)
+- **Why.** The owner's global rule of 2026-10-23 ("Code comments: none, the code explains
+  itself") allows only doc comments a tool turns into documentation (Rust `///` and `//!` on
+  public items of crates whose docs are generated), comments a tool reads (`// SAFETY:`, which
+  clippy's `undocumented_unsafe_blocks` requires here; lint directives) and legal notices.
+  EggOS had about 1,500 plain `//` comment lines besides its ~400 `// SAFETY:` lines, about
+  4,450 doc-comment lines, and nothing that generated its docs.
+- **Doc comments on public items stay, and the docs are now generated** (research). The
+  playbook's rule names rustdoc among the allowed comments, and many public docs are real
+  contracts (errors and their order, the man page or POSIX rule followed). `cargo xtask docs`
+  builds every workspace crate's docs with `RUSTDOCFLAGS=-D warnings`; `cargo xtask ci` and the
+  CI job run it after clippy. Twenty public docs linked private items or an ambiguous name and
+  were fixed to pass. No `missing_docs` lint: it would demand new comments everywhere, against
+  the rule's intent. Cost: one step in the existing Linux job, about half a minute; no new job.
+- **Not allowed:** plain `//` comments (but `// SAFETY:`), doc comments on private items
+  (rustdoc does not show them by default), and `#` comments in TOML and YAML. Public docs keep
+  to the contract; how the code works moves out.
+- **Removal, crate by crate** (research): one cleanup PR per area, each a few hundred lines,
+  information moved to names, constants, tests or this log first: drivers, xtask and the
+  configuration files; then the HAL; then the kernel's modules. Files PR #47 (D54) changes come
+  last, after it merges, so the cleanup does not conflict with it. Feature work cleans the
+  files it changes in a commit of its own, or leaves a large file to its area's cleanup PR.
+- **`CLAUDE.md`** says so under Rules.

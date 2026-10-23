@@ -5,7 +5,7 @@
 //! Each process has a soft and a hard limit per resource ([`ResourceLimits`]), starting from
 //! [`DEFAULTS`]. A process may lower either and raise its soft limit up to its hard one; raising
 //! a hard limit needs privilege (Linux's `CAP_SYS_RESOURCE`), which no process has until
-//! processes have credentials ([`may_raise_hard_limits`]), so it is `EPERM`: lowering a hard
+//! processes have credentials (`may_raise_hard_limits`), so it is `EPERM`: lowering a hard
 //! limit stays final, as a sandbox relies on. The limits are kept and reported; each is
 //! enforced when its resource exists (the stack's 8 MiB region already matches its default).
 
@@ -230,7 +230,7 @@ pub fn setrlimit<P: Platform>(
 
 /// `prlimit64(pid, resource, new, old)`: sets `resource`'s limits to the `struct rlimit64` at
 /// `new`, unless that is null, and copies the ones it had to `old`, unless that is null. See
-/// [`prlimit`].
+/// `prlimit`.
 pub fn prlimit64<P: Platform>(
     process: &Process<P>,
     pid: u64,

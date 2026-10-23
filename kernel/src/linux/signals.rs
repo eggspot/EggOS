@@ -6,7 +6,7 @@
 //! itself `SIGABRT` and expects to die of it.
 //!
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
-//! which makes its own block on the heap ([`Caught`]). Its thread has a blocked mask, pending
+//! which makes its own block on the heap (`Caught`). Its thread has a blocked mask, pending
 //! signals and an alternate stack ([`ThreadSignals`]), which move to each thread when `clone`
 //! exists. A signal a call makes due (sent to the caller, unblocked, or no longer caught) is
 //! delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
@@ -134,7 +134,7 @@ const fn bit(signal: u32) -> u64 {
 /// The signal state of a process and its one thread.
 #[derive(Debug, Default)]
 pub struct Signals {
-    /// The process's actions and what goes with catching signals ([`Caught`]): every action
+    /// The process's actions and what goes with catching signals (`Caught`): every action
     /// [`Action::default`] (`SIG_DFL`) until one first changes, then a block of its own on the
     /// heap. A process costs a word for them, and starting one copies nothing (D59's lesson):
     /// `Process` stays in its heap size class.
@@ -146,7 +146,7 @@ pub struct Signals {
 /// A thread's signal state: what it blocks, what is pending and its alternate stack.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadSignals {
-    /// The blocked signals, bit `n - 1` for signal `n`; never [`UNBLOCKABLE`]'s.
+    /// The blocked signals, bit `n - 1` for signal `n`; never `SIGKILL` or `SIGSTOP`.
     pub blocked: u64,
     /// The signals sent and not yet delivered, as `blocked`.
     pub pending: u64,
@@ -809,7 +809,7 @@ fn own_id<P: Platform>(process: &Process<P>) -> i32 {
 /// one it can reach yet: its own id; 0, its process group, of which it is the only member (a
 /// process is its own group's leader until `setpgid` exists); or minus its id, that group.
 /// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
-/// is looked at, as on Linux; then as [`send_to_self`]. `pid` is a `pid_t`: the register's
+/// is looked at, as on Linux; then as `send_to_self`. `pid` is a `pid_t`: the register's
 /// upper half is ignored.
 pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<u64, Errno> {
     let own = own_id(process);
@@ -823,7 +823,7 @@ pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<
 
 /// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller's one thread being the
 /// only one: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
-/// caller's, then as [`send_to_self`].
+/// caller's, then as `send_to_self`.
 pub fn tkill<P: Platform>(process: &Process<P>, tid: u64, signal: u64) -> Result<u64, Errno> {
     tgkill(process, u64::from(own_id(process) as u32), tid, signal)
 }

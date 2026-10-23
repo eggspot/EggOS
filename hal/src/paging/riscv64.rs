@@ -4,7 +4,7 @@
 //! Sv39 is what every RVA profile requires, so it runs on every RISC-V application processor;
 //! its upper half (256 GiB) holds the direct map (254 GiB) and the kernel image (D29, D33).
 //! Without the Svpbmt extension a page cannot say whether it is device memory: the platform's
-//! physical memory attributes decide, so [`MemoryType`] is not encoded.
+//! physical memory attributes decide, so [`super::MemoryType`] is not encoded.
 
 use super::{Attributes, Entry, Format};
 

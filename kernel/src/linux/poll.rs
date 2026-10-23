@@ -3,7 +3,7 @@
 //! fails for any reason but a few; C programs and event loops poll before reading or writing,
 //! and `poll` with no descriptors is a common way to sleep.
 //!
-//! The only descriptors so far are the console's, 0 to 2 ([`super::is_console`]): always
+//! The only descriptors so far are the console's, 0 to 2 (`is_console`): always
 //! writable, as the console takes every byte at once, and never readable, as there is no
 //! console input yet (M8). Every other descriptor is closed (`POLLNVAL`). So nothing becomes
 //! ready during a wait: a call that finds nothing ready sleeps until its timeout, or for good
@@ -105,7 +105,7 @@ pub fn poll<P: Platform>(
 }
 
 /// `ppoll(fds, nfds, timeout, sigmask, sigsetsize)`: reports, in each `struct pollfd` of the
-/// `nfds` at `fds`, the events its descriptor has of those asked for (see [`events`]), and
+/// `nfds` at `fds`, the events its descriptor has of those asked for (see `events`), and
 /// returns how many report any. If none does, it first waits for one until the `struct
 /// timespec` at `timeout` has passed, for good if that is null, not at all if it is zero. A
 /// timeout that is not zero gets the time not slept written back once the signal mask passed
