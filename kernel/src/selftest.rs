@@ -844,7 +844,7 @@ fn processes_keep_their_fp_registers<P: Platform>(
     const CALLS: u64 = 20;
     /// An exit other than the program's system calls, or a report of changed registers.
     const WRONG: u64 = u64::MAX;
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "none", target_arch = "x86_64"))]
     if programs_see_xsave_or_protection_keys() {
         return Err("programs see XSAVE or protection keys, whose state is never switched");
     }
@@ -901,7 +901,7 @@ fn processes_keep_their_fp_registers<P: Platform>(
     result
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
 fn programs_see_xsave_or_protection_keys() -> bool {
     use core::arch::x86_64::{__cpuid, __cpuid_count};
     const CPUID_1_ECX_OSXSAVE: u32 = 1 << 27;

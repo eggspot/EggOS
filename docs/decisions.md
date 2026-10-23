@@ -3560,11 +3560,11 @@ the license, by an explicit instruction recorded here.
 - **Cost.** One more bit pattern in a CR4 write at each CPU's start; `mremap`'s check is one
   compare on a cold path; `MADV_POPULATE_WRITE` is faster on mapped pages. No benchmark
   changes.
-- **Tests.** QEMU: `processes_keep_their_fp_registers_across_switches` first checks that
-  `CPUID` reports neither `OSXSAVE` nor `OSPKE` on x86_64. Under `-cpu max` with CR4's
-  `OSXSAVE` and `PKE` set before `set_up_user_mode`, as such a loader would leave them, it
-  fails without the fix and passes with it (QEMU's PVH boot leaves them clear, so in CI it
-  guards against a regression). Host: `mremap` with `MREMAP_FIXED` and an old size reaching
-  past user space is `EINVAL` with the region and its contents where they were (fails
-  without the fix); `MADV_POPULATE_WRITE` over populated pages keeps their frames and
-  contents.
+- **Tests.** QEMU: `processes_keep_their_fp_registers_across_switches` first checks, in the
+  kernel (not in host tests, which run on the host's CPU), that `CPUID` reports neither
+  `OSXSAVE` nor `OSPKE` on x86_64. Under `-cpu max` with CR4's `OSXSAVE` and `PKE` set before
+  `set_up_user_mode`, as such a loader would leave them, it fails without the fix and passes
+  with it (QEMU's PVH boot leaves them clear, so in CI it guards against a regression). Host:
+  `mremap` with `MREMAP_FIXED` and an old size reaching past user space is `EINVAL` with the
+  region and its contents where they were (fails without the fix); `MADV_POPULATE_WRITE` over
+  populated pages keeps their frames and contents.
