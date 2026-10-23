@@ -21,7 +21,7 @@
 use super::signal;
 use crate::process::Process;
 use eggos_hal::paging::Format;
-use eggos_hal::{ExceptionKind, Platform};
+use eggos_hal::{Exception, Platform};
 
 /// `si_code`s for faults (sigaction(2)): each signal numbers its own from 1.
 pub mod code {
@@ -69,23 +69,10 @@ pub struct Trap {
     pub address: u64,
 }
 
-/// An exception the program raised, as the HAL reported it, with the program's registers.
-#[derive(Debug, Clone, Copy)]
-pub struct Raised {
-    pub kind: ExceptionKind,
-    /// The architecture's raw cause value ([`eggos_hal::Exception::code`]).
-    pub code: u64,
-    /// The faulting address, for the faults that report one.
-    pub address: Option<u64>,
-    /// The program counter and stack pointer.
-    pub pc: u64,
-    pub stack: u64,
-}
-
-/// The fault `exception` in the program of `process`: see the module documentation. A page
-/// fault here is one the process did not resolve.
+/// The fault `exception` in the program of `process`, whose stack pointer was `stack`: see the
+/// module documentation. A page fault here is one the process did not resolve.
 #[cold]
-pub fn classify<P: Platform>(process: &Process<P>, exception: &Raised) -> Fault {
+pub fn classify<P: Platform>(process: &Process<P>, exception: &Exception, stack: u64) -> Fault {
     let in_user_space = |address: u64| address < <P::PageTableFormat as Format>::USER_END;
     let segv = |address: u64| {
         let code = if in_user_space(address) && process.region(address).is_some() {
@@ -95,7 +82,7 @@ pub fn classify<P: Platform>(process: &Process<P>, exception: &Raised) -> Fault 
         };
         (signal::SIGSEGV, code, address)
     };
-    arch::classify(exception, in_user_space, segv)
+    arch::classify(exception, stack, in_user_space, segv)
 }
 
 /// Builds a [`Fault`].
@@ -110,9 +97,9 @@ fn fault((signal, code, address): (u32, i32, u64), trap: Trap) -> Fault {
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
-    use super::{Fault, Raised, Trap, code, fault};
+    use super::{Fault, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::ExceptionKind;
+    use eggos_hal::{Exception, ExceptionKind};
 
     /// The page-fault error code's protection bit: set for every address outside user space,
     /// mapped or not, as Linux does.
@@ -137,7 +124,8 @@ mod arch {
     }
 
     pub fn classify(
-        exception: &Raised,
+        exception: &Exception,
+        _stack: u64,
         in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {
@@ -179,9 +167,9 @@ mod arch {
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
-    use super::{Fault, Raised, Trap, code, fault};
+    use super::{Fault, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::ExceptionKind;
+    use eggos_hal::{Exception, ExceptionKind};
 
     /// Exception classes (`ESR_EL1.EC`).
     const EC_INSTRUCTION_ABORT_LOWER: u64 = 0x20;
@@ -221,7 +209,8 @@ mod arch {
     }
 
     pub fn classify(
-        exception: &Raised,
+        exception: &Exception,
+        stack: u64,
         in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {
@@ -239,7 +228,7 @@ mod arch {
             }
             // The FAR is unknown after an SP alignment fault: the stack pointer it had.
             ExceptionKind::Alignment if esr >> 26 & 0x3f == EC_SP_ALIGNMENT => {
-                (signal::SIGBUS, code::BUS_ADRALN, exception.stack)
+                (signal::SIGBUS, code::BUS_ADRALN, stack)
             }
             // A PC alignment fault: the misaligned PC, in the FAR.
             ExceptionKind::Alignment => (
@@ -273,12 +262,13 @@ mod arch {
 
 #[cfg(target_arch = "riscv64")]
 mod arch {
-    use super::{Fault, Raised, Trap, code, fault};
+    use super::{Fault, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::ExceptionKind;
+    use eggos_hal::{Exception, ExceptionKind};
 
     pub fn classify(
-        exception: &Raised,
+        exception: &Exception,
+        _stack: u64,
         _in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {

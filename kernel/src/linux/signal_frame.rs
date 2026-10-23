@@ -393,8 +393,9 @@ mod arch {
     //! `uc_mcontext` is `struct sigcontext { u64 fault_address; u64 regs[31]; u64 sp, pc,
     //! pstate; u8 __reserved[4096]; }`; `__reserved` holds records, each a magic number and a
     //! size: here the FP/SIMD one (`fpsimd_context`), which Linux requires, for a fault's
-    //! signal an `esr_context` with the syndrome, then the terminating null one. Above the frame is a frame record (`x29`, `x30`) that `x29`
-    //! points at, so a backtrace from the handler walks into the interrupted code.
+    //! signal an `esr_context` with the syndrome, then the terminating null one. Above the
+    //! frame is a frame record (`x29`, `x30`) that `x29` points at, so a backtrace from the
+    //! handler walks into the interrupted code.
     use super::generic::{MCONTEXT, SIGMASK, UCONTEXT};
     use super::{Handler, INFO_SIZE, STACK_SIZE, Saved, Trap, put, ucontext, word};
     use eggos_hal::user::UserRegisters;

@@ -552,7 +552,7 @@ mod tests {
                 // resolves the fault and runs the program again, which stores and moves on.
                 let page = context.stack() & !(FRAME_SIZE - 1);
                 *context = eggos_hal::user::UserContext::new(pc, page - FRAME_SIZE);
-                return UserExit::Exception(eggos_hal::Exception {
+                return context.simulate_exception(eggos_hal::Exception {
                     kind: eggos_hal::ExceptionKind::DataFault,
                     name: "test page fault",
                     code: crate::tests::FAULT_WRITE,

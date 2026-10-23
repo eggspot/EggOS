@@ -362,7 +362,7 @@ pub(crate) mod tests {
                             );
                         }
                         _ => {
-                            return UserExit::Exception(Exception {
+                            return context.simulate_exception(Exception {
                                 kind: ExceptionKind::DataFault,
                                 name: "test page fault",
                                 code: FAULT_WRITE,
@@ -382,14 +382,14 @@ pub(crate) mod tests {
                     context.simulate_syscall(TestProgram::SYSCALL_REPORT, arguments, pc + 4);
                     UserExit::Syscall
                 }
-                pc if pc == checks + 8 => UserExit::Exception(Exception {
+                pc if pc == checks + 8 => context.simulate_exception(Exception {
                     kind: ExceptionKind::DataFault,
                     name: "test page fault",
                     code: 0,
                     pc,
                     address: Some(context.syscall_result()),
                 }),
-                pc if pc == floating_point => UserExit::Exception(Exception {
+                pc if pc == floating_point => context.simulate_exception(Exception {
                     kind: ExceptionKind::IllegalInstruction,
                     name: "test floating-point trap",
                     code: 0,
@@ -943,7 +943,7 @@ pub(crate) mod tests {
                 _ if cfg!(target_arch = "aarch64") => 0x24 << 26,
                 _ => 13,
             };
-            UserExit::Exception(Exception {
+            context.simulate_exception(Exception {
                 kind: ExceptionKind::DataFault,
                 name: "test page fault",
                 code,

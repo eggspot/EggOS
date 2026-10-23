@@ -885,8 +885,8 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
 /// Sends `fault`'s signal from the kernel, forced as Linux forces a fault's: a program that
 /// blocks or ignores it gets `SIG_DFL` and dies of it. Then delivers it as [`deliver`] does,
 /// its handler, if any, starting with the fault's `siginfo_t` and machine context. Nothing else
-/// is due when a program faults (every due signal was delivered before it ran again), and a
-/// handler cannot unblock any, so the fault's signal is the one delivered.
+/// is due when a program faults (every due signal was delivered before it ran again, and
+/// starting a handler only blocks more), so the fault's signal is the one delivered.
 pub fn deliver_fault<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,

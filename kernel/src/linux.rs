@@ -5,7 +5,8 @@
 //! dispatched by its Linux number on the architecture ([`number`]) and returns its result, or
 //! `-errno`, in the result register; an interrupt resumes the program; a page fault the
 //! process resolves (a page of one of its regions touched for the first time, D52) resumes it
-//! too; any other exception ends the process with the signal Linux would send for it.
+//! too; any other exception sends the program the signal Linux would send for it, which its
+//! handler may catch ([`fault`], D65).
 //!
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
@@ -20,7 +21,8 @@
 //! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
 //! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
 //! `rt_sigpending`, and delivery by their default actions ([`signals`], D63), and signal
-//! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64).
+//! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64), and
+//! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -295,8 +297,11 @@ pub fn handle<P: Platform>(
 /// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
 /// would; any other fault sends the program the signal Linux sends for it ([`fault`]). Out of
 /// line and laid out away from the system-call path, which stays as short as it was (the
-/// exception's parts passed alone keep the loop's state in registers, and the page-fault path
-/// with them: +4% on AArch64's `linux_page_fault` with the whole `Exception` by reference).
+/// exception's parts passed alone keep the loop's state in registers). Only `context` stays
+/// live across the page's mapping for the fault's sake, in place of the `kind` that ending
+/// the process needed before D65: the fault reads the rest back from it
+/// ([`UserContext::last_exception`]). Keeping the raw cause and the address too cost up to
+/// +1% on `linux_page_fault`.
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
@@ -306,12 +311,12 @@ fn user_exception<P: Platform>(
     code: u64,
     address: Option<u64>,
 ) -> ControlFlow<()> {
-    let (Some(page_fault), Some(fault_address)) = (P::page_fault(kind, code), address) else {
-        return fault(process, context, kind, code, address);
+    let (Some(page_fault), Some(address)) = (P::page_fault(kind, code), address) else {
+        return fault(process, context);
     };
-    match process.resolve_page_fault(fault_address, page_fault) {
+    match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
-        Err(UnresolvedFault::NotAllowed) => fault(process, context, kind, code, address),
+        Err(UnresolvedFault::NotAllowed) => fault(process, context),
         Err(UnresolvedFault::OutOfMemory) => {
             process.exit(ProcessExit::Killed {
                 signal: signal::SIGKILL,
@@ -321,27 +326,15 @@ fn user_exception<P: Platform>(
     }
 }
 
-/// Sends the program, whose registers are `context`, the signal Linux sends for the exception
-/// of `kind` with raw cause `code` at `address` ([`fault::classify`]), forced: its handler runs
-/// if it has one and neither blocks nor ignores the signal, else the process ends with it
+/// Sends the program, whose registers are `context` after the exception it raised, the
+/// signal Linux sends for that exception ([`fault::classify`]), forced: its handler runs if it
+/// has one and neither blocks nor ignores the signal, else the process ends with it
 /// ([`signals::deliver_fault`]). Breaks when the process ends.
 #[cold]
 #[inline(never)]
-fn fault<P: Platform>(
-    process: &Process<P>,
-    context: &mut UserContext,
-    kind: ExceptionKind,
-    code: u64,
-    address: Option<u64>,
-) -> ControlFlow<()> {
-    let raised = fault::Raised {
-        kind,
-        code,
-        address,
-        pc: context.pc(),
-        stack: context.stack(),
-    };
-    let fault = fault::classify(process, &raised);
+fn fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+    let exception = context.last_exception();
+    let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, context, &fault)
 }
 
@@ -1853,7 +1846,10 @@ mod tests {
                 pc: 0x40_0000,
                 address: Some(address),
             };
-            handle(process, &mut context, UserExit::Exception(exception))
+            {
+                let exit = context.simulate_exception(exception);
+                handle(process, &mut context, exit)
+            }
         };
         let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
         let with_region = |pages: u64| {
@@ -1974,7 +1970,10 @@ mod tests {
             let process = process_with_data(&kernel, b"ab");
             let exception = exception(kind, class, status, None);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Exception(exception)),
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
                 ControlFlow::Break(()),
                 "{kind:?} {class:#x}"
             );
@@ -2406,7 +2405,10 @@ mod tests {
             let interrupted = context.clone();
             let exception = page_fault_exception(address, write);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Exception(exception)),
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
                 ControlFlow::Continue(())
             );
             assert_eq!(context.pc(), HANDLER);
@@ -2461,7 +2463,10 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, 0x10_0000);
         let exception = page_fault_exception(0x1000, false);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Exception(exception)),
+            {
+                let exit = context.simulate_exception(exception);
+                handle(&process, &mut context, exit)
+            },
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2495,7 +2500,10 @@ mod tests {
             let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
             let exception = page_fault_exception(0x1000, false);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Exception(exception)),
+                {
+                    let exit = context.simulate_exception(exception);
+                    handle(&process, &mut context, exit)
+                },
                 ControlFlow::Break(())
             );
             assert_eq!(

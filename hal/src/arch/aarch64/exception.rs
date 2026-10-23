@@ -795,7 +795,18 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         // `ELR_EL1` already points after the `svc`.
         return UserExit::Syscall;
     }
+    // With `vector`, all `last_exception` needs.
+    registers.esr = esr;
+    registers.far = far;
     UserExit::Exception(decode(index % 4, esr, far, registers.elr))
+}
+
+impl crate::user::aarch64::Registers {
+    /// [`UserContext::last_exception`]: the exception `run_user` returned, from the vector
+    /// entry, `ESR_EL1` and `FAR_EL1` it kept.
+    pub(crate) fn last_exception(&self) -> Exception {
+        decode(self.vector % 4, self.esr, self.far, self.elr)
+    }
 }
 
 /// [`crate::Platform::user_test_program`].

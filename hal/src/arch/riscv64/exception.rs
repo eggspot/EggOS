@@ -901,7 +901,18 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     if scause & SCAUSE_INTERRUPT != 0 && interrupt(scause) {
         return UserExit::Interrupt;
     }
+    // All `last_exception` needs.
+    registers.scause = scause;
+    registers.stval = stval;
     UserExit::Exception(decode(scause, stval, registers.pc))
+}
+
+impl crate::user::riscv64::Registers {
+    /// [`UserContext::last_exception`]: the exception `run_user` returned, from the `scause`
+    /// and `stval` it kept.
+    pub(crate) fn last_exception(&self) -> Exception {
+        decode(self.scause, self.stval, self.pc)
+    }
 }
 
 /// [`crate::Platform::user_test_program`].

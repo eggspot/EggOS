@@ -822,6 +822,8 @@ const KERNEL_CODE_SELECTOR: u16 = 0x08;
 /// Present, DPL 0, 64-bit interrupt gate (interrupts stay masked in the handler).
 const INTERRUPT_GATE: u8 = 0x8e;
 
+/// `#PF`'s vector.
+const PAGE_FAULT_VECTOR: u64 = 14;
 /// Page-fault error code bit 0: the entry was present (a protection violation).
 const PAGE_FAULT_PRESENT: u64 = 1 << 0;
 /// Page-fault error code bit 1: the access wrote memory.
@@ -1014,7 +1016,7 @@ pub(super) fn page_fault(kind: ExceptionKind, error_code: u64) -> Option<crate::
 /// Describes the exception or unexpected interrupt `vector`, with the faulting address for a
 /// page fault.
 fn exception(vector: u64, error_code: u64, rip: u64) -> Exception {
-    let fault_address = if vector == 14 {
+    let fault_address = if vector == PAGE_FAULT_VECTOR {
         let cr2: u64;
         // SAFETY: reading CR2 at ring 0 has no side effects.
         unsafe {
@@ -1202,14 +1204,11 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     // `sysretq` to a non-canonical `rip` faults in ring 0 on the program's stack, and `iretq`
     // to one faults in ring 0 with the program's GS base: never enter with one.
     if registers.rip >= X86_64::USER_END {
-        return UserExit::Exception(Exception {
-            kind: ExceptionKind::InstructionFault,
-            name: "program counter outside user space",
-            // As the fetch's page fault would report it, from user mode.
-            code: PAGE_FAULT_USER | PAGE_FAULT_INSTRUCTION_FETCH,
-            pc: registers.rip,
-            address: Some(registers.rip),
-        });
+        // As the fetch's page fault would report it, from user mode, kept as for one.
+        registers.vector = PAGE_FAULT_VECTOR;
+        registers.error_code = PAGE_FAULT_USER | PAGE_FAULT_INSTRUCTION_FETCH;
+        registers.fault_address = registers.rip;
+        return UserExit::Exception(registers.last_exception());
     }
     registers.cs = USER_CODE_SELECTOR;
     registers.ss = USER_DATA_SELECTOR;
@@ -1227,8 +1226,20 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         vector => {
             // Unchanged for an exception taken again on the way in (none can be).
             debug_assert_ne!(vector, RESTORE_ALL_VECTOR);
-            UserExit::Exception(exception(vector, registers.error_code, registers.rip))
+            let exception = exception(vector, registers.error_code, registers.rip);
+            // With `vector` and `error_code`, all `last_exception` needs.
+            registers.fault_address = exception.address.unwrap_or(0);
+            UserExit::Exception(exception)
         }
+    }
+}
+
+impl crate::user::x86_64::Registers {
+    /// [`UserContext::last_exception`]: the exception `run_user` returned, from the vector and
+    /// error code the entry code saved and the faulting address it kept.
+    pub(crate) fn last_exception(&self) -> Exception {
+        let address = (self.vector == PAGE_FAULT_VECTOR).then_some(self.fault_address);
+        decode(self.vector, self.error_code, self.rip, address)
     }
 }
 
