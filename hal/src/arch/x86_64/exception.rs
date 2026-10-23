@@ -759,6 +759,7 @@ x86_64_user_test_linux_signal_queue:
     movq    %rax, 272(%r12)
     movq    $0, 256(%r12)
     movq    $0, 264(%r12)
+    movq    $0, 144(%r12)
     xorl    %edi, %edi
     leaq    272(%r12), %rsi
     xorl    %edx, %edx

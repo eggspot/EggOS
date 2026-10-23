@@ -262,9 +262,9 @@ impl Info {
     }
 
     /// The `siginfo_t` a program queues signal `signal` with: as written, but with `signal` as
-    /// its `si_signo`, and only its first [`KEPT_INFO_SIZE`] bytes.
-    pub fn queued(signal: u32, bytes: &[u8; INFO_SIZE]) -> Self {
-        let mut info = Self(bytes[..KEPT_INFO_SIZE].try_into().unwrap());
+    /// its `si_signo`.
+    pub fn queued(signal: u32, bytes: [u8; KEPT_INFO_SIZE]) -> Self {
+        let mut info = Self(bytes);
         info.0[..4].copy_from_slice(&(signal as i32).to_ne_bytes());
         info
     }
@@ -1033,23 +1033,23 @@ pub fn tgkill<P: Platform>(
 fn read_queued_info<P: Platform>(
     process: &Process<P>,
     address: u64,
-) -> Result<[u8; INFO_SIZE], Errno> {
-    let mut bytes = [0; INFO_SIZE];
+) -> Result<[u8; KEPT_INFO_SIZE], Errno> {
+    let mut bytes = [0; KEPT_INFO_SIZE];
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
     Ok(bytes)
 }
 
-fn is_reserved_for_kernel_and_kill(bytes: &[u8; INFO_SIZE]) -> bool {
+fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
     let code = i32::from_ne_bytes(bytes[8..12].try_into().unwrap());
     code >= 0 || code == code::TKILL
 }
 
 /// `rt_sigqueueinfo(tgid, signal, info)`: sends `signal` to process `tgid` with the
 /// `siginfo_t` at `info`, as `sigqueue` does with `SI_QUEUE`, the caller being the only
-/// process it can reach yet. As Linux, in this order: `EFAULT` if `info` is not the program's
-/// memory; `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
+/// process it can reach yet. As Linux, in this order: `EFAULT` if the first
+/// [`KEPT_INFO_SIZE`] bytes at `info`, all that is read, are not the program's memory; `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
 /// `SI_TKILL`) and the target is not the caller; `ESRCH` unless the target is the caller (0
 /// is no process); `EINVAL` for a signal outside 0 to 64; `EAGAIN` for a real-time signal when
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
@@ -1071,7 +1071,7 @@ pub fn rt_sigqueueinfo<P: Platform>(
             Errno::ESRCH
         });
     }
-    send_to_self(process, signal, |signal| Info::queued(signal, &bytes))
+    send_to_self(process, signal, |signal| Info::queued(signal, bytes))
 }
 
 /// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
@@ -1097,7 +1097,7 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
     if tgid != own || tid != own {
         return Err(Errno::ESRCH);
     }
-    send_to_self(process, signal, |signal| Info::queued(signal, &bytes))
+    send_to_self(process, signal, |signal| Info::queued(signal, bytes))
 }
 
 /// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: takes the first pending signal in the
@@ -1633,10 +1633,10 @@ mod tests {
     }
 
     fn queued(signal: u32, value: u64) -> Info {
-        let mut bytes = [0xa5; INFO_SIZE];
+        let mut bytes = [0xa5; KEPT_INFO_SIZE];
         bytes[8..12].copy_from_slice(&code::QUEUE.to_ne_bytes());
         bytes[24..32].copy_from_slice(&value.to_ne_bytes());
-        Info::queued(signal, &bytes)
+        Info::queued(signal, bytes)
     }
 
     #[test]

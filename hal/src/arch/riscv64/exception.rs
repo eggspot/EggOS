@@ -766,6 +766,7 @@ riscv64_user_test_linux_signal_queue:
     sd      t0, 272(s4)
     sd      zero, 256(s4)
     sd      zero, 264(s4)
+    sd      zero, 144(s4)
     li      a0, 0
     addi    a1, s4, 272
     li      a2, 0

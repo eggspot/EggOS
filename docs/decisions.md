@@ -2773,6 +2773,12 @@ switch-path cost; this entry follows it.)
   until there are other processes or threads, so a wait is slept out.
 - **Known deviation** (research): Linux's `E2BIG` for a queued `siginfo_t` whose unknown
   `si_code` layout has non-zero bytes past the kept part is not checked; those bytes are dropped.
+  Only the 48 kept bytes are read from the program, as Linux reads only its kernel part for a
+  known layout (independent review).
+- **For later** (independent review): once exited processes wait as zombies (`wait4`), drop the
+  queue at exit, not when the `Process` is freed, so a zombie holds no `RLIMIT_SIGPENDING` charge;
+  and a host test that the global counter returns to where it started, `Drop` included, once a
+  test can run without other tests sending signals in parallel.
 - **Cost.** Nothing on the system-call, switch or fault paths changes: the queue is touched only
   by the calls that send, take or discard a signal. The benchmarks show no change beyond noise.
 - **Tests.** Host: queueing order, standard signals kept once with their first info, the limit's
