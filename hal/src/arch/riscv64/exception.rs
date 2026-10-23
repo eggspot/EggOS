@@ -616,6 +616,83 @@ riscv64_user_test_linux_signals:
     li      a7, 94
     ecall
 8:  j       8b
+    .global riscv64_user_test_linux_signal_handler
+riscv64_user_test_linux_signal_handler:
+    // Linux's generic numbers: exit_group 94, tgkill 131, sigaltstack 132, rt_sigaction 134,
+    // rt_sigprocmask 135, getpid 172. Its `struct sigaction` (handler, flags, mask) is at
+    // sp-64, its `stack_t` at sp-32, its alternate stack 0x2000 bytes from sp-0x2800, the mask
+    // read back at sp-72. RISC-V has no restorer: the handler returns through the kernel's
+    // trampoline.
+    li      t0, 0x2800
+    sub     t1, sp, t0
+    sd      t1, -32(sp)
+    sd      zero, -24(sp)
+    li      t0, 0x2000
+    sd      t0, -16(sp)
+    addi    a0, sp, -32
+    li      a1, 0
+    li      a7, 132
+    ecall
+    bnez    a0, 9f
+    lla     t0, 5f
+    sd      t0, -64(sp)
+    li      t0, 0x08000004          // SA_ONSTACK | SA_SIGINFO
+    sd      t0, -56(sp)
+    sd      zero, -48(sp)           // no mask
+    li      a0, 10                  // SIGUSR1
+    addi    a1, sp, -64
+    li      a2, 0
+    li      a3, 8
+    li      a7, 134
+    ecall
+    bnez    a0, 9f
+    li      a7, 172
+    ecall
+    mv      a1, a0
+    li      a2, 10
+    li      s1, 0x5a5               // kept across the handler, which clobbers it
+    li      s2, 1                   // the handler sets it to 2 in its frame
+    li      a7, 131
+    ecall                           // the handler runs before this returns
+    bnez    a0, 9f
+    li      t0, 0x5a5
+    bne     s1, t0, 9f
+    li      t0, 2
+    bne     s2, t0, 9f
+    li      a0, 0                   // the mask is back: nothing blocked
+    li      a1, 0
+    addi    a2, sp, -72
+    li      a3, 8
+    li      a7, 135
+    ecall
+    bnez    a0, 9f
+    ld      t0, -72(sp)
+    bnez    t0, 9f
+    li      a0, 0
+    li      a7, 94
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
+    // The handler: SIGUSR1 from tgkill (SI_TKILL), on the alternate stack the ucontext names;
+    // then it sets the frame's s2 to 2 and clobbers s1.
+5:  li      t0, 10
+    bne     a0, t0, 7f
+    lw      t1, 0(a1)
+    bne     t1, t0, 7f
+    lw      t1, 8(a1)
+    li      t0, -6
+    bne     t1, t0, 7f
+    ld      t0, 16(a2)              // uc_stack.ss_sp
+    bltu    sp, t0, 7f
+    ld      t1, 32(a2)              // uc_stack.ss_size
+    add     t0, t0, t1
+    bgeu    sp, t0, 7f
+    li      t0, 2
+    sd      t0, {saved_s2}(a2)
+7:  li      s1, 0
+    ret
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -631,6 +708,8 @@ riscv64_user_test_end:
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    // `uc_mcontext`'s s2 (x18) in the ucontext: the sigcontext at 176, register n at 8n.
+    saved_s2 = const 176 + 18 * 8,
 );
 
 /// The registers saved by the entry code, in the order it stores them.
@@ -720,6 +799,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_thread_pointer: u8;
     static riscv64_user_test_linux_poll: u8;
     static riscv64_user_test_linux_signals: u8;
+    static riscv64_user_test_linux_signal_handler: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -773,6 +853,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_thread_pointer: (&raw const riscv64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const riscv64_user_test_linux_poll) as usize - start,
         linux_signals: (&raw const riscv64_user_test_linux_signals) as usize - start,
+        linux_signal_handler: (&raw const riscv64_user_test_linux_signal_handler) as usize - start,
     }
 }
 

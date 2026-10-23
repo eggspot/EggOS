@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 27] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 28] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -124,6 +124,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 27] {
         (
             "linux_programs_signal_themselves",
             linux_programs_signal_themselves::<P>,
+        ),
+        (
+            "linux_programs_run_signal_handlers",
+            linux_programs_run_signal_handlers::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1424,6 +1428,61 @@ fn linux_programs_signal_themselves<P: Platform>(
     let freed = || free_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the signalling program's frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// A Linux program's signal handler must run on its alternate stack with Linux's frame and
+/// return with `rt_sigreturn` to the program as it was (D64): the test program's
+/// `linux_signal_handler` must exit with 0 (see [`eggos_hal::user::TestProgram`]). On AArch64
+/// and RISC-V its handler returns through the kernel's trampoline, which must be mapped for
+/// it. It runs twice, and everything the second run took (the frames of its stack, the
+/// trampoline's page, the signal state's block) must be freed, as in
+/// [`linux_programs_poll_the_console`].
+fn linux_programs_run_signal_handlers<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    // Three pages below the stack pointer: the program's structures, then its alternate stack,
+    // which holds the handler's frame.
+    const STACK_TOP: u64 = 0x70_0000;
+    let mut before = None;
+    for round in 0..2 {
+        if round == 1 {
+            if !release_loaded_address_spaces::<P>(|| true) {
+                return Err("a CPU kept an ended process's address space loaded");
+            }
+            before = Some(free_frames().ok_or("there is no frame allocator")?);
+        }
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+        for page in 1..=3 {
+            process.map_new_page(
+                STACK_TOP - page * FRAME_SIZE,
+                Attributes::USER_READ_WRITE,
+                &[],
+            )?;
+        }
+        let process = Arc::new(process);
+        let program = P::user_test_program();
+        let context = UserContext::new(
+            process::TEST_PROGRAM_ADDRESS + program.linux_signal_handler as u64,
+            STACK_TOP,
+        );
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        match process.exit_status() {
+            Some(ProcessExit::Exited(0)) => {}
+            Some(ProcessExit::Exited(_)) => {
+                return Err("a signal call failed, or the handler or rt_sigreturn went wrong");
+            }
+            Some(ProcessExit::Killed { .. }) => return Err("the handling program was killed"),
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+    }
+    let freed = || free_frames() == before;
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the handling program's frames and tables were not all freed");
     }
     Ok(())
 }

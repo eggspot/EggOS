@@ -351,6 +351,36 @@ impl<P: Platform> Process<P> {
         Ok(start)
     }
 
+    /// Adds a region of one page with `attributes` where `placement` says, as
+    /// [`Self::map_region`], and maps it at once with a frame of its own holding `contents`
+    /// and zero after them, made visible to instruction fetch if executable: a page the
+    /// kernel fills for the program, which need not be writable by it (a signal handler's
+    /// return trampoline). Returns its start, or `None` if there was no room or no memory.
+    /// While the process runs: only its own thread calls this.
+    pub fn map_filled_page(
+        &self,
+        placement: Placement,
+        attributes: Attributes,
+        contents: &[u8],
+    ) -> Option<u64> {
+        if contents.len() > FRAME_SIZE as usize {
+            return None;
+        }
+        let start = self
+            .map_region(placement, FRAME_SIZE, Some(attributes))
+            .ok()?;
+        let regions = self.regions.lock();
+        let mapped = self.map_frame(start, attributes, contents);
+        drop(regions);
+        if mapped.is_err() {
+            // The region alone: nothing is mapped in it.
+            let _ = self.unmap_range(start, start + FRAME_SIZE);
+            return None;
+        }
+        P::drop_user_translations(start, FRAME_SIZE);
+        Some(start)
+    }
+
     /// Takes user addresses `start..end`, page-aligned, out of the process's regions, and
     /// unmaps the pages there, freeing their frames (Linux's `munmap`). Parts of the range in
     /// no region are fine.

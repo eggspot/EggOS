@@ -497,6 +497,85 @@ aarch64_user_test_linux_signals:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_linux_signal_handler
+aarch64_user_test_linux_signal_handler:
+    // Linux's generic numbers: exit_group 94, tgkill 131, sigaltstack 132, rt_sigaction 134,
+    // rt_sigprocmask 135, getpid 172. Its `struct sigaction` is at sp-64, its `stack_t` at
+    // sp-32, its alternate stack 0x2000 bytes from sp-0x2800, the mask read back at sp-72.
+    // No SA_RESTORER, as glibc: the handler returns through the kernel's trampoline.
+    sub     x9, sp, #0x2000
+    sub     x9, x9, #0x800
+    stp     x9, xzr, [sp, #-32]
+    mov     x9, #0x2000
+    str     x9, [sp, #-16]
+    sub     x0, sp, #32
+    mov     x1, #0
+    mov     x8, #132
+    svc     #0
+    cbnz    x0, 9f
+    adr     x9, 5f
+    movz    x10, #0x0004            // SA_SIGINFO
+    movk    x10, #0x0800, lsl #16   // SA_ONSTACK
+    stp     x9, x10, [sp, #-64]
+    stp     xzr, xzr, [sp, #-48]    // no restorer, no mask
+    mov     x0, #10                 // SIGUSR1
+    sub     x1, sp, #64
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #134
+    svc     #0
+    cbnz    x0, 9f
+    mov     x8, #172
+    svc     #0
+    mov     x1, x0
+    mov     x2, #10
+    mov     x19, #0x5a5             // kept across the handler, which clobbers it
+    mov     x20, #1                 // the handler sets it to 2 in its frame
+    mov     x8, #131
+    svc     #0                      // the handler runs before this returns
+    cbnz    x0, 9f
+    cmp     x19, #0x5a5
+    b.ne    9f
+    cmp     x20, #2
+    b.ne    9f
+    mov     x0, #0                  // the mask is back: nothing blocked
+    mov     x1, #0
+    sub     x2, sp, #72
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+    cbnz    x0, 9f
+    ldur    x9, [sp, #-72]
+    cbnz    x9, 9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
+    // The handler: SIGUSR1 from tgkill (SI_TKILL), on the alternate stack the ucontext names;
+    // then it sets the frame's x20 to 2 and clobbers x19.
+5:  cmp     x0, #10
+    b.ne    7f
+    ldr     w9, [x1]
+    cmp     w9, #10
+    b.ne    7f
+    ldr     w9, [x1, #8]
+    cmn     w9, #6
+    b.ne    7f
+    ldr     x9, [x2, #16]           // uc_stack.ss_sp
+    mov     x10, sp
+    cmp     x10, x9
+    b.lo    7f
+    ldr     x11, [x2, #32]          // uc_stack.ss_size
+    add     x9, x9, x11
+    cmp     x10, x9
+    b.hs    7f
+    mov     x9, #2
+    str     x9, [x2, #{saved_x20}]
+7:  mov     x19, #0
+    ret
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -510,6 +589,8 @@ aarch64_user_test_end:
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    // `uc_mcontext.regs[20]` in the ucontext: the sigcontext at 176, its registers at 8.
+    saved_x20 = const 176 + 8 + 20 * 8,
     handler = sym aarch64_exception,
 );
 
@@ -592,6 +673,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_thread_pointer: u8;
     static aarch64_user_test_linux_poll: u8;
     static aarch64_user_test_linux_signals: u8;
+    static aarch64_user_test_linux_signal_handler: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -652,6 +734,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_thread_pointer: (&raw const aarch64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const aarch64_user_test_linux_poll) as usize - start,
         linux_signals: (&raw const aarch64_user_test_linux_signals) as usize - start,
+        linux_signal_handler: (&raw const aarch64_user_test_linux_signal_handler) as usize - start,
     }
 }
 

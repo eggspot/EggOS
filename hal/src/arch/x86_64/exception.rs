@@ -26,7 +26,7 @@ use crate::cpu::{
 };
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Format, x86_64::X86_64};
-use crate::user::x86_64::{NOT_RUN_VECTOR, Registers, SYSCALL_VECTOR};
+use crate::user::x86_64::{RESTORE_ALL_VECTOR, Registers, SYSCALL_VECTOR};
 use crate::user::{TestProgram, UserContext, UserExit};
 use core::cell::UnsafeCell;
 
@@ -595,6 +595,89 @@ x86_64_user_test_linux_signals:
     movl    $231, %eax
     syscall
 8:  jmp     8b
+    .global x86_64_user_test_linux_signal_handler
+x86_64_user_test_linux_signal_handler:
+    // Linux's x86_64 numbers: rt_sigaction 13, rt_sigprocmask 14, rt_sigreturn 15, getpid 39,
+    // sigaltstack 131, exit_group 231, tgkill 234. Its `struct sigaction` is at rsp-64, its
+    // `stack_t` at rsp-32, its alternate stack 0x2000 bytes from rsp-0x2800, the mask read
+    // back at rsp-72. The handler returns through its restorer, as every x86_64 one must.
+    leaq    -0x2800(%rsp), %rax
+    movq    %rax, -32(%rsp)
+    movq    $0, -24(%rsp)
+    movq    $0x2000, -16(%rsp)
+    leaq    -32(%rsp), %rdi
+    xorl    %esi, %esi
+    movl    $131, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    leaq    5f(%rip), %rax
+    movq    %rax, -64(%rsp)
+    movq    $0x0c000004, -56(%rsp)  // SA_ONSTACK | SA_RESTORER | SA_SIGINFO
+    leaq    6f(%rip), %rax
+    movq    %rax, -48(%rsp)
+    movq    $0, -40(%rsp)           // no mask
+    movl    $10, %edi               // SIGUSR1
+    leaq    -64(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $13, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $39, %eax
+    syscall
+    movq    %rax, %rdi
+    movq    %rax, %rsi
+    movl    $10, %edx
+    movl    $0x5a5, %ebx            // kept across the handler, which clobbers it
+    movl    $1, %r12d               // the handler sets it to 2 in its frame
+    movl    $234, %eax
+    syscall                         // the handler runs before this returns
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $0x5a5, %rbx
+    jne     9f
+    cmpq    $2, %r12
+    jne     9f
+    xorl    %edi, %edi              // the mask is back: nothing blocked
+    xorl    %esi, %esi
+    leaq    -72(%rsp), %rdx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $0, -72(%rsp)
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
+    // The handler: SIGUSR1 from tgkill (SI_TKILL), on the alternate stack the ucontext names;
+    // then it sets the frame's r12 to 2 and clobbers rbx.
+5:  cmpl    $10, %edi
+    jne     7f
+    cmpl    $10, (%rsi)
+    jne     7f
+    cmpl    $-6, 8(%rsi)
+    jne     7f
+    movq    16(%rdx), %rax          // uc_stack.ss_sp
+    cmpq    %rax, %rsp
+    jb      7f
+    addq    32(%rdx), %rax          // uc_stack.ss_size
+    cmpq    %rax, %rsp
+    jae     7f
+    movq    $2, {saved_r12}(%rdx)
+7:  xorl    %ebx, %ebx
+    ret
+    // Its restorer.
+6:  movl    $15, %eax
+    syscall
+    int3
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -634,6 +717,8 @@ x86_64_user_test_end:
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    // `uc_mcontext.r12` in the ucontext: the sigcontext at 40, r8 to r15 from its start.
+    saved_r12 = const 40 + 4 * 8,
     thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
     arch_set_fs = const TestProgram::LINUX_ARCH_SET_FS,
     options(att_syntax)
@@ -915,6 +1000,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_thread_pointer: u8;
     static x86_64_user_test_linux_poll: u8;
     static x86_64_user_test_linux_signals: u8;
+    static x86_64_user_test_linux_signal_handler: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1054,7 +1140,7 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         vector if interrupt(vector) => UserExit::Interrupt,
         vector => {
             // Unchanged for an exception taken again on the way in (none can be).
-            debug_assert_ne!(vector, NOT_RUN_VECTOR);
+            debug_assert_ne!(vector, RESTORE_ALL_VECTOR);
             UserExit::Exception(exception(vector, registers.error_code, registers.rip))
         }
     }
@@ -1082,6 +1168,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_thread_pointer: (&raw const x86_64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const x86_64_user_test_linux_poll) as usize - start,
         linux_signals: (&raw const x86_64_user_test_linux_signals) as usize - start,
+        linux_signal_handler: (&raw const x86_64_user_test_linux_signal_handler) as usize - start,
     }
 }
 
