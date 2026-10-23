@@ -192,7 +192,10 @@ impl<P: Platform> AddressSpace<P> {
     /// kernel rather than go on (D46): each CPU records the address space active on it, and a
     /// second one made active before the first is switched back is refused. One a process
     /// loaded lazily ([`Self::load_lazily`]) is unloaded first. The kernel reaches the user
-    /// pages only through [`Platform::with_user_access`].
+    /// pages only through [`Platform::with_user_access`]. Mappings may change meanwhile only
+    /// from this CPU ([`Self::change_pages`]): one changed from another CPU marks this one
+    /// stale, which the check on the way back stops at, as using an address space on two CPUs
+    /// at once needs a shootdown first (D53).
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
         let root = self.roots()[0];
@@ -209,7 +212,8 @@ impl<P: Platform> AddressSpace<P> {
         // which `new_sharing_kernel_half` shared (it refuses tables not marked active, which
         // never change); `&self` keeps them allocated, with mappings removed or changed only
         // through `change_pages`, which drops this CPU's translations of them (added ones are
-        // allowed, see the module documentation), until the switch back below. Nothing points into the kernel's low half, which is empty.
+        // allowed, see the module documentation), until the switch back below. Nothing
+        // points into the kernel's low half, which is empty.
         unsafe { P::switch_address_space(self.roots()) };
         let result = active();
         assert!(

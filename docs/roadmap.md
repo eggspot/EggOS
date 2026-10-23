@@ -100,7 +100,11 @@ Memory-call follow-ups (D53): a "shared" mark on `MAP_SHARED` anonymous regions 
 private pages), `mremap`, `MAP_POPULATE` and `MAP_GROWSDOWN` when a program needs them;
 `PROT_BTI` enforced (the `GP` bit) once BTI is reported in `AT_HWCAP2`; file mappings (M7);
 `RLIMIT_DATA` and `RLIMIT_AS` for `brk` and `mmap`; randomized `mmap` base and break with the
-random number generator.
+random number generator; from PR #45's independent review: `munmap`
+frees its frames after the translations are dropped, taking the frame allocator's lock once
+(before `clone`), and anonymous `MAP_SHARED_VALIDATE` and `MAP_SHARED | MAP_GROWSDOWN`
+checked against Linux's observed behaviour (`EINVAL` there, possibly, where we accept or say
+`EOPNOTSUPP`).
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to

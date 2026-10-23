@@ -1088,10 +1088,11 @@ fn linux_stacks_grow_on_demand<P: Platform>(memory: &mut Memory<P>) -> Result<()
 /// The memory calls change what a running program reaches at once (D53), what its CPU cached
 /// included. The program walks down an `mmap`ed range, storing to every page (the test
 /// program's `stack_growth`, its stack pointer at the range's top), until it runs off the
-/// bottom; then, through the Linux calls, the kernel unmaps the upper half, maps it again and
-/// makes the range read-only, then writable again, running the walk from the top after each.
-/// The first store must fault at the top page while it is unmapped or read-only (a store that
-/// went through a stale translation would walk on), and the walk must cover the whole range
+/// bottom; then, through the Linux calls, the kernel unmaps the upper half, maps it again,
+/// makes the range read-only and then writable again, running the walk from the top after
+/// each. Every change follows a walk that left the CPU with writable translations of the
+/// pages, so the first store must fault at the top page while it is unmapped or read-only (a
+/// store through a stale translation would walk on), and the walk must cover the whole range
 /// when it is writable; the mapped-again half must read as zero, and every frame be freed.
 fn linux_memory_calls_take_effect_at_once<P: Platform>(
     memory: &mut Memory<P>,
@@ -1153,9 +1154,10 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
                         {
                             return fail("the upper half was not mapped again, zeroed");
                         }
-                        linux::memory::mprotect(process, start, 2 * HALF, prot::READ)
+                        Ok(0)
                     }
-                    2 => linux::memory::mprotect(process, start, 2 * HALF, read_write),
+                    2 => linux::memory::mprotect(process, start, 2 * HALF, prot::READ),
+                    3 => linux::memory::mprotect(process, start, 2 * HALF, read_write),
                     _ => return ControlFlow::Break(()),
                 };
                 if changed.is_err() {
@@ -1173,7 +1175,8 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
             return Err(reason);
         }
         let last = top - FRAME_SIZE;
-        if *stops.lock() != [start - FRAME_SIZE, last, last, start - FRAME_SIZE] {
+        let below = start - FRAME_SIZE;
+        if *stops.lock() != [below, last, below, last, below] {
             return Err("a walk went through a page unmapped or read-only, or stopped short");
         }
         for page in (start..top).step_by(FRAME_SIZE as usize) {

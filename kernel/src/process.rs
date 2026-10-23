@@ -443,7 +443,9 @@ impl<P: Platform> Process<P> {
     /// When `mapped_is_ready`, the page is most likely not mapped (a first touch, or a kernel
     /// copy that found it so), so it is mapped first and looked up only if that finds it
     /// mapped: one walk of the tables, not two (D53). The frame zeroed for a page that turns
-    /// out to be mapped, a stale fault's, goes back.
+    /// out to be mapped, a stale fault's, goes back; with no frame to try with, the page is
+    /// looked up all the same, so a stale fault on a mapped page resumes the program even
+    /// when memory is out.
     fn populate(
         &self,
         regions: &Regions,
@@ -460,7 +462,7 @@ impl<P: Platform> Process<P> {
             match self.map_frame(page, attributes, &[]) {
                 Ok(frame) => return Ok((frame, attributes)),
                 Err(MapError::AlreadyMapped) => {}
-                Err(MapError::OutOfMemory) => return Err(UnresolvedFault::OutOfMemory),
+                Err(MapError::OutOfMemory) => return self.mapped_or_out_of_memory(page, access),
                 Err(_) => return Err(UnresolvedFault::NotAllowed),
             }
         }
@@ -475,6 +477,23 @@ impl<P: Platform> Process<P> {
                 Err(_) => Err(UnresolvedFault::NotAllowed),
             },
         }
+    }
+
+    /// For [`Self::populate`], when there was no frame to map page `page` with: the page's
+    /// frame and attributes if it is mapped for `access` already (a stale fault, which then
+    /// resumes), else [`UnresolvedFault::OutOfMemory`]. Cold and out of line, so the fault
+    /// path stays as it was.
+    #[cold]
+    #[inline(never)]
+    fn mapped_or_out_of_memory(
+        &self,
+        page: u64,
+        access: Access,
+    ) -> Result<(u64, Attributes), UnresolvedFault> {
+        self.space
+            .translate(page)
+            .filter(|&(_, mapped)| access.allowed_by(mapped))
+            .ok_or(UnresolvedFault::OutOfMemory)
     }
 
     /// The region that holds user address `address`, if any.
@@ -1123,5 +1142,33 @@ mod tests {
         // The thread held the last reference: its CPU let the process go.
         assert_eq!(here.active_address_space(), cpu::NO_ADDRESS_SPACE);
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn a_stale_fault_on_a_mapped_page_resumes_with_no_frame_left() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let mut process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        process
+            .add_region(DATA, DATA + 2 * FRAME_SIZE, Attributes::USER_READ_WRITE)
+            .unwrap();
+        let read = fault(ExceptionKind::DataFault, Some(DATA), false);
+        resolve(&process, &read).unwrap();
+        let mut taken = Vec::new();
+        while let Some(frame) = memory::FRAMES.lock().as_mut().unwrap().allocate() {
+            taken.push(frame);
+        }
+        // Mapped already: the stale fault resumes; untouched: out of memory.
+        assert_eq!(resolve(&process, &read), Ok(()));
+        let untouched = fault(ExceptionKind::DataFault, Some(DATA + FRAME_SIZE), true);
+        assert_eq!(
+            resolve(&process, &untouched),
+            Err(UnresolvedFault::OutOfMemory)
+        );
+        for frame in taken {
+            // SAFETY: allocated above and never used.
+            unsafe { memory::FRAMES.lock().as_mut().unwrap().free(frame) };
+        }
     }
 }

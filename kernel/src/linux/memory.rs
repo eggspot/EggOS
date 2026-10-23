@@ -225,10 +225,11 @@ pub fn mprotect<P: Platform>(
     if !address.is_multiple_of(FRAME_SIZE) {
         return Err(Errno::EINVAL);
     }
-    let attributes = attributes(prot)?;
+    // Nothing to change: success, whatever `prot` says, as on Linux.
     if length == 0 {
         return Ok(0);
     }
+    let attributes = attributes(prot)?;
     let length = page_aligned(length).ok_or(Errno::ENOMEM)?;
     let end = address.checked_add(length).ok_or(Errno::ENOMEM)?;
     if end > <P::PageTableFormat as Format>::USER_END {
@@ -578,6 +579,8 @@ mod tests {
             }
             assert_eq!(mprotect(start + 1, 0, 0), Errno::EINVAL.result());
             assert_eq!(mprotect(start, 0, 0), 0);
+            assert_eq!(mprotect(start, 0, 0x100), 0);
+            assert_eq!(mprotect(start, 0, prot::WRITE | prot::EXEC), 0);
         }
         // The inaccessible pages' frames are freed with the process.
         assert_eq!(free(), before);
