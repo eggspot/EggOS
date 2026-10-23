@@ -957,9 +957,22 @@ pub const LINUX_START_DATA_SIZE: u64 = 0x2100;
 /// segment at [`LINUX_START_DATA`] with initialized data and `.bss`; and a non-executable
 /// stack. There is no file system to load one from yet (M7).
 pub fn linux_start_image<P: Platform>() -> Vec<u8> {
+    linux_image::<P>(P::user_test_program().code)
+}
+
+/// [`linux_start_image`] with the test program's code only up to the end of its
+/// `linux_start`, for the `linux_exec_load` benchmark: adding a test program after it does
+/// not change what loading the image costs (D62).
+pub fn linux_start_only_image<P: Platform>() -> Vec<u8> {
+    let program = P::user_test_program();
+    linux_image::<P>(&program.code[..program.linux_start_end])
+}
+
+/// [`linux_start_image`] with `code`, the start of the test program's.
+fn linux_image<P: Platform>(code: &[u8]) -> Vec<u8> {
     let program = P::user_test_program();
     let text = process::TEST_PROGRAM_ADDRESS - FRAME_SIZE;
-    let text_size = FRAME_SIZE + program.code.len() as u64;
+    let text_size = FRAME_SIZE + code.len() as u64;
     let data_offset = 2 * FRAME_SIZE + LINUX_START_DATA % FRAME_SIZE;
     let headers = 4;
     let header = |kind, flags, offset, virt, file_size, memory_size| ProgramHeader {
@@ -1012,7 +1025,7 @@ pub fn linux_start_image<P: Platform>() -> Vec<u8> {
             ),
         ],
         &[
-            (FRAME_SIZE as usize, program.code),
+            (FRAME_SIZE as usize, code),
             (data_offset as usize, LINUX_START_DATA_BYTES),
         ],
     )

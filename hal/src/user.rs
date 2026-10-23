@@ -163,6 +163,10 @@ pub struct TestProgram {
     /// stack, then calls `exit_group(argc)`; `exit_group(255)` if the stack pointer is not
     /// 16-byte aligned, the ids differ, or any of those calls failed.
     pub linux_start: usize,
+    /// Where [`Self::linux_start`]'s code ends: the offset of the first byte after it. Its
+    /// ELF image holds the code only up to here, so programs added after it do not grow what
+    /// `linux_exec_load` copies.
+    pub linux_start_end: usize,
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.
     pub linux_unknown_syscalls: usize,

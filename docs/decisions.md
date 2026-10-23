@@ -2295,3 +2295,56 @@ switch-path cost; this entry follows it.)
   Rust's std does but asking for `POLLOUT` on 1, reads the window size, then waits 2 ms in
   `ppoll`. It checks the events and the zero remaining time. The self-test checks it ran at
   least 2 ms and freed everything; it fails if the sleep is removed (checked on aarch64).
+
+## D62 Review of D59–D61: the exec benchmark loads only `linux_start`'s code; `writev` reads its entries in order; `ppoll` writes back the time not slept — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** The review step after three feature PRs (#52–#54): a fresh read of resource limits,
+  signal state, `poll`/`ppoll` and the console's `ioctl`s against the man pages' rules. The
+  limit and signal calls' checks, error order, structure layouts (`struct rlimit64`, the
+  kernel's `struct sigaction` with and without `sa_restorer`, `stack_t`, `struct termios`
+  and `termios2`, `TCGETS2`'s number) and the alternate-stack bounds check out. Three things
+  change.
+- **`linux_exec_load` loads only the code `linux_start` needs.** It loaded an ELF image
+  holding the whole HAL test program, so every new test program grew the benchmark: D61 left
+  riscv64 at +0.71% of its 1% allowance, and signal delivery needs a test program of its own.
+  The HAL's `TestProgram` now marks where `linux_start`'s code ends (`linux_start_end`, a
+  label on each architecture), and the benchmark loads `selftest::linux_start_only_image`,
+  the same image cut there. The self-tests keep the whole image: two of them run
+  `stack_growth` from it. Against `main`'s CI run: −0.24% on aarch64, −0.45% on riscv64,
+  unchanged on x86_64 (its copies are `rep movsb`, which QEMU's `-icount` barely counts).
+  The baseline is unchanged: these numbers are still above it, so lowering it would loosen
+  the gate.
+- **`writev` reads its entries in order** (research; supersedes part of D55's error order).
+  Since Linux 5.10, `writev` first checks that the whole array ends within user space
+  (`EFAULT`, nothing read), then reads the entries one at a time: an unreadable one is
+  `EFAULT`, a length negative as a `ssize_t` is `EINVAL` at once; only then are the buffers'
+  ranges checked. We copied the array in one piece, so an array whose readable first entry
+  had a negative length and whose second was unmapped was `EFAULT` instead of `EINVAL` (found
+  by PR #51's independent review). The fast path is unchanged; only when the copy fails does
+  a cold function read the entries one by one to choose the error. Sources: readv(2), LTP's
+  `writev` and `readv` tests.
+- **`ppoll` writes back the time not slept for every timeout that is not zero** (research;
+  supersedes D61's "left as it was when something is ready at once"). select(2) says Linux
+  updates the timeout "to reflect the amount of time not slept", and ppoll(2) that the system
+  call modifies it: whatever the result, once the timeout was read and found valid, Linux
+  writes back what is left of it, zero after a wait that ran out. So a call with something
+  ready at once now writes back slightly less than it was given, and one that fails later
+  (`EFAULT` for the array, say) writes it back too. The remaining time is the deadline minus
+  the clock, in nanoseconds rounded up, never more than was asked. A timeout of zero, or none,
+  writes nothing, and a write the program's memory refuses is ignored, as before. A timeout
+  too long to count in nanoseconds (over 584 years) or to reach in clock ticks is left as it
+  was, which is about what is left of it. Go and static programs call the system call
+  directly; C libraries hide it.
+- **Noted for signal delivery (next):** x86_64 handlers return only through `sa_restorer`,
+  and Linux delivers nothing without `SA_RESTORER` there; frames on x86_64 skip the 128-byte
+  red zone below the stack pointer, which our own test programs use; a fault whose signal is
+  blocked or ignored still kills, as today.
+- **Follow-up added:** `poll` and `ppoll` copy the whole `struct pollfd` array back, where
+  Linux writes only the `revents` fields; that differs once `clone` lets another thread
+  change the array during a wait.
+- **Tests.** Host: `writev` with an array that runs off its page (`EINVAL` with a negative
+  length before the unreadable entry, `EFAULT` without) and with an array past the end of user
+  space whose readable entry is negative (`EFAULT`, nothing read); `ppoll` writing back a
+  little under 5 s when ready at once, after a later `EFAULT`, zero after a wait that ran out,
+  nothing for a too-long timeout, and nothing to a read-only one. Each fails without its
+  fix. `cargo xtask ci` passes: fmt, clippy, 259 host tests, boot tests and benchmarks on
+  aarch64, riscv64 and x86_64.
