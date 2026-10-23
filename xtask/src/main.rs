@@ -276,7 +276,7 @@ pub fn workspace_root() -> std::path::PathBuf {
 fn docs() -> Result<(), String> {
     cargo_with_env(
         &["doc", "--workspace", "--no-deps"],
-        &[("RUSTDOCFLAGS", "-D warnings")],
+        &[("CARGO_ENCODED_RUSTDOCFLAGS", "-D\u{1f}warnings")],
     )
 }
 

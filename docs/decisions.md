@@ -2666,9 +2666,11 @@ switch-path cost; this entry follows it.)
 - **Doc comments on public items stay, and the docs are now generated** (research). The
   playbook's rule names rustdoc among the allowed comments, and many public docs are real
   contracts (errors and their order, the man page or POSIX rule followed). `cargo xtask docs`
-  builds every workspace crate's docs with `RUSTDOCFLAGS=-D warnings`; `cargo xtask ci` and the
-  CI job run it after clippy. Twenty-one public docs linked private items, a name out of scope or an
-  ambiguous one, and were fixed to pass. No `missing_docs` lint: it would demand new comments everywhere, against
+  builds every workspace crate's docs with rustdoc's `-D warnings`, passed as
+  `CARGO_ENCODED_RUSTDOCFLAGS`, which flags set in the environment cannot override; `cargo
+  xtask ci` and the CI job run it after clippy. Twenty-one doc links (most in public docs) named private items,
+  a name out of scope or an ambiguous one, and were fixed to pass. xtask is a binary, whose
+  docs rustdoc builds with its private items, so its doc comments count as generated too. No `missing_docs` lint: it would demand new comments everywhere, against
   the rule's intent. Cost: one step in the existing Linux job, about half a minute; no new job.
 - **Not allowed:** plain `//` comments (but `// SAFETY:`), doc comments on private items
   (rustdoc does not show them by default), and `#` comments in TOML and YAML. Public docs keep
