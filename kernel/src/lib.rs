@@ -230,6 +230,7 @@ pub(crate) mod tests {
             let breakpoint = Exception {
                 kind: ExceptionKind::Breakpoint,
                 name: "test breakpoint",
+                class: 0,
                 code: 0,
                 pc: 0,
                 address: None,
@@ -363,6 +364,7 @@ pub(crate) mod tests {
                             return UserExit::Exception(Exception {
                                 kind: ExceptionKind::DataFault,
                                 name: "test page fault",
+                                class: 0,
                                 code: FAULT_WRITE,
                                 pc,
                                 address: Some(page),
@@ -383,6 +385,7 @@ pub(crate) mod tests {
                 pc if pc == checks + 8 => UserExit::Exception(Exception {
                     kind: ExceptionKind::DataFault,
                     name: "test page fault",
+                    class: 0,
                     code: 0,
                     pc,
                     address: Some(context.syscall_result()),
@@ -390,6 +393,7 @@ pub(crate) mod tests {
                 pc if pc == floating_point => UserExit::Exception(Exception {
                     kind: ExceptionKind::IllegalInstruction,
                     name: "test floating-point trap",
+                    class: 0,
                     code: 0,
                     pc,
                     address: None,

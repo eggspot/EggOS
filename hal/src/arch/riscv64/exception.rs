@@ -913,6 +913,7 @@ fn decode(scause: u64, stval: u64, pc: u64) -> Exception {
     Exception {
         kind,
         name,
+        class: code as u32,
         code: scause,
         pc,
         address: has_address.then_some(stval),

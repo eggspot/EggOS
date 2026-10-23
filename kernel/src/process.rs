@@ -912,6 +912,7 @@ mod tests {
         Exception {
             kind,
             name: "test page fault",
+            class: 0,
             code: if write { crate::tests::FAULT_WRITE } else { 0 },
             pc: TEST_PROGRAM_ADDRESS,
             address,

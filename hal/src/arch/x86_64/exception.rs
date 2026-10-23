@@ -744,6 +744,8 @@ const INTERRUPT_GATE: u8 = 0x8e;
 const PAGE_FAULT_PRESENT: u64 = 1 << 0;
 /// Page-fault error code bit 1: the access wrote memory.
 const PAGE_FAULT_WRITE: u64 = 1 << 1;
+/// Page-fault error code bit 2: the access was made from user mode.
+const PAGE_FAULT_USER: u64 = 1 << 2;
 /// Page-fault error code bit 3: a reserved bit was set in an entry.
 const PAGE_FAULT_RESERVED_BIT: u64 = 1 << 3;
 /// Page-fault error code bit 4: the fault was an instruction fetch.
@@ -1120,7 +1122,9 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         return UserExit::Exception(Exception {
             kind: ExceptionKind::InstructionFault,
             name: "program counter outside user space",
-            code: 0,
+            // As the fetch's page fault would report it, from user mode.
+            class: 14,
+            code: PAGE_FAULT_USER | PAGE_FAULT_INSTRUCTION_FETCH,
             pc: registers.rip,
             address: Some(registers.rip),
         });
@@ -1209,6 +1213,7 @@ fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Except
     Exception {
         kind,
         name,
+        class: vector as u32,
         code: error_code,
         pc,
         address,

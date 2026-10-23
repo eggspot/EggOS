@@ -765,6 +765,7 @@ fn irq(pc: u64) {
         _ => deliver(&Exception {
             kind: ExceptionKind::Interrupt,
             name: "unexpected IRQ",
+            class: 0,
             code: id.into(),
             pc,
             address: None,
@@ -797,6 +798,7 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     Exception {
         kind,
         name,
+        class: class as u32,
         code: esr,
         pc,
         address: far_valid.then_some(far),

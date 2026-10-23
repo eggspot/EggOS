@@ -58,6 +58,7 @@ mod tests {
         Exception {
             kind,
             name: "data abort",
+            class: 0,
             code: 0x9600_0045,
             pc: 0x4008_1234,
             address,

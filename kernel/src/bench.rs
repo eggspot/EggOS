@@ -555,6 +555,7 @@ mod tests {
                 return UserExit::Exception(eggos_hal::Exception {
                     kind: eggos_hal::ExceptionKind::DataFault,
                     name: "test page fault",
+                    class: 0,
                     code: crate::tests::FAULT_WRITE,
                     pc,
                     address: Some(page),
