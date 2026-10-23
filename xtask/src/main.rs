@@ -63,7 +63,6 @@ pub const ARCHES: &[Arch] = &[
         target: "x86_64-unknown-none",
         user_target: "x86_64-unknown-linux-musl",
         qemu: "qemu-system-x86_64",
-        // `RDRAND` and `RDSEED` seed the random number generator (D56); nothing else changes.
         machine_args: &["-machine", "q35", "-cpu", "qemu64,+rdrand,+rdseed"],
     },
 ];
@@ -247,16 +246,14 @@ pub fn build_user_selftest(arch: &Arch) -> Result<std::path::PathBuf, String> {
     )
 }
 
-/// Runs `cargo <args> --release` with `env` and returns the path of the last executable it
-/// built, `what` naming it in errors.
+/// Runs `cargo <args> --release` with `env` and returns the path cargo reports for the last
+/// executable it built, wherever `CARGO_TARGET_DIR` or `build.target-dir` put it, `what`
+/// naming it in errors.
 fn build_executable(
     args: &[&str],
     env: &[(&str, &str)],
     what: &str,
 ) -> Result<std::path::PathBuf, String> {
-    // Ask cargo where it put the binary rather than guessing `target/`: CARGO_TARGET_DIR or
-    // `build.target-dir` move it, and booting a stale image from the default path would test
-    // the wrong kernel.
     let mut args = args.to_vec();
     args.extend(["--release", "--message-format=json-render-diagnostics"]);
     let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
