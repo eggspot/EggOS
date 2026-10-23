@@ -86,13 +86,13 @@ impl Startup {
     /// The arguments, `argv[0]` first.
     pub fn arguments(&self) -> impl Iterator<Item = &'static CStr> {
         // SAFETY: `from_stack`'s caller promised `argc` pointers to strings that stay.
-        unsafe { strings(self.argv) }
+        unsafe { null_ended_strings(self.argv) }
     }
 
     /// The environment's `NAME=value` strings.
     pub fn environment(&self) -> impl Iterator<Item = &'static CStr> {
         // SAFETY: `from_stack`'s caller promised a null-ended array of strings that stay.
-        unsafe { strings(self.envp) }
+        unsafe { null_ended_strings(self.envp) }
     }
 
     /// The `argv` array's end marker: a null pointer if the stack is laid out as Linux does.
@@ -147,12 +147,7 @@ impl Startup {
     }
 }
 
-/// The strings of the null-ended pointer array at `array`.
-///
-/// # Safety
-///
-/// `array` is null-ended and its strings are null-ended, and both stay in place.
-unsafe fn strings(array: *const *const c_char) -> impl Iterator<Item = &'static CStr> {
+unsafe fn null_ended_strings(array: *const *const c_char) -> impl Iterator<Item = &'static CStr> {
     let mut next = array;
     core::iter::from_fn(move || {
         // SAFETY: the caller's null-ended array: `next` is at most its end marker.

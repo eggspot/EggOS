@@ -38,6 +38,8 @@ pub enum RelocationError {
     UnsupportedTable,
     /// A `DT_RELAENT` other than [`Rela`]'s size.
     EntrySize,
+    /// A `DT_RELASZ` that is not a whole number of entries, or one with no `DT_RELA`.
+    TableSize,
     /// A relocation other than `R_*_RELATIVE`, or one that names a symbol.
     UnsupportedType,
 }
@@ -71,11 +73,14 @@ pub unsafe fn relocate(bias: usize, dynamic: *const [usize; 2]) -> Result<(), Re
     if entry_size != size_of::<Rela>() {
         return Err(RelocationError::EntrySize);
     }
+    if size % size_of::<Rela>() != 0 || (size != 0 && table == 0) {
+        return Err(RelocationError::TableSize);
+    }
     let relocations = bias.wrapping_add(table) as *const Rela;
     for index in 0..size / size_of::<Rela>() {
         // SAFETY: the caller's `DT_RELA` table, `DT_RELASZ` bytes long, at `bias` plus its
-        // address.
-        let relocation = unsafe { relocations.wrapping_add(index).read() };
+        // address; read unaligned, so no alignment is assumed.
+        let relocation = unsafe { relocations.wrapping_add(index).read_unaligned() };
         if relocation.info != u64::from(RELATIVE) {
             return Err(RelocationError::UnsupportedType);
         }
@@ -137,11 +142,33 @@ mod tests {
             (tag::RELR, RelocationError::UnsupportedTable),
             (tag::REL, RelocationError::UnsupportedTable),
             (tag::RELAENT, RelocationError::EntrySize),
+            (tag::RELASZ, RelocationError::TableSize),
         ] {
             let dynamic = [[kind, 16], [tag::NULL, 0]];
             // SAFETY: there is nothing to relocate.
             assert_eq!(unsafe { relocate(0, dynamic.as_ptr()) }, Err(error));
         }
+        assert_eq!(word, 0);
+    }
+
+    #[test]
+    fn refuses_a_size_that_is_not_whole_entries_or_has_no_table() {
+        let mut word = 0usize;
+        let bias = &raw mut word as usize;
+        let relocations = [Rela {
+            offset: 0,
+            info: u64::from(RELATIVE),
+            addend: 0x40,
+        }];
+        let table = (relocations.as_ptr() as usize).wrapping_sub(bias);
+        let dynamic = [[tag::RELA, table], [tag::RELASZ, 25], [tag::NULL, 0]];
+        // SAFETY: the table is refused before anything is written.
+        let result = unsafe { relocate(bias, dynamic.as_ptr()) };
+        assert_eq!(result, Err(RelocationError::TableSize));
+        let without_table = [[tag::RELASZ, size_of::<Rela>()], [tag::NULL, 0]];
+        // SAFETY: the size without a table is refused before anything is read.
+        let result = unsafe { relocate(bias, without_table.as_ptr()) };
+        assert_eq!(result, Err(RelocationError::TableSize));
         assert_eq!(word, 0);
     }
 }

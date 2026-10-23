@@ -1701,19 +1701,14 @@ fn linux_programs_move_and_discard_memory<P: Platform>(
     })
 }
 
-/// A Linux program built from our own Rust source for this architecture, which `cargo xtask`
-/// builds and names in an environment variable when it builds a kernel with `qemu-test`
-/// (D85, D86). Other kernels carry none.
 struct RustProgram {
-    /// The program's image, if the kernel carries it.
     image: Option<&'static [u8]>,
-    /// The path it starts with, which is also its first argument.
     path: &'static [u8],
-    /// Its other arguments.
-    arguments: &'static [&'static [u8]],
+    arguments_after_path: &'static [&'static [u8]],
+    failure_statuses: &'static [(u32, &'static str)],
+    failure_signals: &'static [(u32, &'static str)],
 }
 
-/// `userland/selftest`: our own runtime, no C library (D85).
 static NO_STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(all(target_os = "none", feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
@@ -1723,10 +1718,17 @@ static NO_STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
     image: None,
     path: b"/eggos-selftest",
-    arguments: &[],
+    arguments_after_path: &[],
+    failure_statuses: &[
+        (
+            127,
+            "the Rust program could not relocate itself or protect its data",
+        ),
+        (101, "the Rust program panicked"),
+    ],
+    failure_signals: &[],
 };
 
-/// `userland/std-selftest`: Rust's standard library, linked with musl (D86).
 static STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(all(target_os = "none", feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
@@ -1736,33 +1738,27 @@ static STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
     image: None,
     path: b"/eggos-std-selftest",
-    arguments: &[b"first", b"second"],
+    arguments_after_path: &[b"first", b"second"],
+    failure_statuses: &[],
+    failure_signals: &[(SIGABRT, "the std Rust program panicked: it aborted")],
 };
 
-/// The environment both programs start with, as Linux starts `init`.
+const SIGABRT: u32 = 6;
+
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
-/// [`NO_STD_PROGRAM`], a static PIE, must start as on Linux, relocate itself, and find each
-/// call a C library's and Rust's standard library's start-up make answered as Linux answers
-/// it.
 fn linux_programs_built_from_rust_source_start<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &NO_STD_PROGRAM)
 }
 
-/// [`STD_PROGRAM`] must get through musl's and Rust's standard library's start-up and run
-/// what a typical Rust program uses: the heap, a `HashMap` with random keys, the clocks,
-/// sleeping and standard output.
 fn linux_programs_built_with_rust_std_run<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM)
 }
 
-/// Runs `program` twice: it must exit with 0 both times, having written its line, which the
-/// QEMU runner requires (a failed check writes its name), and everything the second run took
-/// must be freed. A kernel without the program passes.
 fn run_rust_program<P: Platform>(
     memory: &mut Memory<P>,
     program: &RustProgram,
@@ -1771,11 +1767,11 @@ fn run_rust_program<P: Platform>(
         return Ok(());
     };
     let mut arguments = [program.path; 3];
-    let argument_count = 1 + program.arguments.len();
+    let argument_count = 1 + program.arguments_after_path.len();
     let arguments = arguments
         .get_mut(..argument_count)
         .ok_or("a Rust program with too many arguments")?;
-    arguments[1..].copy_from_slice(program.arguments);
+    arguments[1..].copy_from_slice(program.arguments_after_path);
     let mut before = None;
     for round in 0..2 {
         if round == 1 {
@@ -1800,14 +1796,25 @@ fn run_rust_program<P: Platform>(
             .join::<P>();
         match process.exit_status() {
             Some(ProcessExit::Exited(0)) => {}
-            Some(ProcessExit::Exited(127)) => {
-                return Err("the Rust program could not relocate itself or protect its data");
+            Some(ProcessExit::Exited(status)) => {
+                return Err(program
+                    .failure_statuses
+                    .iter()
+                    .find(|(known, _)| *known == status)
+                    .map_or(
+                        "a check of the Rust program failed: it named it on the console",
+                        |(_, failure)| failure,
+                    ));
             }
-            Some(ProcessExit::Exited(101)) => return Err("the Rust program panicked"),
-            Some(ProcessExit::Exited(_)) => {
-                return Err("a check of the Rust program failed: it named it on the console");
+            Some(ProcessExit::Killed { signal }) => {
+                return Err(program
+                    .failure_signals
+                    .iter()
+                    .find(|(known, _)| *known == signal)
+                    .map_or("the Rust program was killed by a signal", |(_, failure)| {
+                        failure
+                    }));
             }
-            Some(ProcessExit::Killed { .. }) => return Err("the Rust program was killed"),
             None => return Err("a Linux program's thread ended without ending it"),
         }
     }

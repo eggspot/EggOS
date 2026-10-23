@@ -13,8 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// The line written when every check passed.
 pub const PASSED_LINE: &str = "EGGOS-USER: a std program built from Rust source ran its checks";
 
-/// The arguments after the program's own name that the kernel's self-test passes.
-const ARGUMENTS: [&str; 2] = ["first", "second"];
+const ARGUMENTS_AFTER_PROGRAM_NAME: [&str; 2] = ["first", "second"];
 
 const SLEEP: Duration = Duration::from_millis(2);
 
@@ -53,7 +52,9 @@ fn arguments() -> bool {
     let mut arguments = std::env::args();
     let program = arguments.next();
     program.is_some_and(|program| program.ends_with("eggos-std-selftest"))
-        && arguments.eq(ARGUMENTS.iter().map(|argument| argument.to_string()))
+        && arguments.eq(ARGUMENTS_AFTER_PROGRAM_NAME
+            .iter()
+            .map(|argument| argument.to_string()))
 }
 
 fn environment() -> bool {

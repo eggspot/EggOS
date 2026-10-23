@@ -28,7 +28,6 @@ const SS_DISABLE: i32 = 2;
 const SIGNAL_SET_SIZE: usize = 8;
 const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 
-/// A start-up check: what it checks, and the check.
 type Check = (&'static str, fn(&Startup) -> bool);
 
 static CHECKS: [Check; 18] = [
@@ -365,8 +364,11 @@ fn smallest_alternate_stack(startup: &Startup) -> bool {
             [&raw const *stack as usize, 0, 0, 0, 0, 0],
         )
     };
-    let accepted = set(&too_small) == -ENOMEM && set(&smallest) == 0 && set(&disabled) == 0;
-    accepted && call(number::MUNMAP, [mapping, size, 0, 0, 0, 0]) == 0
+    let one_byte_less_refused = set(&too_small) == -ENOMEM;
+    let smallest_accepted = set(&smallest) == 0;
+    let disabled_again = set(&disabled) == 0;
+    let unmapped = call(number::MUNMAP, [mapping, size, 0, 0, 0, 0]) == 0;
+    one_byte_less_refused && smallest_accepted && disabled_again && unmapped
 }
 
 fn alternate_stack(_: &Startup) -> bool {

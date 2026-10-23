@@ -53,14 +53,6 @@ global_asm!(
     start = sym start,
 );
 
-/// Relocates the program, makes its relocated data read-only, runs its main function and
-/// ends the process with its status. Until relocation is done nothing here may load a pointer
-/// stored in the program's data.
-///
-/// # Safety
-///
-/// Called once, by `_start`, with the stack Linux started the program with and the program's
-/// dynamic section.
 unsafe extern "C" fn start(stack: *const usize, dynamic: *const [usize; 2]) -> ! {
     // SAFETY: `_start` passes the stack as Linux laid it out, which stays for good.
     let startup = unsafe { Startup::from_stack(stack) };
@@ -79,8 +71,6 @@ unsafe extern "C" fn start(stack: *const usize, dynamic: *const [usize; 2]) -> !
     syscall::exit(eggos_main(&startup))
 }
 
-/// Makes each `PT_GNU_RELRO` range read-only, its start and end rounded down to pages, as
-/// Linux's dynamic loader does.
 fn protect_relocated_data(startup: &Startup, bias: usize) -> bool {
     const PROT_READ: usize = 1;
     let page = startup
