@@ -1442,7 +1442,7 @@ fn start_handler<P: Platform>(
 /// first giving it FP/SIMD registers if it has none and the frame holds other values than a
 /// new program's. [`BadFrame`], changing nothing, if a load would fault on them, or if there
 /// is no memory for them.
-fn restore_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
+fn load_frame_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
     let load = |state: &mut FpState| signal_frame::load_fp_part(part, state);
     if let Some(loaded) = thread::with_running_fp::<P, _>(load) {
         return loaded;
@@ -1469,7 +1469,7 @@ pub fn rt_sigreturn<P: Platform>(
 ) -> Result<u64, Errno> {
     let current = context.registers();
     match signal_frame::read(process, &current).and_then(|saved| {
-        restore_fp::<P>(&saved.fp)?;
+        load_frame_fp::<P>(&saved.fp)?;
         Ok(saved)
     }) {
         Ok(saved) => {
