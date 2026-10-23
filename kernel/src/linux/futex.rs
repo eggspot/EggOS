@@ -5,10 +5,11 @@
 use super::Errno;
 use super::time;
 use crate::process::Process;
-use crate::sync::SpinLock;
+use crate::sync::{SpinLock, SpinLockGuard};
 use crate::thread::{ParkEnd, Parker};
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::paging::Format;
 
@@ -44,10 +45,10 @@ impl Key {
         }
     }
 
-    fn bucket(self) -> &'static SpinLock<Bucket> {
+    fn bucket_index(self) -> usize {
         let mixed =
             (self.space_and_kind << 32 ^ self.address >> 2).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        &BUCKETS[(mixed >> 56) as usize % BUCKET_COUNT]
+        (mixed >> 56) as usize % BUCKET_COUNT
     }
 }
 
@@ -63,15 +64,28 @@ struct Bucket {
 unsafe impl Send for Bucket {}
 
 struct Waiter {
-    key: Key,
     bitset: u32,
     parker: Parker,
+    bucket_index: AtomicUsize,
     link: UnsafeCell<Link>,
 }
 
 struct Link {
     next: Option<NonNull<Waiter>>,
     queued: bool,
+    key: Key,
+}
+
+impl Waiter {
+    fn lock_current_bucket(&self) -> SpinLockGuard<'static, Bucket> {
+        loop {
+            let index = self.bucket_index.load(Ordering::Acquire);
+            let bucket = BUCKETS[index].lock();
+            if self.bucket_index.load(Ordering::Relaxed) == index {
+                return bucket;
+            }
+        }
+    }
 }
 
 impl Bucket {
@@ -84,10 +98,11 @@ impl Bucket {
         unsafe { &mut *cell.get() }
     }
 
-    fn push_back(&mut self, waiter: NonNull<Waiter>) {
+    fn push_back(&mut self, waiter: NonNull<Waiter>, key: Key) {
         *self.link(waiter) = Link {
             next: None,
             queued: true,
+            key,
         };
         let mut last = None;
         let mut following = self.head;
@@ -136,24 +151,25 @@ pub fn wait<P: Platform>(
     deadline: u64,
     still_expected: impl FnOnce() -> Result<(), Errno>,
 ) -> Result<u64, Errno> {
+    let index = key.bucket_index();
     let waiter = Waiter {
-        key,
         bitset,
         parker: Parker::new(),
+        bucket_index: AtomicUsize::new(index),
         link: UnsafeCell::new(Link {
             next: None,
             queued: false,
+            key,
         }),
     };
     let pointer = NonNull::from(&waiter);
-    let bucket_lock = key.bucket();
     {
-        let mut bucket = bucket_lock.lock();
+        let mut bucket = BUCKETS[index].lock();
         still_expected()?;
-        bucket.push_back(pointer);
+        bucket.push_back(pointer, key);
     }
     let park_end = waiter.parker.park_until::<P>(deadline);
-    let mut bucket = bucket_lock.lock();
+    let mut bucket = waiter.lock_current_bucket();
     if !bucket.link(pointer).queued {
         return Ok(0);
     }
@@ -166,18 +182,19 @@ pub fn wait<P: Platform>(
 /// Wakes the waiters on `key` whose bitset shares a bit with `bitset`, in the order they
 /// began to wait, at most `limit` of them; returns how many it woke.
 pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
-    let mut bucket = key.bucket().lock();
+    let mut bucket = BUCKETS[key.bucket_index()].lock();
     let mut woken = 0;
     let mut previous = None;
     let mut following = bucket.head;
     while woken < limit
         && let Some(candidate) = following
     {
-        following = bucket.link(candidate).next;
-        // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its key,
+        let link = bucket.link(candidate);
+        following = link.next;
+        // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its
         // bitset and parker are only read.
         let waiter = unsafe { candidate.as_ref() };
-        if waiter.key == key && waiter.bitset & bitset != 0 {
+        if link.key == key && waiter.bitset & bitset != 0 {
             bucket.unlink(previous, candidate);
             waiter.parker.unpark::<P>();
             woken += 1;
@@ -186,6 +203,67 @@ pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
         }
     }
     woken
+}
+
+/// Wakes at most `wake_limit` of the waiters on `from`, in the order they began to wait, and
+/// moves at most `requeue_limit` of the next ones to `to`, behind its own waiters and in the
+/// same order, whatever their bitsets; returns how many it woke and how many it moved.
+/// `still_expected` runs first, with both words' buckets locked: its error ends the call
+/// before anything moves.
+pub fn requeue<P: Platform>(
+    from: Key,
+    to: Key,
+    wake_limit: u32,
+    requeue_limit: u32,
+    still_expected: impl FnOnce() -> Result<(), Errno>,
+) -> Result<(u32, u32), Errno> {
+    let (from_index, to_index) = (from.bucket_index(), to.bucket_index());
+    let (mut from_bucket, mut to_bucket) = match from_index.cmp(&to_index) {
+        core::cmp::Ordering::Equal => (BUCKETS[from_index].lock(), None),
+        core::cmp::Ordering::Less => {
+            let first = BUCKETS[from_index].lock();
+            (first, Some(BUCKETS[to_index].lock()))
+        }
+        core::cmp::Ordering::Greater => {
+            let first = BUCKETS[to_index].lock();
+            (BUCKETS[from_index].lock(), Some(first))
+        }
+    };
+    still_expected()?;
+    let (mut woken, mut requeued) = (0, 0);
+    let mut previous = None;
+    let mut following = from_bucket.head;
+    while (woken < wake_limit || requeued < requeue_limit)
+        && let Some(candidate) = following
+    {
+        let link = from_bucket.link(candidate);
+        following = link.next;
+        if link.key != from {
+            previous = Some(candidate);
+            continue;
+        }
+        if woken == wake_limit && from == to {
+            previous = Some(candidate);
+            requeued += 1;
+            continue;
+        }
+        from_bucket.unlink(previous, candidate);
+        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held;
+        // its parker and bucket index are reached only through shared references.
+        let waiter = unsafe { candidate.as_ref() };
+        if woken < wake_limit {
+            waiter.parker.unpark::<P>();
+            woken += 1;
+            continue;
+        }
+        waiter.bucket_index.store(to_index, Ordering::Release);
+        match &mut to_bucket {
+            Some(bucket) => bucket.push_back(candidate, to),
+            None => from_bucket.push_back(candidate, to),
+        }
+        requeued += 1;
+    }
+    Ok((woken, requeued))
 }
 
 /// `futex(uaddr, op, val, timeout, uaddr2, val3)`: `FUTEX_WAIT`, `FUTEX_WAKE`,

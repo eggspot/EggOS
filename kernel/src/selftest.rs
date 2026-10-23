@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 39] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 40] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -91,6 +91,9 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 39] {
         }),
         ("futex_waiters_wake_in_order_and_time_out", |_| {
             futex_waiters_wake_in_order_and_time_out::<P>()
+        }),
+        ("futex_waiters_are_requeued_in_order", |_| {
+            futex_waiters_are_requeued_in_order::<P>()
         }),
         (
             "processes_keep_their_own_memory_across_switches",
@@ -2097,6 +2100,85 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     }
     if interrupt::timer_interrupts::<P>() == ticks_before {
         return Err("a thread was preempted without a timer tick");
+    }
+    Ok(())
+}
+
+fn futex_waiters_are_requeued_in_order<P: Platform>() -> Result<(), &'static str> {
+    use linux::futex::{self, Key};
+    static QUEUED: AtomicUsize = AtomicUsize::new(0);
+    static TIMED_OUT: AtomicBool = AtomicBool::new(false);
+    const FROM: Key = Key::new(u32::MAX, 0x1000, false);
+    const TO: Key = Key::new(u32::MAX, 0x2004, false);
+    let millisecond = P::clock_frequency() / 1000;
+    let counted = || {
+        QUEUED.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    };
+    let wait_until_queued = |count: usize| {
+        while QUEUED.load(Ordering::Relaxed) < count {
+            thread::yield_now::<P>();
+        }
+    };
+    QUEUED.store(0, Ordering::Relaxed);
+    let mut waiters = Vec::new();
+    for (index, (key, bitset)) in [(TO, 0b1_0000), (FROM, 1), (FROM, 2), (FROM, 4), (FROM, 8)]
+        .into_iter()
+        .enumerate()
+    {
+        let waiter = thread::spawn::<P, _>(move || {
+            let woken = futex::wait::<P>(key, bitset, u64::MAX, counted);
+            assert_eq!(woken, Ok(0), "a requeued futex waiter was not woken");
+        })
+        .map_err(|_| "could not start five futex waiters")?;
+        wait_until_queued(index + 1);
+        waiters.push(waiter);
+    }
+    let refused = futex::requeue::<P>(FROM, TO, 1, 2, || Err(linux::Errno::EAGAIN));
+    if refused != Err(linux::Errno::EAGAIN) {
+        return Err("a futex requeue did not end with the word's error");
+    }
+    if futex::requeue::<P>(FROM, TO, 1, 2, || Ok(())) != Ok((1, 2)) {
+        return Err("a futex requeue did not wake one waiter and move two");
+    }
+    if futex::wake::<P>(FROM, 0b0111, 3) != 0 {
+        return Err("a woken or requeued waiter was left on the first futex");
+    }
+    if futex::wake::<P>(TO, 0b1_0110, 1) != 1 || futex::wake::<P>(TO, 0b1_0000, 1) != 0 {
+        return Err("requeued futex waiters were not put behind the second futex's own");
+    }
+    if futex::wake::<P>(TO, 0b0110, 1) != 1 || futex::wake::<P>(TO, 0b0010, 1) != 0 {
+        return Err("requeued futex waiters did not keep their order");
+    }
+    if futex::wake::<P>(TO, 0b0100, 1) != 1 {
+        return Err("a requeued futex waiter did not keep its bitset");
+    }
+    if futex::requeue::<P>(FROM, FROM, 0, 5, || Ok(())) != Ok((0, 1)) {
+        return Err("a futex requeue to the same futex did not count the waiter it left");
+    }
+    if futex::wake::<P>(FROM, u32::MAX, 5) != 1 {
+        return Err("a futex waiter requeued to its own futex was lost");
+    }
+    for waiter in waiters {
+        waiter.join::<P>();
+    }
+    TIMED_OUT.store(false, Ordering::Relaxed);
+    let deadline = P::clock_ticks() + 2 * millisecond;
+    let timed = thread::spawn::<P, _>(move || {
+        let ended = futex::wait::<P>(FROM, u32::MAX, deadline, counted);
+        TIMED_OUT.store(ended == Err(linux::Errno::ETIMEDOUT), Ordering::Relaxed);
+    })
+    .map_err(|_| "could not start a futex waiter")?;
+    wait_until_queued(6);
+    if futex::requeue::<P>(FROM, TO, 0, 1, || Ok(())) != Ok((0, 1)) {
+        return Err("a futex requeue did not move a waiter with a deadline");
+    }
+    timed.join::<P>();
+    if !TIMED_OUT.load(Ordering::Relaxed) {
+        return Err("a requeued futex waiter did not time out");
+    }
+    if futex::wake::<P>(TO, u32::MAX, 5) != 0 {
+        return Err("a requeued futex waiter that timed out was left queued");
     }
     Ok(())
 }
