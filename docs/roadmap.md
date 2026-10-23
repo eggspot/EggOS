@@ -17,11 +17,11 @@ Updated by every build-loop run; the order is refined as we learn (reasons in `d
 | M7 | VFS and a first file system | |
 | M8 | virtio drivers (console, block, net, rng, input) | |
 | M9 | More architectures through the HAL | |
-| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24) | |
+| M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | |
 | M11 | Graphics stack (virtio-gpu first) and compositor | |
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
-| M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21) | |
+| M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
 | M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 

@@ -56,6 +56,13 @@ Check each task against these before starting and again before opening the PR.
    OS"). Lightweight counts too: the base install size, idle memory and boot time are measured for
    every release and may only shrink. Any growth must be justified in the PR and treated like a
    performance regression. (D24)
+9. **Fast to get: download in seconds, install in seconds, ready right away.** Getting EggOS must be
+   faster than getting any other OS. The base download (note 3) is small enough to finish in seconds;
+   installing writes a ready-made, compressed base image instead of unpacking packages, asks only what
+   it must, and boots straight into a usable system. Optional components download on demand, in the
+   background, never blocking the user, and updates are small and applied atomically. Download size,
+   install time and first-boot time are measured for every release and may only shrink, like note 8.
+   (D69)
 
 ## Architecture decisions so far
 - **Kernel: our own, in Rust, Linux-compatible.** We do not use the Linux kernel's C code. "Linux-compatible"
