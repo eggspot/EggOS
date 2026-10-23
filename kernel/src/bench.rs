@@ -377,9 +377,9 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
 /// Starting a Linux program from its ELF image (D51): a new process, the self-test's image
 /// with only the code `linux_start` needs (D62) loaded into it with the self-test's arguments
 /// and environment (its code, data and `.bss` mapped, its stack's region recorded and its
-/// arguments' page mapped and laid out), then the process freed. Each page is a frame of its own, zeroed: 1 for the stack (the rest of it is
-/// mapped as the program touches it, D52), 6 for the program, and the tables, so the frames
-/// dominate.
+/// arguments' page mapped and laid out), then the process freed. Each page is a frame of its
+/// own, zeroed: 1 for the stack (the rest of it is mapped as the program touches it, D52), 6
+/// for the program, and the tables, so the frames dominate.
 fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let image = selftest::linux_start_only_image::<P>();
     let arguments = selftest::LINUX_START_ARGUMENTS.map(str::as_bytes);

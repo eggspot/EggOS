@@ -429,8 +429,9 @@ fn write<P: Platform>(
 
 /// `writev(fd, buffers, count)`: as [`write`], for `count` buffers one after another, each a
 /// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux, all before
-/// anything is written: `EINVAL` for more than [`MAX_IOVECS`] buffers; then, entry by entry,
-/// `EFAULT` for one that is not the program's memory and `EINVAL` for a length that is
+/// anything is written: `EINVAL` for more than [`MAX_IOVECS`] buffers; `EFAULT` if the array
+/// does not end within user space; then, entry by entry, `EFAULT` for one that is not the
+/// program's memory and `EINVAL` for a length that is
 /// negative as a `ssize_t` (see [`unreadable_iovecs_error`]); then `EFAULT` if a buffer does
 /// not end within user space; then at most [`MAX_RW_COUNT`] bytes in all, stopping at the
 /// first byte that is not the program's memory. The array is copied once, so the program

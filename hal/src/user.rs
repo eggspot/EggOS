@@ -164,8 +164,8 @@ pub struct TestProgram {
     /// 16-byte aligned, the ids differ, or any of those calls failed.
     pub linux_start: usize,
     /// Where [`Self::linux_start`]'s code ends: the offset of the first byte after it. Its
-    /// ELF image holds the code only up to here, so programs added after it do not grow what
-    /// `linux_exec_load` copies.
+    /// ELF image for `linux_exec_load` holds the code only up to here, so programs added after
+    /// it do not grow what the benchmark copies (one added before it still would).
     pub linux_start_end: usize,
     /// Makes Linux system call [`Self::LINUX_UNKNOWN_SYSCALL`] in a loop: `ENOSYS` each time,
     /// the Linux layer's cheapest dispatch, for its benchmark.
