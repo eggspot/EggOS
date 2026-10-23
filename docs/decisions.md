@@ -3701,7 +3701,7 @@ the license, by an explicit instruction recorded here.
   fresh read of the runtime, the two test programs, their self-tests, the xtask build and
   `AT_MINSIGSTKSZ`. The start-up code, raw system calls, stack parsing, `PT_GNU_RELRO`
   rounding, the initial stack's new layout and `LARGEST_FRAME_SPACE` check out. Five things
-  change.
+  change, besides a comment cleanup.
 - **`RUSTFLAGS` no longer breaks the build** (a real bug). Cargo's `RUSTFLAGS` replaces a
   target's `rustflags` from `.cargo/config.toml` rather than adding to them, so with any
   `RUSTFLAGS` in the environment the runtime program lost `link-self-contained=no` and failed
@@ -3715,7 +3715,7 @@ the license, by an explicit instruction recorded here.
   rule never rests on `no_builtins` alone.
 - **Exit statuses mean what each program says.** 127 (could not relocate) and 101 (panic)
   come from our runtime only; a std program built with `panic = "abort"` ends with `SIGABRT`
-  instead, and its self-test now says so.
+  instead, and its self-test names that signal.
 - **One failure, one failed check.** The `AT_MINSIGSTKSZ` check always disables the stack it
   set and unmaps it, so a wrongly accepted size no longer fails the next check too.
 - **D66.** Doc comments on private items that #80–#81 added are removed (in a commit of

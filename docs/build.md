@@ -34,8 +34,8 @@ holds what used to be written in them.
 - **Linux test-program targets: `rust-lld`, `link-self-contained=no`, `relocation-model=pie`**
   (D85), for programs on our own runtime, which links no C library or start files. `cargo
   xtask` passes each test program's flags in `CARGO_ENCODED_RUSTFLAGS` (D86, D88), which
-  `RUSTFLAGS` cannot override, so its builds do not depend on these lines or on the
-  environment.
+  `RUSTFLAGS` cannot override, so their flags do not depend on these `rustflags` lines or on
+  the environment (the `linker` lines still apply).
 
 ## Kernel features (`kernel/Cargo.toml`)
 - **`qemu-test`**: power the machine off after boot, so the QEMU test runner sees the verdict.

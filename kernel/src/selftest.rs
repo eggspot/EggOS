@@ -1706,7 +1706,7 @@ struct RustProgram {
     path: &'static [u8],
     arguments_after_path: &'static [&'static [u8]],
     failure_statuses: &'static [(u32, &'static str)],
-    killed: &'static str,
+    failure_signals: &'static [(u32, &'static str)],
 }
 
 static NO_STD_PROGRAM: RustProgram = RustProgram {
@@ -1726,7 +1726,7 @@ static NO_STD_PROGRAM: RustProgram = RustProgram {
         ),
         (101, "the Rust program panicked"),
     ],
-    killed: "the Rust program was killed",
+    failure_signals: &[],
 };
 
 static STD_PROGRAM: RustProgram = RustProgram {
@@ -1740,8 +1740,10 @@ static STD_PROGRAM: RustProgram = RustProgram {
     path: b"/eggos-std-selftest",
     arguments_after_path: &[b"first", b"second"],
     failure_statuses: &[],
-    killed: "the std Rust program was killed: a panic aborts it with SIGABRT",
+    failure_signals: &[(SIGABRT, "the std Rust program panicked: it aborted")],
 };
+
+const SIGABRT: u32 = 6;
 
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
@@ -1804,7 +1806,15 @@ fn run_rust_program<P: Platform>(
                         |(_, failure)| failure,
                     ));
             }
-            Some(ProcessExit::Killed { .. }) => return Err(program.killed),
+            Some(ProcessExit::Killed { signal }) => {
+                return Err(program
+                    .failure_signals
+                    .iter()
+                    .find(|(known, _)| *known == signal)
+                    .map_or("the Rust program was killed by a signal", |(_, failure)| {
+                        failure
+                    }));
+            }
             None => return Err("a Linux program's thread ended without ending it"),
         }
     }
