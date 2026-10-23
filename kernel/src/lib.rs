@@ -345,6 +345,7 @@ pub(crate) mod tests {
             let linux_signal_suspend =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_suspend as u64;
             let linux_clock = crate::process::TEST_PROGRAM_ADDRESS + program.linux_clock as u64;
+            let linux_stat = crate::process::TEST_PROGRAM_ADDRESS + program.linux_stat as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -553,6 +554,9 @@ pub(crate) mod tests {
                 pc if (linux_clock..linux_clock + 5).contains(&pc) => {
                     clock_program(context, linux_clock)
                 }
+                pc if (linux_stat..linux_stat + 6).contains(&pc) => {
+                    stat_program(context, linux_stat)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -606,6 +610,7 @@ pub(crate) mod tests {
                 linux_signal_queue: 460,
                 linux_signal_suspend: 520,
                 linux_clock: 580,
+                linux_stat: 640,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -800,6 +805,73 @@ pub(crate) mod tests {
                 [PID.load(Ordering::Relaxed), signal, 0, 0, 0, 0],
             ),
             5..=8 => wait,
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
+    /// Plays `linux_stat` (at `start`) for the test platform: `fstat(1)`, `newfstatat(1, "",
+    /// AT_EMPTY_PATH)` and `statx(1, "", AT_EMPTY_PATH, STATX_BASIC_STATS)` into a buffer
+    /// below a stack pointer it moves down, then `lseek(1, 0, SEEK_CUR)` and `fstat(3)`, and
+    /// `exit_group(0)` if each answered as the program checks.
+    fn stat_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{Errno, number};
+        use eggos_hal::user::UserExit;
+        let pc = context.pc();
+        if pc == start {
+            *context = eggos_hal::user::UserContext::new(pc, context.stack() - 272);
+            write_user_bytes(context.stack() + 256, &[0]);
+        }
+        let buffer = context.stack();
+        let empty_path = buffer + 256;
+        let (mode, rdev) = if cfg!(target_arch = "x86_64") {
+            (24, 40)
+        } else {
+            (16, 32)
+        };
+        let field = |offset: u64, bytes: &mut [u8]| read_user_bytes(buffer + offset, bytes);
+        let character_device = |offset: u64, size: usize| {
+            let mut bytes = [0u8; 4];
+            field(offset, &mut bytes[..size]);
+            u32::from_ne_bytes(bytes) & 0xf000 == 0x2000
+        };
+        let console_device = || {
+            let mut bytes = [0u8; 8];
+            field(rdev, &mut bytes);
+            u64::from_ne_bytes(bytes) == 0x501
+        };
+        let result = context.syscall_result();
+        let step = pc - start;
+        let passed = match step {
+            0 => true,
+            1 => result == 0 && character_device(mode, 4) && console_device(),
+            2 => result == 0 && console_device(),
+            3 => {
+                let mut major = [0u8; 4];
+                field(128, &mut major);
+                result == 0 && character_device(28, 2) && u32::from_ne_bytes(major) == 5
+            }
+            4 => result == Errno::ESPIPE.result(),
+            _ => result == Errno::EBADF.result(),
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => (number::FSTAT, [1, buffer, 0, 0, 0, 0]),
+            1 => {
+                write_user_bytes(buffer + rdev, &[0; 8]);
+                (number::NEWFSTATAT, [1, empty_path, buffer, 0x1000, 0, 0])
+            }
+            2 => {
+                write_user_bytes(buffer + 28, &[0; 2]);
+                write_user_bytes(buffer + 128, &[0; 4]);
+                (number::STATX, [1, empty_path, 0x1000, 0x7ff, buffer, 0])
+            }
+            3 => (number::LSEEK, [1, 0, 1, 0, 0, 0]),
+            4 => (number::FSTAT, [3, buffer, 0, 0, 0, 0]),
             _ => (number::EXIT_GROUP, [0; 6]),
         };
         context.simulate_syscall(number, arguments, pc + 1);

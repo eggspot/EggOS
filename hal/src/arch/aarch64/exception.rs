@@ -850,6 +850,70 @@ aarch64_user_test_linux_clock:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_linux_stat
+aarch64_user_test_linux_stat:
+    sub     sp, sp, #272
+    strb    wzr, [sp, #256]
+    mov     x0, #1
+    mov     x1, sp
+    mov     x8, #80
+    svc     #0
+    cbnz    x0, 9f
+    ldr     w9, [sp, #16]
+    and     w9, w9, #0xf000
+    cmp     w9, #0x2000
+    b.ne    9f
+    ldr     x9, [sp, #32]
+    cmp     x9, #0x501
+    b.ne    9f
+    str     xzr, [sp, #32]
+    mov     x0, #1
+    add     x1, sp, #256
+    mov     x2, sp
+    mov     x3, #0x1000
+    mov     x8, #79
+    svc     #0
+    cbnz    x0, 9f
+    ldr     x9, [sp, #32]
+    cmp     x9, #0x501
+    b.ne    9f
+    strh    wzr, [sp, #28]
+    str     wzr, [sp, #128]
+    mov     x0, #1
+    add     x1, sp, #256
+    mov     x2, #0x1000
+    mov     x3, #0x7ff
+    mov     x4, sp
+    mov     x8, #291
+    svc     #0
+    cbnz    x0, 9f
+    ldrh    w9, [sp, #28]
+    and     w9, w9, #0xf000
+    cmp     w9, #0x2000
+    b.ne    9f
+    ldr     w9, [sp, #128]
+    cmp     w9, #5
+    b.ne    9f
+    mov     x0, #1
+    mov     x1, #0
+    mov     x2, #1
+    mov     x8, #62
+    svc     #0
+    cmn     x0, #29
+    b.ne    9f
+    mov     x0, #3
+    mov     x1, sp
+    mov     x8, #80
+    svc     #0
+    cmn     x0, #9
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -965,6 +1029,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_signal_queue: u8;
     static aarch64_user_test_linux_signal_suspend: u8;
     static aarch64_user_test_linux_clock: u8;
+    static aarch64_user_test_linux_stat: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -1041,6 +1106,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_queue: (&raw const aarch64_user_test_linux_signal_queue) as usize - start,
         linux_signal_suspend: (&raw const aarch64_user_test_linux_signal_suspend) as usize - start,
         linux_clock: (&raw const aarch64_user_test_linux_clock) as usize - start,
+        linux_stat: (&raw const aarch64_user_test_linux_stat) as usize - start,
     }
 }
 

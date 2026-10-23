@@ -951,6 +951,70 @@ x86_64_user_test_linux_clock:
     movl    $231, %eax
     syscall
 8:  jmp     8b
+    .global x86_64_user_test_linux_stat
+x86_64_user_test_linux_stat:
+    subq    $272, %rsp
+    movb    $0, 256(%rsp)
+    movl    $1, %edi
+    movq    %rsp, %rsi
+    movl    $5, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    24(%rsp), %eax
+    andl    $0xf000, %eax
+    cmpl    $0x2000, %eax
+    jne     9f
+    cmpq    $0x501, 40(%rsp)
+    jne     9f
+    movq    $0, 40(%rsp)
+    movl    $1, %edi
+    leaq    256(%rsp), %rsi
+    movq    %rsp, %rdx
+    movl    $0x1000, %r10d
+    movl    $262, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $0x501, 40(%rsp)
+    jne     9f
+    movw    $0, 28(%rsp)
+    movl    $0, 128(%rsp)
+    movl    $1, %edi
+    leaq    256(%rsp), %rsi
+    movl    $0x1000, %edx
+    movl    $0x7ff, %r10d
+    movq    %rsp, %r8
+    movl    $332, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movzwl  28(%rsp), %eax
+    andl    $0xf000, %eax
+    cmpl    $0x2000, %eax
+    jne     9f
+    cmpl    $5, 128(%rsp)
+    jne     9f
+    movl    $1, %edi
+    xorl    %esi, %esi
+    movl    $1, %edx
+    movl    $8, %eax
+    syscall
+    cmpq    $-29, %rax
+    jne     9f
+    movl    $3, %edi
+    movq    %rsp, %rsi
+    movl    $5, %eax
+    syscall
+    cmpq    $-9, %rax
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -1295,6 +1359,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_signal_queue: u8;
     static x86_64_user_test_linux_signal_suspend: u8;
     static x86_64_user_test_linux_clock: u8;
+    static x86_64_user_test_linux_stat: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1477,6 +1542,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_queue: (&raw const x86_64_user_test_linux_signal_queue) as usize - start,
         linux_signal_suspend: (&raw const x86_64_user_test_linux_signal_suspend) as usize - start,
         linux_clock: (&raw const x86_64_user_test_linux_clock) as usize - start,
+        linux_stat: (&raw const x86_64_user_test_linux_stat) as usize - start,
     }
 }
 

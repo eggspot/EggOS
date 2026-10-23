@@ -596,6 +596,7 @@ mod tests {
                 linux_signal_queue: 0,
                 linux_signal_suspend: 0,
                 linux_clock: 0,
+                linux_stat: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

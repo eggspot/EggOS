@@ -7,6 +7,15 @@
 //! minor 1, owned by root with mode `0600`, empty, on a device file system ([`CONSOLE`]). Its
 //! times are the Unix epoch, when the wall clock starts (D73). Paths wait for the file system
 //! (M7): a call that names a file, rather than a descriptor with `AT_EMPTY_PATH`, finds none.
+//!
+//! `newfstatat` and `statx` look up what `dirfd` and `path` name as Linux does. The path is
+//! copied first: `EFAULT` if a byte up to its end is not the program's memory, `ENAMETOOLONG`
+//! if it has no end within `PATH_MAX` (4096) bytes. A null path with `AT_EMPTY_PATH` is not
+//! read, as Linux has accepted since 6.11. Then an empty path is `ENOENT` without
+//! `AT_EMPTY_PATH`, and with it names `dirfd` itself: `EBADF` for a descriptor that is not
+//! open, `ENOENT` for the working directory (`AT_FDCWD`), which does not exist yet. Any other
+//! path finds no file: `ENOENT`, or `ENOTDIR` relative to the console, which is not a
+//! directory, or `EBADF` relative to a descriptor that is not open.
 
 use super::{Errno, is_console};
 use crate::process::Process;
@@ -245,13 +254,7 @@ fn read_path<P: Platform>(process: &Process<P>, address: u64) -> Result<Path, Er
     Err(Errno::ENAMETOOLONG)
 }
 
-/// The status `dirfd` and `path` name with `flags` (`newfstatat`'s and `statx`'s lookup): the
-/// descriptor itself for an empty or null path with [`at::EMPTY_PATH`]. As Linux: the path is
-/// read first ([`read_path`]; a null one with `AT_EMPTY_PATH` is not, as Linux has accepted
-/// since 6.11); then `ENOENT` for an empty path without `AT_EMPTY_PATH`, and `EBADF` for a
-/// descriptor that is not open, or `ENOENT` for the working directory, which does not exist
-/// yet. A path that names a file finds none: `ENOENT`, or `ENOTDIR` relative to the console,
-/// which is not a directory, or `EBADF` relative to a descriptor that is not open.
+/// The status `dirfd` and `path` name with `flags`: the module documentation's lookup.
 fn lookup<P: Platform>(
     process: &Process<P>,
     dirfd: u64,
@@ -274,9 +277,9 @@ fn lookup<P: Platform>(
 }
 
 /// `newfstatat(dirfd, path, statbuf, flags)` (`fstatat` in the generic table): as [`fstat`]
-/// for `dirfd` with an empty path and [`at::EMPTY_PATH`] (see [`lookup`]). As Linux: `EINVAL`
-/// for a flag other than `AT_SYMLINK_NOFOLLOW`, `AT_NO_AUTOMOUNT` and `AT_EMPTY_PATH`, first,
-/// and `EFAULT` for `statbuf` last; `flags` is an `int`.
+/// for `dirfd` with an empty path and [`at::EMPTY_PATH`] (the module documentation's lookup).
+/// As Linux: `EINVAL` for a flag other than `AT_SYMLINK_NOFOLLOW`, `AT_NO_AUTOMOUNT` and
+/// `AT_EMPTY_PATH`, first, and `EFAULT` for `statbuf` last; `flags` is an `int`.
 pub fn newfstatat<P: Platform>(
     process: &Process<P>,
     dirfd: u64,
@@ -293,8 +296,8 @@ pub fn newfstatat<P: Platform>(
 }
 
 /// `statx(dirfd, path, flags, mask, statxbuf)`: writes the `struct statx` of what `dirfd` and
-/// `path` name (see [`lookup`]) to `statxbuf`, with every basic field whatever `mask` asks, as
-/// Linux may. As Linux, before the path is read: `EINVAL` for [`statx_mask::RESERVED`] in
+/// `path` name (the module documentation's lookup) to `statxbuf`, with every basic field
+/// whatever `mask` asks, as Linux may. As Linux, before the path is read: `EINVAL` for [`statx_mask::RESERVED`] in
 /// `mask`, for both synchronisation bits at once, and for a flag other than `newfstatat`'s and
 /// the synchronisation choice; `EFAULT` for `statxbuf` last. `flags` and `mask` are 32-bit.
 /// Rust's std probes for the call with a null path and buffer and no flags, and takes only
