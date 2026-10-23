@@ -600,6 +600,9 @@ impl Signals {
         if due & bit(SIGKILL) != 0 {
             return SIGKILL;
         }
+        if due & SYNCHRONOUS == 0 {
+            return first_to_take(due);
+        }
         let first_raised_by_kernel = self.actions_and_queue.as_deref().and_then(|[block]| {
             block
                 .queue
@@ -617,8 +620,8 @@ impl Signals {
     /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
     /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), the first the
     /// kernel raised (a positive `si_code`) in the order raised, then the lowest, so a fault's
-    /// or a failed frame's `SIGSEGV` is never overtaken; then the lowest number, and a real-time signal's instances in the
-    /// order sent. A handler with [`flag::RESETHAND`] is removed as it is taken, as on Linux:
+    /// or a failed frame's `SIGSEGV` is never overtaken; then the lowest number, and a
+    /// real-time signal's instances in the order sent. A handler with [`flag::RESETHAND`] is removed as it is taken, as on Linux:
     /// its signal's next delivery is by the default action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
         loop {
