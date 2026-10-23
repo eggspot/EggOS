@@ -3372,11 +3372,11 @@ mod tests {
         assert_eq!(settime(1, UNMAPPED), Errno::EINVAL.result());
         assert_eq!(settime(0, UNMAPPED), Errno::EFAULT.result());
         assert_eq!(settime(0, time), Errno::EPERM.result());
-        for seconds in [-1, 8_277_292_037, i64::MAX] {
+        for seconds in [-1, 8_277_292_036, i64::MAX] {
             write_timespec(&process, time, seconds, 0);
             assert_eq!(settime(0, time), Errno::EINVAL.result());
         }
-        write_timespec(&process, time, 8_277_292_036, 999_999_999);
+        write_timespec(&process, time, 8_277_292_035, 999_999_999);
         assert_eq!(settime(0, time), Errno::EPERM.result());
         let settimeofday =
             |tv: u64, tz: u64| call(&process, number::SETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]);
@@ -3386,10 +3386,12 @@ mod tests {
         write_timespec(&process, time, 1, 1_000_000);
         assert_eq!(settimeofday(time, UNMAPPED), Errno::EFAULT.result());
         assert_eq!(settimeofday(time, zone), Errno::EINVAL.result());
-        for seconds in [-1, 8_277_292_037] {
+        for seconds in [-1, 8_277_292_036] {
             write_timespec(&process, time, seconds, 0);
             assert_eq!(settimeofday(time, 0), Errno::EINVAL.result());
         }
+        write_timespec(&process, time, 8_277_292_035, 0);
+        assert_eq!(settimeofday(time, 0), Errno::EPERM.result());
         write_timespec(&process, time, 1, 999_999);
         assert_eq!(settimeofday(time, zone), Errno::EPERM.result());
         assert_eq!(settimeofday(0, 0), Errno::EPERM.result());

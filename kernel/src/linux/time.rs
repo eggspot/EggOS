@@ -40,9 +40,9 @@ const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 /// The size of a `struct timespec` and of a `struct timeval`: two 64-bit fields.
 const TIMESPEC_SIZE: usize = 16;
 
-/// The latest wall-clock second that may be set, as on Linux: room for 30 years of uptime
+/// The first wall-clock second that may not be set, as on Linux: room for 30 years of uptime
 /// before the clock's nanoseconds overflow a signed 64-bit count.
-const SETTABLE_SECONDS_MAX: i64 = i64::MAX / NANOSECONDS_PER_SECOND as i64 - 30 * 365 * 86_400;
+const UNSETTABLE_SECONDS_FROM: i64 = i64::MAX / NANOSECONDS_PER_SECOND as i64 - 30 * 365 * 86_400;
 
 /// The size of a `struct timezone`: two `int`s.
 const TIMEZONE_SIZE: usize = 8;
@@ -197,7 +197,7 @@ pub fn clock_settime<P: Platform>(
     }
     let nanoseconds = poll::read_timeout(process, tp)?;
     if nanoseconds.is_none_or(|nanoseconds| {
-        nanoseconds / NANOSECONDS_PER_SECOND > SETTABLE_SECONDS_MAX as u64
+        nanoseconds / NANOSECONDS_PER_SECOND >= UNSETTABLE_SECONDS_FROM as u64
     }) {
         return Err(Errno::EINVAL);
     }
@@ -229,7 +229,7 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
             .map_err(|_| Errno::EFAULT)?;
     }
     if let Some((seconds, microseconds)) = seconds_and_microseconds
-        && (!(0..=SETTABLE_SECONDS_MAX).contains(&seconds) || microseconds == 1_000_000)
+        && (!(0..UNSETTABLE_SECONDS_FROM).contains(&seconds) || microseconds == 1_000_000)
     {
         return Err(Errno::EINVAL);
     }
