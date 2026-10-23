@@ -93,7 +93,7 @@ The early consoles use QEMU `virt`'s UART addresses (PL011 at `0x0900_0000`, NS1
 tree the firmware passes (`a1` on RISC-V, `x0` with a Linux-style boot on Arm) and ACPI on x86.
 The memory map already comes from the device tree (D28).
 
-## D13 Performance target: the fastest OS — Decided
+## D13 Performance target: the fastest OS — Decided; the owner's acceptance of regressions superseded by D78
 EggOS must beat macOS, Windows and Linux on boot time, latency, throughput and memory footprint on
 the same hardware, and run foreign apps at least as fast as their native OS. Every hot path gets a
 benchmark when it is written, PRs touching one report before/after numbers, and a performance
@@ -3170,3 +3170,16 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   equal to it but unequal to the file system id resetting it; `setresuid(-1, -1, -1)` through
   the dispatcher after `setfsuid`; `newfstatat` with 0x2000, 0x4000 and 0x6000 writing the
   same bytes as `fstat`. Each fails without its fix.
+
+## D78 Performance regressions are settled by research, not by waiting for the owner — Decided (owner, 2026-10-23); supersedes D13's "unless the owner explicitly accepts it"
+A PR that makes a benchmark slower is still blocked until the regression is fixed, or until a
+research subagent concludes the cost is unavoidable: the price of correctness, security or a
+feature EggOS must have, already cut to the minimum, and compared with how Linux, Windows and macOS
+pay for the same thing. Then the PR records the reasoning under "Decided by research", this file
+records the accepted cost, the baseline lines for exactly the affected benchmarks change in the same
+PR, and it merges. Nobody waits for the owner, who can overrule any accepted cost later. The same
+applies to the size, memory, boot and install budgets (D24, D69) and to UX regressions, which are
+treated like performance regressions.
+
+Why: PR #47 (FP/SIMD state per thread) waited a day for an owner OK on a cost that every OS pays.
+The owner: "the agent should make the research to solve it instead wait for me".
