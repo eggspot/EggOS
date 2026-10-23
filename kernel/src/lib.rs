@@ -965,9 +965,9 @@ pub(crate) mod tests {
     }
 
     /// Plays `linux_move_and_discard` (at `start`) for the test platform: `mmap`s a page,
-    /// populates it and writes a word there, moves it 1 MiB down with `mremap`, maps a new page where it was,
-    /// discards the moved one with `madvise`, and `exit_group(0)` if each call answered and
-    /// each page read as the program checks.
+    /// populates it and writes a word there, moves it 1 MiB down with `mremap`, maps a new
+    /// page where it was, discards the moved one with `madvise`, and `exit_group(0)` if each
+    /// call answered and each page read as the program checks.
     fn move_and_discard_program(
         context: &mut eggos_hal::user::UserContext,
         start: u64,

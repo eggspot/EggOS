@@ -3349,6 +3349,12 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   by about 15 KiB per architecture: about 10 KiB for the two calls and about 5 KiB (2%) for
   the inlining. That 5 KiB buys the 6–7% on every `mmap` and `munmap`; without it, the gain
   is gone (`free_pages` out of line measures 388 ns on x86_64, the same as `main`).
+  Research accepted both parts of the size cost (D24, D78). The two calls are what every C
+  library's allocator uses: `MADV_DONTNEED` or `MADV_FREE` to give memory back, `mremap` to
+  grow a large block. Their scope is already cut to anonymous memory only. Windows and macOS
+  pay for the same thing too: `MEM_RESET`/`DiscardVirtualMemory`, and `MADV_FREE_REUSABLE`/
+  `mach_vm_remap`. Cutting the inlining would bring back a regression that can be avoided,
+  for 5 KiB.
 - **Tests.** Host: `move_user_pages` moving mapped and kept pages, refusing a target with a
   page in it or overlapping the source, and putting every page back when tables run out;
   `madvise`'s errors in Linux's order, every advice that changes nothing, `DONTNEED`, `FREE`

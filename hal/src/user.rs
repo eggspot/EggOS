@@ -318,8 +318,9 @@ pub struct TestProgram {
     /// any check or call failed.
     pub linux_credentials: usize,
     /// A Linux program that moves and discards memory (D77): `mmap`s a page, maps its frame with
-    /// `madvise(MADV_POPULATE_WRITE)` and writes a word to it, `mremap`s it with `MREMAP_MAYMOVE | MREMAP_FIXED` to 1 MiB below, where the word
-    /// must be, `mmap`s a new page at the old address with `MAP_FIXED`, which must read 0 (no
+    /// `madvise(MADV_POPULATE_WRITE)` and writes a word to it, `mremap`s it with
+    /// `MREMAP_MAYMOVE | MREMAP_FIXED` to 1 MiB below, where the word must be, `mmap`s a new
+    /// page at the old address with `MAP_FIXED`, which must read 0 (no
     /// translation of the moved page is left there), then `madvise(MADV_DONTNEED)`s the moved
     /// page, which must then read 0. `exit_group(0)`, or `exit_group(1)` if any check or call
     /// failed.

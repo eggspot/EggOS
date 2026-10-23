@@ -490,7 +490,6 @@ impl<F: Format> PageTables<F> {
         // other, so a release fence orders it (`dmb ish` on AArch64, `fence rw,w` on RISC-V).
         fence(Ordering::Release);
         let entry = self.leaf_table_entry(virt, leaf_level, attributes.user, frames)?;
-        // Anything but an empty entry, a kept page included: one compare, not a decode.
         if entry.read() != 0 {
             return Err(MapError::AlreadyMapped);
         }

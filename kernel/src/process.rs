@@ -488,8 +488,9 @@ impl<P: Platform> Process<P> {
 
     /// Unmaps the pages of user addresses `start..end`, page-aligned, that are in regions,
     /// freeing their frames but keeping the regions: their pages are mapped, zeroed, when next
-    /// touched (Linux's `MADV_DONTNEED`). Touching regions are freed as one run. If part of the range is in no region, the rest is
-    /// discarded all the same and the error is [`RegionError::NotCovered`].
+    /// touched (Linux's `MADV_DONTNEED`). Touching regions are freed as one run. If part of
+    /// the range is in no region, the rest is discarded all the same and the error is
+    /// [`RegionError::NotCovered`].
     pub fn discard_pages(&self, start: u64, end: u64) -> Result<(), RegionError> {
         if !is_page_range(start, end) {
             return Err(RegionError::Invalid);
