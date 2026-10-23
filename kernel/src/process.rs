@@ -311,7 +311,8 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
-        let mut unmapped = FreedFrames::new(self.frame_offset);
+        let mut unmapped = FreedFrames::new();
+        let frame_offset = self.frame_offset;
         // Every page, not only those in the regions taken out: the HAL's test program has
         // none (roadmap).
         let result = self.space.change_pages(
@@ -323,19 +324,20 @@ impl<P: Platform> Process<P> {
                 // from the frame allocator, whose offset `frame_offset` is; its entry no longer
                 // refers to it, and no program runs with what CPUs cached of the entry before
                 // `change_pages` returns, so nothing writes it any more.
-                unsafe { unmapped.push(frame) }
+                unsafe { unmapped.push(frame, frame_offset) }
             },
         );
         // Only now, with this CPU's translations of the range dropped and the others marked
         // stale, may the frames go to someone else. Even after an error: those unmapped are no
         // longer the address space's.
-        if unmapped.count() > 0 {
+        if !unmapped.is_empty() {
             let mut frames = memory::FRAMES.lock();
             let frames = frames
                 .as_mut()
                 .expect("the frames came from the frame allocator");
-            // SAFETY: the frames came from this allocator (above), and nothing refers to them
-            // any more: their entries are cleared and no CPU uses translations of them.
+            // SAFETY: the frames came from this allocator, linked through its offset (above),
+            // and nothing refers to them any more: their entries are cleared and no CPU uses
+            // translations of them.
             unsafe { frames.free_all(unmapped) };
         }
         result.map_err(|_| RegionError::Invalid)
