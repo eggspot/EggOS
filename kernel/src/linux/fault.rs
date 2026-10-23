@@ -180,6 +180,7 @@ mod arch {
     const EC_DATA_ABORT_LOWER: u64 = 0x24;
     const EC_DATA_ABORT: u64 = 0x25;
     const EC_SP_ALIGNMENT: u64 = 0x26;
+    const EC_PC_ALIGNMENT: u64 = 0x22;
     /// `ESR_EL1` bits a sanitized syndrome keeps: the class and the instruction length, and
     /// for a data abort, write-not-read and cache maintenance.
     const ESR_CLASS_AND_LENGTH: u64 = 0x3f << 26 | 1 << 25;
@@ -197,8 +198,8 @@ mod arch {
 
     /// The syndrome a program sees for a fault at an address outside user space: the class
     /// and instruction length, and for an abort a level 0 translation fault (with, for a data
-    /// abort, whether it wrote), whatever the kernel's tables hold there; 0 for any other
-    /// class.
+    /// abort, whether it wrote), whatever the kernel's tables hold there; for an alignment
+    /// fault, the class and length alone; 0 for any other class.
     pub fn sanitized(esr: u64) -> u64 {
         let class = esr >> 26 & 0x3f;
         match class {
@@ -208,6 +209,7 @@ mod arch {
             EC_DATA_ABORT_LOWER | EC_DATA_ABORT => {
                 esr & (ESR_CLASS_AND_LENGTH | ESR_DATA_ABORT_KEPT) | STATUS_TRANSLATION_LEVEL_0
             }
+            EC_PC_ALIGNMENT | EC_SP_ALIGNMENT => esr & ESR_CLASS_AND_LENGTH,
             _ => 0,
         }
     }
@@ -309,6 +311,15 @@ pub use arch::sanitized as sanitized_syndrome;
 #[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::sanitized_syndrome;
+
+    #[test]
+    fn a_pc_alignment_fault_at_a_kernel_address_keeps_its_class_and_length() {
+        let pc_alignment_with_length_and_iss = 0x8a00_0123;
+        assert_eq!(
+            sanitized_syndrome(pc_alignment_with_length_and_iss),
+            0x8a00_0000
+        );
+    }
 
     #[test]
     fn syndromes_for_kernel_addresses_say_nothing_of_the_kernel_s_tables() {

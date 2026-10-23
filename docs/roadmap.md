@@ -80,12 +80,13 @@ independent review: RISC-V's `si_addr` (`sepc` or `stval`) and `si_code` for acc
 and misaligned accesses checked against a real Linux under QEMU; `TRAP_TRACE` for a single
 step a program set with `popf`; a non-canonical `rip` (only through `rt_sigreturn`) reported
 as `#GP` (`SI_KERNEL`, `trapno` 13) rather than a fetch page fault; NMIs and machine checks
-from user mode handled by the kernel instead of becoming the program's `SIGSEGV`; AArch64's
-(`fault_address` 0 for `SIGILL` and `SIGTRAP`: done, D67), and whether Linux 6.4+ passes
-the syndrome for undefined instructions and what alignment faults and external aborts report
-in `fault_address`, checked against a real Linux; whether AArch64's `rt_sigreturn` sends
-`SIGSEGV` for a frame whose `pstate` is not EL0t (we mask it and continue); a QEMU test of `SIGILL` and `SIGTRAP` handlers
-(`ud2`, `brk`, `ebreak`) with their `si_addr` and resume point.
+from user mode handled by the kernel instead of becoming the program's `SIGSEGV`;
+(AArch64's `fault_address` 0 for `SIGILL` and `SIGTRAP`: done, D67); checked against a real
+Linux: whether 6.4 and later pass the syndrome for undefined instructions, and what alignment
+faults and external aborts report in `fault_address` and `esr_context`; whether AArch64's
+`rt_sigreturn` sends `SIGSEGV` for a frame whose `pstate` is not EL0t (we mask it and
+continue); a QEMU test of `SIGILL` and `SIGTRAP` handlers (`ud2`, `brk`, `ebreak`) with their
+`si_addr` and resume point.
 
 Process follow-ups (D48): preemption on whenever user programs run (with it off, as for kernel
 threads, a program that never traps keeps its CPU); waking CPUs that keep an ended process's

@@ -2711,6 +2711,8 @@ switch-path cost; this entry follows it.)
   these but leaves the machine context's fault address 0 and writes no `esr_context`, which
   only aborts and alignment faults carry. The frame wrote the PC and the raw syndrome. Now
   only data and instruction aborts and alignment faults report them; `si_addr` is unchanged.
+  An alignment fault at an address outside user space keeps its class and instruction length
+  in the sanitized syndrome (it had none, so its frame lost both fields; independent review).
   Whether Linux 6.4 and later pass the syndrome for undefined instructions, and what alignment
   faults and external aborts report, stay on the list to check against a real Linux under QEMU.
 - **Left on the roadmap** (research): `AT_MINSIGSTKSZ` with D54, since the saved FP/SIMD state
