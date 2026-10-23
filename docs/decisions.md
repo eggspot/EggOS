@@ -2039,3 +2039,42 @@ switch-path cost; this entry follows it.)
   per thread with `ARCH_SET_GS` and the SWAPGS fence (D49); FSGSBASE for programs (Linux
   5.9+, `AT_HWCAP2`), which needs the FS base saved on the way out; `set_thread_area` and
   32-bit programs.
+
+## D58 Review of D55–D57: empty ranges past user space are `EFAULT`; `writev`'s count is an `unsigned int`; BLAKE2s wiped with volatile stores — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** The review step after three feature PRs (#48–#50): an independent read of the
+  merged code for bugs those PRs' reviews missed. It found no serious bug; the RFC 8439 and
+  RFC 7693 test vectors, the per-CPU key derivation and the thread-pointer paths check out.
+- **An empty range must still start within user space** (supersedes D50's "a zero-length
+  write returns 0 unchecked"). `ends_in_user_space` accepted any address for 0 bytes; Linux's
+  user-range check also runs for 0 bytes and then asks only that the start be at most the end
+  of user space. So `write(1, kernel_address, 0)`, `getrandom(kernel_address, 0, flags)` and a
+  `writev` with an empty buffer at a kernel address are now `EFAULT` (the whole `writev`,
+  before anything is written), while 0 bytes anywhere up to and including `USER_END` (mapped
+  or not, `NULL` too) still return 0. Research: the generic `access_ok` series merged for
+  Linux 5.18 (a single comparison against the end of user space, on every architecture),
+  LTP's `EFAULT` cases; high confidence on x86_64 and AArch64, medium-high on RISC-V. Nothing
+  is read or written either way: ABI, not security.
+- **`writev`'s count is an `unsigned int`**, as the descriptor already was: only the
+  register's low 32 bits count, so `1 << 32` writes nothing and returns 0, and
+  `(1 << 32) | 1` writes the first buffer (research: writev(2)'s `int iovcnt`; gVisor reads
+  32 bits too). Before, both were `EINVAL`.
+- **`writev`'s other edge case from PR #48's review**, one huge buffer past user space: Linux
+  6.1 (the release `uname` reports) checks every buffer's whole range before capping at
+  `MAX_RW_COUNT`, so `EFAULT`, which is what we do. Linux 6.4 and later cap a single-buffer
+  `writev` first and return a partial count (research). We keep 6.1's answer while `uname`
+  reports 6.1.
+- **BLAKE2s wipes its state and buffer on drop**, with volatile stores
+  (`eggos_hal::random::wipe`). `finalize` cleared the buffer with a plain store to a value
+  about to go away, which the compiler may remove, leaving seed material (`rng-seed`,
+  `RDSEED`) on the stack. Off every hot path (reseeding only). ChaCha20's per-block working
+  state is still not wiped: doing it in `chacha20::block` adds about 32 stores per 64-byte
+  block, about 3% on `random_fill_4096`, above the benchmark gate; it waits for a design that
+  keeps the state in registers or wipes once per draw. Best effort, as `Secret` (D56): copies
+  the compiler makes (`compress`'s working vector, the state copied out in `finalize`, moves)
+  are not wiped.
+- **Follow-ups added.** When programs get FSGSBASE (D57), the way out of user mode saves a
+  program-written FS base: give the context a new `fs_base_id` whenever the saved value
+  differs, or two copies sharing an id (after `fork` or `clone`) could hold different bases
+  and one would run on the other's. Today copies share an id only with the same value, which
+  is correct. `ARCH_GET_FS` after a program loads an FS selector reports the old base where
+  Linux reports 0 (the program only affects itself); fixed with D57's selector follow-up.
