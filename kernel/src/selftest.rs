@@ -1745,27 +1745,18 @@ static STD_PROGRAM: RustProgram = RustProgram {
 
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
-/// [`NO_STD_PROGRAM`], a static PIE, must start as on Linux, relocate itself, and find each
-/// call a C library's and Rust's standard library's start-up make answered as Linux answers
-/// it.
 fn linux_programs_built_from_rust_source_start<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &NO_STD_PROGRAM)
 }
 
-/// [`STD_PROGRAM`] must get through musl's and Rust's standard library's start-up and run
-/// what a typical Rust program uses: the heap, a `HashMap` with random keys, the clocks,
-/// sleeping and standard output.
 fn linux_programs_built_with_rust_std_run<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM)
 }
 
-/// Runs `program` twice: it must exit with 0 both times, having written its line, which the
-/// QEMU runner requires (a failed check writes its name), and everything the second run took
-/// must be freed. A kernel without the program passes.
 fn run_rust_program<P: Platform>(
     memory: &mut Memory<P>,
     program: &RustProgram,

@@ -28,7 +28,6 @@ const SS_DISABLE: i32 = 2;
 const SIGNAL_SET_SIZE: usize = 8;
 const ALTERNATE_STACK_SIZE: usize = 4 * PAGE;
 
-/// A start-up check: what it checks, and the check.
 type Check = (&'static str, fn(&Startup) -> bool);
 
 static CHECKS: [Check; 18] = [

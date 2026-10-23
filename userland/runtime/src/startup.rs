@@ -147,11 +147,6 @@ impl Startup {
     }
 }
 
-/// The strings of the null-ended pointer array at `array`.
-///
-/// # Safety
-///
-/// `array` is null-ended and its strings are null-ended, and both stay in place.
 unsafe fn strings(array: *const *const c_char) -> impl Iterator<Item = &'static CStr> {
     let mut next = array;
     core::iter::from_fn(move || {
