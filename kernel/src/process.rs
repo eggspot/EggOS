@@ -28,6 +28,7 @@
 
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
+use crate::linux::credentials::Credentials;
 use crate::linux::limits::ResourceLimits;
 use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
@@ -36,6 +37,7 @@ use crate::regions::{Access, Region, RegionError, Regions};
 use crate::sync::SpinLock;
 use crate::thread::{self, JoinHandle, SpawnError};
 use alloc::sync::Arc;
+use core::num::NonZeroU64;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_hal::Platform;
@@ -96,8 +98,16 @@ pub enum Placement {
 /// the same attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProgramBreak {
-    start: u64,
+    start: NonZeroU64,
     end: u64,
+}
+
+/// A process's credentials and resource limits, under one lock: `setrlimit` checks the one
+/// and changes the other. Root's credentials and the default limits to start with.
+#[derive(Debug, Default)]
+pub struct CredentialsAndLimits {
+    pub credentials: Credentials,
+    pub limits: ResourceLimits,
 }
 
 /// A user address space, the frames its pages map and its regions. See the module
@@ -121,8 +131,8 @@ pub struct Process<P: Platform> {
     exit: SpinLock<Option<ProcessExit>>,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
-    /// Its resource limits ([`Self::resource_limits`]).
-    resource_limits: SpinLock<ResourceLimits>,
+    /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
+    credentials_and_limits: SpinLock<CredentialsAndLimits>,
     /// Its signal state and its one thread's ([`Self::signals`]).
     signals: SpinLock<Signals>,
 }
@@ -173,7 +183,7 @@ impl<P: Platform> Process<P> {
             frame_offset,
             exit: SpinLock::new(None),
             id,
-            resource_limits: SpinLock::new(ResourceLimits::new()),
+            credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
             signals: SpinLock::new(Signals::new()),
         })
     }
@@ -183,10 +193,16 @@ impl<P: Platform> Process<P> {
         self.id
     }
 
-    /// Its resource limits (`getrlimit`, `setrlimit`, `prlimit64`; D59), starting from
-    /// [`crate::linux::limits::DEFAULTS`]. Never held while user memory is copied.
-    pub fn resource_limits(&self) -> &SpinLock<ResourceLimits> {
-        &self.resource_limits
+    /// Its credentials (D75), starting as root, and its resource limits (`getrlimit`,
+    /// `setrlimit`, `prlimit64`; D59), starting from [`crate::linux::limits::DEFAULTS`]. Never
+    /// held while user memory is copied.
+    pub fn credentials_and_limits(&self) -> &SpinLock<CredentialsAndLimits> {
+        &self.credentials_and_limits
+    }
+
+    /// Its credentials and resource limits, while the process is built.
+    pub fn credentials_and_limits_mut(&mut self) -> &mut CredentialsAndLimits {
+        self.credentials_and_limits.get_mut()
     }
 
     /// Its signal actions and its thread's blocked signals and alternate stack
@@ -264,7 +280,11 @@ impl<P: Platform> Process<P> {
     /// built.
     pub fn set_program_break(&mut self, start: u64) {
         debug_assert!(start.is_multiple_of(FRAME_SIZE));
-        *self.program_break.get_mut() = Some(ProgramBreak { start, end: start });
+        let start = NonZeroU64::new(start).expect("the program break starts above address 0");
+        *self.program_break.get_mut() = Some(ProgramBreak {
+            start,
+            end: start.get(),
+        });
     }
 
     /// Moves the program break's end to `requested` (Linux's `brk`) and returns where it is
@@ -277,7 +297,9 @@ impl<P: Platform> Process<P> {
         let Some(ProgramBreak { start, end }) = *program_break else {
             return 0;
         };
-        if requested < start || requested > limit.min(<P::PageTableFormat as Format>::USER_END) {
+        if requested < start.get()
+            || requested > limit.min(<P::PageTableFormat as Format>::USER_END)
+        {
             return end;
         }
         // Cannot wrap: both are below `USER_END`.

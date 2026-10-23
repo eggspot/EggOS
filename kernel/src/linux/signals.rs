@@ -253,11 +253,11 @@ pub mod code {
 pub struct Info([u8; KEPT_INFO_SIZE]);
 
 impl Info {
-    /// Signal `signal` sent with `code` by process `pid`, as root, the user of every process
-    /// until processes have credentials.
-    pub fn sent(signal: u32, code: i32, pid: u32) -> Self {
+    /// Signal `signal` sent with `code` by process `pid`, whose real user id is `uid`.
+    pub fn sent(signal: u32, code: i32, pid: u32, uid: u32) -> Self {
         let mut info = Self::without_sender(signal, code);
         info.0[16..20].copy_from_slice(&pid.to_ne_bytes());
+        info.0[20..24].copy_from_slice(&uid.to_ne_bytes());
         info
     }
 
@@ -983,8 +983,9 @@ fn send_to_self<P: Platform>(
         0 => Ok(0),
         signal if signal as usize <= COUNT => {
             let queue_limit = process
-                .resource_limits()
+                .credentials_and_limits()
                 .lock()
+                .limits
                 .get(super::limits::resource::SIGPENDING)
                 .map_or(u64::MAX, |limit| limit.soft);
             process
@@ -1018,8 +1019,9 @@ pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<
     if pid == -1 || (pid != own && pid != 0 && pid != own.wrapping_neg()) {
         return Err(Errno::ESRCH);
     }
+    let uid = real_user_id(process);
     send_to_self(process, signal, |signal| {
-        Info::sent(signal, code::USER, own as u32)
+        Info::sent(signal, code::USER, own as u32, uid)
     })
 }
 
@@ -1048,9 +1050,19 @@ pub fn tgkill<P: Platform>(
     if tgid != own || tid != own {
         return Err(Errno::ESRCH);
     }
+    let uid = real_user_id(process);
     send_to_self(process, signal, |signal| {
-        Info::sent(signal, code::TKILL, own as u32)
+        Info::sent(signal, code::TKILL, own as u32, uid)
     })
+}
+
+fn real_user_id<P: Platform>(process: &Process<P>) -> u32 {
+    process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .ids(super::credentials::Kind::User)
+        .real
 }
 
 fn read_queued_info<P: Platform>(
@@ -1454,11 +1466,11 @@ mod tests {
     const NO_LIMIT: u64 = u64::MAX;
 
     fn by_kill(signal: u32) -> Info {
-        Info::sent(signal, code::USER, 7)
+        Info::sent(signal, code::USER, 7, 0)
     }
 
     fn by_tkill(signal: u32) -> Info {
-        Info::sent(signal, code::TKILL, 7)
+        Info::sent(signal, code::TKILL, 7, 0)
     }
 
     #[test]

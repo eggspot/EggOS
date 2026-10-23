@@ -16,6 +16,7 @@
 //! targets) are loaded at [`pie_base`], where the program relocates itself.
 
 use super::Errno;
+use super::credentials;
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
 use crate::random;
@@ -193,6 +194,12 @@ pub fn load<P: Platform>(
         ));
     }
     let [hwcap, hwcap2] = P::linux_hardware_capabilities();
+    let (user, group) = process
+        .credentials_and_limits_mut()
+        .credentials
+        .after_exec()
+        .map_err(|_| ExecError::OutOfMemory("the credentials"))?;
+    let secure = u64::from(credentials::is_secure_execution(user, group));
     // Linux's order, so a dump of a program's vector compares line by line with Linux's.
     let auxiliary = [
         (auxv::HWCAP, hwcap),
@@ -206,13 +213,11 @@ pub fn load<P: Platform>(
         (auxv::BASE, 0),
         (auxv::FLAGS, 0),
         (auxv::ENTRY, entry),
-        // Every program runs as root until there are users (M10). All four must be given and
-        // equal, with `AT_SECURE` 0, or C libraries treat the program as privileged.
-        (auxv::UID, 0),
-        (auxv::EUID, 0),
-        (auxv::GID, 0),
-        (auxv::EGID, 0),
-        (auxv::SECURE, 0),
+        (auxv::UID, u64::from(user.real)),
+        (auxv::EUID, u64::from(user.effective)),
+        (auxv::GID, u64::from(group.real)),
+        (auxv::EGID, u64::from(group.effective)),
+        (auxv::SECURE, secure),
         // Filled in with the stack's layout: both point into it.
         (auxv::RANDOM, 0),
         (auxv::HWCAP2, hwcap2),

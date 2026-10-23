@@ -28,11 +28,13 @@
 //! `ppoll`'s signal mask during the call (D71), and the clocks and sleeping
 //! (`clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`, ..., [`time`], D73), and
 //! the console's status with `fstat`, `newfstatat` and `statx` ([`stat`]) and `lseek`
-//! refused on it ([`terminal`], D74).
+//! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
+//! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
+pub mod credentials;
 pub mod exec;
 pub mod fault;
 pub mod identity;
@@ -84,7 +86,23 @@ pub mod number {
         pub const UNAME: u64 = 63;
         pub const GETTIMEOFDAY: u64 = 96;
         pub const GETRLIMIT: u64 = 97;
+        pub const GETUID: u64 = 102;
+        pub const GETGID: u64 = 104;
+        pub const SETUID: u64 = 105;
+        pub const SETGID: u64 = 106;
+        pub const GETEUID: u64 = 107;
+        pub const GETEGID: u64 = 108;
         pub const GETPPID: u64 = 110;
+        pub const SETREUID: u64 = 113;
+        pub const SETREGID: u64 = 114;
+        pub const GETGROUPS: u64 = 115;
+        pub const SETGROUPS: u64 = 116;
+        pub const SETRESUID: u64 = 117;
+        pub const GETRESUID: u64 = 118;
+        pub const SETRESGID: u64 = 119;
+        pub const GETRESGID: u64 = 120;
+        pub const SETFSUID: u64 = 122;
+        pub const SETFSGID: u64 = 123;
         pub const RT_SIGPENDING: u64 = 127;
         pub const RT_SIGTIMEDWAIT: u64 = 128;
         pub const RT_SIGQUEUEINFO: u64 = 129;
@@ -143,6 +161,18 @@ pub mod number {
         pub const RT_SIGTIMEDWAIT: u64 = 137;
         pub const RT_SIGQUEUEINFO: u64 = 138;
         pub const RT_SIGRETURN: u64 = 139;
+        pub const SETREGID: u64 = 143;
+        pub const SETGID: u64 = 144;
+        pub const SETREUID: u64 = 145;
+        pub const SETUID: u64 = 146;
+        pub const SETRESUID: u64 = 147;
+        pub const GETRESUID: u64 = 148;
+        pub const SETRESGID: u64 = 149;
+        pub const GETRESGID: u64 = 150;
+        pub const SETFSUID: u64 = 151;
+        pub const SETFSGID: u64 = 152;
+        pub const GETGROUPS: u64 = 158;
+        pub const SETGROUPS: u64 = 159;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
@@ -150,6 +180,10 @@ pub mod number {
         pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;
         pub const GETPPID: u64 = 173;
+        pub const GETUID: u64 = 174;
+        pub const GETEUID: u64 = 175;
+        pub const GETGID: u64 = 176;
+        pub const GETEGID: u64 = 177;
         pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
         pub const MUNMAP: u64 = 215;
@@ -211,6 +245,22 @@ pub mod number {
             FSTAT,
             NEWFSTATAT,
             STATX,
+            GETUID,
+            GETEUID,
+            GETGID,
+            GETEGID,
+            GETRESUID,
+            GETRESGID,
+            GETGROUPS,
+            SETUID,
+            SETGID,
+            SETREUID,
+            SETREGID,
+            SETRESUID,
+            SETRESGID,
+            SETFSUID,
+            SETFSGID,
+            SETGROUPS,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -233,7 +283,8 @@ pub struct Errno(pub u16);
 
 impl Errno {
     /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), a
-    /// hard resource limit raised (`setrlimit`, `prlimit64`), the alternate signal stack
+    /// hard resource limit raised or an id changed by a process that is not privileged
+    /// (`setrlimit`, `prlimit64`, `setuid`, `setgroups`, ...), the alternate signal stack
     /// changed while the thread runs on it (`sigaltstack`), or a `si_code` only the kernel and
     /// `kill` may send queued to another process (`rt_sigqueueinfo`), or the wall clock set
     /// (`clock_settime`, `settimeofday`).
@@ -273,7 +324,8 @@ impl Errno {
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
     /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
-    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`).
+    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`), or an id of -1 (`setuid`,
+    /// `setgid`), a list too small or too long (`getgroups`, `setgroups`).
     pub const EINVAL: Self = Self(22);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
@@ -489,6 +541,7 @@ fn out_of_line_result<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
+    use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
@@ -531,6 +584,30 @@ fn out_of_line_result<P: Platform>(
         number::FSTAT => stat::fstat(process, first, second),
         number::NEWFSTATAT => stat::newfstatat(process, first, second, third, fourth),
         number::STATX => stat::statx(process, first, second, third, fourth, fifth),
+        number::GETUID => Ok(credentials::get_real(process, User)),
+        number::GETGID => Ok(credentials::get_real(process, Group)),
+        number::GETEUID => Ok(credentials::get_effective(process, User)),
+        number::GETEGID => Ok(credentials::get_effective(process, Group)),
+        number::GETRESUID => {
+            credentials::get_real_effective_and_saved(process, User, first, second, third)
+        }
+        number::GETRESGID => {
+            credentials::get_real_effective_and_saved(process, Group, first, second, third)
+        }
+        number::GETGROUPS => credentials::getgroups(process, first, second),
+        number::SETUID => credentials::set(process, User, first),
+        number::SETGID => credentials::set(process, Group, first),
+        number::SETREUID => credentials::set_real_and_effective(process, User, first, second),
+        number::SETREGID => credentials::set_real_and_effective(process, Group, first, second),
+        number::SETRESUID => {
+            credentials::set_real_effective_and_saved(process, User, first, second, third)
+        }
+        number::SETRESGID => {
+            credentials::set_real_effective_and_saved(process, Group, first, second, third)
+        }
+        number::SETFSUID => Ok(credentials::set_filesystem(process, User, first)),
+        number::SETFSGID => Ok(credentials::set_filesystem(process, Group, first)),
+        number::SETGROUPS => credentials::setgroups(process, first, second),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)
@@ -1146,7 +1223,7 @@ mod tests {
             0
         );
         assert_eq!(read(writable + 96), lowered);
-        // The hard limit cannot rise again; the soft limit may not pass it.
+        assert_eq!(call(&process, number::SETUID, [1000, 0, 0, 0, 0, 0]), 0);
         store(
             writable + 32,
             Limit {
@@ -1220,7 +1297,11 @@ mod tests {
             Errno::EFAULT.result()
         );
         assert_eq!(
-            process.resource_limits().lock().get(resource::NOFILE),
+            process
+                .credentials_and_limits()
+                .lock()
+                .limits
+                .get(resource::NOFILE),
             Some(Limit {
                 soft: 128,
                 hard: 512
@@ -1236,7 +1317,11 @@ mod tests {
             Errno::EFAULT.result()
         );
         assert_eq!(
-            process.resource_limits().lock().get(resource::NOFILE),
+            process
+                .credentials_and_limits()
+                .lock()
+                .limits
+                .get(resource::NOFILE),
             Some(Limit {
                 soft: 64,
                 hard: 256
@@ -1257,8 +1342,224 @@ mod tests {
         // Another process starts from the defaults.
         let other = process_with_iovecs(&kernel, b"ab", &[]);
         assert_eq!(
-            other.resource_limits().lock().get(resource::NOFILE),
+            other
+                .credentials_and_limits()
+                .lock()
+                .limits
+                .get(resource::NOFILE),
             Some(limits::DEFAULTS[resource::NOFILE as usize])
+        );
+    }
+
+    #[test]
+    fn credentials_are_read_and_changed_through_user_memory() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let writable = DATA + 4096;
+        let read_only = DATA;
+        let unmapped = DATA + 2 * 4096;
+        let words = |address, count: usize| {
+            let mut bytes = alloc::vec![0u8; count * 4];
+            process.read_user_memory(address, &mut bytes).unwrap();
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&word| u32::from_ne_bytes(word))
+                .collect::<alloc::vec::Vec<_>>()
+        };
+        let store = |address, words: &[u32]| {
+            let bytes: alloc::vec::Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+            process.write_user_memory(address, &bytes).unwrap();
+        };
+        let unchanged = u64::from(credentials::UNCHANGED);
+        let upper_half = 0xffff_ffff_0000_0000;
+        let ids = |real, effective, saved| {
+            assert_eq!(
+                call(
+                    &process,
+                    number::GETRESUID,
+                    [writable, writable + 4, writable + 8, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(words(writable, 3), [real, effective, saved]);
+        };
+        for getter in [
+            number::GETUID,
+            number::GETEUID,
+            number::GETGID,
+            number::GETEGID,
+        ] {
+            assert_eq!(call(&process, getter, [0; 6]), 0);
+        }
+        ids(0, 0, 0);
+        assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 0);
+
+        store(writable + 64, &[300, 100, 200]);
+        assert_eq!(
+            call(&process, number::SETGROUPS, [3, writable + 64, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 3);
+        assert_eq!(
+            call(&process, number::GETGROUPS, [2, writable, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::GETGROUPS,
+                [u64::from(u32::MAX), writable, 0, 0, 0, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::GETGROUPS, [3, read_only, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::GETGROUPS,
+                [upper_half | 3, writable, 0, 0, 0, 0]
+            ),
+            3
+        );
+        assert_eq!(words(writable, 3), [100, 200, 300]);
+        assert_eq!(
+            call(&process, number::SETGROUPS, [65_537, writable, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::SETGROUPS, [1, unmapped, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(call(&process, number::GETGROUPS, [0, 0, 0, 0, 0, 0]), 3);
+        let many: alloc::vec::Vec<u32> = (0..100).rev().collect();
+        store(writable + 1024, &many);
+        assert_eq!(
+            call(
+                &process,
+                number::SETGROUPS,
+                [100, writable + 1024, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::GETGROUPS,
+                [128, writable + 2048, 0, 0, 0, 0]
+            ),
+            100
+        );
+        assert_eq!(
+            words(writable + 2048, 100),
+            (0..100).collect::<alloc::vec::Vec<u32>>()
+        );
+        assert_eq!(
+            call(&process, number::SETGROUPS, [3, writable + 64, 0, 0, 0, 0]),
+            0
+        );
+
+        assert_eq!(call(&process, number::SETRESGID, [5, 6, 7, 0, 0, 0]), 0);
+        assert_eq!(call(&process, number::GETGID, [0; 6]), 5);
+        assert_eq!(call(&process, number::GETEGID, [0; 6]), 6);
+        assert_eq!(
+            call(&process, number::SETFSGID, [unchanged, 0, 0, 0, 0, 0]),
+            6
+        );
+
+        assert_eq!(
+            call(
+                &process,
+                number::SETRESUID,
+                [1000, upper_half | 1001, 0, 0, 0, 0]
+            ),
+            0
+        );
+        ids(1000, 1001, 0);
+        assert_eq!(
+            call(&process, number::SETFSUID, [4242, 0, 0, 0, 0, 0]),
+            1001
+        );
+        assert_eq!(
+            call(&process, number::SETFSUID, [unchanged, 0, 0, 0, 0, 0]),
+            1001
+        );
+        assert_eq!(
+            call(&process, number::SETFSUID, [1000, 0, 0, 0, 0, 0]),
+            1001
+        );
+        assert_eq!(
+            call(&process, number::SETFSUID, [unchanged, 0, 0, 0, 0, 0]),
+            1000
+        );
+        assert_eq!(
+            call(&process, number::SETGROUPS, [0, 0, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call(&process, number::SETUID, [4242, 0, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call(&process, number::SETUID, [unchanged, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            call(&process, number::SETREUID, [unchanged, 0, 0, 0, 0, 0]),
+            0
+        );
+        ids(1000, 0, 0);
+        assert_eq!(
+            call(&process, number::SETREUID, [unchanged, 1000, 0, 0, 0, 0]),
+            0
+        );
+        ids(1000, 1000, 0);
+        assert_eq!(
+            call(&process, number::SETREUID, [1000, unchanged, 0, 0, 0, 0]),
+            0
+        );
+        ids(1000, 1000, 1000);
+        assert_eq!(
+            call(&process, number::SETREUID, [unchanged, 0, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::GETRESUID,
+                [writable, unmapped, writable + 8, 0, 0, 0]
+            ),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(&process, number::SETREGID, [7, unchanged, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call(&process, number::SETREGID, [6, unchanged, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(call(&process, number::GETGID, [0; 6]), 6);
+        assert_eq!(
+            call(&process, number::SETGID, [7, 0, 0, 0, 0, 0]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::SETRESGID,
+                [unchanged, unchanged, 6, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(&process, number::SETGID, [8, 0, 0, 0, 0, 0]),
+            Errno::EPERM.result()
         );
     }
 

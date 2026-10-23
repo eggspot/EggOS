@@ -4,10 +4,10 @@
 //!
 //! Each process has a soft and a hard limit per resource ([`ResourceLimits`]), starting from
 //! [`DEFAULTS`]. A process may lower either and raise its soft limit up to its hard one; raising
-//! a hard limit needs privilege (Linux's `CAP_SYS_RESOURCE`), which no process has until
-//! processes have credentials (`may_raise_hard_limits`), so it is `EPERM`: lowering a hard
-//! limit stays final, as a sandbox relies on. The limits are kept and reported; each is
-//! enforced when its resource exists (the stack's 8 MiB region already matches its default).
+//! a hard limit needs privilege (Linux's `CAP_SYS_RESOURCE`), which a process has while its
+//! effective user id is 0 (D75), so for any other process lowering a hard limit is final, as a
+//! sandbox relies on. The limits are kept and reported; each is enforced when its resource
+//! exists (the stack's 8 MiB region already matches its default).
 
 use super::Errno;
 use crate::process::Process;
@@ -108,8 +108,8 @@ pub mod resource {
 pub const MAX_OPEN_FILES: u64 = 1 << 20;
 
 /// The limits a process starts with, one per resource: those a current Linux distribution gives
-/// its processes (systemd's open-file limit, 1024 soft and 524288 hard, since no process can
-/// raise a hard limit yet; 8 MiB of locked memory, as since Linux 5.16).
+/// its processes (systemd's open-file limit, 1024 soft and 524288 hard; 8 MiB of locked memory,
+/// as since Linux 5.16).
 pub const DEFAULTS: [Limit; resource::COUNT] = {
     use resource::*;
     let mut limits = [Limit::UNLIMITED; resource::COUNT];
@@ -152,12 +152,6 @@ enum ChangeError {
     OutOfMemory,
 }
 
-/// Whether the process may raise its hard limits: Linux's `CAP_SYS_RESOURCE`. No process may
-/// until processes have credentials; then the privileged ones (`init`, M10) will.
-fn may_raise_hard_limits() -> bool {
-    false
-}
-
 impl ResourceLimits {
     /// The defaults.
     pub const fn new() -> Self {
@@ -173,16 +167,16 @@ impl ResourceLimits {
         self.all().get(resource as usize).copied()
     }
 
-    /// Sets `resource`, a resource's number, to `new` if allowed (see the module documentation)
-    /// and returns the limits it had. The first change that changes anything makes the
-    /// process's own copy.
-    fn set(&mut self, resource: u32, new: Limit) -> Result<Limit, ChangeError> {
+    /// Sets `resource`, a resource's number, to `new` if allowed (see the module documentation;
+    /// a hard limit rises only when `privileged`) and returns the limits it had. The first
+    /// change that changes anything makes the process's own copy.
+    fn set(&mut self, resource: u32, new: Limit, privileged: bool) -> Result<Limit, ChangeError> {
         let current = self.get(resource).ok_or(ChangeError::NoSuchResource)?;
         if new.soft > new.hard {
             return Err(ChangeError::SoftAboveHard);
         }
         if (resource == resource::NOFILE && new.hard > MAX_OPEN_FILES)
-            || (new.hard > current.hard && !may_raise_hard_limits())
+            || (new.hard > current.hard && !privileged)
         {
             return Err(ChangeError::NotPermitted);
         }
@@ -246,7 +240,8 @@ pub fn prlimit64<P: Platform>(
 /// copies the ones it had to `old`, if any. As Linux, in this order: `EFAULT` if `new` is not
 /// the program's memory; `ESRCH` for a `pid` other than 0 or the caller's (no other process is
 /// reachable yet); `EINVAL` for a number with no resource or a soft limit above the hard one;
-/// `EPERM` for an open-file limit above [`MAX_OPEN_FILES`] or a raised hard limit; `ENOMEM` if
+/// `EPERM` for an open-file limit above [`MAX_OPEN_FILES`] or a hard limit raised by a process
+/// that is not privileged; `ENOMEM` if
 /// the process's first change finds no memory for its own copy; then, with the new limits set,
 /// `EFAULT` if `old` is not the program's writable memory. `pid` (a
 /// `pid_t`) and `resource` are 32-bit: the registers' upper halves are ignored.
@@ -273,17 +268,22 @@ fn prlimit<P: Platform>(
     }
     let resource = resource as u32;
     // Copied out before the program's memory is touched: the lock is never held across a copy.
-    let previous = {
-        let mut limits = process.resource_limits().lock();
-        match new {
-            None => limits.get(resource).ok_or(Errno::EINVAL)?,
-            Some(new) => limits.set(resource, new).map_err(|error| match error {
-                ChangeError::NoSuchResource | ChangeError::SoftAboveHard => Errno::EINVAL,
-                ChangeError::NotPermitted => Errno::EPERM,
-                ChangeError::OutOfMemory => Errno::ENOMEM,
-            })?,
-        }
-    };
+    let previous =
+        {
+            let mut state = process.credentials_and_limits().lock();
+            let privileged = state.credentials.is_privileged();
+            match new {
+                None => state.limits.get(resource).ok_or(Errno::EINVAL)?,
+                Some(new) => state
+                    .limits
+                    .set(resource, new, privileged)
+                    .map_err(|error| match error {
+                        ChangeError::NoSuchResource | ChangeError::SoftAboveHard => Errno::EINVAL,
+                        ChangeError::NotPermitted => Errno::EPERM,
+                        ChangeError::OutOfMemory => Errno::ENOMEM,
+                    })?,
+            }
+        };
     if let Some(address) = old {
         process
             .write_user_memory(address, &previous.to_bytes())
@@ -331,45 +331,47 @@ mod tests {
         let stack = |soft, hard| Limit { soft, hard };
         // No change, and a number with no resource: still the defaults, with no copy made.
         let default_stack = DEFAULTS[STACK as usize];
-        assert_eq!(limits.set(STACK, default_stack), Ok(default_stack));
+        assert_eq!(limits.set(STACK, default_stack, false), Ok(default_stack));
         assert_eq!(
-            limits.set(COUNT as u32, default_stack),
+            limits.set(COUNT as u32, default_stack, false),
             Err(ChangeError::NoSuchResource)
         );
         assert!(limits.0.is_none());
         // The soft limit up to the hard one, and back down.
         assert_eq!(
-            limits.set(STACK, stack(Limit::INFINITY, Limit::INFINITY)),
+            limits.set(STACK, stack(Limit::INFINITY, Limit::INFINITY), false),
             Ok(default_stack)
         );
         assert!(limits.0.is_some());
         assert_eq!(
             limits
-                .set(STACK, stack(1 << 20, Limit::INFINITY))
+                .set(STACK, stack(1 << 20, Limit::INFINITY), false)
                 .map(|_| ()),
             Ok(())
         );
         // Lowering the hard limit is final.
         assert_eq!(
-            limits.set(STACK, stack(1 << 20, 2 << 20)).map(|_| ()),
+            limits
+                .set(STACK, stack(1 << 20, 2 << 20), false)
+                .map(|_| ()),
             Ok(())
         );
         assert_eq!(
-            limits.set(STACK, stack(1 << 20, 4 << 20)),
+            limits.set(STACK, stack(1 << 20, 4 << 20), false),
             Err(ChangeError::NotPermitted)
         );
         assert_eq!(
-            limits.set(STACK, stack(4 << 20, 2 << 20)),
+            limits.set(STACK, stack(4 << 20, 2 << 20), false),
             Err(ChangeError::SoftAboveHard)
         );
         assert_eq!(limits.get(STACK), Some(stack(1 << 20, 2 << 20)));
         // The open-file limit: up to the hard limit, which then cannot rise again.
         assert_eq!(
-            limits.set(NOFILE, stack(4096, 4096)),
+            limits.set(NOFILE, stack(4096, 4096), false),
             Ok(stack(1024, 524_288))
         );
         assert_eq!(
-            limits.set(NOFILE, stack(4097, 4097)),
+            limits.set(NOFILE, stack(4097, 4097), false),
             Err(ChangeError::NotPermitted)
         );
         // Never past `MAX_OPEN_FILES`, nor unlimited.
@@ -378,13 +380,34 @@ mod tests {
         limits.0.as_mut().unwrap()[NOFILE as usize] = Limit::UNLIMITED;
         for hard in [MAX_OPEN_FILES + 1, Limit::INFINITY] {
             assert_eq!(
-                limits.set(NOFILE, stack(1024, hard)),
+                limits.set(NOFILE, stack(1024, hard), false),
                 Err(ChangeError::NotPermitted)
             );
         }
         assert_eq!(
-            limits.set(NOFILE, stack(1024, MAX_OPEN_FILES)).map(|_| ()),
+            limits
+                .set(NOFILE, stack(1024, MAX_OPEN_FILES), false)
+                .map(|_| ()),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn a_privileged_process_raises_hard_limits_but_never_past_the_open_file_ceiling() {
+        let mut limits = ResourceLimits::new();
+        let limit = |soft, hard| Limit { soft, hard };
+        limits.set(STACK, limit(1 << 20, 2 << 20), true).unwrap();
+        assert_eq!(
+            limits.set(STACK, limit(1 << 20, Limit::INFINITY), true),
+            Ok(limit(1 << 20, 2 << 20))
+        );
+        assert_eq!(
+            limits.set(NOFILE, limit(1024, MAX_OPEN_FILES), true),
+            Ok(DEFAULTS[NOFILE as usize])
+        );
+        assert_eq!(
+            limits.set(NOFILE, limit(1024, MAX_OPEN_FILES + 1), true),
+            Err(ChangeError::NotPermitted)
         );
     }
 

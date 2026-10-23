@@ -346,6 +346,8 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_suspend as u64;
             let linux_clock = crate::process::TEST_PROGRAM_ADDRESS + program.linux_clock as u64;
             let linux_stat = crate::process::TEST_PROGRAM_ADDRESS + program.linux_stat as u64;
+            let linux_credentials =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_credentials as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -557,6 +559,9 @@ pub(crate) mod tests {
                 pc if (linux_stat..linux_stat + 6).contains(&pc) => {
                     stat_program(context, linux_stat)
                 }
+                pc if (linux_credentials..linux_credentials + 5).contains(&pc) => {
+                    credentials_program(context, linux_credentials)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -611,6 +616,7 @@ pub(crate) mod tests {
                 linux_signal_suspend: 520,
                 linux_clock: 580,
                 linux_stat: 640,
+                linux_credentials: 700,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -872,6 +878,36 @@ pub(crate) mod tests {
             }
             3 => (number::LSEEK, [1, 0, 1, 0, 0, 0]),
             4 => (number::FSTAT, [3, buffer, 0, 0, 0, 0]),
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
+    /// Plays `linux_credentials` (at `start`) for the test platform: `geteuid()`,
+    /// `setuid(1000)`, `getuid()` and `setuid(0)`, and `exit_group(0)` if each answered as the
+    /// program checks.
+    fn credentials_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{Errno, number};
+        use eggos_hal::user::UserExit;
+        let pc = context.pc();
+        let result = context.syscall_result();
+        let step = pc - start;
+        let passed = match step {
+            0 => true,
+            1 | 2 => result == 0,
+            3 => result == 1000,
+            _ => result == Errno::EPERM.result(),
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => (number::GETEUID, [0; 6]),
+            1 => (number::SETUID, [1000, 0, 0, 0, 0, 0]),
+            2 => (number::GETUID, [0; 6]),
+            3 => (number::SETUID, [0; 6]),
             _ => (number::EXIT_GROUP, [0; 6]),
         };
         context.simulate_syscall(number, arguments, pc + 1);
