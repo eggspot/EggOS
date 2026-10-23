@@ -3695,3 +3695,29 @@ the license, by an explicit instruction recorded here.
   no frame placed below it for 256 consecutive tops. QEMU: the program of D85 checks the entry,
   that `sigaltstack` refuses one byte less with `ENOMEM`, and takes a stack of exactly that
   size.
+
+## D88 Review of D84–D87: user programs build whatever `RUSTFLAGS` holds; stricter relocation tables; exit statuses read per program — Decided by the build loop
+- **Why.** The review step after three feature PRs (#80–#82, with #79's toolchain change): a
+  fresh read of the runtime, the two test programs, their self-tests, the xtask build and
+  `AT_MINSIGSTKSZ`. The start-up code, raw system calls, stack parsing, `PT_GNU_RELRO`
+  rounding, the initial stack's new layout and `LARGEST_FRAME_SPACE` check out. Five things
+  change.
+- **`RUSTFLAGS` no longer breaks the build** (a real bug). Cargo's `RUSTFLAGS` replaces a
+  target's `rustflags` from `.cargo/config.toml` rather than adding to them, so with any
+  `RUSTFLAGS` in the environment the runtime program lost `link-self-contained=no` and failed
+  to link (`duplicate symbol: _start`, reproduced). xtask now passes every user program's
+  flags in `CARGO_ENCODED_RUSTFLAGS`, which takes precedence, as D86 already did for the std
+  program.
+- **Relocation tables checked whole.** `relocate` refuses a `DT_RELASZ` that is not a whole
+  number of entries, or one with no `DT_RELA` (it would have read the ELF header as
+  relocations), and reads entries unaligned instead of assuming the table's alignment.
+- **`memmove` no longer calls `memcpy`.** Both share one upward byte copy, so the overlap
+  rule never rests on `no_builtins` alone.
+- **Exit statuses mean what each program says.** 127 (could not relocate) and 101 (panic)
+  come from our runtime only; a std program built with `panic = "abort"` ends with `SIGABRT`
+  instead, and its self-test now says so.
+- **One failure, one failed check.** The `AT_MINSIGSTKSZ` check always disables the stack it
+  set and unmaps it, so a wrongly accepted size no longer fails the next check too.
+- **D66.** Doc comments on private items that #80–#81 added are removed (in a commit of
+  their own); their content is in D85 and D86 or in the names (`null_ended_strings`,
+  `ARGUMENTS_AFTER_PROGRAM_NAME`, `arguments_after_path`).
