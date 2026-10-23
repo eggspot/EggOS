@@ -138,7 +138,7 @@ Descriptor follow-ups (D61): a descriptor table per process with `close`, `dup`,
 `fcntl` (`F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `FIONBIO`, `FIOCLEX` and `FIONCLEX` (M7);
 console input (UART receive, virtio-console, M8) with `read`, `POLLIN` and a line discipline
 behind `TCSETS`, `TCSETSW` and `TCSETSF`, and pollers woken when input arrives; `SIGWINCH` on
-`TIOCSWINSZ` and sessions
+`TIOCSWINSZ`; sessions
 and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); `select`,
 `pselect6` and `epoll` (M7); `poll` arrays copied in pieces with preemption points
 between them, once programs poll many thousands of descriptors; checked by observation on a
