@@ -583,6 +583,7 @@ mod tests {
                 linux_signal_handler: 0,
                 linux_fault_handler: 0,
                 linux_signal_queue: 0,
+                linux_signal_suspend: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

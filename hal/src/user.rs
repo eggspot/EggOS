@@ -280,6 +280,15 @@ pub struct TestProgram {
     /// last), and a fourth call must fail with `EAGAIN`. `exit_group(0)`, or `exit_group(1)` if
     /// any check or call failed.
     pub linux_signal_queue: usize,
+    /// A Linux program that waits for a signal with `rt_sigsuspend` (D70): it installs a
+    /// `SIGUSR1` handler with `SA_SIGINFO` (x86_64 with its own restorer, the others returning
+    /// through the kernel's trampoline), blocks `SIGUSR1` and sends it to itself with `tgkill`,
+    /// then calls `rt_sigsuspend` with an empty set. The handler checks the signal and that
+    /// its frame saved the mask from before the call (`SIGUSR1` alone), then sets one register
+    /// in its frame (`x20`, `s2`, `r12`) to 2 and returns. `rt_sigsuspend` must then fail with
+    /// `EINTR`, the register must be 2, and `SIGUSR1` must be blocked again: `exit_group(0)`,
+    /// or `exit_group(1)` if any check or call failed.
+    pub linux_signal_suspend: usize,
 }
 
 impl TestProgram {

@@ -22,7 +22,9 @@
 //! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
 //! `rt_sigpending`, and delivery by their default actions ([`signals`], D63), and signal
 //! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64), and
-//! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65).
+//! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65), and real-time signals
+//! queued with `rt_sigqueueinfo` and `rt_tgsigqueueinfo` and taken with `rt_sigtimedwait`
+//! (D68), and waits for a handler with `rt_sigsuspend` and, on x86_64, `pause` (D70).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -66,6 +68,7 @@ pub mod number {
         pub const IOCTL: u64 = 16;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
+        pub const PAUSE: u64 = 34;
         pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
@@ -75,6 +78,7 @@ pub mod number {
         pub const RT_SIGPENDING: u64 = 127;
         pub const RT_SIGTIMEDWAIT: u64 = 128;
         pub const RT_SIGQUEUEINFO: u64 = 129;
+        pub const RT_SIGSUSPEND: u64 = 130;
         pub const SIGALTSTACK: u64 = 131;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
@@ -106,6 +110,7 @@ pub mod number {
         pub const TKILL: u64 = 130;
         pub const TGKILL: u64 = 131;
         pub const SIGALTSTACK: u64 = 132;
+        pub const RT_SIGSUSPEND: u64 = 133;
         pub const RT_SIGACTION: u64 = 134;
         pub const RT_SIGPROCMASK: u64 = 135;
         pub const RT_SIGPENDING: u64 = 136;
@@ -162,6 +167,9 @@ pub mod number {
             RT_SIGTIMEDWAIT,
             RT_SIGQUEUEINFO,
             RT_TGSIGQUEUEINFO,
+            RT_SIGSUSPEND,
+            #[cfg(target_arch = "x86_64")]
+            PAUSE,
             SIGALTSTACK,
             KILL,
             TKILL,
@@ -200,6 +208,8 @@ impl Errno {
     pub const ENOENT: Self = Self(2);
     /// No such process: here, one the caller cannot reach (`prlimit64`).
     pub const ESRCH: Self = Self(3);
+    /// Interrupted: a signal's handler started during the wait (`rt_sigsuspend`, `pause`).
+    pub const EINTR: Self = Self(4);
     /// The arguments and environment are too long (`execve`).
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
@@ -396,13 +406,20 @@ fn memory_call<P: Platform>(
 /// every system call pays). After a call that can make a signal due, the signal is delivered
 /// before the program runs again ([`signals::deliver`]), which may end the process: then it
 /// breaks. `rt_sigreturn` sets every register itself and returns the restored result
-/// register's value, so writing the result back changes nothing.
+/// register's value, so writing the result back changes nothing. The waits for a signal set
+/// their result and deliver it themselves.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Process<P>,
     number: u64,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
+    match number {
+        number::RT_SIGSUSPEND => return signals::rt_sigsuspend(process, context),
+        #[cfg(target_arch = "x86_64")]
+        number::PAUSE => return signals::pause(process, context),
+        _ => {}
+    }
     let result = out_of_line_result(process, number, context);
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
     match number {
@@ -2827,6 +2844,114 @@ mod tests {
         assert_eq!(
             read_siginfo(&process, info),
             (rt as i32, signals::code::QUEUE, 0x1234_5678_9abc, true)
+        );
+    }
+
+    /// The mask the frame of the handler `context` runs saved.
+    fn saved_mask(process: &Process<P>, context: &UserContext) -> u64 {
+        let ucontext = context.syscall_arguments()[2];
+        let sigmask =
+            ucontext - signal_frame::layout::UCONTEXT as u64 + signal_frame::layout::SIGMASK as u64;
+        let mut bytes = [0; 8];
+        process.read_user_memory(sigmask, &mut bytes).unwrap();
+        u64::from_ne_bytes(bytes)
+    }
+
+    #[test]
+    fn sigsuspend_runs_handlers_under_its_mask_then_restores_the_mask_it_replaced() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let bit = |signal: u64| 1u64 << (signal - 1);
+        let (sigusr1, sigusr2, sigterm, sigkill) = (10u64, 12u64, 15u64, 9u64);
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        set_handler(&process, sigusr1, flags, bit(sigterm));
+        set_handler(&process, sigusr2, flags, 0);
+        let before = bit(sigusr1) | bit(sigusr2) | bit(sigterm);
+        block_signals(&process, before);
+        for signal in [sigusr2, sigusr1] {
+            assert_eq!(
+                call(&process, number::TGKILL, [pid, pid, signal, 0, 0, 0]),
+                0
+            );
+        }
+        let blocked = || process.signals().lock().thread().blocked;
+        let mask = SCRATCH + 0x100;
+        let during = bit(sigterm);
+        process
+            .write_user_memory(mask, &(during | bit(sigkill)).to_ne_bytes())
+            .unwrap();
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+        context.simulate_syscall(number::RT_SIGSUSPEND, [mask, 8, 0, 0, 0, 0], 0x40_0004);
+        let mut interrupted = context.clone();
+        interrupted.set_syscall_result(Errno::EINTR.result());
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(context.syscall_arguments()[0], sigusr2);
+        let in_sigusr1 = during | bit(sigusr1);
+        assert_eq!(saved_mask(&process, &context), in_sigusr1);
+        assert_eq!(blocked(), in_sigusr1 | bit(sigusr2));
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.syscall_arguments()[0], sigusr1);
+        assert_eq!(saved_mask(&process, &context), before);
+        assert_eq!(blocked(), in_sigusr1);
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.registers(), interrupted.registers());
+        assert_eq!(blocked(), before);
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn sigsuspend_checks_its_set_first_and_ends_the_process_by_a_default_action() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let sigterm = 15u64;
+        let before = 1 << (sigterm - 1);
+        block_signals(&process, before);
+        assert_eq!(
+            call(&process, number::TGKILL, [pid, pid, sigterm, 0, 0, 0]),
+            0
+        );
+        let mask = SCRATCH + 0x100;
+        process
+            .write_user_memory(mask, &0u64.to_ne_bytes())
+            .unwrap();
+        for (set, size, errno) in [
+            (UNMAPPED, 7, Errno::EINVAL),
+            (mask, 16, Errno::EINVAL),
+            (UNMAPPED, 8, Errno::EFAULT),
+        ] {
+            assert_eq!(
+                call(&process, number::RT_SIGSUSPEND, [set, size, 0, 0, 0, 0]),
+                errno.result()
+            );
+            assert_eq!(process.signals().lock().thread().blocked, before);
+        }
+        let mut context = called(number::RT_SIGSUSPEND, [mask, 8, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: sigterm as u32
+            })
         );
     }
 

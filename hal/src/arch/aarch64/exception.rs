@@ -740,6 +740,71 @@ aarch64_user_test_linux_signal_queue:
     cmp     x9, x21
     b.ne    9b
     ret
+    .global aarch64_user_test_linux_signal_suspend
+aarch64_user_test_linux_signal_suspend:
+    sub     sp, sp, #64
+    adr     x9, 5f
+    mov     x10, #4
+    stp     x9, x10, [sp]
+    stp     xzr, xzr, [sp, #16]
+    mov     x0, #10
+    mov     x1, sp
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #134
+    svc     #0
+    cbnz    x0, 9f
+    mov     x9, #(1 << 9)
+    str     x9, [sp, #32]
+    str     xzr, [sp, #40]
+    mov     x0, #0
+    add     x1, sp, #32
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+    cbnz    x0, 9f
+    mov     x8, #172
+    svc     #0
+    mov     x1, x0
+    mov     x2, #10
+    mov     x8, #131
+    svc     #0
+    cbnz    x0, 9f
+    mov     x20, #1
+    add     x0, sp, #40
+    mov     x1, #8
+    mov     x8, #133
+    svc     #0
+    cmn     x0, #4
+    b.ne    9f
+    cmp     x20, #2
+    b.ne    9f
+    mov     x0, #0
+    mov     x1, #0
+    add     x2, sp, #48
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+    cbnz    x0, 9f
+    ldr     x9, [sp, #48]
+    cmp     x9, #(1 << 9)
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
+5:  cmp     x0, #10
+    b.ne    7f
+    ldr     x9, [x2, #{uc_sigmask}]
+    cmp     x9, #(1 << 9)
+    b.ne    7f
+    mov     x9, #2
+    str     x9, [x2, #{saved_x20}]
+7:  ret
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -764,6 +829,7 @@ aarch64_user_test_end:
     esr_record = const 176 + 288 + 528,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
     queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    uc_sigmask = const 40,
     first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
     handler = sym aarch64_exception,
@@ -851,6 +917,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_signal_handler: u8;
     static aarch64_user_test_linux_fault_handler: u8;
     static aarch64_user_test_linux_signal_queue: u8;
+    static aarch64_user_test_linux_signal_suspend: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -925,6 +992,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_handler: (&raw const aarch64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const aarch64_user_test_linux_fault_handler) as usize - start,
         linux_signal_queue: (&raw const aarch64_user_test_linux_signal_queue) as usize - start,
+        linux_signal_suspend: (&raw const aarch64_user_test_linux_signal_suspend) as usize - start,
     }
 }
 

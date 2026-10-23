@@ -837,6 +837,77 @@ x86_64_user_test_linux_signal_queue:
     cmpq    %r14, 24(%r12)
     jne     9b
     ret
+    .global x86_64_user_test_linux_signal_suspend
+x86_64_user_test_linux_signal_suspend:
+    subq    $64, %rsp
+    leaq    5f(%rip), %rax
+    movq    %rax, (%rsp)
+    movq    $0x04000004, 8(%rsp)
+    leaq    6f(%rip), %rax
+    movq    %rax, 16(%rsp)
+    movq    $0, 24(%rsp)
+    movl    $10, %edi
+    movq    %rsp, %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $13, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    $0x200, 32(%rsp)
+    movq    $0, 40(%rsp)
+    xorl    %edi, %edi
+    leaq    32(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $39, %eax
+    syscall
+    movq    %rax, %rdi
+    movq    %rax, %rsi
+    movl    $10, %edx
+    movl    $234, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $1, %r12d
+    leaq    40(%rsp), %rdi
+    movl    $8, %esi
+    movl    $130, %eax
+    syscall
+    cmpq    $-4, %rax
+    jne     9f
+    cmpq    $2, %r12
+    jne     9f
+    xorl    %edi, %edi
+    xorl    %esi, %esi
+    leaq    48(%rsp), %rdx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $0x200, 48(%rsp)
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
+5:  cmpl    $10, %edi
+    jne     7f
+    cmpq    $0x200, {uc_sigmask}(%rdx)
+    jne     7f
+    movq    $2, {saved_r12}(%rdx)
+7:  ret
+6:  movl    $15, %eax
+    syscall
+    int3
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -887,6 +958,7 @@ x86_64_user_test_end:
     saved_cr2 = const 40 + 176,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
     queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    uc_sigmask = const 296,
     first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
     thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
@@ -1177,6 +1249,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_signal_handler: u8;
     static x86_64_user_test_linux_fault_handler: u8;
     static x86_64_user_test_linux_signal_queue: u8;
+    static x86_64_user_test_linux_signal_suspend: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1357,6 +1430,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_handler: (&raw const x86_64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const x86_64_user_test_linux_fault_handler) as usize - start,
         linux_signal_queue: (&raw const x86_64_user_test_linux_signal_queue) as usize - start,
+        linux_signal_suspend: (&raw const x86_64_user_test_linux_signal_suspend) as usize - start,
     }
 }
 
