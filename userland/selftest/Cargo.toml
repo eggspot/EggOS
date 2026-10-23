@@ -1,0 +1,12 @@
+[package]
+name = "eggos-selftest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

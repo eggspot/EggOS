@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 36] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 37] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -160,6 +160,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 36] {
         (
             "linux_programs_move_and_discard_memory",
             linux_programs_move_and_discard_memory::<P>,
+        ),
+        (
+            "linux_programs_built_from_rust_source_start",
+            linux_programs_built_from_rust_source_start::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1691,6 +1695,76 @@ fn linux_programs_move_and_discard_memory<P: Platform>(
         HandlingFailure::Killed => "the program moving memory was killed",
         HandlingFailure::Other(error) => error,
     })
+}
+
+/// The program built from our own Rust source, `userland/selftest`, for this architecture:
+/// `cargo xtask` builds it and names it in `EGGOS_USERLAND_SELFTEST` when it builds a kernel
+/// with `qemu-test`. Other kernels carry none.
+#[cfg(all(target_os = "none", feature = "qemu-test"))]
+const RUST_PROGRAM: Option<&[u8]> = Some(include_bytes!(env!(
+    "EGGOS_USERLAND_SELFTEST",
+    "build kernels with qemu-test through cargo xtask, which builds userland/selftest first"
+)));
+#[cfg(not(all(target_os = "none", feature = "qemu-test")))]
+const RUST_PROGRAM: Option<&[u8]> = None;
+
+/// The path, sole argument and environment [`RUST_PROGRAM`] starts with, as Linux starts
+/// `init`.
+const RUST_PROGRAM_PATH: &[u8] = b"/eggos-selftest";
+const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
+
+/// A program built from our own Rust source for Rust's Linux target, a static PIE, must start
+/// as on Linux, relocate itself, and find each call a C library's and Rust's standard
+/// library's start-up make answered as Linux answers it: [`RUST_PROGRAM`] must exit with 0,
+/// having written its line, which the QEMU runner requires (a failed check writes its name).
+/// It runs twice, and everything the second run took must be freed. A kernel without the
+/// program passes.
+fn linux_programs_built_from_rust_source_start<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let Some(image) = RUST_PROGRAM else {
+        return Ok(());
+    };
+    let mut before = None;
+    for round in 0..2 {
+        if round == 1 {
+            if !release_loaded_address_spaces::<P>(|| true) {
+                return Err("a CPU kept an ended process's address space loaded");
+            }
+            before = Some(free_and_slab_frames().ok_or("there is no frame allocator")?);
+        }
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::new(&memory.page_tables) }?;
+        let context = exec::load(
+            &mut process,
+            image,
+            RUST_PROGRAM_PATH,
+            &[RUST_PROGRAM_PATH],
+            &RUST_PROGRAM_ENVIRONMENT,
+        )
+        .map_err(|_| "the loader refused the Rust program's image")?;
+        let process = Arc::new(process);
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        match process.exit_status() {
+            Some(ProcessExit::Exited(0)) => {}
+            Some(ProcessExit::Exited(127)) => {
+                return Err("the Rust program could not relocate itself or protect its data");
+            }
+            Some(ProcessExit::Exited(101)) => return Err("the Rust program panicked"),
+            Some(ProcessExit::Exited(_)) => {
+                return Err("a check of the Rust program failed: it named it on the console");
+            }
+            Some(ProcessExit::Killed { .. }) => return Err("the Rust program was killed"),
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+    }
+    let freed = || free_and_slab_frames() == before;
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the Rust program's frames and tables were not all freed");
+    }
+    Ok(())
 }
 
 /// How a run of [`run_handling_program`] went wrong.

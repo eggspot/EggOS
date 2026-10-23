@@ -3,3 +3,15 @@ xtask = "run --quiet --package xtask --"
 
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+
+[target.riscv64gc-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]

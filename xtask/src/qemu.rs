@@ -20,6 +20,14 @@ const USER_HELLO: &str = "EGGOS-USER: hello from user mode";
 const ELF_START_LINE: &str =
     "EGGOS-USER: started from an ELF image with arguments and an environment";
 
+/// Must match `PASSED_LINE` in `userland/selftest`, without its newline: the line our own
+/// program built from Rust source writes when every start-up check passed (D85).
+const RUST_PROGRAM_LINE: &str =
+    "EGGOS-USER: a program built from Rust source passed its startup checks";
+
+/// The lines the Linux test programs write, which a passing boot must show whole.
+const USER_LINES: [&str; 3] = [USER_HELLO, ELF_START_LINE, RUST_PROGRAM_LINE];
+
 /// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";
 
@@ -217,7 +225,9 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
     }
     match (clean_exit, passed, failed) {
         (true, true, false)
-            if lines().any(|l| l == USER_HELLO) && lines().any(|l| l == ELF_START_LINE) =>
+            if USER_LINES
+                .iter()
+                .all(|&user_line| lines().any(|l| l == user_line)) =>
         {
             eprintln!("xtask: {arch}: boot test passed");
             Ok(())
@@ -258,20 +268,26 @@ mod tests {
 
     #[test]
     fn passes_only_on_clean_exit_with_pass_marker() {
-        let ok = format!("EggOS\r\n{USER_HELLO}\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");
+        let ok = format!("EggOS\r\n{}\r\n{PASS_MARKER}\r\n", USER_LINES.join("\r\n"));
         assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
         assert!(verdict("x", Expect::Pass, false, &ok).is_err());
         assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
     }
 
     #[test]
-    fn a_pass_needs_the_user_and_elf_programs_lines_whole() {
+    fn a_pass_needs_every_linux_test_program_s_line_whole() {
         let silent = format!("EggOS\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &silent).is_err());
-        let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");
-        assert!(verdict("x", Expect::Pass, true, &garbled).is_err());
-        let no_elf = format!("EggOS\r\n{USER_HELLO}\r\n{PASS_MARKER}\r\n");
-        assert!(verdict("x", Expect::Pass, true, &no_elf).is_err());
+        for (index, line) in USER_LINES.iter().enumerate() {
+            let mut garbled = USER_LINES.map(String::from);
+            garbled[index] = format!("{line}x");
+            let garbled = format!("EggOS\r\n{}\r\n{PASS_MARKER}\r\n", garbled.join("\r\n"));
+            assert!(verdict("x", Expect::Pass, true, &garbled).is_err());
+            let mut missing = USER_LINES.to_vec();
+            missing.remove(index);
+            let missing = format!("EggOS\r\n{}\r\n{PASS_MARKER}\r\n", missing.join("\r\n"));
+            assert!(verdict("x", Expect::Pass, true, &missing).is_err());
+        }
     }
 
     #[test]

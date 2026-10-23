@@ -3604,3 +3604,43 @@ the license, by an explicit instruction recorded here.
 - **Next.** The first program (a std hello world that prints its arguments, uses a `HashMap`,
   reads `Instant`, sleeps and exits with a status) runs in a QEMU self-test on aarch64, riscv64
   and x86_64, with `AT_MINSIGSTKSZ` added to the auxiliary vector.
+
+## D85 A first Linux program built from our own Rust source, on a runtime of our own with no C library — Decided by the build loop (targets, relocation, embedding and layout decided by research); complements D84
+- **Why.** D84 pinned the `*-unknown-linux-musl` targets so programs built from our own Rust
+  source can run in the QEMU tests. Before a std program brings a C library's start-up into
+  play, the first program checks the kernel's half of the start-up contract on its own: the
+  stack Linux hands a program, the auxiliary vector, a static PIE relocating itself, and each
+  call a C library's and std's start-up make, answered as Linux answers it. A failure then
+  names the kernel's missing piece, not a C library's.
+- **How.** `userland/runtime` (`eggos-runtime`, a library M10's init, shell and utilities will
+  share): `_start` per architecture, self-relocation of a static PIE (`R_*_RELATIVE` from
+  `DT_RELA`; `DT_REL`, `DT_RELR`, other types or symbols refused with exit 127),
+  `PT_GNU_RELRO` made read-only with `mprotect` as Linux's loader does, the start-up stack
+  read in place, raw system calls, the memory functions the compiler calls (the crate is
+  `no_builtins`) and a panic handler. `userland/selftest` (`eggos-selftest`): 17 start-up
+  checks in a table of function pointers, so the binary really carries relocations
+  (arguments and environment, the auxiliary vector, zeroed statics, thread ids, the robust
+  list, the thread pointer, `RLIMIT_STACK`, descriptors 0–2, `SIGPIPE` ignored, an alternate
+  signal stack behind a guard page, a `SIGSEGV` handled on it that `mprotect`s the page and
+  resumes, `getrandom`, `brk`, a 1 MiB anonymous mapping, IEEE double arithmetic around system
+  calls and the handler, the console's `TIOCGWINSZ` and `fstat`, `CLOCK_MONOTONIC`, `uname`).
+  Both are `#![no_std]` for the musl targets and linked by `rust-lld` with
+  `-C link-self-contained=no` and `-nostdlib`: no musl or other C code is linked. On the host
+  they build as a library with host tests (stack parsing, relocation) and a stub `main`.
+- **Embedding.** `cargo xtask` builds the program first and names its path in
+  `EGGOS_USERLAND_SELFTEST` for every `qemu-test` and `qemu-bench` kernel build and for
+  `clippy-targets`; the kernel reads it with `include_bytes!(env!(..))` only under
+  `qemu-test`. Release kernels are unchanged. Rejected: a nested cargo in `kernel/build.rs`
+  (target-directory deadlocks, leaked environment, a dozen extra builds under
+  `clippy-targets`).
+- **Static PIE rather than a fixed-address executable**: it exercises D51's PIE path, and
+  compiled Rust emits `R_*_RELATIVE` relocations as soon as it has vtables or pointer tables.
+- **Linking flags and D84.** `.cargo/config.toml` gives the three musl targets `rust-lld` with
+  `link-self-contained=no`. D84's std program needs `link-self-contained=yes`, so its build
+  will pass its own linking flags (through `cargo xtask`), and both kinds of program share the
+  targets.
+- **Tests.** The self-test `linux_programs_built_from_rust_source_start` runs the program
+  twice, the second run freeing every frame it took, and the QEMU runner requires the
+  program's line on every architecture; a deliberately wrong expectation fails the boot naming
+  the check.
+- **Next.** D84's std program, with `AT_MINSIGSTKSZ`.
