@@ -340,6 +340,8 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_handler as u64;
             let linux_fault_handler =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_fault_handler as u64;
+            let linux_signal_queue =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_signal_queue as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -537,6 +539,9 @@ pub(crate) mod tests {
                 {
                     fault_handler_program(context, linux_fault_handler)
                 }
+                pc if (linux_signal_queue..linux_signal_queue + 10).contains(&pc) => {
+                    signal_queue_program(context, linux_signal_queue)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -587,6 +592,7 @@ pub(crate) mod tests {
                 linux_signals: 300,
                 linux_signal_handler: 340,
                 linux_fault_handler: 400,
+                linux_signal_queue: 460,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -715,6 +721,76 @@ pub(crate) mod tests {
             // SAFETY: as in `write_user_bytes`.
             *byte = unsafe { user_byte(address + i as u64).read() };
         }
+    }
+
+    fn signal_queue_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::{Errno, number, signals};
+        use eggos_hal::user::{TestProgram, UserExit};
+        static PID: AtomicU64 = AtomicU64::new(0);
+        let pc = context.pc();
+        let base = context.stack() - 288;
+        let (set, sent, received, timeout) = (base + 272, base + 128, base, base + 256);
+        let signal = u64::from(TestProgram::LINUX_QUEUED_SIGNAL);
+        let [first_value, second_value] = TestProgram::LINUX_QUEUED_VALUES;
+        let word = |address: u64| {
+            let mut bytes = [0u8; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        let queue_with = |value: u64| {
+            let pid = PID.load(Ordering::Relaxed);
+            let mut info = [0u8; 32];
+            info[..4].copy_from_slice(&(signal as u32).to_ne_bytes());
+            info[8..12].copy_from_slice(&signals::code::QUEUE.to_ne_bytes());
+            info[16..20].copy_from_slice(&(pid as u32).to_ne_bytes());
+            info[24..].copy_from_slice(&value.to_ne_bytes());
+            write_user_bytes(sent, &info);
+            (number::RT_SIGQUEUEINFO, [pid, signal, sent, 0, 0, 0])
+        };
+        let wait = (number::RT_SIGTIMEDWAIT, [set, received, timeout, 8, 0, 0]);
+        let took = |result: u64, code: i32, value: u64| {
+            result == signal
+                && word(received) as u32 == signal as u32
+                && word(received + 8) as u32 as i32 == code
+                && word(received + 16) == PID.load(Ordering::Relaxed)
+                && word(received + 24) == value
+        };
+        let result = context.syscall_result();
+        let step = pc - start;
+        let passed = match step {
+            0 => true,
+            1..=5 if step != 2 => result == 0,
+            2 => {
+                PID.store(result, Ordering::Relaxed);
+                true
+            }
+            6 => took(result, signals::code::QUEUE, first_value),
+            7 => took(result, signals::code::QUEUE, second_value),
+            8 => took(result, signals::code::USER, 0),
+            _ => result == Errno::EAGAIN.result(),
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => {
+                write_user_bytes(set, &(1u64 << (signal - 1)).to_ne_bytes());
+                write_user_bytes(timeout, &[0; 16]);
+                (number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0])
+            }
+            1 => (number::GETPID, [0; 6]),
+            2 => queue_with(first_value),
+            3 => queue_with(second_value),
+            4 => (
+                number::KILL,
+                [PID.load(Ordering::Relaxed), signal, 0, 0, 0, 0],
+            ),
+            5..=8 => wait,
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
     }
 
     /// Where the simulated `linux_signal_handler` program's handler is, from its start.

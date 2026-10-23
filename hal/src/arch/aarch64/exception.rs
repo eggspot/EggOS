@@ -653,6 +653,93 @@ aarch64_user_test_linux_fault_handler:
 7:  ldr     x9, [x2, #{saved_x23}]
     str     x9, [x2, #{saved_pc}]
     ret
+    .global aarch64_user_test_linux_signal_queue
+aarch64_user_test_linux_signal_queue:
+    sub     x22, sp, #288
+    mov     x9, #(1 << ({queued_signal} - 1))
+    str     x9, [x22, #272]
+    stp     xzr, xzr, [x22, #256]
+    str     xzr, [x22, #144]
+    mov     x0, #0
+    add     x1, x22, #272
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+    cbnz    x0, 9f
+    mov     x8, #172
+    svc     #0
+    mov     x19, x0
+    mov     w9, #{queued_signal}
+    str     w9, [x22, #128]
+    mov     w9, #-1
+    str     w9, [x22, #136]
+    str     w19, [x22, #144]
+    mov     x9, #{first_value}
+    str     x9, [x22, #152]
+    mov     x0, x19
+    mov     x1, #{queued_signal}
+    add     x2, x22, #128
+    mov     x8, #138
+    svc     #0
+    cbnz    x0, 9f
+    mov     x9, #{second_value}
+    str     x9, [x22, #152]
+    mov     x0, x19
+    mov     x1, #{queued_signal}
+    add     x2, x22, #128
+    mov     x8, #138
+    svc     #0
+    cbnz    x0, 9f
+    mov     x0, x19
+    mov     x1, #{queued_signal}
+    mov     x8, #129
+    svc     #0
+    cbnz    x0, 9f
+    mov     x20, #-1
+    mov     x21, #{first_value}
+    bl      6f
+    mov     x21, #{second_value}
+    bl      6f
+    mov     x20, #0
+    mov     x21, #0
+    bl      6f
+    add     x0, x22, #272
+    mov     x1, x22
+    add     x2, x22, #256
+    mov     x3, #8
+    mov     x8, #137
+    svc     #0
+    cmn     x0, #11
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
+6:  add     x0, x22, #272
+    mov     x1, x22
+    add     x2, x22, #256
+    mov     x3, #8
+    mov     x8, #137
+    svc     #0
+    cmp     x0, #{queued_signal}
+    b.ne    9b
+    ldr     w9, [x22]
+    cmp     w9, #{queued_signal}
+    b.ne    9b
+    ldrsw   x9, [x22, #8]
+    cmp     x9, x20
+    b.ne    9b
+    ldr     x9, [x22, #16]
+    cmp     x9, x19
+    b.ne    9b
+    ldr     x9, [x22, #24]
+    cmp     x9, x21
+    b.ne    9b
+    ret
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -676,6 +763,9 @@ aarch64_user_test_end:
     fault_address_in_ucontext = const 176,
     esr_record = const 176 + 288 + 528,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
     handler = sym aarch64_exception,
 );
 
@@ -760,6 +850,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_signals: u8;
     static aarch64_user_test_linux_signal_handler: u8;
     static aarch64_user_test_linux_fault_handler: u8;
+    static aarch64_user_test_linux_signal_queue: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -833,6 +924,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signals: (&raw const aarch64_user_test_linux_signals) as usize - start,
         linux_signal_handler: (&raw const aarch64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const aarch64_user_test_linux_fault_handler) as usize - start,
+        linux_signal_queue: (&raw const aarch64_user_test_linux_signal_queue) as usize - start,
     }
 }
 

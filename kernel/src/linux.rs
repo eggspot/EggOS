@@ -73,6 +73,8 @@ pub mod number {
         pub const GETRLIMIT: u64 = 97;
         pub const GETPPID: u64 = 110;
         pub const RT_SIGPENDING: u64 = 127;
+        pub const RT_SIGTIMEDWAIT: u64 = 128;
+        pub const RT_SIGQUEUEINFO: u64 = 129;
         pub const SIGALTSTACK: u64 = 131;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
@@ -83,6 +85,7 @@ pub mod number {
         pub const TGKILL: u64 = 234;
         pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
+        pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
         /// The highest number above.
@@ -106,6 +109,8 @@ pub mod number {
         pub const RT_SIGACTION: u64 = 134;
         pub const RT_SIGPROCMASK: u64 = 135;
         pub const RT_SIGPENDING: u64 = 136;
+        pub const RT_SIGTIMEDWAIT: u64 = 137;
+        pub const RT_SIGQUEUEINFO: u64 = 138;
         pub const RT_SIGRETURN: u64 = 139;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
@@ -117,6 +122,7 @@ pub mod number {
         pub const MUNMAP: u64 = 215;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
         /// The highest number above.
@@ -153,6 +159,9 @@ pub mod number {
             RT_SIGPROCMASK,
             RT_SIGPENDING,
             RT_SIGRETURN,
+            RT_SIGTIMEDWAIT,
+            RT_SIGQUEUEINFO,
+            RT_TGSIGQUEUEINFO,
             SIGALTSTACK,
             KILL,
             TKILL,
@@ -183,8 +192,9 @@ pub struct Errno(pub u16);
 
 impl Errno {
     /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), a
-    /// hard resource limit raised (`setrlimit`, `prlimit64`), or the alternate signal stack
-    /// changed while the thread runs on it (`sigaltstack`).
+    /// hard resource limit raised (`setrlimit`, `prlimit64`), the alternate signal stack
+    /// changed while the thread runs on it (`sigaltstack`), or a `si_code` only the kernel and
+    /// `kill` may send queued to another process (`rt_sigqueueinfo`).
     pub const EPERM: Self = Self(1);
     /// No such file: here, a program's interpreter (`execve`).
     pub const ENOENT: Self = Self(2);
@@ -197,7 +207,8 @@ impl Errno {
     /// Bad file descriptor.
     pub const EBADF: Self = Self(9);
     /// Try again: here, the random number generator is not seeded yet (`getrandom` with
-    /// `GRND_NONBLOCK`).
+    /// `GRND_NONBLOCK`), a real-time signal finds the signal queue full (`rt_sigqueueinfo`,
+    /// `tgkill`), or no signal came before the timeout (`rt_sigtimedwait`).
     pub const EAGAIN: Self = Self(11);
     /// Out of memory.
     pub const ENOMEM: Self = Self(12);
@@ -398,6 +409,8 @@ fn out_of_line_call<P: Platform>(
         number::KILL
         | number::TKILL
         | number::TGKILL
+        | number::RT_SIGQUEUEINFO
+        | number::RT_TGSIGQUEUEINFO
         | number::RT_SIGPROCMASK
         | number::RT_SIGACTION
         | number::RT_SIGRETURN => signals::deliver(process, context),
@@ -433,6 +446,11 @@ fn out_of_line_result<P: Platform>(
         number::KILL => signals::kill(process, first, second),
         number::TKILL => signals::tkill(process, first, second),
         number::TGKILL => signals::tgkill(process, first, second, third),
+        number::RT_SIGQUEUEINFO => signals::rt_sigqueueinfo(process, first, second, third),
+        number::RT_TGSIGQUEUEINFO => {
+            signals::rt_tgsigqueueinfo(process, first, second, third, fourth)
+        }
+        number::RT_SIGTIMEDWAIT => signals::rt_sigtimedwait(process, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
         number::POLL => poll::poll::<P>(process, first, second, third),
         number::PPOLL => poll::ppoll::<P>(process, first, second, third, fourth, fifth),
@@ -2551,6 +2569,265 @@ mod tests {
                 ControlFlow::Continue(())
             );
         }
+    }
+
+    const SCRATCH: u64 = HANDLER_STACK_TOP - 2 * FRAME_SIZE;
+    const UNMAPPED: u64 = 0x1000;
+
+    fn block_signals(process: &Arc<Process<P>>, set: u64) {
+        process
+            .write_user_memory(SCRATCH + 0x300, &set.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(
+                process,
+                number::RT_SIGPROCMASK,
+                [0, SCRATCH + 0x300, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    fn write_siginfo(process: &Process<P>, address: u64, code: i32, value: u64) {
+        let mut info = [0u8; signal_frame::INFO_SIZE];
+        info[..4].copy_from_slice(&99i32.to_ne_bytes());
+        info[8..12].copy_from_slice(&code.to_ne_bytes());
+        info[24..32].copy_from_slice(&value.to_ne_bytes());
+        info[100] = 0xee;
+        process.write_user_memory(address, &info).unwrap();
+    }
+
+    fn read_siginfo(process: &Process<P>, address: u64) -> (i32, i32, u64, bool) {
+        let mut info = [0u8; signal_frame::INFO_SIZE];
+        process.read_user_memory(address, &mut info).unwrap();
+        let int = |at: usize| i32::from_ne_bytes(info[at..at + 4].try_into().unwrap());
+        let value = u64::from_ne_bytes(info[24..32].try_into().unwrap());
+        let tail_zero = info[signals::KEPT_INFO_SIZE..]
+            .iter()
+            .all(|&byte| byte == 0);
+        (int(0), int(8), value, tail_zero)
+    }
+
+    #[test]
+    fn signals_are_queued_with_their_info_and_linux_s_errors_in_order() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (eperm, esrch, einval, efault) = (
+            Errno::EPERM.result(),
+            Errno::ESRCH.result(),
+            Errno::EINVAL.result(),
+            Errno::EFAULT.result(),
+        );
+        let rt = 40u64;
+        block_signals(&process, 1 << (rt - 1) | 1 << 9);
+        let (user, tkill, queue) = (SCRATCH, SCRATCH + 0x80, SCRATCH + 0x100);
+        write_siginfo(&process, user, signals::code::USER, 0);
+        write_siginfo(&process, tkill, signals::code::TKILL, 0);
+        write_siginfo(&process, queue, signals::code::QUEUE, 0x77);
+        let other = pid + 1;
+        let sigqueueinfo = |tgid, signal, info| {
+            call(
+                &process,
+                number::RT_SIGQUEUEINFO,
+                [tgid, signal, info, 0, 0, 0],
+            )
+        };
+        for (tgid, signal, info, result) in [
+            (other, 65, UNMAPPED, efault),
+            (other, 65, user, eperm),
+            (other, 65, tkill, eperm),
+            (other, 65, queue, esrch),
+            (0, rt, queue, esrch),
+            (1 << 32 | other, rt, queue, esrch),
+            (pid, 65, queue, einval),
+            (pid, 0, queue, 0),
+            (1 << 32 | pid, 10, user, 0),
+        ] {
+            assert_eq!(sigqueueinfo(tgid, signal, info), result, "{tgid} {signal}");
+        }
+        let tgsigqueueinfo = |tgid, tid, signal, info| {
+            call(
+                &process,
+                number::RT_TGSIGQUEUEINFO,
+                [tgid, tid, signal, info, 0, 0],
+            )
+        };
+        for (tgid, tid, signal, info, result) in [
+            (0, other, 65, UNMAPPED, efault),
+            (0, pid, 65, queue, einval),
+            (pid, u64::from(u32::MAX), 65, queue, einval),
+            (pid, other, 65, tkill, eperm),
+            (other, pid, 65, user, esrch),
+            (pid, other, 65, queue, esrch),
+            (pid, pid, 65, queue, einval),
+            (pid, pid, 0, queue, 0),
+        ] {
+            assert_eq!(
+                tgsigqueueinfo(tgid, tid, signal, info),
+                result,
+                "{tgid} {tid} {signal}"
+            );
+        }
+        assert_eq!(sigqueueinfo(pid, rt, queue), 0);
+        write_siginfo(&process, queue, signals::code::QUEUE, 0x78);
+        assert_eq!(tgsigqueueinfo(pid, pid, rt, queue), 0);
+        let set = SCRATCH + 0x200;
+        let received = SCRATCH + 0x400;
+        let timeout = SCRATCH + 0x280;
+        process
+            .write_user_memory(set, &u64::MAX.to_ne_bytes())
+            .unwrap();
+        process.write_user_memory(timeout, &[0; 16]).unwrap();
+        let sigtimedwait = |info, timeout| {
+            call(
+                &process,
+                number::RT_SIGTIMEDWAIT,
+                [set, info, timeout, 8, 0, 0],
+            )
+        };
+        assert_eq!(sigtimedwait(received, timeout), 10);
+        assert_eq!(
+            read_siginfo(&process, received),
+            (10, signals::code::USER, 0, true)
+        );
+        assert_eq!(sigtimedwait(received, timeout), rt);
+        assert_eq!(
+            read_siginfo(&process, received),
+            (rt as i32, signals::code::QUEUE, 0x77, true)
+        );
+        assert_eq!(sigtimedwait(0, timeout), rt);
+        assert_eq!(sigtimedwait(received, timeout), Errno::EAGAIN.result());
+    }
+
+    #[test]
+    fn sigtimedwait_checks_in_linux_s_order_waits_and_loses_a_signal_it_cannot_report() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (einval, efault, eagain) = (
+            Errno::EINVAL.result(),
+            Errno::EFAULT.result(),
+            Errno::EAGAIN.result(),
+        );
+        let set = SCRATCH;
+        let timeout = SCRATCH + 0x10;
+        let received = SCRATCH + 0x100;
+        process
+            .write_user_memory(set, &u64::MAX.to_ne_bytes())
+            .unwrap();
+        let wait_for = |seconds: i64, nanoseconds: i64| {
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&seconds.to_ne_bytes());
+            bytes[8..].copy_from_slice(&nanoseconds.to_ne_bytes());
+            process.write_user_memory(timeout, &bytes).unwrap();
+        };
+        let sigtimedwait = |set, info, timeout, size| {
+            call(
+                &process,
+                number::RT_SIGTIMEDWAIT,
+                [set, info, timeout, size, 0, 0],
+            )
+        };
+        wait_for(-1, 0);
+        for (set, timeout, size, result) in [
+            (UNMAPPED, UNMAPPED, 7, einval),
+            (UNMAPPED, UNMAPPED, 8, efault),
+            (set, UNMAPPED, 8, efault),
+            (set, timeout, 8, einval),
+        ] {
+            assert_eq!(sigtimedwait(set, received, timeout, size), result);
+        }
+        wait_for(0, 1_000_000_000);
+        assert_eq!(sigtimedwait(set, received, timeout, 8), einval);
+        wait_for(0, 0);
+        assert_eq!(sigtimedwait(set, received, timeout, 8), eagain);
+        wait_for(0, 2_000_000);
+        let start = <P as Platform>::clock_ticks();
+        assert_eq!(sigtimedwait(set, received, timeout, 8), eagain);
+        let waited = <P as Platform>::clock_ticks() - start;
+        assert!(
+            waited * 1_000_000_000 >= 2_000_000 * <P as Platform>::clock_frequency(),
+            "{waited}"
+        );
+        block_signals(&process, 1 << 9);
+        assert_eq!(call(&process, number::TGKILL, [pid, pid, 10, 0, 0, 0]), 0);
+        assert_eq!(sigtimedwait(set, READ_ONLY, timeout, 8), efault);
+        let pending = SCRATCH + 0x200;
+        assert_eq!(
+            call(&process, number::RT_SIGPENDING, [pending, 8, 0, 0, 0, 0]),
+            0
+        );
+        let mut bytes = [0xffu8; 8];
+        process.read_user_memory(pending, &mut bytes).unwrap();
+        assert_eq!(u64::from_ne_bytes(bytes), 0);
+    }
+
+    #[test]
+    fn a_full_signal_queue_refuses_real_time_signals_but_kill_s() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let rt = 50u64;
+        block_signals(&process, 1 << (rt - 1));
+        let limit = SCRATCH;
+        process.write_user_memory(limit, &[0; 16]).unwrap();
+        assert_eq!(
+            call(
+                &process,
+                number::SETRLIMIT,
+                [u64::from(limits::resource::SIGPENDING), limit, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let info = SCRATCH + 0x100;
+        write_siginfo(&process, info, signals::code::QUEUE, 1);
+        let eagain = Errno::EAGAIN.result();
+        assert_eq!(
+            call(&process, number::RT_SIGQUEUEINFO, [pid, rt, info, 0, 0, 0]),
+            eagain
+        );
+        assert_eq!(
+            call(&process, number::TGKILL, [pid, pid, rt, 0, 0, 0]),
+            eagain
+        );
+        assert_eq!(process.signals().lock().thread().pending, 0);
+        assert_eq!(call(&process, number::KILL, [pid, rt, 0, 0, 0, 0]), 0);
+        assert_eq!(process.signals().lock().thread().pending, 1 << (rt - 1));
+    }
+
+    #[test]
+    fn a_queued_signal_s_handler_gets_its_info() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let rt = 34u64;
+        let flags = signals::flag::SIGINFO
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            };
+        set_handler(&process, rt, flags, 0);
+        let queued = SCRATCH;
+        write_siginfo(&process, queued, signals::code::QUEUE, 0x1234_5678_9abc);
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+        context.simulate_syscall(
+            number::RT_SIGQUEUEINFO,
+            [pid, rt, queued, 0, 0, 0],
+            0x40_0004,
+        );
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        let [signal, info, ..] = context.syscall_arguments();
+        assert_eq!(signal, rt);
+        assert_eq!(
+            read_siginfo(&process, info),
+            (rt as i32, signals::code::QUEUE, 0x1234_5678_9abc, true)
+        );
     }
 
     #[test]

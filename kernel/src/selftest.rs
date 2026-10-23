@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 29] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 30] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -132,6 +132,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 29] {
         (
             "linux_programs_handle_their_faults",
             linux_programs_handle_their_faults::<P>,
+        ),
+        (
+            "linux_programs_queue_signals_with_their_info",
+            linux_programs_queue_signals_with_their_info::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1469,6 +1473,19 @@ fn linux_programs_handle_their_faults<P: Platform>(
     run_handling_program(memory, program.linux_fault_handler).map_err(|failure| match failure {
         HandlingFailure::Failed => "a call failed, or a fault's handler saw the wrong fault",
         HandlingFailure::Killed => "the faulting program was killed: its handler did not run",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+fn linux_programs_queue_signals_with_their_info<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_signal_queue).map_err(|failure| match failure {
+        HandlingFailure::Failed => {
+            "a queued signal was not taken in order with its siginfo, or a signal call failed"
+        }
+        HandlingFailure::Killed => "the queueing program was killed by a signal it blocked",
         HandlingFailure::Other(error) => error,
     })
 }

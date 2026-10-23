@@ -752,6 +752,91 @@ x86_64_user_test_linux_fault_handler:
 6:  movl    $15, %eax
     syscall
     int3
+    .global x86_64_user_test_linux_signal_queue
+x86_64_user_test_linux_signal_queue:
+    leaq    -288(%rsp), %r12
+    movabsq $(1 << ({queued_signal} - 1)), %rax
+    movq    %rax, 272(%r12)
+    movq    $0, 256(%r12)
+    movq    $0, 264(%r12)
+    movq    $0, 144(%r12)
+    xorl    %edi, %edi
+    leaq    272(%r12), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $39, %eax
+    syscall
+    movq    %rax, %rbx
+    movl    ${queued_signal}, 128(%r12)
+    movl    $-1, 136(%r12)
+    movl    %ebx, 144(%r12)
+    movq    ${first_value}, 152(%r12)
+    movq    %rbx, %rdi
+    movl    ${queued_signal}, %esi
+    leaq    128(%r12), %rdx
+    movl    $129, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    ${second_value}, 152(%r12)
+    movq    %rbx, %rdi
+    movl    ${queued_signal}, %esi
+    leaq    128(%r12), %rdx
+    movl    $129, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    %rbx, %rdi
+    movl    ${queued_signal}, %esi
+    movl    $62, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    $-1, %r13
+    movq    ${first_value}, %r14
+    call    6f
+    movq    ${second_value}, %r14
+    call    6f
+    xorl    %r13d, %r13d
+    xorl    %r14d, %r14d
+    call    6f
+    leaq    272(%r12), %rdi
+    movq    %r12, %rsi
+    leaq    256(%r12), %rdx
+    movl    $8, %r10d
+    movl    $128, %eax
+    syscall
+    cmpq    $-11, %rax
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
+6:  leaq    272(%r12), %rdi
+    movq    %r12, %rsi
+    leaq    256(%r12), %rdx
+    movl    $8, %r10d
+    movl    $128, %eax
+    syscall
+    cmpq    ${queued_signal}, %rax
+    jne     9b
+    cmpl    ${queued_signal}, (%r12)
+    jne     9b
+    movslq  8(%r12), %rax
+    cmpq    %r13, %rax
+    jne     9b
+    cmpq    %rbx, 16(%r12)
+    jne     9b
+    cmpq    %r14, 24(%r12)
+    jne     9b
+    ret
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -801,6 +886,9 @@ x86_64_user_test_end:
     saved_trapno = const 40 + 160,
     saved_cr2 = const 40 + 176,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
     thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
     arch_set_fs = const TestProgram::LINUX_ARCH_SET_FS,
     options(att_syntax)
@@ -1088,6 +1176,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_signals: u8;
     static x86_64_user_test_linux_signal_handler: u8;
     static x86_64_user_test_linux_fault_handler: u8;
+    static x86_64_user_test_linux_signal_queue: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1267,6 +1356,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signals: (&raw const x86_64_user_test_linux_signals) as usize - start,
         linux_signal_handler: (&raw const x86_64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const x86_64_user_test_linux_fault_handler) as usize - start,
+        linux_signal_queue: (&raw const x86_64_user_test_linux_signal_queue) as usize - start,
     }
 }
 
