@@ -1049,7 +1049,8 @@ fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
 /// `rt_sigqueueinfo(tgid, signal, info)`: sends `signal` to process `tgid` with the
 /// `siginfo_t` at `info`, as `sigqueue` does with `SI_QUEUE`, the caller being the only
 /// process it can reach yet. As Linux, in this order: `EFAULT` if the first
-/// [`KEPT_INFO_SIZE`] bytes at `info`, all that is read, are not the program's memory; `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
+/// [`KEPT_INFO_SIZE`] bytes at `info`, all that is read, are not the program's memory;
+/// `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
 /// `SI_TKILL`) and the target is not the caller; `ESRCH` unless the target is the caller (0
 /// is no process); `EINVAL` for a signal outside 0 to 64; `EAGAIN` for a real-time signal when
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
