@@ -80,8 +80,9 @@ pub struct Handler {
 
 /// Writes the frame for `handler` below stack pointer `top` (already on the alternate stack if
 /// the handler runs there) and sets `registers` to start the handler with it: on success the
-/// program's next instruction is the handler's first. `saved` is what the frame keeps. Every
-/// byte of the frame is written, padding and unused fields as zeros.
+/// program's next instruction is the handler's first. `saved` is what the frame keeps. Its
+/// padding and unused fields are written as zeros (but AArch64's `__reserved` after the
+/// terminating record, which Linux leaves as it was too).
 pub fn write<P: Platform>(
     process: &Process<P>,
     top: u64,
@@ -337,9 +338,7 @@ mod arch {
     #[cfg(test)]
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
-        pub const INFO: usize = super::INFO;
         pub const UCONTEXT: usize = super::UCONTEXT;
-        pub const MCONTEXT: usize = super::MCONTEXT;
     }
 }
 
@@ -486,9 +485,7 @@ mod arch {
     #[cfg(test)]
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
-        pub const INFO: usize = 0;
         pub const UCONTEXT: usize = super::UCONTEXT;
-        pub const MCONTEXT: usize = super::MCONTEXT;
     }
 }
 
@@ -589,8 +586,6 @@ mod arch {
     #[cfg(test)]
     pub mod layout {
         pub const SIGMASK: usize = super::SIGMASK;
-        pub const INFO: usize = 0;
         pub const UCONTEXT: usize = super::UCONTEXT;
-        pub const MCONTEXT: usize = super::MCONTEXT;
     }
 }

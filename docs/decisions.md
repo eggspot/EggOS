@@ -2456,7 +2456,8 @@ switch-path cost; this entry follows it.)
   AArch64 without `SA_SIGINFO`), its return address the restorer (`x30`, `ra`, or the
   stack's top word on x86_64), and on x86_64 `rax` 0 and the trap, direction and resume
   flags clear. The frame saves the registers, the blocked mask from before the handler, and
-  the alternate stack as it was set (with `SS_AUTODISARM` if so, never `SS_ONSTACK`).
+  the alternate stack as `sigaltstack` would report it at the interrupted stack pointer
+  (`SS_ONSTACK` if on it, `SS_DISABLE` if none, with `SS_AUTODISARM` if set).
 - **The HAL** gains `UserContext::registers` and `set_registers` (`UserRegisters`, each
   architecture's own set). Setting them makes x86_64 enter with `iretq`, so `rcx` and `r11`
   come back too (`sysretq` would take them for `rip` and `rflags`). The HAL's entry to user
@@ -2475,7 +2476,8 @@ switch-path cost; this entry follows it.)
   the first handler blocks stays pending. `SA_RESETHAND` makes the action `SIG_DFL` as the
   signal is taken. `SA_ONSTACK` starts the frame at the alternate stack's top if the thread
   has one and is not on it; a nested frame that would run off the alternate stack's bottom
-  fails. After `rt_sigreturn`, the signals the restored mask unblocks are delivered.
+  fails. An alternate stack with `SS_AUTODISARM` is disabled on entry to any handler, as
+  sigaltstack(2) says, and comes back from the frame with `rt_sigreturn`. After `rt_sigreturn`, the signals the restored mask unblocks are delivered.
 - **A frame that cannot be written** sends `SIGSEGV` from the kernel (`SI_KERNEL`), as
   Linux's `force_sigsegv`: delivered whatever the program blocked or ignored (its action
   becomes `SIG_DFL` then), and by `SIG_DFL` if `SIGSEGV`'s own frame failed.
@@ -2517,7 +2519,7 @@ switch-path cost; this entry follows it.)
 - **Tests.**
   - Host: the HAL's register get/set (x86_64's `iretq` re-entry); the signal state's rules
     (origins kept and dropped, the handler's mask, `SA_NODEFER`, `SA_RESETHAND`,
-    `SS_AUTODISARM` disarming only on the alternate stack, `rt_sigreturn`'s restore with
+    `SS_AUTODISARM` disarming and a plain alternate stack kept, `rt_sigreturn`'s restore with
     Linux's ignored errors, forced signals); the trampoline's instructions; through the
     dispatcher, a handler's frame (arguments, `SI_TKILL`, the saved mask, alignment, the
     restorer or trampoline), `rt_sigreturn` restoring every register and the mask the frame

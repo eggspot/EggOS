@@ -203,13 +203,12 @@ impl AlternateStack {
         !self.autodisarm && stack.wrapping_sub(self.base).wrapping_sub(1) < self.size
     }
 
-    /// `stack_t` as `sigaltstack` reports it, for a thread whose stack pointer is `stack`
-    /// ([`stack_flag::ONSTACK`] if it is on it), or as a signal frame saves it, with `None`
-    /// (as Linux, only the flags it was set with).
-    fn to_bytes(self, stack: Option<u64>) -> [u8; STACK_SIZE] {
+    /// `stack_t` as the program sees it (from `sigaltstack`, or in a signal frame's
+    /// `uc_stack`), for a thread whose stack pointer is `stack`.
+    fn to_bytes(self, stack: u64) -> [u8; STACK_SIZE] {
         let mut flags = if self.size == 0 {
             stack_flag::DISABLE
-        } else if stack.is_some_and(|stack| self.is_on(stack)) {
+        } else if self.is_on(stack) {
             stack_flag::ONSTACK
         } else {
             0
@@ -433,15 +432,15 @@ impl Signals {
 
     /// The thread enters `action`'s handler for `signal`, its frame written: the action's mask
     /// is blocked too, and the signal itself unless [`flag::NODEFER`]; an alternate stack with
-    /// `SS_AUTODISARM` is disabled if the handler starts on it (`on_alternate_stack`), until
-    /// the handler returns and `rt_sigreturn` restores it.
-    fn enter_handler(&mut self, signal: u32, action: &Action, on_alternate_stack: bool) {
+    /// `SS_AUTODISARM` is disabled on entry to the handler, as sigaltstack(2) says, until the
+    /// handler returns and `rt_sigreturn` restores it from the frame.
+    fn enter_handler(&mut self, signal: u32, action: &Action) {
         let mut blocked = self.thread.blocked | action.mask;
         if action.flags & flag::NODEFER == 0 {
             blocked |= bit(signal);
         }
         self.thread.blocked = blocked & !UNBLOCKABLE;
-        if on_alternate_stack && self.thread.alternate_stack.autodisarm {
+        if self.thread.alternate_stack.autodisarm {
             self.thread.alternate_stack = AlternateStack::default();
         }
     }
@@ -726,7 +725,7 @@ pub fn sigaltstack<P: Platform>(
     };
     if let Some(address) = pointer(old) {
         process
-            .write_user_memory(address, &previous.to_bytes(Some(stack)))
+            .write_user_memory(address, &previous.to_bytes(stack))
             .map_err(|_| Errno::EFAULT)?;
     }
     Ok(0)
@@ -861,9 +860,7 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
                 let started = start_handler(process, context, &thread, signal, &action, origin);
                 let mut signals = process.signals().lock();
                 match started {
-                    Ok(on_alternate_stack) => {
-                        signals.enter_handler(signal, &action, on_alternate_stack)
-                    }
+                    Ok(()) => signals.enter_handler(signal, &action),
                     // As Linux: `SIGSEGV`, by its default action if it was the signal whose
                     // frame failed.
                     Err(BadFrame) => {
@@ -881,8 +878,7 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
 /// Writes `action`'s frame for `signal` from `origin` and points `context` at its handler, for
 /// a thread whose signal state is `thread`: on the alternate stack with [`flag::ONSTACK`],
 /// if it has one and is not on it already (then the frame goes below the stack pointer, as
-/// it does without the flag). Returns whether the handler starts on the alternate stack.
-/// [`BadFrame`] if the frame's memory is not the program's, if it would run off the bottom of
+/// it does without the flag). [`BadFrame`] if the frame's memory is not the program's, if it would run off the bottom of
 /// the alternate stack the thread is on, or if the handler has no way to return.
 fn start_handler<P: Platform>(
     process: &Process<P>,
@@ -891,7 +887,7 @@ fn start_handler<P: Platform>(
     signal: u32,
     action: &Action,
     origin: Origin,
-) -> Result<bool, BadFrame> {
+) -> Result<(), BadFrame> {
     let restorer = if action.flags & flag::RESTORER != 0 {
         action.restorer
     } else {
@@ -914,7 +910,7 @@ fn start_handler<P: Platform>(
     let saved = Saved {
         registers,
         blocked: thread.blocked,
-        alternate_stack: alternate.to_bytes(None),
+        alternate_stack: alternate.to_bytes(stack),
     };
     let info = signal_frame::info(signal, origin, own_id(process) as u32);
     let handler = signal_frame::Handler {
@@ -924,14 +920,14 @@ fn start_handler<P: Platform>(
     };
     signal_frame::write(process, top, &saved, &info, &handler, &mut registers)?;
     context.set_registers(&registers);
-    Ok(switch)
+    Ok(())
 }
 
 /// `rt_sigreturn()`: a handler returned. Restores the registers, blocked mask and alternate
 /// stack its frame saved (see [`signal_frame`]), and returns the restored result register,
-/// which the dispatcher writes back unchanged. A frame that is not the program's memory
-/// sends `SIGSEGV` (whatever the program blocked or ignored), as on Linux, and changes
-/// nothing else. The signals the restored mask unblocks are delivered next.
+/// which the dispatcher writes back unchanged. A frame that is not the program's memory, or
+/// whose FP/SIMD records are not in Linux's shape, sends `SIGSEGV` (whatever the program
+/// blocked or ignored), as on Linux, and changes nothing else. The signals the restored mask unblocks are delivered next.
 pub fn rt_sigreturn<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -1031,13 +1027,13 @@ mod tests {
             size: 0x4000,
             autodisarm: false,
         };
-        let bytes = stack.to_bytes(Some(0x7000_1000));
+        let bytes = stack.to_bytes(0x7000_1000);
         assert_eq!(&bytes[..8], &0x7000_0000u64.to_ne_bytes());
         assert_eq!(&bytes[8..12], &stack_flag::ONSTACK.to_ne_bytes());
         assert_eq!(&bytes[12..16], &[0; 4]);
         assert_eq!(&bytes[16..], &0x4000u64.to_ne_bytes());
         let flags = |stack: AlternateStack, sp| {
-            u32::from_ne_bytes(stack.to_bytes(Some(sp))[8..12].try_into().unwrap())
+            u32::from_ne_bytes(stack.to_bytes(sp)[8..12].try_into().unwrap())
         };
         // Its top is on it (the stack grows down); its base and below, and above its top,
         // are off it.
@@ -1233,7 +1229,7 @@ mod tests {
                 ..action
             })
         );
-        signals.enter_handler(SIGUSR1, &action, false);
+        signals.enter_handler(SIGUSR1, &action);
         assert_eq!(signals.thread.blocked, bit(SIGUSR1) | bit(SIGUSR2));
         // With SA_NODEFER the signal itself stays unblocked; SIGKILL never is.
         signals.thread.blocked = 0;
@@ -1242,20 +1238,24 @@ mod tests {
             mask: bit(SIGKILL) | bit(SIGSEGV),
             ..handler
         };
-        signals.enter_handler(SIGUSR1, &nodefer, false);
+        signals.enter_handler(SIGUSR1, &nodefer);
         assert_eq!(signals.thread.blocked, bit(SIGSEGV));
-        // An alternate stack with SS_AUTODISARM is disabled once a handler starts on it, and
-        // only then.
+        // An alternate stack is kept while a handler runs, unless it has SS_AUTODISARM:
+        // then it is disabled.
+        signals
+            .change_alternate_stack(0x7000_0000, 0, MIN_STACK_SIZE, 0)
+            .unwrap();
+        let kept = signals.thread.alternate_stack;
+        signals.enter_handler(SIGUSR1, &handler);
+        assert_eq!(signals.thread.alternate_stack, kept);
         signals
             .change_alternate_stack(0x7000_0000, stack_flag::AUTODISARM, MIN_STACK_SIZE, 0)
             .unwrap();
         let armed = signals.thread.alternate_stack;
-        signals.enter_handler(SIGUSR1, &handler, false);
-        assert_eq!(signals.thread.alternate_stack, armed);
-        signals.enter_handler(SIGUSR1, &handler, true);
+        signals.enter_handler(SIGUSR1, &handler);
         assert_eq!(signals.thread.alternate_stack, AlternateStack::default());
         // rt_sigreturn restores the mask, without SIGKILL, and the stack the frame saved.
-        signals.restore(u64::MAX, armed.to_bytes(None), 0);
+        signals.restore(u64::MAX, armed.to_bytes(0), 0);
         assert_eq!(signals.thread.blocked, !UNBLOCKABLE);
         assert_eq!(signals.thread.alternate_stack, armed);
         // Not while the thread is on its alternate stack, nor an invalid one: as Linux, the
@@ -1265,9 +1265,9 @@ mod tests {
             ..armed
         };
         signals.thread.alternate_stack = plain;
-        signals.restore(0, AlternateStack::default().to_bytes(None), 0x7000_0100);
+        signals.restore(0, AlternateStack::default().to_bytes(0), 0x7000_0100);
         assert_eq!(signals.thread.alternate_stack, plain);
-        signals.restore(0, AlternateStack { size: 1, ..plain }.to_bytes(None), 0);
+        signals.restore(0, AlternateStack { size: 1, ..plain }.to_bytes(0), 0);
         assert_eq!(signals.thread.alternate_stack, plain);
         assert_eq!(signals.thread.blocked, 0);
     }
