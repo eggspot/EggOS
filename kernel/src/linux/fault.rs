@@ -186,9 +186,10 @@ mod arch {
     const STATUS_TRANSLATION_LEVEL_0: u64 = 0b00_0100;
 
     /// Whether fault status code `status` is a synchronous external abort or a parity or ECC
-    /// error, on the access itself or on a table walk for it.
+    /// error, on the access itself or on a table walk for it at levels 0 to 3 (0b010001 is
+    /// MTE's tag check fault, not one).
     fn external_abort(status: u64) -> bool {
-        matches!(status, 0b01_0000 | 0b01_0001 | 0b01_0100..=0b01_1000 | 0b01_1100..=0b01_1111)
+        matches!(status, 0b01_0000 | 0b01_0100..=0b01_1000 | 0b01_1100..=0b01_1111)
     }
 
     /// The syndrome a program sees for a fault at an address outside user space: the class

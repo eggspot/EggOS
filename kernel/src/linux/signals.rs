@@ -945,10 +945,11 @@ fn deliver_with<P: Platform>(
 }
 
 /// Writes `action`'s frame for `signal` from `origin` (or for `fault`, if the signal is a
-/// fault's) and points `context` at its handler, for a thread whose signal state is `thread`: on the alternate stack with [`flag::ONSTACK`], if it has
-/// one and is not on it already (then the frame goes below the stack pointer, as it does without
-/// the flag). [`BadFrame`] if the frame's memory is not the program's, if it would run off the
-/// bottom of the alternate stack the thread is on, or if the handler has no way to return.
+/// fault's) and points `context` at its handler, for a thread whose signal state is `thread`:
+/// on the alternate stack with [`flag::ONSTACK`], if it has one and is not on it already (then
+/// the frame goes below the stack pointer, as it does without the flag). [`BadFrame`] if the
+/// frame's memory is not the program's, if it would run off the bottom of the alternate stack
+/// the thread is on, or if the handler has no way to return.
 fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,

@@ -295,13 +295,13 @@ pub fn handle<P: Platform>(
 /// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
 /// any. A page fault resumes the program if the process resolves it (demand paging); with no
 /// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
-/// would; any other fault sends the program the signal Linux sends for it ([`fault`]). Out of
-/// line and laid out away from the system-call path, which stays as short as it was (the
-/// exception's parts passed alone keep the loop's state in registers). Only `context` stays
-/// live across the page's mapping for the fault's sake, in place of the `kind` that ending
-/// the process needed before D65: the fault reads the rest back from it
-/// ([`UserContext::last_exception`]). Keeping the raw cause and the address too cost up to
-/// +1% on `linux_page_fault`.
+/// would; any other fault sends the program the signal Linux sends for it
+/// ([`signal_fault`]). Out of line and laid out away from the system-call path, which stays
+/// as short as it was (the exception's parts passed alone keep the loop's state in
+/// registers). Only `context` stays live across the page's mapping for the fault's sake, in
+/// place of the `kind` that ending the process needed before D65: the fault reads the rest
+/// back from it ([`UserContext::last_exception`]). Keeping the raw cause and the address too
+/// cost up to +1% on `linux_page_fault`.
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
@@ -312,11 +312,11 @@ fn user_exception<P: Platform>(
     address: Option<u64>,
 ) -> ControlFlow<()> {
     let (Some(page_fault), Some(address)) = (P::page_fault(kind, code), address) else {
-        return fault(process, context);
+        return signal_fault(process, context);
     };
     match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
-        Err(UnresolvedFault::NotAllowed) => fault(process, context),
+        Err(UnresolvedFault::NotAllowed) => signal_fault(process, context),
         Err(UnresolvedFault::OutOfMemory) => {
             process.exit(ProcessExit::Killed {
                 signal: signal::SIGKILL,
@@ -332,7 +332,7 @@ fn user_exception<P: Platform>(
 /// ([`signals::deliver_fault`]). Breaks when the process ends.
 #[cold]
 #[inline(never)]
-fn fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+fn signal_fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
     let exception = context.last_exception();
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, context, &fault)
@@ -1846,10 +1846,8 @@ mod tests {
                 pc: 0x40_0000,
                 address: Some(address),
             };
-            {
-                let exit = context.simulate_exception(exception);
-                handle(process, &mut context, exit)
-            }
+            let exit = context.simulate_exception(exception);
+            handle(process, &mut context, exit)
         };
         let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
         let with_region = |pages: u64| {
