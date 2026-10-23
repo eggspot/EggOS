@@ -78,6 +78,8 @@ pub mod number {
         pub const IOCTL: u64 = 16;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
+        pub const MREMAP: u64 = 25;
+        pub const MADVISE: u64 = 28;
         pub const PAUSE: u64 = 34;
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
@@ -187,8 +189,10 @@ pub mod number {
         pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
         pub const MUNMAP: u64 = 215;
+        pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const MADVISE: u64 = 233;
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
@@ -208,6 +212,8 @@ pub mod number {
             MMAP,
             MUNMAP,
             MPROTECT,
+            MREMAP,
+            MADVISE,
             GETPID,
             GETPPID,
             GETTID,
@@ -609,6 +615,8 @@ fn out_of_line_result<P: Platform>(
         number::SETFSUID => Ok(credentials::set_filesystem(process, User, first)),
         number::SETFSGID => Ok(credentials::set_filesystem(process, Group, first)),
         number::SETGROUPS => credentials::setgroups(process, first, second),
+        number::MREMAP => memory::mremap::<P>(process, first, second, third, fourth, fifth),
+        number::MADVISE => memory::madvise::<P>(process, first, second, third),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)

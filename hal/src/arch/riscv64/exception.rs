@@ -1093,6 +1093,64 @@ riscv64_user_test_fp_registers:
     .global riscv64_user_test_illegal_instruction
 riscv64_user_test_illegal_instruction:
     unimp
+    .global riscv64_user_test_linux_move_and_discard
+riscv64_user_test_linux_move_and_discard:
+    li      a0, 0
+    li      a1, 4096
+    li      a2, 3
+    li      a3, 0x22
+    li      a4, -1
+    li      a5, 0
+    li      a7, 222
+    ecall
+    li      t0, -4096
+    bgeu    a0, t0, 9f
+    mv      s3, a0
+    li      a1, 4096
+    li      a2, 23
+    li      a7, 233
+    ecall
+    bnez    a0, 9f
+    li      t1, 0x12345678
+    sd      t1, 0(s3)
+    li      t2, 0x100000
+    sub     s4, s3, t2
+    mv      a0, s3
+    li      a1, 4096
+    li      a2, 4096
+    li      a3, 3
+    mv      a4, s4
+    li      a7, 216
+    ecall
+    bne     a0, s4, 9f
+    ld      t2, 0(s4)
+    bne     t2, t1, 9f
+    mv      a0, s3
+    li      a1, 4096
+    li      a2, 3
+    li      a3, 0x32
+    li      a4, -1
+    li      a5, 0
+    li      a7, 222
+    ecall
+    bne     a0, s3, 9f
+    ld      t2, 0(s3)
+    bnez    t2, 9f
+    mv      a0, s4
+    li      a1, 4096
+    li      a2, 4
+    li      a7, 233
+    ecall
+    bnez    a0, 9f
+    ld      t2, 0(s4)
+    bnez    t2, 9f
+    li      a0, 0
+    li      a7, 94
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -1219,6 +1277,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_clock: u8;
     static riscv64_user_test_linux_stat: u8;
     static riscv64_user_test_linux_credentials: u8;
+    static riscv64_user_test_linux_move_and_discard: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -1292,6 +1351,8 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_clock: (&raw const riscv64_user_test_linux_clock) as usize - start,
         linux_stat: (&raw const riscv64_user_test_linux_stat) as usize - start,
         linux_credentials: (&raw const riscv64_user_test_linux_credentials) as usize - start,
+        linux_move_and_discard: (&raw const riscv64_user_test_linux_move_and_discard) as usize
+            - start,
     }
 }
 

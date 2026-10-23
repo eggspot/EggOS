@@ -367,6 +367,8 @@ pub(crate) mod tests {
             let linux_stat = crate::process::TEST_PROGRAM_ADDRESS + program.linux_stat as u64;
             let linux_credentials =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_credentials as u64;
+            let linux_move_and_discard =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_move_and_discard as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -592,6 +594,9 @@ pub(crate) mod tests {
                 pc if (linux_credentials..linux_credentials + 5).contains(&pc) => {
                     credentials_program(context, linux_credentials)
                 }
+                pc if (linux_move_and_discard..linux_move_and_discard + 6).contains(&pc) => {
+                    move_and_discard_program(context, linux_move_and_discard)
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -649,6 +654,7 @@ pub(crate) mod tests {
                 linux_clock: 580,
                 linux_stat: 640,
                 linux_credentials: 700,
+                linux_move_and_discard: 760,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
@@ -952,6 +958,72 @@ pub(crate) mod tests {
             1 => (number::SETUID, [1000, 0, 0, 0, 0, 0]),
             2 => (number::GETUID, [0; 6]),
             3 => (number::SETUID, [0; 6]),
+            _ => (number::EXIT_GROUP, [0; 6]),
+        };
+        context.simulate_syscall(number, arguments, pc + 1);
+        UserExit::Syscall
+    }
+
+    /// Plays `linux_move_and_discard` (at `start`) for the test platform: `mmap`s a page,
+    /// populates it and writes a word there, moves it 1 MiB down with `mremap`, maps a new page where it was,
+    /// discards the moved one with `madvise`, and `exit_group(0)` if each call answered and
+    /// each page read as the program checks.
+    fn move_and_discard_program(
+        context: &mut eggos_hal::user::UserContext,
+        start: u64,
+    ) -> eggos_hal::user::UserExit {
+        use crate::linux::memory::{advice, map, prot, remap};
+        use crate::linux::number;
+        use eggos_hal::user::UserExit;
+        const WORD: u64 = 0x1234_5678;
+        const MOVED_DOWN_BY: u64 = 0x10_0000;
+        static FIRST: AtomicU64 = AtomicU64::new(0);
+        let pc = context.pc();
+        let result = context.syscall_result();
+        let word = |address: u64| {
+            let tables = crate::paging::PageTables::<
+                <TestPlatform as Platform>::PageTableFormat,
+            >::view_for_test(active_root(), TestPlatform::physical_memory_offset());
+            if tables.translate(address).is_none() {
+                return 0;
+            }
+            let mut bytes = [0; 8];
+            read_user_bytes(address, &mut bytes);
+            u64::from_ne_bytes(bytes)
+        };
+        let first = FIRST.load(Ordering::Relaxed);
+        let moved = first.wrapping_sub(MOVED_DOWN_BY);
+        let anonymous = map::PRIVATE | map::ANONYMOUS;
+        let read_write = prot::READ | prot::WRITE;
+        let step = pc - start;
+        let passed = match step {
+            0 => true,
+            1 => result < 0u64.wrapping_sub(4096),
+            2 => result == 0,
+            3 => result == moved && word(moved) == WORD,
+            4 => result == first && word(first) == 0,
+            _ => result == 0 && word(moved) == 0,
+        };
+        let (number, arguments) = match step {
+            _ if !passed => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+            0 => (number::MMAP, [0, 4096, read_write, anonymous, u64::MAX, 0]),
+            1 => {
+                FIRST.store(result, Ordering::Relaxed);
+                (
+                    number::MADVISE,
+                    [result, 4096, advice::POPULATE_WRITE, 0, 0, 0],
+                )
+            }
+            2 => {
+                write_user_bytes(first, &WORD.to_ne_bytes());
+                let flags = remap::MAYMOVE | remap::FIXED;
+                (number::MREMAP, [first, 4096, 4096, flags, moved, 0])
+            }
+            3 => (
+                number::MMAP,
+                [first, 4096, read_write, anonymous | map::FIXED, u64::MAX, 0],
+            ),
+            4 => (number::MADVISE, [moved, 4096, advice::DONTNEED, 0, 0, 0]),
             _ => (number::EXIT_GROUP, [0; 6]),
         };
         context.simulate_syscall(number, arguments, pc + 1);

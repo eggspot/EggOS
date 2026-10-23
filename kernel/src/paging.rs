@@ -314,7 +314,7 @@ impl<F: Format> PageTables<F> {
     /// been changed.
     pub fn change_user_pages(
         &mut self,
-        mut virt: u64,
+        virt: u64,
         length: u64,
         mut change: impl FnMut(u64, Option<Attributes>) -> PageChange,
         mut unmapped: impl FnMut(u64),
@@ -326,6 +326,90 @@ impl<F: Format> PageTables<F> {
         if !(virt | length).is_multiple_of(FRAME_SIZE) {
             return Err(MapError::Unaligned);
         }
+        self.for_each_user_page(virt, length, |_, entry, phys, attributes| {
+            match change(phys, attributes) {
+                PageChange::Unmap => {
+                    entry.write(0);
+                    unmapped(phys);
+                }
+                PageChange::Map(attributes) if attributes.user => {
+                    entry.write(F::leaf(phys, 0, attributes))
+                }
+                PageChange::Map(_) => return Err(MapError::NotUser),
+                PageChange::Inaccessible => entry.write(F::kept(phys)),
+            }
+            Ok(())
+        })
+    }
+
+    /// For a user address space's tables: moves every 4 KiB page of `from..from + length` that
+    /// is mapped, or kept ([`Entry::Kept`]), to the same offset from `to`, entry and all, so
+    /// the frame and its contents go with it; the entries at `from` are left empty. Nothing
+    /// may be mapped or kept in `to..to + length` ([`MapError::AlreadyMapped`] otherwise, with
+    /// nothing moved), and the ranges must not overlap. Tables the destination lacks come
+    /// from `frames`; with none left, the pages moved so far go back and the error is
+    /// [`MapError::OutOfMemory`] (tables allocated stay until the tables are freed). The tables
+    /// may be in use: the caller drops what CPUs cached of the entries at `from`.
+    pub fn move_user_pages(
+        &mut self,
+        from: u64,
+        to: u64,
+        length: u64,
+        frames: &mut FrameAllocator,
+    ) -> Result<(), MapError> {
+        if !self.user_half_only {
+            return Err(MapError::NotUser);
+        }
+        self.check_user_half(from, length)?;
+        self.check_user_half(to, length)?;
+        if !(from | to | length).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        if from < to + length && to < from + length {
+            return Err(MapError::InvalidAddress);
+        }
+        self.for_each_user_page(to, length, |_, _, _, _| Err(MapError::AlreadyMapped))?;
+        fence(Ordering::Release);
+        let mut moved_end = from;
+        let result = self.move_entries(from, to, length, frames, &mut moved_end);
+        if result.is_err() {
+            self.move_entries(to, from, moved_end - from, frames, &mut 0)
+                .expect("moving back finds every table of the source still there");
+        }
+        result
+    }
+
+    /// Moves the entries of [`Self::move_user_pages`], recording in `moved_end` the end of
+    /// what has moved.
+    fn move_entries(
+        &self,
+        from: u64,
+        to: u64,
+        length: u64,
+        frames: &mut FrameAllocator,
+        moved_end: &mut u64,
+    ) -> Result<(), MapError> {
+        self.for_each_user_page(from, length, |virt, entry, _, _| {
+            let destination = self.leaf_table_entry(virt - from + to, 0, true, frames)?;
+            destination.write(entry.read());
+            entry.write(0);
+            *moved_end = virt + FRAME_SIZE;
+            Ok(())
+        })
+    }
+
+    /// Hands every 4 KiB page of `virt..virt + length` in a user address space's tables that
+    /// is mapped, or kept ([`Entry::Kept`]), to `page` in address order: its address, its entry,
+    /// its frame and its attributes (`None` if kept). Parts of the range that map nothing are
+    /// skipped a table at a time, so a large range costs a walk per table, not per page. A
+    /// large leaf is [`MapError::PartOfLargePage`]; an error from `page` stops the walk.
+    #[inline(always)]
+    fn for_each_user_page(
+        &self,
+        mut virt: u64,
+        length: u64,
+        mut page: impl FnMut(u64, TableEntry, u64, Option<Attributes>) -> Result<(), MapError>,
+    ) -> Result<(), MapError> {
         let end = virt + length;
         'pages: while virt < end {
             let mut table = self.roots[F::root(virt).ok_or(MapError::InvalidAddress)?];
@@ -340,23 +424,12 @@ impl<F: Format> PageTables<F> {
                     Entry::Kept(phys) => (phys, None),
                     Entry::Leaf(..) => return Err(MapError::PartOfLargePage),
                     Entry::Empty | Entry::Table(_) => {
-                        // Nothing mapped up to the end of what this entry covers.
                         let size = paging::leaf_size(level);
                         virt = (virt & !(size - 1)).saturating_add(size);
                         continue 'pages;
                     }
                 };
-                match change(phys, attributes) {
-                    PageChange::Unmap => {
-                        entry.write(0);
-                        unmapped(phys);
-                    }
-                    PageChange::Map(attributes) if attributes.user => {
-                        entry.write(F::leaf(phys, 0, attributes))
-                    }
-                    PageChange::Map(_) => return Err(MapError::NotUser),
-                    PageChange::Inaccessible => entry.write(F::kept(phys)),
-                }
+                page(virt, entry, phys, attributes)?;
                 break;
             }
             virt += FRAME_SIZE;
@@ -415,6 +488,26 @@ impl<F: Format> PageTables<F> {
         // be seen by any CPU that sees the entry. A walker on another CPU is an observer as any
         // other, so a release fence orders it (`dmb ish` on AArch64, `fence rw,w` on RISC-V).
         fence(Ordering::Release);
+        let entry = self.leaf_table_entry(virt, leaf_level, attributes.user, frames)?;
+        // Anything but an empty entry, a kept page included: one compare, not a decode.
+        if entry.read() != 0 {
+            return Err(MapError::AlreadyMapped);
+        }
+        entry.write(F::leaf(phys, leaf_level, attributes));
+        Ok(())
+    }
+
+    /// The entry at `leaf_level` for `virt`, with the tables above it allocated from `frames`
+    /// where missing (user tables if `user`), each zeroed before it is linked in. A leaf or
+    /// kept page above `leaf_level` is [`MapError::AlreadyMapped`].
+    #[inline(always)]
+    fn leaf_table_entry(
+        &self,
+        virt: u64,
+        leaf_level: usize,
+        user: bool,
+        frames: &mut FrameAllocator,
+    ) -> Result<TableEntry, MapError> {
         let mut table = self.roots[F::root(virt).ok_or(MapError::InvalidAddress)?];
         for level in (leaf_level + 1..F::LEVELS).rev() {
             let entry = self.entry(table, virt, level);
@@ -423,20 +516,13 @@ impl<F: Format> PageTables<F> {
                 Entry::Leaf(..) | Entry::Kept(_) => return Err(MapError::AlreadyMapped),
                 Entry::Empty => {
                     let next = new_table(frames)?;
-                    // As above: the zeros before the entry that links the table in.
                     fence(Ordering::Release);
-                    entry.write(F::table(next, level, attributes.user));
+                    entry.write(F::table(next, level, user));
                     next
                 }
             };
         }
-        let entry = self.entry(table, virt, leaf_level);
-        // Anything but an empty entry, a kept page included: one compare, not a decode.
-        if entry.read() != 0 {
-            return Err(MapError::AlreadyMapped);
-        }
-        entry.write(F::leaf(phys, leaf_level, attributes));
-        Ok(())
+        Ok(self.entry(table, virt, leaf_level))
     }
 
     /// The entry for `virt` in the table at physical `table`, which is at `level`.
@@ -1138,6 +1224,79 @@ mod tests {
         let mut kernel = PageTables::<X86_64>::new(&mut frames).unwrap();
         // SAFETY: deliberately breaks the contract; the assertion stops it before any free.
         unsafe { kernel.free_user_half(&mut frames, |_, _, _| {}) };
+    }
+
+    #[test]
+    fn user_pages_move_with_their_frames_and_go_back_when_tables_run_out() {
+        let mut frames = frames(32);
+        let mut kernel = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
+        kernel.mark_active();
+        let mut user = PageTables::new_sharing_kernel_half(&kernel, &mut frames).unwrap();
+        let (from, to) = (0x1000_0000, 0x20_0000_0000);
+        let frame = |page: u64| 0x30_0000 + page * K;
+        for page in 0..3 {
+            let attributes = Attributes::USER_READ_WRITE;
+            user.map(from + page * K, frame(page), K, attributes, &mut frames)
+                .unwrap();
+        }
+        user.change_user_pages(
+            from + K,
+            K,
+            |_, _| PageChange::Inaccessible,
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let mapped_at = |user: &PageTables<Riscv64Sv39>, start: u64| {
+            [0, 2].map(|page| user.translate(start + page * K).map(|(phys, _)| phys))
+        };
+        let mut taken = Vec::new();
+        while frames.free_frames() > 1 {
+            taken.push(frames.allocate().unwrap());
+        }
+        assert_eq!(
+            user.move_user_pages(from, to, 4 * K, &mut frames),
+            Err(MapError::OutOfMemory)
+        );
+        assert_eq!(mapped_at(&user, from), [Some(frame(0)), Some(frame(2))]);
+        assert_eq!(mapped_at(&user, to), [None, None]);
+        for frame in taken {
+            // SAFETY: taken from `frames` above and used for nothing.
+            unsafe { frames.free(frame) };
+        }
+        user.map(
+            to + 3 * K,
+            frame(3),
+            K,
+            Attributes::USER_READ_ONLY,
+            &mut frames,
+        )
+        .unwrap();
+        assert_eq!(
+            user.move_user_pages(from, to, 4 * K, &mut frames),
+            Err(MapError::AlreadyMapped)
+        );
+        assert_eq!(
+            user.move_user_pages(from, from + K, 4 * K, &mut frames),
+            Err(MapError::InvalidAddress)
+        );
+        assert_eq!(user.move_user_pages(from, to, 3 * K, &mut frames), Ok(()));
+        assert_eq!(mapped_at(&user, from), [None, None]);
+        assert_eq!(mapped_at(&user, to), [Some(frame(0)), Some(frame(2))]);
+        let mut kept = Vec::new();
+        user.change_user_pages(
+            to,
+            3 * K,
+            |phys, attributes| {
+                kept.push((phys, attributes.is_none()));
+                PageChange::Map(Attributes::USER_READ_WRITE)
+            },
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(
+            kept,
+            [(frame(0), false), (frame(1), true), (frame(2), false)]
+        );
     }
 
     #[test]

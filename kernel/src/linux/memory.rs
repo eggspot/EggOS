@@ -14,8 +14,8 @@
 
 use super::Errno;
 use super::exec::{MINIMUM_ADDRESS, STACK_GUARD_GAP, STACK_RESERVE};
-use crate::process::{Placement, Process};
-use crate::regions::RegionError;
+use crate::process::{Coverage, Placement, PopulateError, Process, Remap};
+use crate::regions::{Access, RegionError};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format};
@@ -87,6 +87,51 @@ pub mod map {
             false
         }
     }
+}
+
+/// `madvise`'s `advice` values, the same on every architecture.
+pub mod advice {
+    pub const NORMAL: u64 = 0;
+    pub const RANDOM: u64 = 1;
+    pub const SEQUENTIAL: u64 = 2;
+    pub const WILLNEED: u64 = 3;
+    pub const DONTNEED: u64 = 4;
+    pub const FREE: u64 = 8;
+    pub const REMOVE: u64 = 9;
+    pub const DONTFORK: u64 = 10;
+    pub const DOFORK: u64 = 11;
+    pub const MERGEABLE: u64 = 12;
+    pub const UNMERGEABLE: u64 = 13;
+    pub const HUGEPAGE: u64 = 14;
+    pub const NOHUGEPAGE: u64 = 15;
+    pub const DONTDUMP: u64 = 16;
+    pub const DODUMP: u64 = 17;
+    pub const WIPEONFORK: u64 = 18;
+    pub const KEEPONFORK: u64 = 19;
+    pub const COLD: u64 = 20;
+    pub const PAGEOUT: u64 = 21;
+    pub const POPULATE_READ: u64 = 22;
+    pub const POPULATE_WRITE: u64 = 23;
+    pub const DONTNEED_LOCKED: u64 = 24;
+    pub const COLLAPSE: u64 = 25;
+    pub const HWPOISON: u64 = 100;
+    pub const SOFT_OFFLINE: u64 = 101;
+
+    /// Whether Linux 6.1 knows `advice`.
+    pub(super) fn is_known(advice: u64) -> bool {
+        matches!(
+            advice,
+            NORMAL..=DONTNEED | FREE..=COLLAPSE | HWPOISON | SOFT_OFFLINE
+        )
+    }
+}
+
+/// `mremap`'s `flags` bits.
+pub mod remap {
+    pub const MAYMOVE: u64 = 0x1;
+    pub const FIXED: u64 = 0x2;
+    pub const DONTUNMAP: u64 = 0x4;
+    pub(super) const KNOWN: u64 = MAYMOVE | FIXED | DONTUNMAP;
 }
 
 /// Where `mmap` places what it is free to place: from below the stack's reserve and the guard
@@ -193,7 +238,10 @@ pub fn mmap<P: Platform>(
         .map_region(placement, length, attributes)
         .map_err(|error| match error {
             RegionError::Overlaps => Errno::EEXIST,
-            RegionError::Invalid | RegionError::NotCovered | RegionError::NoRoom => Errno::ENOMEM,
+            RegionError::Invalid
+            | RegionError::NotCovered
+            | RegionError::NoRoom
+            | RegionError::OutOfMemory => Errno::ENOMEM,
         })
 }
 
@@ -242,6 +290,214 @@ pub fn mprotect<P: Platform>(
             _ => Errno::EINVAL,
         })?;
     Ok(0)
+}
+
+/// `madvise(address, length, advice)` on anonymous memory, checked in Linux's order:
+/// `EINVAL` for an advice Linux does not know, an unaligned address, or a length that wraps
+/// when rounded up to pages or past the end of the address space; then nothing to do for an
+/// empty range. Pages are discarded (`DONTNEED`, `DONTNEED_LOCKED`, `FREE`) or made ready
+/// (`POPULATE_READ`, `POPULATE_WRITE`) in the regions the range meets, and a part of it in no
+/// region is `ENOMEM` once the rest is done. Advice about paging, sharing, merging, huge pages,
+/// core dumps and `fork` is accepted and changes nothing: there is no swap, no `fork` and no
+/// core dump yet, and anonymous memory is private (D53). `REMOVE` needs shared memory and
+/// `COLLAPSE` huge pages: `EINVAL`. `HWPOISON` and `SOFT_OFFLINE` are `EPERM` for an
+/// unprivileged process and `EINVAL` for root, as no page is ever taken offline (D77).
+pub fn madvise<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    length: u64,
+    advice: u64,
+) -> Result<u64, Errno> {
+    if !advice::is_known(advice) || !address.is_multiple_of(FRAME_SIZE) {
+        return Err(Errno::EINVAL);
+    }
+    let length = page_aligned(length).ok_or(Errno::EINVAL)?;
+    let end = address.checked_add(length).ok_or(Errno::EINVAL)?;
+    if length == 0 {
+        return Ok(0);
+    }
+    let not_covered = |coverage| match coverage {
+        Coverage::Whole => Ok(0),
+        Coverage::Part | Coverage::Nothing => Err(Errno::ENOMEM),
+    };
+    match advice {
+        advice::DONTNEED | advice::DONTNEED_LOCKED | advice::FREE => {
+            match process.discard_pages(address, end) {
+                Ok(()) => Ok(0),
+                Err(_) => Err(Errno::ENOMEM),
+            }
+        }
+        advice::POPULATE_READ | advice::POPULATE_WRITE => {
+            let access = if advice == advice::POPULATE_WRITE {
+                Access::Write
+            } else {
+                Access::Read
+            };
+            match process.populate_range(address, end, access) {
+                Ok(()) => Ok(0),
+                Err(PopulateError::NotAllowed) => Err(Errno::EINVAL),
+                Err(PopulateError::OutOfMemory | PopulateError::NotCovered) => Err(Errno::ENOMEM),
+            }
+        }
+        advice::REMOVE | advice::COLLAPSE => match process.coverage(address, end) {
+            Coverage::Nothing => Err(Errno::ENOMEM),
+            Coverage::Part | Coverage::Whole => Err(Errno::EINVAL),
+        },
+        advice::HWPOISON | advice::SOFT_OFFLINE => {
+            let privileged = process
+                .credentials_and_limits()
+                .lock()
+                .credentials
+                .is_privileged();
+            Err(if privileged {
+                Errno::EINVAL
+            } else {
+                Errno::EPERM
+            })
+        }
+        _ => not_covered(process.coverage(address, end)),
+    }
+}
+
+/// `mremap(old_address, old_size, new_size, flags, new_address)` on anonymous memory, checked
+/// in Linux's order (D77): `EINVAL` for unknown flags, `MREMAP_FIXED` without
+/// `MREMAP_MAYMOVE`, `MREMAP_DONTUNMAP` without it or with sizes that differ, an unaligned old
+/// address, or a size that wraps or is 0 when rounded up to pages; then `EFAULT` if the old
+/// address is in no region. Shrinking unmaps the tail; growing needs the old range in one
+/// region (`EFAULT`) and grows it in place if the addresses after it are free and below where
+/// `mmap` places mappings, so the stack's guard gap stays (D77), otherwise moves it with
+/// `MREMAP_MAYMOVE` (`ENOMEM` without). A moved range takes its pages with it, never a
+/// copy. `MREMAP_FIXED` moves to `new_address`, replacing what was there, and
+/// `MREMAP_DONTUNMAP` leaves the old range mapped with no pages; the new range is checked
+/// before anything is unmapped. Returns the range's new start.
+pub fn mremap<P: Platform>(
+    process: &Process<P>,
+    old_address: u64,
+    old_size: u64,
+    new_size: u64,
+    flags: u64,
+    new_address: u64,
+) -> Result<u64, Errno> {
+    let moves_to = flags & (remap::FIXED | remap::DONTUNMAP) != 0;
+    if flags & !remap::KNOWN != 0
+        || (moves_to && flags & remap::MAYMOVE == 0)
+        || (flags & remap::DONTUNMAP != 0 && old_size != new_size)
+        || !old_address.is_multiple_of(FRAME_SIZE)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let old_length = page_aligned(old_size).ok_or(Errno::EINVAL)?;
+    let new_length = page_aligned(new_size)
+        .filter(|&length| length != 0)
+        .ok_or(Errno::EINVAL)?;
+    if process.region(old_address).is_none() {
+        return Err(Errno::EFAULT);
+    }
+    if moves_to {
+        return move_to::<P>(
+            process,
+            old_address,
+            old_length,
+            new_length,
+            flags,
+            new_address,
+        );
+    }
+    if old_length >= new_length {
+        if old_length > new_length {
+            unmap_tail::<P>(process, old_address, new_length, old_length)?;
+        }
+        return Ok(old_address);
+    }
+    if old_length == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let remap = if flags & remap::MAYMOVE != 0 {
+        Remap::InPlaceOrAnywhere {
+            floor: MINIMUM_ADDRESS,
+            top: mmap_top::<P>(),
+        }
+    } else {
+        Remap::InPlace {
+            top: mmap_top::<P>(),
+        }
+    };
+    process
+        .remap_region(old_address, old_length, new_length, remap, false)
+        .map_err(remap_error)
+}
+
+/// [`mremap`] with `MREMAP_FIXED` or `MREMAP_DONTUNMAP`: moves the old range's first
+/// `new_length` bytes, or all of it with the rest new, to `new_address` (`MREMAP_FIXED`) or
+/// where it fits with `new_address` as a hint, and unmaps the rest of the old range.
+fn move_to<P: Platform>(
+    process: &Process<P>,
+    old_address: u64,
+    old_length: u64,
+    new_length: u64,
+    flags: u64,
+    new_address: u64,
+) -> Result<u64, Errno> {
+    let user_end = <P::PageTableFormat as Format>::USER_END;
+    if !new_address.is_multiple_of(FRAME_SIZE)
+        || new_length > user_end
+        || new_address > user_end - new_length
+        || (new_address < old_address.saturating_add(old_length)
+            && old_address < new_address + new_length)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let fixed = flags & remap::FIXED != 0;
+    if fixed && new_address < MINIMUM_ADDRESS {
+        return Err(Errno::EPERM);
+    }
+    let moved = old_length.min(new_length);
+    if moved == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let remap = if fixed {
+        Remap::Replace(new_address)
+    } else {
+        Remap::Anywhere {
+            hint: (new_address != 0).then_some(new_address),
+            floor: MINIMUM_ADDRESS,
+            top: mmap_top::<P>(),
+        }
+    };
+    let keep_source = flags & remap::DONTUNMAP != 0;
+    let start = process
+        .remap_region(old_address, moved, new_length, remap, keep_source)
+        .map_err(remap_error)?;
+    if old_length > moved {
+        unmap_tail::<P>(process, old_address, moved, old_length)?;
+    }
+    Ok(start)
+}
+
+/// Unmaps `old_address + kept..old_address + old_length`, the part of an old range `mremap`
+/// gives up, as `munmap` would: `EINVAL` if it reaches past user space.
+fn unmap_tail<P: Platform>(
+    process: &Process<P>,
+    old_address: u64,
+    kept: u64,
+    old_length: u64,
+) -> Result<(), Errno> {
+    let end = old_address
+        .checked_add(old_length)
+        .filter(|&end| end <= <P::PageTableFormat as Format>::USER_END)
+        .ok_or(Errno::EINVAL)?;
+    process
+        .unmap_range(old_address + kept, end)
+        .map_err(|_| Errno::EINVAL)
+}
+
+/// The error number for [`Process::remap_region`]'s `error`.
+fn remap_error(error: RegionError) -> Errno {
+    match error {
+        RegionError::NotCovered => Errno::EFAULT,
+        RegionError::NoRoom | RegionError::OutOfMemory => Errno::ENOMEM,
+        RegionError::Invalid | RegionError::Overlaps => Errno::EINVAL,
+    }
 }
 
 #[cfg(test)]
@@ -631,5 +887,375 @@ mod tests {
         // SAFETY: as in `process`.
         let bare = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
         assert_eq!(call(&bare, number::BRK, [BREAK, 0, 0, 0, 0, 0]), 0);
+    }
+
+    fn madvise(process: &Arc<Process<P>>, address: u64, length: u64, advice: u64) -> u64 {
+        call(process, number::MADVISE, [address, length, advice, 0, 0, 0])
+    }
+
+    fn mremap(
+        process: &Arc<Process<P>>,
+        old: u64,
+        old_size: u64,
+        new_size: u64,
+        flags: u64,
+        new: u64,
+    ) -> u64 {
+        call(
+            process,
+            number::MREMAP,
+            [old, old_size, new_size, flags, new, 0],
+        )
+    }
+
+    #[test]
+    fn madvise_checks_its_arguments_in_linux_order_and_accepts_what_changes_nothing() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let start = mmap(&process, 0, 2 * PAGE, READ_WRITE, ANONYMOUS);
+        for (address, length, advice, errno) in [
+            (start, 0, 5, Errno::EINVAL),
+            (start, PAGE, 26, Errno::EINVAL),
+            (start, PAGE, 99, Errno::EINVAL),
+            (start + 1, 0, advice::NORMAL, Errno::EINVAL),
+            (start, u64::MAX, advice::NORMAL, Errno::EINVAL),
+            (start, u64::MAX - start - 2, advice::NORMAL, Errno::EINVAL),
+            (start, 3 * PAGE, advice::WILLNEED, Errno::ENOMEM),
+            (start - PAGE, PAGE, advice::NORMAL, Errno::ENOMEM),
+            (start, PAGE, advice::REMOVE, Errno::EINVAL),
+            (start - PAGE, PAGE, advice::REMOVE, Errno::ENOMEM),
+            (start, PAGE, advice::COLLAPSE, Errno::EINVAL),
+            (start, PAGE, advice::HWPOISON, Errno::EINVAL),
+            (start, PAGE, advice::SOFT_OFFLINE, Errno::EINVAL),
+        ] {
+            assert_eq!(
+                madvise(&process, address, length, advice),
+                errno.result(),
+                "{address:#x} {length:#x} {advice}"
+            );
+        }
+        assert_eq!(madvise(&process, start, 0, advice::HWPOISON), 0);
+        assert_eq!(madvise(&process, start - PAGE, 0, advice::NORMAL), 0);
+        for advice in [
+            advice::NORMAL,
+            advice::RANDOM,
+            advice::SEQUENTIAL,
+            advice::WILLNEED,
+            advice::DONTFORK,
+            advice::DOFORK,
+            advice::MERGEABLE,
+            advice::UNMERGEABLE,
+            advice::HUGEPAGE,
+            advice::NOHUGEPAGE,
+            advice::DONTDUMP,
+            advice::DODUMP,
+            advice::WIPEONFORK,
+            advice::KEEPONFORK,
+            advice::COLD,
+            advice::PAGEOUT,
+        ] {
+            assert_eq!(
+                madvise(&process, start, 2 * PAGE - 1, advice),
+                0,
+                "{advice}"
+            );
+        }
+        assert_eq!(call(&process, number::SETUID, [1000, 0, 0, 0, 0, 0]), 0);
+        for advice in [advice::HWPOISON, advice::SOFT_OFFLINE] {
+            assert_eq!(
+                madvise(&process, start, PAGE, advice),
+                Errno::EPERM.result()
+            );
+        }
+    }
+
+    #[test]
+    fn madvise_dontneed_and_free_give_frames_back_and_the_pages_read_zero_again() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let start = mmap(&process, 0, 4 * PAGE, READ_WRITE, ANONYMOUS);
+        for page in 0..4 {
+            assert!(store(&process, start + page * PAGE, page + 1));
+        }
+        let mprotect =
+            |address, prot| call(&process, number::MPROTECT, [address, PAGE, prot, 0, 0, 0]);
+        assert_eq!(mprotect(start + PAGE, 0), 0);
+        assert_eq!(
+            call(
+                &process,
+                number::MUNMAP,
+                [start + 2 * PAGE, PAGE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let before = free();
+        dropped_translations();
+        let result = process.with_active(|| madvise(&process, start, 4 * PAGE, advice::DONTNEED));
+        assert_eq!(result, Errno::ENOMEM.result());
+        assert_eq!(free(), before + 3);
+        assert_eq!(
+            dropped_translations(),
+            [(start, 2 * PAGE), (start + 3 * PAGE, PAGE)]
+        );
+        assert_eq!(process.region(start + PAGE).unwrap().attributes, None);
+        assert_eq!(mprotect(start + PAGE, READ_WRITE), 0);
+        for page in [0, 1, 3] {
+            assert_eq!(word(&process, start + page * PAGE), Some(0), "{page}");
+        }
+        for advice in [advice::FREE, advice::DONTNEED_LOCKED] {
+            assert!(store(&process, start, 9));
+            let before = free();
+            assert_eq!(madvise(&process, start, PAGE, advice), 0);
+            assert_eq!(free(), before + 1);
+            assert_eq!(word(&process, start), Some(0));
+        }
+    }
+
+    #[test]
+    fn madvise_populate_maps_writable_pages_and_checks_the_access() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let start = mmap(&process, 0, 4 * PAGE, READ_WRITE, ANONYMOUS);
+        assert_eq!(
+            call(&process, number::MUNMAP, [start + PAGE, PAGE, 0, 0, 0, 0]),
+            0
+        );
+        assert!(store(&process, start + 3 * PAGE, 7));
+        let before = free();
+        assert_eq!(
+            madvise(&process, start, 4 * PAGE, advice::POPULATE_READ),
+            Errno::ENOMEM.result()
+        );
+        assert_eq!(free(), before);
+        assert_eq!(
+            madvise(&process, start, 4 * PAGE, advice::POPULATE_WRITE),
+            Errno::ENOMEM.result()
+        );
+        assert_eq!(free(), before - 2);
+        for page in [0, 2, 3] {
+            assert!(
+                process
+                    .address_space()
+                    .translate(start + page * PAGE)
+                    .is_some()
+            );
+        }
+        assert_eq!(word(&process, start + 3 * PAGE), Some(7));
+        let read_only = mmap(&process, 0, PAGE, prot::READ, ANONYMOUS);
+        let none = mmap(&process, 0, PAGE, 0, ANONYMOUS);
+        assert_eq!(madvise(&process, read_only, PAGE, advice::POPULATE_READ), 0);
+        for (address, advice) in [
+            (read_only, advice::POPULATE_WRITE),
+            (none, advice::POPULATE_READ),
+            (none, advice::POPULATE_WRITE),
+        ] {
+            assert_eq!(
+                madvise(&process, address, PAGE, advice),
+                Errno::EINVAL.result()
+            );
+        }
+        assert!(process.address_space().translate(read_only).is_none());
+    }
+
+    #[test]
+    fn mremap_checks_its_arguments_in_linux_order() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let start = mmap(&process, 0, 2 * PAGE, READ_WRITE, ANONYMOUS);
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        let (may_move, fixed, keep) = (remap::MAYMOVE, remap::FIXED, remap::DONTUNMAP);
+        let elsewhere = start - 0x10_0000;
+        for (old, old_size, new_size, flags, new, errno) in [
+            (start, PAGE, PAGE, 0x8, 0, Errno::EINVAL),
+            (start, PAGE, PAGE, fixed, elsewhere, Errno::EINVAL),
+            (start, PAGE, PAGE, keep, elsewhere, Errno::EINVAL),
+            (start, PAGE, PAGE - 1, may_move | keep, 0, Errno::EINVAL),
+            (start + 1, PAGE, PAGE, 0, 0, Errno::EINVAL),
+            (start, PAGE, 0, 0, 0, Errno::EINVAL),
+            (start, PAGE, u64::MAX, may_move, 0, Errno::EINVAL),
+            (start, u64::MAX, PAGE, 0, 0, Errno::EINVAL),
+            (start - PAGE, PAGE, 2 * PAGE, may_move, 0, Errno::EFAULT),
+            (
+                start,
+                PAGE,
+                PAGE,
+                may_move | fixed,
+                elsewhere + 1,
+                Errno::EINVAL,
+            ),
+            (
+                start,
+                2 * PAGE,
+                PAGE,
+                may_move | fixed,
+                start + PAGE,
+                Errno::EINVAL,
+            ),
+            (start, PAGE, PAGE, may_move | fixed, user_end, Errno::EINVAL),
+            (
+                start,
+                PAGE,
+                PAGE,
+                may_move | fixed,
+                user_end - 1,
+                Errno::EINVAL,
+            ),
+            (start, PAGE, PAGE, may_move | fixed, 0, Errno::EPERM),
+            (start, 0, PAGE, may_move | fixed, elsewhere, Errno::EINVAL),
+            (start, 0, PAGE, may_move, 0, Errno::EINVAL),
+            (start, 3 * PAGE, 4 * PAGE, may_move, 0, Errno::EFAULT),
+        ] {
+            assert_eq!(
+                mremap(&process, old, old_size, new_size, flags, new),
+                errno.result(),
+                "{old:#x} {old_size:#x} {new_size:#x} {flags:#x} {new:#x}"
+            );
+        }
+        assert_eq!(process.region(start).unwrap().end, start + 2 * PAGE);
+        assert_eq!(process.region(elsewhere), None);
+    }
+
+    #[test]
+    fn mremap_shrinks_in_place_and_grows_in_place_where_the_addresses_after_are_free() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let hint = 0x1000_0000;
+        let start = mmap(&process, hint, 4 * PAGE, READ_WRITE, ANONYMOUS);
+        assert_eq!(start, hint);
+        for page in 0..4 {
+            assert!(store(&process, start + page * PAGE, page + 1));
+        }
+        let before = free();
+        assert_eq!(mremap(&process, start, 4 * PAGE, 2 * PAGE + 1, 0, 0), start);
+        assert_eq!(free(), before + 1);
+        assert_eq!(process.region(start).unwrap().end, start + 3 * PAGE);
+        assert_eq!(mremap(&process, start, PAGE, PAGE, 0, 0), start);
+        assert_eq!(mremap(&process, start, 3 * PAGE, 5 * PAGE, 0, 0), start);
+        assert_eq!(process.region(start).unwrap().end, start + 5 * PAGE);
+        assert_eq!(word(&process, start + 2 * PAGE), Some(3));
+        assert_eq!(word(&process, start + 4 * PAGE), Some(0));
+        let fixed = ANONYMOUS | map::FIXED;
+        let blocker = start + 6 * PAGE;
+        assert_eq!(mmap(&process, blocker, PAGE, prot::READ, fixed), blocker);
+        assert_eq!(
+            mremap(&process, start, 5 * PAGE, 7 * PAGE, 0, 0),
+            Errno::ENOMEM.result()
+        );
+        assert_eq!(
+            mremap(&process, start, 2 * PAGE, 3 * PAGE, 0, 0),
+            Errno::ENOMEM.result()
+        );
+        assert_eq!(
+            mremap(&process, start, 5 * PAGE, 6 * PAGE, 0, 0),
+            start,
+            "up to the next region"
+        );
+        assert_eq!(process.region(start).unwrap().end, blocker);
+        let top = mmap(&process, 0, PAGE, READ_WRITE, ANONYMOUS);
+        assert_eq!(top, mmap_top::<P>() - PAGE);
+        assert_eq!(
+            mremap(&process, top, PAGE, 2 * PAGE, 0, 0),
+            Errno::ENOMEM.result(),
+            "never into the stack's guard gap"
+        );
+    }
+
+    #[test]
+    fn mremap_moves_pages_with_their_contents_and_leaves_nothing_behind() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let hint = 0x1000_0000;
+        let start = mmap(&process, hint, 3 * PAGE, READ_WRITE, ANONYMOUS);
+        let fixed = ANONYMOUS | map::FIXED;
+        let blocker = start + 3 * PAGE;
+        assert_eq!(mmap(&process, blocker, PAGE, prot::READ, fixed), blocker);
+        assert!(store(&process, start, 0x1234));
+        assert!(store(&process, start + PAGE, 0x5678));
+        let mprotect = |address, length, prot| {
+            call(&process, number::MPROTECT, [address, length, prot, 0, 0, 0])
+        };
+        assert_eq!(mprotect(start, 3 * PAGE, 0), 0);
+        let before = free();
+        dropped_translations();
+        let moved =
+            process.with_active(|| mremap(&process, start, 3 * PAGE, 5 * PAGE, remap::MAYMOVE, 0));
+        assert_eq!(moved, mmap_top::<P>() - 5 * PAGE);
+        assert_eq!(dropped_translations(), [(start, 3 * PAGE)]);
+        assert!(free() <= before, "frames move, never copied");
+        let tables = <<P as Platform>::PageTableFormat as Format>::LEVELS as u64 - 1;
+        assert!(free() + tables >= before, "at most the new place's tables");
+        assert_eq!(process.region(start), None);
+        assert_eq!(word(&process, start), None);
+        assert_eq!(
+            process.region(moved),
+            Some(Region {
+                start: moved,
+                end: moved + 5 * PAGE,
+                attributes: None
+            })
+        );
+        assert_eq!(word(&process, moved), None);
+        assert_eq!(mprotect(moved, 5 * PAGE, READ_WRITE), 0);
+        assert_eq!(word(&process, moved), Some(0x1234));
+        assert_eq!(word(&process, moved + PAGE), Some(0x5678));
+        assert_eq!(word(&process, moved + 4 * PAGE), Some(0));
+        assert_eq!(
+            mremap(&process, moved, 2 * PAGE, 3 * PAGE, 0, 0),
+            Errno::ENOMEM.result(),
+            "only a range that ends its region grows in place"
+        );
+        assert_eq!(mprotect(moved + 2 * PAGE, PAGE, prot::READ), 0);
+        assert_eq!(
+            mremap(&process, moved, 3 * PAGE, 6 * PAGE, remap::MAYMOVE, 0),
+            Errno::EFAULT.result(),
+            "a range in two regions"
+        );
+    }
+
+    #[test]
+    fn mremap_fixed_replaces_the_target_and_dontunmap_leaves_an_empty_mapping() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process(&kernel);
+        let (first, target) = (0x1000_0000, 0x2000_0000);
+        assert_eq!(
+            mmap(&process, first, 3 * PAGE, READ_WRITE, ANONYMOUS),
+            first
+        );
+        assert_eq!(
+            mmap(&process, target, 2 * PAGE, READ_WRITE, ANONYMOUS),
+            target
+        );
+        for page in 0..3 {
+            assert!(store(&process, first + page * PAGE, page + 1));
+        }
+        assert!(store(&process, target + PAGE, 9));
+        let before = free();
+        let flags = remap::MAYMOVE | remap::FIXED;
+        assert_eq!(
+            mremap(&process, first, 3 * PAGE, 2 * PAGE, flags, target),
+            target
+        );
+        assert_eq!(free(), before + 2, "the target's page and the old tail");
+        assert_eq!(word(&process, target), Some(1));
+        assert_eq!(word(&process, target + PAGE), Some(2));
+        assert_eq!(process.region(first), None);
+        assert_eq!(process.region(first + 2 * PAGE), None);
+        let flags = remap::MAYMOVE | remap::DONTUNMAP;
+        let kept = mremap(&process, target, 2 * PAGE, 2 * PAGE, flags, first);
+        assert_eq!(kept, first, "the hint, free again");
+        assert_eq!(word(&process, first + PAGE), Some(2));
+        assert_eq!(
+            process.region(target).map(|region| region.end),
+            Some(target + 2 * PAGE)
+        );
+        assert!(process.address_space().translate(target).is_none());
+        assert_eq!(word(&process, target), Some(0));
     }
 }

@@ -33,7 +33,7 @@ use crate::linux::limits::ResourceLimits;
 use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
-use crate::regions::{Access, Region, RegionError, Regions};
+use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
@@ -90,6 +90,45 @@ pub enum Placement {
         floor: u64,
         top: u64,
     },
+}
+
+/// How much of a range of user addresses the regions hold ([`Process::coverage`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    Nothing,
+    Part,
+    Whole,
+}
+
+/// Why [`Process::populate_range`] did not make every page of its range ready.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopulateError {
+    /// A region in the range does not allow the access.
+    NotAllowed,
+    /// There was no frame for a page.
+    OutOfMemory,
+    /// Part of the range is in no region; the rest is ready.
+    NotCovered,
+}
+
+/// Where [`Process::remap_region`] may put a region it resizes or moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remap {
+    /// Where it is: it grows only into free addresses right after it, up to `top`.
+    InPlace { top: u64 },
+    /// Where it is if it can grow there up to `top`, otherwise as high as it fits within
+    /// `floor..top`.
+    InPlaceOrAnywhere { floor: u64, top: u64 },
+    /// At `hint`, if it is given and the range there is free and within `floor..top`;
+    /// otherwise as high as it fits within `floor..top`. Never where it is.
+    Anywhere {
+        hint: Option<u64>,
+        floor: u64,
+        top: u64,
+    },
+    /// At this address, page-aligned, replacing whatever held part of the new range before,
+    /// pages and all.
+    Replace(u64),
 }
 
 /// The program break (Linux's `brk`): where the heap a program grows with `brk` begins, and
@@ -355,19 +394,7 @@ impl<P: Platform> Process<P> {
                 start
             }
             Placement::Anywhere { hint, floor, top } => {
-                let top = top.min(user_end);
-                match hint {
-                    Some(hint)
-                        if hint.is_multiple_of(FRAME_SIZE)
-                            && within(hint, floor, top)
-                            && regions.is_free(hint, hint + length) =>
-                    {
-                        hint
-                    }
-                    _ => regions
-                        .free_below(top, floor, length)
-                        .ok_or(RegionError::NoRoom)?,
-                }
+                free_range(&regions, hint, floor, top.min(user_end), length)?
             }
         };
         regions.insert(start, start + length, attributes)?;
@@ -418,10 +445,16 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
+        self.free_pages(start, end)
+            .map_err(|_| RegionError::Invalid)
+    }
+
+    /// Unmaps every page of user addresses `start..end`, page-aligned, freeing the frames, as
+    /// [`Self::unmap_range`] does with the regions there: with the regions' lock held. Every
+    /// page, not only those in regions: the HAL's test program has none.
+    fn free_pages(&self, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
         let frame_offset = self.frame_offset;
-        // Every page, not only those in the regions taken out: the HAL's test program has
-        // none (roadmap).
         let result = self.space.change_pages(
             start,
             end - start,
@@ -449,7 +482,194 @@ impl<P: Platform> Process<P> {
             // translations of them.
             unsafe { frames.free_chain(chain) };
         }
-        result.map_err(|_| RegionError::Invalid)
+        result
+    }
+
+    /// Unmaps the pages of user addresses `start..end`, page-aligned, that are in regions,
+    /// freeing their frames but keeping the regions: their pages are mapped, zeroed, when next
+    /// touched (Linux's `MADV_DONTNEED`). Touching regions are freed as one run. If part of the range is in no region, the rest is
+    /// discarded all the same and the error is [`RegionError::NotCovered`].
+    pub fn discard_pages(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        if !is_page_range(start, end) {
+            return Err(RegionError::Invalid);
+        }
+        let regions = self.regions.lock();
+        let free_run = |(run_start, run_end)| {
+            self.free_pages(run_start, run_end)
+                .map_err(|_| RegionError::Invalid)
+        };
+        let mut whole = true;
+        let mut run = None;
+        for region in regions.overlapping(start, end) {
+            let part = (region.start.max(start), region.end.min(end));
+            run = match run {
+                Some((run_start, run_end)) if run_end == part.0 => Some((run_start, part.1)),
+                Some(previous) => {
+                    free_run(previous)?;
+                    whole = false;
+                    Some(part)
+                }
+                None => Some(part),
+            };
+        }
+        match run {
+            Some(last) => {
+                free_run(last)?;
+                whole &= last.0 == start && last.1 == end;
+            }
+            None => whole = false,
+        }
+        if whole {
+            Ok(())
+        } else {
+            Err(RegionError::NotCovered)
+        }
+    }
+
+    /// How much of user addresses `start..end` regions hold.
+    pub fn coverage(&self, start: u64, end: u64) -> Coverage {
+        let regions = self.regions.lock();
+        let mut covered = start;
+        let mut any = false;
+        for region in regions.overlapping(start, end) {
+            if region.start > covered {
+                return Coverage::Part;
+            }
+            covered = region.end;
+            any = true;
+        }
+        match (any, covered >= end) {
+            (false, _) => Coverage::Nothing,
+            (true, true) => Coverage::Whole,
+            (true, false) => Coverage::Part,
+        }
+    }
+
+    /// Makes the pages of user addresses `start..end`, page-aligned, ready for `access`, region
+    /// by region in address order (Linux's `MADV_POPULATE_READ` and `MADV_POPULATE_WRITE`): a
+    /// write maps a zeroed frame at every page not mapped yet; a read only checks, as the
+    /// program reads zeros from a page not mapped yet all the same. Stops at a region that does
+    /// not allow `access` ([`PopulateError::NotAllowed`]) or when there is no frame
+    /// ([`PopulateError::OutOfMemory`]); a part of the range in no region is skipped and
+    /// reported at the end ([`PopulateError::NotCovered`]).
+    pub fn populate_range(
+        &self,
+        start: u64,
+        end: u64,
+        access: Access,
+    ) -> Result<(), PopulateError> {
+        debug_assert!(is_page_range(start, end));
+        let regions = self.regions.lock();
+        let mut covered = start;
+        let mut result = Ok(());
+        for region in regions.overlapping(start, end) {
+            if region.start > covered {
+                result = Err(PopulateError::NotCovered);
+            }
+            if !region
+                .attributes
+                .is_some_and(|attributes| access.allowed_by(attributes))
+            {
+                return Err(PopulateError::NotAllowed);
+            }
+            let (part_start, part_end) = (region.start.max(start), region.end.min(end));
+            if access == Access::Write {
+                for page in (part_start..part_end).step_by(FRAME_SIZE as usize) {
+                    self.populate(&regions, page, access, true)
+                        .map_err(|_| PopulateError::OutOfMemory)?;
+                }
+            }
+            covered = part_end;
+        }
+        if covered < end {
+            result = Err(PopulateError::NotCovered);
+        }
+        result
+    }
+
+    /// Resizes or moves the part `start..start + old_length` of one region (Linux's `mremap`),
+    /// both page-aligned and `old_length` not 0, to `new_length` bytes, at least `old_length`,
+    /// where `remap` says, and returns its new start. A moved part takes its pages with it,
+    /// frames and contents, and its attributes; the addresses it grew by are mapped, zeroed,
+    /// when first touched. With `keep_source` (it must move), the old range stays a region
+    /// whose pages are mapped, zeroed, when next touched. [`Remap::Replace`] unmaps the new
+    /// range once the part is found. Errors: [`RegionError::NotCovered`] if the part is
+    /// not all in one region; [`RegionError::NoRoom`] if it cannot be where `remap` allows;
+    /// [`RegionError::OutOfMemory`] if there was no frame for a page table, with nothing moved.
+    pub fn remap_region(
+        &self,
+        start: u64,
+        old_length: u64,
+        new_length: u64,
+        remap: Remap,
+        keep_source: bool,
+    ) -> Result<u64, RegionError> {
+        let user_end = <P::PageTableFormat as Format>::USER_END;
+        let old_end = start
+            .checked_add(old_length)
+            .filter(|&end| end <= user_end)
+            .ok_or(RegionError::NotCovered)?;
+        if new_length < old_length
+            || !is_page_range(start, old_end)
+            || !new_length.is_multiple_of(FRAME_SIZE)
+        {
+            return Err(RegionError::Invalid);
+        }
+        if let Remap::Replace(to) = remap
+            && to.checked_add(new_length).is_none_or(|end| end > user_end)
+        {
+            return Err(RegionError::Invalid);
+        }
+        let mut regions = self.regions.lock();
+        let region = regions
+            .find(start)
+            .copied()
+            .filter(|region| old_end <= region.end)
+            .ok_or(RegionError::NotCovered)?;
+        let growth_top = match remap {
+            Remap::InPlace { top } | Remap::InPlaceOrAnywhere { top, .. } if !keep_source => {
+                Some(top.min(user_end))
+            }
+            _ => None,
+        };
+        if let Some(top) = growth_top {
+            if new_length == old_length {
+                return Ok(start);
+            }
+            let new_end = start.checked_add(new_length).filter(|&end| end <= top);
+            if let Some(new_end) = new_end
+                && old_end == region.end
+                && regions.is_free(old_end, new_end)
+            {
+                regions.insert(old_end, new_end, region.attributes)?;
+                return Ok(start);
+            }
+        }
+        let to = match remap {
+            Remap::InPlace { .. } => return Err(RegionError::NoRoom),
+            Remap::InPlaceOrAnywhere { floor, top } => {
+                free_range(&regions, None, floor, top.min(user_end), new_length)?
+            }
+            Remap::Anywhere { hint, floor, top } => {
+                free_range(&regions, hint, floor, top.min(user_end), new_length)?
+            }
+            Remap::Replace(to) => {
+                self.unmap_locked(&mut regions, to, to + new_length)?;
+                to
+            }
+        };
+        regions.insert(to, to + new_length, region.attributes)?;
+        if let Err(error) = self.space.move_pages(start, to, old_length) {
+            regions.remove(to, to + new_length, |_| ())?;
+            return Err(match error {
+                MapError::OutOfMemory => RegionError::OutOfMemory,
+                _ => RegionError::Invalid,
+            });
+        }
+        if !keep_source {
+            regions.remove(start, old_end, |_| ())?;
+        }
+        Ok(to)
     }
 
     /// Gives user addresses `start..end`, page-aligned, `attributes` (`None`: the program may
@@ -766,6 +986,32 @@ impl<P: Platform> core::fmt::Debug for Process<P> {
 }
 
 /// Gives a frame `map_frame` allocated and could not map back to the kernel's frame allocator.
+/// Where `length` bytes, page-aligned, go within `floor..top`: at `hint` if it is given,
+/// page-aligned and the range there is free; otherwise as high as a free range fits
+/// ([`RegionError::NoRoom`] if none does), as Linux places a mapping top-down.
+#[inline]
+fn free_range(
+    regions: &Regions,
+    hint: Option<u64>,
+    floor: u64,
+    top: u64,
+    length: u64,
+) -> Result<u64, RegionError> {
+    match hint {
+        Some(hint)
+            if hint.is_multiple_of(FRAME_SIZE)
+                && hint >= floor
+                && hint.checked_add(length).is_some_and(|end| end <= top)
+                && regions.is_free(hint, hint + length) =>
+        {
+            Ok(hint)
+        }
+        _ => regions
+            .free_below(top, floor, length)
+            .ok_or(RegionError::NoRoom),
+    }
+}
+
 fn free_frame(frame: u64) {
     let mut frames = memory::FRAMES.lock();
     let frames = frames
