@@ -2162,18 +2162,30 @@ fn futex_waiters_are_requeued_in_order<P: Platform>() -> Result<(), &'static str
     for waiter in waiters {
         waiter.join::<P>();
     }
-    TIMED_OUT.store(false, Ordering::Relaxed);
-    let deadline = P::clock_ticks() + 2 * millisecond;
-    let timed = thread::spawn::<P, _>(move || {
-        let ended = futex::wait::<P>(FROM, u32::MAX, deadline, counted);
-        TIMED_OUT.store(ended == Err(linux::Errno::ETIMEDOUT), Ordering::Relaxed);
-    })
-    .map_err(|_| "could not start a futex waiter")?;
-    wait_until_queued(6);
-    if futex::requeue::<P>(FROM, TO, 0, 1, || Ok(())) != Ok((0, 1)) {
-        return Err("a futex requeue did not move a waiter with a deadline");
+    let mut moved_before_its_deadline = false;
+    for attempt in 0..8 {
+        TIMED_OUT.store(false, Ordering::Relaxed);
+        let deadline = P::clock_ticks() + (2 << attempt) * millisecond;
+        let timed = thread::spawn::<P, _>(move || {
+            let ended = futex::wait::<P>(FROM, u32::MAX, deadline, counted);
+            TIMED_OUT.store(ended == Err(linux::Errno::ETIMEDOUT), Ordering::Relaxed);
+        })
+        .map_err(|_| "could not start a futex waiter")?;
+        wait_until_queued(6 + attempt);
+        let moved = futex::requeue::<P>(FROM, TO, 0, 1, || Ok(()));
+        timed.join::<P>();
+        match moved {
+            Ok((0, 1)) => {
+                moved_before_its_deadline = true;
+                break;
+            }
+            Ok((0, 0)) => continue,
+            _ => return Err("a futex requeue did not move a waiter with a deadline"),
+        }
     }
-    timed.join::<P>();
+    if !moved_before_its_deadline {
+        return Err("a futex waiter with a deadline was never requeued before it");
+    }
     if !TIMED_OUT.load(Ordering::Relaxed) {
         return Err("a requeued futex waiter did not time out");
     }

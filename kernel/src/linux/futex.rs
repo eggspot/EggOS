@@ -144,11 +144,11 @@ impl Bucket {
 }
 
 /// Waits on `key` until a [`wake`] whose bitset shares a bit with `bitset` takes this
-/// waiter (on `key`, or on the word a [`requeue`] moved it to), or the clock reaches `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none).
-/// `still_expected` runs first, with the word's bucket locked so no wake can slip in between:
-/// its error, such as `EAGAIN` when the word no longer holds the expected value, ends the
-/// call at once. `ETIMEDOUT` at the deadline. Call it as a blocking system call runs: with
-/// interrupts masked and no lock held.
+/// waiter (on `key`, or on the word a [`requeue`] moved it to), or the clock reaches
+/// `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none). `still_expected` runs first,
+/// with the word's bucket locked so no wake can slip in between: its error, such as `EAGAIN`
+/// when the word no longer holds the expected value, ends the call at once. `ETIMEDOUT` at the
+/// deadline. Call it as a blocking system call runs: with interrupts masked and no lock held.
 pub fn wait<P: Platform>(
     key: Key,
     bitset: u32,

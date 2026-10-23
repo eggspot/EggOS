@@ -3795,9 +3795,10 @@ the license, by an explicit instruction recorded here.
   `uaddr` with both buckets locked, `EFAULT` or `EAGAIN` if it does not hold `val3`. A requeue
   to the same futex is allowed: it wakes as asked and leaves the others where they are,
   counted as moved. A moved waiter that times out leaves `uaddr2`'s queue with `ETIMEDOUT`.
-- **Check order, where research and structure differ.** Research put negative counts before
-  the clock flag's `ENOSYS`, with medium confidence; we keep D89's order (the operation and
-  its flags first, for every operation), which only differs for a call that has both errors.
+- **Check order.** Research listed negative counts before the clock flag's `ENOSYS`, with
+  medium confidence; the independent review recalled the clock flag being checked first, for
+  every operation, before the requeue's own checks. We keep D89's order (the operation and
+  its flags first), which only matters for a call that has both errors.
 - **How.** A waiter now records its key in its link and the index of the bucket it is in; a
   requeue locks both buckets in index order (one when they are the same), checks the word,
   wakes, then relinks the moved waiters into the second bucket and updates their index. A
@@ -3811,7 +3812,8 @@ the license, by an explicit instruction recorded here.
 - **Tests.** Kernel self-test `futex_waiters_are_requeued_in_order` (five waiters: a check's
   error moves nothing, one woken and two moved, the third left behind, the moved ones behind
   the second futex's own waiter in their order with their bitsets, a requeue to the same
-  futex, and a moved waiter with a deadline timing out from its new bucket); the runtime test
+  futex, and a moved waiter with a deadline timing out from its new bucket, retried with a
+  doubled deadline if the host stalls the guest past it before the requeue); the runtime test
   program's check of the requeue errors from user mode on aarch64, riscv64 and x86_64.
 - **Next.** `clone` for threads (`CLONE_VM | CLONE_THREAD | ...`, `CLONE_SETTLS`,
   `CLONE_CHILD_CLEARTID`'s shared wake, `CLONE_PARENT_SETTID`), with a futex wait interrupted
