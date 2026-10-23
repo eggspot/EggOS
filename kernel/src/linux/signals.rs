@@ -152,10 +152,16 @@ pub struct ThreadSignals {
     pub alternate_stack: AlternateStack,
 }
 
-/// The state of a process that catches signals, out of line ([`Signals::caught`]).
+/// The state of a process that catches signals, out of line ([`Signals::caught`]): its
+/// actions, field by field, with the flags as 32-bit words (every flag the kernel keeps fits),
+/// so that the block, with the words that go with it, fits the heap's largest size class
+/// (2 KiB, as the table of [`Action`]s alone did) instead of taking a frame of its own.
 #[derive(Debug, Clone, Copy)]
 struct Caught {
-    actions: [Action; COUNT],
+    handlers: [u64; COUNT],
+    flags: [u32; COUNT],
+    restorers: [u64; COUNT],
+    masks: [u64; COUNT],
     /// The pending signals sent with `tkill` or `tgkill` ([`Origin::Thread`]), as
     /// [`ThreadSignals::pending`]; the others were sent with `kill` unless in `from_kernel`.
     /// Only a handler sees a signal's origin, so only a process that has changed an action
@@ -165,8 +171,47 @@ struct Caught {
     /// The pending signals the kernel raised ([`Origin::Kernel`]), as `from_thread`.
     from_kernel: u64,
     /// Where the process's return trampoline is mapped ([`super::trampoline`]), 0 until a
-    /// handler first needs it.
+    /// handler first needs it. It stays there: a program that unmaps or replaces the page
+    /// breaks its own handlers' return, as it would by unmapping Linux's vDSO. `execve` must
+    /// reset it with the actions.
     trampoline: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<Caught>() <= crate::heap::MAX_BLOCK);
+const _: () = assert!(flag::KNOWN <= u32::MAX as u64);
+// `Process` sits exactly in a heap size class (D64): the signal state must not grow.
+const _: () = assert!(core::mem::size_of::<Signals>() == 48);
+
+impl Caught {
+    /// Every action `SIG_DFL`, no origins, no trampoline.
+    const fn new() -> Self {
+        Self {
+            handlers: [DEFAULT; COUNT],
+            flags: [0; COUNT],
+            restorers: [0; COUNT],
+            masks: [0; COUNT],
+            from_thread: 0,
+            from_kernel: 0,
+            trampoline: 0,
+        }
+    }
+
+    fn action(&self, index: usize) -> Action {
+        Action {
+            handler: self.handlers[index],
+            flags: u64::from(self.flags[index]),
+            restorer: self.restorers[index],
+            mask: self.masks[index],
+        }
+    }
+
+    /// Sets action `index` to `action`, whose flags are only [`flag::KNOWN`]'s.
+    fn set_action(&mut self, index: usize, action: Action) {
+        self.handlers[index] = action.handler;
+        self.flags[index] = action.flags as u32;
+        self.restorers[index] = action.restorer;
+        self.masks[index] = action.mask;
+    }
 }
 
 /// An alternate signal stack: `size` bytes from `base`, or none when `size` is 0.
@@ -256,7 +301,7 @@ impl Signals {
         Some(
             self.caught
                 .as_deref()
-                .map_or_else(Action::default, |[caught]| caught.actions[index]),
+                .map_or_else(Action::default, |[caught]| caught.action(index)),
         )
     }
 
@@ -279,10 +324,10 @@ impl Signals {
                 Some(caught) => caught,
                 None => self.caught.insert(caught_block()?),
             };
-            caught.actions[signal as usize - 1] = new;
+            caught.set_action(signal as usize - 1, new);
         }
         if self.ignores(signal) {
-            self.thread.pending &= !bit(signal);
+            self.discard(bit(signal));
         }
         Ok(current)
     }
@@ -339,9 +384,9 @@ impl Signals {
         let index = signal as usize - 1;
         let blocked = self.thread.blocked & bit(signal) != 0;
         if let Some([caught]) = self.caught.as_deref_mut()
-            && (blocked || caught.actions[index].handler == IGNORE)
+            && (blocked || caught.handlers[index] == IGNORE)
         {
-            caught.actions[index].handler = DEFAULT;
+            caught.handlers[index] = DEFAULT;
         }
         self.thread.blocked &= !bit(signal);
         self.send(signal, Origin::Kernel);
@@ -361,7 +406,7 @@ impl Signals {
     /// is `SIG_DFL` then.
     fn reset_handler(&mut self, signal: u32) {
         if let Some([caught]) = self.caught.as_deref_mut() {
-            caught.actions[signal as usize - 1].handler = DEFAULT;
+            caught.handlers[signal as usize - 1] = DEFAULT;
         }
     }
 
@@ -564,12 +609,7 @@ fn caught_block() -> Result<Box<[Caught; 1]>, ChangeError> {
     block
         .try_reserve_exact(1)
         .map_err(|_| ChangeError::OutOfMemory)?;
-    block.push(Caught {
-        actions: [Action::default(); COUNT],
-        from_thread: 0,
-        from_kernel: 0,
-        trampoline: 0,
-    });
+    block.push(Caught::new());
     // Exactly one, in a buffer of exactly that capacity: no reallocation.
     Ok(block.into_boxed_slice().try_into().unwrap())
 }
@@ -875,11 +915,11 @@ pub fn deliver<P: Platform>(process: &Process<P>, context: &mut UserContext) -> 
     }
 }
 
-/// Writes `action`'s frame for `signal` from `origin` and points `context` at its handler, for
-/// a thread whose signal state is `thread`: on the alternate stack with [`flag::ONSTACK`],
-/// if it has one and is not on it already (then the frame goes below the stack pointer, as
-/// it does without the flag). [`BadFrame`] if the frame's memory is not the program's, if it would run off the bottom of
-/// the alternate stack the thread is on, or if the handler has no way to return.
+/// Writes `action`'s frame for `signal` from `origin` and points `context` at its handler, for a
+/// thread whose signal state is `thread`: on the alternate stack with [`flag::ONSTACK`], if it has
+/// one and is not on it already (then the frame goes below the stack pointer, as it does without
+/// the flag). [`BadFrame`] if the frame's memory is not the program's, if it would run off the
+/// bottom of the alternate stack the thread is on, or if the handler has no way to return.
 fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -923,11 +963,11 @@ fn start_handler<P: Platform>(
     Ok(())
 }
 
-/// `rt_sigreturn()`: a handler returned. Restores the registers, blocked mask and alternate
-/// stack its frame saved (see [`signal_frame`]), and returns the restored result register,
-/// which the dispatcher writes back unchanged. A frame that is not the program's memory, or
-/// whose FP/SIMD records are not in Linux's shape, sends `SIGSEGV` (whatever the program
-/// blocked or ignored), as on Linux, and changes nothing else. The signals the restored mask unblocks are delivered next.
+/// `rt_sigreturn()`: a handler returned. Restores the registers, blocked mask and alternate stack
+/// its frame saved (see [`signal_frame`]), and returns the restored result register, which the
+/// dispatcher writes back unchanged. A frame that is not the program's memory, or whose FP/SIMD
+/// records are not in Linux's shape, sends `SIGSEGV` (whatever the program blocked or ignored), as
+/// on Linux, and changes nothing else. The signals the restored mask unblocks are delivered next.
 pub fn rt_sigreturn<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -942,9 +982,10 @@ pub fn rt_sigreturn<P: Platform>(
                 .restore(saved.blocked, saved.alternate_stack, context.stack());
             Ok(signal_frame::result(&saved.registers))
         }
+        // As Linux, 0: only a `SIGSEGV` handler's frame can show it.
         Err(BadFrame) => {
             process.signals().lock().force(SIGSEGV);
-            Ok(signal_frame::result(&current))
+            Ok(0)
         }
     }
 }
@@ -1193,6 +1234,19 @@ mod tests {
             })
         ));
         // Taken: its origin went with it.
+        signals.send(SIGUSR1, Origin::Process);
+        assert_eq!(signals.origin(SIGUSR1), Origin::Process);
+        // Discarded by an action that ignores it: its origin goes too.
+        signals.discard(bit(SIGUSR1));
+        signals.thread.blocked = bit(SIGUSR1);
+        signals.send(SIGUSR1, Origin::Thread);
+        let ignore = Action {
+            handler: IGNORE,
+            ..Action::default()
+        };
+        signals.set_action(SIGUSR1, ignore).unwrap();
+        signals.set_action(SIGUSR1, handler).unwrap();
+        signals.thread.blocked = 0;
         signals.send(SIGUSR1, Origin::Process);
         assert_eq!(signals.origin(SIGUSR1), Origin::Process);
     }

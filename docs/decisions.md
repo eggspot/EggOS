@@ -2457,27 +2457,31 @@ switch-path cost; this entry follows it.)
   stack's top word on x86_64), and on x86_64 `rax` 0 and the trap, direction and resume
   flags clear. The frame saves the registers, the blocked mask from before the handler, and
   the alternate stack as `sigaltstack` would report it at the interrupted stack pointer
-  (`SS_ONSTACK` if on it, `SS_DISABLE` if none, with `SS_AUTODISARM` if set).
+  (`SS_ONSTACK` if on it, `SS_DISABLE` if none, with `SS_AUTODISARM` if set), as research
+  recommended; current Linux may write only the flags the stack was set with (0 for an
+  enabled one). Either restores the same stack.
 - **The HAL** gains `UserContext::registers` and `set_registers` (`UserRegisters`, each
   architecture's own set). Setting them makes x86_64 enter with `iretq`, so `rcx` and `r11`
   come back too (`sysretq` would take them for `rip` and `rflags`). The HAL's entry to user
   mode already keeps only the flags a program may set (AArch64's NZCV, x86_64's user flags)
   and refuses a `rip` outside user space, so a forged frame cannot raise privilege.
-- **`rt_sigreturn`** reads the frame at the stack pointer (x86_64: 8 below it, since the
-  handler's `ret` popped `pretcode`; AArch64: it must be 16-byte aligned), restores the
-  registers, the mask (never `SIGKILL` or `SIGSTOP`) and the alternate stack with
-  `sigaltstack`'s rules, errors other than an unreadable frame ignored, as on Linux. It
-  returns the restored result register, so the dispatcher's write changes nothing. A frame
-  that is not the program's memory, or whose FP/SIMD records are not in Linux's shape, sends
-  `SIGSEGV`.
+- **`rt_sigreturn`** (returning 0 after a bad frame, as Linux; the x86_64 trap flag cannot be
+  restored, as the way into user mode never sets it) reads the frame at the stack pointer
+  (x86_64: 8 below it, since the handler's `ret` popped `pretcode`; AArch64: it must be
+  16-byte aligned), restores the registers, the mask (never `SIGKILL` or `SIGSTOP`) and the
+  alternate stack with `sigaltstack`'s rules, errors other than an unreadable frame ignored,
+  as on Linux. It returns the restored result register, so the dispatcher's write changes
+  nothing. A frame that is not the program's memory, or whose FP/SIMD records are not in
+  Linux's shape, sends `SIGSEGV`.
 - **Delivery** (research, Q4): every due signal with a handler gets a frame, each on top of
   the one before, the last one's handler running first, as Linux's return-to-user loop does;
-  each handler blocks its `sa_mask` and, unless `SA_NODEFER`, its own signal, so a signal
-  the first handler blocks stays pending. `SA_RESETHAND` makes the action `SIG_DFL` as the
-  signal is taken. `SA_ONSTACK` starts the frame at the alternate stack's top if the thread
-  has one and is not on it; a nested frame that would run off the alternate stack's bottom
-  fails. An alternate stack with `SS_AUTODISARM` is disabled on entry to any handler, as
-  sigaltstack(2) says, and comes back from the frame with `rt_sigreturn`. After `rt_sigreturn`, the signals the restored mask unblocks are delivered.
+  each handler blocks its `sa_mask` and, unless `SA_NODEFER`, its own signal, so a signal the
+  first handler blocks stays pending. `SA_RESETHAND` makes the action `SIG_DFL` as the signal
+  is taken. `SA_ONSTACK` starts the frame at the alternate stack's top if the thread has one
+  and is not on it; a nested frame that would run off the alternate stack's bottom fails. An
+  alternate stack with `SS_AUTODISARM` is disabled on entry to any handler, as sigaltstack(2)
+  says, and comes back from the frame with `rt_sigreturn`. After `rt_sigreturn`, the signals
+  the restored mask unblocks are delivered.
 - **A frame that cannot be written** sends `SIGSEGV` from the kernel (`SI_KERNEL`), as
   Linux's `force_sigsegv`: delivered whatever the program blocked or ignored (its action
   becomes `SIG_DFL` then), and by `SIG_DFL` if `SIGSEGV`'s own frame failed.
@@ -2494,7 +2498,9 @@ switch-path cost; this entry follows it.)
   delivery, not at exec or `rt_sigaction` (Rust's std calls that at every startup), so a
   process that never runs a handler pays nothing, `linux_exec_load` included. A private page
   needs no "shared frame" exemption in teardown, `munmap` or `mprotect`. 4 KiB per process
-  that runs a handler; the real vDSO, shared and mapped at exec, will take it over.
+  that runs a handler; the real vDSO, shared and mapped at exec, will take it over. Its
+  address is kept: a program that unmaps or replaces the page breaks its own handlers'
+  return, as with Linux's vDSO; `execve` must reset it with the actions.
   x86_64 has none: as on Linux, a handler without `SA_RESTORER` cannot return, so it never
   runs and the process gets `SIGSEGV` (musl and glibc always set it there).
 - **FP/SIMD parts** (research, Q2). Programs get no FP/SIMD registers until D54 (PR #47),
@@ -2506,10 +2512,14 @@ switch-path cost; this entry follows it.)
   checks the records' shape (AArch64: the FP/SIMD record, an optional `esr_context`, the
   terminator; RISC-V: no extensions) and ignores their values. With D54 the frames save the
   thread's real registers instead: a change to what is written, not to the layout.
-- **Kept out of `Process`.** `Process` is 240 bytes, 256 with its `Arc`, exactly a heap size
-  class: one more word moves every process to the 512-byte class (D59's lesson). So the
-  signals' origins and the trampoline's address live in the out-of-line block that already
-  held the action table (`Caught`), made by a process's first action change. Only a handler
+- **Kept out of `Process`, and the table within 2 KiB.** `Process` is 240 bytes, 256 with its
+  `Arc`, exactly a heap size class: one more word moves every process to the 512-byte class
+  (D59's lesson). So the signals' origins and the trampoline's address live in the
+  out-of-line block that already held the action table (`Caught`), made by a process's first
+  action change. That table was exactly 2048 bytes, the heap's largest block (D30), so the
+  block now keeps the actions field by field with the flags as 32-bit words (every flag the
+  kernel keeps fits): 1816 bytes, still one 2 KiB block, not a frame (independent review's
+  finding). Compile-time checks hold both sizes. Only a handler
   sees an origin, so a signal sent before the process first changed an action reports
   `SI_USER`; they move to each thread with the pending signals when `clone` exists.
 - **Cost** (same Mac, QEMU `-icount`, against `main`'s CI run): every benchmark within

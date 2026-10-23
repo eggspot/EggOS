@@ -187,6 +187,9 @@ mod arch {
     const SELECTORS: usize = 144;
     const OLDMASK: usize = 168;
     const FPSTATE: usize = 184;
+    // Linux's offsets from the frame, written out: what programs read.
+    const _: () = assert!(UCONTEXT == 8 && MCONTEXT == 48 && SIGMASK == 304 && INFO == 312);
+    const _: () = assert!(MCONTEXT + SELECTORS == 192 && MCONTEXT + FPSTATE == 232);
 
     /// The flags a handler starts without, as on Linux: trap, direction and resume.
     const HANDLER_CLEARS: u64 = 1 << 8 | 1 << 10 | 1 << 16;
@@ -352,6 +355,8 @@ mod generic {
     pub const UCONTEXT: usize = INFO_SIZE;
     pub const SIGMASK: usize = UCONTEXT + 40;
     pub const MCONTEXT: usize = UCONTEXT + 176;
+    // Linux's offsets from the frame, written out: what programs read.
+    const _: () = assert!(UCONTEXT == 128 && SIGMASK == 168 && MCONTEXT == 304);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -370,6 +375,8 @@ mod arch {
     const PC: usize = MCONTEXT + 264;
     const PSTATE: usize = MCONTEXT + 272;
     const RESERVED: usize = MCONTEXT + 288;
+    const _: () = assert!(REGS == 312 && SP == 560 && PC == 568 && PSTATE == 576);
+    const _: () = assert!(RESERVED == 592);
     /// The whole frame: the `ucontext_t` is 4560 bytes.
     const SIZE: u64 = (UCONTEXT + 4560) as u64;
     const _: () = assert!(SIZE == 4688);
@@ -511,6 +518,7 @@ mod arch {
     /// The extensions' header at the end of `sc_fpregs`: a reserved word, then the first
     /// extension's magic number and size, 0 for none.
     const EXTENSIONS: usize = WRITTEN - 12;
+    const _: () = assert!(EXTENSIONS == 1076);
 
     /// 16-byte aligned below `top`.
     pub fn place(top: u64) -> u64 {
