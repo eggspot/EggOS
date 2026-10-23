@@ -256,11 +256,12 @@ aarch64_user_test_linux_hello:
     .balign 4
     .global aarch64_user_test_linux_start
 aarch64_user_test_linux_start:
-    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, getrandom
-    // 278. x19 is argc, x20 walks argv and envp, x21 counts the two lists, x22 holds the
+    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, prlimit64
+    // 261, getrandom 278. x19 is argc, x20 walks argv and envp, x21 counts the two lists, x22 holds the
     // process id. Each string is written by writev from one iovec on the stack. Ends with
     // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
-    // getrandom does not fill the 16 bytes below the stack pointer with something not zero.
+    // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
+    // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
     mov     x9, sp
     mov     x0, #255
     tst     x9, #15
@@ -284,6 +285,21 @@ aarch64_user_test_linux_start:
     ldp     x9, x10, [sp, #-16]
     orr     x9, x9, x10
     cbz     x9, 9f
+    mov     x0, #0
+    mov     x1, #3                  // RLIMIT_STACK
+    mov     x2, #0
+    sub     x3, sp, #32
+    mov     x8, #261
+    svc     #0
+    mov     x9, x0
+    mov     x0, #255
+    cbnz    x9, 9f
+    ldp     x9, x10, [sp, #-32]
+    mov     x11, #0x800000
+    cmp     x9, x11
+    b.ne    9f
+    cmn     x10, #1
+    b.ne    9f
     ldr     x19, [sp]
     add     x20, sp, #8
     mov     x21, #2
