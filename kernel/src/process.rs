@@ -28,7 +28,7 @@
 
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
-use crate::memory::{self, FreedFrames};
+use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
 use crate::sync::SpinLock;
@@ -311,7 +311,7 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
-        let mut unmapped = FreedFrames::new();
+        let mut unmapped = FramesToFree::new();
         let frame_offset = self.frame_offset;
         // Every page, not only those in the regions taken out: the HAL's test program has
         // none (roadmap).
@@ -331,6 +331,8 @@ impl<P: Platform> Process<P> {
         // stale, may the frames go to someone else. Even after an error: those unmapped are no
         // longer the address space's.
         if !unmapped.is_empty() {
+            // SAFETY: every frame was pushed with `frame_offset` (above).
+            let chain = unsafe { unmapped.chain(frame_offset) };
             let mut frames = memory::FRAMES.lock();
             let frames = frames
                 .as_mut()
@@ -338,7 +340,7 @@ impl<P: Platform> Process<P> {
             // SAFETY: the frames came from this allocator, linked through its offset (above),
             // and nothing refers to them any more: their entries are cleared and no CPU uses
             // translations of them.
-            unsafe { frames.free_all(unmapped) };
+            unsafe { frames.free_chain(chain) };
         }
         result.map_err(|_| RegionError::Invalid)
     }

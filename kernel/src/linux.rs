@@ -144,7 +144,10 @@ pub fn spawn<P: Platform>(
 /// common paths (a system call that returns, an interrupt) stay short, and everything with a
 /// frame of its own (`write`, the memory calls, ending the process) is out of line. Always
 /// inlined: as a call of its own, the loop's state spills around it (+11% on the system-call
-/// round trip when the memory calls' dispatch made it too large for the inliner).
+/// round trip when the memory calls' dispatch made it too large for the inliner). Called with
+/// interrupts masked, no lock held and no address space active (outside
+/// `AddressSpace::with_active` and `Process::with_user_memory`), so a call may block or pass a
+/// preemption point.
 #[inline(always)]
 pub fn handle<P: Platform>(
     process: &Arc<Process<P>>,
@@ -297,7 +300,7 @@ fn write<P: Platform>(
         }
         P::console_write(bytes);
         written += length as u64;
-        // System calls run with interrupts masked and no lock held (`handle`).
+        // System calls may pass one ([`handle`]).
         thread::preemption_point::<P>();
     }
     Ok(written)
