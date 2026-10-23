@@ -2126,7 +2126,7 @@ switch-path cost; this entry follows it.)
   reports; a larger soft limit is accepted and does not grow it), `fork` copying the limits.
 - **Tests.** Host tests: the defaults, lowering and raising rules, no copy for a change that
   changes nothing, the structure's layout; the three calls through the dispatcher with user
-  memory (upper halves ignored, every error, nothing changed by a failed call, a second
-  process starting from the defaults). QEMU, on aarch64, riscv64 and x86_64: the ELF-started
+  memory (upper halves ignored, every error, nothing changed by a failed call, a new limit
+  kept when the old one cannot be copied out, a second process starting from the defaults). QEMU, on aarch64, riscv64 and x86_64: the ELF-started
   test program calls `prlimit64(0, RLIMIT_STACK, NULL, old)` with the architecture's number
   and checks 8 MiB soft and unlimited hard.

@@ -925,11 +925,18 @@ mod tests {
         );
         // Another process, an unknown resource, memory that is not the program's (or not
         // writable): nothing changes.
+        store(
+            writable + 32,
+            Limit {
+                soft: 64,
+                hard: 256,
+            },
+        );
         assert_eq!(
             call(
                 &process,
                 number::PRLIMIT64,
-                [pid + 1, nofile, 0, writable, 0, 0]
+                [pid + 1, nofile, writable + 32, writable, 0, 0]
             ),
             Errno::ESRCH.result()
         );
@@ -962,6 +969,22 @@ mod tests {
             Some(Limit {
                 soft: 128,
                 hard: 512
+            })
+        );
+        // An old limit that cannot be copied out is `EFAULT`, with the new one set, as Linux.
+        assert_eq!(
+            call(
+                &process,
+                number::PRLIMIT64,
+                [0, nofile, writable + 32, DATA, 0, 0]
+            ),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            process.resource_limits().lock().get(resource::NOFILE),
+            Some(Limit {
+                soft: 64,
+                hard: 256
             })
         );
         // `setrlimit` and `getrlimit` take no null pointer; `prlimit64` takes two, and only

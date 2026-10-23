@@ -215,7 +215,7 @@ pub fn getrlimit<P: Platform>(
     resource: u64,
     limit: u64,
 ) -> Result<u64, Errno> {
-    change(process, 0, resource, None, Some(limit))
+    prlimit(process, 0, resource, None, Some(limit))
 }
 
 /// `setrlimit(resource, limit)`: as `prlimit64(0, resource, limit, NULL)`, but a null `limit`
@@ -225,12 +225,12 @@ pub fn setrlimit<P: Platform>(
     resource: u64,
     limit: u64,
 ) -> Result<u64, Errno> {
-    change(process, 0, resource, Some(limit), None)
+    prlimit(process, 0, resource, Some(limit), None)
 }
 
 /// `prlimit64(pid, resource, new, old)`: sets `resource`'s limits to the `struct rlimit64` at
 /// `new`, unless that is null, and copies the ones it had to `old`, unless that is null. See
-/// [`change`].
+/// [`prlimit`].
 pub fn prlimit64<P: Platform>(
     process: &Process<P>,
     pid: u64,
@@ -239,17 +239,18 @@ pub fn prlimit64<P: Platform>(
     old: u64,
 ) -> Result<u64, Errno> {
     let pointer = |address| (address != 0).then_some(address);
-    change(process, pid, resource, pointer(new), pointer(old))
+    prlimit(process, pid, resource, pointer(new), pointer(old))
 }
 
 /// What the three calls share: sets `resource`'s limits to the structure at `new`, if any, and
 /// copies the ones it had to `old`, if any. As Linux, in this order: `EFAULT` if `new` is not
 /// the program's memory; `ESRCH` for a `pid` other than 0 or the caller's (no other process is
 /// reachable yet); `EINVAL` for a number with no resource or a soft limit above the hard one;
-/// `EPERM` for an open-file limit above [`MAX_OPEN_FILES`] or a raised hard limit; then, with
-/// the new limits set, `EFAULT` if `old` is not the program's writable memory. `pid` (a
+/// `EPERM` for an open-file limit above [`MAX_OPEN_FILES`] or a raised hard limit; `ENOMEM` if
+/// the process's first change finds no memory for its own copy; then, with the new limits set,
+/// `EFAULT` if `old` is not the program's writable memory. `pid` (a
 /// `pid_t`) and `resource` are 32-bit: the registers' upper halves are ignored.
-fn change<P: Platform>(
+fn prlimit<P: Platform>(
     process: &Process<P>,
     pid: u64,
     resource: u64,
