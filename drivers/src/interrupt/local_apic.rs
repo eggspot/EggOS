@@ -9,7 +9,7 @@ const ID_SHIFT: u32 = 24;
 const TASK_PRIORITY: usize = 0x080;
 const END_OF_INTERRUPT: usize = 0x0b0;
 const SPURIOUS_INTERRUPT_VECTOR: usize = 0x0f0;
-const ICR_LOW_WRITE_SENDS: usize = 0x300;
+const ICR_LOW: usize = 0x300;
 const ICR_HIGH: usize = 0x310;
 const LVT_TIMER: usize = 0x320;
 const TIMER_INITIAL_COUNT: usize = 0x380;
@@ -94,10 +94,7 @@ impl<R: RegisterIo> LocalApic<R> {
     /// (SDM 9.4.4.1). Waits until any earlier interrupt was accepted first.
     pub fn send_init_to_others(&self) {
         self.wait_until_sent();
-        self.regs.write32(
-            ICR_LOW_WRITE_SENDS,
-            ICR_ALL_EXCLUDING_SELF | ICR_LEVEL_ASSERT | ICR_DELIVERY_INIT,
-        );
+        self.send(ICR_ALL_EXCLUDING_SELF | ICR_LEVEL_ASSERT | ICR_DELIVERY_INIT);
     }
 
     /// Sends a start-up interrupt to the CPU whose local APIC id is `destination`: a CPU
@@ -106,10 +103,7 @@ impl<R: RegisterIo> LocalApic<R> {
         self.wait_until_sent();
         self.regs
             .write32(ICR_HIGH, u32::from(destination) << ICR_DESTINATION_SHIFT);
-        self.regs.write32(
-            ICR_LOW_WRITE_SENDS,
-            ICR_LEVEL_ASSERT | ICR_DELIVERY_STARTUP | u32::from(page),
-        );
+        self.send(ICR_LEVEL_ASSERT | ICR_DELIVERY_STARTUP | u32::from(page));
     }
 
     /// Sends the interrupt `vector` to the CPU whose local APIC id is `destination` (fixed
@@ -118,14 +112,15 @@ impl<R: RegisterIo> LocalApic<R> {
         self.wait_until_sent();
         self.regs
             .write32(ICR_HIGH, u32::from(destination) << ICR_DESTINATION_SHIFT);
-        self.regs.write32(
-            ICR_LOW_WRITE_SENDS,
-            ICR_LEVEL_ASSERT | ICR_DELIVERY_FIXED | u32::from(vector),
-        );
+        self.send(ICR_LEVEL_ASSERT | ICR_DELIVERY_FIXED | u32::from(vector));
+    }
+
+    fn send(&self, command: u32) {
+        self.regs.write32(ICR_LOW, command);
     }
 
     fn wait_until_sent(&self) {
-        while self.regs.read32(ICR_LOW_WRITE_SENDS) & ICR_SEND_PENDING != 0 {
+        while self.regs.read32(ICR_LOW) & ICR_SEND_PENDING != 0 {
             core::hint::spin_loop();
         }
     }
@@ -174,33 +169,26 @@ mod tests {
     #[test]
     fn init_waits_through_two_pending_reads_then_startup_through_none() {
         let apic = LocalApic::new(FakeRegs::default());
-        apic.regs.script_reads(
-            ICR_LOW_WRITE_SENDS,
-            &[ICR_SEND_PENDING, ICR_SEND_PENDING, 0, 0],
-        );
+        apic.regs
+            .script_reads(ICR_LOW, &[ICR_SEND_PENDING, ICR_SEND_PENDING, 0, 0]);
         apic.send_init_to_others();
         apic.send_startup(7, 0x08);
-        assert_eq!(apic.regs.reads_of(ICR_LOW_WRITE_SENDS), 4);
+        assert_eq!(apic.regs.reads_of(ICR_LOW), 4);
         assert_eq!(
             apic.regs.writes(),
-            vec![
-                (ICR_LOW_WRITE_SENDS, 0xc_4500),
-                (ICR_HIGH, 7 << 24),
-                (ICR_LOW_WRITE_SENDS, 0x4608),
-            ]
+            vec![(ICR_LOW, 0xc_4500), (ICR_HIGH, 7 << 24), (ICR_LOW, 0x4608),]
         );
     }
 
     #[test]
     fn a_fixed_interrupt_names_its_destination_then_its_vector() {
         let apic = LocalApic::new(FakeRegs::default());
-        apic.regs
-            .script_reads(ICR_LOW_WRITE_SENDS, &[ICR_SEND_PENDING, 0]);
+        apic.regs.script_reads(ICR_LOW, &[ICR_SEND_PENDING, 0]);
         apic.send_fixed(2, 0x31);
-        assert_eq!(apic.regs.reads_of(ICR_LOW_WRITE_SENDS), 2);
+        assert_eq!(apic.regs.reads_of(ICR_LOW), 2);
         assert_eq!(
             apic.regs.writes(),
-            vec![(ICR_HIGH, 2 << 24), (ICR_LOW_WRITE_SENDS, 0x4031)]
+            vec![(ICR_HIGH, 2 << 24), (ICR_LOW, 0x4031)]
         );
     }
 
