@@ -653,6 +653,17 @@ fn futex_waits_and_times_out(_: &Startup) -> bool {
         && futex(word, WAKE | PRIVATE, 1, 0, 0) == 0
         && futex(word, WAKE_BITSET | PRIVATE, 1, 0, 0) == -EINVAL
         && futex(word, WAKE | PRIVATE | CLOCK_REALTIME, 1, 0, 0) == -ENOSYS
+        && futex(word, WAIT | PRIVATE | CLOCK_REALTIME, 7, 0, 0) == -ENOSYS
+        && futex(
+            word,
+            WAIT | PRIVATE | CLOCK_REALTIME,
+            7,
+            bad_nanoseconds.as_ptr() as usize,
+            0,
+        ) == -EINVAL
+        && futex(word, WAIT_BITSET | PRIVATE, 8, past.as_ptr() as usize, 1) == -EAGAIN
+        && futex(0, WAKE | PRIVATE, 1, 0, 0) == 0
+        && futex(0, WAKE, 1, 0, 0) == -EFAULT
         && futex(word, UNKNOWN, 0, 0, 0) == -ENOSYS
         && futex(0, WAIT | PRIVATE, 0, 0, 0) == -EFAULT
 }

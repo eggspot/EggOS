@@ -2104,14 +2104,9 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
 fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'static str> {
     use linux::futex::{self, Key};
     static QUEUED: AtomicUsize = AtomicUsize::new(0);
-    const KEY: Key = Key {
-        space: u32::MAX,
-        address: 0x1000,
-    };
-    const OTHER_SPACE: Key = Key {
-        space: u32::MAX - 1,
-        ..KEY
-    };
+    const KEY: Key = Key::new(u32::MAX, 0x1000, false);
+    const OTHER_SPACE: Key = Key::new(u32::MAX - 1, 0x1000, false);
+    const SHARED: Key = Key::new(u32::MAX, 0x1000, true);
     let millisecond = P::clock_frequency() / 1000;
     let wait_forever = |bitset: u32| {
         futex::wait::<P>(KEY, bitset, u64::MAX, || {
@@ -2137,6 +2132,9 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
     }
     if futex::wake::<P>(OTHER_SPACE, u32::MAX, 3) != 0 {
         return Err("a futex wake woke a waiter on another address space's word");
+    }
+    if futex::wake::<P>(SHARED, u32::MAX, 3) != 0 {
+        return Err("a shared futex wake woke private waiters on the same word");
     }
     if futex::wake::<P>(KEY, 0b100, 0) != 0 {
         return Err("a futex wake woke more waiters than its limit");

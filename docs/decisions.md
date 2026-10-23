@@ -3721,3 +3721,56 @@ the license, by an explicit instruction recorded here.
 - **D66.** Doc comments on private items that #80–#81 added are removed (in a commit of
   their own); their content is in D85 and D86 or in the names (`null_ended_strings`,
   `ARGUMENTS_AFTER_PROGRAM_NAME`, `arguments_after_path`).
+
+## D89 `futex`: `FUTEX_WAIT`, `FUTEX_WAKE` and their bitset forms, on a timed park in the scheduler — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** Threads are M6's next step, and every thread library is built on `futex`: Rust's
+  std (its `Mutex`, `Condvar`, `RwLock`, `Once` and thread parking), musl's locks, `once`,
+  `pthread_join` and semaphores, and the `CLONE_CHILD_CLEARTID` wake at thread exit. It comes
+  before `clone`, which needs it.
+- **What.** `futex` with `FUTEX_WAIT` (relative timeout on the monotonic clock),
+  `FUTEX_WAKE`, `FUTEX_WAIT_BITSET` (absolute timeout on the monotonic clock, or the realtime
+  clock with `FUTEX_CLOCK_REALTIME`) and `FUTEX_WAKE_BITSET`, with and without
+  `FUTEX_PRIVATE_FLAG`. Waiters wake in the order they began to wait. The other operations
+  are `ENOSYS` for now.
+- **Linux's rules** (research, from the man pages, LWN and musl's and std's sources): a
+  wait's timeout is read and checked first (`EFAULT`, then `EINVAL` for negative seconds or
+  nanoseconds outside 0–999999999); then the operation: an unknown one, or
+  `FUTEX_CLOCK_REALTIME` on anything but `FUTEX_WAIT_BITSET`, is `ENOSYS` (Linux 5.13 reverted
+  the 4.5 change that allowed it with `FUTEX_WAIT`); a bitset of 0 or a word not 4-byte
+  aligned `EINVAL`; then the word: unreadable `EFAULT`, another value `EAGAIN`, and only then
+  the deadline (`ETIMEDOUT`), so a past deadline with the wrong value is `EAGAIN`. The word
+  and the value are compared as `u32`. A wake's count is an `int`, and 0 or less still wakes
+  one waiter, as Linux does. A private wake never touches memory (only an address past user
+  space is `EFAULT`); a shared one needs the word readable. Private and shared waits on one
+  word are kept apart, as on Linux, where glibc and musl wait shared on the
+  `CLONE_CHILD_CLEARTID` word and a private wake must not reach them.
+- **How.** A futex is keyed by its process's id (the address space, while a process has one
+  thread and shares no memory), its address and whether it is shared. Waiters are linked into
+  one of 256 buckets, each a spin lock over a list of waiters that live on the waiting
+  threads' stacks, so nothing allocates. A waiter checks the word with its bucket locked, so a
+  wake that changes the word first cannot be missed. It waits on a new scheduler primitive,
+  `thread::Parker`: a thread with a deadline sleeps with its CPU's sleepers and `unpark` takes
+  it out of them early; a thread without one is held by the `Parker` alone, off every list. A
+  waker unlinks the waiter and unparks it with the bucket locked, and the woken thread takes
+  that lock before its stack frame goes, so a waker never touches a waiter that is gone.
+- **Signals.** A waiting thread cannot be interrupted yet: only its own process could send it
+  a signal, and its only thread is waiting. With `clone`, a handler that runs ends the wait
+  with `EINTR` (musl and std retry), and restarting waits come later.
+- **Cost.** No existing benchmark moves (the system-call round trips are unchanged). New:
+  `futex_wake_empty` (a wake nobody waits for: 20, 27 and 25 instructions on aarch64, riscv64
+  and x86_64, against 15, 13 and 14 for a wait queue's) and `futex_wait_wake_round_trip` (two
+  kernel threads handing a turn back and forth through two futexes: 473, 567 and 480, against
+  218, 222 and 206 for `thread_wait_wake_round_trip` with wait queues; the difference is the
+  bucket locks and the separate park). Measured while building it: parks without a deadline
+  held outside the sleepers list and in their own small closure (−10%), and the shared bit
+  folded into the key's address-space word (a third field cost +3–5%).
+- **Tests.** Kernel self-test `futex_waiters_wake_in_order_and_time_out` (three kernel-thread
+  waiters with different bitsets: a wake's limit and bitset, FIFO order, other address
+  spaces' and shared wakes left alone, `EAGAIN` from the check, `ETIMEDOUT` never early, a
+  timed-out waiter not left queued, an unpark before the park); the runtime test program's
+  check of every error above from user mode on aarch64, riscv64 and x86_64; a host test of
+  the wake count.
+- **Next.** `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` (musl's condition variables need
+  `FUTEX_REQUEUE`), then `clone` for threads with `CLONE_CHILD_CLEARTID`'s shared wake and the
+  robust list. Later: `FUTEX_WAKE_OP`, the PI operations, `futex_waitv`, and keys by physical
+  page for memory shared between processes.

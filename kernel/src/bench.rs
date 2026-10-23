@@ -320,24 +320,15 @@ fn thread_wait_wake_round_trip<P: Platform>(n: u64) {
 }
 
 fn futex_wake_empty<P: Platform>(n: u64) {
-    const KEY: Key = Key {
-        space: u32::MAX,
-        address: 0x1000,
-    };
+    const KEY: Key = Key::new(u32::MAX, 0x1000, false);
     for _ in 0..n {
         black_box(futex::wake::<P>(black_box(KEY), u32::MAX, 1));
     }
 }
 
 fn futex_wait_wake_round_trip<P: Platform>(n: u64) {
-    const BOOT: Key = Key {
-        space: u32::MAX,
-        address: 0x1000,
-    };
-    const OTHER: Key = Key {
-        address: 0x2000,
-        ..BOOT
-    };
+    const BOOT: Key = Key::new(u32::MAX, 0x1000, false);
+    const OTHER: Key = Key::new(u32::MAX, 0x2000, false);
     static TURN: AtomicU64 = AtomicU64::new(0);
     fn wait_for_turn<P: Platform>(key: Key, turn: u64) {
         while TURN.load(Ordering::Relaxed) != turn {

@@ -27,17 +27,26 @@ const WORD_SIZE: u64 = 4;
 const BUCKET_COUNT: usize = 256;
 
 /// The word a waiter waits on: the address space it is in, by its process's id while a
-/// process has one thread and no memory shared with another, and its user address.
+/// process has one thread and no memory shared with another, its user address, and whether
+/// the futex is shared (no `FUTEX_PRIVATE_FLAG`): as on Linux, private and shared waits on one
+/// word are apart, and a wake reaches only its own kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
-    pub space: u32,
-    pub address: u64,
+    space_and_kind: u64,
+    address: u64,
 }
 
 impl Key {
+    pub const fn new(space: u32, address: u64, shared: bool) -> Self {
+        Self {
+            space_and_kind: (space as u64) << 1 | shared as u64,
+            address,
+        }
+    }
+
     fn bucket(self) -> &'static SpinLock<Bucket> {
         let mixed =
-            (u64::from(self.space) << 32 ^ self.address >> 2).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            (self.space_and_kind << 32 ^ self.address >> 2).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         &BUCKETS[(mixed >> 56) as usize % BUCKET_COUNT]
     }
 }
@@ -180,10 +189,11 @@ pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
 }
 
 /// `futex(uaddr, op, val, timeout, uaddr2, val3)`: `FUTEX_WAIT`, `FUTEX_WAKE`,
-/// `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, private or not (the same while no memory is
-/// shared between processes), with Linux's checks and errors. A waiting thread cannot be
-/// interrupted by a signal yet: only its own process could send one, and its only thread is
-/// waiting. The other operations are `ENOSYS`.
+/// `FUTEX_WAIT_BITSET` and `FUTEX_WAKE_BITSET`, private or shared, with Linux's checks in
+/// Linux's order: a wait's timeout first, then the operation and its flags (`ENOSYS`), the
+/// bitset and the word's alignment (`EINVAL`), the word itself (`EFAULT`, then `EAGAIN`). A
+/// waiting thread cannot be interrupted by a signal yet: only its own process could send one,
+/// and its only thread is waiting. The other operations are `ENOSYS`.
 pub fn futex<P: Platform>(
     process: &Process<P>,
     address: u64,
@@ -194,53 +204,46 @@ pub fn futex<P: Platform>(
 ) -> Result<u64, Errno> {
     let operation = operation as u32;
     let command = operation & !(op::PRIVATE_FLAG | op::CLOCK_REALTIME);
-    let realtime = operation & op::CLOCK_REALTIME != 0;
+    let deadline = match (command, timeout) {
+        (op::WAIT | op::WAIT_BITSET, 0) => u64::MAX,
+        (op::WAIT, _) => time::deadline_after::<P>(process, timeout)?,
+        (op::WAIT_BITSET, _) => time::deadline_at::<P>(process, timeout)?,
+        _ => u64::MAX,
+    };
     let bitset = match command {
         op::WAIT | op::WAKE => MATCH_ANY,
         op::WAIT_BITSET | op::WAKE_BITSET => bitset as u32,
         _ => return Err(Errno::ENOSYS),
     };
-    if realtime && !matches!(command, op::WAIT | op::WAIT_BITSET) {
+    if operation & op::CLOCK_REALTIME != 0 && command != op::WAIT_BITSET {
         return Err(Errno::ENOSYS);
     }
-    if !address.is_multiple_of(WORD_SIZE) {
+    if bitset == 0 || !address.is_multiple_of(WORD_SIZE) {
         return Err(Errno::EINVAL);
     }
-    if bitset == 0 {
-        return Err(Errno::EINVAL);
-    }
-    let key = Key {
-        space: process.id().get(),
-        address,
-    };
+    let shared = operation & op::PRIVATE_FLAG == 0;
+    let key = Key::new(process.id().get(), address, shared);
     match command {
         op::WAKE | op::WAKE_BITSET => {
             if address > <P::PageTableFormat as Format>::USER_END - WORD_SIZE {
                 return Err(Errno::EFAULT);
             }
-            if operation & op::PRIVATE_FLAG == 0 {
+            if shared {
                 read_word(process, address)?;
             }
-            Ok(u64::from(wake::<P>(
-                key,
-                bitset,
-                (value as u32 as i32).max(1) as u32,
-            )))
+            Ok(u64::from(wake::<P>(key, bitset, wake_limit(value))))
         }
-        _ => {
-            let deadline = match timeout {
-                0 => u64::MAX,
-                _ if command == op::WAIT => time::deadline_after::<P>(process, timeout)?,
-                _ => time::deadline_at::<P>(process, timeout)?,
-            };
-            wait::<P>(key, bitset, deadline, || {
-                match read_word(process, address)? == value as u32 {
-                    true => Ok(()),
-                    false => Err(Errno::EAGAIN),
-                }
-            })
-        }
+        _ => wait::<P>(key, bitset, deadline, || {
+            match read_word(process, address)? == value as u32 {
+                true => Ok(()),
+                false => Err(Errno::EAGAIN),
+            }
+        }),
     }
+}
+
+fn wake_limit(value: u64) -> u32 {
+    (value as u32 as i32).max(1) as u32
 }
 
 fn read_word<P: Platform>(process: &Process<P>, address: u64) -> Result<u32, Errno> {
@@ -249,4 +252,18 @@ fn read_word<P: Platform>(process: &Process<P>, address: u64) -> Result<u32, Err
         .read_user_memory(address, &mut word)
         .map_err(|_| Errno::EFAULT)?;
     Ok(u32::from_ne_bytes(word))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wake_of_zero_or_fewer_waiters_wakes_one_as_on_linux() {
+        assert_eq!(wake_limit(0), 1);
+        assert_eq!(wake_limit(u64::from(u32::MAX)), 1);
+        assert_eq!(wake_limit(0xffff_ffff_0000_0003), 3);
+        assert_eq!(wake_limit(i32::MAX as u64), i32::MAX as u32);
+        assert_eq!(wake_limit(1 << 31), 1);
+    }
 }
