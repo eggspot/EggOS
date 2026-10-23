@@ -92,8 +92,16 @@ Every change is judged against it:
 - **Measure, don't guess.** Every hot path (syscalls, scheduling, interrupts, page faults, IPC, I/O,
   memory allocation, graphics, the compatibility layers' translation paths) gets a benchmark when it is
   written. A PR that touches a hot path states before/after numbers from the same machine.
-- **Never merge a performance regression.** A slower result blocks the PR until it is fixed or the owner
-  explicitly accepts it.
+- **Never merge a performance regression without a reason that holds up.** A slower result blocks the
+  PR until it is fixed, or until a research subagent concludes the cost is unavoidable. That means the
+  price of correctness, security or a feature EggOS must have, already cut to the minimum, and compared
+  with how Linux, Windows and macOS pay for the same thing. Then:
+  - the PR records the reasoning under "Decided by research";
+  - docs/decisions.md records the accepted cost;
+  - the baseline lines for exactly the affected benchmarks are updated in the same PR;
+  - the PR merges.
+
+  This doesn't wait for the owner, who can overrule it later. (Owner, 2026-10-23.)
 - **Design for speed from the start**, not as a later optimisation pass: choose data structures and
   algorithms for their real cost (cache misses, allocations, locks, copies, context switches), avoid
   allocation and locking on hot paths, prefer zero-copy, and keep per-CPU state per-CPU.
@@ -151,8 +159,9 @@ The owner does not merge PRs by hand. After opening a PR, in the same session:
 
 An open question is never a reason to leave a PR unmerged: answer it with a research subagent (see
 "Open questions" below), record the answer in the PR under "Decided by research", and merge.
-Never auto-merge a PR that needs the owner: one that accepts a performance or UX regression, touches
-credentials or money, or goes against a rule the owner stated. Those wait for the owner's OK. A PR that
+Never auto-merge a PR that needs the owner: one that touches credentials or money, or goes against a
+rule the owner stated. Those wait for the owner's OK. A performance or UX regression does not need
+the owner: settle it with research as "Never merge a performance regression" says. A PR that
 changes the license is never merged at all (see License).
 
 ## Releases: ship every major feature, don't ask
