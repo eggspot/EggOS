@@ -454,6 +454,49 @@ aarch64_user_test_linux_poll:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_linux_signals
+aarch64_user_test_linux_signals:
+    // Linux's generic numbers: exit_group 94, kill 129, tgkill 131, rt_sigprocmask 135,
+    // rt_sigpending 136, getpid 172. The signal set is at sp-16, the pending set at sp-32.
+    mov     x0, #0
+    mov     x1, #17                 // SIGCHLD, ignored
+    mov     x8, #129
+    svc     #0
+    cbnz    x0, 9f
+    mov     x9, #(1 << 9)           // SIGUSR1
+    str     x9, [sp, #-16]
+    mov     x0, #0                  // SIG_BLOCK
+    sub     x1, sp, #16
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+    cbnz    x0, 9f
+    mov     x8, #172
+    svc     #0
+    mov     x1, x0
+    mov     x2, #10                 // SIGUSR1
+    mov     x8, #131
+    svc     #0
+    cbnz    x0, 9f
+    sub     x0, sp, #32
+    mov     x1, #8
+    mov     x8, #136
+    svc     #0
+    cbnz    x0, 9f
+    ldur    x9, [sp, #-32]
+    cmp     x9, #(1 << 9)
+    b.ne    9f
+    mov     x0, #1                  // SIG_UNBLOCK: SIGUSR1 ends the program here
+    sub     x1, sp, #16
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #135
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -548,6 +591,7 @@ unsafe extern "C" {
     static aarch64_user_test_stack_growth: u8;
     static aarch64_user_test_linux_thread_pointer: u8;
     static aarch64_user_test_linux_poll: u8;
+    static aarch64_user_test_linux_signals: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -607,6 +651,7 @@ pub(super) fn user_test_program() -> TestProgram {
         stack_growth: (&raw const aarch64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const aarch64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const aarch64_user_test_linux_poll) as usize - start,
+        linux_signals: (&raw const aarch64_user_test_linux_signals) as usize - start,
     }
 }
 

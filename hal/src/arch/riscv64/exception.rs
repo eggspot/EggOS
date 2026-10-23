@@ -573,6 +573,49 @@ riscv64_user_test_linux_poll:
     li      a7, 94
     ecall
 8:  j       8b
+    .global riscv64_user_test_linux_signals
+riscv64_user_test_linux_signals:
+    // Linux's generic numbers: exit_group 94, kill 129, tgkill 131, rt_sigprocmask 135,
+    // rt_sigpending 136, getpid 172. The signal set is at sp-16, the pending set at sp-32.
+    li      a0, 0
+    li      a1, 17                  // SIGCHLD, ignored
+    li      a7, 129
+    ecall
+    bnez    a0, 9f
+    li      t0, 1 << 9              // SIGUSR1
+    sd      t0, -16(sp)
+    li      a0, 0                   // SIG_BLOCK
+    addi    a1, sp, -16
+    li      a2, 0
+    li      a3, 8
+    li      a7, 135
+    ecall
+    bnez    a0, 9f
+    li      a7, 172
+    ecall
+    mv      a1, a0
+    li      a2, 10                  // SIGUSR1
+    li      a7, 131
+    ecall
+    bnez    a0, 9f
+    addi    a0, sp, -32
+    li      a1, 8
+    li      a7, 136
+    ecall
+    bnez    a0, 9f
+    ld      t0, -32(sp)
+    li      t1, 1 << 9
+    bne     t0, t1, 9f
+    li      a0, 1                   // SIG_UNBLOCK: SIGUSR1 ends the program here
+    addi    a1, sp, -16
+    li      a2, 0
+    li      a3, 8
+    li      a7, 135
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -676,6 +719,7 @@ unsafe extern "C" {
     static riscv64_user_test_stack_growth: u8;
     static riscv64_user_test_linux_thread_pointer: u8;
     static riscv64_user_test_linux_poll: u8;
+    static riscv64_user_test_linux_signals: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -728,6 +772,7 @@ pub(super) fn user_test_program() -> TestProgram {
         stack_growth: (&raw const riscv64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const riscv64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const riscv64_user_test_linux_poll) as usize - start,
+        linux_signals: (&raw const riscv64_user_test_linux_signals) as usize - start,
     }
 }
 

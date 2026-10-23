@@ -189,6 +189,12 @@ pub struct TestProgram {
     /// remaining time back. x86_64 polls first with `poll`, the others with `ppoll`. Then
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_poll: usize,
+    /// A Linux program that sends itself signals (D63): `kill(0, SIGCHLD)`, which is ignored,
+    /// then blocks `SIGUSR1`, sends it with `tgkill` to its own id, checks that
+    /// `rt_sigpending` reports it, and unblocks it, which must end the program with
+    /// `SIGUSR1` before `rt_sigprocmask` returns. `exit_group(1)` if any call failed or
+    /// returned.
+    pub linux_signals: usize,
 }
 
 impl TestProgram {
