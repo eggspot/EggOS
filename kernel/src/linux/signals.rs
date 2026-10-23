@@ -229,7 +229,7 @@ fn uncharge(queued: &AtomicU64, entries: usize) {
     queued.fetch_sub(entries as u64, Ordering::Relaxed);
 }
 
-/// How many records a drained queue keeps room for (48 bytes each).
+/// How many records ([`KEPT_INFO_SIZE`] bytes each) a drained queue keeps room for.
 const DRAINED_QUEUE_CAPACITY: usize = 32;
 
 /// The bytes of a `siginfo_t` the kernel keeps with a pending signal: `si_signo`, `si_errno`,

@@ -2902,7 +2902,7 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
 - **For later.** `pselect6` with the same handoff (M7, with `select`); signals sent during a
   wait waking it, once a sender from outside the thread exists.
 
-## D72 Review of D68–D71: `ppoll` with a read-only timeout fails with `EINTR`; `rt_sigtimedwait`'s order; kernel-raised signals in the order raised; a drained queue freed — Decided by the build loop
+## D72 Review of D68–D71: `ppoll` with a read-only timeout fails with `EINTR`; `rt_sigtimedwait`'s order; kernel-raised signals in the order raised; a drained queue shrunk — Decided by the build loop
 - **Why.** The review step after three feature PRs (#62, #64, #65), with a fresh read by an
   independent reviewer. The error orders of the queueing calls, `rt_sigtimedwait` and
   `rt_sigsuspend`, the masks the frames save (the first the mask from before the call, the
@@ -2939,5 +2939,4 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   with `EINTR`, the mask restored and the timeout unchanged; kernel-raised `SIGSEGV` then
   `SIGILL` are delivered in that order; `rt_sigtimedwait` takes `SIGILL` (sent) before
   `SIGSEGV` (kernel); the queue's capacity drops to at most 32 once drained, by taking or
-  discarding. Each
-  fails without its fix. `cargo xtask ci` passes on aarch64, riscv64 and x86_64.
+  discarding. Each fails without its fix. `cargo xtask ci` passes on aarch64, riscv64 and x86_64.
