@@ -71,11 +71,47 @@ pub const ARCHES: &[Arch] = &[
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 
 /// Crates compiled for the architectures' Linux targets: our own Linux programs.
-const USER_CRATES: &[&str] = &["eggos-runtime", "eggos-selftest"];
+const USER_CRATES: &[&str] = &["eggos-runtime", "eggos-selftest", "eggos-std-selftest"];
 
-/// The program the `qemu-test` kernels run (D85), and the variable that names it to them.
-const USER_SELFTEST: &str = "eggos-selftest";
-const USER_SELFTEST_VARIABLE: &str = "EGGOS_USERLAND_SELFTEST";
+/// A Linux program built from our own Rust source that the `qemu-test` kernels run.
+struct UserProgram {
+    package: &'static str,
+    /// The environment variable that names the program's path to the kernel build.
+    variable: &'static str,
+    /// The flags that replace `.cargo/config.toml`'s for the target, if any.
+    rustflags: Option<&'static [&'static str]>,
+}
+
+/// The programs the `qemu-test` kernels run: one on our own runtime (D85), one on Rust's
+/// standard library and musl (D86).
+const USER_PROGRAMS: [UserProgram; 2] = [
+    UserProgram {
+        package: "eggos-selftest",
+        variable: "EGGOS_USERLAND_SELFTEST",
+        rustflags: None,
+    },
+    UserProgram {
+        package: "eggos-std-selftest",
+        variable: "EGGOS_USERLAND_STD_SELFTEST",
+        rustflags: Some(STD_PROGRAM_RUSTFLAGS),
+    },
+];
+
+/// A program on Rust's standard library links the toolchain's own musl and start files,
+/// statically, as a static PIE where the target has one, with no debug information or
+/// symbols (D84, D86).
+const STD_PROGRAM_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "link-self-contained=yes",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "relocation-model=pie",
+    "-C",
+    "debuginfo=0",
+    "-C",
+    "strip=symbols",
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -196,8 +232,8 @@ fn clippy_targets() -> Result<(), String> {
         }
         args.extend(["--", "-D", "warnings"]);
         cargo(&args)?;
-        let program = build_user_selftest(arch)?;
-        let program = program.to_string_lossy();
+        let programs = build_user_programs(arch)?;
+        let env = program_variables(&programs);
         for features in [
             &[][..],
             &["--features", "eggos-kernel/qemu-test"],
@@ -210,25 +246,23 @@ fn clippy_targets() -> Result<(), String> {
             }
             args.extend(features);
             args.extend(["--", "-D", "warnings"]);
-            cargo_with_env(&args, &[(USER_SELFTEST_VARIABLE, &program)])?;
+            cargo_with_env(&args, &env)?;
         }
     }
     Ok(())
 }
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
-/// any, and returns its path. Every kernel feature is a test kernel's, which runs the program
-/// [`build_user_selftest`] builds first.
+/// any, and returns its path. Every kernel feature is a test kernel's, which runs the programs
+/// [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let mut args = vec!["build", "-p", "eggos-kernel", "--target", arch.target];
-    let mut env = Vec::new();
-    let program;
+    let mut programs = Vec::new();
     if let Some(feature) = feature {
         args.extend(["--features", feature]);
-        program = build_user_selftest(arch)?;
-        env.push((USER_SELFTEST_VARIABLE, program.to_string_lossy()));
+        programs = build_user_programs(arch)?;
     }
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+    let env = program_variables(&programs);
     build_executable(
         &args,
         &env,
@@ -236,14 +270,32 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
     )
 }
 
-/// Builds our own Linux program that the test kernels run, `userland/selftest`, for `arch`'s
-/// Linux target (release profile), and returns its path.
-pub fn build_user_selftest(arch: &Arch) -> Result<std::path::PathBuf, String> {
-    build_executable(
-        &["build", "-p", USER_SELFTEST, "--target", arch.user_target],
-        &[],
-        &format!("{USER_SELFTEST} executable for {}", arch.user_target),
-    )
+/// Builds [`USER_PROGRAMS`] for `arch`'s Linux target (release profile) and returns each
+/// one's variable and path.
+pub fn build_user_programs(arch: &Arch) -> Result<Vec<(&'static str, String)>, String> {
+    USER_PROGRAMS
+        .iter()
+        .map(|program| {
+            let rustflags = program.rustflags.map(|flags| flags.join("\x1f"));
+            let env: Vec<(&str, &str)> = rustflags
+                .iter()
+                .map(|flags| ("CARGO_ENCODED_RUSTFLAGS", flags.as_str()))
+                .collect();
+            let path = build_executable(
+                &["build", "-p", program.package, "--target", arch.user_target],
+                &env,
+                &format!("{} executable for {}", program.package, arch.user_target),
+            )?;
+            Ok((program.variable, path.to_string_lossy().into_owned()))
+        })
+        .collect()
+}
+
+fn program_variables<'a>(programs: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    programs
+        .iter()
+        .map(|(variable, path)| (*variable, path.as_str()))
+        .collect()
 }
 
 /// Runs `cargo <args> --release` with `env` and returns the path cargo reports for the last

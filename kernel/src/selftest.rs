@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 37] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 38] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -164,6 +164,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 37] {
         (
             "linux_programs_built_from_rust_source_start",
             linux_programs_built_from_rust_source_start::<P>,
+        ),
+        (
+            "linux_programs_built_with_rust_std_run",
+            linux_programs_built_with_rust_std_run::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1697,34 +1701,81 @@ fn linux_programs_move_and_discard_memory<P: Platform>(
     })
 }
 
-/// The program built from our own Rust source, `userland/selftest`, for this architecture:
-/// `cargo xtask` builds it and names it in `EGGOS_USERLAND_SELFTEST` when it builds a kernel
-/// with `qemu-test`. Other kernels carry none.
-#[cfg(all(target_os = "none", feature = "qemu-test"))]
-const RUST_PROGRAM: Option<&[u8]> = Some(include_bytes!(env!(
-    "EGGOS_USERLAND_SELFTEST",
-    "build kernels with qemu-test through cargo xtask, which builds userland/selftest first"
-)));
-#[cfg(not(all(target_os = "none", feature = "qemu-test")))]
-const RUST_PROGRAM: Option<&[u8]> = None;
+/// A Linux program built from our own Rust source for this architecture, which `cargo xtask`
+/// builds and names in an environment variable when it builds a kernel with `qemu-test`
+/// (D85, D86). Other kernels carry none.
+struct RustProgram {
+    /// The program's image, if the kernel carries it.
+    image: Option<&'static [u8]>,
+    /// The path it starts with, which is also its first argument.
+    path: &'static [u8],
+    /// Its other arguments.
+    arguments: &'static [&'static [u8]],
+}
 
-/// The path, sole argument and environment [`RUST_PROGRAM`] starts with, as Linux starts
-/// `init`.
-const RUST_PROGRAM_PATH: &[u8] = b"/eggos-selftest";
+/// `userland/selftest`: our own runtime, no C library (D85).
+const NO_STD_PROGRAM: RustProgram = RustProgram {
+    #[cfg(all(target_os = "none", feature = "qemu-test"))]
+    image: Some(include_bytes!(env!(
+        "EGGOS_USERLAND_SELFTEST",
+        "build kernels with qemu-test through cargo xtask, which builds userland/selftest first"
+    ))),
+    #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
+    image: None,
+    path: b"/eggos-selftest",
+    arguments: &[],
+};
+
+/// `userland/std-selftest`: Rust's standard library, linked with musl (D86).
+const STD_PROGRAM: RustProgram = RustProgram {
+    #[cfg(all(target_os = "none", feature = "qemu-test"))]
+    image: Some(include_bytes!(env!(
+        "EGGOS_USERLAND_STD_SELFTEST",
+        "build kernels with qemu-test through cargo xtask, which builds userland/std-selftest first"
+    ))),
+    #[cfg(not(all(target_os = "none", feature = "qemu-test")))]
+    image: None,
+    path: b"/eggos-std-selftest",
+    arguments: &[b"first", b"second"],
+};
+
+/// The environment both programs start with, as Linux starts `init`.
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
-/// A program built from our own Rust source for Rust's Linux target, a static PIE, must start
-/// as on Linux, relocate itself, and find each call a C library's and Rust's standard
-/// library's start-up make answered as Linux answers it: [`RUST_PROGRAM`] must exit with 0,
-/// having written its line, which the QEMU runner requires (a failed check writes its name).
-/// It runs twice, and everything the second run took must be freed. A kernel without the
-/// program passes.
+/// [`NO_STD_PROGRAM`], a static PIE, must start as on Linux, relocate itself, and find each
+/// call a C library's and Rust's standard library's start-up make answered as Linux answers
+/// it.
 fn linux_programs_built_from_rust_source_start<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    let Some(image) = RUST_PROGRAM else {
+    run_rust_program(memory, &NO_STD_PROGRAM)
+}
+
+/// [`STD_PROGRAM`] must get through musl's and Rust's standard library's start-up and run
+/// what a typical Rust program uses: the heap, a `HashMap` with random keys, the clocks,
+/// sleeping and standard output.
+fn linux_programs_built_with_rust_std_run<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM)
+}
+
+/// Runs `program` twice: it must exit with 0 both times, having written its line, which the
+/// QEMU runner requires (a failed check writes its name), and everything the second run took
+/// must be freed. A kernel without the program passes.
+fn run_rust_program<P: Platform>(
+    memory: &mut Memory<P>,
+    program: &RustProgram,
+) -> Result<(), &'static str> {
+    let Some(image) = program.image else {
         return Ok(());
     };
+    let mut arguments = [program.path; 3];
+    let argument_count = 1 + program.arguments.len();
+    let arguments = arguments
+        .get_mut(..argument_count)
+        .ok_or("a Rust program with too many arguments")?;
+    arguments[1..].copy_from_slice(program.arguments);
     let mut before = None;
     for round in 0..2 {
         if round == 1 {
@@ -1738,8 +1789,8 @@ fn linux_programs_built_from_rust_source_start<P: Platform>(
         let context = exec::load(
             &mut process,
             image,
-            RUST_PROGRAM_PATH,
-            &[RUST_PROGRAM_PATH],
+            program.path,
+            arguments,
             &RUST_PROGRAM_ENVIRONMENT,
         )
         .map_err(|_| "the loader refused the Rust program's image")?;

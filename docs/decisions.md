@@ -3644,3 +3644,30 @@ the license, by an explicit instruction recorded here.
   program's line on every architecture; a deliberately wrong expectation fails the boot naming
   the check.
 - **Next.** D84's std program, with `AT_MINSIGSTKSZ`.
+
+## D86 A program built with Rust's standard library and musl runs in the QEMU self-tests — Decided by the build loop; carries out D84's plan
+- **What.** `userland/std-selftest` (`eggos-std-selftest`) is an ordinary Rust program on
+  Rust's standard library, built for the `*-unknown-linux-musl` targets and linked statically
+  with the toolchain's own musl and start files. It checks what a typical Rust program uses
+  from its first line: its arguments and environment, a `HashMap` (random keys from
+  `getrandom`), the heap (a 2 MiB vector and many small strings), a boxed trait object, float
+  formatting, `Instant` across a 2 ms `thread::sleep`, and the realtime clock; it writes
+  `EGGOS-USER: a std program built from Rust source ran its checks` and exits with 0, or names
+  each failed check and exits with 1. Before `main` it goes through musl's start-up (`__libc_start_main`,
+  the thread pointer, `set_tid_address`, the stack protector's canary from `AT_RANDOM`) and
+  std's (descriptors 0–2 checked with `poll`, `SIGPIPE` ignored, the main thread's stack found
+  and a guarded alternate signal stack mapped for stack-overflow reports).
+- **How it is built.** `cargo xtask` builds it with `CARGO_ENCODED_RUSTFLAGS` replacing
+  `.cargo/config.toml`'s flags for the target (D85's `link-self-contained=no` is for our own
+  runtime): `-C link-self-contained=yes -C target-feature=+crt-static -C relocation-model=pie
+  -C debuginfo=0 -C strip=symbols`. x86_64's target makes a static PIE and AArch64's and
+  RISC-V's a static executable at a fixed address, so the self-tests load both kinds through
+  D51's loader. Each is about 370–430 KiB. Like D85's program it is named to the `qemu-test`
+  kernel build in an environment variable (`EGGOS_USERLAND_STD_SELFTEST`) and embedded only
+  there; release kernels are unchanged, and the program is never committed (D84).
+- **Tests.** The self-test `linux_programs_built_with_rust_std_run` runs it twice (the second
+  run must free every frame it took), and the QEMU runner requires its line on aarch64,
+  riscv64 and x86_64. A deliberately wrong expectation fails the boot naming the check. On the
+  host it builds as the same program, so `cargo clippy` and `cargo build` cover it.
+- **Next.** `AT_MINSIGSTKSZ` in the auxiliary vector (std then sizes its alternate stack from
+  it rather than from `SIGSTKSZ`); C programs linked with musl; `init` as pid 1 (M10).
