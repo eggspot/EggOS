@@ -35,7 +35,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 23] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 24] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -79,6 +79,10 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 23] {
             process_syscall_round_trip::<P>,
         ),
         ("process_switch_round_trip", process_switch_round_trip::<P>),
+        (
+            "fp_process_switch_round_trip",
+            fp_process_switch_round_trip::<P>,
+        ),
         ("linux_syscall_round_trip", linux_syscall_round_trip::<P>),
         ("linux_exec_load", linux_exec_load::<P>),
         ("linux_page_fault", linux_page_fault::<P>),
@@ -492,6 +496,45 @@ fn process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
+/// `process_switch_round_trip` with programs that use their FP/SIMD registers (D54), each
+/// checking every one after each call ([`TestProgram::fp_registers`]): per iteration also two
+/// saves and two loads of FP/SIMD registers, and the program's checks. Compare with
+/// `process_switch_round_trip`.
+fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    let mut threads = [None, None];
+    for (number, thread) in threads.iter_mut().enumerate() {
+        // SAFETY: as in `process_syscall_round_trip`.
+        let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+            .expect("the test program fits in memory");
+        let context = Process::<P>::test_program_context(|program| program.fp_registers);
+        let mut calls = 0;
+        *thread = process::spawn::<P, _>(Arc::new(program), context, move |_, context, exit| {
+            match exit {
+                UserExit::Syscall
+                    if context.syscall_number() == eggos_hal::user::TestProgram::SYSCALL_NULL =>
+                {
+                    calls += 1;
+                    thread::yield_now::<P>();
+                    context.set_syscall_result(0);
+                }
+                // Its seed.
+                UserExit::Syscall => context.set_syscall_result(number as u64),
+                UserExit::Exception(exception) if process::first_fp_use::<P>(exception.kind) => {}
+                _ => return ControlFlow::Break(()),
+            }
+            if calls < n {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        })
+        .ok();
+    }
+    for thread in threads.into_iter().flatten() {
+        thread.join::<P>();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +626,8 @@ mod tests {
                 floating_point: 0,
                 null_syscalls: 0,
                 spin: 0,
+                fp_registers: 0,
+                illegal_instruction: 0,
                 linux_hello: 0,
                 linux_start: 0,
                 linux_start_end: 4,
@@ -623,6 +668,9 @@ mod tests {
             // SAFETY: the caller's guarantees are the host switch's.
             unsafe { thread::host::switch_thread(save, resume) }
         }
+        unsafe fn set_user_fp(_on: bool) {}
+        unsafe fn save_fp(_state: *mut eggos_hal::fp::FpState) {}
+        unsafe fn restore_fp(_state: *const eggos_hal::fp::FpState) {}
         fn cpus(_cpu: &mut dyn FnMut(u64)) {
             unreachable!("not used in tests")
         }
@@ -664,12 +712,13 @@ mod tests {
                 (syscall, _),
                 (process_syscall, _),
                 (process_switch, _),
+                (fp_process_switch, _),
                 (linux_syscall, _),
                 (linux_exec, _),
                 (linux_page_fault, _),
                 (linux_mmap_munmap, _),
             ],
-        ) = all.split_at(all.len() - 7)
+        ) = all.split_at(all.len() - 8)
         else {
             unreachable!()
         };
@@ -678,6 +727,7 @@ mod tests {
                 *syscall,
                 *process_syscall,
                 *process_switch,
+                *fp_process_switch,
                 *linux_syscall,
                 *linux_exec,
                 *linux_page_fault,
@@ -687,6 +737,7 @@ mod tests {
                 "syscall_round_trip",
                 "process_syscall_round_trip",
                 "process_switch_round_trip",
+                "fp_process_switch_round_trip",
                 "linux_syscall_round_trip",
                 "linux_exec_load",
                 "linux_page_fault",
@@ -744,6 +795,8 @@ mod tests {
         process_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         process_switch_round_trip::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        fp_process_switch_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         linux_syscall_round_trip::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);

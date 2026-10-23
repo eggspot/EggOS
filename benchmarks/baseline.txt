@@ -11,6 +11,7 @@ riscv64 firmware OpenSBI-v1.3
 aarch64 breakpoint_round_trip 92.00
 aarch64 clock_read 5.00
 aarch64 empty_loop 4.00
+aarch64 fp_process_switch_round_trip 1107.98
 aarch64 frame_allocate_untouched 17.15
 aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
@@ -34,6 +35,7 @@ aarch64 wait_queue_wake_empty 15.00
 riscv64 breakpoint_round_trip 127.00
 riscv64 clock_read 4.00
 riscv64 empty_loop 4.00
+riscv64 fp_process_switch_round_trip 1041.02
 riscv64 frame_allocate_untouched 16.16
 riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
@@ -57,6 +59,7 @@ riscv64 wait_queue_wake_empty 13.01
 x86_64 breakpoint_round_trip 59.00
 x86_64 clock_read 8.00
 x86_64 empty_loop 4.00
+x86_64 fp_process_switch_round_trip 798.34
 x86_64 frame_allocate_untouched 14.06
 x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06

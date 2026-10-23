@@ -7,8 +7,9 @@
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
 //! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` and its thread pointer
 //! `TPIDR_EL0` (D57) included, into its `UserContext`, where `SP_EL1` points while it runs,
-//! and returns from [`run_user`] instead. The kernel uses no FP/SIMD registers (D10), so they
-//! are not saved, and programs may not use them either: `CPACR_EL1` traps them at EL0 (D49).
+//! and returns from [`run_user`] instead. The kernel uses no FP/SIMD registers (D10), so the
+//! entry does not save them: a program's are saved and loaded by the scheduler, per thread,
+//! once it has used them (`fp`, D54); until then `CPACR_EL1` traps them at EL0 (D49).
 
 use super::timer;
 use crate::Interrupt;
@@ -228,6 +229,59 @@ aarch64_user_test_null_syscalls:
     .global aarch64_user_test_spin
 aarch64_user_test_spin:
 3:  b       3b
+    .global aarch64_user_test_fp_registers
+aarch64_user_test_fp_registers:
+    // x19: the seed system call 0 returns; x20: the differences found; x21: whether to stop.
+    mov     x8, #{syscall_first}
+    svc     #0
+    mov     x19, x0
+    mov     x20, #0
+    .arch_extension fp
+    .arch_extension simd
+    // A new program's registers are zero, FPCR too. The first access traps (D54).
+    mrs     x9, fpcr
+    orr     x20, x20, x9
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fmov    x9, d\i
+    orr     x20, x20, x9
+    mov     x9, v\i\().d[1]
+    orr     x20, x20, x9
+    .endr
+    // FPCR's rounding mode from the seed's low bits, register n = seed + n in both halves.
+    and     x9, x19, #3
+    lsl     x9, x9, #22
+    msr     fpcr, x9
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    add     x9, x19, #\i
+    dup     v\i\().2d, x9
+    .endr
+7:  mov     x8, #{syscall_null}
+    svc     #0
+    mov     x21, x0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    add     x9, x19, #\i
+    fmov    x10, d\i
+    eor     x10, x10, x9
+    orr     x20, x20, x10
+    mov     x10, v\i\().d[1]
+    eor     x10, x10, x9
+    orr     x20, x20, x10
+    .endr
+    mrs     x9, fpcr
+    and     x10, x19, #3
+    lsl     x10, x10, #22
+    eor     x9, x9, x10
+    orr     x20, x20, x9
+    .arch_extension nosimd
+    .arch_extension nofp
+    cbz     x21, 7b
+    mov     x0, x20
+    mov     x8, #{syscall_report}
+    svc     #0
+8:  b       8b
+    .global aarch64_user_test_illegal_instruction
+aarch64_user_test_illegal_instruction:
+    udf     #0
     .global aarch64_user_test_linux_hello
 aarch64_user_test_linux_hello:
     // Linux's generic numbers: write 64, exit_group 94. x19 collects the differences.
@@ -1041,6 +1095,8 @@ unsafe extern "C" {
     static aarch64_user_test_floating_point: u8;
     static aarch64_user_test_null_syscalls: u8;
     static aarch64_user_test_spin: u8;
+    static aarch64_user_test_fp_registers: u8;
+    static aarch64_user_test_illegal_instruction: u8;
     static aarch64_user_test_linux_hello: u8;
     static aarch64_user_test_linux_start: u8;
     static aarch64_user_test_linux_start_end: u8;
@@ -1118,6 +1174,8 @@ pub(super) fn user_test_program() -> TestProgram {
         floating_point: (&raw const aarch64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const aarch64_user_test_null_syscalls) as usize - start,
         spin: (&raw const aarch64_user_test_spin) as usize - start,
+        fp_registers: (&raw const aarch64_user_test_fp_registers) as usize - start,
+        illegal_instruction: (&raw const aarch64_user_test_illegal_instruction) as usize - start,
         linux_hello: (&raw const aarch64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const aarch64_user_test_linux_start) as usize - start,
         linux_start_end: (&raw const aarch64_user_test_linux_start_end) as usize - start,

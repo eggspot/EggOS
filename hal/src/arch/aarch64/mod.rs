@@ -9,6 +9,7 @@
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
 mod exception;
+mod fp;
 mod thread;
 mod timer;
 
@@ -98,11 +99,12 @@ _start:
     add     x0, x0, :lo12:__stack_top
     mov     sp, x0
 
-    // What EL0 may use, whatever firmware left (D49): no FP/SIMD, which traps (in EL1 too,
-    // where the kernel uses none) until it is saved per thread, and no timer or counter, so a
-    // program cannot reprogram the kernel's timer. `TPIDRRO_EL0`, which programs can read,
-    // holds nothing of firmware's: zero, as on Linux (`TPIDR_EL0` is each program's own).
-    msr     cpacr_el1, xzr
+    // What EL0 may use, whatever firmware left (D49): FP/SIMD for EL1 only, so a program's
+    // first use traps and gets its own registers (D54; SVE and SME stay off), and no timer or
+    // counter, so a program cannot reprogram the kernel's timer. `TPIDRRO_EL0`, which programs
+    // can read, holds nothing of firmware's: zero, as on Linux (`TPIDR_EL0` is each program's own).
+    mov     x0, #{cpacr_fp_el1_only}
+    msr     cpacr_el1, x0
     msr     cntkctl_el1, xzr
     msr     tpidrro_el0, xzr
 
@@ -161,7 +163,8 @@ eggos_secondary_start:
     br      x0
 7:  ldr     x0, [x19, #{start_stack_top}]
     mov     sp, x0
-    msr     cpacr_el1, xzr          // as on the boot CPU
+    mov     x0, #{cpacr_fp_el1_only} // as on the boot CPU
+    msr     cpacr_el1, x0
     msr     cntkctl_el1, xzr
     msr     tpidrro_el0, xzr
     adrp    x0, exception_vectors
@@ -176,6 +179,7 @@ eggos_secondary_start:
 "#,
     secondary_main = sym secondary_main,
     start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
+    cpacr_fp_el1_only = const fp::CPACR_FP_EL1_ONLY,
     init_timer = sym timer::init,
     l0_low = sym BOOT_L0_LOW,
     l1_low = sym BOOT_L1_LOW,
@@ -506,8 +510,26 @@ impl Platform for Aarch64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        // FP/SIMD traps in user mode (D49), so not even `HWCAP_FP` or `HWCAP_ASIMD`.
-        [0, 0]
+        // `HWCAP_FP` and `HWCAP_ASIMD`, which programs get on first use (D54), if the CPU
+        // has them (`ID_AA64PFR0_EL1.FP` and `AdvSIMD`, 0xf if not). SVE and SME stay off.
+        const HWCAP_FP: u64 = 1 << 0;
+        const HWCAP_ASIMD: u64 = 1 << 1;
+        let features: u64;
+        // SAFETY: reading an ID register has no side effects.
+        unsafe {
+            core::arch::asm!("mrs {}, id_aa64pfr0_el1", out(reg) features, options(nomem, nostack))
+        };
+        let fp = if features >> 16 & 0xf != 0xf {
+            HWCAP_FP
+        } else {
+            0
+        };
+        let asimd = if features >> 20 & 0xf != 0xf {
+            HWCAP_ASIMD
+        } else {
+            0
+        };
+        [fp | asimd, 0]
     }
 
     fn make_instructions_visible(start: usize, length: usize) {
@@ -594,6 +616,21 @@ impl Platform for Aarch64 {
         // before any other starts and between the HAL's other reads of the tree, which the
         // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
         unsafe { boot_memory::device_tree_take_seeds(RAM_BASE, seed) };
+    }
+
+    unsafe fn set_user_fp(on: bool) {
+        // SAFETY: the caller's contract is `set_user`'s.
+        unsafe { fp::set_user(on) }
+    }
+
+    unsafe fn save_fp(state: *mut crate::fp::FpState) {
+        // SAFETY: the caller's contract is `save`'s.
+        unsafe { fp::save(state) }
+    }
+
+    unsafe fn restore_fp(state: *const crate::fp::FpState) {
+        // SAFETY: the caller's contract is `restore`'s.
+        unsafe { fp::restore(state) }
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {

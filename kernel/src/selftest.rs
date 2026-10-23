@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 34] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 35] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -92,6 +92,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 34] {
         (
             "processes_keep_their_own_memory_across_switches",
             |memory| processes_keep_their_own_memory::<P>(memory, 2, 1),
+        ),
+        (
+            "processes_keep_their_fp_registers_across_switches",
+            |memory| processes_keep_their_fp_registers::<P>(memory, 2),
         ),
         (
             "processes_are_preempted_on_return_to_user_mode",
@@ -671,8 +675,10 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
             }
             _ => return Err("the program read kernel memory without a fault"),
         }
-        // A floating-point instruction traps: programs get no FP/SIMD registers until they are
-        // saved per thread, so none can read what another left in them.
+        // A floating-point instruction traps: each CPU starts with FP/SIMD off for user mode,
+        // and turns them on only for a thread that has registers of its own (D54), which this
+        // one, a kernel thread running the program directly, never has. This runs before any
+        // program used them.
         let mut context = Process::<P>::test_program_context(|program| program.floating_point);
         let floating_point = context.pc();
         // SAFETY: as above.
@@ -811,6 +817,72 @@ fn processes_keep_their_own_memory<P: Platform>(
     Ok(())
 }
 
+/// Programs must each keep their own FP/SIMD registers, whatever ran in between (D54): `count`
+/// processes run [`TestProgram::fp_registers`], each with a seed of its own, and at each of its
+/// null system calls the handler yields, so the others run (and load their registers) on its
+/// CPU. Each must start with a new program's registers, all zero, though another's are in the
+/// CPU's, and find its own values unchanged after every call.
+fn processes_keep_their_fp_registers<P: Platform>(
+    memory: &mut Memory<P>,
+    count: usize,
+) -> Result<(), &'static str> {
+    const CALLS: u64 = 20;
+    /// An exit other than the program's system calls, or a report of changed registers.
+    const WRONG: u64 = u64::MAX;
+    let mut threads = Vec::new();
+    for number in 0..count {
+        // SAFETY: as in `processes_with_data`.
+        let process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+        // Distinct in every register, and in the rounding mode, from the next program's.
+        let seed = 0x5eed_0000_0000 + (number as u64) * 0x101;
+        let result = Arc::new(AtomicU64::new(WRONG));
+        let reported = result.clone();
+        let mut calls = 0;
+        let context = Process::<P>::test_program_context(|program| program.fp_registers);
+        let thread = process::spawn::<P, _>(Arc::new(process), context, move |_, context, exit| {
+            match exit {
+                UserExit::Interrupt => return ControlFlow::Continue(()),
+                UserExit::Syscall => {}
+                UserExit::Exception(exception) if process::first_fp_use::<P>(exception.kind) => {
+                    return ControlFlow::Continue(());
+                }
+                UserExit::Exception(_) => return ControlFlow::Break(()),
+            }
+            match context.syscall_number() {
+                TestProgram::SYSCALL_FIRST => context.set_syscall_result(seed),
+                TestProgram::SYSCALL_NULL => {
+                    thread::yield_now::<P>();
+                    calls += 1;
+                    context.set_syscall_result(u64::from(calls >= CALLS));
+                }
+                _ => {
+                    let differences = context.syscall_arguments()[0];
+                    reported.store(
+                        if calls == CALLS { differences } else { WRONG },
+                        Ordering::Relaxed,
+                    );
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        threads.push((
+            thread.map_err(|_| "could not start a process's thread")?,
+            result,
+        ));
+    }
+    let mut result = Ok(());
+    for (thread, differences) in threads {
+        thread.join::<P>();
+        match differences.load(Ordering::Relaxed) {
+            0 => {}
+            WRONG => result = Err("an FP/SIMD program faulted or ended early"),
+            _ => result = Err("a program's FP/SIMD registers changed, or did not start at zero"),
+        }
+    }
+    result
+}
+
 /// Has every other CPU's idle thread look again until none keeps an ended process's address
 /// space loaded (D48) and `freed` holds (a CPU frees what it let go just after it stops
 /// recording it), waking them each millisecond, for up to [`THREADS_MEET_TIMEOUT_MS`]. Returns
@@ -917,7 +989,8 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
 
 /// A Linux program (M6) must write to the console through `write`, get Linux's results for a
 /// bad buffer (`EFAULT`) and an unknown call (`ENOSYS`), and end with `exit_group`; one that
-/// runs a floating-point instruction must be ended with `SIGILL`. The QEMU runner checks that
+/// runs an undefined instruction must be ended with `SIGILL`, after it got FP/SIMD registers
+/// in case that was what it wanted (D54). The QEMU runner checks that
 /// the line it writes reached the console. Everything the processes took must be freed.
 fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let hello = TestProgram::LINUX_HELLO.as_bytes();
@@ -935,7 +1008,7 @@ fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<
             ProcessExit::Exited(0),
         ),
         (
-            |program| program.floating_point,
+            |program| program.illegal_instruction,
             ProcessExit::Killed {
                 signal: linux::signal::SIGILL,
             },
@@ -1287,7 +1360,9 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
 /// CPU (up to 16), run on different CPUs at once, so several CPUs keep its address space loaded
 /// when it ends and must all let it go; then a process per CPU with two threads each, so they
 /// run, load their address spaces and their code on the other CPUs too, and move between them;
-/// then [`linux_programs_keep_their_thread_pointers`] with more programs than CPUs.
+/// then [`linux_programs_keep_their_thread_pointers`] with more programs than CPUs, and
+/// [`processes_keep_their_fp_registers`] with two programs per CPU (up to 16), which move
+/// between CPUs with their FP/SIMD registers.
 fn processes_run_on_every_cpu<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let cpus = cpu::CPUS.all().len();
     if cpus <= 1 {
@@ -1295,7 +1370,8 @@ fn processes_run_on_every_cpu<P: Platform>(memory: &mut Memory<P>) -> Result<(),
     }
     processes_keep_their_own_memory(memory, 1, cpus.min(16))?;
     processes_keep_their_own_memory(memory, cpus.min(8), 2)?;
-    linux_programs_keep_their_thread_pointers(memory, (2 * cpus + 1).min(17))
+    linux_programs_keep_their_thread_pointers(memory, (2 * cpus + 1).min(17))?;
+    processes_keep_their_fp_registers(memory, (2 * cpus).min(16))
 }
 
 /// Linux programs must each keep their own thread pointer (D57): `count` processes run the
@@ -2279,6 +2355,15 @@ mod tests {
         unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
             unreachable!("not used in tests")
         }
+        unsafe fn set_user_fp(_on: bool) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn save_fp(_state: *mut eggos_hal::fp::FpState) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn restore_fp(_state: *const eggos_hal::fp::FpState) {
+            unreachable!("not used in tests")
+        }
         fn cpus(_cpu: &mut dyn FnMut(u64)) {
             unreachable!("not used in tests")
         }
@@ -2396,6 +2481,15 @@ mod tests {
             unreachable!("not used in tests")
         }
         unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn set_user_fp(_on: bool) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn save_fp(_state: *mut eggos_hal::fp::FpState) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn restore_fp(_state: *const eggos_hal::fp::FpState) {
             unreachable!("not used in tests")
         }
         fn cpus(_cpu: &mut dyn FnMut(u64)) {

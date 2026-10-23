@@ -12,8 +12,9 @@
 //! into the running program's `UserContext`: the entry saves every register there, switches
 //! back to the kernel's GS base and returns from [`run_user`]; `syscall` builds the same frame
 //! and joins it. The kernel target uses no SSE/x87 registers (`x86_64-unknown-none` is
-//! soft-float), so they are not saved, and programs may not use them either: `CR0.TS` traps
-//! them (D49).
+//! soft-float), so the entry does not save them: a program's are saved and loaded by the
+//! scheduler, per thread, once it has used them (`fp`, D54); until then `CR0.TS` traps them
+//! (D49).
 //!
 //! All exceptions run on the current stack: there is no IST stack yet, so a stack overflow
 //! that faults again ends in a triple fault (a reset, which the QEMU runner detects). Separate
@@ -313,6 +314,49 @@ x86_64_user_test_null_syscalls:
     .global x86_64_user_test_spin
 x86_64_user_test_spin:
 3:  jmp     3b
+    .global x86_64_user_test_fp_registers
+x86_64_user_test_fp_registers:
+    // rbx: the seed system call 0 returns; r12: the differences found; r13: whether to stop.
+    movl    ${syscall_first}, %eax
+    syscall
+    movq    %rax, %rbx
+    xorl    %r12d, %r12d
+    // A new program's registers are zero. The first access traps (D54).
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    movq    %xmm\i, %rcx
+    orq     %rcx, %r12
+    pshufd  $0x4e, %xmm\i, %xmm\i
+    movq    %xmm\i, %rcx
+    orq     %rcx, %r12
+    .endr
+    // Register n = seed + n, in both halves.
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    leaq    \i(%rbx), %rcx
+    movq    %rcx, %xmm\i
+    punpcklqdq %xmm\i, %xmm\i
+    .endr
+7:  movl    ${syscall_null}, %eax
+    syscall
+    movq    %rax, %r13
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    leaq    \i(%rbx), %rdx
+    movq    %xmm\i, %rcx
+    xorq    %rdx, %rcx
+    orq     %rcx, %r12
+    pshufd  $0x4e, %xmm\i, %xmm\i
+    movq    %xmm\i, %rcx
+    xorq    %rdx, %rcx
+    orq     %rcx, %r12
+    .endr
+    testq   %r13, %r13
+    jz      7b
+    movq    %r12, %rdi
+    movl    ${syscall_report}, %eax
+    syscall
+8:  jmp     8b
+    .global x86_64_user_test_illegal_instruction
+x86_64_user_test_illegal_instruction:
+    ud2
     .global x86_64_user_test_linux_hello
 x86_64_user_test_linux_hello:
     // Linux's x86_64 numbers: write 1, exit_group 231. rbx collects the differences.
@@ -1344,6 +1388,9 @@ const CR0_TS: u64 = 1 << 3;
 const CR0_NE: u64 = 1 << 5;
 /// `CR4.FSGSBASE`: lets ring 3 write its own FS and GS bases (`wrfsbase`, `wrgsbase`).
 const CR4_FSGSBASE: u64 = 1 << 16;
+/// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
+const CR4_OSFXSR: u64 = 1 << 9;
+const CR4_OSXMMEXCPT: u64 = 1 << 10;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
@@ -1373,6 +1420,8 @@ unsafe extern "C" {
     static x86_64_user_test_floating_point: u8;
     static x86_64_user_test_null_syscalls: u8;
     static x86_64_user_test_spin: u8;
+    static x86_64_user_test_fp_registers: u8;
+    static x86_64_user_test_illegal_instruction: u8;
     static x86_64_user_test_linux_hello: u8;
     static x86_64_user_test_linux_start: u8;
     static x86_64_user_test_linux_start_end: u8;
@@ -1436,11 +1485,22 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             options(nostack, preserves_flags),
         );
     }
-    // SAFETY: CR0 only changes what x87, MMX and SSE instructions do: with TS and MP set and EM
-    // clear, each raises #NM (SSE raises #UD or #NM while CR4.OSFXSR is clear), in ring 3 and
-    // in the kernel, which uses none. Programs get no FP/SIMD registers until they are saved
-    // per thread, so none can read what another left in them (D49); NE reports x87 errors as
-    // #MF once they can happen.
+    // SAFETY: CR0 and CR4 only change what x87, MMX and SSE instructions do: with TS and MP
+    // set and EM clear, each raises #NM, in ring 3 and in the kernel, which uses none, until
+    // the scheduler clears TS for a program that has its own FP/SIMD registers (D54), so none
+    // can read what another left in them (D49). NE reports x87 errors as #MF; OSFXSR enables
+    // SSE and `FXSAVE`/`FXRSTOR`, OSXMMEXCPT reports unmasked SSE exceptions as #XM.
+    unsafe {
+        core::arch::asm!(
+            "mov {tmp}, cr4",
+            "or {tmp}, {set}",
+            "mov cr4, {tmp}",
+            tmp = out(reg) _,
+            set = in(reg) CR4_OSFXSR | CR4_OSXMMEXCPT,
+            options(nomem, nostack),
+        );
+    }
+    // SAFETY: as above.
     unsafe {
         core::arch::asm!(
             "mov {tmp}, cr0",
@@ -1556,6 +1616,8 @@ pub(super) fn user_test_program() -> TestProgram {
         floating_point: (&raw const x86_64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const x86_64_user_test_null_syscalls) as usize - start,
         spin: (&raw const x86_64_user_test_spin) as usize - start,
+        fp_registers: (&raw const x86_64_user_test_fp_registers) as usize - start,
+        illegal_instruction: (&raw const x86_64_user_test_illegal_instruction) as usize - start,
         linux_hello: (&raw const x86_64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const x86_64_user_test_linux_start) as usize - start,
         linux_start_end: (&raw const x86_64_user_test_linux_start_end) as usize - start,

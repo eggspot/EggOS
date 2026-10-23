@@ -7,6 +7,7 @@
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
 mod exception;
+mod fp;
 mod thread;
 mod timer;
 
@@ -87,9 +88,9 @@ _start:
 4:  lla     sp, __stack_top
 
     // FPU and vector unit off (FS and VS = Off; VS reads as zero without V): the kernel uses
-    // neither and the trap entry saves neither, so any FP or vector instruction traps as
-    // illegal, in U-mode too (D49). Then the trap vector, before any Rust code runs, and
-    // the timer.
+    // neither, so any FP or vector instruction traps as illegal, in U-mode too (D49), until
+    // the scheduler turns FS on for a program that has its own FP registers (D54). Then the
+    // trap vector, before any Rust code runs, and the timer.
     li      t0, (3 << 13) | (3 << 9)
     csrc    sstatus, t0
     lla     t0, exception_entry
@@ -466,10 +467,14 @@ impl Platform for Riscv64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        // One bit per single-letter extension, `1 << (letter - 'A')`: the base the kernel's
-        // target requires (RV64IMAC), without F, D or V, which trap in user mode (D49).
+        // One bit per single-letter extension, `1 << (letter - 'A')`: RV64GC, the base every
+        // RISC-V Linux distribution requires, F and D included, which programs get on first
+        // use (D54). Not V, which stays off.
         let letter = |extension: u8| 1u64 << (extension - b'A');
-        [letter(b'I') | letter(b'M') | letter(b'A') | letter(b'C'), 0]
+        [
+            letter(b'I') | letter(b'M') | letter(b'A') | letter(b'F') | letter(b'D') | letter(b'C'),
+            0,
+        ]
     }
 
     fn make_instructions_visible(_start: usize, _length: usize) {
@@ -537,6 +542,21 @@ impl Platform for Riscv64 {
         // before any other starts and between the HAL's other reads of the tree, which the
         // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
         unsafe { boot_memory::device_tree_take_seeds(device_tree(), seed) };
+    }
+
+    unsafe fn set_user_fp(on: bool) {
+        // SAFETY: the caller's contract is `set_user`'s.
+        unsafe { fp::set_user(on) }
+    }
+
+    unsafe fn save_fp(state: *mut crate::fp::FpState) {
+        // SAFETY: the caller's contract is `save`'s.
+        unsafe { fp::save(state) }
+    }
+
+    unsafe fn restore_fp(state: *const crate::fp::FpState) {
+        // SAFETY: the caller's contract is `restore`'s.
+        unsafe { fp::restore(state) }
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {

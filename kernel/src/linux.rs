@@ -410,15 +410,16 @@ pub fn handle<P: Platform>(
 }
 
 /// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
-/// any. A page fault resumes the program if the process resolves it (demand paging); with no
-/// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
-/// would; any other fault sends the program the signal Linux sends for it
-/// ([`signal_fault`]). Out of line and laid out away from the system-call path, which stays
-/// as short as it was (the exception's parts passed alone keep the loop's state in
-/// registers). Only `context` stays live across the page's mapping for the fault's sake, in
-/// place of the `kind` that ending the process needed before D65: the fault reads the rest
-/// back from it ([`UserContext::last_exception`]). Keeping the raw cause and the address too
-/// cost up to +1% on `linux_page_fault`.
+/// any. A page fault resumes the program if the process resolves it (demand paging), as does
+/// its first FP/SIMD instruction, which gives its thread the registers (D54); with no memory
+/// for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer would; any
+/// other fault sends the program the signal Linux sends for it ([`signal_fault`]). Out of line
+/// and laid out away from the system-call path, which stays as short as it was (the
+/// exception's parts passed alone keep the loop's state in registers). Only `context` stays
+/// live across the page's mapping for the fault's sake, in place of the `kind` that ending the
+/// process needed before D65: the fault reads the rest back from it
+/// ([`UserContext::last_exception`]). Keeping the raw cause and the address too cost up to +1%
+/// on `linux_page_fault`.
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
@@ -429,6 +430,9 @@ fn user_exception<P: Platform>(
     address: Option<u64>,
 ) -> ControlFlow<()> {
     let (Some(page_fault), Some(address)) = (P::page_fault(kind, code), address) else {
+        if process::first_fp_use::<P>(kind) {
+            return ControlFlow::Continue(());
+        }
         return signal_fault(process, context);
     };
     match process.resolve_page_fault(address, page_fault) {

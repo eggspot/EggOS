@@ -6,9 +6,10 @@
 //! from [`run_user`] (D47). `exception_entry` saves the general-purpose registers, `sepc` and `sstatus` on the
 //! current stack, calls [`riscv64_exception`] with the frame, and restores everything and
 //! `sret`s if it returns. The boot code turns the FPU and vector unit off (`sstatus.FS` and `VS`
-//! = Off), so kernel code or a program that used their registers would trap as an illegal
-//! instruction instead of silently corrupting or leaking state that this entry does not save
-//! (D49).
+//! = Off), so a program that used their registers traps as an illegal instruction instead of
+//! leaking state that this entry does not save (D49), until the scheduler gives its thread FP
+//! registers of its own and turns FS on for it (`fp`, D54); the kernel, built soft-float,
+//! never uses them. The vector unit stays off.
 
 use super::timer;
 use crate::Interrupt;
@@ -330,7 +331,10 @@ riscv64_user_test_checks:
 1:  j       1b
     .global riscv64_user_test_floating_point
 riscv64_user_test_floating_point:
+    .option push
+    .option arch, +d
     fmv.d.x ft0, zero
+    .option pop
     .global riscv64_user_test_null_syscalls
 riscv64_user_test_null_syscalls:
     li      a7, {syscall_null}
@@ -339,6 +343,53 @@ riscv64_user_test_null_syscalls:
     .global riscv64_user_test_spin
 riscv64_user_test_spin:
 3:  j       3b
+    .global riscv64_user_test_fp_registers
+riscv64_user_test_fp_registers:
+    // s2: the seed system call 0 returns; s3: the differences found; s4: whether to stop.
+    li      a7, {syscall_first}
+    ecall
+    mv      s2, a0
+    li      s3, 0
+    .option push
+    .option arch, +d
+    // A new program's registers are zero, fcsr too. The first access traps (D54).
+    frcsr   t0
+    or      s3, s3, t0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fmv.x.d t0, f\i
+    or      s3, s3, t0
+    .endr
+    // fcsr's rounding mode from the seed's low bits, register n = seed + n.
+    andi    t0, s2, 3
+    slli    t0, t0, 5
+    fscsr   t0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    addi    t0, s2, \i
+    fmv.d.x f\i, t0
+    .endr
+7:  li      a7, {syscall_null}
+    ecall
+    mv      s4, a0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    addi    t0, s2, \i
+    fmv.x.d t1, f\i
+    xor     t1, t1, t0
+    or      s3, s3, t1
+    .endr
+    frcsr   t0
+    andi    t1, s2, 3
+    slli    t1, t1, 5
+    xor     t0, t0, t1
+    or      s3, s3, t0
+    .option pop
+    beqz    s4, 7b
+    mv      a0, s3
+    li      a7, {syscall_report}
+    ecall
+8:  j       8b
+    .global riscv64_user_test_illegal_instruction
+riscv64_user_test_illegal_instruction:
+    unimp
     .global riscv64_user_test_linux_hello
 riscv64_user_test_linux_hello:
     // Linux's generic numbers: write 64, exit_group 94. s1 collects the differences.
@@ -1154,6 +1205,8 @@ unsafe extern "C" {
     static riscv64_user_test_floating_point: u8;
     static riscv64_user_test_null_syscalls: u8;
     static riscv64_user_test_spin: u8;
+    static riscv64_user_test_fp_registers: u8;
+    static riscv64_user_test_illegal_instruction: u8;
     static riscv64_user_test_linux_hello: u8;
     static riscv64_user_test_linux_start: u8;
     static riscv64_user_test_linux_start_end: u8;
@@ -1224,6 +1277,8 @@ pub(super) fn user_test_program() -> TestProgram {
         floating_point: (&raw const riscv64_user_test_floating_point) as usize - start,
         null_syscalls: (&raw const riscv64_user_test_null_syscalls) as usize - start,
         spin: (&raw const riscv64_user_test_spin) as usize - start,
+        fp_registers: (&raw const riscv64_user_test_fp_registers) as usize - start,
+        illegal_instruction: (&raw const riscv64_user_test_illegal_instruction) as usize - start,
         linux_hello: (&raw const riscv64_user_test_linux_hello) as usize - start,
         linux_start: (&raw const riscv64_user_test_linux_start) as usize - start,
         linux_start_end: (&raw const riscv64_user_test_linux_start_end) as usize - start,
