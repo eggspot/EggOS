@@ -295,6 +295,13 @@ pub struct TestProgram {
     /// `CLOCK_PROCESS_CPUTIME_ID`, which must fail with `EINVAL` until there is CPU time.
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_clock: usize,
+    /// A Linux program that reads the console's status (D74): `fstat(1)`, which must report a
+    /// character device (`S_IFCHR`) with device number 5:1 (`/dev/console`), `newfstatat(1, "",
+    /// AT_EMPTY_PATH)`, which must report the same device number, and `statx(1, "",
+    /// AT_EMPTY_PATH, STATX_BASIC_STATS)`, which must report a character device of major 5.
+    /// Then `lseek(1, 0, SEEK_CUR)` must fail with `ESPIPE` and `fstat(3)` with `EBADF`.
+    /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
+    pub linux_stat: usize,
 }
 
 impl TestProgram {

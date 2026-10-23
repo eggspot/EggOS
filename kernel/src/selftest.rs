@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 32] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 33] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -144,6 +144,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 32] {
         (
             "linux_programs_read_clocks_and_sleep",
             linux_programs_read_clocks_and_sleep::<P>,
+        ),
+        (
+            "linux_programs_read_the_console_s_status",
+            linux_programs_read_the_console_s_status::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1529,6 +1533,24 @@ fn linux_programs_read_clocks_and_sleep<P: Platform>(
             "clock_gettime or nanosleep did not answer as on Linux, or the sleep ended early"
         }
         HandlingFailure::Killed => "the clock program was killed",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program must find the console a character device, `/dev/console`'s 5:1, through
+/// `fstat`, `newfstatat` and `statx`, and be refused `lseek` on it and `fstat` on a descriptor
+/// that is not open (D74): the test program's `linux_stat` must exit with 0 (see
+/// [`eggos_hal::user::TestProgram`]). It runs twice, and everything the second run took must
+/// be freed.
+fn linux_programs_read_the_console_s_status<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_stat).map_err(|failure| match failure {
+        HandlingFailure::Failed => {
+            "fstat, newfstatat, statx or lseek did not answer for the console as on Linux"
+        }
+        HandlingFailure::Killed => "the status program was killed",
         HandlingFailure::Other(error) => error,
     })
 }

@@ -1,7 +1,8 @@
-//! The console as a terminal (M6, D61): `ioctl` on descriptors 0 to 2. C libraries ask
-//! whether a descriptor is a terminal before they choose how to buffer it (musl's stdout and
-//! `isatty` with `TIOCGWINSZ`, glibc's `isatty` and `tcgetattr` with `TCGETS`), so a program
-//! that writes to the console line-buffers as it would on a Linux serial console.
+//! The console as a terminal (M6, D61): `ioctl` on descriptors 0 to 2, and `lseek`, which a
+//! terminal refuses (D74). C libraries ask whether a descriptor is a terminal before they
+//! choose how to buffer it (musl's stdout and `isatty` with `TIOCGWINSZ`, glibc's `isatty` and
+//! `tcgetattr` with `TCGETS`), so a program that writes to the console line-buffers as it
+//! would on a Linux serial console.
 //!
 //! The requests answered are the ones whose answer is true of the console today:
 //! - `TCGETS` and `TCGETS2`: the settings of a Linux serial console at 115200 baud
@@ -159,6 +160,23 @@ pub fn ioctl<P: Platform>(
         }
         request::FIONREAD => write(&0i32.to_ne_bytes()),
         _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// The last `whence` `lseek` knows: `SEEK_HOLE` (after `SEEK_SET`, `SEEK_CUR`, `SEEK_END` and
+/// `SEEK_DATA`).
+const SEEK_LAST: u32 = 4;
+
+/// `lseek(fd, offset, whence)` on the console, which a terminal cannot do. As Linux: `EBADF`
+/// for a descriptor that is not open, `EINVAL` for a `whence` it does not know (an `unsigned
+/// int`), then `ESPIPE`; the offset is never looked at.
+pub fn lseek(fd: u64, whence: u64) -> Result<u64, Errno> {
+    if !is_console(fd) {
+        Err(Errno::EBADF)
+    } else if whence as u32 > SEEK_LAST {
+        Err(Errno::EINVAL)
+    } else {
+        Err(Errno::ESPIPE)
     }
 }
 

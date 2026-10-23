@@ -26,7 +26,9 @@
 //! queued with `rt_sigqueueinfo` and `rt_tgsigqueueinfo` and taken with `rt_sigtimedwait`
 //! (D68), and waits for a handler with `rt_sigsuspend` and, on x86_64, `pause` (D70), and
 //! `ppoll`'s signal mask during the call (D71), and the clocks and sleeping
-//! (`clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`, ..., [`time`], D73).
+//! (`clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`, ..., [`time`], D73), and
+//! the console's status with `fstat`, `newfstatat` and `statx` ([`stat`]) and `lseek`
+//! refused on it ([`terminal`], D74).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -40,6 +42,7 @@ pub mod poll;
 pub mod random;
 pub mod signal_frame;
 pub mod signals;
+pub mod stat;
 pub mod terminal;
 pub mod thread_pointer;
 pub mod time;
@@ -60,7 +63,9 @@ pub mod number {
     #[cfg(target_arch = "x86_64")]
     mod table {
         pub const WRITE: u64 = 1;
+        pub const FSTAT: u64 = 5;
         pub const POLL: u64 = 7;
+        pub const LSEEK: u64 = 8;
         pub const MMAP: u64 = 9;
         pub const MPROTECT: u64 = 10;
         pub const MUNMAP: u64 = 11;
@@ -98,20 +103,25 @@ pub mod number {
         pub const CLOCK_NANOSLEEP: u64 = 230;
         pub const EXIT_GROUP: u64 = 231;
         pub const TGKILL: u64 = 234;
+        pub const NEWFSTATAT: u64 = 262;
         pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
+        pub const STATX: u64 = 332;
         /// The highest number above.
-        pub const LAST: u64 = GETRANDOM;
+        pub const LAST: u64 = STATX;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
         pub const IOCTL: u64 = 29;
-        pub const PPOLL: u64 = 73;
+        pub const LSEEK: u64 = 62;
         pub const WRITE: u64 = 64;
         pub const WRITEV: u64 = 66;
+        pub const PPOLL: u64 = 73;
+        pub const NEWFSTATAT: u64 = 79;
+        pub const FSTAT: u64 = 80;
         pub const EXIT: u64 = 93;
         pub const EXIT_GROUP: u64 = 94;
         pub const SET_TID_ADDRESS: u64 = 96;
@@ -148,8 +158,9 @@ pub mod number {
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
+        pub const STATX: u64 = 291;
         /// The highest number above.
-        pub const LAST: u64 = GETRANDOM;
+        pub const LAST: u64 = STATX;
     }
     pub use table::*;
 
@@ -196,6 +207,10 @@ pub mod number {
             POLL,
             PPOLL,
             IOCTL,
+            LSEEK,
+            FSTAT,
+            NEWFSTATAT,
+            STATX,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -223,7 +238,8 @@ impl Errno {
     /// `kill` may send queued to another process (`rt_sigqueueinfo`), or the wall clock set
     /// (`clock_settime`, `settimeofday`).
     pub const EPERM: Self = Self(1);
-    /// No such file: here, a program's interpreter (`execve`).
+    /// No such file: here, a program's interpreter (`execve`), or any file a path names,
+    /// as there are none yet (`newfstatat`, `statx`).
     pub const ENOENT: Self = Self(2);
     /// No such process: here, one the caller cannot reach (`prlimit64`).
     pub const ESRCH: Self = Self(3);
@@ -233,7 +249,8 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
     pub const ENOEXEC: Self = Self(8);
-    /// Bad file descriptor.
+    /// Bad file descriptor: here, one that is not open; so far only the standard descriptors
+    /// are.
     pub const EBADF: Self = Self(9);
     /// Try again: here, the random number generator is not seeded yet (`getrandom` with
     /// `GRND_NONBLOCK`), a real-time signal finds the signal queue full (`rt_sigqueueinfo`,
@@ -249,13 +266,21 @@ impl Errno {
     pub const EEXIST: Self = Self(17);
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
+    /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
+    /// `statx`).
+    pub const ENOTDIR: Self = Self(20);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
-    /// clock the time calls do not answer for or a bad time (the time calls).
+    /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
+    /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`).
     pub const EINVAL: Self = Self(22);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
+    /// Not seekable: here, the console (`lseek`).
+    pub const ESPIPE: Self = Self(29);
+    /// A path longer than `PATH_MAX` (`newfstatat`, `statx`).
+    pub const ENAMETOOLONG: Self = Self(36);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
     /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`), or a clock
@@ -464,7 +489,7 @@ fn out_of_line_result<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
-    let [first, second, third, fourth, ..] = context.syscall_arguments();
+    let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -502,6 +527,10 @@ fn out_of_line_result<P: Platform>(
         #[cfg(target_arch = "x86_64")]
         number::POLL => poll::poll::<P>(process, first, second, third),
         number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
+        number::LSEEK => terminal::lseek(first, third),
+        number::FSTAT => stat::fstat(process, first, second),
+        number::NEWFSTATAT => stat::newfstatat(process, first, second, third, fourth),
+        number::STATX => stat::statx(process, first, second, third, fourth, fifth),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)
@@ -3433,5 +3462,286 @@ mod tests {
                 })
             );
         }
+    }
+
+    const STAT_BUFFER: u64 = SCRATCH + 0x200;
+    const STATX_BUFFER: u64 = SCRATCH + 0x400;
+    const EMPTY: u64 = SCRATCH + 0x600;
+    const RELATIVE: u64 = SCRATCH + 0x610;
+    const ABSOLUTE: u64 = SCRATCH + 0x620;
+
+    fn process_for_status(
+        kernel: &PageTables<<P as Platform>::PageTableFormat>,
+    ) -> Arc<Process<P>> {
+        let (process, _) = process_with_stacks(kernel);
+        for (address, path) in [
+            (EMPTY, &b"\0"[..]),
+            (RELATIVE, b"tty\0"),
+            (ABSOLUTE, b"/dev/console\0"),
+        ] {
+            process.write_user_memory(address, path).unwrap();
+        }
+        process
+    }
+
+    fn user_bytes<const N: usize>(process: &Process<P>, address: u64) -> [u8; N] {
+        let mut bytes = [0; N];
+        process.read_user_memory(address, &mut bytes).unwrap();
+        bytes
+    }
+
+    fn word(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn double_word(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    }
+
+    #[test]
+    fn the_standard_descriptors_are_the_console_s_character_device() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let x86_64 = cfg!(target_arch = "x86_64");
+        let [mode, owner, group, rdev] = if x86_64 {
+            [24, 28, 32, 40]
+        } else {
+            [16, 24, 28, 32]
+        };
+        let links = |bytes: &[u8]| {
+            if x86_64 {
+                double_word(bytes, 16)
+            } else {
+                u64::from(word(bytes, 20))
+            }
+        };
+        for fd in [0, 1, 2, 0xffff_ffff_0000_0001] {
+            process
+                .write_user_memory(STAT_BUFFER, &[0xff; stat::STAT_SIZE])
+                .unwrap();
+            assert_eq!(
+                call(&process, number::FSTAT, [fd, STAT_BUFFER, 0, 0, 0, 0]),
+                0
+            );
+            let bytes: [u8; stat::STAT_SIZE] = user_bytes(&process, STAT_BUFFER);
+            assert_eq!(double_word(&bytes, 0), 5);
+            assert_eq!(double_word(&bytes, 8), stat::CONSOLE_INODE);
+            assert_eq!(word(&bytes, mode), 0o020600);
+            assert_eq!(links(&bytes), 1);
+            assert_eq!((word(&bytes, owner), word(&bytes, group)), (0, 0));
+            assert_eq!(double_word(&bytes, rdev), 0x501);
+            assert_eq!(double_word(&bytes, 48), 0);
+            assert_eq!(word(&bytes, 56), 4096);
+            assert!(bytes[64..].iter().all(|&byte| byte == 0));
+            for path in [EMPTY, 0] {
+                process
+                    .write_user_memory(STAT_BUFFER, &[0xff; stat::STAT_SIZE])
+                    .unwrap();
+                let flags = stat::at::EMPTY_PATH | stat::at::SYMLINK_NOFOLLOW;
+                assert_eq!(
+                    call(
+                        &process,
+                        number::NEWFSTATAT,
+                        [fd, path, STAT_BUFFER, flags, 0, 0]
+                    ),
+                    0
+                );
+                assert_eq!(
+                    user_bytes::<{ stat::STAT_SIZE }>(&process, STAT_BUFFER),
+                    bytes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn statx_reports_the_console_s_basic_fields_whatever_the_mask() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        for (fd, path, mask) in [(1, EMPTY, 0x7ff), (2, 0, 0), (0, EMPTY, 0x0fff_ffff)] {
+            process
+                .write_user_memory(STATX_BUFFER, &[0xff; stat::STATX_SIZE])
+                .unwrap();
+            let flags = stat::at::EMPTY_PATH | 0x2000;
+            assert_eq!(
+                call(
+                    &process,
+                    number::STATX,
+                    [fd, path, flags, mask, STATX_BUFFER, 0]
+                ),
+                0
+            );
+            let bytes: [u8; stat::STATX_SIZE] = user_bytes(&process, STATX_BUFFER);
+            assert_eq!(word(&bytes, 0), 0x7ff);
+            assert_eq!(word(&bytes, 4), 4096);
+            assert_eq!(double_word(&bytes, 8), 0);
+            assert_eq!(
+                [word(&bytes, 16), word(&bytes, 20), word(&bytes, 24)],
+                [1, 0, 0]
+            );
+            assert_eq!(u16::from_ne_bytes([bytes[28], bytes[29]]), 0o020600);
+            assert_eq!(double_word(&bytes, 32), stat::CONSOLE_INODE);
+            assert_eq!(
+                [
+                    double_word(&bytes, 40),
+                    double_word(&bytes, 48),
+                    double_word(&bytes, 56)
+                ],
+                [0; 3]
+            );
+            assert!(bytes[64..128].iter().all(|&byte| byte == 0));
+            assert_eq!(
+                [128, 132, 136, 140].map(|offset| word(&bytes, offset)),
+                [5, 1, 0, 5]
+            );
+            assert!(bytes[144..].iter().all(|&byte| byte == 0));
+        }
+    }
+
+    #[test]
+    fn the_status_calls_fail_as_linux_s_do_in_linux_s_order() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let fstatat = |fd, path, buffer, flags| {
+            call(
+                &process,
+                number::NEWFSTATAT,
+                [fd, path, buffer, flags, 0, 0],
+            )
+        };
+        let statx = |fd, path, flags, mask, buffer| {
+            call(&process, number::STATX, [fd, path, flags, mask, buffer, 0])
+        };
+        let fdcwd = u64::from(stat::at::FDCWD as u32);
+        let empty = stat::at::EMPTY_PATH;
+        for buffer in [READ_ONLY, UNMAPPED] {
+            assert_eq!(
+                call(&process, number::FSTAT, [1, buffer, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+            assert_eq!(fstatat(1, EMPTY, buffer, empty), Errno::EFAULT.result());
+            assert_eq!(
+                statx(1, EMPTY, empty, 0x7ff, buffer),
+                Errno::EFAULT.result()
+            );
+        }
+        assert_eq!(
+            call(&process, number::FSTAT, [3, UNMAPPED, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(
+            call(&process, number::FSTAT, [u64::MAX, STAT_BUFFER, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(statx(0, 0, 0, 0xfff, 0), Errno::EFAULT.result());
+        for (fd, path, flags, error) in [
+            (3, UNMAPPED, 0x200, Errno::EINVAL),
+            (3, UNMAPPED, 0x1_0000, Errno::EINVAL),
+            (1, UNMAPPED, empty, Errno::EFAULT),
+            (1, 0, 0, Errno::EFAULT),
+            (3, EMPTY, 0, Errno::ENOENT),
+            (1, EMPTY, 0, Errno::ENOENT),
+            (3, EMPTY, empty, Errno::EBADF),
+            (3, 0, empty, Errno::EBADF),
+            (fdcwd, EMPTY, empty, Errno::ENOENT),
+            (fdcwd, RELATIVE, 0, Errno::ENOENT),
+            (3, ABSOLUTE, 0, Errno::ENOENT),
+            (1, ABSOLUTE, empty, Errno::ENOENT),
+            (1, RELATIVE, empty, Errno::ENOTDIR),
+            (3, RELATIVE, 0, Errno::EBADF),
+        ] {
+            assert_eq!(
+                fstatat(fd, path, UNMAPPED, flags),
+                error.result(),
+                "{fd} {path:#x} {flags:#x}"
+            );
+            assert_eq!(
+                fstatat(fd, path, STAT_BUFFER, flags | 1 << 32),
+                error.result(),
+                "{fd} {path:#x} {flags:#x}"
+            );
+            assert_eq!(
+                statx(fd, path, flags, 0x7ff, UNMAPPED),
+                error.result(),
+                "{fd} {path:#x} {flags:#x}"
+            );
+        }
+        for (flags, mask) in [
+            (0x6000, 0x7ff),
+            (0x8000, 0x7ff),
+            (0, 0x8000_0000),
+            (empty | 0x4000, 0xffff_ffff),
+        ] {
+            assert_eq!(
+                statx(1, EMPTY, flags, mask, STATX_BUFFER),
+                Errno::EINVAL.result(),
+                "{flags:#x} {mask:#x}"
+            );
+        }
+        assert_eq!(
+            statx(1, EMPTY, empty | 0x4000, 0x1_7fff_ffff, STATX_BUFFER),
+            0
+        );
+    }
+
+    #[test]
+    fn paths_are_read_to_their_end_and_no_further() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let fdcwd = u64::from(stat::at::FDCWD as u32);
+        let lowest = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
+        let fstatat = |path| {
+            call(
+                &process,
+                number::NEWFSTATAT,
+                [fdcwd, path, STAT_BUFFER, 0, 0, 0],
+            )
+        };
+        process
+            .write_user_memory(HANDLER_STACK_TOP - 2, b"x\0")
+            .unwrap();
+        assert_eq!(fstatat(HANDLER_STACK_TOP - 2), Errno::ENOENT.result());
+        process
+            .write_user_memory(HANDLER_STACK_TOP - 2, b"xy")
+            .unwrap();
+        assert_eq!(fstatat(HANDLER_STACK_TOP - 2), Errno::EFAULT.result());
+        let longest = alloc::vec![b'a'; 4095];
+        process.write_user_memory(lowest + 1, &longest).unwrap();
+        process.write_user_memory(lowest + 4096, &[0]).unwrap();
+        assert_eq!(fstatat(lowest + 1), Errno::ENOENT.result());
+        process.write_user_memory(lowest + 4096, b"a\0").unwrap();
+        assert_eq!(fstatat(lowest + 1), Errno::ENAMETOOLONG.result());
+        assert_eq!(fstatat(0xffff_ffff_ffff_fff0), Errno::EFAULT.result());
+    }
+
+    #[test]
+    fn the_console_cannot_seek() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let lseek =
+            |fd, offset, whence| call(&process, number::LSEEK, [fd, offset, whence, 0, 0, 0]);
+        for fd in [0, 1, 2, 1 << 32 | 2] {
+            for whence in [0, 1, 2, 3, 4, 0xffff_ffff_0000_0001] {
+                assert_eq!(
+                    lseek(fd, 0, whence),
+                    Errno::ESPIPE.result(),
+                    "{fd:#x} {whence:#x}"
+                );
+                assert_eq!(
+                    lseek(fd, u64::MAX, whence),
+                    Errno::ESPIPE.result(),
+                    "{fd:#x} {whence:#x}"
+                );
+            }
+            for whence in [5, 0xffff_ffff] {
+                assert_eq!(lseek(fd, 0, whence), Errno::EINVAL.result());
+            }
+        }
+        assert_eq!(lseek(3, 0, 9), Errno::EBADF.result());
     }
 }

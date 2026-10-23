@@ -954,6 +954,72 @@ riscv64_user_test_linux_clock:
     li      a7, 94
     ecall
 8:  j       8b
+    .global riscv64_user_test_linux_stat
+riscv64_user_test_linux_stat:
+    addi    sp, sp, -272
+    sb      zero, 256(sp)
+    li      a0, 1
+    mv      a1, sp
+    li      a7, 80
+    ecall
+    bnez    a0, 9f
+    lwu     t0, 16(sp)
+    li      t1, 0xf000
+    and     t0, t0, t1
+    li      t1, 0x2000
+    bne     t0, t1, 9f
+    ld      t0, 32(sp)
+    li      t1, 0x501
+    bne     t0, t1, 9f
+    sd      zero, 32(sp)
+    li      a0, 1
+    addi    a1, sp, 256
+    mv      a2, sp
+    li      a3, 0x1000
+    li      a7, 79
+    ecall
+    bnez    a0, 9f
+    ld      t0, 32(sp)
+    li      t1, 0x501
+    bne     t0, t1, 9f
+    sh      zero, 28(sp)
+    sw      zero, 128(sp)
+    li      a0, 1
+    addi    a1, sp, 256
+    li      a2, 0x1000
+    li      a3, 0x7ff
+    mv      a4, sp
+    li      a7, 291
+    ecall
+    bnez    a0, 9f
+    lhu     t0, 28(sp)
+    li      t1, 0xf000
+    and     t0, t0, t1
+    li      t1, 0x2000
+    bne     t0, t1, 9f
+    lwu     t0, 128(sp)
+    li      t1, 5
+    bne     t0, t1, 9f
+    li      a0, 1
+    li      a1, 0
+    li      a2, 1
+    li      a7, 62
+    ecall
+    li      t0, -29
+    bne     a0, t0, 9f
+    li      a0, 3
+    mv      a1, sp
+    li      a7, 80
+    ecall
+    li      t0, -9
+    bne     a0, t0, 9f
+    li      a0, 0
+    li      a7, 94
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -1076,6 +1142,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_signal_queue: u8;
     static riscv64_user_test_linux_signal_suspend: u8;
     static riscv64_user_test_linux_clock: u8;
+    static riscv64_user_test_linux_stat: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -1145,6 +1212,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_queue: (&raw const riscv64_user_test_linux_signal_queue) as usize - start,
         linux_signal_suspend: (&raw const riscv64_user_test_linux_signal_suspend) as usize - start,
         linux_clock: (&raw const riscv64_user_test_linux_clock) as usize - start,
+        linux_stat: (&raw const riscv64_user_test_linux_stat) as usize - start,
     }
 }
 

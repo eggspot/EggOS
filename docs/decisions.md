@@ -3004,3 +3004,62 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   absolute realtime sleepers re-evaluated once the wall clock can be set; `EINTR` and `rem`
   once signals can arrive during a sleep.
 
+## D74 The console's status: `fstat`, `newfstatat` and `statx` on the standard descriptors; `lseek` refused — Decided by the build loop (the console's values, the lookup rules and the scope decided by research)
+- **Why.** M6's next startup step. glibc's stdio calls `fstat` (since 2.33 on 64-bit as
+  `newfstatat(fd, "", buf, AT_EMPTY_PATH)`) on a stream before its first write: a character
+  device that is a terminal is line-buffered, and `st_blksize` sizes the buffer. musl calls
+  `fstat`; Rust's std calls `statx` first (probing for it with a null path and buffer, taking
+  only `EFAULT` to mean it exists) and falls back to `fstatat`. `fseek` and `ftell` on a
+  terminal reach `lseek` and expect `ESPIPE`. Every one of these answered `ENOSYS`.
+- **The console's status** (research): what `stat /dev/console` shows on a Linux distribution
+  with devtmpfs, the device Linux opens on 0, 1 and 2 for `init` (D61): a character device
+  (`S_IFCHR | 0600`, 0o020600), device number 5:1 (`st_rdev` 0x501 in the C libraries'
+  `dev_t` encoding), one link, owned by root (uid and gid 0), size and blocks 0, `st_blksize`
+  4096 (the page size, as on devtmpfs). The device files' file system is the anonymous device
+  0:5, devtmpfs's usual number, and the console's inode 5, neither 0 (taken by some programs
+  for "unknown") nor 1 (a file system's root); both are named constants
+  (`stat::DEVICE_FILES`, `stat::CONSOLE_INODE`) for M7's `/dev` to keep. Every time is 0: the
+  node exists from boot, and boot is the epoch on the wall clock (D73). The three descriptors
+  report the same status: they are one open file.
+- **`statx`** (research): `stx_mask` 0x7ff (`STATX_BASIC_STATS`) whatever the caller asked, as
+  `statx(2)` allows; not `STATX_MNT_ID`, as there is no mount and so no honest mount id, and
+  not `STATX_BTIME`, so Rust's `created()` says it is not available. Attributes and their mask
+  0; the device numbers as major and minor fields; all 256 bytes written.
+- **Lookups** (research), as Linux: flags first (`EINVAL` for any but `AT_SYMLINK_NOFOLLOW`,
+  `AT_NO_AUTOMOUNT` and `AT_EMPTY_PATH`, and for `statx` its reserved mask bit and both
+  synchronisation bits at once, before the path is read, so Rust's probe gets `EFAULT`), then
+  the path copied (`EFAULT`, or `ENAMETOOLONG` with no end within 4096 bytes; chunks never
+  cross a page, so nothing past the end is read), then an empty path `ENOENT` without
+  `AT_EMPTY_PATH` and the descriptor itself with it (`EBADF` if not open, `ENOENT` for
+  `AT_FDCWD`, as there is no working directory yet). A null path with `AT_EMPTY_PATH` is
+  accepted without being read, as Linux has since 6.11, though `uname` says 6.1 (D55): it is
+  strictly more permissive and skips a copy. Any other path finds no file: `ENOENT` (absolute
+  or from `AT_FDCWD`), `ENOTDIR` relative to the console, which is not a directory, `EBADF`
+  relative to a descriptor that is not open. `ENOENT` rather than `ENOSYS`: it is true, and a
+  program probing for an optional file carries on, where `ENOSYS` would make Rust's std give
+  up on `statx`. `EFAULT` for the result buffer comes last.
+- **`lseek`** (research): `EBADF`, then `EINVAL` for a `whence` past `SEEK_HOLE` (an `unsigned
+  int`), then `ESPIPE`; the offset is never looked at. To confirm against a running Linux: that
+  `EINVAL` for `whence` comes before `ESPIPE` on a terminal, and whether `newfstatat` accepts
+  `statx`'s synchronisation bits (0x2000, 0x4000), which `fstatat(2)` does not list and this
+  refuses with `EINVAL`.
+- **Left for the descriptor table (M7)** (research): `fcntl`, `close`, `dup` and their kin
+  change or report per-descriptor state (`FD_CLOEXEC`, a closed descriptor), which needs the
+  table; `read` waits for console input (M8), as D61 decided. For the record, the console's
+  `F_GETFL` will be `O_RDWR | O_LARGEFILE` (0x8002 on x86_64 and RISC-V, 0x20002 on AArch64).
+  `pread64` and `pwrite64` (`ESPIPE` on the console) come with them.
+- **Cost.** The calls sit in `out_of_line_result`; `number::LAST` rises to `statx` (332 on
+  x86_64, 291 in the generic table), still one compare. The system-call path's inlined part is
+  unchanged, and every benchmark matches `main`'s CI run within 0.3 ns.
+- **Tests.** Host, through the dispatcher: the host's `struct stat` layout field by field
+  (x86_64's in CI's `check` job, the generic one on an AArch64 host) on 0, 1 and 2 (and a
+  descriptor with its upper half set), `newfstatat` with an empty and a null path
+  writing the same bytes as `fstat`, `statx`'s fields and mask whatever was asked, every error
+  in Linux's order (Rust's probe included), paths read to their end and no further,
+  `ENAMETOOLONG` at 4096 bytes, `lseek`'s three answers, and the `dev_t` encoding of large
+  numbers. QEMU: a new test program, `linux_stat`, checks `fstat(1)`, `newfstatat(1, "",
+  AT_EMPTY_PATH)` and `statx` report the character device 5:1, then that `lseek` is `ESPIPE`
+  and `fstat(3)` `EBADF`; it passes on aarch64, riscv64 and x86_64.
+- **For later.** The terminal's access and change times updated as it is used (`w` reads them
+  for idle time), with console input (M8); the console as `/dev/console` in M7's device file
+  system, keeping this status; `STATX_MNT_ID` once there are mounts.
