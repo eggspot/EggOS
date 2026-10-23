@@ -3653,10 +3653,8 @@ the license, by an explicit instruction recorded here.
   `getrandom`), the heap (a 2 MiB vector and many small strings), a boxed trait object, float
   formatting, `Instant` across a 2 ms `thread::sleep`, and the realtime clock; it writes
   `EGGOS-USER: a std program built from Rust source ran its checks` and exits with 0, or names
-  each failed check and exits with 1. Before `main` it goes through musl's start-up (`__libc_start_main`,
-  the thread pointer, `set_tid_address`, the stack protector's canary from `AT_RANDOM`) and
-  std's (descriptors 0–2 checked with `poll`, `SIGPIPE` ignored, the main thread's stack found
-  and a guarded alternate signal stack mapped for stack-overflow reports).
+  each failed check and exits with 1. Before `main` it goes through musl's and std's start-up,
+  whose calls D84's research listed.
 - **How it is built.** `cargo xtask` builds it with `CARGO_ENCODED_RUSTFLAGS` replacing
   `.cargo/config.toml`'s flags for the target (D85's `link-self-contained=no` is for our own
   runtime): `-C link-self-contained=yes -C target-feature=+crt-static -C relocation-model=pie

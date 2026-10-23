@@ -1714,7 +1714,7 @@ struct RustProgram {
 }
 
 /// `userland/selftest`: our own runtime, no C library (D85).
-const NO_STD_PROGRAM: RustProgram = RustProgram {
+static NO_STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(all(target_os = "none", feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
         "EGGOS_USERLAND_SELFTEST",
@@ -1727,7 +1727,7 @@ const NO_STD_PROGRAM: RustProgram = RustProgram {
 };
 
 /// `userland/std-selftest`: Rust's standard library, linked with musl (D86).
-const STD_PROGRAM: RustProgram = RustProgram {
+static STD_PROGRAM: RustProgram = RustProgram {
     #[cfg(all(target_os = "none", feature = "qemu-test"))]
     image: Some(include_bytes!(env!(
         "EGGOS_USERLAND_STD_SELFTEST",
