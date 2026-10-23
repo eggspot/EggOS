@@ -3514,15 +3514,17 @@ the license, by an explicit instruction recorded here.
   `MXCSR` check against the mask `FXSAVE64` just wrote, every signal frame's FP/SIMD layout,
   how handlers start, `madvise`'s checks and holes, and `mremap`'s moves, rollbacks and error
   order all check out. Three things change.
-- **x86_64 clears `CR4.OSXSAVE`, `PKE` and `UINTR` on every CPU, whatever firmware left.**
+- **x86_64 clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR` on every CPU, whatever firmware left.**
   D54 said `OSXSAVE` "stays clear", but `set_up_user_mode` only set bits in CR4 and cleared
   `FSGSBASE`, and the boot CPU keeps the loader's CR4. A loader that hands over with
   `OSXSAVE` set (UEFI loaders often do) would let programs use AVX and AVX-512, whose upper
   register halves and mask registers `FXSAVE64` neither saves nor clears: one program would
   see another's (LazyFP, CVE-2018-3665, again), and a thread that checked `CPUID` on the boot
   CPU would get `SIGILL` on another. With `PKE` left set, `WRPKRU` works in ring 3 and PKRU
-  is never switched, so one program could take pkey 0 away from the next. User interrupts
-  need state that is never switched too. Clearing them takes away nothing the kernel uses;
+  is never switched, so one program could take pkey 0 away from the next. Shadow stacks
+  and indirect-branch tracking (`CET`, with `IA32_U_CET` and the ring-3 shadow-stack
+  pointer) and user interrupts need state that is never switched too; the kernel uses
+  neither (no `-Zcf-protection`). Clearing them takes away nothing the kernel uses;
   `CPUID` then tells programs there is no `XSAVE` and no protection keys (Intel SDM Vol. 1
   §13 and Vol. 3A §2.5). AArch64 writes `CPACR_EL1` outright and RISC-V clears `sstatus.VS`,
   so neither has the problem. The `FSGSBASE` reason (D49, D57) is unchanged: the way in
