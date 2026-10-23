@@ -14,8 +14,8 @@
 //!
 //! What a state holds, per architecture: `V0`-`V31`, `FPCR` and `FPSR` on AArch64 (no SVE or
 //! SME yet); `f0`-`f31` and `fcsr` on RISC-V (no V yet); on x86_64 the x87, MMX and SSE
-//! registers and `MXCSR`, in `FXSAVE`'s 512-byte image (no AVX yet: `CR4.OSXSAVE` stays
-//! clear, so `CPUID` tells programs not to use it).
+//! registers and `MXCSR`, in `FXSAVE`'s 512-byte image (no AVX yet: each CPU clears
+//! `CR4.OSXSAVE`, so `CPUID` tells programs not to use it).
 
 /// A thread's FP/SIMD registers while they are not loaded on a CPU. Aligned for every
 /// architecture's save instructions (`FXSAVE` needs 16 bytes, and `XSAVE`, when AVX comes,

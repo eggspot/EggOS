@@ -844,6 +844,10 @@ fn processes_keep_their_fp_registers<P: Platform>(
     const CALLS: u64 = 20;
     /// An exit other than the program's system calls, or a report of changed registers.
     const WRONG: u64 = u64::MAX;
+    #[cfg(target_arch = "x86_64")]
+    if programs_see_xsave_or_protection_keys() {
+        return Err("programs see XSAVE or protection keys, whose state is never switched");
+    }
     let mut threads = Vec::new();
     for number in 0..count {
         // SAFETY: as in `processes_with_data`.
@@ -895,6 +899,15 @@ fn processes_keep_their_fp_registers<P: Platform>(
         }
     }
     result
+}
+
+#[cfg(target_arch = "x86_64")]
+fn programs_see_xsave_or_protection_keys() -> bool {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    const CPUID_1_ECX_OSXSAVE: u32 = 1 << 27;
+    const CPUID_7_ECX_OSPKE: u32 = 1 << 4;
+    __cpuid(1).ecx & CPUID_1_ECX_OSXSAVE != 0
+        || (__cpuid(0).eax >= 7 && __cpuid_count(7, 0).ecx & CPUID_7_ECX_OSPKE != 0)
 }
 
 /// Has every other CPU's idle thread look again until none keeps an ended process's address

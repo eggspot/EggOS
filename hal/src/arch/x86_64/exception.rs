@@ -1480,6 +1480,10 @@ const CR0_TS: u64 = 1 << 3;
 const CR0_NE: u64 = 1 << 5;
 /// `CR4.FSGSBASE`: lets ring 3 write its own FS and GS bases (`wrfsbase`, `wrgsbase`).
 const CR4_FSGSBASE: u64 = 1 << 16;
+const CR4_OSXSAVE: u64 = 1 << 18;
+const CR4_PKE: u64 = 1 << 22;
+const CR4_UINTR: u64 = 1 << 25;
+const CR4_RING_3_STATE_NOT_SWITCHED: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_UINTR;
 /// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
@@ -1623,18 +1627,17 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
     unsafe { super::write_msr(IA32_LSTAR, x86_64_syscall_entry as *const () as u64) };
     // SAFETY: as above.
     unsafe { super::write_msr(IA32_FMASK, SYSCALL_MASKED_RFLAGS) };
-    // Programs may not write their FS or GS base themselves, whatever firmware left: the way
-    // in loads the FS base only when it changed (`fs_base_id`), and a program-chosen GS base
-    // needs the SWAPGS fence first (D49).
-    // SAFETY: clearing `CR4.FSGSBASE` only takes four instructions away from ring 3; the
-    // kernel uses none of them.
+    // SAFETY: clearing these CR4 bits, whatever firmware left, only takes instructions and
+    // state away from ring 3 that the kernel never switches between programs (D83): the FS
+    // and GS base writes, `XSAVE` with AVX and later state, `WRPKRU` and user interrupts.
+    // The kernel uses none of them.
     unsafe {
         core::arch::asm!(
             "mov {tmp}, cr4",
             "and {tmp}, {clear}",
             "mov cr4, {tmp}",
             tmp = out(reg) _,
-            clear = in(reg) !CR4_FSGSBASE,
+            clear = in(reg) !CR4_RING_3_STATE_NOT_SWITCHED,
             options(nomem, nostack),
         );
     }
