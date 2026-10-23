@@ -340,6 +340,7 @@ x86_64_user_test_linux_start:
     movq    %rax, %r14
     movl    $186, %eax
     syscall
+    movl    $255, %edi
     cmpq    %rax, %r14
     jne     9f
     movq    (%rsp), %rbx

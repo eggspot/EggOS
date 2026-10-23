@@ -689,7 +689,8 @@ mod tests {
             call(&process, number::SET_ROBUST_LIST, [DATA, 16, 0, 0, 0, 0]),
             Errno::EINVAL.result()
         );
-        // `uname` fills the writable page; not into the read-only one, nor across into it.
+        // `uname` fills the writable page; not the read-only one, nor across into the unmapped
+        // one after it.
         assert_eq!(
             call(&process, number::UNAME, [DATA + 4096, 0, 0, 0, 0, 0]),
             0

@@ -111,7 +111,8 @@ Startup-call follow-ups (D55): process ids reused after `wait4` reaps them (a pr
 `clone` and futexes; parents for `getppid` with `fork`; `sethostname` and `setdomainname`; the
 same release in `/proc/sys/kernel/osrelease` and `/proc/version` (procfs); a `writev`
 benchmark once a sink faster than the console's UART exists (M7), and `getpid`'s round trip
-as the cheapest real call.
+as the cheapest real call; `writev`'s two edge cases from PR #48's review checked against
+Linux (D55); `init` as pid 1 (M10).
 
 Thread follow-ups (D35): guard pages below thread stacks in a kernel virtual area, with a per-CPU
 cache of free stacks, once exception stacks exist; a self-test measuring stack high-water to

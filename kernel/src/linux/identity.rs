@@ -34,6 +34,12 @@ pub mod utsname {
     pub const MACHINE: &str = "riscv64";
     #[cfg(target_arch = "x86_64")]
     pub const MACHINE: &str = "x86_64";
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "x86_64"
+    )))]
+    compile_error!("utsname::MACHINE needs Linux's name for this architecture");
     /// The NIS domain name: Linux's default.
     pub const DOMAINNAME: &str = "(none)";
 

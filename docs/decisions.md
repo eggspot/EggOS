@@ -1872,9 +1872,14 @@ switch-path cost; this entry follows it.)
 - **Tests.** Host tests: `writev` in order, empty buffers, more than the stack holds, every
   error before anything is written, partial writes; the identity calls through the
   dispatcher, two processes with different ids, `uname` into writable memory and `EFAULT`
-  into read-only memory or across into it; the `utsname` layout. QEMU, on aarch64, riscv64
+  into read-only memory or across into unmapped memory; the `utsname` layout. QEMU, on aarch64, riscv64
   and x86_64: the ELF-started test program now checks `gettid == getpid` and writes its
   arguments and environment with `writev` from an iovec on its stack, so both run with each
   architecture's real numbers and the runner checks the line reached the console.
 - **Follow-ups:** a `writev` benchmark once a sink faster than the console's UART exists
   (pipes, files: M7); `getpid`'s round trip as the cheapest real call, with the next batch.
+  From PR #48's independent review, to confirm by observation on Linux: a buffer count with
+  bits above the low 32 (Linux may truncate it, returning 0 for `1 << 32` where we return
+  `EINVAL`), and a single oversized iovec running past user space (Linux may cap it before
+  its range check). Self-test processes take ids, so the first real program is not pid 1:
+  `init` gets pid 1 when it exists (M10).
