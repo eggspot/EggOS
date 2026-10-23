@@ -457,10 +457,10 @@ impl Signals {
 
     /// Takes the next pending, unblocked signal, discarding the ignored ones on the way: `Some`
     /// for one that ends the process (default actions Term and Core, `SIGKILL`'s included),
-    /// stops it, or runs its handler. `SIGKILL` first; then, as on Linux, the synchronous signals (`SIGILL`,
-    /// `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`) come first, those the kernel raised
-    /// before those a program sent, so a fault's or a failed frame's `SIGSEGV` is never
-    /// overtaken; otherwise the lowest number first. A handler with [`flag::RESETHAND`] is
+    /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
+    /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), those the
+    /// kernel raised before those a program sent, so a fault's or a failed frame's `SIGSEGV`
+    /// is never overtaken; then the lowest number. A handler with [`flag::RESETHAND`] is
     /// removed as it is taken, as on Linux: its signal's next delivery is by the default
     /// action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
@@ -566,7 +566,6 @@ const SIGCONT: u32 = 18;
 
 const SIGSYS: u32 = 31;
 
-/// The signals a program's own instruction raises, which Linux delivers before any other.
 const SYNCHRONOUS: u64 =
     bit(SIGILL) | bit(SIGTRAP) | bit(SIGBUS) | bit(SIGFPE) | bit(SIGSEGV) | bit(SIGSYS);
 
