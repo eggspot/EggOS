@@ -343,50 +343,6 @@ riscv64_user_test_null_syscalls:
     .global riscv64_user_test_spin
 riscv64_user_test_spin:
 3:  j       3b
-    .global riscv64_user_test_fp_registers
-riscv64_user_test_fp_registers:
-    li      a7, {syscall_first}
-    ecall
-    mv      s2, a0
-    li      s3, 0
-    .option push
-    .option arch, +d
-    frcsr   t0
-    or      s3, s3, t0
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    fmv.x.d t0, f\i
-    or      s3, s3, t0
-    .endr
-    andi    t0, s2, 3
-    slli    t0, t0, 5
-    fscsr   t0
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    addi    t0, s2, \i
-    fmv.d.x f\i, t0
-    .endr
-7:  li      a7, {syscall_null}
-    ecall
-    mv      s4, a0
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    addi    t0, s2, \i
-    fmv.x.d t1, f\i
-    xor     t1, t1, t0
-    or      s3, s3, t1
-    .endr
-    frcsr   t0
-    andi    t1, s2, 3
-    slli    t1, t1, 5
-    xor     t0, t0, t1
-    or      s3, s3, t0
-    .option pop
-    beqz    s4, 7b
-    mv      a0, s3
-    li      a7, {syscall_report}
-    ecall
-8:  j       8b
-    .global riscv64_user_test_illegal_instruction
-riscv64_user_test_illegal_instruction:
-    unimp
     .global riscv64_user_test_linux_hello
 riscv64_user_test_linux_hello:
     // Linux's generic numbers: write 64, exit_group 94. s1 collects the differences.
@@ -1093,6 +1049,50 @@ riscv64_user_test_linux_credentials:
     li      a7, 94
     ecall
 8:  j       8b
+    .global riscv64_user_test_fp_registers
+riscv64_user_test_fp_registers:
+    li      a7, {syscall_first}
+    ecall
+    mv      s2, a0
+    li      s3, 0
+    .option push
+    .option arch, +d
+    frcsr   t0
+    or      s3, s3, t0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fmv.x.d t0, f\i
+    or      s3, s3, t0
+    .endr
+    andi    t0, s2, 3
+    slli    t0, t0, 5
+    fscsr   t0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    addi    t0, s2, \i
+    fmv.d.x f\i, t0
+    .endr
+7:  li      a7, {syscall_null}
+    ecall
+    mv      s4, a0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    addi    t0, s2, \i
+    fmv.x.d t1, f\i
+    xor     t1, t1, t0
+    or      s3, s3, t1
+    .endr
+    frcsr   t0
+    andi    t1, s2, 3
+    slli    t1, t1, 5
+    xor     t0, t0, t1
+    or      s3, s3, t0
+    .option pop
+    beqz    s4, 7b
+    mv      a0, s3
+    li      a7, {syscall_report}
+    ecall
+8:  j       8b
+    .global riscv64_user_test_illegal_instruction
+riscv64_user_test_illegal_instruction:
+    unimp
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection

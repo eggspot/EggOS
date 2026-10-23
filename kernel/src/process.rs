@@ -213,7 +213,8 @@ impl<P: Platform> Process<P> {
     }
 
     /// A process whose address space maps the HAL's test program
-    /// ([`Platform::user_test_program`]) at [`TEST_PROGRAM_ADDRESS`], [`Attributes::USER_TEXT`].
+    /// ([`Platform::user_test_program`]) at [`TEST_PROGRAM_ADDRESS`], [`Attributes::USER_TEXT`],
+    /// on as many pages as it takes.
     ///
     /// # Safety
     /// As [`Self::new`].
@@ -222,11 +223,11 @@ impl<P: Platform> Process<P> {
     ) -> Result<Self, &'static str> {
         // SAFETY: the caller's guarantees.
         let mut process = unsafe { Self::new(kernel) }?;
-        process.map_new_page(
-            TEST_PROGRAM_ADDRESS,
-            Attributes::USER_TEXT,
-            P::user_test_program().code,
-        )?;
+        let mut virt = TEST_PROGRAM_ADDRESS;
+        for page in P::user_test_program().code.chunks(FRAME_SIZE as usize) {
+            process.map_new_page(virt, Attributes::USER_TEXT, page)?;
+            virt += FRAME_SIZE;
+        }
         Ok(process)
     }
 

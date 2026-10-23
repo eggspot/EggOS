@@ -314,46 +314,6 @@ x86_64_user_test_null_syscalls:
     .global x86_64_user_test_spin
 x86_64_user_test_spin:
 3:  jmp     3b
-    .global x86_64_user_test_fp_registers
-x86_64_user_test_fp_registers:
-    movl    ${syscall_first}, %eax
-    syscall
-    movq    %rax, %rbx
-    xorl    %r12d, %r12d
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-    movq    %xmm\i, %rcx
-    orq     %rcx, %r12
-    pshufd  $0x4e, %xmm\i, %xmm\i
-    movq    %xmm\i, %rcx
-    orq     %rcx, %r12
-    .endr
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-    leaq    \i(%rbx), %rcx
-    movq    %rcx, %xmm\i
-    punpcklqdq %xmm\i, %xmm\i
-    .endr
-7:  movl    ${syscall_null}, %eax
-    syscall
-    movq    %rax, %r13
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-    leaq    \i(%rbx), %rdx
-    movq    %xmm\i, %rcx
-    xorq    %rdx, %rcx
-    orq     %rcx, %r12
-    pshufd  $0x4e, %xmm\i, %xmm\i
-    movq    %xmm\i, %rcx
-    xorq    %rdx, %rcx
-    orq     %rcx, %r12
-    .endr
-    testq   %r13, %r13
-    jz      7b
-    movq    %r12, %rdi
-    movl    ${syscall_report}, %eax
-    syscall
-8:  jmp     8b
-    .global x86_64_user_test_illegal_instruction
-x86_64_user_test_illegal_instruction:
-    ud2
     .global x86_64_user_test_linux_hello
 x86_64_user_test_linux_hello:
     // Linux's x86_64 numbers: write 1, exit_group 231. rbx collects the differences.
@@ -1083,6 +1043,46 @@ x86_64_user_test_linux_credentials:
     movl    $231, %eax
     syscall
 8:  jmp     8b
+    .global x86_64_user_test_fp_registers
+x86_64_user_test_fp_registers:
+    movl    ${syscall_first}, %eax
+    syscall
+    movq    %rax, %rbx
+    xorl    %r12d, %r12d
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    movq    %xmm\i, %rcx
+    orq     %rcx, %r12
+    pshufd  $0x4e, %xmm\i, %xmm\i
+    movq    %xmm\i, %rcx
+    orq     %rcx, %r12
+    .endr
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    leaq    \i(%rbx), %rcx
+    movq    %rcx, %xmm\i
+    punpcklqdq %xmm\i, %xmm\i
+    .endr
+7:  movl    ${syscall_null}, %eax
+    syscall
+    movq    %rax, %r13
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    leaq    \i(%rbx), %rdx
+    movq    %xmm\i, %rcx
+    xorq    %rdx, %rcx
+    orq     %rcx, %r12
+    pshufd  $0x4e, %xmm\i, %xmm\i
+    movq    %xmm\i, %rcx
+    xorq    %rdx, %rcx
+    orq     %rcx, %r12
+    .endr
+    testq   %r13, %r13
+    jz      7b
+    movq    %r12, %rdi
+    movl    ${syscall_report}, %eax
+    syscall
+8:  jmp     8b
+    .global x86_64_user_test_illegal_instruction
+x86_64_user_test_illegal_instruction:
+    ud2
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection

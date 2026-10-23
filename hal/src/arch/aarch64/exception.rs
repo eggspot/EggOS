@@ -229,56 +229,6 @@ aarch64_user_test_null_syscalls:
     .global aarch64_user_test_spin
 aarch64_user_test_spin:
 3:  b       3b
-    .global aarch64_user_test_fp_registers
-aarch64_user_test_fp_registers:
-    mov     x8, #{syscall_first}
-    svc     #0
-    mov     x19, x0
-    mov     x20, #0
-    .arch_extension fp
-    .arch_extension simd
-    mrs     x9, fpcr
-    orr     x20, x20, x9
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    fmov    x9, d\i
-    orr     x20, x20, x9
-    mov     x9, v\i\().d[1]
-    orr     x20, x20, x9
-    .endr
-    and     x9, x19, #3
-    lsl     x9, x9, #22
-    msr     fpcr, x9
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    add     x9, x19, #\i
-    dup     v\i\().2d, x9
-    .endr
-7:  mov     x8, #{syscall_null}
-    svc     #0
-    mov     x21, x0
-    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
-    add     x9, x19, #\i
-    fmov    x10, d\i
-    eor     x10, x10, x9
-    orr     x20, x20, x10
-    mov     x10, v\i\().d[1]
-    eor     x10, x10, x9
-    orr     x20, x20, x10
-    .endr
-    mrs     x9, fpcr
-    and     x10, x19, #3
-    lsl     x10, x10, #22
-    eor     x9, x9, x10
-    orr     x20, x20, x9
-    .arch_extension nosimd
-    .arch_extension nofp
-    cbz     x21, 7b
-    mov     x0, x20
-    mov     x8, #{syscall_report}
-    svc     #0
-8:  b       8b
-    .global aarch64_user_test_illegal_instruction
-aarch64_user_test_illegal_instruction:
-    udf     #0
     .global aarch64_user_test_linux_hello
 aarch64_user_test_linux_hello:
     // Linux's generic numbers: write 64, exit_group 94. x19 collects the differences.
@@ -990,6 +940,56 @@ aarch64_user_test_linux_credentials:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_fp_registers
+aarch64_user_test_fp_registers:
+    mov     x8, #{syscall_first}
+    svc     #0
+    mov     x19, x0
+    mov     x20, #0
+    .arch_extension fp
+    .arch_extension simd
+    mrs     x9, fpcr
+    orr     x20, x20, x9
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    fmov    x9, d\i
+    orr     x20, x20, x9
+    mov     x9, v\i\().d[1]
+    orr     x20, x20, x9
+    .endr
+    and     x9, x19, #3
+    lsl     x9, x9, #22
+    msr     fpcr, x9
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    add     x9, x19, #\i
+    dup     v\i\().2d, x9
+    .endr
+7:  mov     x8, #{syscall_null}
+    svc     #0
+    mov     x21, x0
+    .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    add     x9, x19, #\i
+    fmov    x10, d\i
+    eor     x10, x10, x9
+    orr     x20, x20, x10
+    mov     x10, v\i\().d[1]
+    eor     x10, x10, x9
+    orr     x20, x20, x10
+    .endr
+    mrs     x9, fpcr
+    and     x10, x19, #3
+    lsl     x10, x10, #22
+    eor     x9, x9, x10
+    orr     x20, x20, x9
+    .arch_extension nosimd
+    .arch_extension nofp
+    cbz     x21, 7b
+    mov     x0, x20
+    mov     x8, #{syscall_report}
+    svc     #0
+8:  b       8b
+    .global aarch64_user_test_illegal_instruction
+aarch64_user_test_illegal_instruction:
+    udf     #0
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
