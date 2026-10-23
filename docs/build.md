@@ -75,8 +75,8 @@ holds what used to be written in them.
   image's inputs change (or by hand), so it bills a few minutes per toolchain or package change,
   not per PR. On a PR, or a manual run on another branch, it builds and checks the image; on
   `main` it also pushes. Only `main`'s image is ever pushed.
-- **Layers** are reused from the current image (`--cache-from`), so a toolchain bump does not
-  reinstall QEMU. Without registry access (a PR) the cache import logs a 403 "failed to
+- **Layers** are reused from the current image (`--cache-from`, which fetches only the layers
+  it reuses), so a toolchain bump does not reinstall QEMU. Without registry access (a PR) the cache import logs a 403 "failed to
   configure registry cache importer" error, which is expected, and the image builds from
   scratch.
 - **Timeout 30 minutes**: a rebuild installs QEMU from the Ubuntu mirror, which has stalled for

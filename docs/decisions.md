@@ -3590,7 +3590,8 @@ the license, by an explicit instruction recorded here.
   sysroot, as `core` and `alloc` already do for the kernel, and `Cargo.lock` still lists only
   our crates. The binary is a Linux program for EggOS to run, the kind of foreign software the
   OS exists for, so like firmware it is outside EggOS: it is a test fixture, built only for
-  the QEMU tests, never linked into the kernel's code and never shipped in a release image.
+  the QEMU tests, never linked into the kernel's code, never shipped in a release image and
+  never committed: like firmware, nothing of it is copied into the repo.
   Licences fit MIT OR Apache-2.0 (musl is MIT; LLVM's libunwind and start files are
   Apache-2.0 with the LLVM exception). glibc programs cannot be built this way (rustup ships no
   self-contained glibc) and are left to observed behaviour.
