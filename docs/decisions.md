@@ -2346,3 +2346,93 @@ switch-path cost; this entry follows it.)
   ready-at-once and after-`EFAULT` `ppoll` cases fail without their fixes; the rest guard the
   error order. `cargo xtask ci` passes: fmt, clippy, 259 host tests, boot tests and benchmarks
   on aarch64, riscv64 and x86_64.
+
+## D63 Signals sent and delivered, part 1: `kill`, `tkill`, `tgkill`, `rt_sigpending`; default actions delivered before the call returns — Decided by the build loop (Linux's rules decided by research)
+- **Why now.** `abort()` (C's, and Rust's `panic = "abort"`) sends itself `SIGABRT` with
+  `tgkill` or `kill` and expects to die of it. Until now that was `ENOSYS`, and musl's
+  `abort` then crashed on an illegal instruction, so the process ended with `SIGILL` instead.
+  Programs also send themselves signals with `raise`, and use `kill(pid, 0)` to check that a
+  process exists. Signal delivery is split in two. Part 1 (this) covers sending and the
+  default actions. Part 2 adds handlers: signal frames on each architecture, `rt_sigreturn`,
+  `SA_ONSTACK`, `SA_RESETHAND` and `SA_NODEFER`, and real-time signals queued with their
+  `siginfo`.
+- **Targets** (research, kill(2) and tgkill(2)). Only the caller is reachable, as for
+  `prlimit64` (D59).
+  - `kill` reaches the caller through its own id, through 0 (its process group), or through
+    minus its id (that group). Each process leads its own group until `setpgid` exists.
+  - `-1` means every process the caller may signal except itself, so it is `ESRCH`. Linux
+    returns `ESRCH` when nothing was signalled. `-1` is never process 1's group.
+  - Any other id is `ESRCH`. The target is found before the signal is looked at, so a bad
+    signal to a missing process is `ESRCH`.
+  - `tkill` and `tgkill` return `EINVAL` for an id that is not positive, then `ESRCH` unless
+    the ids are the caller's (its thread's id is the process's), then `EINVAL` for a signal
+    outside 0 to 64.
+  - Signal 0 only checks the target. The ids are `pid_t`: the registers' upper halves are
+    ignored.
+- **Pending signals and `rt_sigpending`** (research).
+  - Each thread has a pending set beside its blocked mask: 8 bytes in the existing `Signals`
+    lock, no allocation.
+  - A signal that is ignored (`SIG_IGN`, or a default of ignore) and not blocked is discarded
+    when sent. A blocked one stays pending even if ignored, as on Linux.
+  - Setting an action that ignores a signal discards it if pending, blocked or not, as POSIX
+    requires.
+  - `SIGCONT` discards pending stop signals, and a stop signal discards a pending `SIGCONT`,
+    whatever their actions (POSIX).
+  - `rt_sigpending` reports the pending signals that are blocked. As on Linux, it takes any
+    `sigsetsize` up to 8 and copies that many bytes, `EINVAL` above 8, then `EFAULT`.
+  - A set does not count a signal twice. Real-time signals' queue, and each signal's
+    `siginfo`, come in part 2 with the calls that can observe them (`rt_sigtimedwait`,
+    `rt_sigqueueinfo`, handlers with `SA_SIGINFO`).
+- **Delivery before the call returns, with nothing added to the system-call path.**
+  - POSIX requires a signal a process sends itself, or one it unblocks, to be delivered
+    before `kill` or `sigprocmask` returns. Only the calls that can make a signal due do it
+    today: `kill`, `tkill`, `tgkill`, `rt_sigprocmask`, and `rt_sigaction` (a pending signal
+    whose handler is removed).
+  - So `out_of_line_call` runs `signals::deliver` after those calls only. It sets the
+    result itself and may break, which ends the thread. The inlined dispatch's catch-all arm
+    now just returns its call's control flow.
+  - Signals from other processes and timers will need a check on the way back to user mode:
+    a per-thread "pending and not blocked" test, one load and a branch, perhaps folded into
+    the reschedule check that preemption already makes there (D48).
+- **Default actions** (signal(7)):
+  - **Term and Core** end the process with the signal (`ProcessExit::Killed`). There are no
+    core dumps yet.
+  - **Ign** (`SIGCHLD`, `SIGURG`, `SIGWINCH`) and **Cont** discard the signal.
+  - **Stop.** No process has a parent, so every process group is orphaned. POSIX then has the
+    terminal's stop signals (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`) discarded at their default
+    action.
+  - `SIGSTOP` really stops: the thread sleeps until `SIGCONT` or `SIGKILL`. Only another
+    process could send either, so for good, as on Linux when no one does.
+  - Lowest number first, and `SIGKILL` whatever the mask (it can never be blocked). A
+    signal with a handler stays pending until part 2 delivers it.
+- **Process 1 is not protected yet.** On Linux, `init` receives only the signals it has a
+  handler for, so a self-sent `SIGABRT` would be dropped there. Here process 1 is just the
+  first program started, not `init`, so it dies like any other. The protection comes with
+  `init` (M10), deliberately not before.
+- **Faults** still end the process with their signal whatever its actions (D60), which is
+  Linux's behaviour for a blocked or ignored fault signal. Faults go to a handler in part 2.
+- **Follow-ups.**
+  - `ppoll`'s signal mask applied during its wait, which ends the wait with `EINTR` (needs
+    handlers).
+  - `rt_sigsuspend` and `rt_sigtimedwait`.
+  - Signals the kernel raises itself: `SIGPIPE` on a write to a broken pipe (M7), `SIGXFSZ`
+    with the file-size limit.
+  - The return-path check, once anything else can send.
+  - A stopped state the scheduler and `wait4` see, once parents exist.
+- **Cost** (same Mac, QEMU `-icount`, against `main`'s CI run): every benchmark within
+  ±0.02%, apart from riscv64's two SBI timer benchmarks, which differ between local QEMU and
+  CI on `main` too. `linux_exec_load` moves +0.01%, although a new test program was added
+  (D62's cut) and the thread state grew by the pending set.
+- **Tests.**
+  - Host:
+    - the default-action table against signal(7);
+    - the pending rules (discarding at send and at delivery, blocked ignored signals kept
+      and reported, a handler's signal kept, lowest first, the terminal's stop signals
+      discarded, `SIGSTOP` stopping, `SIGCONT` and the stop signals cancelling);
+    - through the dispatcher: every target and error in order, `rt_sigpending` at sizes 8,
+      2 and 0 and its errors, a blocked `SIGUSR1` ending the process when unblocked, and
+      `tgkill(SIGABRT)` ending it with `SIGABRT`.
+  - QEMU, on aarch64, riscv64 and x86_64: the test program `linux_signals` checks that
+    `kill(0, SIGCHLD)` is ignored, then blocks `SIGUSR1`, sends it with `tgkill`, checks
+    `rt_sigpending` and unblocks it. The self-test `linux_programs_signal_themselves` requires
+    the process to be killed by `SIGUSR1`, and every frame of its second run to be freed.

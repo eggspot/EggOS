@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 26] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 27] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -120,6 +120,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 26] {
         (
             "linux_programs_poll_the_console",
             linux_programs_poll_the_console::<P>,
+        ),
+        (
+            "linux_programs_signal_themselves",
+            linux_programs_signal_themselves::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1373,6 +1377,53 @@ fn linux_programs_poll_the_console<P: Platform>(
     let freed = || free_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the polling program's frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// A Linux program's signals must be delivered by their actions before the call that made
+/// them due returns (D63): the test program's `linux_signals` must be ended by the `SIGUSR1`
+/// it blocked, sent itself and then unblocked, after `kill(0, SIGCHLD)` was ignored and
+/// `rt_sigpending` reported it. It runs twice, and everything the second run took must be
+/// freed, as in [`linux_programs_poll_the_console`].
+fn linux_programs_signal_themselves<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    // A page below the stack pointer for the program's signal sets.
+    const STACK_TOP: u64 = 0x70_0000;
+    const SIGUSR1: u32 = 10;
+    let mut before = None;
+    for round in 0..2 {
+        if round == 1 {
+            if !release_loaded_address_spaces::<P>(|| true) {
+                return Err("a CPU kept an ended process's address space loaded");
+            }
+            before = Some(free_frames().ok_or("there is no frame allocator")?);
+        }
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+        process.map_new_page(STACK_TOP - FRAME_SIZE, Attributes::USER_READ_WRITE, &[])?;
+        let process = Arc::new(process);
+        let program = P::user_test_program();
+        let context = UserContext::new(
+            process::TEST_PROGRAM_ADDRESS + program.linux_signals as u64,
+            STACK_TOP,
+        );
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        match process.exit_status() {
+            Some(ProcessExit::Killed { signal: SIGUSR1 }) => {}
+            Some(ProcessExit::Killed { .. }) => return Err("the program died of another signal"),
+            Some(ProcessExit::Exited(_)) => {
+                return Err("a signal call failed, or SIGUSR1 was not delivered when unblocked");
+            }
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+    }
+    let freed = || free_frames() == before;
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the signalling program's frames and tables were not all freed");
     }
     Ok(())
 }

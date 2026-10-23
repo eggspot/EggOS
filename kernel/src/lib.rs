@@ -335,6 +335,7 @@ pub(crate) mod tests {
             let linux_thread_pointer =
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_thread_pointer as u64;
             let linux_poll = crate::process::TEST_PROGRAM_ADDRESS + program.linux_poll as u64;
+            let linux_signals = crate::process::TEST_PROGRAM_ADDRESS + program.linux_signals as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -488,6 +489,40 @@ pub(crate) mod tests {
                     context.simulate_syscall(number, arguments, pc + 1);
                     UserExit::Syscall
                 }
+                pc if (linux_signals..linux_signals + 7).contains(&pc) => {
+                    // kill(0, SIGCHLD), rt_sigprocmask(SIG_BLOCK, SIGUSR1), getpid,
+                    // tgkill(pid, pid, SIGUSR1), rt_sigpending, rt_sigprocmask(SIG_UNBLOCK,
+                    // SIGUSR1), which must end it, else exit_group(1); each call's result
+                    // checked, as the program checks it.
+                    use crate::linux::number;
+                    let stack = context.stack();
+                    let (set, pending) = (stack - 16, stack - 32);
+                    let result = context.syscall_result();
+                    let usr1 = 1u64 << 9;
+                    let step = pc - linux_signals;
+                    let failed = match step {
+                        1 | 2 | 4 | 5 => result != 0,
+                        _ => false,
+                    } || step == 5 && {
+                        let mut bytes = [0u8; 8];
+                        read_user_bytes(pending, &mut bytes);
+                        u64::from_ne_bytes(bytes) != usr1
+                    };
+                    let (number, arguments) = match step {
+                        _ if failed || step == 6 => (number::EXIT_GROUP, [1, 0, 0, 0, 0, 0]),
+                        0 => (number::KILL, [0, 17, 0, 0, 0, 0]),
+                        1 => {
+                            write_user_bytes(set, &usr1.to_ne_bytes());
+                            (number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0])
+                        }
+                        2 => (number::GETPID, [0; 6]),
+                        3 => (number::TGKILL, [result, result, 10, 0, 0, 0]),
+                        4 => (number::RT_SIGPENDING, [pending, 8, 0, 0, 0, 0]),
+                        _ => (number::RT_SIGPROCMASK, [1, set, 0, 8, 0, 0]),
+                    };
+                    context.simulate_syscall(number, arguments, pc + 1);
+                    UserExit::Syscall
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -535,6 +570,7 @@ pub(crate) mod tests {
                 stack_growth: 27,
                 linux_thread_pointer: 200,
                 linux_poll: 264,
+                linux_signals: 300,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

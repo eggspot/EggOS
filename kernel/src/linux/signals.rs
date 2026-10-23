@@ -1,27 +1,33 @@
-//! Signal state (M6, D60): `rt_sigaction`, `rt_sigprocmask` and `sigaltstack`. Rust's std
-//! ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
-//! startup, glibc blocks and unblocks signals around much of its work, and a failed call is
-//! fatal to some of them, so the calls work and keep their state before signals are delivered.
+//! Signals (M6): their state, `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` (D60), and
+//! sending and delivering them, `kill`, `tkill`, `tgkill` and `rt_sigpending` (D63). Rust's
+//! std ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
+//! startup, glibc blocks and unblocks signals around much of its work, and `abort()` sends
+//! itself `SIGABRT` and expects to die of it.
 //!
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
-//! which makes its own table on the heap. Its thread has a blocked mask and an alternate stack
-//! ([`ThreadSignals`]), which move to each thread when `clone` exists. Nothing is delivered
-//! yet: a fault still ends the process with its signal whatever the actions and the mask say,
-//! which is also what Linux does for a fault whose signal is blocked or ignored. Delivery
-//! (signal frames, `rt_sigreturn`, `kill`) is the next step.
+//! which makes its own table on the heap. Its thread has a blocked mask, pending signals and
+//! an alternate stack ([`ThreadSignals`]), which move to each thread when `clone` exists. A
+//! signal a call makes due (sent to the caller, unblocked, or no longer caught) is delivered
+//! before the call
+//! returns ([`deliver`]): by its default action or `SIG_IGN`; one with a handler stays
+//! pending until signal frames and `rt_sigreturn` exist (part 2). A fault still ends the
+//! process with its signal whatever the actions and the mask say, which is also what Linux
+//! does for a fault whose signal is blocked or ignored.
 
 use super::Errno;
 use super::signal::{SIGKILL, SIGSTOP};
-use crate::process::Process;
+use crate::process::{Process, ProcessExit};
+use crate::thread;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 use eggos_hal::Platform;
 
 /// How many signals there are: 1 to 64 (`_NSIG`).
 pub const COUNT: usize = 64;
 
 /// The size of a signal set (`sigset_t` as the kernel takes it): the calls' `sigsetsize`
-/// must be this.
+/// must be this, but `rt_sigpending`'s may be smaller.
 pub const SET_SIZE: u64 = 8;
 
 /// `SIG_DFL`: the signal's default action.
@@ -132,11 +138,14 @@ pub struct Signals {
     thread: ThreadSignals,
 }
 
-/// A thread's signal state: what it blocks and its alternate stack.
+/// A thread's signal state: what it blocks, what is pending and its alternate stack.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadSignals {
     /// The blocked signals, bit `n - 1` for signal `n`; never [`UNBLOCKABLE`]'s.
     pub blocked: u64,
+    /// The signals sent and not yet delivered, as `blocked`: blocked ones, and ones whose
+    /// handler runs once signal frames exist (D63).
+    pub pending: u64,
     /// The alternate stack for handlers with [`flag::ONSTACK`].
     pub alternate_stack: AlternateStack,
 }
@@ -214,6 +223,7 @@ impl Signals {
             actions: None,
             thread: ThreadSignals {
                 blocked: 0,
+                pending: 0,
                 alternate_stack: AlternateStack {
                     base: 0,
                     size: 0,
@@ -235,7 +245,8 @@ impl Signals {
 
     /// Sets `signal`'s action to `new`, without its unknown flags and with `SIGKILL` and
     /// `SIGSTOP` left out of its mask, and returns the action it had. The first change that
-    /// changes anything makes the process's own table.
+    /// changes anything makes the process's own table. An action that ignores the signal
+    /// discards it if pending, blocked or not, as POSIX requires.
     fn set_action(&mut self, signal: u32, new: Action) -> Result<Action, ChangeError> {
         let current = self.action(signal).ok_or(ChangeError::Invalid)?;
         if bit(signal) & UNBLOCKABLE != 0 {
@@ -253,12 +264,128 @@ impl Signals {
             };
             own[signal as usize - 1] = new;
         }
+        if self.ignores(signal) {
+            self.thread.pending &= !bit(signal);
+        }
         Ok(current)
     }
 
     /// Its thread's state.
     pub fn thread(&self) -> ThreadSignals {
         self.thread
+    }
+
+    /// Whether `signal` (1 to 64) is discarded when it arrives: ignored, by `SIG_IGN` or by
+    /// its default action.
+    fn ignores(&self, signal: u32) -> bool {
+        self.action(signal)
+            .is_some_and(|action| match action.handler {
+                IGNORE => true,
+                DEFAULT => default_action(signal) == DefaultAction::Ignore,
+                _ => false,
+            })
+    }
+
+    /// Sends `signal` (1 to 64) to the thread: pending until [`Self::next_delivery`] takes it,
+    /// unless it is ignored and not blocked, which discards it at once, as on Linux (a blocked
+    /// signal stays pending even if ignored, and `rt_sigpending` reports it). As POSIX
+    /// requires, `SIGCONT` discards pending stop signals and a stop signal a pending
+    /// `SIGCONT`, whatever their actions. A signal already pending is not counted twice:
+    /// real-time signals' queue comes with their handlers.
+    pub fn send(&mut self, signal: u32) {
+        if signal == SIGCONT {
+            self.thread.pending &= !STOP_SIGNALS;
+        } else if bit(signal) & STOP_SIGNALS != 0 {
+            self.thread.pending &= !bit(SIGCONT);
+        }
+        if self.thread.blocked & bit(signal) == 0 && self.ignores(signal) {
+            return;
+        }
+        self.thread.pending |= bit(signal);
+    }
+
+    /// Takes the next pending, unblocked signal whose action is due now, lowest number first,
+    /// discarding the ignored ones on the way: `Some(signal)` for one that ends the process
+    /// (default actions Term and Core, `SIGKILL`'s included). A signal with a handler stays
+    /// pending: handlers run once signal frames exist (D63).
+    pub fn next_delivery(&mut self) -> Option<Delivery> {
+        let mut due = self.thread.pending & !self.thread.blocked;
+        while due != 0 {
+            let signal = due.trailing_zeros() + 1;
+            due &= due - 1;
+            let action = self.action(signal).unwrap_or_default();
+            let delivery = match action.handler {
+                IGNORE => None,
+                DEFAULT => match default_action(signal) {
+                    DefaultAction::Terminate | DefaultAction::Core => Some(Delivery::Kill(signal)),
+                    DefaultAction::Ignore | DefaultAction::Continue => None,
+                    // A terminal's stop signals are discarded in an orphaned process group,
+                    // as POSIX requires, and with no parents every process's group is one.
+                    DefaultAction::Stop if signal != SIGSTOP => None,
+                    DefaultAction::Stop => Some(Delivery::Stop(signal)),
+                },
+                _ => continue,
+            };
+            self.thread.pending &= !bit(signal);
+            if delivery.is_some() {
+                return delivery;
+            }
+        }
+        None
+    }
+
+    /// The pending signals that are blocked, as `rt_sigpending` reports them.
+    fn blocked_pending(&self) -> u64 {
+        self.thread.pending & self.thread.blocked
+    }
+}
+
+/// `SIGCONT`'s number.
+const SIGCONT: u32 = 18;
+
+/// The stop signals: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU`.
+const STOP_SIGNALS: u64 = bit(SIGSTOP) | bit(20) | bit(21) | bit(22);
+
+/// What delivering a signal does, for [`Signals::next_delivery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The process ends with this signal.
+    Kill(u32),
+    /// The process stops until `SIGCONT` or `SIGKILL`.
+    Stop(u32),
+}
+
+/// What a signal does when its action is `SIG_DFL` (signal(7)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultAction {
+    /// The process ends with the signal.
+    Terminate,
+    /// The process ends with the signal and would dump core (there are no core dumps yet).
+    Core,
+    /// The signal is discarded.
+    Ignore,
+    /// The process stops until `SIGCONT` or `SIGKILL`.
+    Stop,
+    /// A stopped process continues; otherwise the signal is discarded.
+    Continue,
+}
+
+/// Signal `signal`'s default action (1 to 64; the generic numbers, which AArch64, RISC-V and
+/// x86_64 share), as signal(7) lists it. Every real-time signal, 32 to 64, terminates.
+pub const fn default_action(signal: u32) -> DefaultAction {
+    use DefaultAction::*;
+    match signal {
+        // SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV, SIGXCPU, SIGXFSZ, SIGSYS.
+        3..=8 | 11 | 24 | 25 | 31 => Core,
+        // SIGCHLD, SIGURG, SIGWINCH.
+        17 | 23 | 28 => Ignore,
+        // SIGCONT.
+        18 => Continue,
+        // SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU.
+        19..=22 => Stop,
+        // SIGHUP, SIGINT, SIGKILL, SIGUSR1, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM, SIGSTKFLT,
+        // SIGVTALRM, SIGPROF, SIGIO, SIGPWR, and the real-time signals.
+        _ => Terminate,
     }
 }
 
@@ -449,6 +576,113 @@ pub fn sigaltstack<P: Platform>(
     Ok(0)
 }
 
+/// Signal `signal` (an `int`) as `kill`, `tkill` and `tgkill` take it, once their target was
+/// found: sends it to the process's thread, or only checks the target for 0. `EINVAL` outside
+/// 0 to 64.
+fn send_to_self<P: Platform>(process: &Process<P>, signal: u64) -> Result<u64, Errno> {
+    match signal as u32 {
+        0 => Ok(0),
+        signal if signal as usize <= COUNT => {
+            process.signals().lock().send(signal);
+            Ok(0)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// The process's id as a `pid_t`.
+fn own_id<P: Platform>(process: &Process<P>) -> i32 {
+    // At most `i32::MAX` (`ProcessId`).
+    process.id().get() as i32
+}
+
+/// `kill(pid, signal)`: sends `signal` to the process `pid` names, the caller being the only
+/// one it can reach yet: its own id; 0, its process group, of which it is the only member (a
+/// process is its own group's leader until `setpgid` exists); or minus its id, that group.
+/// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
+/// is looked at, as on Linux; then as [`send_to_self`]. `pid` is a `pid_t`: the register's
+/// upper half is ignored.
+pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<u64, Errno> {
+    let own = own_id(process);
+    let pid = pid as u32 as i32;
+    // -1 is never a group, even process 1's.
+    if pid == -1 || (pid != own && pid != 0 && pid != own.wrapping_neg()) {
+        return Err(Errno::ESRCH);
+    }
+    send_to_self(process, signal)
+}
+
+/// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller's one thread being the
+/// only one: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
+/// caller's, then as [`send_to_self`].
+pub fn tkill<P: Platform>(process: &Process<P>, tid: u64, signal: u64) -> Result<u64, Errno> {
+    tgkill(process, u64::from(own_id(process) as u32), tid, signal)
+}
+
+/// `tgkill(tgid, tid, signal)`: as [`tkill`], with the thread's process (its thread group)
+/// named too: `EINVAL` if either id is not positive, then `ESRCH` unless both are the
+/// caller's.
+pub fn tgkill<P: Platform>(
+    process: &Process<P>,
+    tgid: u64,
+    tid: u64,
+    signal: u64,
+) -> Result<u64, Errno> {
+    let (tgid, tid) = (tgid as u32 as i32, tid as u32 as i32);
+    if tgid <= 0 || tid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let own = own_id(process);
+    if tgid != own || tid != own {
+        return Err(Errno::ESRCH);
+    }
+    send_to_self(process, signal)
+}
+
+/// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
+/// others were delivered or wait for their handler) to `set`, its first `sigsetsize` bytes: as
+/// on Linux, any size up to 8 is taken, a larger one is `EINVAL`, then `EFAULT` if `set` is
+/// not the program's writable memory.
+pub fn rt_sigpending<P: Platform>(
+    process: &Process<P>,
+    set: u64,
+    set_size: u64,
+) -> Result<u64, Errno> {
+    if set_size > SET_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    if !super::ends_in_user_space::<P>(set, set_size) {
+        return Err(Errno::EFAULT);
+    }
+    let pending = process.signals().lock().blocked_pending().to_ne_bytes();
+    process
+        .write_user_memory(set, &pending[..set_size as usize])
+        .map(|()| 0)
+        .map_err(|_| Errno::EFAULT)
+}
+
+/// Delivers the signals a call just made due (sent to the caller, unblocked, or no longer
+/// caught), before the call returns to the program, as POSIX requires: ends the process for
+/// one whose action does, or stops it for `SIGSTOP`. Only the calls that can make a signal
+/// due run this, so the system-call path pays nothing; signals from other processes and
+/// timers will need a check on the way back to user mode.
+pub fn deliver<P: Platform>(process: &Process<P>) -> ControlFlow<()> {
+    let delivery = process.signals().lock().next_delivery();
+    match delivery {
+        None => ControlFlow::Continue(()),
+        Some(Delivery::Kill(signal)) => {
+            process.exit(ProcessExit::Killed { signal });
+            ControlFlow::Break(())
+        }
+        // Stopped until `SIGCONT` or `SIGKILL`, which only another process could send: none
+        // can reach it yet, so for good, as on Linux when no one sends either.
+        Some(Delivery::Stop(_)) => {
+            thread::sleep_until::<P>(u64::MAX);
+            ControlFlow::Continue(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,5 +782,113 @@ mod tests {
         };
         assert_eq!(flags(disarmed, 0x7000_1000), stack_flag::AUTODISARM);
         assert_eq!(flags(AlternateStack::default(), 0), stack_flag::DISABLE);
+    }
+
+    #[test]
+    fn default_actions_are_signal_7_s() {
+        use DefaultAction::*;
+        // signal(7)'s table, by number.
+        let core = [3, 4, 5, 6, 7, 8, 11, 24, 25, 31];
+        let stop = [19, 20, 21, 22];
+        let expected = |signal| {
+            if core.contains(&signal) {
+                Core
+            } else if [17, 23, 28].contains(&signal) {
+                Ignore
+            } else if signal == 18 {
+                Continue
+            } else if stop.contains(&signal) {
+                Stop
+            } else {
+                Terminate
+            }
+        };
+        for signal in 1..=COUNT as u32 {
+            assert_eq!(default_action(signal), expected(signal), "{signal}");
+        }
+        assert_eq!(default_action(SIGKILL), Terminate);
+        assert_eq!(default_action(SIGSTOP), Stop);
+    }
+
+    #[test]
+    fn signals_are_delivered_by_their_actions() {
+        const SIGABRT: u32 = 6;
+        const SIGUSR1: u32 = 10;
+        const SIGCHLD: u32 = 17;
+        const SIGTSTP: u32 = 20;
+        let mut signals = Signals::new();
+        // Ignored and not blocked: discarded when sent.
+        signals.send(SIGCHLD);
+        let ignore = Action {
+            handler: IGNORE,
+            ..Action::default()
+        };
+        signals.set_action(SIGUSR1, ignore).unwrap();
+        signals.send(SIGUSR1);
+        assert_eq!(signals.thread.pending, 0);
+        // Blocked: pending, ignored or not, and reported; an ignored one is discarded once
+        // unblocked, a terminating one ends the process.
+        signals.thread.blocked = bit(SIGCHLD) | bit(SIGUSR1) | bit(SIGABRT);
+        for signal in [SIGCHLD, SIGUSR1, SIGABRT] {
+            signals.send(signal);
+        }
+        assert_eq!(signals.blocked_pending(), signals.thread.blocked);
+        assert_eq!(signals.next_delivery(), None);
+        signals.thread.blocked = 0;
+        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGABRT)));
+        // The ignored ones after it go on the next look.
+        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(signals.thread.pending, 0);
+        // Setting an action that ignores a pending signal discards it, blocked or not.
+        signals.thread.blocked = bit(SIGABRT);
+        signals.send(SIGABRT);
+        signals.set_action(SIGABRT, ignore).unwrap();
+        assert_eq!(signals.thread.pending, 0);
+        // A handler: pending until frames exist, and never reported while unblocked.
+        let handler = Action {
+            handler: 0x40_1000,
+            ..Action::default()
+        };
+        signals.set_action(SIGUSR1, handler).unwrap();
+        signals.send(SIGUSR1);
+        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(signals.thread.pending, bit(SIGUSR1));
+        assert_eq!(signals.blocked_pending(), 0);
+        // The default action again: due.
+        signals.set_action(SIGUSR1, Action::default()).unwrap();
+        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGUSR1)));
+        // Lowest number first; SIGKILL whatever the mask said.
+        signals.thread.blocked = 0;
+        signals.send(64);
+        signals.send(SIGKILL);
+        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
+        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(64)));
+        // A terminal's stop signals are discarded (an orphaned process group); SIGSTOP stops.
+        signals.send(SIGTSTP);
+        assert_eq!(signals.next_delivery(), None);
+        signals.send(SIGSTOP);
+        assert_eq!(signals.next_delivery(), Some(Delivery::Stop(SIGSTOP)));
+    }
+
+    #[test]
+    fn sigcont_and_the_stop_signals_cancel_each_other() {
+        let mut signals = Signals::new();
+        signals.thread.blocked = !UNBLOCKABLE;
+        for signal in [20, 21, 22] {
+            signals.send(signal);
+        }
+        signals.send(SIGCONT);
+        assert_eq!(signals.thread.pending, bit(SIGCONT));
+        signals.send(21);
+        assert_eq!(signals.thread.pending, bit(21));
+        // SIGSTOP cannot be blocked: sent, it is pending until delivered.
+        signals.send(SIGCONT);
+        signals.send(SIGSTOP);
+        assert_eq!(signals.thread.pending, bit(SIGSTOP));
+        signals.send(SIGCONT);
+        assert_eq!(signals.thread.pending, bit(SIGCONT));
+        signals.thread.blocked = 0;
+        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(signals.thread.pending, 0);
     }
 }

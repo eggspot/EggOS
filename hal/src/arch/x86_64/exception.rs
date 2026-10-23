@@ -549,6 +549,52 @@ x86_64_user_test_linux_poll:
     movl    $231, %eax
     syscall
 8:  jmp     8b
+    .global x86_64_user_test_linux_signals
+x86_64_user_test_linux_signals:
+    // Linux's x86_64 numbers: rt_sigprocmask 14, getpid 39, kill 62, rt_sigpending 127,
+    // exit_group 231, tgkill 234. The signal set is at rsp-16, the pending set at rsp-32.
+    xorl    %edi, %edi
+    movl    $17, %esi               // SIGCHLD, ignored
+    movl    $62, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    $(1 << 9), -16(%rsp)    // SIGUSR1
+    xorl    %edi, %edi              // SIG_BLOCK
+    leaq    -16(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $39, %eax
+    syscall
+    movq    %rax, %rdi
+    movq    %rax, %rsi
+    movl    $10, %edx               // SIGUSR1
+    movl    $234, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    leaq    -32(%rsp), %rdi
+    movl    $8, %esi
+    movl    $127, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $(1 << 9), -32(%rsp)
+    jne     9f
+    movl    $1, %edi                // SIG_UNBLOCK: SIGUSR1 ends the program here
+    leaq    -16(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $14, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -868,6 +914,7 @@ unsafe extern "C" {
     static x86_64_user_test_stack_growth: u8;
     static x86_64_user_test_linux_thread_pointer: u8;
     static x86_64_user_test_linux_poll: u8;
+    static x86_64_user_test_linux_signals: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1034,6 +1081,7 @@ pub(super) fn user_test_program() -> TestProgram {
         stack_growth: (&raw const x86_64_user_test_stack_growth) as usize - start,
         linux_thread_pointer: (&raw const x86_64_user_test_linux_thread_pointer) as usize - start,
         linux_poll: (&raw const x86_64_user_test_linux_poll) as usize - start,
+        linux_signals: (&raw const x86_64_user_test_linux_signals) as usize - start,
     }
 }
 

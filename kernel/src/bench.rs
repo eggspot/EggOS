@@ -579,6 +579,7 @@ mod tests {
                 stack_growth: 2,
                 linux_thread_pointer: 0,
                 linux_poll: 0,
+                linux_signals: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

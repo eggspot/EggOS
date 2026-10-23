@@ -18,9 +18,11 @@
 //! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59), and the signal
 //! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60), and, on the
 //! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
-//! ([`terminal`], D61). Every other number returns `ENOSYS`, as Linux does for a call it
-//! lacks, so a program that probes for a call carries on. The next calls are the rest of what
-//! a static program's startup needs (signal delivery, ...), then the file system's (M7).
+//! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
+//! `rt_sigpending`, and delivery by their default actions ([`signals`], D63). Every other
+//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
+//! call carries on. The next calls are the rest of what a static program's startup needs
+//! (signal handlers, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
@@ -59,15 +61,19 @@ pub mod number {
         pub const SCHED_YIELD: u64 = 24;
         pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
+        pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
         pub const GETRLIMIT: u64 = 97;
         pub const GETPPID: u64 = 110;
+        pub const RT_SIGPENDING: u64 = 127;
         pub const SIGALTSTACK: u64 = 131;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
         pub const GETTID: u64 = 186;
+        pub const TKILL: u64 = 200;
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
+        pub const TGKILL: u64 = 234;
         pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const PRLIMIT64: u64 = 302;
@@ -86,9 +92,13 @@ pub mod number {
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const SET_ROBUST_LIST: u64 = 99;
         pub const SCHED_YIELD: u64 = 124;
+        pub const KILL: u64 = 129;
+        pub const TKILL: u64 = 130;
+        pub const TGKILL: u64 = 131;
         pub const SIGALTSTACK: u64 = 132;
         pub const RT_SIGACTION: u64 = 134;
         pub const RT_SIGPROCMASK: u64 = 135;
+        pub const RT_SIGPENDING: u64 = 136;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
@@ -133,7 +143,11 @@ pub mod number {
             PRLIMIT64,
             RT_SIGACTION,
             RT_SIGPROCMASK,
+            RT_SIGPENDING,
             SIGALTSTACK,
+            KILL,
+            TKILL,
+            TGKILL,
             #[cfg(target_arch = "x86_64")]
             POLL,
             PPOLL,
@@ -330,7 +344,7 @@ fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) ->
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
-            _ => out_of_line_call::<P>(process, number, context),
+            _ => return out_of_line_call::<P>(process, number, context),
         }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -354,11 +368,33 @@ fn memory_call<P: Platform>(
 }
 
 /// Every call up to [`number::LAST`] but `write`, `exit` and the memory calls, with the
-/// program's registers: `ENOSYS` for a number with no call. One out-of-line function for all
-/// of them, as [`memory_call`]: each call [`syscall`]'s own match grows by adds to the thread
-/// loop that it is inlined into (the loop's registers spill, and every system call pays).
+/// program's registers, whose result it sets: `ENOSYS` for a number with no call. One
+/// out-of-line function for all of them, as [`memory_call`]: each call [`syscall`]'s own match
+/// grows by adds to the thread loop that it is inlined into (the loop's registers spill, and
+/// every system call pays). After a call that can make a signal due, the signal is delivered
+/// before the program runs again ([`signals::deliver`]), which may end the process: then it
+/// breaks.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
+    process: &Process<P>,
+    number: u64,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let result = out_of_line_result(process, number, context);
+    context.set_syscall_result(result.unwrap_or_else(Errno::result));
+    match number {
+        number::KILL
+        | number::TKILL
+        | number::TGKILL
+        | number::RT_SIGPROCMASK
+        | number::RT_SIGACTION => signals::deliver(process),
+        _ => ControlFlow::Continue(()),
+    }
+}
+
+/// The result of [`out_of_line_call`]'s call `number`.
+#[inline(always)]
+fn out_of_line_result<P: Platform>(
     process: &Process<P>,
     number: u64,
     context: &mut UserContext,
@@ -379,6 +415,10 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGACTION => signals::rt_sigaction(process, first, second, third, fourth),
         number::RT_SIGPROCMASK => signals::rt_sigprocmask(process, first, second, third, fourth),
         number::SIGALTSTACK => signals::sigaltstack(process, first, second, context.stack()),
+        number::RT_SIGPENDING => signals::rt_sigpending(process, first, second),
+        number::KILL => signals::kill(process, first, second),
+        number::TKILL => signals::tkill(process, first, second),
+        number::TGKILL => signals::tgkill(process, first, second, third),
         #[cfg(target_arch = "x86_64")]
         number::POLL => poll::poll::<P>(process, first, second, third),
         number::PPOLL => poll::ppoll::<P>(process, first, second, third, fourth, fifth),
@@ -1636,6 +1676,156 @@ mod tests {
             .unwrap();
         assert_eq!(&words[..8], &0x7000_1000u64.to_ne_bytes());
         assert_eq!(&words[8..], &[0; 8]);
+    }
+
+    #[test]
+    fn signals_sent_to_the_caller_are_delivered_before_the_call_returns() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (sigabrt, sigusr1, sigchld) = (6, 10, 17);
+        let (esrch, einval) = (Errno::ESRCH.result(), Errno::EINVAL.result());
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let pid = u64::from(process.id().get());
+        let writable = DATA + 4096;
+        // The targets: the caller, its group (0, minus its id), nothing else; the target is
+        // found before the signal is checked. Signal 0 only checks.
+        // (Minus 1 is every other process, never process 1's group.)
+        let own_group = (pid > 1).then(|| pid.wrapping_neg());
+        for target in [pid, 0, 1 << 32 | pid].into_iter().chain(own_group) {
+            assert_eq!(call(&process, number::KILL, [target, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(
+                call(&process, number::KILL, [target, sigchld, 0, 0, 0, 0]),
+                0
+            );
+            assert_eq!(
+                call(&process, number::KILL, [target, 65, 0, 0, 0, 0]),
+                einval
+            );
+        }
+        let group_of_none = u64::from(i32::MIN as u32);
+        for target in [pid + 1, u64::MAX, group_of_none, (pid + 1).wrapping_neg()] {
+            assert_eq!(
+                call(&process, number::KILL, [target, 65, 0, 0, 0, 0]),
+                esrch
+            );
+        }
+        assert_eq!(call(&process, number::TKILL, [pid, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&process, number::TKILL, [0, 65, 0, 0, 0, 0]), einval);
+        assert_eq!(
+            call(&process, number::TKILL, [pid + 1, 65, 0, 0, 0, 0]),
+            esrch
+        );
+        assert_eq!(call(&process, number::TKILL, [pid, 65, 0, 0, 0, 0]), einval);
+        assert_eq!(call(&process, number::TGKILL, [pid, pid, 0, 0, 0, 0]), 0);
+        for (tgid, tid, result) in [
+            (0, pid, einval),
+            (pid, u64::from(u32::MAX), einval),
+            (pid + 1, pid, esrch),
+            (pid, pid + 1, esrch),
+            (pid, pid, einval),
+        ] {
+            assert_eq!(
+                call(&process, number::TGKILL, [tgid, tid, 65, 0, 0, 0]),
+                result
+            );
+        }
+        // A blocked signal is pending, and `rt_sigpending` reports it, in up to 8 bytes.
+        process
+            .write_user_memory(writable, &(1u64 << (sigusr1 - 1)).to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::RT_SIGPROCMASK, [0, writable, 0, 8, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::TGKILL, [pid, pid, sigusr1, 0, 0, 0]),
+            0
+        );
+        let pending = writable + 64;
+        for size in [8, 2, 0] {
+            process.write_user_memory(pending, &[0xff; 8]).unwrap();
+            assert_eq!(
+                call(&process, number::RT_SIGPENDING, [pending, size, 0, 0, 0, 0]),
+                0
+            );
+            let mut bytes = [0u8; 8];
+            process.read_user_memory(pending, &mut bytes).unwrap();
+            let mut expected = [0xff; 8];
+            expected[..size as usize]
+                .copy_from_slice(&(1u64 << (sigusr1 - 1)).to_ne_bytes()[..size as usize]);
+            assert_eq!(bytes, expected, "{size}");
+        }
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        for (set, size, result) in [
+            (pending, 9, einval),
+            (DATA, 8, Errno::EFAULT.result()),
+            (user_end - 4, 8, Errno::EFAULT.result()),
+            (user_end, 0, 0),
+        ] {
+            assert_eq!(
+                call(&process, number::RT_SIGPENDING, [set, size, 0, 0, 0, 0]),
+                result
+            );
+        }
+        // Unblocked, it ends the process before `rt_sigprocmask` returns.
+        let mut context = called(number::RT_SIGPROCMASK, [1, writable, 0, 8, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: sigusr1 as u32
+            })
+        );
+        // A caught signal stays pending (handlers come with signal frames); `rt_sigaction`
+        // restoring its default action makes it due, before the call returns.
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let pid = u64::from(process.id().get());
+        let sigusr2 = 12;
+        process
+            .write_user_memory(
+                writable,
+                &[0x40_1000u64, 0, 0, 0].map(u64::to_ne_bytes).concat(),
+            )
+            .unwrap();
+        assert_eq!(
+            call(
+                &process,
+                number::RT_SIGACTION,
+                [sigusr2, writable, 0, 8, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(call(&process, number::KILL, [pid, sigusr2, 0, 0, 0, 0]), 0);
+        assert_eq!(process.exit_status(), None);
+        process.write_user_memory(writable, &[0; 32]).unwrap();
+        let mut context = called(number::RT_SIGACTION, [sigusr2, writable, 0, 8, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: sigusr2 as u32
+            })
+        );
+        // `abort()`: `SIGABRT` to itself ends the process with it before `tgkill` returns.
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let pid = u64::from(process.id().get());
+        let mut context = called(number::TGKILL, [pid, pid, sigabrt, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: sigabrt as u32
+            })
+        );
     }
 
     #[test]
