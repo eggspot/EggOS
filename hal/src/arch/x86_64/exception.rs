@@ -908,6 +908,49 @@ x86_64_user_test_linux_signal_suspend:
 6:  movl    $15, %eax
     syscall
     int3
+    .global x86_64_user_test_linux_clock
+x86_64_user_test_linux_clock:
+    subq    $64, %rsp
+    movl    $1, %edi
+    movq    %rsp, %rsi
+    movl    $228, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    $0, 32(%rsp)
+    movq    ${clock_wait}, 40(%rsp)
+    leaq    32(%rsp), %rdi
+    xorl    %esi, %esi
+    movl    $35, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $1, %edi
+    leaq    16(%rsp), %rsi
+    movl    $228, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movq    16(%rsp), %rax
+    subq    (%rsp), %rax
+    imulq   $1000000000, %rax, %rax
+    addq    24(%rsp), %rax
+    subq    8(%rsp), %rax
+    cmpq    40(%rsp), %rax
+    jb      9f
+    movl    $2, %edi
+    leaq    16(%rsp), %rsi
+    movl    $228, %eax
+    syscall
+    cmpq    $-22, %rax
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -947,6 +990,7 @@ x86_64_user_test_end:
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
     // `uc_mcontext.r12` in the ucontext: the sigcontext at 40, r8 to r15 from its start.
     saved_r12 = const 40 + 4 * 8,
     saved_r13 = const 40 + 5 * 8,
@@ -1250,6 +1294,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_fault_handler: u8;
     static x86_64_user_test_linux_signal_queue: u8;
     static x86_64_user_test_linux_signal_suspend: u8;
+    static x86_64_user_test_linux_clock: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1431,6 +1476,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_fault_handler: (&raw const x86_64_user_test_linux_fault_handler) as usize - start,
         linux_signal_queue: (&raw const x86_64_user_test_linux_signal_queue) as usize - start,
         linux_signal_suspend: (&raw const x86_64_user_test_linux_signal_suspend) as usize - start,
+        linux_clock: (&raw const x86_64_user_test_linux_clock) as usize - start,
     }
 }
 

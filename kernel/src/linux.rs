@@ -25,7 +25,8 @@
 //! faults delivered to them with Linux's `siginfo_t` ([`fault`], D65), and real-time signals
 //! queued with `rt_sigqueueinfo` and `rt_tgsigqueueinfo` and taken with `rt_sigtimedwait`
 //! (D68), and waits for a handler with `rt_sigsuspend` and, on x86_64, `pause` (D70), and
-//! `ppoll`'s signal mask during the call (D71).
+//! `ppoll`'s signal mask during the call (D71), and the clocks and sleeping
+//! (`clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`, ..., [`time`], D73).
 //! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -41,6 +42,7 @@ pub mod signal_frame;
 pub mod signals;
 pub mod terminal;
 pub mod thread_pointer;
+pub mod time;
 pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
@@ -70,10 +72,12 @@ pub mod number {
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const PAUSE: u64 = 34;
+        pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
+        pub const GETTIMEOFDAY: u64 = 96;
         pub const GETRLIMIT: u64 = 97;
         pub const GETPPID: u64 = 110;
         pub const RT_SIGPENDING: u64 = 127;
@@ -83,9 +87,15 @@ pub mod number {
         pub const SIGALTSTACK: u64 = 131;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
+        pub const SETTIMEOFDAY: u64 = 164;
         pub const GETTID: u64 = 186;
         pub const TKILL: u64 = 200;
+        pub const TIME: u64 = 201;
         pub const SET_TID_ADDRESS: u64 = 218;
+        pub const CLOCK_SETTIME: u64 = 227;
+        pub const CLOCK_GETTIME: u64 = 228;
+        pub const CLOCK_GETRES: u64 = 229;
+        pub const CLOCK_NANOSLEEP: u64 = 230;
         pub const EXIT_GROUP: u64 = 231;
         pub const TGKILL: u64 = 234;
         pub const PPOLL: u64 = 271;
@@ -106,6 +116,11 @@ pub mod number {
         pub const EXIT_GROUP: u64 = 94;
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const SET_ROBUST_LIST: u64 = 99;
+        pub const NANOSLEEP: u64 = 101;
+        pub const CLOCK_SETTIME: u64 = 112;
+        pub const CLOCK_GETTIME: u64 = 113;
+        pub const CLOCK_GETRES: u64 = 114;
+        pub const CLOCK_NANOSLEEP: u64 = 115;
         pub const SCHED_YIELD: u64 = 124;
         pub const KILL: u64 = 129;
         pub const TKILL: u64 = 130;
@@ -121,6 +136,8 @@ pub mod number {
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
+        pub const GETTIMEOFDAY: u64 = 169;
+        pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;
         pub const GETPPID: u64 = 173;
         pub const GETTID: u64 = 178;
@@ -203,7 +220,8 @@ impl Errno {
     /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), a
     /// hard resource limit raised (`setrlimit`, `prlimit64`), the alternate signal stack
     /// changed while the thread runs on it (`sigaltstack`), or a `si_code` only the kernel and
-    /// `kill` may send queued to another process (`rt_sigqueueinfo`).
+    /// `kill` may send queued to another process (`rt_sigqueueinfo`), or the wall clock set
+    /// (`clock_settime`, `settimeofday`).
     pub const EPERM: Self = Self(1);
     /// No such file: here, a program's interpreter (`execve`).
     pub const ENOENT: Self = Self(2);
@@ -233,13 +251,15 @@ impl Errno {
     pub const ENODEV: Self = Self(19);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
-    /// (the signal calls), or a bad timeout or too many descriptors (`ppoll`, `poll`).
+    /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
+    /// clock the time calls do not answer for or a bad time (the time calls).
     pub const EINVAL: Self = Self(22);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
-    /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`).
+    /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`), or a clock
+    /// `clock_nanosleep` cannot sleep on.
     pub const EOPNOTSUPP: Self = Self(95);
 
     /// The value the program sees in its result register: `-errno`.
@@ -470,6 +490,15 @@ fn out_of_line_result<P: Platform>(
             signals::rt_tgsigqueueinfo(process, first, second, third, fourth)
         }
         number::RT_SIGTIMEDWAIT => signals::rt_sigtimedwait(process, first, second, third, fourth),
+        number::CLOCK_GETTIME => time::clock_gettime(process, first, second),
+        number::CLOCK_GETRES => time::clock_getres(process, first, second),
+        number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
+        #[cfg(target_arch = "x86_64")]
+        number::TIME => time::time(process, first),
+        number::NANOSLEEP => time::nanosleep(process, first),
+        number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, first, second, third),
+        number::CLOCK_SETTIME => time::clock_settime(process, first, second),
+        number::SETTIMEOFDAY => time::settimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
         number::POLL => poll::poll::<P>(process, first, second, third),
         number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
@@ -3097,6 +3126,275 @@ mod tests {
         let mut left = [0u8; 16];
         process.read_user_memory(timeout, &mut left).unwrap();
         assert_eq!(left, two_milliseconds);
+    }
+
+    fn read_timespec(process: &Process<P>, address: u64) -> (u64, u64) {
+        let mut bytes = [0u8; 16];
+        process.read_user_memory(address, &mut bytes).unwrap();
+        let [seconds, nanoseconds] =
+            [&bytes[..8], &bytes[8..]].map(|half| u64::from_ne_bytes(half.try_into().unwrap()));
+        (seconds, nanoseconds)
+    }
+
+    fn write_timespec(process: &Process<P>, address: u64, seconds: i64, nanoseconds: i64) {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&seconds.to_ne_bytes());
+        bytes[8..].copy_from_slice(&nanoseconds.to_ne_bytes());
+        process.write_user_memory(address, &bytes).unwrap();
+    }
+
+    fn nanoseconds((seconds, nanoseconds): (u64, u64)) -> u64 {
+        seconds * 1_000_000_000 + nanoseconds
+    }
+
+    #[test]
+    fn clocks_read_the_monotonic_time_and_refuse_the_clocks_they_do_not_answer_for() {
+        use time::clock;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let tp = SCRATCH + 0x100;
+        let mut last = None;
+        for id in [
+            clock::REALTIME,
+            clock::MONOTONIC,
+            clock::MONOTONIC_RAW,
+            clock::REALTIME_COARSE,
+            clock::MONOTONIC_COARSE,
+            clock::BOOTTIME,
+            clock::TAI,
+        ] {
+            let id = u64::from(id as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [id, tp, 0, 0, 0, 0]),
+                0
+            );
+            let (seconds, nanoseconds) = read_timespec(&process, tp);
+            assert!(nanoseconds < 1_000_000_000);
+            let now = self::nanoseconds((seconds, nanoseconds));
+            assert!(last.is_none_or(|last| now > last), "clock {id}");
+            last = Some(now);
+            assert_eq!(
+                call(&process, number::CLOCK_GETRES, [id, tp, 0, 0, 0, 0]),
+                0
+            );
+            assert_eq!(read_timespec(&process, tp), (0, 1));
+            assert_eq!(call(&process, number::CLOCK_GETRES, [id, 0, 0, 0, 0, 0]), 0);
+            for (call_number, unwritable) in [
+                (number::CLOCK_GETTIME, READ_ONLY),
+                (number::CLOCK_GETTIME, UNMAPPED),
+                (number::CLOCK_GETRES, READ_ONLY),
+            ] {
+                assert_eq!(
+                    call(&process, call_number, [id, unwritable, 0, 0, 0, 0]),
+                    Errno::EFAULT.result()
+                );
+            }
+        }
+        for id in [
+            clock::PROCESS_CPUTIME_ID,
+            clock::THREAD_CPUTIME_ID,
+            clock::REALTIME_ALARM,
+            clock::BOOTTIME_ALARM,
+            10,
+            12,
+            -2,
+            -6,
+        ] {
+            let id = 0xffff_ffff_0000_0000 | u64::from(id as u32);
+            for call_number in [number::CLOCK_GETTIME, number::CLOCK_GETRES] {
+                assert_eq!(
+                    call(&process, call_number, [id, UNMAPPED, 0, 0, 0, 0]),
+                    Errno::EINVAL.result()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gettimeofday_reads_the_wall_clock_in_microseconds_with_utc() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let (tv, tz, tp) = (SCRATCH + 0x100, SCRATCH + 0x110, SCRATCH + 0x120);
+        process.write_user_memory(tz, &[0xff; 8]).unwrap();
+        assert_eq!(
+            call(&process, number::CLOCK_GETTIME, [0, tp, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::GETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]),
+            0
+        );
+        let before = nanoseconds(read_timespec(&process, tp));
+        let (seconds, microseconds) = read_timespec(&process, tv);
+        assert!(microseconds < 1_000_000);
+        assert!((seconds * 1_000_000 + microseconds) * 1000 >= before / 1000 * 1000);
+        let mut zone = [0xffu8; 8];
+        process.read_user_memory(tz, &mut zone).unwrap();
+        assert_eq!(zone, [0; 8]);
+        assert_eq!(call(&process, number::GETTIMEOFDAY, [0, 0, 0, 0, 0, 0]), 0);
+        for (tv, tz) in [(READ_ONLY, 0), (0, READ_ONLY), (tv, UNMAPPED)] {
+            assert_eq!(
+                call(&process, number::GETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let tloc = SCRATCH + 0x130;
+            let seconds = call(&process, number::TIME, [tloc, 0, 0, 0, 0, 0]);
+            let mut written = [0u8; 8];
+            process.read_user_memory(tloc, &mut written).unwrap();
+            assert_eq!(u64::from_ne_bytes(written), seconds);
+            assert_eq!(call(&process, number::TIME, [0, 0, 0, 0, 0, 0]), seconds);
+            assert_eq!(
+                call(&process, number::TIME, [READ_ONLY, 0, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+    }
+
+    #[test]
+    fn nanosleep_never_wakes_early_and_checks_its_request_as_linux() {
+        use time::{TIMER_ABSTIME, clock};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let (req, tp) = (SCRATCH + 0x100, SCRATCH + 0x120);
+        let now = || {
+            assert_eq!(
+                call(&process, number::CLOCK_GETTIME, [1, tp, 0, 0, 0, 0]),
+                0
+            );
+            nanoseconds(read_timespec(&process, tp))
+        };
+        let monotonic = u64::from(clock::MONOTONIC as u32);
+        for (call_number, arguments) in [
+            (number::NANOSLEEP, [req, 0, 0, 0, 0, 0]),
+            (number::CLOCK_NANOSLEEP, [monotonic, 0, req, 0, 0, 0]),
+            (number::CLOCK_NANOSLEEP, [0, 0xfe, req, 0, 0, 0]),
+        ] {
+            write_timespec(&process, req, 0, 2_000_001);
+            let before = now();
+            assert_eq!(call(&process, call_number, arguments), 0);
+            assert!(now() - before >= 2_000_001);
+            for (seconds, nanoseconds) in [(0, 1_000_000_000), (0, -1), (-1, 0)] {
+                write_timespec(&process, req, seconds, nanoseconds);
+                assert_eq!(
+                    call(&process, call_number, arguments),
+                    Errno::EINVAL.result()
+                );
+            }
+        }
+        for (call_number, arguments) in [
+            (number::NANOSLEEP, [UNMAPPED, 0, 0, 0, 0, 0]),
+            (number::CLOCK_NANOSLEEP, [monotonic, 0, UNMAPPED, 0, 0, 0]),
+        ] {
+            assert_eq!(
+                call(&process, call_number, arguments),
+                Errno::EFAULT.result()
+            );
+        }
+        let deadline = now() + 3_000_000;
+        write_timespec(
+            &process,
+            req,
+            (deadline / 1_000_000_000) as i64,
+            (deadline % 1_000_000_000) as i64,
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::CLOCK_NANOSLEEP,
+                [monotonic, TIMER_ABSTIME, req, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(now() >= deadline);
+        write_timespec(&process, req, 0, 1);
+        let before = now();
+        assert_eq!(
+            call(
+                &process,
+                number::CLOCK_NANOSLEEP,
+                [0, TIMER_ABSTIME, req, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(now() - before < 1_000_000);
+        for (id, errno) in [
+            (clock::PROCESS_CPUTIME_ID, Errno::EINVAL),
+            (clock::THREAD_CPUTIME_ID, Errno::EOPNOTSUPP),
+            (clock::REALTIME_ALARM, Errno::EFAULT),
+            (clock::BOOTTIME_ALARM, Errno::EFAULT),
+            (clock::MONOTONIC_RAW, Errno::EOPNOTSUPP),
+            (clock::MONOTONIC_COARSE, Errno::EOPNOTSUPP),
+            (clock::REALTIME_COARSE, Errno::EOPNOTSUPP),
+        ] {
+            assert_eq!(
+                call(
+                    &process,
+                    number::CLOCK_NANOSLEEP,
+                    [u64::from(id as u32), 0, UNMAPPED, 0, 0, 0]
+                ),
+                errno.result()
+            );
+        }
+        write_timespec(&process, req, 0, -1);
+        for alarm in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM] {
+            let alarm = u64::from(alarm as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_NANOSLEEP, [alarm, 0, req, 0, 0, 0]),
+                Errno::EINVAL.result()
+            );
+        }
+        write_timespec(&process, req, 0, 1);
+        for alarm in [clock::REALTIME_ALARM, clock::BOOTTIME_ALARM] {
+            let alarm = u64::from(alarm as u32);
+            assert_eq!(
+                call(&process, number::CLOCK_NANOSLEEP, [alarm, 0, req, 0, 0, 0]),
+                Errno::EOPNOTSUPP.result()
+            );
+        }
+    }
+
+    #[test]
+    fn no_process_may_set_the_wall_clock_and_the_checks_come_first_as_on_linux() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let (time, zone) = (SCRATCH + 0x100, SCRATCH + 0x110);
+        process.write_user_memory(zone, &[0; 8]).unwrap();
+        write_timespec(&process, time, 1, 0);
+        let settime =
+            |clock: u64, tp: u64| call(&process, number::CLOCK_SETTIME, [clock, tp, 0, 0, 0, 0]);
+        assert_eq!(settime(1, UNMAPPED), Errno::EINVAL.result());
+        assert_eq!(settime(0, UNMAPPED), Errno::EFAULT.result());
+        assert_eq!(settime(0, time), Errno::EPERM.result());
+        for seconds in [-1, 8_277_292_036, i64::MAX] {
+            write_timespec(&process, time, seconds, 0);
+            assert_eq!(settime(0, time), Errno::EINVAL.result());
+        }
+        write_timespec(&process, time, 8_277_292_035, 999_999_999);
+        assert_eq!(settime(0, time), Errno::EPERM.result());
+        let settimeofday =
+            |tv: u64, tz: u64| call(&process, number::SETTIMEOFDAY, [tv, tz, 0, 0, 0, 0]);
+        assert_eq!(settimeofday(UNMAPPED, UNMAPPED), Errno::EFAULT.result());
+        write_timespec(&process, time, 1, 1_000_001);
+        assert_eq!(settimeofday(time, UNMAPPED), Errno::EINVAL.result());
+        write_timespec(&process, time, 1, 1_000_000);
+        assert_eq!(settimeofday(time, UNMAPPED), Errno::EFAULT.result());
+        assert_eq!(settimeofday(time, zone), Errno::EINVAL.result());
+        for seconds in [-1, 8_277_292_036] {
+            write_timespec(&process, time, seconds, 0);
+            assert_eq!(settimeofday(time, 0), Errno::EINVAL.result());
+        }
+        write_timespec(&process, time, 8_277_292_035, 0);
+        assert_eq!(settimeofday(time, 0), Errno::EPERM.result());
+        write_timespec(&process, time, 1, 999_999);
+        assert_eq!(settimeofday(time, zone), Errno::EPERM.result());
+        assert_eq!(settimeofday(0, 0), Errno::EPERM.result());
     }
 
     #[test]

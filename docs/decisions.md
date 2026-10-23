@@ -2940,3 +2940,67 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   `SIGILL` are delivered in that order; `rt_sigtimedwait` takes `SIGILL` (sent) before
   `SIGSEGV` (kernel); the queue's capacity drops to at most 32 once drained, by taking or
   discarding. Each fails without its fix. `cargo xtask ci` passes on aarch64, riscv64 and x86_64.
+
+## D73 Clocks and sleeping: `clock_gettime`, `clock_getres`, `gettimeofday`, `time`, `nanosleep`, `clock_nanosleep`; the wall clock starts at the epoch; no process sets it yet — Decided by the build loop (the wall clock's source, the clock ids and Linux's rules decided by research)
+- **Why.** M6's next startup step. Rust's std reads `CLOCK_MONOTONIC` for `Instant` and
+  `CLOCK_REALTIME` for `SystemTime` and sleeps with `nanosleep`; the C libraries' `time`,
+  `gettimeofday`, `clock_gettime` and `sleep` reach the same calls when there is no vDSO, as
+  here. None existed: every one answered `ENOSYS`.
+- **One clock, in nanoseconds.** Every clock reads the monotonic clock
+  (`Platform::clock_ticks`) times a 32.32 fixed-point nanoseconds-per-tick factor, rounded up
+  and computed once: one multiplication, no division, 7 to 11 instructions over the raw clock
+  read (benchmark `linux_clock_monotonic_read`). Rounding the factor up means a reading never
+  shows less time passing than the ticks did, so a program that sleeps for a duration always
+  measures at least that duration.
+- **The wall clock starts at the Unix epoch** (research), as Linux's does on a machine with no
+  real-time clock driver: `CLOCK_REALTIME` reads the same as `CLOCK_MONOTONIC`. Reading a
+  real-time clock now would take QEMU's fixed device addresses into early boot, which ties the
+  core to one machine; the PL031, Goldfish and CMOS clocks come as ordinary drivers after the
+  driver model (M5) and set the wall clock's offset at boot. Nothing a program can do yet
+  depends on the date (no files, M7, no network, M8).
+- **The clocks** (research): `REALTIME`, `MONOTONIC`, `BOOTTIME` (no suspend) and `TAI` (TAI
+  offset 0) with their `_RAW` and `_COARSE` variants, which read the same precise value (a
+  coarse clock may only lag). `EINVAL` for the CPU-time clocks (process, thread and the
+  dynamic `-pid` ids: there is no per-thread CPU time yet, and measuring it costs the thread
+  switch, a benchmarked hot path; glibc's and musl's `clock()` then return `-1`, which POSIX
+  allows, and Rust's std never uses them), the alarm clocks (Linux's need a real-time clock
+  device), and every other id. `clock_getres` reports 1 ns for each, as Linux does for its
+  high-resolution clocks; the coarse ones read precisely, so 1 ns is true for them too.
+- **Sleeping** (research): `nanosleep` and `clock_nanosleep` on the realtime, monotonic,
+  boot-time and TAI clocks (`EOPNOTSUPP` on the raw, coarse and thread CPU-time ones, and on
+  the alarm clocks after the request's checks, as Linux without a real-time clock), relative or
+  with `TIMER_ABSTIME` (other flag bits ignored, as on Linux), in Linux's error order:
+  `EINVAL` for the clock, `EOPNOTSUPP`, `EFAULT` for the request, `EINVAL` for negative seconds
+  or nanoseconds outside 0 to 999999999. The deadline is computed in nanoseconds and woken at
+  the first tick that reads at or past it, so a sleep never ends early; one too long to count
+  lasts for good; an absolute deadline already passed returns at once. Nothing can send the
+  sleeping thread a signal yet, so a sleep is never interrupted and `rem` is never written;
+  `EINTR` with `rem` comes with the first sender from outside the thread.
+- **Setting the clock** (research): `clock_settime` and `settimeofday` make Linux's checks
+  (`EINVAL` for any clock but `CLOCK_REALTIME`, `EFAULT`, `EINVAL` for a bad time or one past
+  Linux's latest settable second, 30 years of uptime short of the 64-bit nanosecond limit, and for
+  `settimeofday` its microseconds and time zone checks in Linux's order) and then answer
+  `EPERM`: no process may set the wall clock until processes have credentials
+  (`CAP_SYS_TIME`), as none may raise a hard resource limit (D59). The clock is shared by
+  every process, and an agent confined to its own permissions (D21) must not move it.
+- **`time`** is x86_64's only (the generic table has none). `gettimeofday` writes a zeroed
+  time zone (UTC).
+- **Cost.** The calls sit in `out_of_line_result`; the system-call path's inlined part is
+  unchanged and the round-trip benchmarks are the same as `main`'s. New benchmark:
+  `linux_clock_monotonic_read`, 12 (aarch64), 15 (riscv64) and 19 (x86_64) instructions.
+- **Tests.** Host, through the dispatcher: every clock reads forward and reports 1 ns, the
+  refused clocks `EINVAL` before `EFAULT`, unwritable buffers `EFAULT`; `gettimeofday` in
+  microseconds with a zeroed time zone, x86_64's `time`; `nanosleep` and both kinds of
+  `clock_nanosleep` never wake early, with Linux's errors in order, the alarm clocks included;
+  the setting calls' checks then `EPERM`; and, at frequencies from 1 MHz to 3.7 GHz, the first
+  tick at a time reads at least it and the tick before reads less. QEMU: a new test program, `linux_clock`, reads `CLOCK_MONOTONIC`, sleeps 1 ms
+  with `nanosleep`, reads it again and checks that at least 1 ms passed, then checks that
+  `CLOCK_PROCESS_CPUTIME_ID` is `EINVAL`; it passes on aarch64, riscv64 and x86_64.
+- **For later.** Real-time clock drivers setting the wall clock (after M5); a vDSO for clock
+  reads without a system call (it needs the counter readable from user mode again, which D49
+  turned off: `CNTKCTL_EL0`, `scounteren`, `CR4.TSD`); per-thread CPU time for the CPU-time
+  clocks, `getrusage` and `times`, with the owner's OK on its switch-path cost; the invariant-TSC
+  check, so `CLOCK_MONOTONIC` never goes backwards when a thread moves between x86_64 CPUs;
+  absolute realtime sleepers re-evaluated once the wall clock can be set; `EINTR` and `rem`
+  once signals can arrive during a sleep.
+
