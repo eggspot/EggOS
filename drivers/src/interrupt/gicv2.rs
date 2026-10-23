@@ -102,7 +102,9 @@ impl<R: RegisterIo> Gicv2CpuInterface<R> {
         Self { regs }
     }
 
-    /// Lets interrupts of every priority through and starts signalling them to this CPU.
+    /// Lets interrupts of every priority through and starts signalling them to this CPU. (The
+    /// priority mask is written as 0xff: the lowest priority a GIC implements reads back as
+    /// 0xff, or with its unimplemented low bits clear.)
     pub fn enable(&self) {
         self.regs.write32(GICC_PMR, PMR_ALLOW_EVERY_PRIORITY);
         self.regs.write32(GICC_CTLR, CTLR_ENABLE_GROUP_0);

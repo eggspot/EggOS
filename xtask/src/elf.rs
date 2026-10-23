@@ -301,9 +301,9 @@ mod tests {
     #[test]
     fn a_symbol_outside_every_segment_is_an_error() {
         let mut outside = image(false);
-        let past_the_segment_s_end = 0xffff_0000_0000_3000u64;
+        let past_the_end_of_the_segment = 0xffff_0000_0000_3000u64;
         outside[PROBE_SYMBOL + ST_VALUE..PROBE_SYMBOL + ST_SIZE]
-            .copy_from_slice(&past_the_segment_s_end.to_le_bytes());
+            .copy_from_slice(&past_the_end_of_the_segment.to_le_bytes());
         assert!(find_symbol(&outside, "probe").is_err());
     }
 

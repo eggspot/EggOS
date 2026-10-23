@@ -15,7 +15,9 @@ pub trait RegisterIo {
 
 /// A memory-mapped register block. Every access checks its offset against the block's size and
 /// its width's alignment, in release builds too, and panics on a bad one before touching
-/// memory.
+/// memory: [`RegisterIo`] is a safe trait, so no offset from safe code may reach a volatile
+/// access outside the block. The check is a few compares next to a device access that costs
+/// hundreds of cycles.
 #[derive(Debug)]
 pub struct Mmio {
     base: usize,

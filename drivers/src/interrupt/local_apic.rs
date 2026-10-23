@@ -1,6 +1,6 @@
 //! x86 local APIC in xAPIC mode, memory-mapped (Intel SDM vol. 3A, chapter 11): each CPU's
 //! interrupt controller, its timer, and the inter-processor interrupts that start and wake the
-//! other CPUs.
+//! other CPUs, sent through the interrupt command register (SDM 11.6.1).
 
 use crate::io::RegisterIo;
 
@@ -55,7 +55,8 @@ impl<R: RegisterIo> LocalApic<R> {
 
     /// Sets the timer up in one-shot mode, counting at the APIC's input clock, raising
     /// `vector` when it reaches zero (or nothing, when `masked`). The timer stays stopped
-    /// until [`Self::start_timer`].
+    /// until [`Self::start_timer`]. It is stopped first, since changing a running timer's LVT is
+    /// not defined to stop it.
     pub fn configure_one_shot_timer(&self, vector: u8, masked: bool) {
         self.stop_timer_before_changing_its_lvt();
         self.regs.write32(TIMER_DIVIDE_CONFIGURATION, DIVIDE_BY_1);

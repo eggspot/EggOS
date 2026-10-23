@@ -534,12 +534,9 @@ mod tests {
         assert_eq!(merged, expected);
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(kept[0].contains("kept riscv64 timer_arm"));
-        let firmware_dependent_without_a_baseline_is_not_recorded_from_other_firmware =
-            "not recorded: riscv64 timer_interrupt_round_trip";
         assert!(
-            kept[1].contains(
-                firmware_dependent_without_a_baseline_is_not_recorded_from_other_firmware
-            )
+            kept[1].contains("not recorded: riscv64 timer_interrupt_round_trip"),
+            "a firmware-dependent result with no baseline is not recorded from other firmware"
         );
     }
 

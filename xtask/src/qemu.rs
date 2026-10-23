@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_needs_the_user_program_s_and_the_elf_program_s_lines_whole() {
+    fn a_pass_needs_the_user_and_elf_programs_lines_whole() {
         let silent = format!("EggOS\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &silent).is_err());
         let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");

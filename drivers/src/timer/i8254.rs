@@ -93,7 +93,7 @@ mod tests {
         let speaker_and_gate_left_on_by_firmware = 0b11;
         let output_low = 0;
         pit.control.script_reads(
-            0,
+            SYSTEM_CONTROL_PORT_B,
             &[
                 speaker_and_gate_left_on_by_firmware,
                 output_low,
