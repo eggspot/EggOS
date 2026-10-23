@@ -2078,3 +2078,56 @@ switch-path cost; this entry follows it.)
   and one would run on the other's. Today copies share an id only with the same value, which
   is correct. `ARCH_GET_FS` after a program loads an FS selector reports the old base where
   Linux reports 0 (the program only affects itself); fixed with D57's selector follow-up.
+
+## D59 Resource limits: `getrlimit`, `setrlimit`, `prlimit64`; per-process limits copied on first change; no hard limit raised until credentials — Decided by the build loop (privilege, `pid` and defaults decided by research)
+- **Why now.** M6's next startup call after D55–D58: glibc reads `RLIMIT_STACK` at startup
+  (its default thread stack size), Rust's std reads it for the main thread's guard, and
+  shells, build tools and servers read the open-file limit and raise their soft limit to the
+  hard one. musl tries `prlimit64` first and falls back to `getrlimit`/`setrlimit`, so all
+  three exist, with each architecture's numbers (x86_64: 97, 160, 302; the generic table
+  AArch64 and RISC-V use: 163, 164, 261).
+- **Per process, copied on first change** (`linux::limits::ResourceLimits`, in
+  `Process::resource_limits` behind its own `SpinLock`, never held while user memory is
+  copied): `None` means the shared `DEFAULTS`; the first change that changes anything makes
+  the process's own copy on the heap (fallible: `ENOMEM`). A first version kept all 16
+  limits inline: `Process` grew from 168 to 432 bytes and every `Process::new` copied
+  256 bytes, +1.3% on riscv64's `linux_exec_load` (above the gate), and the larger `Process`
+  moved to the heap's 512-byte class, which a boot self-test's frame count noticed. Now a
+  process costs a word and a lock for its limits and `linux_exec_load` is within noise.
+- **No process may raise a hard limit yet** (research: fail closed). Linux needs
+  `CAP_SYS_RESOURCE`; processes have no credentials, so nothing can tell a privileged caller
+  from another, and allowing raises would make every lowered hard limit reversible, which
+  sandboxes and agent confinement (D21) rely on. Startup code only raises soft limits up to
+  the hard one, which is allowed. One predicate (`may_raise_hard_limits`, false) becomes the
+  capability check with credentials, and `init` (M10) gets the privilege. An open-file limit
+  above 1048576 (`fs.nr_open`'s default, `MAX_OPEN_FILES`) is `EPERM` whatever the privilege,
+  so `RLIM_INFINITY` there is refused, as on Linux.
+- **Only the caller's own limits** (research): `prlimit64` with a `pid` other than 0 or the
+  caller's (its thread id is the same, D55) is `ESRCH` until there is a process table; then
+  other processes are `EPERM` without the same user or the capability.
+- **Defaults** (research: what current systemd distributions show in `ulimit -a`; man pages):
+  everything unlimited except `RLIMIT_STACK` 8 MiB soft (D52's stack region) and unlimited
+  hard; `RLIMIT_CORE` 0 soft, unlimited hard; `RLIMIT_NOFILE` 1024 soft and 524288 hard
+  (systemd's, not the kernel's 4096: with no way to raise a hard limit, 4096 would strand
+  servers); `RLIMIT_MEMLOCK` 8 MiB (Linux 5.16 and later; `uname` says 6.1);
+  `RLIMIT_NPROC` and `RLIMIT_SIGPENDING` a fixed 65536 (Linux derives them from memory: fixed
+  until enforced, so every machine reports the same); `RLIMIT_MSGQUEUE` 819200;
+  `RLIMIT_NICE` and `RLIMIT_RTPRIO` 0. The resource numbers are the generic ones (MIPS,
+  SPARC and Alpha differ); another architecture is a compile error until it is checked.
+- **Linux's order of errors**: `EFAULT` for an unreadable new limit; `ESRCH`; `EINVAL` for a
+  number with no resource (the register's low 32 bits, as `pid`'s) or a soft limit above the
+  hard one; `EPERM`; then, with the new limits set, `EFAULT` for an unwritable old one.
+  `getrlimit` and `setrlimit` with a null pointer are `EFAULT`; `prlimit64` takes null for
+  either and with both only checks. Research could not confirm the order between `ESRCH` and
+  `EINVAL` on a running Linux: to check by observation.
+- **Nothing is enforced yet.** Each limit is enforced when its resource exists: file
+  descriptors (M7), `RLIMIT_DATA` and `RLIMIT_AS` on the memory calls, `RLIMIT_STACK` when
+  the stack region's size follows it at `execve` (today it is the fixed 8 MiB the default
+  reports; a larger soft limit is accepted and does not grow it), `fork` copying the limits.
+- **Tests.** Host tests: the defaults, lowering and raising rules, no copy for a change that
+  changes nothing, the structure's layout; the three calls through the dispatcher with user
+  memory (upper halves ignored, every error, nothing changed by a failed call, a new limit
+  kept when the old one cannot be copied out, a second process starting from the defaults).
+  QEMU, on aarch64, riscv64 and x86_64: the ELF-started
+  test program calls `prlimit64(0, RLIMIT_STACK, NULL, old)` with the architecture's number
+  and checks 8 MiB soft and unlimited hard.

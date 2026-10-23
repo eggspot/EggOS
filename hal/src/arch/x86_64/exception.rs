@@ -343,11 +343,12 @@ x86_64_user_test_linux_hello:
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .global x86_64_user_test_linux_start
 x86_64_user_test_linux_start:
-    // Linux's x86_64 numbers: writev 20, getpid 39, gettid 186, exit_group 231, getrandom
-    // 318. rbx is argc, r12 walks argv and envp, r13 counts the two lists, r14 holds the
-    // process id. Each string is written by writev from one iovec on the stack. Ends with
+    // Linux's x86_64 numbers: writev 20, getpid 39, gettid 186, exit_group 231, prlimit64
+    // 302, getrandom 318. rbx is argc, r12 walks argv and envp, r13 counts the two lists, r14
+    // holds the process id. Each string is written by writev from one iovec on the stack. Ends with
     // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
-    // getrandom does not fill the 16 bytes below the stack pointer with something not zero.
+    // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
+    // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
     movl    $255, %edi
     testq   $15, %rsp
     jnz     9f
@@ -370,6 +371,19 @@ x86_64_user_test_linux_start:
     movq    -16(%rsp), %rax
     orq     -8(%rsp), %rax
     jz      9f
+    xorl    %edi, %edi
+    movl    $3, %esi                // RLIMIT_STACK
+    xorl    %edx, %edx
+    leaq    -32(%rsp), %r10
+    movl    $302, %eax
+    syscall
+    movl    $255, %edi
+    testq   %rax, %rax
+    jnz     9f
+    cmpq    $0x800000, -32(%rsp)
+    jne     9f
+    cmpq    $-1, -24(%rsp)
+    jne     9f
     movq    (%rsp), %rbx
     leaq    8(%rsp), %r12
     movl    $2, %r13d

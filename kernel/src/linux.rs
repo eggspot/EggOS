@@ -14,13 +14,15 @@
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
 //! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
-//! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57). Every
-//! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes
-//! for a call carries on. The next calls are the rest of what a static program's startup
-//! needs (signals, `prlimit64`, ...), then the file system's (M7).
+//! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57), and the
+//! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59). Every other
+//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
+//! call carries on. The next calls are the rest of what a static program's startup needs
+//! (signals, `poll`, `ioctl`, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
+pub mod limits;
 pub mod memory;
 pub mod random;
 pub mod thread_pointer;
@@ -49,12 +51,15 @@ pub mod number {
         pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
         pub const UNAME: u64 = 63;
+        pub const GETRLIMIT: u64 = 97;
         pub const GETPPID: u64 = 110;
         pub const ARCH_PRCTL: u64 = 158;
+        pub const SETRLIMIT: u64 = 160;
         pub const GETTID: u64 = 186;
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
         pub const SET_ROBUST_LIST: u64 = 273;
+        pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
         /// The highest number above.
         pub const LAST: u64 = GETRANDOM;
@@ -69,6 +74,8 @@ pub mod number {
         pub const SET_ROBUST_LIST: u64 = 99;
         pub const SCHED_YIELD: u64 = 124;
         pub const UNAME: u64 = 160;
+        pub const GETRLIMIT: u64 = 163;
+        pub const SETRLIMIT: u64 = 164;
         pub const GETPID: u64 = 172;
         pub const GETPPID: u64 = 173;
         pub const GETTID: u64 = 178;
@@ -76,6 +83,7 @@ pub mod number {
         pub const MUNMAP: u64 = 215;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
         /// The highest number above.
         pub const LAST: u64 = GETRANDOM;
@@ -104,6 +112,9 @@ pub mod number {
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
             GETRANDOM,
+            GETRLIMIT,
+            SETRLIMIT,
+            PRLIMIT64,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -125,10 +136,13 @@ pub mod number {
 pub struct Errno(pub u16);
 
 impl Errno {
-    /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`).
+    /// Not permitted: here, a mapping below the lowest address allowed (`execve`, `mmap`), or
+    /// a hard resource limit raised (`setrlimit`, `prlimit64`).
     pub const EPERM: Self = Self(1);
     /// No such file: here, a program's interpreter (`execve`).
     pub const ENOENT: Self = Self(2);
+    /// No such process: here, one the caller cannot reach (`prlimit64`).
+    pub const ESRCH: Self = Self(3);
     /// The arguments and environment are too long (`execve`).
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
@@ -320,7 +334,7 @@ fn out_of_line_call<P: Platform>(
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
-    let [first, second, third, ..] = context.syscall_arguments();
+    let [first, second, third, fourth, ..] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -330,6 +344,9 @@ fn out_of_line_call<P: Platform>(
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(process, first)),
         number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
+        number::GETRLIMIT => limits::getrlimit(process, first, second),
+        number::SETRLIMIT => limits::setrlimit(process, first, second),
+        number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
         number::SCHED_YIELD => {
             thread::yield_now::<P>();
             Ok(0)
@@ -797,6 +814,198 @@ mod tests {
                 Errno::EFAULT.result()
             );
         }
+    }
+
+    #[test]
+    fn resource_limits_are_read_and_lowered_through_user_memory() {
+        use limits::{Limit, resource};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let writable = DATA + 4096;
+        let read = |address| {
+            let mut words = [0u8; 16];
+            process.read_user_memory(address, &mut words).unwrap();
+            let (soft, hard) = words.split_at(8);
+            Limit {
+                soft: u64::from_ne_bytes(soft.try_into().unwrap()),
+                hard: u64::from_ne_bytes(hard.try_into().unwrap()),
+            }
+        };
+        let store = |address, limit: Limit| {
+            let mut words = [0u8; 16];
+            words[..8].copy_from_slice(&limit.soft.to_ne_bytes());
+            words[8..].copy_from_slice(&limit.hard.to_ne_bytes());
+            process.write_user_memory(address, &words).unwrap();
+        };
+        let [stack, nofile] = [resource::STACK, resource::NOFILE].map(u64::from);
+        let pid = u64::from(process.id().get());
+        assert_eq!(
+            call(&process, number::GETRLIMIT, [stack, writable, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read(writable), limits::DEFAULTS[resource::STACK as usize]);
+        // Lower the open-file limit with `setrlimit`, reading the old one with `prlimit64`.
+        let lowered = Limit {
+            soft: 256,
+            hard: 512,
+        };
+        store(writable + 32, lowered);
+        assert_eq!(
+            call(
+                &process,
+                number::SETRLIMIT,
+                [nofile, writable + 32, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // pid 0 or the caller's own, with only the low 32 bits of it and of the resource.
+        for (pid, resource) in [
+            (0, nofile),
+            (pid, 1 << 32 | nofile),
+            (1 << 32 | pid, nofile),
+        ] {
+            assert_eq!(
+                call(
+                    &process,
+                    number::PRLIMIT64,
+                    [pid, resource, 0, writable + 64, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(read(writable + 64), lowered);
+        }
+        // Set and read the old limits in one call: what it had.
+        store(
+            writable + 32,
+            Limit {
+                soft: 128,
+                hard: 512,
+            },
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::PRLIMIT64,
+                [0, nofile, writable + 32, writable + 96, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(read(writable + 96), lowered);
+        // The hard limit cannot rise again; the soft limit may not pass it.
+        store(
+            writable + 32,
+            Limit {
+                soft: 128,
+                hard: 513,
+            },
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::SETRLIMIT,
+                [nofile, writable + 32, 0, 0, 0, 0]
+            ),
+            Errno::EPERM.result()
+        );
+        store(
+            writable + 32,
+            Limit {
+                soft: 513,
+                hard: 512,
+            },
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::SETRLIMIT,
+                [nofile, writable + 32, 0, 0, 0, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        // Another process, an unknown resource, memory that is not the program's (or not
+        // writable): nothing changes.
+        store(
+            writable + 32,
+            Limit {
+                soft: 64,
+                hard: 256,
+            },
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::PRLIMIT64,
+                [pid + 1, nofile, writable + 32, writable, 0, 0]
+            ),
+            Errno::ESRCH.result()
+        );
+        assert_eq!(read(writable), limits::DEFAULTS[resource::STACK as usize]);
+        for resource in [resource::COUNT as u64, u64::from(u32::MAX)] {
+            assert_eq!(
+                call(
+                    &process,
+                    number::GETRLIMIT,
+                    [resource, writable, 0, 0, 0, 0]
+                ),
+                Errno::EINVAL.result()
+            );
+        }
+        for address in [0, DATA, writable + 4096 - 8] {
+            assert_eq!(
+                call(&process, number::GETRLIMIT, [nofile, address, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        assert_eq!(
+            call(
+                &process,
+                number::SETRLIMIT,
+                [nofile, writable + 8192, 0, 0, 0, 0]
+            ),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            process.resource_limits().lock().get(resource::NOFILE),
+            Some(Limit {
+                soft: 128,
+                hard: 512
+            })
+        );
+        // An old limit that cannot be copied out is `EFAULT`, with the new one set, as Linux.
+        assert_eq!(
+            call(
+                &process,
+                number::PRLIMIT64,
+                [0, nofile, writable + 32, DATA, 0, 0]
+            ),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            process.resource_limits().lock().get(resource::NOFILE),
+            Some(Limit {
+                soft: 64,
+                hard: 256
+            })
+        );
+        // `setrlimit` and `getrlimit` take no null pointer; `prlimit64` takes two, and only
+        // checks.
+        for number in [number::GETRLIMIT, number::SETRLIMIT] {
+            assert_eq!(
+                call(&process, number, [nofile, 0, 0, 0, 0, 0]),
+                Errno::EFAULT.result()
+            );
+        }
+        assert_eq!(
+            call(&process, number::PRLIMIT64, [0, nofile, 0, 0, 0, 0]),
+            0
+        );
+        // Another process starts from the defaults.
+        let other = process_with_iovecs(&kernel, b"ab", &[]);
+        assert_eq!(
+            other.resource_limits().lock().get(resource::NOFILE),
+            Some(limits::DEFAULTS[resource::NOFILE as usize])
+        );
     }
 
     #[test]

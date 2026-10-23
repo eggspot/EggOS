@@ -28,6 +28,7 @@
 
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
+use crate::linux::limits::ResourceLimits;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
@@ -119,6 +120,8 @@ pub struct Process<P: Platform> {
     exit: SpinLock<Option<ProcessExit>>,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
+    /// Its resource limits ([`Self::resource_limits`]).
+    resource_limits: SpinLock<ResourceLimits>,
 }
 
 /// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
@@ -167,12 +170,19 @@ impl<P: Platform> Process<P> {
             frame_offset,
             exit: SpinLock::new(None),
             id,
+            resource_limits: SpinLock::new(ResourceLimits::new()),
         })
     }
 
     /// Its id, given when it was created.
     pub fn id(&self) -> ProcessId {
         self.id
+    }
+
+    /// Its resource limits (`getrlimit`, `setrlimit`, `prlimit64`; D59), starting from
+    /// [`crate::linux::limits::DEFAULTS`]. Never held while user memory is copied.
+    pub fn resource_limits(&self) -> &SpinLock<ResourceLimits> {
+        &self.resource_limits
     }
 
     /// A process whose address space maps the HAL's test program
