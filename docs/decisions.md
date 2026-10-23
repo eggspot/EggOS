@@ -2519,9 +2519,10 @@ switch-path cost; this entry follows it.)
   action change. That table was exactly 2048 bytes, the heap's largest block (D30), so the
   block now keeps the actions field by field with the flags as 32-bit words (every flag the
   kernel keeps fits): 1816 bytes, still one 2 KiB block, not a frame (independent review's
-  finding). Compile-time checks hold both sizes. Only a handler
-  sees an origin, so a signal sent before the process first changed an action reports
-  `SI_USER`; they move to each thread with the pending signals when `clone` exists.
+  finding). Compile-time checks hold `Signals` at 48 bytes (so `Process` too) and `Caught`
+  within a block. Only a handler sees an origin, so a signal sent before the process first
+  changed an action reports `SI_USER`; they move to each thread with the pending signals when
+  `clone` exists.
 - **Cost** (same Mac, QEMU `-icount`, against `main`'s CI run): every benchmark within
   ±0.02%, apart from riscv64's two SBI timer benchmarks, which differ between local QEMU and
   CI on `main` too. Nothing was added to the system-call, page-fault or switch paths; the new
