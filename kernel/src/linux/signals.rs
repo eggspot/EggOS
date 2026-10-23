@@ -1,14 +1,17 @@
 //! Signals (M6): their state, `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` (D60),
-//! sending and delivering them, `kill`, `tkill`, `tgkill` and `rt_sigpending` (D63), and their
-//! handlers, which run on Linux's signal frames and return with `rt_sigreturn` (D64). Rust's
+//! sending and delivering them, `kill`, `tkill`, `tgkill` and `rt_sigpending` (D63), their
+//! handlers, which run on Linux's signal frames and return with `rt_sigreturn` (D64), and
+//! their `siginfo_t`, queued with each pending signal, several instances of a real-time signal
+//! at once, with `rt_sigqueueinfo`, `rt_tgsigqueueinfo` and `rt_sigtimedwait` (D68). Rust's
 //! std ignores `SIGPIPE` and installs `SIGSEGV` and `SIGBUS` handlers on an alternate stack at
 //! startup, glibc blocks and unblocks signals around much of its work, and `abort()` sends
 //! itself `SIGABRT` and expects to die of it.
 //!
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
-//! which makes its own block on the heap (`Caught`). Its thread has a blocked mask, pending
-//! signals and an alternate stack ([`ThreadSignals`]), which move to each thread when `clone`
-//! exists. A signal a call makes due (sent to the caller, unblocked, or no longer caught) is
+//! which makes its own block on the heap, which also queues its pending signals' [`Info`]. Its
+//! thread has a blocked mask, pending signals and an alternate stack ([`ThreadSignals`]), which
+//! move to each thread when `clone` exists. A signal a call makes due (sent to the caller,
+//! unblocked, or no longer caught) is
 //! delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
@@ -18,17 +21,23 @@
 use super::Errno;
 use super::fault::Fault;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
-use super::signal_frame::{self, BadFrame, STACK_SIZE, Saved};
+use super::signal_frame::{self, BadFrame, INFO_SIZE, STACK_SIZE, Saved};
 use crate::process::{Process, ProcessExit};
 use crate::thread;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
 /// How many signals there are: 1 to 64 (`_NSIG`).
 pub const COUNT: usize = 64;
+
+/// The first real-time signal (the kernel's `SIGRTMIN`): from it to 64, several instances of a
+/// signal may be pending at once, each with its own [`Info`].
+pub const FIRST_REAL_TIME: u32 = 32;
 
 /// The size of a signal set (`sigset_t` as the kernel takes it): the calls' `sigsetsize`
 /// must be this, but `rt_sigpending`'s may be smaller.
@@ -134,11 +143,7 @@ const fn bit(signal: u32) -> u64 {
 /// The signal state of a process and its one thread.
 #[derive(Debug, Default)]
 pub struct Signals {
-    /// The process's actions and what goes with catching signals (`Caught`): every action
-    /// [`Action::default`] (`SIG_DFL`) until one first changes, then a block of its own on the
-    /// heap. A process costs a word for them, and starting one copies nothing (D59's lesson):
-    /// `Process` stays in its heap size class.
-    caught: Option<Box<[Caught; 1]>>,
+    actions_and_queue: Option<Box<[ActionsAndQueue; 1]>>,
     /// Its thread's.
     thread: ThreadSignals,
 }
@@ -148,52 +153,35 @@ pub struct Signals {
 pub struct ThreadSignals {
     /// The blocked signals, bit `n - 1` for signal `n`; never `SIGKILL` or `SIGSTOP`.
     pub blocked: u64,
-    /// The signals sent and not yet delivered, as `blocked`.
+    /// The signals sent and not yet delivered, as `blocked`, each once however many of its
+    /// instances are queued.
     pub pending: u64,
     /// The alternate stack for handlers with [`flag::ONSTACK`].
     pub alternate_stack: AlternateStack,
 }
 
-/// The state of a process that catches signals, out of line ([`Signals::caught`]): its
-/// actions, field by field, with the flags as 32-bit words (every flag the kernel keeps fits),
-/// so that the block, with the words that go with it, fits the heap's largest size class
-/// (2 KiB, as the table of [`Action`]s alone did) instead of taking a frame of its own.
-#[derive(Debug, Clone, Copy)]
-struct Caught {
+#[derive(Debug)]
+struct ActionsAndQueue {
     handlers: [u64; COUNT],
     flags: [u32; COUNT],
     restorers: [u64; COUNT],
     masks: [u64; COUNT],
-    /// The pending signals sent with `tkill` or `tgkill` ([`Origin::Thread`]), as
-    /// [`ThreadSignals::pending`]; the others were sent with `kill` unless in `from_kernel`.
-    /// Only a handler sees a signal's origin, so only a process that has changed an action
-    /// keeps them: a signal sent before its first change reports [`Origin::Process`]. They
-    /// move to each thread with the pending signals when `clone` exists.
-    from_thread: u64,
-    /// The pending signals the kernel raised ([`Origin::Kernel`]), as `from_thread`.
-    from_kernel: u64,
-    /// Where the process's return trampoline is mapped ([`super::trampoline`]), 0 until a
-    /// handler first needs it. It stays there: a program that unmaps or replaces the page
-    /// breaks its own handlers' return, as it would by unmapping Linux's vDSO. `execve` must
-    /// reset it with the actions.
+    queue: VecDeque<Info>,
     trampoline: u64,
 }
 
-const _: () = assert!(core::mem::size_of::<Caught>() <= crate::heap::MAX_BLOCK);
+const _: () = assert!(core::mem::size_of::<ActionsAndQueue>() <= crate::heap::MAX_BLOCK);
 const _: () = assert!(flag::KNOWN <= u32::MAX as u64);
-// `Process` sits exactly in a heap size class (D64): the signal state must not grow.
 const _: () = assert!(core::mem::size_of::<Signals>() == 48);
 
-impl Caught {
-    /// Every action `SIG_DFL`, no origins, no trampoline.
+impl ActionsAndQueue {
     const fn new() -> Self {
         Self {
             handlers: [DEFAULT; COUNT],
             flags: [0; COUNT],
             restorers: [0; COUNT],
             masks: [0; COUNT],
-            from_thread: 0,
-            from_kernel: 0,
+            queue: VecDeque::new(),
             trampoline: 0,
         }
     }
@@ -207,7 +195,6 @@ impl Caught {
         }
     }
 
-    /// Sets action `index` to `action`, whose flags are only [`flag::KNOWN`]'s.
     fn set_action(&mut self, index: usize, action: Action) {
         self.handlers[index] = action.handler;
         self.flags[index] = action.flags as u32;
@@ -215,6 +202,113 @@ impl Caught {
         self.masks[index] = action.mask;
     }
 }
+
+impl Drop for ActionsAndQueue {
+    fn drop(&mut self) {
+        uncharge(&QUEUED_SIGNALS, self.queue.len());
+    }
+}
+
+static QUEUED_SIGNALS: AtomicU64 = AtomicU64::new(0);
+
+fn try_charge(queued: &AtomicU64, limit: u64) -> bool {
+    queued
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            (count < limit).then_some(count + 1)
+        })
+        .is_ok()
+}
+
+fn charge(queued: &AtomicU64) {
+    queued.fetch_add(1, Ordering::Relaxed);
+}
+
+fn uncharge(queued: &AtomicU64, entries: usize) {
+    queued.fetch_sub(entries as u64, Ordering::Relaxed);
+}
+
+/// The bytes of a `siginfo_t` the kernel keeps with a pending signal: `si_signo`, `si_errno`,
+/// `si_code` and the union of fields after them. A program always gets the rest as zeros.
+pub const KEPT_INFO_SIZE: usize = 48;
+
+/// `si_code`: who sent a signal, the generic values, which x86_64 shares.
+pub mod code {
+    /// With `kill` (`SI_USER`).
+    pub const USER: i32 = 0;
+    /// By the kernel (`SI_KERNEL`), as for a signal frame that could not be written.
+    pub const KERNEL: i32 = 0x80;
+    /// With `sigqueue`, through `rt_sigqueueinfo` (`SI_QUEUE`).
+    pub const QUEUE: i32 = -1;
+    /// With `tkill` or `tgkill` (`SI_TKILL`).
+    pub const TKILL: i32 = -6;
+}
+
+/// A pending signal's `siginfo_t`, as the kernel keeps it ([`KEPT_INFO_SIZE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Info([u8; KEPT_INFO_SIZE]);
+
+impl Info {
+    /// Signal `signal` sent with `code` by process `pid`, as root, the user of every process
+    /// until processes have credentials.
+    pub fn sent(signal: u32, code: i32, pid: u32) -> Self {
+        let mut info = Self::without_sender(signal, code);
+        info.0[16..20].copy_from_slice(&pid.to_ne_bytes());
+        info
+    }
+
+    /// Signal `signal` raised by the kernel ([`code::KERNEL`]).
+    pub fn from_kernel(signal: u32) -> Self {
+        Self::without_sender(signal, code::KERNEL)
+    }
+
+    /// The `siginfo_t` a program queues signal `signal` with: as written, but with `signal` as
+    /// its `si_signo`, and only its first [`KEPT_INFO_SIZE`] bytes.
+    pub fn queued(signal: u32, bytes: &[u8; INFO_SIZE]) -> Self {
+        let mut info = Self(bytes[..KEPT_INFO_SIZE].try_into().unwrap());
+        info.0[..4].copy_from_slice(&(signal as i32).to_ne_bytes());
+        info
+    }
+
+    fn without_sender(signal: u32, code: i32) -> Self {
+        let mut info = Self([0; KEPT_INFO_SIZE]);
+        info.0[..4].copy_from_slice(&(signal as i32).to_ne_bytes());
+        info.0[8..12].copy_from_slice(&code.to_ne_bytes());
+        info
+    }
+
+    fn lost(signal: u32) -> Self {
+        Self::without_sender(signal, code::USER)
+    }
+
+    /// Its signal, 1 to 64.
+    pub fn signal(&self) -> u32 {
+        u32::from_ne_bytes(self.0[..4].try_into().unwrap())
+    }
+
+    /// Its `si_code`.
+    pub fn code(&self) -> i32 {
+        i32::from_ne_bytes(self.0[8..12].try_into().unwrap())
+    }
+
+    /// The whole `siginfo_t`, as a handler and `rt_sigtimedwait` give it to the program.
+    pub fn to_bytes(self) -> [u8; INFO_SIZE] {
+        let mut bytes = [0; INFO_SIZE];
+        bytes[..KEPT_INFO_SIZE].copy_from_slice(&self.0);
+        bytes
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recorded {
+    Queued,
+    Unobservable,
+    Lost,
+}
+
+/// A real-time signal could not be queued: the queued signals reached `RLIMIT_SIGPENDING`, or
+/// there was no memory for another (`EAGAIN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueFull;
 
 /// An alternate signal stack: `size` bytes from `base`, or none when `size` is 0.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -284,7 +378,7 @@ impl Signals {
     /// No handlers, nothing blocked, no alternate stack.
     pub const fn new() -> Self {
         Self {
-            caught: None,
+            actions_and_queue: None,
             thread: ThreadSignals {
                 blocked: 0,
                 pending: 0,
@@ -301,9 +395,9 @@ impl Signals {
     pub fn action(&self, signal: u32) -> Option<Action> {
         let index = (signal as usize).checked_sub(1).filter(|&i| i < COUNT)?;
         Some(
-            self.caught
+            self.actions_and_queue
                 .as_deref()
-                .map_or_else(Action::default, |[caught]| caught.action(index)),
+                .map_or_else(Action::default, |[block]| block.action(index)),
         )
     }
 
@@ -322,11 +416,13 @@ impl Signals {
             ..new
         };
         if new != current {
-            let [caught] = &mut **match &mut self.caught {
-                Some(caught) => caught,
-                None => self.caught.insert(caught_block()?),
+            let [block] = &mut **match &mut self.actions_and_queue {
+                Some(block) => block,
+                None => self
+                    .actions_and_queue
+                    .insert(actions_and_queue_block().ok_or(ChangeError::OutOfMemory)?),
             };
-            caught.set_action(signal as usize - 1, new);
+            block.set_action(signal as usize - 1, new);
         }
         if self.ignores(signal) {
             self.discard(bit(signal));
@@ -350,33 +446,69 @@ impl Signals {
             })
     }
 
-    /// Sends `signal` (1 to 64) to the thread from `origin`: pending until
-    /// [`Self::next_delivery`] takes it, unless it is ignored and not blocked, which discards
+    /// Sends the signal `info` describes to the thread: pending until [`Self::next_delivery`]
+    /// or [`Self::take_waited`] takes it, unless it is ignored and not blocked, which discards
     /// it at once, as on Linux (a blocked signal stays pending even if ignored, and
     /// `rt_sigpending` reports it). As POSIX requires, `SIGCONT` discards pending stop signals
-    /// and a stop signal a pending `SIGCONT`, whatever their actions. A signal already pending
-    /// is not counted twice, and keeps the origin it was first sent from, as Linux keeps the
-    /// first `siginfo` of a signal that is not real-time: real-time signals' queue comes later.
-    pub fn send(&mut self, signal: u32, origin: Origin) {
+    /// and a stop signal a pending `SIGCONT`, whatever their actions. A standard signal already
+    /// pending is not sent again, and keeps the `info` it was first sent with; each instance of
+    /// a real-time signal is queued with its own, in the order sent.
+    ///
+    /// Each queued `info` counts toward `RLIMIT_SIGPENDING`, `queue_limit` here, as on Linux:
+    /// a real-time signal not sent with `kill` that finds the queued signals at the limit, or
+    /// no memory, is not sent ([`QueueFull`]); any other signal is then pending without its
+    /// `info`, and is taken as `SI_USER` from no process. A standard signal sent with `kill` or
+    /// by the kernel is queued past the limit. The `info` of a signal that is not blocked is
+    /// kept only by a process that has its own actions: in another, it is delivered by its
+    /// default action before the program could look at it.
+    pub fn send(&mut self, info: Info, queue_limit: u64) -> Result<(), QueueFull> {
+        let signal = info.signal();
         if signal == SIGCONT {
             self.discard(STOP_SIGNALS);
         } else if bit(signal) & STOP_SIGNALS != 0 {
             self.discard(bit(SIGCONT));
         }
-        if self.thread.blocked & bit(signal) == 0 && self.ignores(signal) {
-            return;
+        let blocked = self.thread.blocked & bit(signal) != 0;
+        if !blocked && self.ignores(signal) {
+            return Ok(());
         }
-        if self.thread.pending & bit(signal) != 0 {
-            return;
+        let real_time = signal >= FIRST_REAL_TIME;
+        if !real_time && self.thread.pending & bit(signal) != 0 {
+            return Ok(());
+        }
+        let recorded = self.record(info, blocked, queue_limit);
+        if recorded == Recorded::Lost && real_time && info.code() != code::USER {
+            return Err(QueueFull);
         }
         self.thread.pending |= bit(signal);
-        if let Some([caught]) = self.caught.as_deref_mut() {
-            match origin {
-                Origin::Process => {}
-                Origin::Thread => caught.from_thread |= bit(signal),
-                Origin::Kernel => caught.from_kernel |= bit(signal),
-            }
+        Ok(())
+    }
+
+    fn record(&mut self, info: Info, blocked: bool, queue_limit: u64) -> Recorded {
+        let exempt_from_limit = info.signal() < FIRST_REAL_TIME && info.code() >= 0;
+        if exempt_from_limit {
+            charge(&QUEUED_SIGNALS);
+        } else if !try_charge(&QUEUED_SIGNALS, queue_limit) {
+            return Recorded::Lost;
         }
+        if self.actions_and_queue.is_none() && blocked {
+            self.actions_and_queue = actions_and_queue_block();
+        }
+        let recorded = match self.actions_and_queue.as_deref_mut() {
+            None if !blocked => Recorded::Unobservable,
+            None => Recorded::Lost,
+            Some([block]) => match block.queue.try_reserve(1) {
+                Ok(()) => {
+                    block.queue.push_back(info);
+                    Recorded::Queued
+                }
+                Err(_) => Recorded::Lost,
+            },
+        };
+        if recorded != Recorded::Queued {
+            uncharge(&QUEUED_SIGNALS, 1);
+        }
+        recorded
     }
 
     /// Sends `signal` from the kernel so that it is delivered whatever the program asked, as
@@ -385,45 +517,68 @@ impl Signals {
     pub fn force(&mut self, signal: u32) {
         let index = signal as usize - 1;
         let blocked = self.thread.blocked & bit(signal) != 0;
-        if let Some([caught]) = self.caught.as_deref_mut()
-            && (blocked || caught.handlers[index] == IGNORE)
+        if let Some([block]) = self.actions_and_queue.as_deref_mut()
+            && (blocked || block.handlers[index] == IGNORE)
         {
-            caught.handlers[index] = DEFAULT;
+            block.handlers[index] = DEFAULT;
         }
         self.thread.blocked &= !bit(signal);
-        self.send(signal, Origin::Kernel);
+        let _ = self.send(Info::from_kernel(signal), u64::MAX);
     }
 
-    /// Discards the pending signals in `set`.
     fn discard(&mut self, set: u64) {
         self.thread.pending &= !set;
-        if let Some([caught]) = self.caught.as_deref_mut() {
-            caught.from_thread &= !set;
-            caught.from_kernel &= !set;
+        if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+            let queued = block.queue.len();
+            block.queue.retain(|info| bit(info.signal()) & set == 0);
+            uncharge(&QUEUED_SIGNALS, queued - block.queue.len());
         }
+    }
+
+    fn take(&mut self, signal: u32) -> Info {
+        let mut more_queued = false;
+        let taken = self.actions_and_queue.as_deref_mut().and_then(|[block]| {
+            let first = block
+                .queue
+                .iter()
+                .position(|info| info.signal() == signal)?;
+            let info = block.queue.remove(first)?;
+            uncharge(&QUEUED_SIGNALS, 1);
+            more_queued = block
+                .queue
+                .iter()
+                .skip(first)
+                .any(|info| info.signal() == signal);
+            Some(info)
+        });
+        if !more_queued {
+            self.thread.pending &= !bit(signal);
+        }
+        taken.unwrap_or_else(|| Info::lost(signal))
     }
 
     /// Sets `signal`'s handler to `SIG_DFL`, keeping its flags and mask, as Linux does for
     /// [`flag::RESETHAND`] and a forced signal. Nothing to do without a table: every handler
     /// is `SIG_DFL` then.
     fn reset_handler(&mut self, signal: u32) {
-        if let Some([caught]) = self.caught.as_deref_mut() {
-            caught.handlers[signal as usize - 1] = DEFAULT;
+        if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+            block.handlers[signal as usize - 1] = DEFAULT;
         }
     }
 
     /// The address of the process's return trampoline, 0 until it is mapped.
     pub fn trampoline(&self) -> u64 {
-        self.caught
+        self.actions_and_queue
             .as_deref()
-            .map_or(0, |[caught]| caught.trampoline)
+            .map_or(0, |[block]| block.trampoline)
     }
 
     /// Records where the return trampoline was mapped. Only a process with a handler, which
-    /// has its own table, has one.
+    /// has its own table, has one. It stays there: a program that unmaps or replaces the page
+    /// breaks its own handlers' return, as it would by unmapping Linux's vDSO.
     pub fn set_trampoline(&mut self, address: u64) {
-        if let Some([caught]) = self.caught.as_deref_mut() {
-            caught.trampoline = address;
+        if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+            block.trampoline = address;
         }
     }
 
@@ -432,27 +587,22 @@ impl Signals {
             return SIGKILL;
         }
         let synchronous = due & SYNCHRONOUS;
-        let raised_by_kernel = self
-            .caught
-            .as_deref()
-            .map_or(0, |[caught]| synchronous & caught.from_kernel);
+        if synchronous == 0 {
+            return due.trailing_zeros() + 1;
+        }
+        let raised_by_kernel = self.actions_and_queue.as_deref().map_or(0, |[block]| {
+            block
+                .queue
+                .iter()
+                .filter(|info| info.code() > 0)
+                .fold(0, |set, info| set | bit(info.signal()))
+        }) & synchronous;
         let first = if raised_by_kernel != 0 {
             raised_by_kernel
-        } else if synchronous != 0 {
-            synchronous
         } else {
-            due
+            synchronous
         };
         first.trailing_zeros() + 1
-    }
-
-    /// Where pending `signal` came from.
-    fn origin(&self, signal: u32) -> Origin {
-        match self.caught.as_deref() {
-            Some([caught]) if caught.from_kernel & bit(signal) != 0 => Origin::Kernel,
-            Some([caught]) if caught.from_thread & bit(signal) != 0 => Origin::Thread,
-            _ => Origin::Process,
-        }
     }
 
     /// Takes the next pending, unblocked signal, discarding the ignored ones on the way: `Some`
@@ -460,22 +610,23 @@ impl Signals {
     /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
     /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), those the
     /// kernel raised before those a program sent, so a fault's or a failed frame's `SIGSEGV`
-    /// is never overtaken; then the lowest number. A handler with [`flag::RESETHAND`] is
-    /// removed as it is taken, as on Linux: its signal's next delivery is by the default
-    /// action.
+    /// is never overtaken; then the lowest number, and a real-time signal's instances in the
+    /// order sent. A handler with [`flag::RESETHAND`] is removed as it is taken, as on Linux:
+    /// its signal's next delivery is by the default action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
-        let mut due = self.thread.pending & !self.thread.blocked;
-        while due != 0 {
+        loop {
+            let due = self.thread.pending & !self.thread.blocked;
+            if due == 0 {
+                return None;
+            }
             let signal = self.first_to_deliver(due);
-            due &= !bit(signal);
             let action = self.action(signal).unwrap_or_default();
+            let info = self.take(signal);
             let delivery = match action.handler {
                 IGNORE => None,
                 DEFAULT => match default_action(signal) {
                     DefaultAction::Terminate | DefaultAction::Core => Some(Delivery::Kill(signal)),
                     DefaultAction::Ignore | DefaultAction::Continue => None,
-                    // A terminal's stop signals are discarded in an orphaned process group,
-                    // as POSIX requires, and with no parents every process's group is one.
                     DefaultAction::Stop if signal != SIGSTOP => None,
                     DefaultAction::Stop => Some(Delivery::Stop(signal)),
                 },
@@ -483,20 +634,27 @@ impl Signals {
                     if action.flags & flag::RESETHAND != 0 {
                         self.reset_handler(signal);
                     }
-                    let origin = self.origin(signal);
                     Some(Delivery::Handler {
                         signal,
                         action,
-                        origin,
+                        info,
                     })
                 }
             };
-            self.discard(bit(signal));
             if delivery.is_some() {
                 return delivery;
             }
         }
-        None
+    }
+
+    /// Takes the first pending signal in `wanted`, blocked or not, in the order
+    /// [`Self::next_delivery`] takes them, with its [`Info`], as `rt_sigtimedwait` does.
+    pub fn take_waited(&mut self, wanted: u64) -> Option<Info> {
+        let due = self.thread.pending & wanted;
+        (due != 0).then(|| {
+            let signal = self.first_to_deliver(due);
+            self.take(signal)
+        })
     }
 
     /// The thread enters `action`'s handler for `signal`, its frame written: the action's mask
@@ -579,23 +737,12 @@ pub enum Delivery {
     Kill(u32),
     /// The process stops until `SIGCONT` or `SIGKILL`.
     Stop(u32),
-    /// `action`'s handler runs for `signal`, sent from `origin`.
+    /// `action`'s handler runs for `signal`, with its `info`.
     Handler {
         signal: u32,
         action: Action,
-        origin: Origin,
+        info: Info,
     },
-}
-
-/// Who sent a signal: what its `siginfo`'s `si_code` says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
-    /// A process, with `kill` (`SI_USER`).
-    Process,
-    /// A thread, with `tkill` or `tgkill` (`SI_TKILL`).
-    Thread,
-    /// The kernel (`SI_KERNEL`), as for a signal frame that could not be written.
-    Kernel,
 }
 
 /// What a signal does when its action is `SIG_DFL` (signal(7)).
@@ -632,15 +779,11 @@ pub const fn default_action(signal: u32) -> DefaultAction {
     }
 }
 
-/// A block of default actions on the heap, or [`ChangeError::OutOfMemory`].
-fn caught_block() -> Result<Box<[Caught; 1]>, ChangeError> {
+fn actions_and_queue_block() -> Option<Box<[ActionsAndQueue; 1]>> {
     let mut block = Vec::new();
-    block
-        .try_reserve_exact(1)
-        .map_err(|_| ChangeError::OutOfMemory)?;
-    block.push(Caught::new());
-    // Exactly one, in a buffer of exactly that capacity: no reallocation.
-    Ok(block.into_boxed_slice().try_into().unwrap())
+    block.try_reserve_exact(1).ok()?;
+    block.push(ActionsAndQueue::new());
+    block.into_boxed_slice().try_into().ok()
 }
 
 /// The address `address` as an optional pointer: `None` when null.
@@ -808,19 +951,25 @@ fn parse_stack(bytes: [u8; STACK_SIZE]) -> (u64, u32, u64) {
     (base, flags, size)
 }
 
-/// Signal `signal` (an `int`) as `kill`, `tkill` and `tgkill` take it, once their target was
-/// found: sends it to the process's thread from `origin`, or only checks the target for 0.
-/// `EINVAL` outside 0 to 64.
 fn send_to_self<P: Platform>(
     process: &Process<P>,
     signal: u64,
-    origin: Origin,
+    info: impl FnOnce(u32) -> Info,
 ) -> Result<u64, Errno> {
     match signal as u32 {
         0 => Ok(0),
         signal if signal as usize <= COUNT => {
-            process.signals().lock().send(signal, origin);
-            Ok(0)
+            let queue_limit = process
+                .resource_limits()
+                .lock()
+                .get(super::limits::resource::SIGPENDING)
+                .map_or(u64::MAX, |limit| limit.soft);
+            process
+                .signals()
+                .lock()
+                .send(info(signal), queue_limit)
+                .map(|()| 0)
+                .map_err(|QueueFull| Errno::EAGAIN)
         }
         _ => Err(Errno::EINVAL),
     }
@@ -836,8 +985,9 @@ fn own_id<P: Platform>(process: &Process<P>) -> i32 {
 /// one it can reach yet: its own id; 0, its process group, of which it is the only member (a
 /// process is its own group's leader until `setpgid` exists); or minus its id, that group.
 /// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
-/// is looked at, as on Linux; then as `send_to_self`. `pid` is a `pid_t`: the register's
-/// upper half is ignored.
+/// is looked at, as on Linux; then `EINVAL` for a signal outside 0 to 64, and 0, which only
+/// checks the target. `pid` is a `pid_t`: the register's upper half is ignored. The signal's
+/// `siginfo_t` says `SI_USER` from the caller.
 pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<u64, Errno> {
     let own = own_id(process);
     let pid = pid as u32 as i32;
@@ -845,12 +995,15 @@ pub fn kill<P: Platform>(process: &Process<P>, pid: u64, signal: u64) -> Result<
     if pid == -1 || (pid != own && pid != 0 && pid != own.wrapping_neg()) {
         return Err(Errno::ESRCH);
     }
-    send_to_self(process, signal, Origin::Process)
+    send_to_self(process, signal, |signal| {
+        Info::sent(signal, code::USER, own as u32)
+    })
 }
 
 /// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller's one thread being the
 /// only one: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
-/// caller's, then as `send_to_self`.
+/// caller's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal when the queued
+/// signals are at `RLIMIT_SIGPENDING` (see [`Signals::send`]).
 pub fn tkill<P: Platform>(process: &Process<P>, tid: u64, signal: u64) -> Result<u64, Errno> {
     tgkill(process, u64::from(own_id(process) as u32), tid, signal)
 }
@@ -872,7 +1025,127 @@ pub fn tgkill<P: Platform>(
     if tgid != own || tid != own {
         return Err(Errno::ESRCH);
     }
-    send_to_self(process, signal, Origin::Thread)
+    send_to_self(process, signal, |signal| {
+        Info::sent(signal, code::TKILL, own as u32)
+    })
+}
+
+fn read_queued_info<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+) -> Result<[u8; INFO_SIZE], Errno> {
+    let mut bytes = [0; INFO_SIZE];
+    process
+        .read_user_memory(address, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(bytes)
+}
+
+fn is_reserved_for_kernel_and_kill(bytes: &[u8; INFO_SIZE]) -> bool {
+    let code = i32::from_ne_bytes(bytes[8..12].try_into().unwrap());
+    code >= 0 || code == code::TKILL
+}
+
+/// `rt_sigqueueinfo(tgid, signal, info)`: sends `signal` to process `tgid` with the
+/// `siginfo_t` at `info`, as `sigqueue` does with `SI_QUEUE`, the caller being the only
+/// process it can reach yet. As Linux, in this order: `EFAULT` if `info` is not the program's
+/// memory; `EPERM` if its `si_code` is one only the kernel and `kill` send (0 or more, or
+/// `SI_TKILL`) and the target is not the caller; `ESRCH` unless the target is the caller (0
+/// is no process); `EINVAL` for a signal outside 0 to 64; `EAGAIN` for a real-time signal when
+/// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
+/// `siginfo_t` as written, with `signal` as its `si_signo` and only its first
+/// [`KEPT_INFO_SIZE`] bytes; Linux's `E2BIG` for a `si_code` it does not know with more bytes
+/// is not checked. `tgid` is a `pid_t`.
+pub fn rt_sigqueueinfo<P: Platform>(
+    process: &Process<P>,
+    tgid: u64,
+    signal: u64,
+    info: u64,
+) -> Result<u64, Errno> {
+    let bytes = read_queued_info(process, info)?;
+    let own = own_id(process);
+    if tgid as u32 as i32 != own {
+        return Err(if is_reserved_for_kernel_and_kill(&bytes) {
+            Errno::EPERM
+        } else {
+            Errno::ESRCH
+        });
+    }
+    send_to_self(process, signal, |signal| Info::queued(signal, &bytes))
+}
+
+/// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
+/// process `tgid`, the caller's one thread: after `EFAULT`, `EINVAL` if either id is not
+/// positive, then `EPERM` for a reserved `si_code` unless `tid` is the caller's, then `ESRCH`
+/// unless both ids are the caller's.
+pub fn rt_tgsigqueueinfo<P: Platform>(
+    process: &Process<P>,
+    tgid: u64,
+    tid: u64,
+    signal: u64,
+    info: u64,
+) -> Result<u64, Errno> {
+    let bytes = read_queued_info(process, info)?;
+    let (tgid, tid) = (tgid as u32 as i32, tid as u32 as i32);
+    if tgid <= 0 || tid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let own = own_id(process);
+    if tid != own && is_reserved_for_kernel_and_kill(&bytes) {
+        return Err(Errno::EPERM);
+    }
+    if tgid != own || tid != own {
+        return Err(Errno::ESRCH);
+    }
+    send_to_self(process, signal, |signal| Info::queued(signal, &bytes))
+}
+
+/// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: takes the first pending signal in the
+/// set at `set`, blocked or not, in the order delivery takes them, copies its `siginfo_t` to
+/// `info` unless that is null, and returns its number. If none is pending, it first waits
+/// until the `struct timespec` at `timeout` has passed (on the monotonic clock, rounded up to
+/// a clock tick), for good if that is null, not at all if it is zero, then fails with `EAGAIN`.
+/// Nothing can send the thread a signal while it waits yet, so the wait is slept out. As Linux,
+/// in this order: `EINVAL` if `sigsetsize` is not 8; `EFAULT` if the set is not the program's
+/// memory; `EFAULT` if `timeout` is not, and `EINVAL` for negative seconds or nanoseconds
+/// outside 0 to 999999999; then, with the signal taken, `EFAULT` if `info` is not the program's
+/// writable memory, and the signal is lost. `SIGKILL` and `SIGSTOP` in the set are ignored.
+pub fn rt_sigtimedwait<P: Platform>(
+    process: &Process<P>,
+    set: u64,
+    info: u64,
+    timeout: u64,
+    set_size: u64,
+) -> Result<u64, Errno> {
+    if set_size != SET_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0; SET_SIZE as usize];
+    process
+        .read_user_memory(set, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    let wanted = u64::from_ne_bytes(bytes) & !UNBLOCKABLE;
+    let deadline = match pointer(timeout) {
+        None => Some(u64::MAX),
+        Some(address) => super::poll::deadline_in::<P>(
+            super::poll::read_timeout(process, address)?.unwrap_or(u64::MAX),
+        ),
+    };
+    let take = || process.signals().lock().take_waited(wanted);
+    let taken = match take() {
+        Some(taken) => taken,
+        None => {
+            let deadline = deadline.ok_or(Errno::EAGAIN)?;
+            thread::sleep_until::<P>(deadline);
+            take().ok_or(Errno::EAGAIN)?
+        }
+    };
+    if let Some(address) = pointer(info) {
+        process
+            .write_user_memory(address, &taken.to_bytes())
+            .map_err(|_| Errno::EFAULT)?;
+    }
+    Ok(u64::from(taken.signal()))
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
@@ -948,12 +1221,10 @@ fn deliver_with<P: Platform>(
             Some(Delivery::Handler {
                 signal,
                 action,
-                origin,
+                info,
             }) => {
                 let described = fault.take_if(|fault| fault.signal == signal);
-                let started = start_handler(
-                    process, context, &thread, signal, &action, origin, described,
-                );
+                let started = start_handler(process, context, &thread, &action, &info, described);
                 let mut signals = process.signals().lock();
                 match started {
                     Ok(()) => signals.enter_handler(signal, &action),
@@ -971,7 +1242,7 @@ fn deliver_with<P: Platform>(
     }
 }
 
-/// Writes `action`'s frame for `signal` from `origin` (or for `fault`, if the signal is a
+/// Writes `action`'s frame for the signal `info` describes (or for `fault`, if the signal is a
 /// fault's) and points `context` at its handler, for a thread whose signal state is `thread`:
 /// on the alternate stack with [`flag::ONSTACK`], if it has one and is not on it already (then
 /// the frame goes below the stack pointer, as it does without the flag). [`BadFrame`] if the
@@ -981,9 +1252,8 @@ fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
     thread: &ThreadSignals,
-    signal: u32,
     action: &Action,
-    origin: Origin,
+    info: &Info,
     fault: Option<&Fault>,
 ) -> Result<(), BadFrame> {
     let restorer = if action.flags & flag::RESTORER != 0 {
@@ -1012,15 +1282,12 @@ fn start_handler<P: Platform>(
     };
     let (info, trap) = match fault {
         Some(fault) => (signal_frame::fault_info(fault), Some(&fault.trap)),
-        None => (
-            signal_frame::info(signal, origin, own_id(process) as u32),
-            None,
-        ),
+        None => (info.to_bytes(), None),
     };
     let handler = signal_frame::Handler {
         entry: action.handler,
         restorer,
-        signal,
+        signal: u32::from_ne_bytes(info[..4].try_into().unwrap()),
     };
     signal_frame::write(process, top, &saved, &info, trap, &handler, &mut registers)?;
     context.set_registers(&registers);
@@ -1058,6 +1325,16 @@ pub fn rt_sigreturn<P: Platform>(
 mod tests {
     use super::*;
 
+    const NO_LIMIT: u64 = u64::MAX;
+
+    fn by_kill(signal: u32) -> Info {
+        Info::sent(signal, code::USER, 7)
+    }
+
+    fn by_tkill(signal: u32) -> Info {
+        Info::sent(signal, code::TKILL, 7)
+    }
+
     #[test]
     fn every_signal_starts_with_its_default_action() {
         let signals = Signals::new();
@@ -1078,7 +1355,7 @@ mod tests {
             signals.set_action(13, Action::default()),
             Ok(Action::default())
         );
-        assert!(signals.caught.is_none());
+        assert!(signals.actions_and_queue.is_none());
         for signal in [SIGKILL, SIGSTOP, 0, 65] {
             let ignore = Action {
                 handler: IGNORE,
@@ -1089,7 +1366,7 @@ mod tests {
                 Err(ChangeError::Invalid)
             );
         }
-        assert!(signals.caught.is_none());
+        assert!(signals.actions_and_queue.is_none());
         // A handler: unknown flags cleared, SIGKILL and SIGSTOP left out of its mask.
         let handler = Action {
             handler: 0x40_1000,
@@ -1189,19 +1466,19 @@ mod tests {
         const SIGTSTP: u32 = 20;
         let mut signals = Signals::new();
         // Ignored and not blocked: discarded when sent.
-        signals.send(SIGCHLD, Origin::Process);
+        signals.send(by_kill(SIGCHLD), NO_LIMIT).unwrap();
         let ignore = Action {
             handler: IGNORE,
             ..Action::default()
         };
         signals.set_action(SIGUSR1, ignore).unwrap();
-        signals.send(SIGUSR1, Origin::Process);
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, 0);
         // Blocked: pending, ignored or not, and reported; an ignored one is discarded once
         // unblocked, a terminating one ends the process.
         signals.thread.blocked = bit(SIGCHLD) | bit(SIGUSR1) | bit(SIGABRT);
         for signal in [SIGCHLD, SIGUSR1, SIGABRT] {
-            signals.send(signal, Origin::Process);
+            signals.send(by_kill(signal), NO_LIMIT).unwrap();
         }
         assert_eq!(signals.blocked_pending(), signals.thread.blocked);
         assert_eq!(signals.next_delivery(), None);
@@ -1212,7 +1489,7 @@ mod tests {
         assert_eq!(signals.thread.pending, 0);
         // Setting an action that ignores a pending signal discards it, blocked or not.
         signals.thread.blocked = bit(SIGABRT);
-        signals.send(SIGABRT, Origin::Process);
+        signals.send(by_kill(SIGABRT), NO_LIMIT).unwrap();
         signals.set_action(SIGABRT, ignore).unwrap();
         assert_eq!(signals.thread.pending, 0);
         // A handler runs, with where the signal came from.
@@ -1221,31 +1498,31 @@ mod tests {
             ..Action::default()
         };
         signals.set_action(SIGUSR1, handler).unwrap();
-        signals.send(SIGUSR1, Origin::Thread);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
         assert_eq!(signals.blocked_pending(), 0);
         assert_eq!(
             signals.next_delivery(),
             Some(Delivery::Handler {
                 signal: SIGUSR1,
                 action: handler,
-                origin: Origin::Thread
+                info: by_tkill(SIGUSR1)
             })
         );
         assert_eq!(signals.thread.pending, 0);
         // The default action again: due.
         signals.set_action(SIGUSR1, Action::default()).unwrap();
-        signals.send(SIGUSR1, Origin::Process);
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGUSR1)));
         // Lowest number first; SIGKILL whatever the mask said.
         signals.thread.blocked = 0;
-        signals.send(64, Origin::Process);
-        signals.send(SIGKILL, Origin::Process);
+        signals.send(by_kill(64), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGKILL), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(64)));
         // A terminal's stop signals are discarded (an orphaned process group); SIGSTOP stops.
-        signals.send(SIGTSTP, Origin::Process);
+        signals.send(by_kill(SIGTSTP), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), None);
-        signals.send(SIGSTOP, Origin::Process);
+        signals.send(by_kill(SIGSTOP), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Stop(SIGSTOP)));
     }
 
@@ -1261,9 +1538,9 @@ mod tests {
         for signal in [SIGHUP, SIGTRAP, SIGUSR1, SIGSEGV] {
             signals.set_action(signal, handler).unwrap();
         }
-        signals.send(SIGUSR1, Origin::Thread);
-        signals.send(SIGHUP, Origin::Process);
-        signals.send(SIGTRAP, Origin::Process);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGHUP), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGTRAP), NO_LIMIT).unwrap();
         signals.force(SIGSEGV);
         let order: Vec<u32> = core::iter::from_fn(|| match signals.next_delivery() {
             Some(Delivery::Handler { signal, .. }) => Some(signal),
@@ -1271,9 +1548,9 @@ mod tests {
         })
         .collect();
         assert_eq!(order, [SIGSEGV, SIGTRAP, SIGHUP, SIGUSR1]);
-        signals.send(SIGUSR1, Origin::Process);
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         signals.force(SIGSEGV);
-        signals.send(SIGKILL, Origin::Process);
+        signals.send(by_kill(SIGKILL), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
     }
 
@@ -1282,17 +1559,17 @@ mod tests {
         let mut signals = Signals::new();
         signals.thread.blocked = !UNBLOCKABLE;
         for signal in [20, 21, 22] {
-            signals.send(signal, Origin::Process);
+            signals.send(by_kill(signal), NO_LIMIT).unwrap();
         }
-        signals.send(SIGCONT, Origin::Process);
+        signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(SIGCONT));
-        signals.send(21, Origin::Process);
+        signals.send(by_kill(21), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(21));
         // SIGSTOP cannot be blocked: sent, it is pending until delivered.
-        signals.send(SIGCONT, Origin::Process);
-        signals.send(SIGSTOP, Origin::Process);
+        signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGSTOP), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(SIGSTOP));
-        signals.send(SIGCONT, Origin::Process);
+        signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(SIGCONT));
         signals.thread.blocked = 0;
         assert_eq!(signals.next_delivery(), None);
@@ -1300,47 +1577,206 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_keeps_the_origin_it_was_first_sent_from() {
+    fn a_standard_signal_keeps_the_info_it_was_first_sent_with() {
         const SIGUSR1: u32 = 10;
         let mut signals = Signals::new();
         signals.thread.blocked = bit(SIGUSR1);
-        // A process that catches nothing keeps no origins: only a handler sees one.
-        signals.send(SIGUSR1, Origin::Thread);
-        assert_eq!(signals.origin(SIGUSR1), Origin::Process);
-        signals.discard(bit(SIGUSR1));
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
+        assert_eq!(signals.thread.pending, bit(SIGUSR1));
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), Some(by_tkill(SIGUSR1)));
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), None);
+        assert_eq!(signals.thread.pending, 0);
         let handler = Action {
             handler: 0x40_1000,
             ..Action::default()
         };
         signals.set_action(SIGUSR1, handler).unwrap();
-        signals.send(SIGUSR1, Origin::Thread);
-        signals.send(SIGUSR1, Origin::Process);
-        assert_eq!(signals.origin(SIGUSR1), Origin::Thread);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
         signals.thread.blocked = 0;
-        let delivery = signals.next_delivery();
-        assert!(matches!(
-            delivery,
+        assert_eq!(
+            signals.next_delivery(),
             Some(Delivery::Handler {
-                origin: Origin::Thread,
-                ..
+                signal: SIGUSR1,
+                action: handler,
+                info: by_tkill(SIGUSR1)
             })
+        );
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
+        assert!(matches!(
+            signals.next_delivery(),
+            Some(Delivery::Handler { info, .. }) if info == by_kill(SIGUSR1)
         ));
-        // Taken: its origin went with it.
-        signals.send(SIGUSR1, Origin::Process);
-        assert_eq!(signals.origin(SIGUSR1), Origin::Process);
-        // Discarded by an action that ignores it: its origin goes too.
-        signals.discard(bit(SIGUSR1));
         signals.thread.blocked = bit(SIGUSR1);
-        signals.send(SIGUSR1, Origin::Thread);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
         let ignore = Action {
             handler: IGNORE,
             ..Action::default()
         };
         signals.set_action(SIGUSR1, ignore).unwrap();
         signals.set_action(SIGUSR1, handler).unwrap();
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), Some(by_kill(SIGUSR1)));
+    }
+
+    #[test]
+    fn a_signal_not_blocked_keeps_no_info_without_actions_of_its_own() {
+        const SIGUSR1: u32 = 10;
+        let mut signals = Signals::new();
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
+        assert!(signals.actions_and_queue.is_none());
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), Some(Info::lost(SIGUSR1)));
+        signals.thread.blocked = bit(SIGUSR1);
+        signals.send(by_tkill(SIGUSR1), NO_LIMIT).unwrap();
+        assert!(signals.actions_and_queue.is_some());
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), Some(by_tkill(SIGUSR1)));
+    }
+
+    fn queued(signal: u32, value: u64) -> Info {
+        let mut bytes = [0xa5; INFO_SIZE];
+        bytes[8..12].copy_from_slice(&code::QUEUE.to_ne_bytes());
+        bytes[24..32].copy_from_slice(&value.to_ne_bytes());
+        Info::queued(signal, &bytes)
+    }
+
+    #[test]
+    fn real_time_signals_queue_each_instance_with_its_info_in_order() {
+        const RT: u32 = 40;
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(RT) | bit(RT + 1);
+        signals.send(queued(RT + 1, 9), NO_LIMIT).unwrap();
+        for value in 1..=3 {
+            signals.send(queued(RT, value), NO_LIMIT).unwrap();
+        }
+        signals.send(by_kill(RT), NO_LIMIT).unwrap();
+        assert_eq!(signals.blocked_pending(), bit(RT) | bit(RT + 1));
+        let [block] = signals.actions_and_queue.as_deref().unwrap();
+        assert_eq!(block.queue.len(), 5);
+        let taken: Vec<Info> =
+            core::iter::from_fn(|| signals.take_waited(bit(RT) | bit(RT + 1))).collect();
+        assert_eq!(
+            taken,
+            [
+                queued(RT, 1),
+                queued(RT, 2),
+                queued(RT, 3),
+                by_kill(RT),
+                queued(RT + 1, 9)
+            ]
+        );
+        assert_eq!(signals.thread.pending, 0);
+        let bytes = queued(RT, 1).to_bytes();
+        assert_eq!(bytes[..4], (RT as i32).to_ne_bytes());
+        assert_eq!(bytes[12..16], [0xa5; 4]);
+        assert_eq!(bytes[KEPT_INFO_SIZE..], [0; INFO_SIZE - KEPT_INFO_SIZE]);
+        let handler = Action {
+            handler: 0x40_1000,
+            ..Action::default()
+        };
+        signals.set_action(RT, handler).unwrap();
+        signals.send(queued(RT, 1), NO_LIMIT).unwrap();
+        signals.send(queued(RT, 2), NO_LIMIT).unwrap();
         signals.thread.blocked = 0;
-        signals.send(SIGUSR1, Origin::Process);
-        assert_eq!(signals.origin(SIGUSR1), Origin::Process);
+        let Some(Delivery::Handler { info, action, .. }) = signals.next_delivery() else {
+            panic!("no handler ran");
+        };
+        assert_eq!(info, queued(RT, 1));
+        assert_eq!(signals.thread.pending, bit(RT));
+        signals.enter_handler(RT, &action);
+        assert_eq!(signals.next_delivery(), None);
+        signals.thread.blocked = 0;
+        assert!(matches!(
+            signals.next_delivery(),
+            Some(Delivery::Handler { info, .. }) if info == queued(RT, 2)
+        ));
+        assert_eq!(signals.thread.pending, 0);
+    }
+
+    #[test]
+    fn ignoring_a_real_time_signal_discards_every_instance() {
+        const RT: u32 = 50;
+        let mut signals = Signals::new();
+        let ignore = Action {
+            handler: IGNORE,
+            ..Action::default()
+        };
+        signals.set_action(RT, ignore).unwrap();
+        signals.thread.blocked = bit(RT);
+        signals.send(queued(RT, 1), NO_LIMIT).unwrap();
+        signals.send(queued(RT, 2), NO_LIMIT).unwrap();
+        assert_eq!(signals.blocked_pending(), bit(RT));
+        signals.thread.blocked = 0;
+        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(signals.thread.pending, 0);
+        let [block] = signals.actions_and_queue.as_deref().unwrap();
+        assert!(block.queue.is_empty());
+        signals.thread.blocked = bit(RT);
+        signals.send(queued(RT, 1), NO_LIMIT).unwrap();
+        signals.send(queued(RT, 2), NO_LIMIT).unwrap();
+        signals.set_action(RT, Action::default()).unwrap();
+        signals.set_action(RT, ignore).unwrap();
+        assert_eq!(signals.thread.pending, 0);
+        let [block] = signals.actions_and_queue.as_deref().unwrap();
+        assert!(block.queue.is_empty());
+    }
+
+    #[test]
+    fn a_full_queue_refuses_real_time_signals_except_kill_s_and_loses_the_others_info() {
+        const SIGUSR1: u32 = 10;
+        const RT: u32 = 33;
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(SIGUSR1) | bit(RT) | bit(SIGSEGV);
+        assert_eq!(signals.send(queued(RT, 1), 0), Err(QueueFull));
+        assert_eq!(signals.send(by_tkill(RT), 0), Err(QueueFull));
+        assert_eq!(signals.thread.pending, 0);
+        signals.send(by_kill(RT), 0).unwrap();
+        signals.send(queued(SIGUSR1, 1), 0).unwrap();
+        signals.send(Info::from_kernel(SIGSEGV), 0).unwrap();
+        assert_eq!(
+            signals.thread.pending,
+            bit(SIGUSR1) | bit(RT) | bit(SIGSEGV)
+        );
+        assert_eq!(signals.take_waited(bit(RT)), Some(Info::lost(RT)));
+        assert_eq!(signals.take_waited(bit(SIGUSR1)), Some(Info::lost(SIGUSR1)));
+        assert_eq!(
+            signals.take_waited(bit(SIGSEGV)),
+            Some(Info::from_kernel(SIGSEGV))
+        );
+        signals.send(queued(RT, 1), NO_LIMIT).unwrap();
+        signals.send(by_kill(RT), 0).unwrap();
+        assert_eq!(signals.take_waited(bit(RT)), Some(queued(RT, 1)));
+        assert_eq!(signals.take_waited(bit(RT)), None);
+    }
+
+    #[test]
+    fn the_queue_counts_up_to_the_limit_and_frees_what_it_took() {
+        let queued = AtomicU64::new(0);
+        assert!(try_charge(&queued, 2));
+        assert!(try_charge(&queued, 2));
+        assert!(!try_charge(&queued, 2));
+        charge(&queued);
+        assert_eq!(queued.load(Ordering::Relaxed), 3);
+        uncharge(&queued, 2);
+        assert!(!try_charge(&queued, 1));
+        assert!(try_charge(&queued, 2));
+        uncharge(&queued, 2);
+        assert_eq!(queued.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn sigtimedwait_takes_synchronous_signals_first_and_never_sigkill_or_sigstop() {
+        const SIGUSR1: u32 = 10;
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(SIGUSR1) | bit(SIGTRAP) | bit(40);
+        signals.send(queued(40, 1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGTRAP), NO_LIMIT).unwrap();
+        let everything = u64::MAX & !UNBLOCKABLE;
+        let order: Vec<u32> = core::iter::from_fn(|| signals.take_waited(everything))
+            .map(|info| info.signal())
+            .collect();
+        assert_eq!(order, [SIGTRAP, SIGUSR1, 40]);
+        assert_eq!(signals.take_waited(everything), None);
     }
 
     #[test]
@@ -1356,7 +1792,7 @@ mod tests {
             mask: bit(SIGUSR2) | bit(SIGKILL),
         };
         signals.set_action(SIGUSR1, handler).unwrap();
-        signals.send(SIGUSR1, Origin::Process);
+        signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         let Some(Delivery::Handler { action, .. }) = signals.next_delivery() else {
             panic!("no handler ran");
         };
@@ -1431,7 +1867,6 @@ mod tests {
         signals.thread.blocked = bit(SIGSEGV) | bit(1);
         signals.force(SIGSEGV);
         assert_eq!(signals.thread.blocked, bit(1));
-        assert_eq!(signals.origin(SIGSEGV), Origin::Kernel);
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGSEGV)));
         // Ignored: by the default action.
         let ignore = Action {
@@ -1449,7 +1884,7 @@ mod tests {
             Some(Delivery::Handler {
                 signal: SIGSEGV,
                 action: handler,
-                origin: Origin::Kernel
+                info: Info::from_kernel(SIGSEGV)
             })
         );
     }

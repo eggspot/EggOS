@@ -23,7 +23,6 @@
 //! there and no `esr_context`.
 
 use super::fault::{Fault, Trap};
-use super::signals::Origin;
 use crate::process::Process;
 use eggos_hal::Platform;
 use eggos_hal::user::UserRegisters;
@@ -33,31 +32,6 @@ pub const INFO_SIZE: usize = 128;
 
 /// The size of a `stack_t`.
 pub const STACK_SIZE: usize = 24;
-
-/// `si_code` for a signal sent with `kill` (`SI_USER`).
-const SI_USER: i32 = 0;
-/// `si_code` for a signal sent with `tkill` or `tgkill` (`SI_TKILL`).
-const SI_TKILL: i32 = -6;
-/// `si_code` for a signal the kernel raised (`SI_KERNEL`).
-const SI_KERNEL: i32 = 0x80;
-
-/// The `siginfo_t` of `signal` from `origin`, sent by process `pid` (ignored for the kernel's):
-/// `si_signo`, `si_errno` 0 and `si_code`, then the sender's id and user id (0: processes have
-/// no credentials yet, and every process is root's until they do).
-pub fn info(signal: u32, origin: Origin, pid: u32) -> [u8; INFO_SIZE] {
-    let mut info = [0; INFO_SIZE];
-    let code = match origin {
-        Origin::Process => SI_USER,
-        Origin::Thread => SI_TKILL,
-        Origin::Kernel => SI_KERNEL,
-    };
-    info[..4].copy_from_slice(&(signal as i32).to_ne_bytes());
-    info[8..12].copy_from_slice(&code.to_ne_bytes());
-    if origin != Origin::Kernel {
-        info[16..20].copy_from_slice(&pid.to_ne_bytes());
-    }
-    info
-}
 
 /// The `siginfo_t` of `fault`: `si_signo`, `si_errno` 0, `si_code` and `si_addr`, the
 /// sender's fields' place.

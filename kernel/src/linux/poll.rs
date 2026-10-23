@@ -74,11 +74,11 @@ fn events(fd: i32, requested: u16) -> u16 {
 }
 
 /// When a wait ends, in clock ticks ([`Platform::clock_ticks`]); `u64::MAX` for never.
-type Deadline = u64;
+pub type Deadline = u64;
 
 /// The deadline of a wait for `nanoseconds`, rounded up so it is never reached early: `None`
 /// for none, no wait at all.
-fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
+pub fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
     (nanoseconds != 0).then(|| {
         let ticks = mul_div_ceil(nanoseconds, P::clock_frequency(), NANOSECONDS_PER_SECOND);
         P::clock_ticks().saturating_add(ticks)
@@ -129,23 +129,11 @@ pub fn ppoll<P: Platform>(
     mask: u64,
     set_size: u64,
 ) -> Result<u64, Errno> {
-    // The timeout in nanoseconds, if one was given that a `u64` holds.
     let mut requested_nanoseconds = None;
     let deadline = if timeout == 0 {
         Some(Deadline::MAX)
     } else {
-        let mut bytes = [0; TIMESPEC_SIZE];
-        process
-            .read_user_memory(timeout, &mut bytes)
-            .map_err(|_| Errno::EFAULT)?;
-        let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
-        let nanoseconds = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
-        if seconds < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&nanoseconds) {
-            return Err(Errno::EINVAL);
-        }
-        requested_nanoseconds = (seconds as u64)
-            .checked_mul(NANOSECONDS_PER_SECOND)
-            .and_then(|whole| whole.checked_add(nanoseconds as u64));
+        requested_nanoseconds = read_timeout(process, timeout)?;
         deadline_in::<P>(requested_nanoseconds.unwrap_or(u64::MAX))
     };
     if mask != 0 {
@@ -174,6 +162,24 @@ pub fn ppoll<P: Platform>(
         let _ = process.write_user_memory(timeout, &bytes);
     }
     result
+}
+
+/// The `struct timespec` at `address`, a timeout, in nanoseconds, or `None` if it is too long
+/// for a `u64` (over 584 years). As Linux: `EFAULT` if it is not the program's memory, `EINVAL`
+/// for negative seconds or nanoseconds outside 0 to 999999999.
+pub fn read_timeout<P: Platform>(process: &Process<P>, address: u64) -> Result<Option<u64>, Errno> {
+    let mut bytes = [0; TIMESPEC_SIZE];
+    process
+        .read_user_memory(address, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let nanoseconds = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
+    if seconds < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&nanoseconds) {
+        return Err(Errno::EINVAL);
+    }
+    Ok((seconds as u64)
+        .checked_mul(NANOSECONDS_PER_SECOND)
+        .and_then(|whole| whole.checked_add(nanoseconds as u64)))
 }
 
 /// What both calls share once the timeout is a `deadline` (`None` for no wait): checks

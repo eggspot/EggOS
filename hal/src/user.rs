@@ -271,6 +271,15 @@ pub struct TestProgram {
     /// requires the count to be 2: `exit_group(0)`, or `exit_group(1)` if any check or call
     /// failed.
     pub linux_fault_handler: usize,
+    /// A Linux program that queues signals with their `siginfo` (D68): it blocks
+    /// [`Self::LINUX_QUEUED_SIGNAL`], a real-time signal, queues it to itself twice with
+    /// `rt_sigqueueinfo` (`SI_QUEUE`, its own id as `si_pid`, then each of
+    /// [`Self::LINUX_QUEUED_VALUES`] as `si_value`), and sends it once more with `kill`. Then
+    /// `rt_sigtimedwait` with a zero timeout must take the three instances in the order they
+    /// were sent, each with its `siginfo_t` (`SI_USER` from its own id and no value for the
+    /// last), and a fourth call must fail with `EAGAIN`. `exit_group(0)`, or `exit_group(1)` if
+    /// any check or call failed.
+    pub linux_signal_queue: usize,
 }
 
 impl TestProgram {
@@ -295,6 +304,10 @@ impl TestProgram {
     /// Where [`Self::linux_fault_handler`] first faults: an address in no mapping (below
     /// Linux's lowest `mmap` address), not page-aligned.
     pub const LINUX_FAULT_ADDRESS: u64 = 0x1230;
+    /// The real-time signal [`Self::linux_signal_queue`] queues.
+    pub const LINUX_QUEUED_SIGNAL: u32 = 40;
+    /// The `si_value`s [`Self::linux_signal_queue`] queues its signal with, in order.
+    pub const LINUX_QUEUED_VALUES: [u64; 2] = [0x5151, 0x5252];
 }
 
 #[cfg(target_arch = "aarch64")]

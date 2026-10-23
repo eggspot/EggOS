@@ -759,6 +759,87 @@ riscv64_user_test_linux_fault_handler:
 7:  ld      t1, {saved_s5}(a2)
     sd      t1, {saved_pc}(a2)
     ret
+    .global riscv64_user_test_linux_signal_queue
+riscv64_user_test_linux_signal_queue:
+    addi    s4, sp, -288
+    li      t0, 1 << ({queued_signal} - 1)
+    sd      t0, 272(s4)
+    li      a0, 0
+    addi    a1, s4, 272
+    li      a2, 0
+    li      a3, 8
+    li      a7, 135
+    ecall
+    bnez    a0, 9f
+    li      a7, 172
+    ecall
+    mv      s1, a0
+    li      t0, {queued_signal}
+    sw      t0, 128(s4)
+    li      t0, -1
+    sw      t0, 136(s4)
+    sw      s1, 144(s4)
+    li      t0, {first_value}
+    sd      t0, 152(s4)
+    mv      a0, s1
+    li      a1, {queued_signal}
+    addi    a2, s4, 128
+    li      a7, 138
+    ecall
+    bnez    a0, 9f
+    li      t0, {second_value}
+    sd      t0, 152(s4)
+    mv      a0, s1
+    li      a1, {queued_signal}
+    addi    a2, s4, 128
+    li      a7, 138
+    ecall
+    bnez    a0, 9f
+    mv      a0, s1
+    li      a1, {queued_signal}
+    li      a7, 129
+    ecall
+    bnez    a0, 9f
+    li      s2, -1
+    li      s3, {first_value}
+    jal     6f
+    li      s3, {second_value}
+    jal     6f
+    li      s2, 0
+    li      s3, 0
+    jal     6f
+    addi    a0, s4, 272
+    mv      a1, s4
+    addi    a2, s4, 256
+    li      a3, 8
+    li      a7, 137
+    ecall
+    li      t0, -11
+    bne     a0, t0, 9f
+    li      a0, 0
+    li      a7, 94
+    ecall
+9:  li      a0, 1
+    li      a7, 94
+    ecall
+8:  j       8b
+6:  addi    a0, s4, 272
+    mv      a1, s4
+    addi    a2, s4, 256
+    li      a3, 8
+    li      a7, 137
+    ecall
+    li      t0, {queued_signal}
+    bne     a0, t0, 9b
+    lw      t1, 0(s4)
+    bne     t1, t0, 9b
+    lw      t1, 8(s4)
+    bne     t1, s2, 9b
+    ld      t1, 16(s4)
+    bne     t1, s1, 9b
+    ld      t1, 24(s4)
+    bne     t1, s3, 9b
+    ret
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -782,6 +863,9 @@ riscv64_user_test_end:
     // `uc_mcontext`'s `pc`, first in its registers.
     saved_pc = const 176,
     fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
 /// The registers saved by the entry code, in the order it stores them.
@@ -873,6 +957,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_signals: u8;
     static riscv64_user_test_linux_signal_handler: u8;
     static riscv64_user_test_linux_fault_handler: u8;
+    static riscv64_user_test_linux_signal_queue: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -939,6 +1024,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signals: (&raw const riscv64_user_test_linux_signals) as usize - start,
         linux_signal_handler: (&raw const riscv64_user_test_linux_signal_handler) as usize - start,
         linux_fault_handler: (&raw const riscv64_user_test_linux_fault_handler) as usize - start,
+        linux_signal_queue: (&raw const riscv64_user_test_linux_signal_queue) as usize - start,
     }
 }
 
