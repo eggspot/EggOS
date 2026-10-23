@@ -111,7 +111,8 @@ Startup-call follow-ups (D55): process ids reused after `wait4` reaps them (a pr
 same release in `/proc/sys/kernel/osrelease` and `/proc/version` (procfs); a `writev`
 benchmark once a sink faster than the console's UART exists (M7), and `getpid`'s round trip
 as the cheapest real call; (`writev`'s two edge cases from PR #48's review checked against
-Linux: done, D58); `init` as pid 1 (M10).
+Linux: done, D58); from PR #51's independent review: `writev` with a partly unreadable array
+whose readable entries hold a negative length is `EINVAL` on Linux, `EFAULT` here; `init` as pid 1 (M10).
 
 Thread-pointer follow-ups (D57): `CLONE_SETTLS` with `clone`; FS and GS selectors saved and
 reset per program; `ARCH_SET_GS` with the SWAPGS fence (D49); FSGSBASE for programs (the FS

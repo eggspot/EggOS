@@ -2069,7 +2069,9 @@ switch-path cost; this entry follows it.)
   `RDSEED`) on the stack. Off every hot path (reseeding only). ChaCha20's per-block working
   state is still not wiped: doing it in `chacha20::block` adds about 32 stores per 64-byte
   block, about 3% on `random_fill_4096`, above the benchmark gate; it waits for a design that
-  keeps the state in registers or wipes once per draw.
+  keeps the state in registers or wipes once per draw. Best effort, as `Secret` (D56): copies
+  the compiler makes (`compress`'s working vector, the state copied out in `finalize`, moves)
+  are not wiped.
 - **Follow-ups added.** When programs get FSGSBASE (D57), the way out of user mode saves a
   program-written FS base: give the context a new `fs_base_id` whenever the saved value
   differs, or two copies sharing an id (after `fork` or `clone`) could hold different bases
