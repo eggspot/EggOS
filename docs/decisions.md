@@ -3506,7 +3506,7 @@ the license, by an explicit instruction recorded here.
   when AVX comes (D54); SVE, SME and V records with their resets; `fork` and `clone` copying
   the FP/SIMD state (D54).
 
-## D83 Review of D54, D77 and D82: x86_64 clears `CR4.OSXSAVE` and `PKE` whatever firmware left; `mremap` with `MREMAP_FIXED` checks the old range's end before moving; `MADV_POPULATE_WRITE` skips mapped pages — Decided by the build loop
+## D83 Review of D54, D77 and D82: x86_64 clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR` whatever firmware left; `mremap` with `MREMAP_FIXED` checks the old range's end before moving; `MADV_POPULATE_WRITE` skips mapped pages — Decided by the build loop
 - **Why.** The review step after three feature PRs (#47, #72, #77). The switch path's owner
   check (thread ids are never reused, so a stale owner cannot match), the preemption and
   interrupt masking around `start_fp`, `with_running_fp` and `CpuFp::switch`, RISC-V's
@@ -3532,7 +3532,7 @@ the license, by an explicit instruction recorded here.
   fence first.
 - **`mremap` with `MREMAP_FIXED` or `MREMAP_DONTUNMAP` and an old size larger than the new
   one checks that the old range ends inside user space before it moves anything**
-  (`EINVAL`). It checked that only when unmapping the tail, after the move, so such a call
+  (`EINVAL`, before the target's `EPERM`, as Linux's `munmap` of the tail comes first). It checked that only when unmapping the tail, after the move, so such a call
   moved the pages, replaced what was at the target, and then failed: the program's data was
   at the target while the call said nothing happened. Linux unmaps the tail first, under
   `munmap`'s rule that a range past user space is `EINVAL`, so its old range is intact. This
@@ -3558,8 +3558,9 @@ the license, by an explicit instruction recorded here.
     HAL's `fp` code and the test programs; a QEMU test that `rt_sigreturn` with reserved
     `MXCSR` bits is `SIGSEGV` with no kernel fault.
 - **Cost.** One more bit pattern in a CR4 write at each CPU's start; `mremap`'s check is one
-  compare on a cold path; `MADV_POPULATE_WRITE` is faster on mapped pages. No benchmark
-  changes.
+  compare on a cold path; `MADV_POPULATE_WRITE` skips the zeroing of a frame for each mapped
+  page, and pays one more table walk for each unmapped one, small next to zeroing its frame.
+  No benchmark changes.
 - **Tests.** QEMU: `processes_keep_their_fp_registers_across_switches` first checks, in the
   kernel (not in host tests, which run on the host's CPU), that `CPUID` reports neither
   `OSXSAVE` nor `OSPKE` on x86_64. Under `-cpu max` with CR4's `OSXSAVE` and `PKE` set before

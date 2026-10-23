@@ -443,12 +443,12 @@ fn move_to<P: Platform>(
     {
         return Err(Errno::EINVAL);
     }
+    if old_length > new_length && old_address.saturating_add(old_length) > user_end {
+        return Err(Errno::EINVAL);
+    }
     let fixed = flags & remap::FIXED != 0;
     if fixed && new_address < MINIMUM_ADDRESS {
         return Err(Errno::EPERM);
-    }
-    if old_length > new_length && old_address.saturating_add(old_length) > user_end {
-        return Err(Errno::EINVAL);
     }
     let moved = old_length.min(new_length);
     if moved == 0 {
@@ -1097,6 +1097,7 @@ mod tests {
                 elsewhere,
                 Errno::EINVAL,
             ),
+            (start, user_end, PAGE, may_move | fixed, 0, Errno::EINVAL),
             (start, 0, PAGE, may_move | fixed, elsewhere, Errno::EINVAL),
             (start, 0, PAGE, may_move, 0, Errno::EINVAL),
             (start, 3 * PAGE, 4 * PAGE, may_move, 0, Errno::EFAULT),

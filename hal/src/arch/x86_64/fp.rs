@@ -2,8 +2,9 @@
 //! saved with `FXSAVE64` and loaded with `FXRSTOR64`. `CR0.TS` turns them on and off, for the
 //! kernel as well as ring 3 (#NM); the kernel, built without SSE or x87
 //! (`x86_64-unknown-none`), never touches them. Each CPU sets `CR4.OSFXSR` and `OSXMMEXCPT`
-//! (`set_up_user_mode`) and clears `CR4.OSXSAVE` and `PKE`, whatever firmware left (D83): no AVX
-//! or protection-key state yet, and `CPUID` tells programs so.
+//! (`set_up_user_mode`) and clears `CR4.OSXSAVE`, `PKE`, `CET` and `UINTR`, whatever firmware
+//! left (D83): no AVX, protection-key, shadow-stack or user-interrupt state yet, and `CPUID`
+//! tells programs so.
 
 use crate::fp::FpState;
 
