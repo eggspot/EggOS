@@ -108,9 +108,9 @@ pub fn poll<P: Platform>(
 /// `nfds` at `fds`, the events its descriptor has of those asked for (see [`events`]), and
 /// returns how many report any. If none does, it first waits for one until the `struct
 /// timespec` at `timeout` has passed, for good if that is null, not at all if it is zero. A
-/// timeout that is not zero gets the time not slept written back, whatever the result once it
-/// was read: zero after a wait that ended with it, about all of it when something was ready
-/// at once (D62). Linux's system call does that (its C libraries hide it), and ignores a
+/// timeout that is not zero gets the time not slept written back once the signal mask passed
+/// its checks, whatever the result: zero after a wait that ended with it, about all of it
+/// when something was ready at once (D62). Linux's system call does that (its C libraries hide it), and ignores a
 /// timeout the program cannot write, as here. As Linux, in this order: `EFAULT` if `timeout` is not
 /// the program's memory; `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999;
 /// with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the mask is not the

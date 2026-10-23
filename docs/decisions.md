@@ -2325,8 +2325,9 @@ switch-path cost; this entry follows it.)
 - **`ppoll` writes back the time not slept for every timeout that is not zero** (research;
   supersedes D61's "left as it was when something is ready at once"). select(2) says Linux
   updates the timeout "to reflect the amount of time not slept", and ppoll(2) that the system
-  call modifies it: whatever the result, once the timeout was read and found valid, Linux
-  writes back what is left of it, zero after a wait that ran out. So a call with something
+  call modifies it: whatever the result, once the timeout was read and found valid (and here
+  once the signal mask passed its checks), Linux writes back what is left of it, zero after a
+  wait that ran out. So a call with something
   ready at once now writes back slightly less than it was given, and one that fails later
   (`EFAULT` for the array, say) writes it back too. The remaining time is the deadline minus
   the clock, in nanoseconds rounded up, never more than was asked. A timeout of zero, or none,

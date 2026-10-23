@@ -431,11 +431,11 @@ fn write<P: Platform>(
 /// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux, all before
 /// anything is written: `EINVAL` for more than [`MAX_IOVECS`] buffers; then, entry by entry,
 /// `EFAULT` for one that is not the program's memory and `EINVAL` for a length that is
-/// negative as a `ssize_t` (see [`unreadable_iovecs`]); then `EFAULT` if a buffer does not end
-/// within user space; then at most [`MAX_RW_COUNT`] bytes in all, stopping
-/// at the first byte that is not the program's memory. The array is copied once, so the
-/// program changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is:
-/// the register's upper half is ignored.
+/// negative as a `ssize_t` (see [`unreadable_iovecs_error`]); then `EFAULT` if a buffer does
+/// not end within user space; then at most [`MAX_RW_COUNT`] bytes in all, stopping at the
+/// first byte that is not the program's memory. The array is copied once, so the program
+/// changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is: the
+/// register's upper half is ignored.
 #[inline(never)]
 fn writev<P: Platform>(
     process: &Process<P>,
@@ -463,7 +463,7 @@ fn writev<P: Platform>(
         &mut on_heap[..]
     };
     if process.read_user_memory(buffers, array).is_err() {
-        return Err(unreadable_iovecs(process, buffers, count));
+        return Err(unreadable_iovecs_error(process, buffers, count));
     }
     let (entries, _) = array.as_chunks::<IOVEC_SIZE>();
     if entries.iter().any(|entry| iovec(entry).1 > i64::MAX as u64) {
@@ -508,7 +508,7 @@ fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
 /// passes a readable array.
 #[cold]
 #[inline(never)]
-fn unreadable_iovecs<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Errno {
+fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Errno {
     if !ends_in_user_space::<P>(buffers, count * IOVEC_SIZE as u64) {
         return Errno::EFAULT;
     }
