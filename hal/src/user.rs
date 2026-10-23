@@ -225,6 +225,20 @@ pub struct TestProgram {
     /// clobbered register restored, the changed one 2, and nothing blocked:
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_signal_handler: usize,
+    /// A Linux program whose faults go to its `SIGSEGV` handler (D65): it installs one with
+    /// `SA_SIGINFO` (x86_64 with its own restorer, the others returning through the kernel's
+    /// trampoline) and maps a `PROT_NONE` page with `mmap`, then reads
+    /// [`Self::LINUX_FAULT_ADDRESS`], where nothing is mapped, and the `PROT_NONE` page. Before
+    /// each read it sets three registers to the `si_addr` and `si_code` (`SEGV_MAPERR`, then
+    /// `SEGV_ACCERR`) the handler must see and to where the handler resumes it (`x21` to `x23`,
+    /// `s3` to `s5`, `r13` to `r15`). The handler checks the signal and its `siginfo_t`
+    /// against those registers in its frame, and the fault address its machine context reports
+    /// (AArch64's `fault_address` and `esr_context` record, x86_64's `cr2` and `trapno` 14),
+    /// counts each fault that passed in a fourth register in its frame (`x20`, `s2`, `r12`),
+    /// sets the frame's program counter to the resume point, and returns. The program then
+    /// requires the count to be 2: `exit_group(0)`, or `exit_group(1)` if any check or call
+    /// failed.
+    pub linux_fault_handler: usize,
 }
 
 impl TestProgram {
@@ -246,6 +260,9 @@ impl TestProgram {
     /// How long [`Self::linux_poll`] waits in `ppoll`, in nanoseconds: 2 ms, a few timer
     /// ticks on every architecture.
     pub const LINUX_POLL_WAIT_NS: u64 = 2_000_000;
+    /// Where [`Self::linux_fault_handler`] first faults: an address in no mapping (below
+    /// Linux's lowest `mmap` address), not page-aligned.
+    pub const LINUX_FAULT_ADDRESS: u64 = 0x1230;
 }
 
 #[cfg(target_arch = "aarch64")]

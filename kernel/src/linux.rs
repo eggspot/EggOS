@@ -45,7 +45,7 @@ use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Format;
 use eggos_hal::user::{UserContext, UserExit};
-use eggos_hal::{Exception, Platform};
+use eggos_hal::{ExceptionKind, Platform};
 
 /// Linux's system-call numbers. x86_64 has its own table; AArch64 and RISC-V share the generic
 /// one (`asm-generic/unistd.h`).
@@ -280,31 +280,38 @@ pub fn handle<P: Platform>(
     match exit {
         UserExit::Syscall => syscall(process, context),
         UserExit::Interrupt => ControlFlow::Continue(()),
-        UserExit::Exception(exception) => user_exception(process, context, &exception),
+        UserExit::Exception(exception) => user_exception(
+            process,
+            context,
+            exception.kind,
+            exception.code,
+            exception.address,
+        ),
     }
 }
 
-/// An exception in the program. A page fault resumes the program if the process resolves it
-/// (demand paging); with no memory for the page, the process ends with `SIGKILL`, as Linux's
-/// out-of-memory killer would; any other fault sends the program the signal Linux sends for
-/// it ([`fault`]). Out of line and laid out away from the system-call path, which stays as
-/// short as it was: a fault costs a frame's zeroing anyway.
+/// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
+/// any. A page fault resumes the program if the process resolves it (demand paging); with no
+/// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
+/// would; any other fault sends the program the signal Linux sends for it ([`fault`]). Out of
+/// line and laid out away from the system-call path, which stays as short as it was (the
+/// exception's parts passed alone keep the loop's state in registers, and the page-fault path
+/// with them: +4% on AArch64's `linux_page_fault` with the whole `Exception` by reference).
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
-    exception: &Exception,
+    kind: ExceptionKind,
+    code: u64,
+    address: Option<u64>,
 ) -> ControlFlow<()> {
-    let (Some(page_fault), Some(address)) = (
-        P::page_fault(exception.kind, exception.code),
-        exception.address,
-    ) else {
-        return fault(process, context, exception);
+    let (Some(page_fault), Some(fault_address)) = (P::page_fault(kind, code), address) else {
+        return fault(process, context, kind, code, address);
     };
-    match process.resolve_page_fault(address, page_fault) {
+    match process.resolve_page_fault(fault_address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
-        Err(UnresolvedFault::NotAllowed) => fault(process, context, exception),
+        Err(UnresolvedFault::NotAllowed) => fault(process, context, kind, code, address),
         Err(UnresolvedFault::OutOfMemory) => {
             process.exit(ProcessExit::Killed {
                 signal: signal::SIGKILL,
@@ -314,17 +321,27 @@ fn user_exception<P: Platform>(
     }
 }
 
-/// Sends the program the signal Linux sends for `exception` ([`fault::classify`]), forced:
-/// its handler runs if it has one and neither blocks nor ignores the signal, else the process
-/// ends with it ([`signals::deliver_fault`]). Breaks when the process ends.
+/// Sends the program, whose registers are `context`, the signal Linux sends for the exception
+/// of `kind` with raw cause `code` at `address` ([`fault::classify`]), forced: its handler runs
+/// if it has one and neither blocks nor ignores the signal, else the process ends with it
+/// ([`signals::deliver_fault`]). Breaks when the process ends.
 #[cold]
 #[inline(never)]
 fn fault<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
-    exception: &Exception,
+    kind: ExceptionKind,
+    code: u64,
+    address: Option<u64>,
 ) -> ControlFlow<()> {
-    let fault = fault::classify(process, exception, context.stack());
+    let raised = fault::Raised {
+        kind,
+        code,
+        address,
+        pc: context.pc(),
+        stack: context.stack(),
+    };
+    let fault = fault::classify(process, &raised);
     signals::deliver_fault(process, context, &fault)
 }
 
@@ -620,8 +637,8 @@ mod tests {
     use crate::paging::PageTables;
     use crate::tests::{TestPlatform as P, console_output};
     use crate::thread::host::frames_for_test;
+    use eggos_hal::Exception;
     use eggos_hal::paging::Attributes;
-    use eggos_hal::{Exception, ExceptionKind};
 
     const DATA: u64 = 0x50_0000;
 
@@ -1832,7 +1849,6 @@ mod tests {
             let exception = Exception {
                 kind: ExceptionKind::DataFault,
                 name: "test page fault",
-                class: 0,
                 code,
                 pc: 0x40_0000,
                 address: Some(address),
@@ -1888,13 +1904,19 @@ mod tests {
         );
     }
 
-    /// An exception of `kind`, `class` and `code` at 0x40_0000, with the faulting address
-    /// `address`, if any.
-    fn exception(kind: ExceptionKind, class: u32, code: u64, address: Option<u64>) -> Exception {
+    /// An exception of `kind` at 0x40_0000, with the faulting address `address`, if any, whose
+    /// raw cause is `status` with the architecture's `class` in it as the HAL reports it:
+    /// AArch64's `ESR_EL1.EC`, RISC-V's `scause`; x86_64's error code is `status` alone (the
+    /// kind tells its vectors apart).
+    fn exception(kind: ExceptionKind, class: u64, status: u64, address: Option<u64>) -> Exception {
+        let code = match () {
+            _ if cfg!(target_arch = "x86_64") => status,
+            _ if cfg!(target_arch = "aarch64") => class << 26 | status,
+            _ => class | status,
+        };
         Exception {
             kind,
             name: "test exception",
-            class,
             code,
             pc: 0x40_0000,
             address,
@@ -1916,11 +1938,11 @@ mod tests {
         use ExceptionKind::*;
         #[cfg(target_arch = "x86_64")]
         let faults = [
-            (Other, 0, 0, signal::SIGFPE),
-            (Other, 1, 0, signal::SIGTRAP),
+            (Arithmetic, 0, 0, signal::SIGFPE),
+            (Debug, 1, 0, signal::SIGTRAP),
             (Breakpoint, 3, 0, signal::SIGTRAP),
             (IllegalInstruction, 6, 0, signal::SIGILL),
-            (Other, 12, 0, signal::SIGBUS),
+            (Segment, 12, 0, signal::SIGBUS),
             (Other, 13, 0, signal::SIGSEGV),
             (DataFault, 14, 0, signal::SIGSEGV),
             (InstructionFault, 14, 0x10, signal::SIGSEGV),
@@ -1950,12 +1972,7 @@ mod tests {
         ];
         for (kind, class, status, signal) in faults {
             let process = process_with_data(&kernel, b"ab");
-            let code = if cfg!(target_arch = "aarch64") {
-                u64::from(class) << 26 | status
-            } else {
-                status
-            };
-            let exception = exception(kind, class, code, None);
+            let exception = exception(kind, class, status, None);
             assert_eq!(
                 handle(&process, &mut context, UserExit::Exception(exception)),
                 ControlFlow::Break(()),
@@ -2313,11 +2330,12 @@ mod tests {
             _ if cfg!(target_arch = "aarch64") => 0x24,
             _ => 15,
         };
-        let mut code = if write { crate::tests::FAULT_WRITE } else { 0 };
+        let mut status = if write { crate::tests::FAULT_WRITE } else { 0 };
         if cfg!(target_arch = "aarch64") {
-            code |= u64::from(class) << 26 | 1 << 25;
+            // The instruction length bit, which a sanitized syndrome keeps.
+            status |= 1 << 25;
         }
-        exception(ExceptionKind::DataFault, class, code, Some(address))
+        exception(ExceptionKind::DataFault, class, status, Some(address))
     }
 
     /// Sets `signal`'s action to `SIG_IGN` with `rt_sigaction`.

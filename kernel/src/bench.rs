@@ -555,7 +555,6 @@ mod tests {
                 return UserExit::Exception(eggos_hal::Exception {
                     kind: eggos_hal::ExceptionKind::DataFault,
                     name: "test page fault",
-                    class: 0,
                     code: crate::tests::FAULT_WRITE,
                     pc,
                     address: Some(page),
@@ -582,6 +581,7 @@ mod tests {
                 linux_poll: 0,
                 linux_signals: 0,
                 linux_signal_handler: 0,
+                linux_fault_handler: 0,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {

@@ -576,6 +576,83 @@ aarch64_user_test_linux_signal_handler:
     str     x9, [x2, #{saved_x20}]
 7:  mov     x19, #0
     ret
+    .global aarch64_user_test_linux_fault_handler
+aarch64_user_test_linux_fault_handler:
+    // Linux's generic numbers: exit_group 94, rt_sigaction 134, mmap 222. Its `struct
+    // sigaction` is at sp-64. No SA_RESTORER: the handler returns through the trampoline.
+    adr     x9, 5f
+    mov     x10, #4                 // SA_SIGINFO
+    stp     x9, x10, [sp, #-64]
+    stp     xzr, xzr, [sp, #-48]    // no restorer, no mask
+    mov     x0, #11                 // SIGSEGV
+    sub     x1, sp, #64
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #134
+    svc     #0
+    cbnz    x0, 9f
+    mov     x0, #0                  // mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS)
+    mov     x1, #4096
+    mov     x2, #0
+    mov     x3, #0x22
+    mov     x4, #-1
+    mov     x5, #0
+    mov     x8, #222
+    svc     #0
+    cmn     x0, #4095
+    b.hs    9f
+    mov     x24, x0
+    mov     x20, #0                 // the faults the handler counted
+    mov     x21, #{fault_address}   // nothing mapped there: SEGV_MAPERR
+    mov     x22, #1
+    adr     x23, 1f
+    ldr     x9, [x21]
+    b       9f
+1:  mov     x21, x24                // PROT_NONE: SEGV_ACCERR
+    mov     x22, #2
+    adr     x23, 2f
+    ldr     x9, [x21]
+    b       9f
+2:  cmp     x20, #2
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
+    // The handler: SIGSEGV with the si_code and si_addr in the frame's x22 and x21, which
+    // fault_address and the esr_context record report too; it counts it in the frame's x20,
+    // and resumes the program at its x23, whatever the checks found.
+5:  cmp     x0, #11
+    b.ne    7f
+    ldr     w9, [x1]
+    cmp     w9, #11
+    b.ne    7f
+    ldr     w9, [x1, #8]
+    ldr     x10, [x2, #{saved_x22}]
+    cmp     x9, x10
+    b.ne    7f
+    ldr     x9, [x1, #16]
+    ldr     x10, [x2, #{saved_x21}]
+    cmp     x9, x10
+    b.ne    7f
+    ldr     x10, [x2, #{fault_address_in_ucontext}]
+    cmp     x9, x10
+    b.ne    7f
+    ldr     x9, [x2, #{esr_record}]
+    movz    x10, #0x5201
+    movk    x10, #0x4553, lsl #16
+    movk    x10, #0x10, lsl #32     // ESR_MAGIC, 16 bytes
+    cmp     x9, x10
+    b.ne    7f
+    ldr     x9, [x2, #{saved_x20}]
+    add     x9, x9, #1
+    str     x9, [x2, #{saved_x20}]
+7:  ldr     x9, [x2, #{saved_x23}]
+    str     x9, [x2, #{saved_pc}]
+    ret
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -591,6 +668,14 @@ aarch64_user_test_end:
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     // `uc_mcontext.regs[20]` in the ucontext: the sigcontext at 176, its registers at 8.
     saved_x20 = const 176 + 8 + 20 * 8,
+    saved_x21 = const 176 + 8 + 21 * 8,
+    saved_x22 = const 176 + 8 + 22 * 8,
+    saved_x23 = const 176 + 8 + 23 * 8,
+    // `uc_mcontext.pc` and `fault_address`, and the record after `__reserved`'s FP/SIMD one.
+    saved_pc = const 176 + 264,
+    fault_address_in_ucontext = const 176,
+    esr_record = const 176 + 288 + 528,
+    fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
     handler = sym aarch64_exception,
 );
 
@@ -674,6 +759,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_poll: u8;
     static aarch64_user_test_linux_signals: u8;
     static aarch64_user_test_linux_signal_handler: u8;
+    static aarch64_user_test_linux_fault_handler: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -735,6 +821,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_poll: (&raw const aarch64_user_test_linux_poll) as usize - start,
         linux_signals: (&raw const aarch64_user_test_linux_signals) as usize - start,
         linux_signal_handler: (&raw const aarch64_user_test_linux_signal_handler) as usize - start,
+        linux_fault_handler: (&raw const aarch64_user_test_linux_fault_handler) as usize - start,
     }
 }
 
@@ -765,7 +852,6 @@ fn irq(pc: u64) {
         _ => deliver(&Exception {
             kind: ExceptionKind::Interrupt,
             name: "unexpected IRQ",
-            class: 0,
             code: id.into(),
             pc,
             address: None,
@@ -798,7 +884,6 @@ fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     Exception {
         kind,
         name,
-        class: class as u32,
         code: esr,
         pc,
         address: far_valid.then_some(far),

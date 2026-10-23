@@ -19,6 +19,15 @@ pub enum ExceptionKind {
     DataFault,
     /// A misaligned instruction, data or stack access.
     Alignment,
+    /// An arithmetic error the CPU traps: integer division by zero or overflow (x86_64's
+    /// `#DE`), or an unmasked floating-point exception (`#MF`, `#XM`).
+    Arithmetic,
+    /// A debug exception: a hardware breakpoint or watchpoint, a single step, or x86_64's
+    /// `int1`.
+    Debug,
+    /// A segment check failed: a segment not present, or a stack access outside its segment,
+    /// such as a push with a non-canonical stack pointer (x86_64's `#NP` and `#SS`).
+    Segment,
     /// An interrupt arrived that the kernel does not handle yet.
     Interrupt,
     /// Anything else; [`Exception::name`] says what.
@@ -31,10 +40,6 @@ pub struct Exception {
     pub kind: ExceptionKind,
     /// The architecture's own name for it, e.g. `"data abort"` or `"#GP general protection"`.
     pub name: &'static str,
-    /// The architecture's number for its type: the vector on x86_64 (which `code` does not
-    /// hold), the exception class (`ESR_EL1.EC`) on AArch64, `scause` without its interrupt bit
-    /// on RISC-V. It fits in the padding after `kind`, so an `Exception` is no larger.
-    pub class: u32,
     /// The architecture's raw cause value: `ESR_EL1` on AArch64, `scause` on RISC-V, the
     /// error code pushed by the CPU on x86_64 (0 when it pushes none). For an unexpected
     /// interrupt from an interrupt controller: its number there (GIC interrupt ID, x86

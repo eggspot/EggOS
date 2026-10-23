@@ -678,6 +678,80 @@ x86_64_user_test_linux_signal_handler:
 6:  movl    $15, %eax
     syscall
     int3
+    .global x86_64_user_test_linux_fault_handler
+x86_64_user_test_linux_fault_handler:
+    // Linux's x86_64 numbers: mmap 9, rt_sigaction 13, rt_sigreturn 15, exit_group 231. Its
+    // `struct sigaction` is at rsp-64; the handler returns through its restorer.
+    leaq    5f(%rip), %rax
+    movq    %rax, -64(%rsp)
+    movq    $0x04000004, -56(%rsp)  // SA_RESTORER | SA_SIGINFO
+    leaq    6f(%rip), %rax
+    movq    %rax, -48(%rsp)
+    movq    $0, -40(%rsp)           // no mask
+    movl    $11, %edi               // SIGSEGV
+    leaq    -64(%rsp), %rsi
+    xorl    %edx, %edx
+    movl    $8, %r10d
+    movl    $13, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    xorl    %edi, %edi              // mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS)
+    movl    $4096, %esi
+    xorl    %edx, %edx
+    movl    $0x22, %r10d
+    movq    $-1, %r8
+    xorl    %r9d, %r9d
+    movl    $9, %eax
+    syscall
+    cmpq    $-4095, %rax
+    jae     9f
+    movq    %rax, %rbx
+    xorl    %r12d, %r12d            // the faults the handler counted
+    movl    ${fault_address}, %r13d // nothing mapped there: SEGV_MAPERR
+    movl    $1, %r14d
+    leaq    1f(%rip), %r15
+    movq    (%r13), %rax
+    jmp     9f
+1:  movq    %rbx, %r13              // PROT_NONE: SEGV_ACCERR
+    movl    $2, %r14d
+    leaq    2f(%rip), %r15
+    movq    (%r13), %rax
+    jmp     9f
+2:  cmpq    $2, %r12
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
+    // The handler: SIGSEGV with the si_code and si_addr in the frame's r14 and r13, which cr2
+    // reports too, with trapno 14 (#PF); it counts it in the frame's r12, and resumes the
+    // program at its r15, whatever the checks found.
+5:  cmpl    $11, %edi
+    jne     7f
+    cmpl    $11, (%rsi)
+    jne     7f
+    movl    8(%rsi), %eax
+    cmpq    {saved_r14}(%rdx), %rax
+    jne     7f
+    movq    16(%rsi), %rax
+    cmpq    {saved_r13}(%rdx), %rax
+    jne     7f
+    cmpq    {saved_cr2}(%rdx), %rax
+    jne     7f
+    cmpq    $14, {saved_trapno}(%rdx)
+    jne     7f
+    incq    {saved_r12}(%rdx)
+7:  movq    {saved_r15}(%rdx), %rax
+    movq    %rax, {saved_rip}(%rdx)
+    ret
+    // Its restorer.
+6:  movl    $15, %eax
+    syscall
+    int3
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -719,6 +793,14 @@ x86_64_user_test_end:
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     // `uc_mcontext.r12` in the ucontext: the sigcontext at 40, r8 to r15 from its start.
     saved_r12 = const 40 + 4 * 8,
+    saved_r13 = const 40 + 5 * 8,
+    saved_r14 = const 40 + 6 * 8,
+    saved_r15 = const 40 + 7 * 8,
+    // `uc_mcontext`'s `rip`, `trapno` and `cr2`.
+    saved_rip = const 40 + 16 * 8,
+    saved_trapno = const 40 + 160,
+    saved_cr2 = const 40 + 176,
+    fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
     thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
     arch_set_fs = const TestProgram::LINUX_ARCH_SET_FS,
     options(att_syntax)
@@ -1003,6 +1085,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_poll: u8;
     static x86_64_user_test_linux_signals: u8;
     static x86_64_user_test_linux_signal_handler: u8;
+    static x86_64_user_test_linux_fault_handler: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1123,7 +1206,6 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
             kind: ExceptionKind::InstructionFault,
             name: "program counter outside user space",
             // As the fetch's page fault would report it, from user mode.
-            class: 14,
             code: PAGE_FAULT_USER | PAGE_FAULT_INSTRUCTION_FETCH,
             pc: registers.rip,
             address: Some(registers.rip),
@@ -1173,13 +1255,14 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_poll: (&raw const x86_64_user_test_linux_poll) as usize - start,
         linux_signals: (&raw const x86_64_user_test_linux_signals) as usize - start,
         linux_signal_handler: (&raw const x86_64_user_test_linux_signal_handler) as usize - start,
+        linux_fault_handler: (&raw const x86_64_user_test_linux_fault_handler) as usize - start,
     }
 }
 
 fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Exception {
     let (kind, name) = match vector {
-        0 => (ExceptionKind::Other, "#DE divide error"),
-        1 => (ExceptionKind::Other, "#DB debug"),
+        0 => (ExceptionKind::Arithmetic, "#DE divide error"),
+        1 => (ExceptionKind::Debug, "#DB debug"),
         2 => (ExceptionKind::Interrupt, "NMI"),
         3 => (ExceptionKind::Breakpoint, "#BP breakpoint"),
         4 => (ExceptionKind::Other, "#OF overflow"),
@@ -1191,17 +1274,20 @@ fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Except
         ),
         8 => (ExceptionKind::Other, "#DF double fault"),
         10 => (ExceptionKind::Other, "#TS invalid TSS"),
-        11 => (ExceptionKind::Other, "#NP segment not present"),
-        12 => (ExceptionKind::Other, "#SS stack-segment fault"),
+        11 => (ExceptionKind::Segment, "#NP segment not present"),
+        12 => (ExceptionKind::Segment, "#SS stack-segment fault"),
         13 => (ExceptionKind::Other, "#GP general protection"),
         14 if error_code & PAGE_FAULT_INSTRUCTION_FETCH != 0 => {
             (ExceptionKind::InstructionFault, "#PF page fault")
         }
         14 => (ExceptionKind::DataFault, "#PF page fault"),
-        16 => (ExceptionKind::Other, "#MF x87 floating-point error"),
+        16 => (ExceptionKind::Arithmetic, "#MF x87 floating-point error"),
         17 => (ExceptionKind::Alignment, "#AC alignment check"),
         18 => (ExceptionKind::Other, "#MC machine check"),
-        19 => (ExceptionKind::Other, "#XM SIMD floating-point exception"),
+        19 => (
+            ExceptionKind::Arithmetic,
+            "#XM SIMD floating-point exception",
+        ),
         20 => (ExceptionKind::Other, "#VE virtualization exception"),
         21 => (ExceptionKind::Other, "#CP control protection"),
         28 => (ExceptionKind::Other, "#HV hypervisor injection"),
@@ -1213,7 +1299,6 @@ fn decode(vector: u64, error_code: u64, pc: u64, address: Option<u64>) -> Except
     Exception {
         kind,
         name,
-        class: vector as u32,
         code: error_code,
         pc,
         address,

@@ -21,7 +21,7 @@
 use super::signal;
 use crate::process::Process;
 use eggos_hal::paging::Format;
-use eggos_hal::{Exception, Platform};
+use eggos_hal::{ExceptionKind, Platform};
 
 /// `si_code`s for faults (sigaction(2)): each signal numbers its own from 1.
 pub mod code {
@@ -69,10 +69,23 @@ pub struct Trap {
     pub address: u64,
 }
 
-/// The fault `exception` in the program of `process`, whose stack pointer was `stack`:
-/// see the module documentation. A page fault here is one the process did not resolve.
+/// An exception the program raised, as the HAL reported it, with the program's registers.
+#[derive(Debug, Clone, Copy)]
+pub struct Raised {
+    pub kind: ExceptionKind,
+    /// The architecture's raw cause value ([`eggos_hal::Exception::code`]).
+    pub code: u64,
+    /// The faulting address, for the faults that report one.
+    pub address: Option<u64>,
+    /// The program counter and stack pointer.
+    pub pc: u64,
+    pub stack: u64,
+}
+
+/// The fault `exception` in the program of `process`: see the module documentation. A page
+/// fault here is one the process did not resolve.
 #[cold]
-pub fn classify<P: Platform>(process: &Process<P>, exception: &Exception, stack: u64) -> Fault {
+pub fn classify<P: Platform>(process: &Process<P>, exception: &Raised) -> Fault {
     let in_user_space = |address: u64| address < <P::PageTableFormat as Format>::USER_END;
     let segv = |address: u64| {
         let code = if in_user_space(address) && process.region(address).is_some() {
@@ -82,7 +95,7 @@ pub fn classify<P: Platform>(process: &Process<P>, exception: &Exception, stack:
         };
         (signal::SIGSEGV, code, address)
     };
-    arch::classify(exception, stack, in_user_space, segv)
+    arch::classify(exception, in_user_space, segv)
 }
 
 /// Builds a [`Fault`].
@@ -97,23 +110,40 @@ fn fault((signal, code, address): (u32, i32, u64), trap: Trap) -> Fault {
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
-    use super::{Fault, Trap, code, fault};
+    use super::{Fault, Raised, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::{Exception, ExceptionKind};
+    use eggos_hal::ExceptionKind;
 
     /// The page-fault error code's protection bit: set for every address outside user space,
     /// mapped or not, as Linux does.
     const PAGE_FAULT_PROTECTION: u64 = 1 << 0;
 
+    /// `trapno`: the vector of an exception of `kind`. The HAL's kinds tell every vector a
+    /// program can raise apart but `#MF` and `#XM` from `#DE` (reported as 0: they cannot
+    /// happen while programs have no FP/SIMD registers, D49), `#NP` from `#SS` (12), and
+    /// `#NM` from `#UD` (6: FP/SIMD use, which D54 turns into a first use, not a fault).
+    fn vector(kind: ExceptionKind) -> u64 {
+        match kind {
+            ExceptionKind::Arithmetic => 0,
+            ExceptionKind::Debug => 1,
+            ExceptionKind::Breakpoint => 3,
+            ExceptionKind::IllegalInstruction => 6,
+            ExceptionKind::Segment => 12,
+            ExceptionKind::DataFault | ExceptionKind::InstructionFault => 14,
+            ExceptionKind::Alignment => 17,
+            // `#GP`, and the vectors no program raises.
+            ExceptionKind::Interrupt | ExceptionKind::Other => 13,
+        }
+    }
+
     pub fn classify(
-        exception: &Exception,
-        _stack: u64,
+        exception: &Raised,
         in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {
         let pc = exception.pc;
         let mut trap = Trap {
-            number: exception.class.into(),
+            number: vector(exception.kind),
             cause: exception.code,
             address: 0,
         };
@@ -132,20 +162,16 @@ mod arch {
             ExceptionKind::IllegalInstruction => (signal::SIGILL, code::ILL_ILLOPN, pc),
             // `#AC`: no address.
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, 0),
-            ExceptionKind::Interrupt | ExceptionKind::Other => match exception.class {
-                // `#DE`.
-                0 => (signal::SIGFPE, code::FPE_INTDIV, pc),
-                // `#DB`, from `int1` (`icebp`): programs cannot set the trap flag or
-                // debug registers yet.
-                1 => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
-                // `#NP` and `#SS` (say, a push with a non-canonical stack pointer).
-                11 | 12 => (signal::SIGBUS, code::SI_KERNEL, 0),
-                // `#MF` and `#XM`, which cannot happen while programs have no FP/SIMD
-                // registers (D49); their `si_code` comes from the FP status with D54.
-                16 | 19 => (signal::SIGFPE, code::SI_KERNEL, pc),
-                // `#GP` (a privileged instruction, a non-canonical address) and the rest.
-                _ => (signal::SIGSEGV, code::SI_KERNEL, 0),
-            },
+            // `#DE` (`#MF` and `#XM` take their `si_code` from the FP status with D54).
+            ExceptionKind::Arithmetic => (signal::SIGFPE, code::FPE_INTDIV, pc),
+            // `int1` (`icebp`): programs cannot set the trap flag or debug registers yet.
+            ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            // `#NP` and `#SS`.
+            ExceptionKind::Segment => (signal::SIGBUS, code::SI_KERNEL, 0),
+            // `#GP` (a privileged instruction, a non-canonical address) and the rest.
+            ExceptionKind::Interrupt | ExceptionKind::Other => {
+                (signal::SIGSEGV, code::SI_KERNEL, 0)
+            }
         };
         fault((signal, code, address), trap)
     }
@@ -153,14 +179,16 @@ mod arch {
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
-    use super::{Fault, Trap, code, fault};
+    use super::{Fault, Raised, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::{Exception, ExceptionKind};
+    use eggos_hal::ExceptionKind;
 
     /// Exception classes (`ESR_EL1.EC`).
     const EC_INSTRUCTION_ABORT_LOWER: u64 = 0x20;
+    const EC_INSTRUCTION_ABORT: u64 = 0x21;
     const EC_DATA_ABORT_LOWER: u64 = 0x24;
-    const EC_SP_ALIGNMENT: u32 = 0x26;
+    const EC_DATA_ABORT: u64 = 0x25;
+    const EC_SP_ALIGNMENT: u64 = 0x26;
     /// `ESR_EL1` bits a sanitized syndrome keeps: the class and the instruction length, and
     /// for a data abort, write-not-read and cache maintenance.
     const ESR_CLASS_AND_LENGTH: u64 = 0x3f << 26 | 1 << 25;
@@ -182,10 +210,10 @@ mod arch {
     pub fn sanitized(esr: u64) -> u64 {
         let class = esr >> 26 & 0x3f;
         match class {
-            EC_INSTRUCTION_ABORT_LOWER | 0x21 => {
+            EC_INSTRUCTION_ABORT_LOWER | EC_INSTRUCTION_ABORT => {
                 esr & ESR_CLASS_AND_LENGTH | STATUS_TRANSLATION_LEVEL_0
             }
-            EC_DATA_ABORT_LOWER | 0x25 => {
+            EC_DATA_ABORT_LOWER | EC_DATA_ABORT => {
                 esr & (ESR_CLASS_AND_LENGTH | ESR_DATA_ABORT_KEPT) | STATUS_TRANSLATION_LEVEL_0
             }
             _ => 0,
@@ -193,8 +221,7 @@ mod arch {
     }
 
     pub fn classify(
-        exception: &Exception,
-        stack: u64,
+        exception: &Raised,
         in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {
@@ -211,8 +238,8 @@ mod arch {
                 }
             }
             // The FAR is unknown after an SP alignment fault: the stack pointer it had.
-            ExceptionKind::Alignment if exception.class == EC_SP_ALIGNMENT => {
-                (signal::SIGBUS, code::BUS_ADRALN, stack)
+            ExceptionKind::Alignment if esr >> 26 & 0x3f == EC_SP_ALIGNMENT => {
+                (signal::SIGBUS, code::BUS_ADRALN, exception.stack)
             }
             // A PC alignment fault: the misaligned PC, in the FAR.
             ExceptionKind::Alignment => (
@@ -222,10 +249,14 @@ mod arch {
             ),
             // `brk`: the PC stays on it, so a handler that returns runs it again.
             ExceptionKind::Breakpoint => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
-            // Undefined instructions, the FP/SIMD trap, and every other class from EL0.
-            ExceptionKind::IllegalInstruction | ExceptionKind::Interrupt | ExceptionKind::Other => {
-                (signal::SIGILL, code::ILL_ILLOPC, pc)
-            }
+            // Undefined instructions, the FP/SIMD trap, and every other class from EL0 (the
+            // HAL reports no arithmetic, debug or segment exceptions on AArch64).
+            ExceptionKind::IllegalInstruction
+            | ExceptionKind::Arithmetic
+            | ExceptionKind::Debug
+            | ExceptionKind::Segment
+            | ExceptionKind::Interrupt
+            | ExceptionKind::Other => (signal::SIGILL, code::ILL_ILLOPC, pc),
         };
         let reported = match exception.address {
             Some(far) if !in_user_space(far) => sanitized(esr),
@@ -242,13 +273,12 @@ mod arch {
 
 #[cfg(target_arch = "riscv64")]
 mod arch {
-    use super::{Fault, Trap, code, fault};
+    use super::{Fault, Raised, Trap, code, fault};
     use crate::linux::signal;
-    use eggos_hal::{Exception, ExceptionKind};
+    use eggos_hal::ExceptionKind;
 
     pub fn classify(
-        exception: &Exception,
-        _stack: u64,
+        exception: &Raised,
         _in_user_space: impl Fn(u64) -> bool,
         segv: impl Fn(u64) -> (u32, i32, u64),
     ) -> Fault {
@@ -262,9 +292,14 @@ mod arch {
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
             // `ebreak`: the PC stays on it, so a handler that returns runs it again.
             ExceptionKind::Breakpoint => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
-            ExceptionKind::IllegalInstruction | ExceptionKind::Interrupt | ExceptionKind::Other => {
-                (signal::SIGILL, code::ILL_ILLOPC, pc)
-            }
+            // Illegal instructions and every other cause from U-mode (the HAL reports no
+            // arithmetic, debug or segment exceptions on RISC-V).
+            ExceptionKind::IllegalInstruction
+            | ExceptionKind::Arithmetic
+            | ExceptionKind::Debug
+            | ExceptionKind::Segment
+            | ExceptionKind::Interrupt
+            | ExceptionKind::Other => (signal::SIGILL, code::ILL_ILLOPC, pc),
         };
         fault(reported, Trap::default())
     }
