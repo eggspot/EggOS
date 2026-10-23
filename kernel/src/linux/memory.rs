@@ -451,6 +451,9 @@ fn move_to<P: Platform>(
     if fixed && new_address < MINIMUM_ADDRESS {
         return Err(Errno::EPERM);
     }
+    if old_length > new_length && old_address.saturating_add(old_length) > user_end {
+        return Err(Errno::EINVAL);
+    }
     let moved = old_length.min(new_length);
     if moved == 0 {
         return Err(Errno::EINVAL);
@@ -1044,6 +1047,13 @@ mod tests {
             );
         }
         assert_eq!(word(&process, start + 3 * PAGE), Some(7));
+        let populated = free();
+        assert_eq!(
+            madvise(&process, start + 2 * PAGE, 2 * PAGE, advice::POPULATE_WRITE),
+            0
+        );
+        assert_eq!(free(), populated);
+        assert_eq!(word(&process, start + 3 * PAGE), Some(7));
         let read_only = mmap(&process, 0, PAGE, prot::READ, ANONYMOUS);
         let none = mmap(&process, 0, PAGE, 0, ANONYMOUS);
         assert_eq!(madvise(&process, read_only, PAGE, advice::POPULATE_READ), 0);
@@ -1066,6 +1076,7 @@ mod tests {
         let kernel = kernel_tables();
         let process = process(&kernel);
         let start = mmap(&process, 0, 2 * PAGE, READ_WRITE, ANONYMOUS);
+        assert!(store(&process, start, 7));
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         let (may_move, fixed, keep) = (remap::MAYMOVE, remap::FIXED, remap::DONTUNMAP);
         let elsewhere = start - 0x10_0000;
@@ -1105,6 +1116,14 @@ mod tests {
                 Errno::EINVAL,
             ),
             (start, PAGE, PAGE, may_move | fixed, 0, Errno::EPERM),
+            (
+                start,
+                user_end,
+                PAGE,
+                may_move | fixed,
+                elsewhere,
+                Errno::EINVAL,
+            ),
             (start, 0, PAGE, may_move | fixed, elsewhere, Errno::EINVAL),
             (start, 0, PAGE, may_move, 0, Errno::EINVAL),
             (start, 3 * PAGE, 4 * PAGE, may_move, 0, Errno::EFAULT),
@@ -1116,6 +1135,7 @@ mod tests {
             );
         }
         assert_eq!(process.region(start).unwrap().end, start + 2 * PAGE);
+        assert_eq!(word(&process, start), Some(7));
         assert_eq!(process.region(elsewhere), None);
     }
 

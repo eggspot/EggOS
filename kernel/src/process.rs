@@ -577,6 +577,13 @@ impl<P: Platform> Process<P> {
             let (part_start, part_end) = (region.start.max(start), region.end.min(end));
             if access == Access::Write {
                 for page in (part_start..part_end).step_by(FRAME_SIZE as usize) {
+                    if self
+                        .space
+                        .translate(page)
+                        .is_some_and(|(_, mapped)| access.allowed_by(mapped))
+                    {
+                        continue;
+                    }
                     self.populate(&regions, page, access, true)
                         .map_err(|error| match error {
                             UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
