@@ -1914,7 +1914,7 @@ switch-path cost; this entry follows it.)
   | Source | Where | Credit |
   |---|---|---|
   | Device tree `/chosen/rng-seed` (QEMU `virt` gives 32 bytes) | AArch64, RISC-V | full, as Linux's default `random.trust_bootloader` |
-  | Device tree `/chosen/kaslr-seed` | AArch64 | none |
+  | Device tree `/chosen/kaslr-seed` (where the loader gives one: QEMU on AArch64) | AArch64, RISC-V | none |
   | `RDSEED` (100 tries per word), else `RDRAND` (10 tries, Intel's guide); samples of all ones or equal to the one before are thrown away | x86_64 | full, as Linux's default `random.trust_cpu` |
   | The clock, at every reseed | all | none |
 
@@ -1964,4 +1964,8 @@ switch-path cost; this entry follows it.)
   partial count after; never for 256 bytes or fewer); `dc zva` on AArch64 and `cbo.zero`
   (Zicboz) on RISC-V for zeroing, measured; confirm by observation on Linux whether
   `getrandom` caps the length before or after its range check; an MCP and CLI capability
-  that reports whether the generator is seeded (D22).
+  that reports whether the generator is seeded (D22). From PR #49's independent review:
+  `getrandom` copies 64 bytes at a time (a regions lock and a table walk each), far above
+  ChaCha20's own cost for large buffers: fill a page at a time and measure the copy; a
+  console line when a thread first waits for an unseeded generator (it waits for good
+  until a later source exists); wiping ChaCha20's and BLAKE2s's working state.

@@ -22,9 +22,12 @@ pub(super) fn fill(seed: &mut [u8; SEED_SIZE]) -> bool {
     let max_leaf = __cpuid(0).eax;
     let has_rdseed = max_leaf >= 7 && __cpuid_count(7, 0).ebx & 1 << 18 != 0;
     let has_rdrand = __cpuid(1).ecx & 1 << 30 != 0;
-    // SAFETY: CPUID says the CPU has the instruction each closure runs.
-    (has_rdseed && take(seed, RDSEED_TRIES, || unsafe { rdseed() }))
-        || (has_rdrand && take(seed, RDRAND_TRIES, || unsafe { rdrand() }))
+    (has_rdseed
+        // SAFETY: CPUID says the CPU has `RDSEED`.
+        && take(seed, RDSEED_TRIES, || unsafe { rdseed() }))
+        || (has_rdrand
+            // SAFETY: CPUID says the CPU has `RDRAND`.
+            && take(seed, RDRAND_TRIES, || unsafe { rdrand() }))
 }
 
 /// Fills `seed` from `sample`, a word at a time, giving each word `tries` tries.

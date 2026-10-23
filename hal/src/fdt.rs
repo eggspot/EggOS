@@ -411,8 +411,8 @@ const SEED_PROPERTIES: [(&[u8], SeedSource); 2] = [
 const MAX_SEEDS: usize = 4;
 
 /// Hands each seed in `/chosen` of the tree at the start of `blob` (`rng-seed`, `kaslr-seed`)
-/// to `seed` with its source, then removes it from the tree: its value is zeroed and the whole
-/// property (its token, length, name and padded value) overwritten with `FDT_NOP` tokens,
+/// to `seed` with its source, then removes it from the tree: the whole property (its token,
+/// length, name and padded value) is overwritten with `FDT_NOP` tokens,
 /// which every reader skips (Devicetree Specification v0.4, section 5.4.1). So nothing that
 /// reads the tree later, a kernel started after this one included, sees the seed, or sees an
 /// empty one it might trust. Returns how many it took. A tree that is invalid or malformed

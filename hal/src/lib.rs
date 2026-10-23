@@ -199,8 +199,8 @@ pub trait Platform: 'static {
     /// `kaslr-seed` on AArch64 and RISC-V, 256 bits from `RDSEED` (or `RDRAND`) on x86_64.
     /// Called on the boot CPU before any other CPU starts: at boot, and again by a boot
     /// self-test that checks the device tree's seeds are gone. A device-tree seed is
-    /// removed from the tree once handed over (its bytes zeroed, the property overwritten with
-    /// `FDT_NOP` tokens), so nothing that reads the tree later sees it, and CPU samples are
+    /// removed from the tree once handed over (the whole property, value included, overwritten
+    /// with `FDT_NOP` tokens), so nothing that reads the tree later sees it, and CPU samples are
     /// wiped after the call: the kernel must not keep `seed`'s bytes either, beyond hashing
     /// them. Nothing at all on a machine with no source.
     fn random_seeds(seed: &mut dyn FnMut(random::SeedSource, &[u8]));
