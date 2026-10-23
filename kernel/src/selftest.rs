@@ -1752,6 +1752,7 @@ fn linux_programs_built_from_rust_source_start<P: Platform>(
             Some(ProcessExit::Exited(127)) => {
                 return Err("the Rust program could not relocate itself or protect its data");
             }
+            Some(ProcessExit::Exited(101)) => return Err("the Rust program panicked"),
             Some(ProcessExit::Exited(_)) => {
                 return Err("a check of the Rust program failed: it named it on the console");
             }
