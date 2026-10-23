@@ -3420,3 +3420,30 @@ the license, by an explicit instruction recorded here.
   one only when it happened to make a size class take a frame.
 - **Tests.** Host: the count grows by one when a class takes a frame and not for a frame-sized
   allocation, and the sum is unchanged after both are freed.
+
+## D81 A CPU records that it has no address space loaded only after it dropped its reference — Decided by the build loop (the order and the fences decided by research)
+- **Why.** D80 did not stop `processes_run_on_every_cpu` from failing with "the processes'
+  frames and tables were not all freed" (main's CI on #75; about 1 boot in 16 on x86_64
+  locally). The cause was a race. `unload` switched to the kernel's tables, recorded "none
+  loaded", and only then dropped the CPU's reference, which frees the process's tables and
+  pages when it is the last. The self-test's warm-up wait returns once every CPU records
+  none, so it could read its starting count while another CPU was still freeing. With
+  diagnostics: the count was 7 frames low (one test process) with no process alive, and those
+  7 came back during the next round. D80's change stays: it removes a separate cause.
+- **What.** `unload` drops the reference first, then a Release fence, then records none.
+  `release_loaded_address_spaces` takes an Acquire fence once every CPU records none. So "none
+  loaded" means everything the CPUs let go is freed and visible.
+- **Cost and safety (research).** `unload` is a cold path, and the fence is its only new
+  instruction. The hardware switch still comes before the drop, as `AddressSpace::drop`
+  requires. While the drop runs, other CPUs may still see this CPU recording the old root:
+  - `LazilyLoaded::only_cpus_hold_it` may answer wrongly. That is harmless, as `Arc` counts
+    the real holders.
+  - `Cpu::mark_stale` may mark it. The store of "none" overwrites that.
+  - `wake_cpus_holding` may send a spurious wake-up.
+
+  All of these hold even if the freed root frame is reused at once, and D48 already accepts
+  them. Nothing the drop runs uses this CPU's record: `Process` has no `Drop` of its own, and
+  interrupts are masked.
+- **Tests.** 40 x86_64 boots in a row pass (before: about 1 failure in 16). The diagnosis
+  used temporary prints of the count, the live processes and each CPU's slot; they are not
+  kept.

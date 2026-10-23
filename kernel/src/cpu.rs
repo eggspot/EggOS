@@ -53,8 +53,9 @@ pub struct Cpu {
     online: AtomicBool,
     /// The first root of the user address space active on this CPU, made active by
     /// [`crate::address_space::AddressSpace::with_active`] or loaded lazily for a process
-    /// (D48), or [`NO_ADDRESS_SPACE`] while the kernel's empty low half is active (D46). Always
-    /// what the CPU has loaded, with [`STALE`] set once another CPU has removed or changed
+    /// (D48), or [`NO_ADDRESS_SPACE`] while the kernel's empty low half is active (D46). What
+    /// the CPU has loaded, about to load, or has just switched away from while it lets the
+    /// address space go (D81), with [`STALE`] set once another CPU has removed or changed
     /// mappings of it (D53): loaded, but with translations the CPU may have cached that are
     /// no longer right, so it switches again before it uses it. Changed only by the CPU itself,
     /// but for that mark ([`Cpu::mark_stale`]); the CPU stores a root without it only along

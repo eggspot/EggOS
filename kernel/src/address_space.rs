@@ -433,7 +433,9 @@ fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
 
 /// Switches `here`, this CPU, back to the kernel's tables from the address space `loaded` keeps,
 /// and drops the CPU's reference to it; if only CPUs held it, has the others that keep it
-/// loaded look again ([`release_unused`]).
+/// loaded look again ([`release_unused`]). The CPU records that it has none loaded only after
+/// the reference is dropped, so once every CPU records none, everything the last reference
+/// kept is freed (D81).
 fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
     let root = here.active_address_space() & !cpu::STALE;
     let ended = loaded.only_cpus_hold_it(here, root);
@@ -443,8 +445,9 @@ fn unload<P: Platform>(here: &'static Cpu, loaded: LazilyLoaded) {
     // nothing uses it: the kernel reaches user pages only after loading the address space it
     // means.
     unsafe { P::switch_address_space(&loaded.kernel_roots[..loaded.root_count]) };
-    here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
     drop(loaded);
+    fence(Ordering::Release);
+    here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
     if ended {
         wake_cpus_holding::<P>(here, root);
     }

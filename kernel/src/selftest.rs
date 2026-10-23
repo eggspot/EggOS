@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
 use eggos_hal::random::SeedSource;
@@ -898,9 +898,9 @@ fn processes_keep_their_fp_registers<P: Platform>(
 }
 
 /// Has every other CPU's idle thread look again until none keeps an ended process's address
-/// space loaded (D48) and `freed` holds (a CPU frees what it let go just after it stops
-/// recording it), waking them each millisecond, for up to [`THREADS_MEET_TIMEOUT_MS`]. Returns
-/// whether every CPU, this one included, has none loaded.
+/// space loaded (D48) and `freed` holds, waking them each millisecond, for up to
+/// [`THREADS_MEET_TIMEOUT_MS`]. Returns whether every CPU, this one included, has none loaded;
+/// if so, everything they let go is freed, as a CPU records none only after that (D81).
 fn release_loaded_address_spaces<P: Platform>(freed: impl Fn() -> bool) -> bool {
     let here = cpu::current::<P>();
     let millisecond = P::clock_frequency() / 1000;
@@ -920,7 +920,9 @@ fn release_loaded_address_spaces<P: Platform>(freed: impl Fn() -> bool) -> bool 
         }
         thread::sleep_until::<P>(P::clock_ticks() + millisecond);
     }
-    none_loaded()
+    let released = none_loaded();
+    fence(Ordering::Acquire);
+    released
 }
 
 /// Programs that never make a system call must still take turns (D48): with preemption on, two
