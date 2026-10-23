@@ -256,12 +256,14 @@ aarch64_user_test_linux_hello:
     .balign 4
     .global aarch64_user_test_linux_start
 aarch64_user_test_linux_start:
-    // Linux's generic numbers: writev 66, exit_group 94, getpid 172, gettid 178, prlimit64
-    // 261, getrandom 278. x19 is argc, x20 walks argv and envp, x21 counts the two lists, x22
-    // holds the process id. Each string is written by writev from one iovec on the stack. Ends with
-    // exit_group(255) if the stack is misaligned, the thread's id is not the process's, or
-    // getrandom does not fill the 16 bytes below the stack pointer with something not zero,
-    // or prlimit64 does not report the stack's limits as 8 MiB soft and unlimited hard.
+    // Linux's generic numbers: writev 66, exit_group 94, sigaltstack 132, rt_sigaction 134,
+    // getpid 172, gettid 178, prlimit64 261, getrandom 278. x19 is argc, x20 walks argv and
+    // envp, x21 counts the two lists, x22 holds the process id. Each string is written by
+    // writev from one iovec on the stack. Ends with exit_group(255) if the stack is
+    // misaligned, the thread's id is not the process's, getrandom does not fill the 16 bytes
+    // below the stack pointer with something not zero, prlimit64 does not report the stack's
+    // limits as 8 MiB soft and unlimited hard, SIGPIPE's action does not read back as SIG_IGN
+    // once set, or sigaltstack does not report no alternate stack.
     mov     x9, sp
     mov     x0, #255
     tst     x9, #15
@@ -299,6 +301,40 @@ aarch64_user_test_linux_start:
     cmp     x9, x11
     b.ne    9f
     cmn     x10, #1
+    b.ne    9f
+    mov     x9, #1                  // SIG_IGN
+    stp     x9, xzr, [sp, #-64]
+    stp     xzr, xzr, [sp, #-48]
+    mov     x0, #13                 // SIGPIPE
+    sub     x1, sp, #64
+    mov     x2, #0
+    mov     x3, #8
+    mov     x8, #134
+    svc     #0
+    mov     x9, x0
+    mov     x0, #255
+    cbnz    x9, 9f
+    mov     x0, #13
+    mov     x1, #0
+    sub     x2, sp, #96
+    mov     x3, #8
+    mov     x8, #134
+    svc     #0
+    mov     x9, x0
+    mov     x0, #255
+    cbnz    x9, 9f
+    ldr     x9, [sp, #-96]
+    cmp     x9, #1
+    b.ne    9f
+    mov     x0, #0
+    sub     x1, sp, #128
+    mov     x8, #132
+    svc     #0
+    mov     x9, x0
+    mov     x0, #255
+    cbnz    x9, 9f
+    ldr     w9, [sp, #-120]
+    cmp     w9, #2                  // SS_DISABLE
     b.ne    9f
     ldr     x19, [sp]
     add     x20, sp, #8

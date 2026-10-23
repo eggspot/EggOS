@@ -29,6 +29,7 @@
 use crate::address_space::{self, AddressSpace};
 use crate::cpu;
 use crate::linux::limits::ResourceLimits;
+use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
@@ -122,6 +123,8 @@ pub struct Process<P: Platform> {
     id: ProcessId,
     /// Its resource limits ([`Self::resource_limits`]).
     resource_limits: SpinLock<ResourceLimits>,
+    /// Its signal state and its one thread's ([`Self::signals`]).
+    signals: SpinLock<Signals>,
 }
 
 /// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
@@ -171,6 +174,7 @@ impl<P: Platform> Process<P> {
             exit: SpinLock::new(None),
             id,
             resource_limits: SpinLock::new(ResourceLimits::new()),
+            signals: SpinLock::new(Signals::new()),
         })
     }
 
@@ -183,6 +187,13 @@ impl<P: Platform> Process<P> {
     /// [`crate::linux::limits::DEFAULTS`]. Never held while user memory is copied.
     pub fn resource_limits(&self) -> &SpinLock<ResourceLimits> {
         &self.resource_limits
+    }
+
+    /// Its signal actions and its thread's blocked signals and alternate stack
+    /// (`rt_sigaction`, `rt_sigprocmask`, `sigaltstack`; D60). Never held while user memory is
+    /// copied.
+    pub fn signals(&self) -> &SpinLock<Signals> {
+        &self.signals
     }
 
     /// A process whose address space maps the HAL's test program
