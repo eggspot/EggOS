@@ -171,10 +171,11 @@ const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
 };
 
 impl AlternateStack {
-    /// Whether the thread, whose stack pointer is `stack`, is on it. Never with
-    /// `SS_AUTODISARM`: the stack is disarmed while a handler runs on it.
+    /// Whether the thread, whose stack pointer is `stack`, is on it: above its base and at
+    /// most at its top, as the stack grows down (a pointer at the top is the empty stack's).
+    /// Never with `SS_AUTODISARM`: the stack is disarmed while a handler runs on it.
     fn is_on(&self, stack: u64) -> bool {
-        !self.autodisarm && stack.wrapping_sub(self.base) < self.size
+        !self.autodisarm && stack.wrapping_sub(self.base).wrapping_sub(1) < self.size
     }
 
     /// `stack_t` as the program sees it, for a thread whose stack pointer is `stack`.
@@ -534,8 +535,11 @@ mod tests {
         let flags = |stack: AlternateStack, sp| {
             u32::from_ne_bytes(stack.to_bytes(sp)[8..12].try_into().unwrap())
         };
-        // One past its end, and below it, is off the stack.
-        assert_eq!(flags(stack, 0x7000_4000), 0);
+        // Its top is on it (the stack grows down); its base and below, and above its top,
+        // are off it.
+        assert_eq!(flags(stack, 0x7000_4000), stack_flag::ONSTACK);
+        assert_eq!(flags(stack, 0x7000_4001), 0);
+        assert_eq!(flags(stack, 0x7000_0000), 0);
         assert_eq!(flags(stack, 0x6fff_ffff), 0);
         // A disarmed stack is never reported as in use.
         let disarmed = AlternateStack {

@@ -1207,6 +1207,8 @@ mod tests {
         assert_eq!(sigaltstack(0, writable + 64, base + 0x100), 0);
         assert_eq!(words(writable + 64, 3), [base, 1, size]);
         assert_eq!(sigaltstack(0, writable + 64, base + size), 0);
+        assert_eq!(words(writable + 64, 3), [base, 1, size]);
+        assert_eq!(sigaltstack(0, writable + 64, base), 0);
         assert_eq!(words(writable + 64, 3), [base, 0, size]);
         store(writable, &[0, 2, 0]);
         assert_eq!(

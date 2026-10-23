@@ -2162,7 +2162,8 @@ switch-path cost; this entry follows it.)
     `EINVAL` for a `how` other than block, unblock or set, looked at only with a set;
     `SIGKILL` and `SIGSTOP` silently never blocked; then the old mask copied out.
   - `sigaltstack`: `EFAULT`; `EPERM` while the thread's stack pointer is on its alternate
-    stack (never with `SS_AUTODISARM`, which disarms it under a handler); `EINVAL` for flags
+    stack (above its base and at most at its top, as the stack grows down; never with
+    `SS_AUTODISARM`, which disarms it under a handler); `EINVAL` for flags
     other than 0, `SS_ONSTACK` (taken as 0) or `SS_DISABLE`, each with or without
     `SS_AUTODISARM`; `ENOMEM` below `MINSIGSTKSZ` (2048, 5120 on AArch64); a disabled stack
     keeps no base or size. The old stack reports `SS_DISABLE`, `SS_ONSTACK` or 0, with
