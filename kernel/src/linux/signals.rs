@@ -229,6 +229,9 @@ fn uncharge(queued: &AtomicU64, entries: usize) {
     queued.fetch_sub(entries as u64, Ordering::Relaxed);
 }
 
+/// How many records a drained queue keeps room for (48 bytes each).
+const DRAINED_QUEUE_CAPACITY: usize = 32;
+
 /// The bytes of a `siginfo_t` the kernel keeps with a pending signal: `si_signo`, `si_errno`,
 /// `si_code` and the union of fields after them. A program always gets the rest as zeros.
 pub const KEPT_INFO_SIZE: usize = 48;
@@ -538,13 +541,15 @@ impl Signals {
         self.free_drained_queue();
     }
 
-    /// Gives an empty queue's memory back, so a burst of queued signals costs nothing once
-    /// they are taken.
+    /// Gives an empty queue's memory back past [`DRAINED_QUEUE_CAPACITY`] records, so a burst
+    /// of queued signals costs little once they are taken, while a signal sent and taken at a
+    /// time needs no allocation.
     fn free_drained_queue(&mut self) {
         if let Some([block]) = self.actions_and_queue.as_deref_mut()
             && block.queue.is_empty()
+            && block.queue.capacity() > DRAINED_QUEUE_CAPACITY
         {
-            block.queue = VecDeque::new();
+            block.queue.shrink_to(DRAINED_QUEUE_CAPACITY);
         }
     }
 
@@ -621,8 +626,9 @@ impl Signals {
     /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), the first the
     /// kernel raised (a positive `si_code`) in the order raised, then the lowest, so a fault's
     /// or a failed frame's `SIGSEGV` is never overtaken; then the lowest number, and a
-    /// real-time signal's instances in the order sent. A handler with [`flag::RESETHAND`] is removed as it is taken, as on Linux:
-    /// its signal's next delivery is by the default action.
+    /// real-time signal's instances in the order sent. A handler with [`flag::RESETHAND`] is
+    /// removed as it is taken, as on Linux: its signal's next delivery is by the default
+    /// action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
         loop {
             let due = self.thread.pending & !self.thread.blocked;
@@ -1725,7 +1731,7 @@ mod tests {
         signals.send(queued(RT + 1, 0), NO_LIMIT).unwrap();
         assert!(capacity(&signals) >= Some(101));
         while signals.take_waited(bit(RT)).is_some() {}
-        assert!(capacity(&signals) >= Some(1));
+        assert!(capacity(&signals) >= Some(101));
         signals
             .set_action(
                 RT + 1,
@@ -1735,10 +1741,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(capacity(&signals), Some(0));
+        let drained = capacity(&signals).unwrap();
+        assert!((1..=DRAINED_QUEUE_CAPACITY).contains(&drained));
         signals.send(queued(RT, 0), NO_LIMIT).unwrap();
         assert_eq!(signals.take_waited(bit(RT)), Some(queued(RT, 0)));
-        assert_eq!(capacity(&signals), Some(0));
+        assert_eq!(capacity(&signals), Some(drained));
     }
 
     #[test]
