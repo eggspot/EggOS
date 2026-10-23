@@ -2476,6 +2476,84 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_frame_s_sigsegv_is_delivered_before_a_lower_numbered_pending_signal() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (sighup, sigusr1) = (1u64, 10u64);
+        let restorer = if signals::HAS_RESTORER {
+            signals::flag::RESTORER
+        } else {
+            0
+        };
+        set_handler(&process, sighup, restorer, 0);
+        let set = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
+        let both = 1u64 << (sighup - 1) | 1u64 << (sigusr1 - 1);
+        process.write_user_memory(set, &both.to_ne_bytes()).unwrap();
+        let (block, unblock) = (0, 1);
+        assert_eq!(
+            call(&process, number::RT_SIGPROCMASK, [block, set, 0, 8, 0, 0]),
+            0
+        );
+        for signal in [sighup, sigusr1] {
+            assert_eq!(call(&process, number::KILL, [pid, signal, 0, 0, 0, 0]), 0);
+        }
+        let unmapped_stack = 0x10_0000;
+        let mut context = UserContext::new(0x40_0000, unmapped_stack);
+        context.simulate_syscall(
+            number::RT_SIGPROCMASK,
+            [unblock, set, 0, 8, 0, 0],
+            0x40_0004,
+        );
+        assert_eq!(
+            handle(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGSEGV
+            })
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_breakpoints_and_undefined_instructions_report_no_fault_address_or_syndrome() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let (ec_unknown, ec_brk64) = (0x00, 0x3c);
+        for (signal, kind, class) in [
+            (
+                signal::SIGILL,
+                ExceptionKind::IllegalInstruction,
+                ec_unknown,
+            ),
+            (signal::SIGTRAP, ExceptionKind::Breakpoint, ec_brk64),
+        ] {
+            set_handler(&process, u64::from(signal), signals::flag::SIGINFO, 0);
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            let exit = context.simulate_exception(exception(kind, class, 1 << 25, None));
+            assert_eq!(
+                handle(&process, &mut context, exit),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            let [delivered, info, ..] = context.syscall_arguments();
+            assert_eq!(delivered, u64::from(signal));
+            let mut si_addr = [0; 8];
+            process.read_user_memory(info + 16, &mut si_addr).unwrap();
+            assert_eq!(u64::from_ne_bytes(si_addr), 0x40_0000);
+            assert_eq!(reported_trap(&process, &context), [0; 3]);
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+        }
+    }
+
+    #[test]
     fn a_fault_s_signal_blocked_or_ignored_ends_the_process() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();

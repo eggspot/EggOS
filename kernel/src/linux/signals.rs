@@ -17,7 +17,7 @@
 
 use super::Errno;
 use super::fault::Fault;
-use super::signal::{SIGKILL, SIGSEGV, SIGSTOP};
+use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, STACK_SIZE, Saved};
 use crate::process::{Process, ProcessExit};
 use crate::thread;
@@ -427,6 +427,25 @@ impl Signals {
         }
     }
 
+    fn first_to_deliver(&self, due: u64) -> u32 {
+        if due & bit(SIGKILL) != 0 {
+            return SIGKILL;
+        }
+        let synchronous = due & SYNCHRONOUS;
+        let raised_by_kernel = self
+            .caught
+            .as_deref()
+            .map_or(0, |[caught]| synchronous & caught.from_kernel);
+        let first = if raised_by_kernel != 0 {
+            raised_by_kernel
+        } else if synchronous != 0 {
+            synchronous
+        } else {
+            due
+        };
+        first.trailing_zeros() + 1
+    }
+
     /// Where pending `signal` came from.
     fn origin(&self, signal: u32) -> Origin {
         match self.caught.as_deref() {
@@ -436,16 +455,19 @@ impl Signals {
         }
     }
 
-    /// Takes the next pending, unblocked signal, lowest number first, discarding the ignored
-    /// ones on the way: `Some` for one that ends the process (default actions Term and Core,
-    /// `SIGKILL`'s included), stops it, or runs its handler. A handler with
-    /// [`flag::RESETHAND`] is removed as it is taken, as on Linux: its signal's next delivery
-    /// is by the default action.
+    /// Takes the next pending, unblocked signal, discarding the ignored ones on the way: `Some`
+    /// for one that ends the process (default actions Term and Core, `SIGKILL`'s included),
+    /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
+    /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), those the
+    /// kernel raised before those a program sent, so a fault's or a failed frame's `SIGSEGV`
+    /// is never overtaken; then the lowest number. A handler with [`flag::RESETHAND`] is
+    /// removed as it is taken, as on Linux: its signal's next delivery is by the default
+    /// action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
         let mut due = self.thread.pending & !self.thread.blocked;
         while due != 0 {
-            let signal = due.trailing_zeros() + 1;
-            due &= due - 1;
+            let signal = self.first_to_deliver(due);
+            due &= !bit(signal);
             let action = self.action(signal).unwrap_or_default();
             let delivery = match action.handler {
                 IGNORE => None,
@@ -541,6 +563,11 @@ impl Signals {
 
 /// `SIGCONT`'s number.
 const SIGCONT: u32 = 18;
+
+const SIGSYS: u32 = 31;
+
+const SYNCHRONOUS: u64 =
+    bit(SIGILL) | bit(SIGTRAP) | bit(SIGBUS) | bit(SIGFPE) | bit(SIGSEGV) | bit(SIGSYS);
 
 /// The stop signals: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU`.
 const STOP_SIGNALS: u64 = bit(SIGSTOP) | bit(20) | bit(21) | bit(22);
@@ -1220,6 +1247,34 @@ mod tests {
         assert_eq!(signals.next_delivery(), None);
         signals.send(SIGSTOP, Origin::Process);
         assert_eq!(signals.next_delivery(), Some(Delivery::Stop(SIGSTOP)));
+    }
+
+    #[test]
+    fn sigkill_then_synchronous_signals_the_kernel_raised_then_those_sent_then_lowest_first() {
+        const SIGHUP: u32 = 1;
+        const SIGUSR1: u32 = 10;
+        let handler = Action {
+            handler: 0x40_1000,
+            ..Action::default()
+        };
+        let mut signals = Signals::new();
+        for signal in [SIGHUP, SIGTRAP, SIGUSR1, SIGSEGV] {
+            signals.set_action(signal, handler).unwrap();
+        }
+        signals.send(SIGUSR1, Origin::Thread);
+        signals.send(SIGHUP, Origin::Process);
+        signals.send(SIGTRAP, Origin::Process);
+        signals.force(SIGSEGV);
+        let order: Vec<u32> = core::iter::from_fn(|| match signals.next_delivery() {
+            Some(Delivery::Handler { signal, .. }) => Some(signal),
+            _ => None,
+        })
+        .collect();
+        assert_eq!(order, [SIGSEGV, SIGTRAP, SIGHUP, SIGUSR1]);
+        signals.send(SIGUSR1, Origin::Process);
+        signals.force(SIGSEGV);
+        signals.send(SIGKILL, Origin::Process);
+        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
     }
 
     #[test]

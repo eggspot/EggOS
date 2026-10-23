@@ -2682,3 +2682,49 @@ switch-path cost; this entry follows it.)
   last, after it merges, so the cleanup does not conflict with it. Feature work cleans the
   files it changes in a commit of its own, or leaves a large file to its area's cleanup PR.
 - **`CLAUDE.md`** says so under Rules.
+
+## D67 Review of D63–D65: synchronous signals delivered first; AArch64 frames of `brk` and undefined instructions report no fault address or syndrome — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** The review step after three feature PRs (#56–#58): a fresh read of sending,
+  delivery, signal frames and faults against Linux's observable behaviour. `force`,
+  `SS_AUTODISARM` (disarmed on entry to every handler, never "on" the stack while disarmed),
+  `rt_sigreturn`'s alternate-stack restore at the restored stack pointer with every error
+  but an unreadable frame ignored, `SA_RESETHAND` resetting only the handler (Linux keeps
+  `SA_SIGINFO`, unlike POSIX's wording), the `siginfo_t` offsets, x86_64's frame and
+  `sigcontext`, and the red zone left out on the alternate stack all check out. Two things
+  change.
+- **Synchronous signals first** (research; a real bug). Delivery took the lowest number
+  first. Linux takes the synchronous signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`,
+  `SIGSEGV`, `SIGSYS`) before any other, those the kernel raised before those a program sent,
+  so that a fault's frame describes the faulting instruction (Linux commit a27341cd,
+  "Prioritize synchronous signals over 'normal' signals", which Wine relies on; and "signal:
+  Better detection of synchronous signals", for a failed frame's `SIGSEGV`). Here, with
+  `SIGHUP` caught and `SIGUSR1` at its default both unblocked at once and the stack
+  unwritable, `SIGHUP`'s frame failed, `SIGSEGV` was forced, and `SIGUSR1` (10) went before
+  `SIGSEGV` (11): the process died of `SIGUSR1`, not `SIGSEGV`. With a `SIGUSR1` handler,
+  `SIGSEGV`'s frame would have stacked on `SIGUSR1`'s and described its handler's entry.
+  `Signals::next_delivery` now takes `SIGKILL` first (it ends the process whatever else is
+  due), then the synchronous signals the kernel raised, then the other synchronous ones, then
+  the lowest number. Not on any hot path: only the calls that make a signal due and faults
+  deliver.
+- **AArch64: `fault_address` 0 and no `esr_context` for `brk` and undefined instructions**
+  (research; found by PR #58's independent review). Linux reports the PC in `si_addr` for
+  these but leaves the machine context's fault address 0 and writes no `esr_context`, which
+  only aborts and alignment faults carry. The frame wrote the PC and the raw syndrome. Now
+  only data and instruction aborts and alignment faults report them; `si_addr` is unchanged.
+  An alignment fault at an address outside user space keeps its class and instruction length
+  in the sanitized syndrome (it had none, so its frame lost both fields; independent review).
+  Whether Linux 6.4 and later pass the syndrome for undefined instructions, and what alignment
+  faults and external aborts report, stay on the list to check against a real Linux under QEMU.
+- **Left on the roadmap** (research): `AT_MINSIGSTKSZ` with D54, since the saved FP/SIMD state
+  changes its value (Rust's std sizes its alternate stack as the larger of `SIGSTKSZ` and the
+  entry, a missing one reading as 0, and every frame fits `SIGSTKSZ` today; `MIN_STACK_SIZE`
+  matches Linux's `MINSIGSTKSZ`); x86_64's non-canonical `rip` from `rt_sigreturn` reported as
+  `#GP` (it changes the HAL's x86_64 exit path, which PR #47 also changes); whether AArch64's
+  `rt_sigreturn` sends `SIGSEGV` for a frame whose `pstate` is not EL0t (we mask it to the
+  flags a program may set and continue).
+- **Tests.** Host: the delivery order (`SIGKILL`, then a forced `SIGSEGV`, then a sent
+  `SIGTRAP`, then `SIGHUP` and `SIGUSR1` by number); through the dispatcher, a failed `SIGHUP`
+  frame with `SIGUSR1` pending ends the process with `SIGSEGV`; on AArch64, `SIGILL` and
+  `SIGTRAP` handlers get the PC in `si_addr`, no fault address and no `esr_context`, and return.
+  All three fail without the fixes. `cargo xtask qemu --arch all` passes on aarch64, riscv64
+  and x86_64.

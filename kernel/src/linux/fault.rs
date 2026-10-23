@@ -63,9 +63,11 @@ pub struct Trap {
     /// x86_64's `trapno`: the vector.
     pub number: u64,
     /// x86_64's `err` (the error code the CPU pushed) and AArch64's `esr_context` (`ESR_EL1`),
-    /// each with nothing about the kernel's mappings for an address outside user space.
+    /// each with nothing about the kernel's mappings for an address outside user space. On
+    /// AArch64, only aborts and alignment faults report one: 0 (no `esr_context`) for the rest.
     pub cause: u64,
-    /// x86_64's `cr2` (page faults only) and AArch64's `fault_address` (`si_addr`).
+    /// x86_64's `cr2` (page faults only) and AArch64's `fault_address` (`si_addr` for aborts
+    /// and alignment faults, 0 for the rest, as on Linux).
     pub address: u64,
 }
 
@@ -178,6 +180,7 @@ mod arch {
     const EC_DATA_ABORT_LOWER: u64 = 0x24;
     const EC_DATA_ABORT: u64 = 0x25;
     const EC_SP_ALIGNMENT: u64 = 0x26;
+    const EC_PC_ALIGNMENT: u64 = 0x22;
     /// `ESR_EL1` bits a sanitized syndrome keeps: the class and the instruction length, and
     /// for a data abort, write-not-read and cache maintenance.
     const ESR_CLASS_AND_LENGTH: u64 = 0x3f << 26 | 1 << 25;
@@ -195,8 +198,8 @@ mod arch {
 
     /// The syndrome a program sees for a fault at an address outside user space: the class
     /// and instruction length, and for an abort a level 0 translation fault (with, for a data
-    /// abort, whether it wrote), whatever the kernel's tables hold there; 0 for any other
-    /// class.
+    /// abort, whether it wrote), whatever the kernel's tables hold there; for an alignment
+    /// fault, the class and length alone; 0 for any other class.
     pub fn sanitized(esr: u64) -> u64 {
         let class = esr >> 26 & 0x3f;
         match class {
@@ -206,6 +209,7 @@ mod arch {
             EC_DATA_ABORT_LOWER | EC_DATA_ABORT => {
                 esr & (ESR_CLASS_AND_LENGTH | ESR_DATA_ABORT_KEPT) | STATUS_TRANSLATION_LEVEL_0
             }
+            EC_PC_ALIGNMENT | EC_SP_ALIGNMENT => esr & ESR_CLASS_AND_LENGTH,
             _ => 0,
         }
     }
@@ -249,14 +253,18 @@ mod arch {
             | ExceptionKind::Interrupt
             | ExceptionKind::Other => (signal::SIGILL, code::ILL_ILLOPC, pc),
         };
-        let reported = match exception.address {
-            Some(far) if !in_user_space(far) => sanitized(esr),
-            _ => esr,
-        };
-        let trap = Trap {
-            number: 0,
-            cause: reported,
-            address,
+        let trap = match exception.kind {
+            ExceptionKind::DataFault
+            | ExceptionKind::InstructionFault
+            | ExceptionKind::Alignment => Trap {
+                number: 0,
+                cause: match exception.address {
+                    Some(far) if !in_user_space(far) => sanitized(esr),
+                    _ => esr,
+                },
+                address,
+            },
+            _ => Trap::default(),
         };
         fault((signal, code, address), trap)
     }
@@ -303,6 +311,15 @@ pub use arch::sanitized as sanitized_syndrome;
 #[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::sanitized_syndrome;
+
+    #[test]
+    fn a_pc_alignment_fault_at_a_kernel_address_keeps_its_class_and_length() {
+        let pc_alignment_with_length_and_iss = 0x8a00_0123;
+        assert_eq!(
+            sanitized_syndrome(pc_alignment_with_length_and_iss),
+            0x8a00_0000
+        );
+    }
 
     #[test]
     fn syndromes_for_kernel_addresses_say_nothing_of_the_kernel_s_tables() {
