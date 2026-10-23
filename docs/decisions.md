@@ -3063,3 +3063,77 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
 - **For later.** The terminal's access and change times updated as it is used (`w` reads them
   for idle time), with console input (M8); the console as `/dev/console` in M7's device file
   system, keeping this status; `STATX_MNT_ID` once there are mounts.
+
+## D75 Credentials: user and group ids, supplementary groups, `getuid`, `setuid`, `setresuid`, `setgroups` and their kin; root may raise hard limits — Decided by the build loop (the storage, the privilege model, Linux's rules and the scope decided by research)
+- **Why.** M6's next step. Every process ran as an unnamed root: the auxiliary vector said
+  uid 0, `getuid` and its kin answered `ENOSYS`, and D59 and D73 left "until processes have
+  credentials" behind. Shells, `id`, `sudo`-like tools and daemons that drop privileges call
+  these at startup.
+- **What a process has.** Real, effective, saved and file system user ids, the same four
+  group ids, and its supplementary groups, kept sorted with duplicates, as Linux keeps them.
+  A process starts as root, as Linux starts `init`: every id 0, no groups.
+- **Privilege is "effective user id 0"** (research). With no file capabilities, `capset`,
+  `PR_SET_KEEPCAPS` or securebits, capabilities(7)'s rules for uid changes reduce to exactly
+  that for `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_RESOURCE`: the effective set is cleared when
+  the effective uid leaves 0 and restored from the permitted set when it returns, and the
+  permitted set is lost only once no real, effective or saved uid is 0, after which no
+  unprivileged call can return to 0. The group calls test the effective uid too. When
+  capabilities come, this becomes explicit permitted and effective sets; file permission
+  checks (M7) will use the file system uid, since `setfsuid` to a non-zero id drops the file
+  capabilities.
+- **The rules** (research, from setuid(2), setreuid(2), setresuid(2), setfsuid(2),
+  setgroups(2), getgroups(2), credentials(7)), the same for users and groups:
+  - `setuid(id)`: `EINVAL` for -1; privileged, every id becomes `id`; otherwise the effective
+    and file system ids, if `id` is the real or saved id; else `EPERM`.
+  - `setreuid(real, effective)`, -1 to keep one: unprivileged, the real id may become the real
+    or effective id and the effective id any of the three; the saved id becomes the new
+    effective id when the real id is given or the effective id is given and differs from the
+    old real id.
+  - `setresuid`: unprivileged, each given id must be one the process holds.
+  - The file system id follows the effective id on each of these. `setfsuid(id)` always
+    returns the old file system id, changing it only when privileged or `id` is held (real,
+    effective, saved or file system), never to -1.
+  - `getresuid` writes real, effective, then saved, `EFAULT` at the first bad pointer.
+    `getgroups(size, list)`: `EINVAL` for a negative `size` or one below the count unless 0,
+    which returns the count. `setgroups`: `EPERM` unless privileged, then `EINVAL` above
+    `NGROUPS_MAX` (65536), `ENOMEM`, `EFAULT`; 0 empties the list without reading it.
+  - A call that fails changes nothing. Ids are 32-bit: registers' upper halves are ignored.
+- **Storage** (research). Per process, as the one thread a process has; Linux keeps them per
+  thread, so at `clone(CLONE_THREAD)` they become a per-thread record shared until a thread
+  changes it (glibc and musl apply set*id calls to every thread themselves). Root's are a
+  shared static; a process's own record is made on its first change (`ENOMEM` then), as D59's
+  limits. `Process` is exactly the heap's 256-byte class, so the credentials share the
+  resource limits' lock (`CredentialsAndLimits`; `setrlimit` checks one and changes the other
+  under it), and the program break's start became a `NonZeroU64` so its `Option` costs
+  nothing: `Process` stays 240 bytes. The supplementary groups are copied to and from the
+  program 64 at a time through a buffer on the stack, so the lock is never held across a copy.
+- **Raising hard limits** (research): a privileged process may now raise its hard limits
+  (D59's `CAP_SYS_RESOURCE`), up to `fs.nr_open` for open files. As every process starts as
+  root, a lowered hard limit stays final only for a process that has given up root, as on
+  Linux.
+- **`execve`'s step and the auxiliary vector** (research): at a program's start the saved and
+  file system ids become the effective ones; `AT_UID`, `AT_EUID`, `AT_GID` and `AT_EGID` come
+  from the credentials, and `AT_SECURE` is 1 when an effective id differs from the real one.
+  Set-uid and set-gid files come with M7. Signals sent with `kill` and `tgkill` carry the
+  sender's real uid in `si_uid`.
+- **Left for later** (research): setting the wall clock stays `EPERM` even for root (D73): it
+  needs a settable clock and its own decision, as the clock is the whole machine's. Permission
+  checks for signals to other processes wait for a process table (an unprivileged sender's
+  real or effective uid must match the target's real or saved uid). Linux also resets the
+  dumpable flag and the parent-death signal when an effective or file system id changes, and
+  marks a process whose real uid changed so its next `execve` checks `RLIMIT_NPROC`: each
+  comes with `prctl`, parents and per-user process counts. To confirm against a running Linux:
+  `setgroups`' `EPERM` before `EINVAL` and its sorted list; whether `getresuid` with a bad
+  second pointer has written the first id; whether `setresuid(-1, -1, -1)` resets a file
+  system id set by `setfsuid`.
+- **Cost.** The calls sit in `out_of_line_result`, below `number::LAST`: the system-call,
+  switch and page-fault paths are unchanged. `linux_exec_load` matches `main` on aarch64 and is
+  8 ns (riscv64) and 24 ns (x86_64) above it, 0.02% and 0.08%, from the per-process state
+  built and dropped with each process; root's after-exec step is two constants.
+- **Tests.** Host: each rule as a pure function on the ids (privileged and not, -1, the saved
+  id's update), the record made only on a real change, groups sorted, `after_exec`, and a
+  privileged process raising a hard limit but never past `fs.nr_open`; through the dispatcher,
+  every call with its errors in order (`EINVAL`, `EPERM`, `EFAULT`, upper halves ignored). QEMU:
+  a new test program, `linux_credentials`, checks `geteuid()` is 0, `setuid(1000)` succeeds,
+  `getuid()` is then 1000 and `setuid(0)` fails with `EPERM`; it passes on aarch64, riscv64 and
+  x86_64.

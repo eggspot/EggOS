@@ -308,8 +308,9 @@ fn poll_fds<P: Platform>(
 ) -> Result<Polled, Errno> {
     let count = u64::from(count as u32);
     let open_files = process
-        .resource_limits()
+        .credentials_and_limits()
         .lock()
+        .limits
         .get(limits::resource::NOFILE)
         .map_or(u64::MAX, |limit| limit.soft);
     if count > open_files {

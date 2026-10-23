@@ -183,10 +183,10 @@ pub fn time<P: Platform>(process: &Process<P>, tloc: u64) -> Result<u64, Errno> 
 /// `clock_settime(clock, tp)`: as Linux, `EINVAL` for any clock but `CLOCK_REALTIME`, the only
 /// one that can be set, then `EFAULT` if `tp` is not the program's memory, then `EINVAL` for
 /// negative seconds, seconds past Linux's latest settable second or nanoseconds outside 0 to
-/// 999999999, then `EPERM`: no process may set
-/// the wall clock (Linux's `CAP_SYS_TIME`) until processes have credentials, as none may raise
-/// a hard resource limit (D59). The clock is shared by every process, and an agent confined to
-/// its own permissions (D21) must not move it.
+/// 999999999, then `EPERM`: no process may set the wall clock yet, not even a privileged one,
+/// which Linux allows (`CAP_SYS_TIME`); that waits for a settable clock and its own decision
+/// (D75). The clock is shared by every process, and an agent confined to its own permissions
+/// (D21) must not move it.
 pub fn clock_settime<P: Platform>(
     process: &Process<P>,
     clock_id: u64,

@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 33] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 34] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -148,6 +148,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 33] {
         (
             "linux_programs_read_the_console_s_status",
             linux_programs_read_the_console_s_status::<P>,
+        ),
+        (
+            "linux_programs_change_their_credentials",
+            linux_programs_change_their_credentials::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1551,6 +1555,20 @@ fn linux_programs_read_the_console_s_status<P: Platform>(
             "fstat, newfstatat, statx or lseek did not answer for the console as on Linux"
         }
         HandlingFailure::Killed => "the status program was killed",
+        HandlingFailure::Other(error) => error,
+    })
+}
+
+/// A Linux program starts as root and may give that up for good (D75): the test program's
+/// `linux_credentials` must exit with 0 (see [`eggos_hal::user::TestProgram`]). It runs twice,
+/// and everything the second run took must be freed.
+fn linux_programs_change_their_credentials<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let program = P::user_test_program();
+    run_handling_program(memory, program.linux_credentials).map_err(|failure| match failure {
+        HandlingFailure::Failed => "getuid, geteuid or setuid did not answer as on Linux",
+        HandlingFailure::Killed => "the credentials program was killed",
         HandlingFailure::Other(error) => error,
     })
 }

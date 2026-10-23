@@ -914,6 +914,31 @@ aarch64_user_test_linux_stat:
     mov     x8, #94
     svc     #0
 8:  b       8b
+    .global aarch64_user_test_linux_credentials
+aarch64_user_test_linux_credentials:
+    mov     x8, #175
+    svc     #0
+    cbnz    x0, 9f
+    mov     x0, #1000
+    mov     x8, #146
+    svc     #0
+    cbnz    x0, 9f
+    mov     x8, #174
+    svc     #0
+    cmp     x0, #1000
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #146
+    svc     #0
+    cmn     x0, #1
+    b.ne    9f
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+9:  mov     x0, #1
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -1030,6 +1055,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_signal_suspend: u8;
     static aarch64_user_test_linux_clock: u8;
     static aarch64_user_test_linux_stat: u8;
+    static aarch64_user_test_linux_credentials: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -1107,6 +1133,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_suspend: (&raw const aarch64_user_test_linux_signal_suspend) as usize - start,
         linux_clock: (&raw const aarch64_user_test_linux_clock) as usize - start,
         linux_stat: (&raw const aarch64_user_test_linux_stat) as usize - start,
+        linux_credentials: (&raw const aarch64_user_test_linux_credentials) as usize - start,
     }
 }
 

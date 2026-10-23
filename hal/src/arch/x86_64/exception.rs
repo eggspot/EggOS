@@ -1015,6 +1015,33 @@ x86_64_user_test_linux_stat:
     movl    $231, %eax
     syscall
 8:  jmp     8b
+    .global x86_64_user_test_linux_credentials
+x86_64_user_test_linux_credentials:
+    movl    $107, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $1000, %edi
+    movl    $105, %eax
+    syscall
+    testq   %rax, %rax
+    jnz     9f
+    movl    $102, %eax
+    syscall
+    cmpq    $1000, %rax
+    jne     9f
+    xorl    %edi, %edi
+    movl    $105, %eax
+    syscall
+    cmpq    $-1, %rax
+    jne     9f
+    xorl    %edi, %edi
+    movl    $231, %eax
+    syscall
+9:  movl    $1, %edi
+    movl    $231, %eax
+    syscall
+8:  jmp     8b
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -1360,6 +1387,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_signal_suspend: u8;
     static x86_64_user_test_linux_clock: u8;
     static x86_64_user_test_linux_stat: u8;
+    static x86_64_user_test_linux_credentials: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -1543,6 +1571,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_signal_suspend: (&raw const x86_64_user_test_linux_signal_suspend) as usize - start,
         linux_clock: (&raw const x86_64_user_test_linux_clock) as usize - start,
         linux_stat: (&raw const x86_64_user_test_linux_stat) as usize - start,
+        linux_credentials: (&raw const x86_64_user_test_linux_credentials) as usize - start,
     }
 }
 

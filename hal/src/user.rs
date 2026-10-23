@@ -302,6 +302,11 @@ pub struct TestProgram {
     /// Then `lseek(1, 0, SEEK_CUR)` must fail with `ESPIPE` and `fstat(3)` with `EBADF`.
     /// `exit_group(0)`, or `exit_group(1)` if any check or call failed.
     pub linux_stat: usize,
+    /// A Linux program that changes its credentials (D75): `geteuid()` must be 0 (root), then
+    /// `setuid(1000)` must succeed, `getuid()` must be 1000, and `setuid(0)` must fail with
+    /// `EPERM`, as the program is no longer privileged. `exit_group(0)`, or `exit_group(1)` if
+    /// any check or call failed.
+    pub linux_credentials: usize,
 }
 
 impl TestProgram {
