@@ -194,6 +194,14 @@ count per frame); per-CPU caches instead of one heap lock and a high watermark o
 (M4); a physical address limit for 32-bit DMA (M8); one buddy bitmap per range; anti-fragmentation
 grouping.
 
+Comment cleanup (D66): no comments in code but `// SAFETY:`, lint directives and rustdoc on
+public items (`cargo xtask docs` in CI: done, PR #59); (drivers, xtask's `bench`, `elf` and
+`qemu`, and the Cargo, Cargo-config, CI, Dependabot and funding files, their notes moved to
+`docs/build.md`: done); next the HAL, then the kernel's modules, a few hundred lines per PR;
+the files PR #47 changes (`xtask/src/main.rs` and `rust-toolchain.toml` among them) after it
+merges; the CI image's `Dockerfile` and `ci-image.yml` with the next change to the image, since
+any change to them rebuilds the image on the PR.
+
 Setup follow-ups from the 2026-10-22 review (all done: exception vectors in D25, the benchmark harness
 in D27):
 - **Benchmarks: done** (D27). `cargo xtask bench` boots each architecture under QEMU `-icount`

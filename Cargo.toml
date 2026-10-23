@@ -13,9 +13,7 @@ unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
-# Every `unsafe` block must carry a `// SAFETY:` comment (repo rule).
 undocumented_unsafe_blocks = "deny"
-# One unsafe operation per block, so each `// SAFETY:` comment justifies exactly one thing.
 multiple_unsafe_ops_per_block = "deny"
 
 [profile.dev]
@@ -24,6 +22,5 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 debug = 1
-# What we measure and ship (CLAUDE.md, "The target: the fastest OS").
 lto = true
 codegen-units = 1

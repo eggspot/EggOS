@@ -1,4 +1,3 @@
-# Keeps the GitHub Actions used by CI current (EggOS has no third-party crates to update).
 version: 2
 updates:
   - package-ecosystem: github-actions

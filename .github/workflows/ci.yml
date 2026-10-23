@@ -1,11 +1,3 @@
-# One cheap Linux job, checks ordered cheapest first so a typo fails in seconds; on PRs, a small
-# macOS + Windows host check runs after it passes (CLAUDE.md: changes must build on both).
-# Billing rules: see ~/.claude/CLAUDE.md (CI section) and docs/decisions.md (D8).
-#
-# `check` is a required status check on main, so the workflow always runs (a workflow skipped
-# by a `paths` filter never reports and would leave docs PRs pending forever). Docs-only
-# changes are detected in the first step and every later step is skipped, which still reports
-# success in a few seconds.
 name: CI
 
 on:
@@ -20,18 +12,15 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: read # list a PR's changed files
+  pull-requests: read
 
 jobs:
   check:
     runs-on: ubuntu-24.04
-    # QEMU, OpenSBI and the pinned toolchain come preinstalled (D36; built by ci-image.yml from
-    # main). CI always runs in main's image, so a change that needs something new in the image
-    # lands in its own PR first.
     permissions:
       contents: read
-      pull-requests: read # list a PR's changed files
-      packages: read # pull the CI image
+      pull-requests: read
+      packages: read
     container:
       image: ghcr.io/eggspot/eggos-ci:main
       credentials:
@@ -64,14 +53,10 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Already in the image; installs it only when this change moved the pin and the image has
-      # not been rebuilt yet (ci-image.yml rebuilds it once the change is on main).
       - name: Install pinned toolchain (rust-toolchain.toml)
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
 
-      # Restore the newest cache on every run; save only from pushes to main, so PR commits no
-      # longer each upload their own cache. No dependencies, so only `target/` is worth caching.
       - uses: actions/cache/restore@v6
         if: steps.changes.outputs.code == 'true'
         with:
@@ -113,8 +98,6 @@ jobs:
           path: target
           key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
 
-  # Development hosts are macOS and Windows: prove the workspace builds, lints and tests there.
-  # PRs into main only, after the Linux job passed, and only when code changed.
   hosts:
     needs: check
     if: github.event_name == 'pull_request' && needs.check.outputs.code == 'true'
