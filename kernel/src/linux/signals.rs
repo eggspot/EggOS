@@ -335,12 +335,13 @@ mod stack_flag {
 }
 
 /// The smallest alternate stack (`MINSIGSTKSZ`): room for the kernel's largest signal frame on
-/// the architecture.
+/// the architecture. Programs read it as `AT_MINSIGSTKSZ` too.
 pub const MIN_STACK_SIZE: u64 = if cfg!(target_arch = "aarch64") {
     5120
 } else {
     2048
 };
+const _: () = assert!(signal_frame::LARGEST_FRAME_SPACE <= MIN_STACK_SIZE);
 
 impl AlternateStack {
     /// Whether the thread, whose stack pointer is `stack`, is on it: above its base and at

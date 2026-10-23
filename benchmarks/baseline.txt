@@ -17,7 +17,7 @@ aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
 aarch64 heap_allocate_free_small 50.00
 aarch64 linux_clock_monotonic_read 12.00
-aarch64 linux_exec_load 36703.46
+aarch64 linux_exec_load 36511.47
 aarch64 linux_mmap_munmap 335.52
 aarch64 linux_page_fault 1374.39
 aarch64 linux_syscall_round_trip 125.92
@@ -41,7 +41,7 @@ riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
 riscv64 heap_allocate_free_small 57.00
 riscv64 linux_clock_monotonic_read 15.00
-riscv64 linux_exec_load 31946.48
+riscv64 linux_exec_load 31638.49
 riscv64 linux_mmap_munmap 362.11
 riscv64 linux_page_fault 1400.53
 riscv64 linux_syscall_round_trip 165.39
@@ -65,7 +65,7 @@ x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06
 x86_64 heap_allocate_free_small 48.00
 x86_64 linux_clock_monotonic_read 19.00
-x86_64 linux_exec_load 28524.01
+x86_64 linux_exec_load 28334.01
 x86_64 linux_mmap_munmap 360.09
 x86_64 linux_page_fault 1137.57
 x86_64 linux_syscall_round_trip 130.14

@@ -17,6 +17,7 @@
 
 use super::Errno;
 use super::credentials;
+use super::signals;
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
 use crate::random;
@@ -71,6 +72,7 @@ pub mod auxv {
     pub const RANDOM: u64 = 25;
     pub const HWCAP2: u64 = 26;
     pub const EXECFN: u64 = 31;
+    pub const MINSIGSTKSZ: u64 = 51;
 }
 
 /// Why a program could not be started, as `execve` reports it ([`Self::errno`]).
@@ -202,6 +204,7 @@ pub fn load<P: Platform>(
     let secure = u64::from(credentials::is_secure_execution(user, group));
     // Linux's order, so a dump of a program's vector compares line by line with Linux's.
     let auxiliary = [
+        (auxv::MINSIGSTKSZ, signals::MIN_STACK_SIZE),
         (auxv::HWCAP, hwcap),
         (auxv::PAGESZ, FRAME_SIZE),
         // `times(2)`'s unit, as on Linux.
@@ -457,26 +460,33 @@ impl InitialStack {
         };
         put(path_at, path);
         put(random_at, random);
-        let mut pointers = Vec::with_capacity(words as usize);
-        pointers.push(arguments.len() as u64);
-        for (list, mut address) in [(arguments, arguments_at), (environment, environment_at)] {
+        let lists = [(arguments, arguments_at), (environment, environment_at)];
+        for (list, mut address) in lists {
             for string in list {
                 put(address, string);
-                pointers.push(address);
                 address += string.len() as u64 + 1;
             }
-            pointers.push(0);
+        }
+        let mut word_at = start;
+        let mut put_word = |word: u64| {
+            put(word_at, &word.to_le_bytes());
+            word_at += 8;
+        };
+        put_word(arguments.len() as u64);
+        for (list, mut address) in lists {
+            for string in list {
+                put_word(address);
+                address += string.len() as u64 + 1;
+            }
+            put_word(0);
         }
         for &(kind, value) in auxiliary.iter().chain(&[(auxv::NULL, 0)]) {
-            let value = match kind {
+            put_word(kind);
+            put_word(match kind {
                 auxv::RANDOM => random_at,
                 auxv::EXECFN => path_at,
                 _ => value,
-            };
-            pointers.extend([kind, value]);
-        }
-        for (index, word) in pointers.iter().enumerate() {
-            put(start + index as u64 * 8, &word.to_le_bytes());
+            });
         }
         Ok(Self { start, bytes })
     }
@@ -672,6 +682,7 @@ mod tests {
             assert_eq!(
                 kinds,
                 [
+                    auxv::MINSIGSTKSZ,
                     auxv::HWCAP,
                     auxv::PAGESZ,
                     auxv::CLKTCK,
@@ -690,6 +701,10 @@ mod tests {
                     auxv::HWCAP2,
                     auxv::EXECFN,
                 ]
+            );
+            assert_eq!(
+                value(&auxiliary, auxv::MINSIGSTKSZ),
+                signals::MIN_STACK_SIZE
             );
             assert_eq!(
                 value(&auxiliary, auxv::PHDR),
