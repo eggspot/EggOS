@@ -637,7 +637,7 @@ impl<P: Platform> Process<P> {
     /// Copies the process's memory at user address `address` into `buffer`, as a system call
     /// reads a buffer the program passed. The address is untrusted: every page must be a user
     /// page of normal memory, or nothing more is copied and the error says so (part of `buffer`
-    /// may have been written by then). See [`Self::copy_user_pages`] for how.
+    /// may have been written by then). See `copy_user_pages` for how.
     pub fn read_user_memory(
         &self,
         address: u64,

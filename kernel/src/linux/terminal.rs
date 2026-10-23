@@ -53,7 +53,7 @@ const TERMIOS2_SIZE: usize = TERMIOS_SIZE + 8;
 const BAUD: u32 = 115_200;
 
 /// The console's settings as `TCGETS` reports them: a Linux serial console's after boot
-/// (`stty -a`), at [`BAUD`].
+/// (`stty -a`), at `BAUD`.
 pub const TERMIOS: [u8; TERMIOS_SIZE] = {
     // Input: carriage return read as newline; ^S and ^Q stop and start output.
     const ICRNL: u32 = 0o400;

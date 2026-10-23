@@ -103,7 +103,7 @@ pub fn set_robust_list(_head: u64, length: u64) -> Result<u64, Errno> {
     }
 }
 
-/// `uname(buffer)`: copies [`UTSNAME`] to `buffer`, or `EFAULT` if it is not all the
+/// `uname(buffer)`: copies `UTSNAME` to `buffer`, or `EFAULT` if it is not all the
 /// program's writable memory (part may be written by then, as on Linux).
 pub fn uname<P: Platform>(process: &Process<P>, buffer: u64) -> Result<u64, Errno> {
     process

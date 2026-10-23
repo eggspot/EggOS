@@ -122,7 +122,7 @@ pub fn write<P: Platform>(
 /// using.
 pub const RED_ZONE: u64 = arch::RED_ZONE;
 
-/// The lowest address of the frame [`write`] puts below `top`: where the stack pointer must
+/// The lowest address of the frame [`write()`] puts below `top`: where the stack pointer must
 /// stay above, on an alternate stack.
 pub fn lowest_address(top: u64) -> u64 {
     arch::place(top)

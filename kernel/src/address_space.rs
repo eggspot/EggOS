@@ -26,7 +26,7 @@
 //! Removing or changing mappings of a live address space ([`AddressSpace::change_pages`], the
 //! memory calls, D53) leaves translations CPUs may have cached behind: the CPU that changes
 //! them drops its own, and marks every other CPU that keeps the address space loaded
-//! ([`Cpu::mark_stale`]), so that CPU switches to it again, dropping what it cached, before
+//! (`Cpu::mark_stale`), so that CPU switches to it again, dropping what it cached, before
 //! it next uses it. No interrupt to the other CPUs: while a process has one thread, the one
 //! changing its mappings, no other CPU uses its address space meanwhile, and the thread
 //! reaches another CPU only through the scheduler's locks, after the mark. A second user at
@@ -164,7 +164,7 @@ impl<P: Platform> AddressSpace<P> {
 
     /// After mappings in user `virt..virt + length` were removed or changed: drops this
     /// CPU's cached translations of them if it has the address space loaded, and marks every
-    /// other CPU that keeps it loaded stale ([`Cpu::mark_stale`]). Increases too: a stale
+    /// other CPU that keeps it loaded stale (`Cpu::mark_stale`). Increases too: a stale
     /// entry with less access raises a permission fault that is never retried (D52).
     fn drop_old_translations(&self, virt: u64, length: u64) {
         let here = cpu::current::<P>();
@@ -235,7 +235,7 @@ impl<P: Platform> AddressSpace<P> {
     /// Makes this address space the one loaded on this CPU, for a thread of the process that
     /// `owner` is (D48): switches to it only if the CPU has another one loaded (or none), and
     /// keeps a reference to `owner`, so the tables stay allocated, until the CPU loads another
-    /// one, [`unload_lazily_loaded`] or [`release_unused`] put it away, or [`Self::with_active`]
+    /// one, `unload_lazily_loaded` or `release_unused` put it away, or [`Self::with_active`]
     /// needs the CPU. Call it with interrupts masked, as the kernel runs; it does not block.
     ///
     /// The address space stays loaded after the thread leaves the CPU: kernel threads run with
@@ -296,7 +296,7 @@ impl<P: Platform> AddressSpace<P> {
     }
 
     /// Whether this address space is the one active or loaded on this CPU, and not marked
-    /// stale ([`Cpu::mark_stale`]).
+    /// stale (`Cpu::mark_stale`).
     #[inline]
     pub fn is_loaded_here(&self) -> bool {
         cpu::current::<P>().active_address_space() == self.root()
@@ -402,7 +402,7 @@ fn wake_cpus_holding<P: Platform>(here: &'static Cpu, root: u64) {
 }
 
 /// Marks every CPU of `cpus` but `here` that keeps the address space whose first root is
-/// `root` loaded stale ([`Cpu::mark_stale`]).
+/// `root` loaded stale (`Cpu::mark_stale`).
 fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
     for &other in cpus {
         if !ptr::eq(other, here) && other.active_address_space() == root {

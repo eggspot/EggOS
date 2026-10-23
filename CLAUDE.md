@@ -119,7 +119,13 @@ them.
     and license. "There is a crate for it" is never a reason. `Cargo.lock` lists only our own crates.
   - Firmware the machine provides (UEFI, OpenSBI, QEMU's loaders) is outside EggOS and is not a
     dependency; nothing from it is copied into the repo.
-- `unsafe` only where unavoidable, each block with a `// SAFETY:` comment explaining why it is sound.
+- `unsafe` only where unavoidable, each block with a `// SAFETY:` comment explaining why it is sound
+  (clippy's `undocumented_unsafe_blocks` requires it).
+- **No other comments in code** (global rule "Code comments: none"; D66): no plain `//` comments in
+  Rust and no `#` comments in TOML or YAML. Allowed: `// SAFETY:`, lint directives, and `///`/`//!`
+  on public items, which `cargo xtask docs` (part of `cargo xtask ci`) builds with rustdoc; keep them
+  short and about the contract. Reasons, spec references and design notes go in names, constants,
+  tests or `docs/decisions.md`. Existing comments are removed crate by crate in cleanup PRs.
 - Development hosts are Windows and macOS; changes must build and be testable on both.
 - Build/test: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
 - CI follows the global billing rules: Linux runners by default; macOS (10x cost) and Windows (2x) jobs

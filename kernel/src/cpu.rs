@@ -39,7 +39,7 @@ pub struct Cpu {
     /// another CPU's request that it look ([`Self::request_reschedule`]). Not 0 means it must
     /// look. Counted by the CPU's interrupt handler, read by the preemption point's fast path
     /// with one load ([`local_unseen_by_scheduler`]), and emptied by the scheduler
-    /// ([`Self::see_scheduler_events`]), which moves the timer interrupts to
+    /// (`see_scheduler_events`), which moves the timer interrupts to
     /// [`Self::timer_interrupts_seen`]. Other CPUs only set the top bit.
     unseen_by_scheduler: AtomicU64,
     /// Timer interrupts the scheduler has looked at. Changed only by the CPU itself.
@@ -132,7 +132,7 @@ impl Cpu {
 
     /// Timer interrupts the CPU has taken since boot. Read from another CPU, it can be briefly
     /// behind, never ahead, while the CPU's scheduler moves its unseen interrupts to the seen
-    /// ones ([`Self::see_scheduler_events`] empties the unseen ones first, and they are read
+    /// ones (`see_scheduler_events` empties the unseen ones first, and they are read
     /// last).
     pub fn timer_interrupts(&self) -> u64 {
         let seen = self.timer_interrupts_seen.load(Ordering::Acquire);
