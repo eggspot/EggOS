@@ -1864,7 +1864,7 @@ switch-path cost; this entry follows it.)
   have not written must keep returning `ENOSYS`, never a wrong result; the release is raised
   only by a recorded decision; `/proc/sys/kernel/osrelease` and `/proc/version` will report
   the same when procfs exists.
-- **Dispatch cost.** Every new call goes behind one out-of-line function (`other_call`), so
+- **Dispatch cost.** Every new call goes behind one out-of-line function (`out_of_line_call`), so
   the thread loop's inlined dispatch keeps three arms and its `number > LAST` compare.
   Growing it still tipped LLVM into calling `linux::syscall` instead of inlining it (+8 to
   +10% on `linux_syscall_round_trip`, found by diffing the loop's disassembly); `syscall` is

@@ -270,7 +270,7 @@ fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) ->
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
-            _ => other_call::<P>(process, number, first, second, third),
+            _ => out_of_line_call::<P>(process, number, first, second, third),
         }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -298,7 +298,7 @@ fn memory_call<P: Platform>(
 /// them, as [`memory_call`]: each call [`syscall`]'s own match grows by adds to the thread
 /// loop that it is inlined into (the loop's registers spill, and every system call pays).
 #[inline(never)]
-fn other_call<P: Platform>(
+fn out_of_line_call<P: Platform>(
     process: &Process<P>,
     number: u64,
     first: u64,
