@@ -128,13 +128,15 @@ pub fn poll<P: Platform>(
 /// instead of the thread's during the call (D71): if none reports events and a signal is due
 /// under it, the call delivers it and, once a handler starts, fails with `EINTR`, the
 /// handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
-/// action ignores is taken and the call goes on, as Linux restarts it. Otherwise the thread's
-/// mask is back when it returns, and a signal the call's mask unblocked stays pending. A
-/// timeout that is not zero gets the time not slept written back once the signal mask passed
-/// its checks, whatever the result: zero after a wait that ended with it, about all of it
-/// when something was ready at once (D62); one too long to count in nanoseconds is left as
-/// it was. Linux's system call does that (its C libraries hide it), and ignores a timeout the
-/// program cannot write, as here. As Linux, in this order: `EFAULT` if `timeout` is not the
+/// action ignores is taken and the call goes on, as Linux restarts it, unless the time left
+/// could not be written back (below): then it fails with `EINTR`, as Linux's does, since it
+/// cannot restart with the time left. Otherwise the thread's mask is back when it returns, and
+/// a signal the call's mask unblocked stays pending. A timeout that is not zero gets the time
+/// not slept written back once the signal mask passed its checks, whatever the result: zero
+/// after a wait that ended with it, about all of it when something was ready at once (D62);
+/// one too long to count in nanoseconds is written back as it was. Linux's system call does
+/// that (its C libraries hide it), and ignores a timeout the program cannot write, as here,
+/// but for that `EINTR`. As Linux, in this order: `EFAULT` if `timeout` is not the
 /// program's memory; `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999;
 /// with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the mask is not the
 /// program's memory; `EINVAL` for more descriptors than the open-file limit (`RLIMIT_NOFILE`'s
@@ -144,7 +146,7 @@ pub fn poll<P: Platform>(
 pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
     let [fds, count, timeout, mask, set_size, _] = context.syscall_arguments();
     let Wait {
-        requested_nanoseconds,
+        requested_timeout,
         deadline,
         mask,
     } = match checked_wait(process, timeout, mask, set_size) {
@@ -157,14 +159,18 @@ pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
     let thread_mask = mask.map(|mask| signals::replace_blocked(process, mask));
     loop {
         let polled = poll_fds(process, fds, count, deadline, thread_mask.is_some());
-        write_back_time_left::<P>(process, timeout, requested_nanoseconds, deadline);
+        let time_left_written =
+            write_back_time_left::<P>(process, timeout, &requested_timeout, deadline);
         let result = match polled {
             Ok(Polled::Interrupted) => {
                 context.set_syscall_result(Errno::EINTR.result());
                 if signals::deliver_restoring_mask(process, context, thread_mask)? {
                     return ControlFlow::Continue(());
                 }
-                continue;
+                if time_left_written {
+                    continue;
+                }
+                Err(Errno::EINTR)
             }
             Ok(Polled::Ready(ready)) => Ok(ready),
             Err(errno) => Err(errno),
@@ -179,8 +185,8 @@ pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
 
 /// How `ppoll` waits, from its timeout and signal mask.
 struct Wait {
-    /// The timeout asked for, in nanoseconds: `None` for a null one or one too long to count.
-    requested_nanoseconds: Option<u64>,
+    /// The timeout the time left is written back to: `None` for a null or zero one.
+    requested_timeout: Option<RequestedTimeout>,
     /// When the wait ends: `None` for no wait.
     deadline: Option<Deadline>,
     /// The signals blocked during the call instead of the thread's, if any.
@@ -194,12 +200,17 @@ fn checked_wait<P: Platform>(
     mask: u64,
     set_size: u64,
 ) -> Result<Wait, Errno> {
-    let mut requested_nanoseconds = None;
+    let mut requested_timeout = None;
     let deadline = if timeout == 0 {
         Some(Deadline::MAX)
     } else {
-        requested_nanoseconds = read_timeout(process, timeout)?;
-        deadline_in::<P>(requested_nanoseconds.unwrap_or(u64::MAX))
+        let as_written = read_timespec(process, timeout)?;
+        let nanoseconds = parse_timeout(as_written)?;
+        requested_timeout = (nanoseconds != Some(0)).then_some(RequestedTimeout {
+            as_written,
+            nanoseconds,
+        });
+        deadline_in::<P>(nanoseconds.unwrap_or(u64::MAX))
     };
     let mask = if mask == 0 {
         None
@@ -207,44 +218,72 @@ fn checked_wait<P: Platform>(
         Some(signals::read_set(process, mask, set_size)?)
     };
     Ok(Wait {
-        requested_nanoseconds,
+        requested_timeout,
         deadline,
         mask,
     })
 }
 
+/// A timeout that is not zero, which `ppoll` writes the time left back to.
+struct RequestedTimeout {
+    /// The `struct timespec` as the program wrote it.
+    as_written: [u8; TIMESPEC_SIZE],
+    /// It in nanoseconds: `None` if it is too long to count.
+    nanoseconds: Option<u64>,
+}
+
 /// Writes the time left until `deadline` back to the `struct timespec` at `timeout`, at most the
-/// `requested_nanoseconds`, ignoring a timeout the program cannot write. A zero timeout has no
-/// deadline, and nothing to write back. One too long to count in nanoseconds (over 584 years)
-/// or to reach in clock ticks is left as it was: about what is left of it. Never more than was
-/// asked for is written, as the deadline was rounded up.
+/// time asked for, as the deadline was rounded up, and returns whether it could: `false` for a
+/// timeout the program cannot write, which Linux ignores unless a signal interrupted the call.
+/// A null or zero timeout has nothing to write back. One too long to count in nanoseconds (over
+/// 584 years) or to reach in clock ticks is written back as it was: about what is left of it.
 fn write_back_time_left<P: Platform>(
     process: &Process<P>,
     timeout: u64,
-    requested_nanoseconds: Option<u64>,
+    requested_timeout: &Option<RequestedTimeout>,
     deadline: Option<Deadline>,
-) {
-    if let (Some(nanoseconds), Some(deadline)) = (requested_nanoseconds, deadline)
-        && deadline != Deadline::MAX
-    {
-        let left = deadline.saturating_sub(P::clock_ticks());
-        let left =
-            mul_div_ceil(left, NANOSECONDS_PER_SECOND, P::clock_frequency()).min(nanoseconds);
-        let mut bytes = [0; TIMESPEC_SIZE];
-        bytes[..8].copy_from_slice(&(left / NANOSECONDS_PER_SECOND).to_ne_bytes());
-        bytes[8..].copy_from_slice(&(left % NANOSECONDS_PER_SECOND).to_ne_bytes());
-        let _ = process.write_user_memory(timeout, &bytes);
-    }
+) -> bool {
+    let Some(RequestedTimeout {
+        as_written,
+        nanoseconds,
+    }) = requested_timeout
+    else {
+        return true;
+    };
+    let bytes = match (nanoseconds, deadline) {
+        (Some(nanoseconds), Some(deadline)) if deadline != Deadline::MAX => {
+            let left = deadline.saturating_sub(P::clock_ticks());
+            let left =
+                mul_div_ceil(left, NANOSECONDS_PER_SECOND, P::clock_frequency()).min(*nanoseconds);
+            let mut bytes = [0; TIMESPEC_SIZE];
+            bytes[..8].copy_from_slice(&(left / NANOSECONDS_PER_SECOND).to_ne_bytes());
+            bytes[8..].copy_from_slice(&(left % NANOSECONDS_PER_SECOND).to_ne_bytes());
+            bytes
+        }
+        _ => *as_written,
+    };
+    process.write_user_memory(timeout, &bytes).is_ok()
 }
 
 /// The `struct timespec` at `address`, a timeout, in nanoseconds, or `None` if it is too long
 /// for a `u64` (over 584 years). As Linux: `EFAULT` if it is not the program's memory, `EINVAL`
 /// for negative seconds or nanoseconds outside 0 to 999999999.
 pub fn read_timeout<P: Platform>(process: &Process<P>, address: u64) -> Result<Option<u64>, Errno> {
+    parse_timeout(read_timespec(process, address)?)
+}
+
+fn read_timespec<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+) -> Result<[u8; TIMESPEC_SIZE], Errno> {
     let mut bytes = [0; TIMESPEC_SIZE];
     process
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
+    Ok(bytes)
+}
+
+fn parse_timeout(bytes: [u8; TIMESPEC_SIZE]) -> Result<Option<u64>, Errno> {
     let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
     let nanoseconds = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
     if seconds < 0 || !(0..NANOSECONDS_PER_SECOND as i64).contains(&nanoseconds) {

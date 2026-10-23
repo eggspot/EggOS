@@ -229,6 +229,9 @@ fn uncharge(queued: &AtomicU64, entries: usize) {
     queued.fetch_sub(entries as u64, Ordering::Relaxed);
 }
 
+/// How many records ([`KEPT_INFO_SIZE`] bytes each) a drained queue keeps room for.
+const DRAINED_QUEUE_CAPACITY: usize = 32;
+
 /// The bytes of a `siginfo_t` the kernel keeps with a pending signal: `si_signo`, `si_errno`,
 /// `si_code` and the union of fields after them. A program always gets the rest as zeros.
 pub const KEPT_INFO_SIZE: usize = 48;
@@ -535,6 +538,19 @@ impl Signals {
             block.queue.retain(|info| bit(info.signal()) & set == 0);
             uncharge(&QUEUED_SIGNALS, queued - block.queue.len());
         }
+        self.free_drained_queue();
+    }
+
+    /// Gives an empty queue's memory back past [`DRAINED_QUEUE_CAPACITY`] records, so a burst
+    /// of queued signals costs little once they are taken, while a signal sent and taken at a
+    /// time needs no allocation.
+    fn free_drained_queue(&mut self) {
+        if let Some([block]) = self.actions_and_queue.as_deref_mut()
+            && block.queue.is_empty()
+            && block.queue.capacity() > DRAINED_QUEUE_CAPACITY
+        {
+            block.queue.shrink_to(DRAINED_QUEUE_CAPACITY);
+        }
     }
 
     fn take(&mut self, signal: u32) -> Info {
@@ -556,6 +572,7 @@ impl Signals {
         if !more_queued {
             self.thread.pending &= !bit(signal);
         }
+        self.free_drained_queue();
         taken.unwrap_or_else(|| Info::lost(signal))
     }
 
@@ -588,33 +605,30 @@ impl Signals {
         if due & bit(SIGKILL) != 0 {
             return SIGKILL;
         }
-        let synchronous = due & SYNCHRONOUS;
-        if synchronous == 0 {
-            return due.trailing_zeros() + 1;
+        if due & SYNCHRONOUS == 0 {
+            return first_to_take(due);
         }
-        let raised_by_kernel = self.actions_and_queue.as_deref().map_or(0, |[block]| {
+        let first_raised_by_kernel = self.actions_and_queue.as_deref().and_then(|[block]| {
             block
                 .queue
                 .iter()
-                .filter(|info| info.code() > 0)
-                .fold(0, |set, info| set | bit(info.signal()))
-        }) & synchronous;
-        let first = if raised_by_kernel != 0 {
-            raised_by_kernel
-        } else {
-            synchronous
-        };
-        first.trailing_zeros() + 1
+                .find(|info| info.code() > 0 && bit(info.signal()) & due & SYNCHRONOUS != 0)
+        });
+        match first_raised_by_kernel {
+            Some(info) => info.signal(),
+            None => first_to_take(due),
+        }
     }
 
     /// Takes the next pending, unblocked signal, discarding the ignored ones on the way: `Some`
     /// for one that ends the process (default actions Term and Core, `SIGKILL`'s included),
     /// stops it, or runs its handler. The order: `SIGKILL`; then, as on Linux, the synchronous
-    /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), those the
-    /// kernel raised before those a program sent, so a fault's or a failed frame's `SIGSEGV`
-    /// is never overtaken; then the lowest number, and a real-time signal's instances in the
-    /// order sent. A handler with [`flag::RESETHAND`] is removed as it is taken, as on Linux:
-    /// its signal's next delivery is by the default action.
+    /// signals (`SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE`, `SIGSEGV`, `SIGSYS`), the first the
+    /// kernel raised (a positive `si_code`) in the order raised, then the lowest, so a fault's
+    /// or a failed frame's `SIGSEGV` is never overtaken; then the lowest number, and a
+    /// real-time signal's instances in the order sent. A handler with [`flag::RESETHAND`] is
+    /// removed as it is taken, as on Linux: its signal's next delivery is by the default
+    /// action.
     pub fn next_delivery(&mut self) -> Option<Delivery> {
         loop {
             let due = self.thread.pending & !self.thread.blocked;
@@ -649,14 +663,13 @@ impl Signals {
         }
     }
 
-    /// Takes the first pending signal in `wanted`, blocked or not, in the order
-    /// [`Self::next_delivery`] takes them, with its [`Info`], as `rt_sigtimedwait` does.
+    /// Takes the first pending signal in `wanted`, blocked or not, with its [`Info`], as
+    /// `rt_sigtimedwait` does: the lowest synchronous one, then the lowest, and a real-time
+    /// signal's instances in the order sent. Unlike [`Self::next_delivery`], who raised a
+    /// synchronous signal does not matter, as on Linux.
     pub fn take_waited(&mut self, wanted: u64) -> Option<Info> {
         let due = self.thread.pending & wanted;
-        (due != 0).then(|| {
-            let signal = self.first_to_deliver(due);
-            self.take(signal)
-        })
+        (due != 0).then(|| self.take(first_to_take(due)))
     }
 
     /// The thread enters `action`'s handler for `signal`, its frame written: the action's mask
@@ -728,6 +741,14 @@ const SIGSYS: u32 = 31;
 
 const SYNCHRONOUS: u64 =
     bit(SIGILL) | bit(SIGTRAP) | bit(SIGBUS) | bit(SIGFPE) | bit(SIGSEGV) | bit(SIGSYS);
+
+/// The first signal of the set `due` (not empty) to take: the lowest synchronous one, if any,
+/// else the lowest.
+fn first_to_take(due: u64) -> u32 {
+    let synchronous = due & SYNCHRONOUS;
+    let first = if synchronous != 0 { synchronous } else { due };
+    first.trailing_zeros() + 1
+}
 
 /// The stop signals: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU`.
 const STOP_SIGNALS: u64 = bit(SIGSTOP) | bit(20) | bit(21) | bit(22);
@@ -1657,6 +1678,74 @@ mod tests {
         signals.force(SIGSEGV);
         signals.send(by_kill(SIGKILL), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
+    }
+
+    #[test]
+    fn synchronous_signals_the_kernel_raised_are_delivered_in_the_order_raised() {
+        let handler = Action {
+            handler: 0x40_1000,
+            ..Action::default()
+        };
+        let mut signals = Signals::new();
+        for signal in [SIGILL, SIGSEGV] {
+            signals.set_action(signal, handler).unwrap();
+        }
+        signals.thread.blocked = bit(SIGILL) | bit(SIGSEGV);
+        signals.send(Info::from_kernel(SIGSEGV), NO_LIMIT).unwrap();
+        signals.send(Info::from_kernel(SIGILL), NO_LIMIT).unwrap();
+        signals.thread.blocked = 0;
+        let order: Vec<u32> = core::iter::from_fn(|| match signals.next_delivery() {
+            Some(Delivery::Handler { signal, .. }) => Some(signal),
+            _ => None,
+        })
+        .collect();
+        assert_eq!(order, [SIGSEGV, SIGILL]);
+    }
+
+    #[test]
+    fn sigtimedwait_takes_the_lowest_synchronous_signal_whoever_raised_it() {
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(SIGILL) | bit(SIGSEGV);
+        signals.send(Info::from_kernel(SIGSEGV), NO_LIMIT).unwrap();
+        signals.send(by_kill(SIGILL), NO_LIMIT).unwrap();
+        let order: Vec<u32> = core::iter::from_fn(|| signals.take_waited(!UNBLOCKABLE))
+            .map(|info| info.signal())
+            .collect();
+        assert_eq!(order, [SIGILL, SIGSEGV]);
+    }
+
+    #[test]
+    fn a_drained_queue_gives_its_memory_back() {
+        const RT: u32 = 40;
+        let capacity = |signals: &Signals| {
+            signals
+                .actions_and_queue
+                .as_deref()
+                .map(|[block]| block.queue.capacity())
+        };
+        let mut signals = Signals::new();
+        signals.thread.blocked = bit(RT) | bit(RT + 1);
+        for value in 0..100 {
+            signals.send(queued(RT, value), NO_LIMIT).unwrap();
+        }
+        signals.send(queued(RT + 1, 0), NO_LIMIT).unwrap();
+        assert!(capacity(&signals) >= Some(101));
+        while signals.take_waited(bit(RT)).is_some() {}
+        assert!(capacity(&signals) >= Some(101));
+        signals
+            .set_action(
+                RT + 1,
+                Action {
+                    handler: IGNORE,
+                    ..Action::default()
+                },
+            )
+            .unwrap();
+        let drained = capacity(&signals).unwrap();
+        assert!((1..=DRAINED_QUEUE_CAPACITY).contains(&drained));
+        signals.send(queued(RT, 0), NO_LIMIT).unwrap();
+        assert_eq!(signals.take_waited(bit(RT)), Some(queued(RT, 0)));
+        assert_eq!(capacity(&signals), Some(drained));
     }
 
     #[test]

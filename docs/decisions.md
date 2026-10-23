@@ -2901,3 +2901,42 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   `linux_signal_suspend`, and `linux_poll` checks `ppoll` without a mask on every architecture.
 - **For later.** `pselect6` with the same handoff (M7, with `select`); signals sent during a
   wait waking it, once a sender from outside the thread exists.
+
+## D72 Review of D68–D71: `ppoll` with a read-only timeout fails with `EINTR`; `rt_sigtimedwait`'s order; kernel-raised signals in the order raised; a drained queue shrunk — Decided by the build loop
+- **Why.** The review step after three feature PRs (#62, #64, #65), with a fresh read by an
+  independent reviewer. The error orders of the queueing calls, `rt_sigtimedwait` and
+  `rt_sigsuspend`, the masks the frames save (the first the mask from before the call, the
+  next ones the previous handler's), `ppoll`'s write-back and mask restore, the
+  `RLIMIT_SIGPENDING` rules and the `QUEUED_SIGNALS` charge on every path, and the test
+  programs all check out. Four things change.
+- **`ppoll` interrupted by an ignored signal, with a timeout it cannot write back, fails with
+  `EINTR`.** Linux restarts an interrupted `ppoll` whose handler did not run, with the time
+  left written back to the program's timeout; when that write fails, it cannot restart with
+  the time left, so it fails with `EINTR` instead (the "sticky" timeout path of its poll
+  code). Here the call went on and waited out its timeout. A timeout too long to count in
+  nanoseconds is now written back as the program wrote it (Linux writes the time left, which
+  differs from it only by the time slept), so a read-only one is noticed as on Linux.
+- **`rt_sigtimedwait` takes the lowest synchronous signal, whoever raised it.** D67's
+  preference for the synchronous signals the kernel raised belongs to delivery only; Linux's
+  `sigtimedwait` takes them by number. With `SIGSEGV` queued with a kernel `si_code` (which a
+  program may queue to itself) and `SIGILL` sent with `kill`, both blocked, the call returned
+  `SIGSEGV`; Linux returns `SIGILL`.
+- **Kernel-raised synchronous signals are delivered in the order raised**, the first record
+  in the queue with a positive `si_code`, as Linux does, not the lowest number among them.
+  One deliberate difference: Linux may take such a record for a blocked signal once any
+  synchronous signal is due (only a program queuing a kernel `si_code` to itself can make
+  one); here only records of due signals are taken.
+- **A drained queue gives its memory back.** The queue's buffer grows by doubling and never
+  shrank, so a burst of tens of thousands of queued real-time signals left megabytes per
+  process after they were taken (note 8: the lightest). When the last record is taken or
+  discarded, it shrinks to room for 32 records, so a signal sent and taken at a time still
+  needs no allocation.
+- **Left on the roadmap** (independent review): a queue that grows by fixed-size chunks
+  instead of one contiguous buffer, so a long queue never needs a large contiguous block (and
+  never copies itself under the signals lock) before it reaches `RLIMIT_SIGPENDING`.
+- **Cost.** None of these paths is hot: the benchmarks are the same as `main`'s.
+- **Tests.** Host: `ppoll` with a read-only 2 ms timeout and only an ignored signal due fails
+  with `EINTR`, the mask restored and the timeout unchanged; kernel-raised `SIGSEGV` then
+  `SIGILL` are delivered in that order; `rt_sigtimedwait` takes `SIGILL` (sent) before
+  `SIGSEGV` (kernel); the queue's capacity drops to at most 32 once drained, by taking or
+  discarding. Each fails without its fix. `cargo xtask ci` passes on aarch64, riscv64 and x86_64.

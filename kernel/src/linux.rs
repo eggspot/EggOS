@@ -3067,6 +3067,39 @@ mod tests {
     }
 
     #[test]
+    fn ppoll_interrupted_by_an_ignored_signal_fails_with_eintr_if_its_timeout_is_read_only() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let mut two_milliseconds = [0u8; 16];
+        two_milliseconds[8..].copy_from_slice(&2_000_000u64.to_ne_bytes());
+        let process = process_with_iovecs(&kernel, &two_milliseconds, &[]);
+        let pid = u64::from(process.id().get());
+        let (timeout, mask, set) = (DATA, DATA + 4096 + 64, DATA + 4096 + 72);
+        let sigchld = 17u64;
+        let before = 1u64 << (sigchld - 1);
+        process
+            .write_user_memory(set, &before.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::TGKILL, [pid, pid, sigchld, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            call(&process, number::PPOLL, [0, 0, timeout, mask, 8, 0]),
+            Errno::EINTR.result()
+        );
+        let thread = process.signals().lock().thread();
+        assert_eq!((thread.blocked, thread.pending), (before, 0));
+        let mut left = [0u8; 16];
+        process.read_user_memory(timeout, &mut left).unwrap();
+        assert_eq!(left, two_milliseconds);
+    }
+
+    #[test]
     fn a_fault_s_signal_blocked_or_ignored_ends_the_process() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
