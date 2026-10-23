@@ -36,6 +36,8 @@ architectures: aarch64, riscv64, x86_64";
 pub struct Arch {
     pub name: &'static str,
     pub target: &'static str,
+    /// Rust's Linux target for the architecture, which our own Linux programs are built for.
+    pub user_target: &'static str,
     pub qemu: &'static str,
     pub machine_args: &'static [&'static str],
 }
@@ -45,26 +47,36 @@ pub const ARCHES: &[Arch] = &[
     Arch {
         name: "aarch64",
         target: "aarch64-unknown-none-softfloat",
+        user_target: "aarch64-unknown-linux-musl",
         qemu: "qemu-system-aarch64",
         machine_args: &["-machine", "virt,gic-version=2", "-cpu", "cortex-a72"],
     },
     Arch {
         name: "riscv64",
         target: "riscv64imac-unknown-none-elf",
+        user_target: "riscv64gc-unknown-linux-musl",
         qemu: "qemu-system-riscv64",
         machine_args: &["-machine", "virt", "-bios", "default"],
     },
     Arch {
         name: "x86_64",
         target: "x86_64-unknown-none",
+        user_target: "x86_64-unknown-linux-musl",
         qemu: "qemu-system-x86_64",
         // `RDRAND` and `RDSEED` seed the random number generator (D56); nothing else changes.
         machine_args: &["-machine", "q35", "-cpu", "qemu64,+rdrand,+rdseed"],
     },
 ];
 
-/// Crates compiled for kernel targets (everything but this host tool).
+/// Crates compiled for kernel targets.
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
+
+/// Crates compiled for the architectures' Linux targets: our own Linux programs.
+const USER_CRATES: &[&str] = &["eggos-runtime", "eggos-selftest"];
+
+/// The program the `qemu-test` kernels run (D84), and the variable that names it to them.
+const USER_SELFTEST: &str = "eggos-selftest";
+const USER_SELFTEST_VARIABLE: &str = "EGGOS_USERLAND_SELFTEST";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -179,6 +191,14 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
 /// feature, since they change code paths.
 fn clippy_targets() -> Result<(), String> {
     for arch in ARCHES {
+        let mut args = vec!["clippy", "--target", arch.user_target];
+        for krate in USER_CRATES {
+            args.extend(["-p", krate]);
+        }
+        args.extend(["--", "-D", "warnings"]);
+        cargo(&args)?;
+        let program = build_user_selftest(arch)?;
+        let program = program.to_string_lossy();
         for features in [
             &[][..],
             &["--features", "eggos-kernel/qemu-test"],
@@ -191,34 +211,59 @@ fn clippy_targets() -> Result<(), String> {
             }
             args.extend(features);
             args.extend(["--", "-D", "warnings"]);
-            cargo(&args)?;
+            cargo_with_env(&args, &[(USER_SELFTEST_VARIABLE, &program)])?;
         }
     }
     Ok(())
 }
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
-/// any, and returns its path.
+/// any, and returns its path. Every kernel feature is a test kernel's, which runs the program
+/// [`build_user_selftest`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
-    let mut args = vec![
-        "build",
-        "--release",
-        "-p",
-        "eggos-kernel",
-        "--target",
-        arch.target,
-    ];
+    let mut args = vec!["build", "-p", "eggos-kernel", "--target", arch.target];
+    let mut env = Vec::new();
+    let program;
     if let Some(feature) = feature {
         args.extend(["--features", feature]);
+        program = build_user_selftest(arch)?;
+        env.push((USER_SELFTEST_VARIABLE, program.to_string_lossy()));
     }
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+    build_executable(
+        &args,
+        &env,
+        &format!("kernel executable for {}", arch.target),
+    )
+}
+
+/// Builds our own Linux program that the test kernels run, `userland/selftest`, for `arch`'s
+/// Linux target (release profile), and returns its path.
+pub fn build_user_selftest(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    build_executable(
+        &["build", "-p", USER_SELFTEST, "--target", arch.user_target],
+        &[],
+        &format!("{USER_SELFTEST} executable for {}", arch.user_target),
+    )
+}
+
+/// Runs `cargo <args> --release` with `env` and returns the path of the last executable it
+/// built, `what` naming it in errors.
+fn build_executable(
+    args: &[&str],
+    env: &[(&str, &str)],
+    what: &str,
+) -> Result<std::path::PathBuf, String> {
     // Ask cargo where it put the binary rather than guessing `target/`: CARGO_TARGET_DIR or
     // `build.target-dir` move it, and booting a stale image from the default path would test
     // the wrong kernel.
-    args.push("--message-format=json-render-diagnostics");
+    let mut args = args.to_vec();
+    args.extend(["--release", "--message-format=json-render-diagnostics"]);
     let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     eprintln!("xtask: cargo {}", args.join(" "));
     let output = Command::new(&cargo_bin)
         .args(&args)
+        .envs(env.iter().copied())
         .current_dir(workspace_root())
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -238,7 +283,7 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
         .filter_map(|l| json_string_field(l, "executable"))
         .next_back()
         .map(std::path::PathBuf::from)
-        .ok_or_else(|| format!("cargo reported no kernel executable for {}", arch.target))
+        .ok_or_else(|| format!("cargo reported no {what}"))
 }
 
 /// Returns the string value of `"field":"..."` in one line of cargo's JSON output, unescaped.
