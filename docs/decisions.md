@@ -1900,7 +1900,8 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   `XCR0` set), then SVE/SME on AArch64 and V on RISC-V, each with a first-use trap of its own
   as Linux does for the large states; FP/SIMD state in signal frames (with `MXCSR` checked
   against `MXCSR_MASK` on `sigreturn`); `fork` and `clone` copying or starting it; #XM and #MF
-  (x87 and SSE exceptions a program unmasks) reported as `SIGFPE` rather than `SIGSEGV`;
+  (x87 and SSE exceptions a program unmasks), already `SIGFPE`, given their own `FPE_*`
+  codes rather than `FPE_INTDIV`;
   skipping the AMD x87 pointer reset on CPUs with CPUID 0x80000008:EBX[2]; `execve` in a
   running thread dropping or resetting the state; `SIGKILL`, not `SIGILL`, when there is no
   memory for the state; skipping the save on a thread's last switch, when it exits; a

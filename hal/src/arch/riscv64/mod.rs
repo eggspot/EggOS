@@ -87,7 +87,6 @@ _start:
     // From here on the kernel runs at its virtual address, and `lla` gives virtual addresses.
 4:  lla     sp, __stack_top
 
-    // FPU and vector unit off (FS and VS = Off; VS reads as zero without V): the kernel uses
     li      t0, (3 << 13) | (3 << 9)
     csrc    sstatus, t0
     lla     t0, exception_entry

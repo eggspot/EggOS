@@ -116,7 +116,7 @@ two segments on one page if a real binary needs it.
 
 FP/SIMD follow-ups (D54): AVX and AVX-512 through `XSAVE`/`XSAVEOPT`, SVE/SME on AArch64 and V
 on RISC-V, each with a first-use trap of its own; FP/SIMD state in signal frames (`MXCSR`
-checked on `sigreturn`); `fork` and `clone` copying or starting it; #XM and #MF as `SIGFPE`;
+checked on `sigreturn`); `fork` and `clone` copying or starting it; #XM and #MF with their own `FPE_*` codes (they are `SIGFPE` with `FPE_INTDIV` now);
 the AMD x87 pointer reset skipped where CPUID 0x80000008:EBX[2] says it is not needed.
 
 Memory-call follow-ups (D53): a "shared" mark on `MAP_SHARED` anonymous regions before
