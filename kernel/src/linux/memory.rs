@@ -193,11 +193,9 @@ pub fn mmap<P: Platform>(
     }
     let length = page_aligned(length).ok_or(Errno::ENOMEM)?;
     if flags & map::ANONYMOUS == 0 {
-        // No files yet (M7): no descriptor names one.
         return Err(Errno::EBADF);
     }
     if flags & map::HUGETLB != 0 {
-        // No pool of huge pages, as on a Linux system that reserved none.
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
@@ -224,7 +222,6 @@ pub fn mmap<P: Platform>(
             top: 0x8000_0000,
         }
     } else {
-        // A hint is moved up to a page boundary and used if the range there is free.
         let hint = (address != 0)
             .then(|| address.checked_next_multiple_of(FRAME_SIZE))
             .flatten();
@@ -273,7 +270,6 @@ pub fn mprotect<P: Platform>(
     if !address.is_multiple_of(FRAME_SIZE) {
         return Err(Errno::EINVAL);
     }
-    // Nothing to change: success, whatever `prot` says, as on Linux.
     if length == 0 {
         return Ok(0);
     }
@@ -591,11 +587,9 @@ mod tests {
                 attributes: Some(Attributes::USER_READ_WRITE)
             })
         );
-        // Nothing mapped until touched; then a zeroed page.
         assert!(process.address_space().translate(first).is_none());
         assert_eq!(word(&process, first + 8), Some(0));
         assert!(store(&process, first + 3 * PAGE, 7));
-        // The next goes below; read-only and executable ones refuse writes.
         let second = mmap(&process, 0, PAGE, prot::READ, map::SHARED | map::ANONYMOUS);
         assert_eq!(second, first - PAGE);
         assert!(!store(&process, second, 1));
@@ -604,14 +598,12 @@ mod tests {
             process.region(code).unwrap().attributes,
             Some(Attributes::USER_TEXT)
         );
-        // A free hint is used, rounded up to a page; a taken one is not.
         let hint = 0x1000_0000;
         assert_eq!(mmap(&process, hint - 5, PAGE, READ_WRITE, ANONYMOUS), hint);
         assert_eq!(
             mmap(&process, hint, PAGE, READ_WRITE, ANONYMOUS),
             code - PAGE
         );
-        // `MAP_FIXED_NOREPLACE`: only where nothing is.
         let fixed_new = ANONYMOUS | map::FIXED_NOREPLACE;
         assert_eq!(
             mmap(&process, hint, PAGE, READ_WRITE, fixed_new),
@@ -621,7 +613,6 @@ mod tests {
             mmap(&process, hint + PAGE, PAGE, READ_WRITE, fixed_new),
             hint + PAGE
         );
-        // `MAP_FIXED` replaces what was there, pages and all: the frame goes back.
         let before = free();
         let fixed = ANONYMOUS | map::FIXED;
         assert_eq!(
@@ -632,7 +623,6 @@ mod tests {
         assert_eq!(word(&process, first + 3 * PAGE), Some(0));
         assert!(!store(&process, first + 3 * PAGE, 7));
         assert!(store(&process, first + PAGE, 7));
-        // `PROT_NONE`: a region the program may not touch.
         let none = mmap(&process, 0, PAGE, 0, ANONYMOUS);
         assert_eq!(process.region(none).unwrap().attributes, None);
         assert_eq!(word(&process, none), None);
@@ -706,15 +696,12 @@ mod tests {
                 "{address:#x} {length:#x} {prot:#x} {flags:#x} {offset:#x}"
             );
         }
-        // Unknown flags are ignored with the other types, and the descriptor and offset of
-        // an anonymous mapping are too.
         let address = call(
             &process,
             number::MMAP,
             [0, PAGE, READ_WRITE, ANONYMOUS | 0x80_0000, 3, PAGE],
         );
         assert!(process.region(address).is_some());
-        // Nothing was mapped by the refused calls.
         assert_eq!(
             process
                 .region(mmap_top::<P>() - PAGE)
@@ -736,7 +723,6 @@ mod tests {
         dropped_translations();
         let munmap =
             |address, length| call(&process, number::MUNMAP, [address, length, 0, 0, 0, 0]);
-        // The middle two, with the address space active here: its translations go too.
         let result = process.with_active(|| munmap(start + PAGE, 2 * PAGE - 5));
         assert_eq!(result, 0);
         assert_eq!(free(), before + 2);
@@ -749,10 +735,8 @@ mod tests {
         assert_eq!(process.region(start + PAGE), None);
         assert_eq!(word(&process, start + PAGE), None);
         assert_eq!(word(&process, start + 3 * PAGE), Some(3));
-        // Not loaded here: nothing of it is cached on this CPU to drop.
         assert_eq!(munmap(start, PAGE), 0);
         assert!(dropped_translations().is_empty());
-        // Nothing mapped there: fine.
         assert_eq!(munmap(start, 3 * PAGE), 0);
         assert_eq!(free(), before + 3);
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
@@ -785,14 +769,12 @@ mod tests {
                 call(&process, number::MPROTECT, [address, length, prot, 0, 0, 0])
             };
             let mapped = free();
-            // No access: nothing translates, no copy reaches it, and no frame goes.
             assert_eq!(mprotect(start, 2 * PAGE, 0), 0);
             assert!(process.address_space().translate(start).is_none());
             assert_eq!(word(&process, start), None);
             assert!(!store(&process, start + PAGE, 1));
             assert_eq!(process.region(start).unwrap().attributes, None);
             assert_eq!(free(), mapped);
-            // Back: the same frames, contents intact.
             dropped_translations();
             let result = process.with_active(|| mprotect(start, 2 * PAGE, READ_WRITE));
             assert_eq!(result, 0);
@@ -800,8 +782,6 @@ mod tests {
             assert_eq!(word(&process, start), Some(0x1234));
             assert_eq!(word(&process, start + PAGE), Some(0x5678));
             assert_eq!(free(), mapped);
-            // Read-only, then executable (from writable: allowed), never both writable and
-            // executable.
             assert_eq!(mprotect(start, PAGE, prot::READ), 0);
             assert!(!store(&process, start, 1));
             assert_eq!(
@@ -817,7 +797,6 @@ mod tests {
                 mprotect(start, PAGE, prot::WRITE | prot::EXEC),
                 Errno::EACCES.result()
             );
-            // A hole: what lies before it changes, then `ENOMEM`.
             assert_eq!(
                 call(
                     &process,
@@ -841,7 +820,6 @@ mod tests {
             assert_eq!(mprotect(start, 0, 0x100), 0);
             assert_eq!(mprotect(start, 0, prot::WRITE | prot::EXEC), 0);
         }
-        // The inaccessible pages' frames are freed with the process.
         assert_eq!(free(), before);
     }
 
@@ -853,7 +831,6 @@ mod tests {
         let brk = |address| call(&process, number::BRK, [address, 0, 0, 0, 0, 0]);
         assert_eq!(brk(0), BREAK);
         assert_eq!(brk(BREAK + PAGE + 5), BREAK + PAGE + 5);
-        // One region with the data below, up to the page the break is in.
         assert_eq!(
             process.region(BREAK),
             Some(Region {
@@ -864,12 +841,10 @@ mod tests {
         );
         assert!(store(&process, BREAK + PAGE, 9));
         assert!(!store(&process, BREAK + 2 * PAGE, 9));
-        // Shrinking gives the pages back.
         let before = free();
         assert_eq!(brk(BREAK + 1), BREAK + 1);
         assert_eq!(free(), before + 1);
         assert_eq!(word(&process, BREAK + PAGE), None);
-        // Below its start, past where mappings go, or into a mapping: refused, unchanged.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         for refused in [BREAK - 1, mmap_top::<P>() + 1, user_end, u64::MAX] {
             assert_eq!(brk(refused), BREAK + 1, "{refused:#x}");
@@ -881,12 +856,10 @@ mod tests {
         );
         assert_eq!(brk(BREAK + 5 * PAGE), BREAK + 1);
         assert_eq!(brk(BREAK + 4 * PAGE), BREAK + 4 * PAGE);
-        // Shrinking back to the start never touches the data below it.
         assert!(store(&process, BREAK - 8, 5));
         assert_eq!(brk(BREAK), BREAK);
         assert_eq!(word(&process, BREAK - 8), Some(5));
         assert_eq!(process.region(BREAK), None);
-        // A process without a break (not a Linux program): 0.
         // SAFETY: as in `process`.
         let bare = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
         assert_eq!(call(&bare, number::BRK, [BREAK, 0, 0, 0, 0, 0]), 0);
