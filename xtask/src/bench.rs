@@ -275,8 +275,9 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
     let mut report = Comparison::default();
     for arch in ran {
         let (now, then) = (measured.firmware.get(*arch), baseline.firmware.get(*arch));
-        // Without a version, a changed banner would silently ungate the firmware's results.
-        if now.is_none() && FIRMWARE_DEPENDENT.iter().any(|(a, _, _)| a == arch) {
+        let unreadable_firmware_would_ungate_its_results =
+            now.is_none() && FIRMWARE_DEPENDENT.iter().any(|(a, _, _)| a == arch);
+        if unreadable_firmware_would_ungate_its_results {
             report.failures.push(format!(
                 "{arch}: could not read the firmware version from the console"
             ));
@@ -365,8 +366,8 @@ mod tests {
         let parsed = parse_console(console).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].0, "clock_read");
-        // 62 500 ticks at 62.5 MHz = 1 ms, over 10 000 iterations = 100 ns each.
-        assert!((parsed[0].1 - 100.0).abs() < 1e-9);
+        let one_ms_over_10_000_iterations_in_ns = 100.0;
+        assert!((parsed[0].1 - one_ms_over_10_000_iterations_in_ns).abs() < 1e-9);
         assert!((parsed[1].1 - 2.5).abs() < 1e-9);
     }
 
@@ -405,18 +406,22 @@ mod tests {
     }
 
     #[test]
-    fn within_tolerance_passes_and_beyond_fails() {
+    fn one_percent_plus_half_a_nanosecond_passes_and_beyond_fails() {
         let baseline = results(&[("a", "x", 100.0)]);
-        // 1% + 0.5 ns of 100 ns: 101.5 passes, 101.6 fails.
+        let at_the_tolerance = 101.5;
         assert!(
-            compare(&baseline, &results(&[("a", "x", 101.5)]), &["a"])
+            compare(&baseline, &results(&[("a", "x", at_the_tolerance)]), &["a"])
                 .failures
                 .is_empty()
         );
         let slower = compare(&baseline, &results(&[("a", "x", 101.6)]), &["a"]);
         assert_eq!(slower.failures.len(), 1);
         assert!(slower.text.contains("REGRESSION"));
-        // Faster never fails, but is pointed out so the baseline can be tightened.
+    }
+
+    #[test]
+    fn faster_never_fails_but_is_pointed_out_so_the_baseline_can_be_tightened() {
+        let baseline = results(&[("a", "x", 100.0)]);
         let faster = compare(&baseline, &results(&[("a", "x", 50.0)]), &["a"]);
         assert!(faster.failures.is_empty());
         assert!(faster.text.contains("faster"));
@@ -443,32 +448,32 @@ mod tests {
         assert_eq!(firmware_version("riscv64", "EggOS\n"), None);
     }
 
+    fn timer_arm_and_clock_read_on(
+        firmware: &str,
+        timer_arm: f64,
+        clock_read: f64,
+    ) -> Measurements {
+        with_firmware(
+            results(&[
+                ("riscv64", "timer_arm", timer_arm),
+                ("riscv64", "clock_read", clock_read),
+            ]),
+            "riscv64",
+            firmware,
+        )
+    }
+
     #[test]
-    fn firmware_dependent_results_are_gated_only_on_the_baselines_firmware() {
-        let baseline = with_firmware(
-            results(&[
-                ("riscv64", "timer_arm", 100.0),
-                ("riscv64", "clock_read", 4.0),
-            ]),
-            "riscv64",
-            "OpenSBI-v1.3",
-        );
-        let slower = results(&[
-            ("riscv64", "timer_arm", 200.0),
-            ("riscv64", "clock_read", 4.0),
-        ]);
-        // Same firmware: a regression.
-        let same = with_firmware(slower, "riscv64", "OpenSBI-v1.3");
+    fn a_firmware_dependent_regression_on_the_baselines_firmware_fails() {
+        let baseline = timer_arm_and_clock_read_on("OpenSBI-v1.3", 100.0, 4.0);
+        let same = timer_arm_and_clock_read_on("OpenSBI-v1.3", 200.0, 4.0);
         assert_eq!(compare(&baseline, &same, &["riscv64"]).failures.len(), 1);
-        // Other firmware: reported, not gated; benchmarks that do not enter it still are.
-        let other = with_firmware(
-            results(&[
-                ("riscv64", "timer_arm", 200.0),
-                ("riscv64", "clock_read", 9.0),
-            ]),
-            "riscv64",
-            "OpenSBI-v1.7",
-        );
+    }
+
+    #[test]
+    fn on_other_firmware_its_results_are_reported_not_gated_but_the_others_still_are() {
+        let baseline = timer_arm_and_clock_read_on("OpenSBI-v1.3", 100.0, 4.0);
+        let other = timer_arm_and_clock_read_on("OpenSBI-v1.7", 200.0, 9.0);
         let report = compare(&baseline, &other, &["riscv64"]);
         assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
         assert!(report.failures[0].contains("clock_read"));
@@ -478,7 +483,11 @@ mod tests {
                 .contains("firmware OpenSBI-v1.7, baseline recorded with OpenSBI-v1.3")
         );
         assert!(report.text.contains("not gated"));
-        // No firmware version at all (a changed banner) fails instead of ungating silently.
+    }
+
+    #[test]
+    fn no_firmware_version_at_all_fails_instead_of_ungating_silently() {
+        let baseline = timer_arm_and_clock_read_on("OpenSBI-v1.3", 100.0, 4.0);
         let unknown = results(&[
             ("riscv64", "timer_arm", 100.0),
             ("riscv64", "clock_read", 4.0),
@@ -523,12 +532,19 @@ mod tests {
             "OpenSBI-v1.3",
         );
         assert_eq!(merged, expected);
-        // A firmware-dependent result with no baseline yet is not recorded from other firmware.
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(kept[0].contains("kept riscv64 timer_arm"));
-        assert!(kept[1].contains("not recorded: riscv64 timer_interrupt_round_trip"));
+        let firmware_dependent_without_a_baseline_is_not_recorded_from_other_firmware =
+            "not recorded: riscv64 timer_interrupt_round_trip";
+        assert!(
+            kept[1].contains(
+                firmware_dependent_without_a_baseline_is_not_recorded_from_other_firmware
+            )
+        );
+    }
 
-        // On the baseline's own firmware everything is replaced.
+    #[test]
+    fn updating_on_the_baselines_own_firmware_replaces_everything() {
         let baseline = with_firmware(
             results(&[("riscv64", "timer_arm", 100.0)]),
             "riscv64",

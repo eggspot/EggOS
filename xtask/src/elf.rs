@@ -126,12 +126,13 @@ impl<'a> Elf<'a> {
             }
             let symbols = self.u64(section + 24)?;
             let symbols_size = self.u64(section + 32)?;
-            // `sh_link` names the string table holding the symbol names.
-            let link = u64::from(self.u32(section + 40)?);
+            let names_section_from_sh_link = u64::from(self.u32(section + 40)?);
             let strings_section = self
                 .entries(section_table, section_count, SECTION_HEADER_SIZE)?
-                .nth(link as usize)
-                .ok_or_else(|| format!("symbol table links to missing section {link}"))?;
+                .nth(names_section_from_sh_link as usize)
+                .ok_or_else(|| {
+                    format!("symbol table links to missing section {names_section_from_sh_link}")
+                })?;
             let strings = self.u64(strings_section + 24)?;
             let count = symbols_size / SYMBOL_SIZE as u64;
             for symbol in self.entries(symbols, count, SYMBOL_SIZE)? {
@@ -183,6 +184,34 @@ impl<'a> Elf<'a> {
 mod tests {
     use super::*;
 
+    const E_PHOFF: usize = 0x20;
+    const E_SHOFF: usize = 0x28;
+    const E_PHNUM: usize = 0x38;
+    const E_SHNUM: usize = 0x3c;
+    const P_VADDR: usize = 16;
+    const P_PADDR: usize = 24;
+    const P_MEMSZ: usize = 40;
+    const SH_TYPE: usize = 4;
+    const SH_OFFSET: usize = 24;
+    const SH_SIZE: usize = 32;
+    const SH_LINK: usize = 40;
+    const ST_NAME: usize = 0;
+    const ST_SHNDX: usize = 6;
+    const ST_VALUE: usize = 8;
+    const ST_SIZE: usize = 16;
+
+    const PROGRAM_HEADERS: usize = 0x40;
+    const LOAD_SEGMENT: usize = PROGRAM_HEADERS;
+    const SECTION_HEADERS: usize = 0x100;
+    const SYMTAB_SECTION_INDEX: u64 = 1;
+    const SYMTAB_SECTION: usize = SECTION_HEADERS + SECTION_HEADER_SIZE;
+    const STRTAB_SECTION_INDEX: u64 = 2;
+    const STRTAB_SECTION: usize = SECTION_HEADERS + 2 * SECTION_HEADER_SIZE;
+    const SYMBOLS: usize = 0x80;
+    const OTHER_SYMBOL: usize = SYMBOLS + SYMBOL_SIZE;
+    const PROBE_SYMBOL: usize = SYMBOLS + 2 * SYMBOL_SIZE;
+    const STRINGS: usize = 0x1c0;
+
     /// A minimal ELF-64 image: one loadable segment at virtual `0xffff_0000_0000_1000`,
     /// physical `0x4000_1000`, 0x2000 bytes; a symbol table with `probe` at `+0x10`, 32
     /// bytes, after `other`.
@@ -196,32 +225,26 @@ mod tests {
             };
             out[offset..offset + size].copy_from_slice(&bytes);
         };
-        // Header: program headers at 0x40 (one), section headers at 0x100 (three).
-        put(0x20, 0x40, 8);
-        put(0x28, 0x100, 8);
-        put(0x38, 1, 2);
-        put(0x3c, 3, 2);
-        // The loadable segment.
-        put(0x40, u64::from(SEGMENT_TYPE_LOAD), 4);
-        put(0x40 + 16, 0xffff_0000_0000_1000, 8);
-        put(0x40 + 24, 0x4000_1000, 8);
-        put(0x40 + 40, 0x2000, 8);
-        // Section 1: `.symtab` at 0x80, three symbols (the null one first), strings in
-        // section 2.
-        put(0x140 + 4, u64::from(SECTION_TYPE_SYMTAB), 4);
-        put(0x140 + 24, 0x80, 8);
-        put(0x140 + 32, 3 * SYMBOL_SIZE as u64, 8);
-        put(0x140 + 40, 2, 4);
-        // Section 2: the string table at 0x1c0.
-        put(0x180 + 24, 0x1c0, 8);
-        // Symbol 1: `other`; symbol 2: `probe`; both defined in section 1.
-        put(0x80 + 24, 1, 4);
-        put(0x80 + 24 + 6, 1, 2);
-        put(0x80 + 24 + 8, 0xffff_0000_0000_1000, 8);
-        put(0x80 + 48, 7, 4);
-        put(0x80 + 48 + 6, 1, 2);
-        put(0x80 + 48 + 8, 0xffff_0000_0000_1010, 8);
-        put(0x80 + 48 + 16, 32, 8);
+        put(E_PHOFF, PROGRAM_HEADERS as u64, 8);
+        put(E_SHOFF, SECTION_HEADERS as u64, 8);
+        put(E_PHNUM, 1, 2);
+        put(E_SHNUM, 3, 2);
+        put(LOAD_SEGMENT, u64::from(SEGMENT_TYPE_LOAD), 4);
+        put(LOAD_SEGMENT + P_VADDR, 0xffff_0000_0000_1000, 8);
+        put(LOAD_SEGMENT + P_PADDR, 0x4000_1000, 8);
+        put(LOAD_SEGMENT + P_MEMSZ, 0x2000, 8);
+        put(SYMTAB_SECTION + SH_TYPE, u64::from(SECTION_TYPE_SYMTAB), 4);
+        put(SYMTAB_SECTION + SH_OFFSET, SYMBOLS as u64, 8);
+        put(SYMTAB_SECTION + SH_SIZE, 3 * SYMBOL_SIZE as u64, 8);
+        put(SYMTAB_SECTION + SH_LINK, STRTAB_SECTION_INDEX, 4);
+        put(STRTAB_SECTION + SH_OFFSET, STRINGS as u64, 8);
+        put(OTHER_SYMBOL + ST_NAME, 1, 4);
+        put(OTHER_SYMBOL + ST_SHNDX, SYMTAB_SECTION_INDEX, 2);
+        put(OTHER_SYMBOL + ST_VALUE, 0xffff_0000_0000_1000, 8);
+        put(PROBE_SYMBOL + ST_NAME, 7, 4);
+        put(PROBE_SYMBOL + ST_SHNDX, SYMTAB_SECTION_INDEX, 2);
+        put(PROBE_SYMBOL + ST_VALUE, 0xffff_0000_0000_1010, 8);
+        put(PROBE_SYMBOL + ST_SIZE, 32, 8);
         out[..6].copy_from_slice(&[
             0x7f,
             b'E',
@@ -234,7 +257,7 @@ mod tests {
                 DATA_LITTLE_ENDIAN
             },
         ]);
-        out[0x1c0..0x1cd].copy_from_slice(b"\0other\0probe\0");
+        out[STRINGS..STRINGS + 13].copy_from_slice(b"\0other\0probe\0");
         out
     }
 
@@ -278,16 +301,17 @@ mod tests {
     #[test]
     fn a_symbol_outside_every_segment_is_an_error() {
         let mut outside = image(false);
-        // Move `probe` past the end of the segment.
-        outside[0x80 + 48 + 8..0x80 + 48 + 16]
-            .copy_from_slice(&0xffff_0000_0000_3000u64.to_le_bytes());
+        let past_the_segment_s_end = 0xffff_0000_0000_3000u64;
+        outside[PROBE_SYMBOL + ST_VALUE..PROBE_SYMBOL + ST_SIZE]
+            .copy_from_slice(&past_the_segment_s_end.to_le_bytes());
         assert!(find_symbol(&outside, "probe").is_err());
     }
 
     #[test]
     fn an_undefined_symbol_does_not_count() {
         let mut undefined = image(false);
-        undefined[0x80 + 48 + 6..0x80 + 48 + 8].copy_from_slice(&0u16.to_le_bytes());
+        undefined[PROBE_SYMBOL + ST_SHNDX..PROBE_SYMBOL + ST_VALUE]
+            .copy_from_slice(&0u16.to_le_bytes());
         assert_eq!(
             find_symbol(&undefined, "probe"),
             Err("no symbol `probe` in the kernel image".into())
@@ -295,14 +319,16 @@ mod tests {
     }
 
     #[test]
-    fn a_table_past_the_end_of_the_image_is_an_error_not_an_overflow() {
+    fn a_section_table_whose_end_overflows_u64_is_an_error_not_an_overflow() {
         let mut huge = image(false);
-        // A section table offset whose end overflows u64, then a section count whose table
-        // ends past the image.
-        huge[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        huge[E_SHOFF..E_SHOFF + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(find_symbol(&huge, "probe").is_err());
+    }
+
+    #[test]
+    fn a_section_count_whose_table_ends_past_the_image_is_an_error() {
         let mut many = image(false);
-        many[0x3c..0x3e].copy_from_slice(&u16::MAX.to_le_bytes());
+        many[E_SHNUM..E_SHNUM + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(find_symbol(&many, "probe").is_err());
     }
 }

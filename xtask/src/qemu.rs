@@ -43,6 +43,9 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Seeing it twice means the machine reset and booted again.
 const BANNER_PREFIX: &str = "EggOS ";
 
+/// Arguments every boot gets. Never `-no-reboot`: with it, an x86 triple fault (in the
+/// power-off path, say) ends QEMU with exit code 0, which looks like a clean power-off; without
+/// it the machine resets and prints the banner again, which fails the test.
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
 
 /// CPUs in the boot tests and interactive runs, so every boot starts the secondary CPUs
@@ -99,9 +102,6 @@ pub fn boot_test(
     eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
-        // No `-no-reboot` here: with it, an x86 triple fault (e.g. in the power-off path) ends
-        // QEMU with exit code 0 and would look like a clean power-off. Without it the machine
-        // resets and prints the banner again, which fails the test below.
         .args(COMMON_ARGS)
         .arg("-smp")
         .arg(cpus.to_string())
@@ -114,18 +114,7 @@ pub fn boot_test(
         .spawn()
         .map_err(|e| format!("could not start {}: {e} (is QEMU installed?)", arch.qemu))?;
 
-    // Stream the console to our stderr while collecting it, so a hang is still visible.
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n @ 1..) = stdout.read(&mut buf) {
-            let _ = std::io::stderr().write_all(&buf[..n]);
-            if tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
+    let rx = echo_console_to_stderr(child.stdout.take().expect("stdout is piped"));
 
     let started = Instant::now();
     let mut console = Vec::new();
@@ -154,11 +143,27 @@ pub fn boot_test(
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    // The reader thread ends when QEMU closes stdout; collect the rest of what it saw.
-    console.extend(rx.iter().flatten());
+    let rest_until_qemu_closes_stdout = rx.iter().flatten();
+    console.extend(rest_until_qemu_closes_stdout);
     let console = String::from_utf8_lossy(&console).into_owned();
     verdict(arch.name, expect, status.success(), &console)?;
     Ok(console)
+}
+
+/// Copies QEMU's console to our stderr as it arrives, so a hang is still visible, and sends
+/// each piece to the returned receiver, until QEMU closes its stdout.
+fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n @ 1..) = stdout.read(&mut buf) {
+            let _ = std::io::stderr().write_all(&buf[..n]);
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// How many times the kernel's boot banner appears on the console.
@@ -257,12 +262,14 @@ mod tests {
         assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
         assert!(verdict("x", Expect::Pass, false, &ok).is_err());
         assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
-        // The user program's line must be there, whole.
+    }
+
+    #[test]
+    fn a_pass_needs_the_user_program_s_and_the_elf_program_s_lines_whole() {
         let silent = format!("EggOS\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &silent).is_err());
         let garbled = format!("EggOS\r\n{USER_HELLO}x\r\n{ELF_START_LINE}\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &garbled).is_err());
-        // And the ELF program's.
         let no_elf = format!("EggOS\r\n{USER_HELLO}\r\n{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &no_elf).is_err());
     }
@@ -279,35 +286,50 @@ mod tests {
         assert!(verdict("x", Expect::Pass, true, &rebooted).is_err());
     }
 
-    #[test]
-    fn fatal_exception_needs_the_report_then_the_fail_marker() {
-        let reported = format!(
+    fn reported_fatal_exception() -> String {
+        format!(
             "{PASS_MARKER}\n{WRITE_PROTECT_PROBE}0x5000\n\n\
              {EXCEPTION_PREFIX}#PF page fault (code 0x3) at pc 0x1000, address 0x5000\n{FAIL_MARKER}\n"
-        );
+        )
+    }
+
+    #[test]
+    fn fatal_exception_needs_the_report_then_the_fail_marker() {
+        let reported = reported_fatal_exception();
         assert!(verdict("x", Expect::FatalException, true, &reported).is_ok());
         assert!(verdict("x", Expect::FatalException, false, &reported).is_err());
-        // A plain pass, a panic or a fail marker before the report is not the exception path.
+    }
+
+    #[test]
+    fn a_plain_pass_a_panic_or_an_early_fail_marker_is_not_the_exception_path() {
         let pass = format!("{PASS_MARKER}\n");
         assert!(verdict("x", Expect::FatalException, true, &pass).is_err());
         let panic = format!("{PASS_MARKER}\nkernel panic: x\n{FAIL_MARKER}\n");
         assert!(verdict("x", Expect::FatalException, true, &panic).is_err());
         let early = format!("{FAIL_MARKER}\n{EXCEPTION_PREFIX}x\n");
         assert!(verdict("x", Expect::FatalException, true, &early).is_err());
-        // Without the self-tests passing first, the run proves nothing about the vectors.
+    }
+
+    #[test]
+    fn a_fatal_exception_without_the_self_tests_passing_first_proves_nothing() {
         let no_pass = format!("{EXCEPTION_PREFIX}x\n{FAIL_MARKER}\n");
         assert!(verdict("x", Expect::FatalException, true, &no_pass).is_err());
-        // A fault elsewhere, or none (write protection broken, so the illegal instruction
-        // after the write ends the run), is not the write being caught.
-        let elsewhere = reported.replace("address 0x5000", "address 0x6000");
+    }
+
+    #[test]
+    fn a_fault_elsewhere_or_the_illegal_instruction_after_an_unprotected_write_is_not_caught() {
+        let elsewhere = reported_fatal_exception().replace("address 0x5000", "address 0x6000");
         assert!(verdict("x", Expect::FatalException, true, &elsewhere).is_err());
         let unprotected = format!(
             "{PASS_MARKER}\n{WRITE_PROTECT_PROBE}0x5000\n\n\
              {EXCEPTION_PREFIX}#UD invalid opcode (code 0x0) at pc 0x1000\n{FAIL_MARKER}\n"
         );
         assert!(verdict("x", Expect::FatalException, true, &unprotected).is_err());
-        // And the fatal exception run is a failure when a pass is expected.
-        assert!(verdict("x", Expect::Pass, true, &reported).is_err());
+    }
+
+    #[test]
+    fn the_fatal_exception_run_fails_when_a_pass_is_expected() {
+        assert!(verdict("x", Expect::Pass, true, &reported_fatal_exception()).is_err());
     }
 
     #[test]
