@@ -438,6 +438,28 @@ riscv64_user_test_stack_growth:
 6:  sd      t0, 0(t0)
     sub     t0, t0, t1
     j       6b
+    .global riscv64_user_test_linux_thread_pointer
+riscv64_user_test_linux_thread_pointer:
+    // Linux's generic numbers: getpid 172, sched_yield 124, exit_group 94. The thread pointer
+    // starts at zero; then getpid() << 12, set in `tp`, must outlast every sched_yield. s0
+    // collects the differences.
+    mv      s0, tp
+    li      a7, 172
+    ecall
+    slli    s1, a0, 12
+    mv      tp, s1
+    li      s2, {thread_pointer_rounds}
+7:  li      a7, 124
+    ecall
+    or      s0, s0, a0
+    xor     t0, tp, s1
+    or      s0, s0, t0
+    addi    s2, s2, -1
+    bnez    s2, 7b
+    snez    a0, s0
+    li      a7, 94
+    ecall
+8:  j       8b
     .global riscv64_user_test_end
 riscv64_user_test_end:
     .popsection
@@ -451,6 +473,7 @@ riscv64_user_test_end:
     syscall_null = const TestProgram::SYSCALL_NULL,
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
 );
 
 /// The registers saved by the entry code, in the order it stores them.
@@ -536,6 +559,7 @@ unsafe extern "C" {
     static riscv64_user_test_linux_start: u8;
     static riscv64_user_test_linux_unknown_syscalls: u8;
     static riscv64_user_test_stack_growth: u8;
+    static riscv64_user_test_linux_thread_pointer: u8;
     static riscv64_user_test_end: u8;
 }
 
@@ -585,6 +609,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_unknown_syscalls: (&raw const riscv64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const riscv64_user_test_stack_growth) as usize - start,
+        linux_thread_pointer: (&raw const riscv64_user_test_linux_thread_pointer) as usize - start,
     }
 }
 

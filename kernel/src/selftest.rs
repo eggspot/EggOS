@@ -49,7 +49,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 24] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 25] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -112,6 +112,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 24] {
             "linux_memory_calls_take_effect_at_once",
             linux_memory_calls_take_effect_at_once::<P>,
         ),
+        // Before the secondary CPUs start: every program on one CPU.
+        ("linux_programs_keep_their_thread_pointers", |memory| {
+            linux_programs_keep_their_thread_pointers::<P>(memory, 3)
+        }),
         (
             "secondary_cpus_start_and_report_in",
             secondary_cpus_start_and_report_in::<P>,
@@ -1232,14 +1236,68 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
 /// [`processes_keep_their_own_memory`] on every CPU: first one process whose threads, one per
 /// CPU (up to 16), run on different CPUs at once, so several CPUs keep its address space loaded
 /// when it ends and must all let it go; then a process per CPU with two threads each, so they
-/// run, load their address spaces and their code on the other CPUs too, and move between them.
+/// run, load their address spaces and their code on the other CPUs too, and move between them;
+/// then [`linux_programs_keep_their_thread_pointers`] with more programs than CPUs.
 fn processes_run_on_every_cpu<P: Platform>(memory: &mut Memory<P>) -> Result<(), &'static str> {
     let cpus = cpu::CPUS.all().len();
     if cpus <= 1 {
         return Ok(());
     }
     processes_keep_their_own_memory(memory, 1, cpus.min(16))?;
-    processes_keep_their_own_memory(memory, cpus.min(8), 2)
+    processes_keep_their_own_memory(memory, cpus.min(8), 2)?;
+    linux_programs_keep_their_thread_pointers(memory, (2 * cpus + 1).min(17))
+}
+
+/// Linux programs must each keep their own thread pointer (D57): `count` processes run the
+/// test program's `linux_thread_pointer`, which starts with a zero thread pointer, sets its
+/// own and checks it after each of 20 `sched_yield`s, while the others run with theirs on the
+/// same CPU (more programs than CPUs) or it moves to another. Each must end with
+/// `exit_group(0)`. The programs run twice, and everything the second round took must be
+/// freed: the first may grow the heap's size classes, whose frames stay with them (D30).
+fn linux_programs_keep_their_thread_pointers<P: Platform>(
+    memory: &mut Memory<P>,
+    count: usize,
+) -> Result<(), &'static str> {
+    let mut before = None;
+    for round in 0..2 {
+        if round == 1 {
+            // After the CPUs let go of the first round's address spaces, which they keep
+            // loaded until they need another.
+            if !release_loaded_address_spaces::<P>(|| true) {
+                return Err("a CPU kept an ended process's address space loaded");
+            }
+            before = Some(free_frames().ok_or("there is no frame allocator")?);
+        }
+        let mut programs = Vec::new();
+        for _ in 0..count {
+            // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+            let process =
+                Arc::new(unsafe { Process::<P>::with_test_program(&memory.page_tables) }?);
+            let context =
+                Process::<P>::test_program_context(|program| program.linux_thread_pointer);
+            let thread = linux::spawn::<P>(process.clone(), context)
+                .map_err(|_| "could not start a Linux program's thread")?;
+            programs.push((process, thread));
+        }
+        for (process, thread) in programs {
+            thread.join::<P>();
+            match process.exit_status() {
+                Some(ProcessExit::Exited(0)) => {}
+                Some(ProcessExit::Exited(_)) => {
+                    return Err("a program's thread pointer changed, or a call failed");
+                }
+                Some(ProcessExit::Killed { .. }) => {
+                    return Err("a program was killed (on x86_64: its FS base was not its own)");
+                }
+                None => return Err("a Linux program's thread ended without ending it"),
+            }
+        }
+    }
+    let freed = || free_frames() == before;
+    if !release_loaded_address_spaces::<P>(freed) || !freed() {
+        return Err("the Linux programs' frames and tables were not all freed");
+    }
+    Ok(())
 }
 
 /// The frame allocator's free frames, `None` if there is none.

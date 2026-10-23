@@ -100,9 +100,11 @@ _start:
 
     // What EL0 may use, whatever firmware left (D49): no FP/SIMD, which traps (in EL1 too,
     // where the kernel uses none) until it is saved per thread, and no timer or counter, so a
-    // program cannot reprogram the kernel's timer.
+    // program cannot reprogram the kernel's timer. `TPIDRRO_EL0`, which programs can read,
+    // holds nothing of firmware's: zero, as on Linux (`TPIDR_EL0` is each program's own).
     msr     cpacr_el1, xzr
     msr     cntkctl_el1, xzr
+    msr     tpidrro_el0, xzr
 
     // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
     adrp    x0, exception_vectors
@@ -161,6 +163,7 @@ eggos_secondary_start:
     mov     sp, x0
     msr     cpacr_el1, xzr          // as on the boot CPU
     msr     cntkctl_el1, xzr
+    msr     tpidrro_el0, xzr
     adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0

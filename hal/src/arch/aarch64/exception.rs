@@ -5,10 +5,10 @@
 //! of four types (synchronous, IRQ, FIQ, SError). Every entry from EL1 saves the general-purpose
 //! registers, `ELR_EL1` and `SPSR_EL1` on the current stack, then calls [`aarch64_exception`]
 //! with the frame and the entry's index, and restores everything and `eret`s if it returns.
-//! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` included, into its
-//! `UserContext`, where `SP_EL1` points while it runs, and returns from [`run_user`] instead.
-//! The kernel uses no FP/SIMD registers (D10), so they are not saved, and programs may not use
-//! them either: `CPACR_EL1` traps them at EL0 (D49).
+//! Every entry from EL0 (D47) saves the program's registers, `SP_EL0` and its thread pointer
+//! `TPIDR_EL0` (D57) included, into its `UserContext`, where `SP_EL1` points while it runs,
+//! and returns from [`run_user`] instead. The kernel uses no FP/SIMD registers (D10), so they
+//! are not saved, and programs may not use them either: `CPACR_EL1` traps them at EL0 (D49).
 
 use super::timer;
 use crate::Interrupt;
@@ -104,8 +104,8 @@ exception_common:
     isb
 
     // The rest of the way out of EL0: save the program's registers in its `UserContext`
-    // (`sp`), record the vector entry, then return from `aarch64_enter_user` on the kernel
-    // stack it left.
+    // (`sp`), its thread pointer (`TPIDR_EL0`) included, record the vector entry, then return
+    // from `aarch64_enter_user` on the kernel stack it left.
 user_exception_common:
     stp     x2, x3, [sp, #16]
     stp     x4, x5, [sp, #32]
@@ -126,25 +126,26 @@ user_exception_common:
     mrs     x2, spsr_el1
     mrs     x3, sp_el0
     stp     x2, x3, [sp, #256]
+    mrs     x2, tpidr_el0
+    str     x2, [sp, #272]
     ldr     x2, [sp, #{user_saved_size}]
     str     x1, [sp, #{user_saved_size} + 8]
     mov     sp, x2
-    ldp     x19, x20, [sp, #0]
     ldp     x21, x22, [sp, #16]
     ldp     x23, x24, [sp, #32]
     ldp     x25, x26, [sp, #48]
     ldp     x27, x28, [sp, #64]
     ldp     x29, x30, [sp, #80]
-    add     sp, sp, #96
+    ldp     x19, x20, [sp], #96
     ret
 
     // `aarch64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
     // the stack pointer in the context, points `SP_EL1` just past the context's saved part and
-    // enters EL0 with the program's registers. Returns through `user_exception_common`.
+    // enters EL0 with the program's registers, `TPIDR_EL0` included. Returns through
+    // `user_exception_common`.
     .global aarch64_enter_user
 aarch64_enter_user:
-    sub     sp, sp, #96
-    stp     x19, x20, [sp, #0]
+    stp     x19, x20, [sp, #-96]!
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
     stp     x25, x26, [sp, #48]
@@ -152,13 +153,13 @@ aarch64_enter_user:
     stp     x29, x30, [sp, #80]
     mov     x1, sp
     str     x1, [x0, #{user_saved_size}]
-    ldp     x2, x3, [x0, #256]
-    msr     spsr_el1, x2
-    msr     sp_el0, x3
-    ldr     x2, [x0, #248]
+    ldp     x2, x3, [x0, #248]
     msr     elr_el1, x2
-    add     x1, x0, #{user_saved_size}
-    mov     sp, x1
+    msr     spsr_el1, x3
+    ldp     x2, x3, [x0, #264]
+    msr     sp_el0, x2
+    msr     tpidr_el0, x3
+    add     sp, x0, #{user_saved_size}
     ldp     x2, x3, [x0, #16]
     ldp     x4, x5, [x0, #32]
     ldp     x6, x7, [x0, #48]
@@ -321,6 +322,30 @@ aarch64_user_test_stack_growth:
 6:  str     x9, [x9]
     sub     x9, x9, #0x1000
     b       6b
+    .global aarch64_user_test_linux_thread_pointer
+aarch64_user_test_linux_thread_pointer:
+    // Linux's generic numbers: getpid 172, sched_yield 124, exit_group 94. The thread pointer
+    // starts at zero; then getpid() << 12, set with `msr`, must outlast every sched_yield.
+    // x19 collects the differences.
+    mrs     x19, tpidr_el0
+    mov     x8, #172
+    svc     #0
+    lsl     x20, x0, #12
+    msr     tpidr_el0, x20
+    mov     x21, #{thread_pointer_rounds}
+7:  mov     x8, #124
+    svc     #0
+    orr     x19, x19, x0
+    mrs     x0, tpidr_el0
+    eor     x0, x0, x20
+    orr     x19, x19, x0
+    subs    x21, x21, #1
+    b.ne    7b
+    cmp     x19, #0
+    cset    x0, ne
+    mov     x8, #94
+    svc     #0
+8:  b       8b
     .global aarch64_user_test_end
 aarch64_user_test_end:
     .popsection
@@ -332,6 +357,7 @@ aarch64_user_test_end:
     syscall_null = const TestProgram::SYSCALL_NULL,
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     handler = sym aarch64_exception,
 );
 
@@ -410,6 +436,7 @@ unsafe extern "C" {
     static aarch64_user_test_linux_start: u8;
     static aarch64_user_test_linux_unknown_syscalls: u8;
     static aarch64_user_test_stack_growth: u8;
+    static aarch64_user_test_linux_thread_pointer: u8;
     static aarch64_user_test_end: u8;
 }
 
@@ -466,6 +493,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_unknown_syscalls: (&raw const aarch64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const aarch64_user_test_stack_growth) as usize - start,
+        linux_thread_pointer: (&raw const aarch64_user_test_linux_thread_pointer) as usize - start,
     }
 }
 

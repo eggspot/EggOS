@@ -79,7 +79,30 @@ impl UserContext {
     pub fn set_syscall_result(&mut self, value: u64) {
         self.arch.set_syscall_result(value);
     }
+
+    /// The program's thread pointer: where its thread-local storage is, in the register the
+    /// architecture's ABI keeps it in (`TPIDR_EL0`, `tp`, the FS base). Zero for a new program,
+    /// as Linux starts one.
+    pub fn thread_pointer(&self) -> u64 {
+        self.arch.thread_pointer()
+    }
+
+    /// Sets the program's thread pointer, as x86_64's `arch_prctl(ARCH_SET_FS)` and `clone`'s
+    /// `CLONE_SETTLS` do (on AArch64 and RISC-V the program can also set it itself). It takes
+    /// effect when the program runs again. On x86_64 it must be below the end of user space
+    /// ([`crate::paging::Format::USER_END`]): above, the FS base would be the kernel's half or
+    /// non-canonical, and loading it would fault in the kernel; such a value is refused and
+    /// the thread pointer left as it was. Any value is accepted elsewhere, as the program
+    /// itself could set it.
+    pub fn set_thread_pointer(&mut self, value: u64) -> Result<(), InvalidThreadPointer> {
+        self.arch.set_thread_pointer(value)
+    }
 }
+
+/// [`UserContext::set_thread_pointer`]'s value is not a user address, where the architecture
+/// needs one (x86_64).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidThreadPointer;
 
 /// Host builds only: for a test platform that stands in for the CPU in the kernel's host tests.
 #[cfg(not(target_os = "none"))]
@@ -145,6 +168,13 @@ pub struct TestProgram {
     /// every page of the stack is touched once, for demand paging's self-test and benchmark
     /// (D52).
     pub stack_growth: usize,
+    /// A Linux program whose thread pointer must be zero when it starts, then hold what it
+    /// sets it to, `getpid() << 12`, across [`Self::LINUX_THREAD_POINTER_ROUNDS`] calls to
+    /// `sched_yield`, while other programs run on the same CPU with their own (or it moves to
+    /// another CPU). It sets it as the architecture's C library does: `msr tpidr_el0`, `mv tp`,
+    /// `arch_prctl(ARCH_SET_FS)`. Then `exit_group(0)`, or `exit_group(1)` if any check or
+    /// call failed.
+    pub linux_thread_pointer: usize,
 }
 
 impl TestProgram {
@@ -157,6 +187,12 @@ impl TestProgram {
     pub const LINUX_HELLO: &str = "EGGOS-USER: hello from user mode\n";
     /// A number Linux has no system call for, on any architecture.
     pub const LINUX_UNKNOWN_SYSCALL: u64 = 1000;
+    /// How many times [`Self::linux_thread_pointer`] yields and checks its thread pointer.
+    pub const LINUX_THREAD_POINTER_ROUNDS: u64 = 20;
+    /// x86_64: the word [`Self::linux_thread_pointer`] reads through FS ("EGGOSTLS").
+    pub const LINUX_THREAD_POINTER_MARKER: u64 = u64::from_le_bytes(*b"EGGOSTLS");
+    /// x86_64: `arch_prctl`'s code for setting the FS base.
+    pub const LINUX_ARCH_SET_FS: u64 = 0x1002;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -174,6 +210,10 @@ pub(crate) mod aarch64 {
         pub(crate) spsr: u64,
         /// `SP_EL0`.
         pub(crate) sp: u64,
+        /// `TPIDR_EL0`: the thread pointer, which the program may also write itself, so it is
+        /// saved on every way out of EL0 and loaded on every way in.
+        pub(crate) tpidr: u64,
+        _pad: u64,
         /// The kernel's stack pointer while the program runs; the frame above ends here, where
         /// `SP_EL1` points in user mode.
         pub(crate) kernel_sp: u64,
@@ -181,8 +221,11 @@ pub(crate) mod aarch64 {
         pub(crate) vector: u64,
     }
 
-    /// Bytes the lower-EL entry code stores below `SP_EL1`: `x`, `elr`, `spsr` and `sp`.
-    pub(crate) const SAVED_SIZE: usize = 34 * 8;
+    /// Bytes the lower-EL entry code stores below `SP_EL1`: `x`, `elr`, `spsr`, `sp` and
+    /// `tpidr`, and a word that keeps `SP_EL1` 16-byte aligned.
+    pub(crate) const SAVED_SIZE: usize = 36 * 8;
+    const _: () = assert!(core::mem::offset_of!(Registers, elr) == 248);
+    const _: () = assert!(core::mem::offset_of!(Registers, tpidr) == 272);
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_sp) == SAVED_SIZE);
     const _: () = assert!(core::mem::offset_of!(Registers, vector) == SAVED_SIZE + 8);
 
@@ -193,9 +236,21 @@ pub(crate) mod aarch64 {
                 elr: pc,
                 spsr: 0,
                 sp: stack,
+                tpidr: 0,
+                _pad: 0,
                 kernel_sp: 0,
                 vector: 0,
             }
+        }
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.tpidr
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.tpidr = value;
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.elr
@@ -254,6 +309,17 @@ pub(crate) mod riscv64 {
                 pc,
                 kernel_sp: 0,
             }
+        }
+        /// `tp` (`x4`), an ordinary register for the trap entry: saved and loaded with the rest.
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.x[4]
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            self.x[4] = value;
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.pc
@@ -319,8 +385,19 @@ pub(crate) mod x86_64 {
         pub(crate) ss: u64,
         /// The kernel's stack pointer while the program runs; `TSS.RSP0` points here.
         pub(crate) kernel_rsp: u64,
+        /// The FS base: the thread pointer. Programs cannot write it themselves (`CR4.FSGSBASE`
+        /// is clear), so it is never saved; the way in loads it with `wrmsr` only when this
+        /// CPU's FS base belongs to another value of `fs_base_id`.
+        pub(crate) fs_base: u64,
+        /// Names `fs_base`'s value: 0 for a context whose FS base was never set (0), and a
+        /// new number, from [`NEXT_FS_BASE_ID`], each time it is set. The way in compares it
+        /// with the one this CPU's FS base was last loaded for (`X86Tables::fs_base_id`).
+        pub(crate) fs_base_id: u64,
         _pad: u64,
     }
+
+    /// The next [`Registers::fs_base_id`]: never 0, never reused (2^64 settings).
+    static NEXT_FS_BASE_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
@@ -332,6 +409,8 @@ pub(crate) mod x86_64 {
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) == 22 * 8);
     // `TSS.RSP0` must be 16-byte aligned: the CPU aligns it down before pushing.
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) % 16 == 0);
+    const _: () = assert!(core::mem::offset_of!(Registers, fs_base) == 23 * 8);
+    const _: () = assert!(core::mem::offset_of!(Registers, fs_base_id) == 24 * 8);
 
     impl Registers {
         pub(crate) fn new(pc: u64, stack: u64) -> Self {
@@ -359,8 +438,25 @@ pub(crate) mod x86_64 {
                 rsp: stack,
                 ss: 0,
                 kernel_rsp: 0,
+                fs_base: 0,
+                fs_base_id: 0,
                 _pad: 0,
             }
+        }
+        pub(crate) fn thread_pointer(&self) -> u64 {
+            self.fs_base
+        }
+        pub(crate) fn set_thread_pointer(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            use crate::paging::Format;
+            if value >= crate::paging::x86_64::X86_64::USER_END {
+                return Err(super::InvalidThreadPointer);
+            }
+            self.fs_base = value;
+            self.fs_base_id = NEXT_FS_BASE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Ok(())
         }
         pub(crate) fn pc(&self) -> u64 {
             self.rip
@@ -393,6 +489,27 @@ pub(crate) mod x86_64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_thread_pointer_starts_at_zero_and_takes_user_addresses() {
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        assert_eq!(context.thread_pointer(), 0);
+        assert_eq!(context.set_thread_pointer(0x7000_1000), Ok(()));
+        assert_eq!(context.thread_pointer(), 0x7000_1000);
+        // Only x86_64's FS base must stay a user address; elsewhere the program could set
+        // anything itself.
+        let kernel = 0xffff_8000_0000_0000;
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(
+                context.set_thread_pointer(kernel),
+                Err(InvalidThreadPointer)
+            );
+            assert_eq!(context.thread_pointer(), 0x7000_1000);
+        } else {
+            assert_eq!(context.set_thread_pointer(kernel), Ok(()));
+            assert_eq!(context.thread_pointer(), kernel);
+        }
+    }
 
     #[test]
     fn a_new_context_starts_at_its_entry_with_its_stack() {

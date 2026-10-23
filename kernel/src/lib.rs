@@ -332,6 +332,8 @@ pub(crate) mod tests {
             let linux_hello_line = crate::process::TEST_PROGRAM_ADDRESS + TEST_PROGRAM_LINE as u64;
             let linux_start = crate::process::TEST_PROGRAM_ADDRESS + program.linux_start as u64;
             let stack_growth = crate::process::TEST_PROGRAM_ADDRESS + program.stack_growth as u64;
+            let linux_thread_pointer =
+                crate::process::TEST_PROGRAM_ADDRESS + program.linux_thread_pointer as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
                     // Its stores, from the stack pointer's page down, each page's address in its
@@ -403,6 +405,38 @@ pub(crate) mod tests {
                     context.simulate_syscall(number, arguments, pc + 1);
                     UserExit::Syscall
                 }
+                pc if (linux_thread_pointer..linux_thread_pointer + 64).contains(&pc) => {
+                    // getpid(), then its thread pointer set to the result << 12 and checked
+                    // after each sched_yield, then exit_group(0) if it started at zero and
+                    // stayed set.
+                    use crate::linux::number;
+                    static WRONG: AtomicU64 = AtomicU64::new(0);
+                    let rounds = TestProgram::LINUX_THREAD_POINTER_ROUNDS;
+                    let pointer = context.thread_pointer();
+                    let (number, arguments) = match pc - linux_thread_pointer {
+                        0 => {
+                            WRONG.store(u64::from(pointer != 0), Ordering::Relaxed);
+                            (number::GETPID, [0; 6])
+                        }
+                        step => {
+                            if step == 1 {
+                                context
+                                    .set_thread_pointer(context.syscall_result() << 12)
+                                    .expect("a process id shifted is a user address");
+                            } else if pointer == 0 || !pointer.is_multiple_of(4096) {
+                                WRONG.store(1, Ordering::Relaxed);
+                            }
+                            if step <= rounds {
+                                (number::SCHED_YIELD, [0; 6])
+                            } else {
+                                let wrong = WRONG.load(Ordering::Relaxed);
+                                (number::EXIT_GROUP, [wrong, 0, 0, 0, 0, 0])
+                            }
+                        }
+                    };
+                    context.simulate_syscall(number, arguments, pc + 1);
+                    UserExit::Syscall
+                }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
                     // write(1, the line, its length), write(1, 0, 1), an unknown call, then
                     // exit_group(0) if each returned what Linux returns.
@@ -446,6 +480,7 @@ pub(crate) mod tests {
                 linux_start: 100,
                 linux_unknown_syscalls: 26,
                 stack_growth: 27,
+                linux_thread_pointer: 200,
             }
         }
         fn linux_hardware_capabilities() -> [u64; 2] {
