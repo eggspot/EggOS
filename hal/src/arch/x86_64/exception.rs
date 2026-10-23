@@ -21,7 +21,9 @@
 //! (D47): `syscall` and `sysretq` leave a moment in ring 0 on the program's stack.
 
 use super::timer::{self, APIC_SPURIOUS_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR, WAKEUP_VECTOR};
-use crate::cpu::{GDT_ENTRIES, HalCpuLocal, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET};
+use crate::cpu::{
+    FS_BASE_ID_OFFSET, GDT_ENTRIES, HalCpuLocal, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
+};
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Format, x86_64::X86_64};
 use crate::user::x86_64::{NOT_RUN_VECTOR, Registers, SYSCALL_VECTOR};
@@ -191,9 +193,13 @@ x86_64_enter_user:
     movq    %rsp, {kernel_rsp}(%rdi)
     leaq    {kernel_rsp}(%rdi), %rax
     movq    %rax, %gs:{tss_rsp0}
-    movq    %rdi, %rsp
-    cmpq    ${syscall_vector}, {vector}(%rdi)
+    // The program's FS base, unless this CPU's is already the one its `fs_base_id` names.
+    movq    {fs_base_id}(%rdi), %rax
+    cmpq    %rax, %gs:{cpu_fs_base_id}
+    jne     2f
+3:  cmpq    ${syscall_vector}, {vector}(%rdi)
     je      1f
+    movq    %rdi, %rsp
     popq    %r15
     popq    %r14
     popq    %r13
@@ -213,27 +219,35 @@ x86_64_enter_user:
     swapgs
     iretq
     int3
-1:  popq    %r15
-    popq    %r14
-    popq    %r13
-    popq    %r12
-    popq    %r11
-    popq    %r10
-    popq    %r9
-    popq    %r8
-    popq    %rbp
-    popq    %rdi
-    popq    %rsi
-    popq    %rdx
-    popq    %rcx
-    popq    %rbx
-    popq    %rax
-    movq    16(%rsp), %rcx          // rip
-    movq    32(%rsp), %r11          // rflags
-    movq    40(%rsp), %rsp          // the program's stack
+    // After a system call: `sysretq` takes `rcx` and `r11`, so theirs are not loaded.
+1:  movq    {r15}(%rdi), %r15
+    movq    {r14}(%rdi), %r14
+    movq    {r13}(%rdi), %r13
+    movq    {r12}(%rdi), %r12
+    movq    {r10}(%rdi), %r10
+    movq    {r9}(%rdi), %r9
+    movq    {r8}(%rdi), %r8
+    movq    {rbp}(%rdi), %rbp
+    movq    {rsi}(%rdi), %rsi
+    movq    {rdx}(%rdi), %rdx
+    movq    {rbx}(%rdi), %rbx
+    movq    {rax}(%rdi), %rax
+    movq    {rip}(%rdi), %rcx
+    movq    {rflags}(%rdi), %r11
+    movq    {rsp}(%rdi), %rsp       // the program's stack
+    movq    {rdi}(%rdi), %rdi
     swapgs
     sysretq
     int3
+    // Loads the FS base (`rax` holds the context's `fs_base_id`): `rax`, `rcx` and `rdx` are
+    // the program's to load after this.
+2:  movq    %rax, %gs:{cpu_fs_base_id}
+    movq    {fs_base}(%rdi), %rax
+    movq    %rax, %rdx
+    shrq    $32, %rdx
+    movl    ${ia32_fs_base}, %ecx
+    wrmsr
+    jmp     3b
     .popsection
 
     // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
@@ -396,6 +410,44 @@ x86_64_user_test_stack_growth:
 6:  movq    %rax, (%rax)
     subq    $4096, %rax
     jmp     6b
+    .global x86_64_user_test_linux_thread_pointer
+x86_64_user_test_linux_thread_pointer:
+    // Linux's x86_64 numbers: getpid 39, sched_yield 24, arch_prctl 158, exit_group 231.
+    // A program cannot read its FS base, so it reads the marker below through FS, at the
+    // marker's address less the base it expects: that finds the marker only if the FS base
+    // is that one (another base reads elsewhere or faults). First with the base a new program
+    // starts with, zero; then with getpid() << 12, set with arch_prctl(ARCH_SET_FS), after
+    // every sched_yield. rbx collects the differences.
+    leaq    8f(%rip), %r13
+    movq    %fs:(%r13), %rbx
+    xorq    8f(%rip), %rbx
+    movl    $39, %eax
+    syscall
+    shlq    $12, %rax
+    movq    %rax, %r12
+    subq    %rax, %r13
+    movq    %rax, %rsi
+    movl    ${arch_set_fs}, %edi
+    movl    $158, %eax
+    syscall
+    orq     %rax, %rbx
+    movl    ${thread_pointer_rounds}, %r14d
+7:  movl    $24, %eax
+    syscall
+    orq     %rax, %rbx
+    movq    %fs:(%r13), %rax
+    xorq    8f(%rip), %rax
+    orq     %rax, %rbx
+    decl    %r14d
+    jnz     7b
+    xorl    %edi, %edi
+    testq   %rbx, %rbx
+    setnz   %dil
+    movl    $231, %eax
+    syscall
+9:  jmp     9b
+    .balign 8
+8:  .quad   {thread_pointer_marker}
     .global x86_64_user_test_end
 x86_64_user_test_end:
     .popsection
@@ -403,6 +455,26 @@ x86_64_user_test_end:
     handler = sym x86_64_exception,
     kernel_rsp = const core::mem::offset_of!(Registers, kernel_rsp),
     vector = const core::mem::offset_of!(Registers, vector),
+    r15 = const core::mem::offset_of!(Registers, r15),
+    r14 = const core::mem::offset_of!(Registers, r14),
+    r13 = const core::mem::offset_of!(Registers, r13),
+    r12 = const core::mem::offset_of!(Registers, r12),
+    r10 = const core::mem::offset_of!(Registers, r10),
+    r9 = const core::mem::offset_of!(Registers, r9),
+    r8 = const core::mem::offset_of!(Registers, r8),
+    rbp = const core::mem::offset_of!(Registers, rbp),
+    rdi = const core::mem::offset_of!(Registers, rdi),
+    rsi = const core::mem::offset_of!(Registers, rsi),
+    rdx = const core::mem::offset_of!(Registers, rdx),
+    rbx = const core::mem::offset_of!(Registers, rbx),
+    rax = const core::mem::offset_of!(Registers, rax),
+    rip = const core::mem::offset_of!(Registers, rip),
+    rflags = const core::mem::offset_of!(Registers, rflags),
+    rsp = const core::mem::offset_of!(Registers, rsp),
+    fs_base = const core::mem::offset_of!(Registers, fs_base),
+    fs_base_id = const core::mem::offset_of!(Registers, fs_base_id),
+    cpu_fs_base_id = const FS_BASE_ID_OFFSET,
+    ia32_fs_base = const IA32_FS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
     user_rsp = const USER_RSP_OFFSET,
     user_cs = const USER_CODE_SELECTOR,
@@ -413,6 +485,9 @@ x86_64_user_test_end:
     syscall_null = const TestProgram::SYSCALL_NULL,
     hello_length = const TestProgram::LINUX_HELLO.len(),
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    thread_pointer_marker = const TestProgram::LINUX_THREAD_POINTER_MARKER,
+    arch_set_fs = const TestProgram::LINUX_ARCH_SET_FS,
     options(att_syntax)
 );
 
@@ -653,6 +728,8 @@ const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;
 const CR0_TS: u64 = 1 << 3;
 const CR0_NE: u64 = 1 << 5;
+/// `CR4.FSGSBASE`: lets ring 3 write its own FS and GS bases (`wrfsbase`, `wrgsbase`).
+const CR4_FSGSBASE: u64 = 1 << 16;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 /// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
@@ -666,6 +743,10 @@ const EFER_SYSCALL: u64 = 1 << 0;
 const IA32_STAR: u32 = 0xc000_0081;
 const IA32_LSTAR: u32 = 0xc000_0082;
 const IA32_FMASK: u32 = 0xc000_0084;
+/// The FS segment's base in 64-bit mode: the running program's thread pointer.
+const IA32_FS_BASE: u32 = 0xc000_0100;
+/// The GS base `swapgs` swaps in on the way to ring 3: the program's GS base.
+const IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
 
 unsafe extern "C" {
     /// Enters ring 3 with `context`'s registers; returns once an interrupt, exception or
@@ -682,6 +763,7 @@ unsafe extern "C" {
     static x86_64_user_test_linux_start: u8;
     static x86_64_user_test_linux_unknown_syscalls: u8;
     static x86_64_user_test_stack_growth: u8;
+    static x86_64_user_test_linux_thread_pointer: u8;
     static x86_64_user_test_end: u8;
 }
 
@@ -764,6 +846,29 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
     unsafe { super::write_msr(IA32_LSTAR, x86_64_syscall_entry as *const () as u64) };
     // SAFETY: as above.
     unsafe { super::write_msr(IA32_FMASK, SYSCALL_MASKED_RFLAGS) };
+    // Programs may not write their FS or GS base themselves, whatever firmware left: the way
+    // in loads the FS base only when it changed (`fs_base_id`), and a program-chosen GS base
+    // needs the SWAPGS fence first (D49).
+    // SAFETY: clearing `CR4.FSGSBASE` only takes four instructions away from ring 3; the
+    // kernel uses none of them.
+    unsafe {
+        core::arch::asm!(
+            "mov {tmp}, cr4",
+            "and {tmp}, {clear}",
+            "mov cr4, {tmp}",
+            tmp = out(reg) _,
+            clear = in(reg) !CR4_FSGSBASE,
+            options(nomem, nostack),
+        );
+    }
+    // Programs' FS and GS bases start at zero, whatever firmware left: the FS base as the
+    // per-CPU block's `fs_base_id` 0 says (`x86_64_enter_user` loads another only for a
+    // context that set one), the GS base for good, since no program can set it yet
+    // (`ARCH_SET_GS` waits for the SWAPGS fence, D49). Neither is used in the kernel.
+    // SAFETY: both MSRs are architectural, and nothing runs in ring 3 on this CPU yet.
+    unsafe { super::write_msr(IA32_FS_BASE, 0) };
+    // SAFETY: as above; the kernel's own GS base is `IA32_GS_BASE`, which this leaves alone.
+    unsafe { super::write_msr(IA32_KERNEL_GS_BASE, 0) };
 }
 
 const _: () = assert!(USER_DATA_SELECTOR - 3 - 8 == KERNEL_DATA_SELECTOR);
@@ -822,6 +927,7 @@ pub(super) fn user_test_program() -> TestProgram {
         linux_unknown_syscalls: (&raw const x86_64_user_test_linux_unknown_syscalls) as usize
             - start,
         stack_growth: (&raw const x86_64_user_test_stack_growth) as usize - start,
+        linux_thread_pointer: (&raw const x86_64_user_test_linux_thread_pointer) as usize - start,
     }
 }
 

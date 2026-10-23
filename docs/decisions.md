@@ -1969,3 +1969,65 @@ switch-path cost; this entry follows it.)
   ChaCha20's own cost for large buffers: fill a page at a time and measure the copy; a
   console line when a thread first waits for an unseeded generator (it waits for good
   until a later source exists); wiping ChaCha20's and BLAKE2s's working state.
+
+## D57 The thread pointer: in each thread's user context, loaded on every way into user mode; x86_64's `arch_prctl`; `sched_yield` — Decided by the build loop (`arch_prctl`'s answers decided by research)
+- **Why now.** Every C library and Rust's std set the thread pointer before `main`
+  (thread-local storage, the stack-protector canary on x86_64 at `%fs:0x28`), so no compiled
+  program runs past its startup without it; it is the next startup call after D55 and D56.
+- **Where it lives** (supersedes D55's plan to save it in the thread switch next to FP/SIMD):
+  in the thread's `UserContext`, as `UserContext::thread_pointer` and `set_thread_pointer`,
+  so it moves with the thread between CPUs and nothing is added to the thread switch, which
+  kernel threads use too (PR #47 showed that two compares there already fail the gate).
+  - **AArch64:** `TPIDR_EL0`, which programs write themselves (`msr`), so the way out of EL0
+    saves it and the way in loads it, with the other registers. The three extra instructions
+    are paid for in the same code: `stp`/`ldp` with pre- and post-index for the kernel's
+    callee-saved registers and `add sp, x0, #...` instead of two moves. `TPIDRRO_EL0` is
+    zeroed at boot on every CPU (programs can read it; it held firmware's value).
+  - **RISC-V:** `tp` is an ordinary register for the trap entry, already saved and loaded
+    with the rest (the kernel's own `tp`, its per-CPU block, is kept on the kernel stack).
+  - **x86_64:** the FS base. Programs cannot write it (`CR4.FSGSBASE` is now cleared at
+    boot, whatever firmware left), so it is never saved. Each context carries an
+    `fs_base_id`: 0 while its FS base was never set (0), and a new number from a global
+    counter each time it is set. The way into ring 3 compares it with the one this CPU's FS
+    base was loaded for (a per-CPU word) and runs `wrmsr` only when they differ, so a
+    program that keeps its CPU pays one load and compare per entry and no MSR write. The id,
+    not the value, is compared: a program that loads FS with a selector (base 0) cannot make
+    another program with the same value keep that zero. The `sysretq` path now loads the
+    registers from the context with moves instead of pops and skips the two that `sysretq`
+    overwrites, which pays for the check. The FS base and the user GS base
+    (`IA32_KERNEL_GS_BASE`) are zeroed at CPU start.
+- **Cost.** Gated benchmarks within the gate on every architecture, the system-call round
+  trips slightly faster: `syscall_round_trip` 106.17 → 105.24 (AArch64), 148.27 → 147.95
+  (RISC-V), 107.44 → 106.98 (x86_64). The thread switch is untouched.
+- **`arch_prctl(code, address)`** (x86_64, 158), as Linux on a CPU without CPUID faulting
+  (decided by research, from the man page and observed behaviour):
+
+  | Code | Result |
+  |---|---|
+  | `ARCH_SET_FS` | 0; `EPERM` at or above the end of user space (2^47 − 4096); not checked for a mapping |
+  | `ARCH_GET_FS`, `ARCH_GET_GS` | the base written as an `unsigned long`, `EFAULT` if it cannot be; the GS base is always 0 |
+  | `ARCH_SET_GS` | `EINVAL`, as for a code the kernel lacks, until the SWAPGS fence (D49) lets a program choose its GS base; no C library or Rust's std sets it (Wine and DynamoRIO do) |
+  | `ARCH_GET_CPUID` | 1 |
+  | `ARCH_SET_CPUID` | `ENODEV` |
+  | anything else (shadow stacks, AMX permissions, vDSO mapping, LAM) | `EINVAL`, which their callers take as the feature being absent |
+
+  `code` is a C `int`: only its low 32 bits count.
+- **`sched_yield()`** (24 on x86_64, 124 on AArch64 and RISC-V): lets the next ready thread
+  on the CPU run, and returns 0. The self-test needs it, and C libraries and Rust's std call
+  it in spin loops.
+- **Tests.** A host test of every `arch_prctl` answer. A QEMU self-test,
+  `linux_programs_keep_their_thread_pointers`: Linux test programs check that their thread
+  pointer starts at zero, set it to `getpid() << 12` as their C library would (`msr
+  tpidr_el0`, `mv tp`, `arch_prctl(ARCH_SET_FS)`; on x86_64 they read a marker through
+  `%fs`, since a program cannot read its FS base), and check it after each of 20
+  `sched_yield`s: three programs on one CPU before the secondary CPUs start, then up to 17
+  on every CPU, twice, with every frame of the second round freed. It fails with the
+  AArch64 load or the x86_64 `wrmsr` removed (checked).
+- **Follow-ups:** a per-CPU "last context" check on AArch64 instead of the unconditional
+  `msr` once a real CPU shows `TPIDR_EL0` writes cost more than QEMU's count; with `clone`,
+  `CLONE_SETTLS` through `set_thread_pointer`; the FS and GS selectors a program loads stay
+  for the next program on its CPU (a 16-bit channel between programs; their bases do not
+  leak): save and reset them as Linux does; the GS base
+  per thread with `ARCH_SET_GS` and the SWAPGS fence (D49); FSGSBASE for programs (Linux
+  5.9+, `AT_HWCAP2`), which needs the FS base saved on the way out; `set_thread_area` and
+  32-bit programs.

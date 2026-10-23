@@ -13,16 +13,17 @@
 //! So far: `write` and `writev` to standard output and standard error (the console), `exit`
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
-//! `set_robust_list` ([`identity`], D55), and `getrandom` ([`random`], D56). Every other
-//! number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes for a
-//! call carries on. The next calls are the rest of what a static program's startup needs
-//! (`arch_prctl` and the thread pointer, signals, `prlimit64`, ...), then the file system's
-//! (M7).
+//! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
+//! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57). Every
+//! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that probes
+//! for a call carries on. The next calls are the rest of what a static program's startup
+//! needs (signals, `prlimit64`, ...), then the file system's (M7).
 
 pub mod exec;
 pub mod identity;
 pub mod memory;
 pub mod random;
+pub mod thread_pointer;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{self, JoinHandle, SpawnError};
@@ -44,10 +45,12 @@ pub mod number {
         pub const MUNMAP: u64 = 11;
         pub const BRK: u64 = 12;
         pub const WRITEV: u64 = 20;
+        pub const SCHED_YIELD: u64 = 24;
         pub const GETPID: u64 = 39;
         pub const EXIT: u64 = 60;
         pub const UNAME: u64 = 63;
         pub const GETPPID: u64 = 110;
+        pub const ARCH_PRCTL: u64 = 158;
         pub const GETTID: u64 = 186;
         pub const SET_TID_ADDRESS: u64 = 218;
         pub const EXIT_GROUP: u64 = 231;
@@ -64,6 +67,7 @@ pub mod number {
         pub const EXIT_GROUP: u64 = 94;
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const SET_ROBUST_LIST: u64 = 99;
+        pub const SCHED_YIELD: u64 = 124;
         pub const UNAME: u64 = 160;
         pub const GETPID: u64 = 172;
         pub const GETPPID: u64 = 173;
@@ -96,6 +100,9 @@ pub mod number {
             UNAME,
             SET_TID_ADDRESS,
             SET_ROBUST_LIST,
+            SCHED_YIELD,
+            #[cfg(target_arch = "x86_64")]
+            ARCH_PRCTL,
             GETRANDOM,
         ];
         let mut i = 0;
@@ -139,6 +146,8 @@ impl Errno {
     pub const EFAULT: Self = Self(14);
     /// Exists already: here, a mapping in the way of `MAP_FIXED_NOREPLACE`.
     pub const EEXIST: Self = Self(17);
+    /// No such device: here, a CPU feature the call needs is missing.
+    pub const ENODEV: Self = Self(19);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls).
     pub const EINVAL: Self = Self(22);
@@ -278,7 +287,7 @@ fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) ->
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
-            _ => out_of_line_call::<P>(process, number, first, second, third),
+            _ => out_of_line_call::<P>(process, number, context),
         }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -301,18 +310,17 @@ fn memory_call<P: Platform>(
     }
 }
 
-/// Every call up to [`number::LAST`] but `write`, `exit` and the memory calls, with its first
-/// three arguments: `ENOSYS` for a number with no call. One out-of-line function for all of
-/// them, as [`memory_call`]: each call [`syscall`]'s own match grows by adds to the thread
+/// Every call up to [`number::LAST`] but `write`, `exit` and the memory calls, with the
+/// program's registers: `ENOSYS` for a number with no call. One out-of-line function for all
+/// of them, as [`memory_call`]: each call [`syscall`]'s own match grows by adds to the thread
 /// loop that it is inlined into (the loop's registers spill, and every system call pays).
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Process<P>,
     number: u64,
-    first: u64,
-    second: u64,
-    third: u64,
+    context: &mut UserContext,
 ) -> Result<u64, Errno> {
+    let [first, second, third, ..] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -322,6 +330,12 @@ fn out_of_line_call<P: Platform>(
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(process, first)),
         number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
+        number::SCHED_YIELD => {
+            thread::yield_now::<P>();
+            Ok(0)
+        }
+        #[cfg(target_arch = "x86_64")]
+        number::ARCH_PRCTL => thread_pointer::arch_prctl::<P>(process, context, first, second),
         _ => Err(Errno::ENOSYS),
     }
 }
@@ -760,6 +774,52 @@ mod tests {
                 Errno::EFAULT.result()
             );
         }
+    }
+
+    #[test]
+    fn arch_prctl_sets_and_reads_the_thread_pointer() {
+        use thread_pointer::{arch_prctl, code};
+        let [set_fs, get_fs, get_gs, get_cpuid, set_cpuid] = [
+            code::ARCH_SET_FS,
+            code::ARCH_GET_FS,
+            code::ARCH_GET_GS,
+            code::ARCH_GET_CPUID,
+            code::ARCH_SET_CPUID,
+        ]
+        .map(u64::from);
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"ab", &[]);
+        let mut context = UserContext::new(0x40_0000, 0);
+        assert_eq!(context.thread_pointer(), 0);
+        let mut prctl = |code: u64, address| arch_prctl::<P>(&process, &mut context, code, address);
+        // Any user address, mapped or not; nothing at or above the end of user space.
+        let end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(prctl(set_fs, end - 1), Ok(0));
+        assert_eq!(prctl(set_fs, end), Err(Errno::EPERM));
+        assert_eq!(prctl(set_fs, u64::MAX), Err(Errno::EPERM));
+        // Only the code's low 32 bits count, as for Linux's `int`.
+        assert_eq!(prctl(1 << 32 | set_fs, 0x7000_1000).map(|_| ()), Ok(()));
+        // Read back into the writable page; not into the read-only one or past the end.
+        assert_eq!(prctl(get_fs, DATA + 4096 + 8), Ok(0));
+        assert_eq!(prctl(get_gs, DATA + 4096 + 16), Ok(0));
+        for address in [DATA, DATA + 8192 - 4, 0] {
+            assert_eq!(prctl(get_fs, address), Err(Errno::EFAULT));
+            assert_eq!(prctl(get_gs, address), Err(Errno::EFAULT));
+        }
+        assert_eq!(prctl(get_cpuid, 0), Ok(1));
+        assert_eq!(prctl(set_cpuid, 0), Err(Errno::ENODEV));
+        // The GS base waits for the SWAPGS fence (D49); unknown codes are refused too.
+        for unknown in [code::ARCH_SET_GS.into(), 0x3001, 0x5001, 0x1023, 0] {
+            assert_eq!(prctl(unknown, 0x7000_2000), Err(Errno::EINVAL));
+        }
+        assert_eq!(context.thread_pointer(), 0x7000_1000);
+        let mut words = [0u8; 16];
+        process
+            .read_user_memory(DATA + 4096 + 8, &mut words)
+            .unwrap();
+        assert_eq!(&words[..8], &0x7000_1000u64.to_ne_bytes());
+        assert_eq!(&words[8..], &[0; 8]);
     }
 
     #[test]
