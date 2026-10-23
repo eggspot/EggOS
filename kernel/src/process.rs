@@ -822,10 +822,10 @@ where
 
 /// For a thread's handler ([`spawn`]), on an exception of `kind`: whether it was the
 /// program's first use of FP/SIMD, which traps as an illegal instruction until the thread has
-/// registers of its own (D54). If so, the thread now has them ([`thread::start_fp`]) and the
+/// registers of its own (D54). If so, the thread now has them (`thread::start_fp`) and the
 /// handler resumes the program, which runs the instruction again. A second illegal
 /// instruction, or one with no memory left for the registers, is the handler's. Kept out of the
-/// loop in [`run`], where system calls would pay for it.
+/// loop in `run`, where system calls would pay for it.
 #[cold]
 #[inline(never)]
 pub fn first_fp_use<P: Platform>(kind: ExceptionKind) -> bool {
