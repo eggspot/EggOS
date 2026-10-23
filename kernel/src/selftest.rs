@@ -675,10 +675,6 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
             }
             _ => return Err("the program read kernel memory without a fault"),
         }
-        // A floating-point instruction traps: each CPU starts with FP/SIMD off for user mode,
-        // and turns them on only for a thread that has registers of its own (D54), which this
-        // one, a kernel thread running the program directly, never has. This runs before any
-        // program used them.
         let mut context = Process::<P>::test_program_context(|program| program.floating_point);
         let floating_point = context.pc();
         // SAFETY: as above.
@@ -833,7 +829,6 @@ fn processes_keep_their_fp_registers<P: Platform>(
     for number in 0..count {
         // SAFETY: as in `processes_with_data`.
         let process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
-        // Distinct in every register, and in the rounding mode, from the next program's.
         let seed = 0x5eed_0000_0000 + (number as u64) * 0x101;
         let result = Arc::new(AtomicU64::new(WRONG));
         let reported = result.clone();

@@ -13,7 +13,6 @@ core::arch::global_asm!(
     .option arch, +d
     .balign 4
     .global eggos_fp_save
-    // a0: the state, laid out as `Riscv64State`. Only if FS is Dirty; leaves it Clean.
 eggos_fp_save:
     csrr    t0, sstatus
     li      t1, {fs_dirty}
@@ -58,7 +57,6 @@ eggos_fp_save:
 1:  ret
 
     .global eggos_fp_restore
-    // a0: the state. Leaves FS Clean: the registers are what the state holds.
 eggos_fp_restore:
     fld     f0, 0(a0)
     fld     f1, 8(a0)

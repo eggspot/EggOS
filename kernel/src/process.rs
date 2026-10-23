@@ -1281,7 +1281,6 @@ mod tests {
             assert_eq!(exception.kind, ExceptionKind::IllegalInstruction);
             assert_eq!(exception.pc, illegal);
             EXITS.fetch_add(1, Ordering::Relaxed);
-            // The first gives the thread FP registers; the second is the handler's.
             if first_fp_use::<P>(exception.kind) {
                 ControlFlow::Continue(())
             } else {
@@ -1291,8 +1290,6 @@ mod tests {
         .unwrap();
         thread.join::<P>();
         assert_eq!(EXITS.load(Ordering::Relaxed), 2);
-        // Turned off first if an earlier test left them on; then on and loaded with a new
-        // program's values at the first trap, and saved when the thread left the CPU.
         let calls = fp_calls();
         let calls = calls
             .strip_prefix(&[FpCall::SetUser(false)])

@@ -316,12 +316,10 @@ x86_64_user_test_spin:
 3:  jmp     3b
     .global x86_64_user_test_fp_registers
 x86_64_user_test_fp_registers:
-    // rbx: the seed system call 0 returns; r12: the differences found; r13: whether to stop.
     movl    ${syscall_first}, %eax
     syscall
     movq    %rax, %rbx
     xorl    %r12d, %r12d
-    // A new program's registers are zero. The first access traps (D54).
     .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
     movq    %xmm\i, %rcx
     orq     %rcx, %r12
@@ -329,7 +327,6 @@ x86_64_user_test_fp_registers:
     movq    %xmm\i, %rcx
     orq     %rcx, %r12
     .endr
-    // Register n = seed + n, in both halves.
     .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
     leaq    \i(%rbx), %rcx
     movq    %rcx, %xmm\i

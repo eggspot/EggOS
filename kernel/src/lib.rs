@@ -416,15 +416,14 @@ pub(crate) mod tests {
                     pc,
                     address: Some(context.syscall_result()),
                 }),
-                pc if pc == floating_point || pc == illegal_instruction => {
-                    context.simulate_exception(Exception {
+                pc if pc == floating_point || pc == illegal_instruction => context
+                    .simulate_exception(Exception {
                         kind: ExceptionKind::IllegalInstruction,
                         name: "test illegal instruction",
                         code: 0,
                         pc,
                         address: None,
-                    })
-                }
+                    }),
                 pc if (fp_registers..fp_registers + 3).contains(&pc) => {
                     let (number, next) = match pc - fp_registers {
                         0 => (TestProgram::SYSCALL_FIRST, pc + 1),

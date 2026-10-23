@@ -345,21 +345,18 @@ riscv64_user_test_spin:
 3:  j       3b
     .global riscv64_user_test_fp_registers
 riscv64_user_test_fp_registers:
-    // s2: the seed system call 0 returns; s3: the differences found; s4: whether to stop.
     li      a7, {syscall_first}
     ecall
     mv      s2, a0
     li      s3, 0
     .option push
     .option arch, +d
-    // A new program's registers are zero, fcsr too. The first access traps (D54).
     frcsr   t0
     or      s3, s3, t0
     .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
     fmv.x.d t0, f\i
     or      s3, s3, t0
     .endr
-    // fcsr's rounding mode from the seed's low bits, register n = seed + n.
     andi    t0, s2, 3
     slli    t0, t0, 5
     fscsr   t0

@@ -1189,7 +1189,6 @@ pub(crate) enum FpStart {
 #[inline(never)]
 pub(crate) fn start_fp<P: Platform>() -> FpStart {
     let layout = Layout::new::<FpState>();
-    // Before the scheduler's lock: the heap may take the frame allocator's.
     // SAFETY: `FpState` is not zero-sized.
     let Some(state) = NonNull::new(unsafe { alloc::alloc::alloc(layout) }.cast::<FpState>()) else {
         return FpStart::OutOfMemory;
@@ -1374,10 +1373,6 @@ fn switch_to<P: Platform>(
     next: ThreadBox,
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
-    // Two loads on a switch between kernel threads, from lines the switch reads anyway, and two
-    // more to a program that has no FP/SIMD registers while they are off. The FP/SIMD switch
-    // is a copy of the whole switch, out of line: a call here would keep values live across
-    // it, and every switch would pay to save registers for them.
     let fp = &schedulers.of(here).fp;
     let next_thread = next.get();
     if fp.running_has_fp || next_thread.user && (fp.user_on || next_thread.fp.get().is_some()) {
@@ -2172,7 +2167,6 @@ mod tests {
     #[test]
     fn a_program_without_fp_registers_runs_after_they_are_cleared() {
         use crate::tests::{FpCall, fp_calls};
-        // Serialises the FP/SIMD calls' record with the other tests.
         let _frames = host::frames_for_test();
         let here = cpu::current::<P>();
         let thread = |id, user, fp| Thread {
@@ -2210,7 +2204,6 @@ mod tests {
         fp.switch::<P>(&with_fp, &without_fp, here);
         let state = state.as_ptr() as usize;
         let initial = &raw const INITIAL_FP_STATE as usize;
-        // On and loaded; saved on the way out, then cleared before turning off.
         assert_eq!(
             fp_calls(),
             [
@@ -2222,11 +2215,8 @@ mod tests {
             ]
         );
         assert_eq!(fp.owner, None);
-        // Back to the program with registers: its own are loaded again.
         fp.switch::<P>(&without_fp, &with_fp, here);
         assert_eq!(fp_calls(), [FpCall::SetUser(true), FpCall::Restore(state)]);
-        // A kernel thread in between leaves them on and loaded; the next program without
-        // any still finds them cleared.
         fp.switch::<P>(&with_fp, &kernel, here);
         assert_eq!(fp_calls(), [FpCall::Save(state)]);
         fp.switch::<P>(&kernel, &without_fp, here);

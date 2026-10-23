@@ -12,7 +12,6 @@ core::arch::global_asm!(
     .arch_extension simd
     .balign 4
     .global eggos_fp_save
-    // x0: the state, laid out as `Aarch64State`.
 eggos_fp_save:
     stp     q0, q1, [x0, #0]
     stp     q2, q3, [x0, #32]
@@ -37,7 +36,6 @@ eggos_fp_save:
     ret
 
     .global eggos_fp_restore
-    // x0: the state.
 eggos_fp_restore:
     ldp     q0, q1, [x0, #0]
     ldp     q2, q3, [x0, #32]

@@ -12,17 +12,12 @@ core::arch::global_asm!(
     .pushsection .text.fp, "ax"
     .balign 16
     .global eggos_fp_save
-    // rdi: the state, `FXSAVE64`'s 512-byte image, 16-byte aligned.
 eggos_fp_save:
     fxsave64 (%rdi)
     retq
     int3
 
     .global eggos_fp_restore
-    // rdi: the state. AMD CPUs without CPUID 0x80000008:EBX[2] leave the x87 last-instruction
-    // and last-operand pointers as they were when `FXRSTOR` finds no exception pending
-    // (CVE-2006-1056): an x87 load first sets them to the kernel's, not the previous program's.
-    // `fnclex` keeps it from raising a pending exception, and freeing st(7) gives it room.
 eggos_fp_restore:
     fnclex
     ffree   %st(7)

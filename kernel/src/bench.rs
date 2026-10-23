@@ -517,7 +517,6 @@ fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
                     thread::yield_now::<P>();
                     context.set_syscall_result(0);
                 }
-                // Its seed.
                 UserExit::Syscall => context.set_syscall_result(number as u64),
                 UserExit::Exception(exception) if process::first_fp_use::<P>(exception.kind) => {}
                 _ => return ControlFlow::Break(()),

@@ -88,9 +88,6 @@ _start:
 4:  lla     sp, __stack_top
 
     // FPU and vector unit off (FS and VS = Off; VS reads as zero without V): the kernel uses
-    // neither, so any FP or vector instruction traps as illegal, in U-mode too (D49), until
-    // the scheduler turns FS on for a program that has its own FP registers (D54). Then the
-    // trap vector, before any Rust code runs, and the timer.
     li      t0, (3 << 13) | (3 << 9)
     csrc    sstatus, t0
     lla     t0, exception_entry
@@ -467,9 +464,6 @@ impl Platform for Riscv64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        // One bit per single-letter extension, `1 << (letter - 'A')`: RV64GC, the base every
-        // RISC-V Linux distribution requires, F and D included, which programs get on first
-        // use (D54). Not V, which stays off.
         let letter = |extension: u8| 1u64 << (extension - b'A');
         [
             letter(b'I') | letter(b'M') | letter(b'A') | letter(b'F') | letter(b'D') | letter(b'C'),

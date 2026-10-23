@@ -76,7 +76,6 @@ impl Default for FpState {
 
 impl core::fmt::Debug for FpState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // The registers are the program's: nothing a kernel log needs.
         f.debug_struct("FpState").finish_non_exhaustive()
     }
 }
@@ -138,7 +137,6 @@ mod tests {
                 u32::from_le_bytes(image[24..28].try_into().unwrap()),
                 0x1f80
             );
-            // Abridged tag word 0: every x87 register empty. Everything else zero.
             assert!(
                 image
                     .iter()

@@ -697,8 +697,6 @@ impl Platform for X86_64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        // `CPUID.1:EDX`, as Linux reports it: FPU, MMX, FXSR, SSE and SSE2 included, which
-        // programs get on first use (D54). AVX is `CPUID.1:ECX`'s, where `OSXSAVE` stays 0.
         let features = core::arch::x86_64::__cpuid(1).edx;
         // `AT_HWCAP2` stays 0: its `FSGSBASE` bit would tell programs they may set their GS
         // base, which needs D49's SWAPGS fence first.

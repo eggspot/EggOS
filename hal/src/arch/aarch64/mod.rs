@@ -99,10 +99,6 @@ _start:
     add     x0, x0, :lo12:__stack_top
     mov     sp, x0
 
-    // What EL0 may use, whatever firmware left (D49): FP/SIMD for EL1 only, so a program's
-    // first use traps and gets its own registers (D54; SVE and SME stay off), and no timer or
-    // counter, so a program cannot reprogram the kernel's timer. `TPIDRRO_EL0`, which programs
-    // can read, holds nothing of firmware's: zero, as on Linux (`TPIDR_EL0` is each program's own).
     mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
     msr     cntkctl_el1, xzr
@@ -163,7 +159,7 @@ eggos_secondary_start:
     br      x0
 7:  ldr     x0, [x19, #{start_stack_top}]
     mov     sp, x0
-    mov     x0, #{cpacr_fp_el1_only} // as on the boot CPU
+    mov     x0, #{cpacr_fp_el1_only}
     msr     cpacr_el1, x0
     msr     cntkctl_el1, xzr
     msr     tpidrro_el0, xzr
@@ -510,8 +506,6 @@ impl Platform for Aarch64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        // `HWCAP_FP` and `HWCAP_ASIMD`, which programs get on first use (D54), if the CPU
-        // has them (`ID_AA64PFR0_EL1.FP` and `AdvSIMD`, 0xf if not). SVE and SME stay off.
         const HWCAP_FP: u64 = 1 << 0;
         const HWCAP_ASIMD: u64 = 1 << 1;
         let features: u64;

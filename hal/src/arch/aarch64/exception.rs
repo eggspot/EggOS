@@ -231,14 +231,12 @@ aarch64_user_test_spin:
 3:  b       3b
     .global aarch64_user_test_fp_registers
 aarch64_user_test_fp_registers:
-    // x19: the seed system call 0 returns; x20: the differences found; x21: whether to stop.
     mov     x8, #{syscall_first}
     svc     #0
     mov     x19, x0
     mov     x20, #0
     .arch_extension fp
     .arch_extension simd
-    // A new program's registers are zero, FPCR too. The first access traps (D54).
     mrs     x9, fpcr
     orr     x20, x20, x9
     .irp    i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
@@ -247,7 +245,6 @@ aarch64_user_test_fp_registers:
     mov     x9, v\i\().d[1]
     orr     x20, x20, x9
     .endr
-    // FPCR's rounding mode from the seed's low bits, register n = seed + n in both halves.
     and     x9, x19, #3
     lsl     x9, x9, #22
     msr     fpcr, x9
