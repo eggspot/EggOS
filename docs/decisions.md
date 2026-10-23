@@ -2259,7 +2259,17 @@ switch-path cost; this entry follows it.)
   only for secure (setuid, `AT_SECURE`) programs.
 - **Not verified** (no Linux to observe from here), recorded as follow-ups: the order of
   `ppoll`'s checks; whether `sigsetsize` is checked with no mask; `CLOCAL` on a serial
-  console; whether current glibc reads the settings with `TCGETS2`.
+  console; whether current glibc reads the settings with `TCGETS2`; whether `ppoll` writes
+  the remaining time back when something is ready at once (here the timeout is left as it
+  was); whether `poll` with no descriptors and an array address past user space is `EFAULT`,
+  as D58's rule for empty ranges makes it here.
+- **From PR #54's independent review**: a wait is decided by "nothing ready and a timeout
+  that is not zero", so a deadline that passes while the array is read still writes the zero
+  remaining time back; the self-test runs twice and counts frames after the first run, as
+  the other process self-tests do. Left for later: an array of up to 524288 entries (the
+  highest soft limit) is one 4 MiB heap allocation, held through an endless wait and copied
+  with no preemption point; copy it in pieces with a point between them, once programs poll
+  that many descriptors.
 - **Cost** (same Mac, QEMU `-icount`, against `main`). The new calls sit behind
   `out_of_line_call`, so the system-call path is unchanged: `linux_syscall_round_trip` and
   `process_syscall_round_trip` move by at most 0.01 ns, the switch, page-fault and `mmap`

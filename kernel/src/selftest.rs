@@ -1308,46 +1308,56 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
 /// A Linux program must find the console's descriptors as Rust's std and the C libraries
 /// expect at startup, and a `ppoll` that waits must sleep for its timeout (D61): the test
 /// program's `linux_poll` must end with `exit_group(0)`, no sooner than
-/// [`TestProgram::LINUX_POLL_WAIT_NS`] after it started. Everything the process took must be
-/// freed.
+/// [`TestProgram::LINUX_POLL_WAIT_NS`] after it started. It runs twice, and everything the
+/// second run took must be freed: the first may grow the heap's size classes, whose frames
+/// stay with them (D30).
 fn linux_programs_poll_the_console<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     // A page below the stack pointer for the program's structures.
     const STACK_TOP: u64 = 0x70_0000;
-    let before = free_frames().ok_or("there is no frame allocator")?;
-    // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
-    let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
-    process.map_new_page(STACK_TOP - FRAME_SIZE, Attributes::USER_READ_WRITE, &[])?;
-    let process = Arc::new(process);
-    let program = P::user_test_program();
-    let context = UserContext::new(
-        process::TEST_PROGRAM_ADDRESS + program.linux_poll as u64,
-        STACK_TOP,
-    );
-    let started = P::clock_ticks();
-    let thread = linux::spawn::<P>(process.clone(), context)
-        .map_err(|_| "could not start a Linux program's thread")?;
-    thread.join::<P>();
-    let elapsed = P::clock_ticks() - started;
-    match process.exit_status() {
-        Some(ProcessExit::Exited(0)) => {}
-        Some(ProcessExit::Exited(_)) => {
-            return Err("poll, ppoll or ioctl did not answer as on a Linux serial console");
-        }
-        Some(ProcessExit::Killed { .. }) => return Err("the polling program was killed"),
-        None => return Err("a Linux program's thread ended without ending it"),
-    }
     let wait = mul_div_ceil(
         TestProgram::LINUX_POLL_WAIT_NS,
         P::clock_frequency(),
         1_000_000_000,
     );
-    if elapsed < wait {
-        return Err("ppoll returned before its timeout");
+    let mut before = None;
+    for round in 0..2 {
+        if round == 1 {
+            // After the CPU lets go of the first run's address space, which it keeps loaded
+            // until it needs another.
+            if !release_loaded_address_spaces::<P>(|| true) {
+                return Err("a CPU kept an ended process's address space loaded");
+            }
+            before = Some(free_frames().ok_or("there is no frame allocator")?);
+        }
+        // SAFETY: `memory.page_tables` are the kernel's tables, active on every CPU.
+        let mut process = unsafe { Process::<P>::with_test_program(&memory.page_tables) }?;
+        process.map_new_page(STACK_TOP - FRAME_SIZE, Attributes::USER_READ_WRITE, &[])?;
+        let process = Arc::new(process);
+        let program = P::user_test_program();
+        let context = UserContext::new(
+            process::TEST_PROGRAM_ADDRESS + program.linux_poll as u64,
+            STACK_TOP,
+        );
+        let started = P::clock_ticks();
+        linux::spawn::<P>(process.clone(), context)
+            .map_err(|_| "could not start a Linux program's thread")?
+            .join::<P>();
+        let elapsed = P::clock_ticks() - started;
+        match process.exit_status() {
+            Some(ProcessExit::Exited(0)) => {}
+            Some(ProcessExit::Exited(_)) => {
+                return Err("poll, ppoll or ioctl did not answer as on a Linux serial console");
+            }
+            Some(ProcessExit::Killed { .. }) => return Err("the polling program was killed"),
+            None => return Err("a Linux program's thread ended without ending it"),
+        }
+        if elapsed < wait {
+            return Err("ppoll returned before its timeout");
+        }
     }
-    drop(process);
-    let freed = || free_frames() == Some(before);
+    let freed = || free_frames() == before;
     if !release_loaded_address_spaces::<P>(freed) || !freed() {
         return Err("the polling program's frames and tables were not all freed");
     }

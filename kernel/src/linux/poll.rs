@@ -76,10 +76,13 @@ fn events(fd: i32, requested: u16) -> u16 {
 /// When a wait ends, in clock ticks ([`Platform::clock_ticks`]); `u64::MAX` for never.
 type Deadline = u64;
 
-/// The deadline `nanoseconds` from now, rounded up so it is never reached early.
-fn deadline_in<P: Platform>(nanoseconds: u64) -> Deadline {
-    let ticks = mul_div_ceil(nanoseconds, P::clock_frequency(), NANOSECONDS_PER_SECOND);
-    P::clock_ticks().saturating_add(ticks)
+/// The deadline of a wait for `nanoseconds`, rounded up so it is never reached early: `None`
+/// for none, no wait at all.
+fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
+    (nanoseconds != 0).then(|| {
+        let ticks = mul_div_ceil(nanoseconds, P::clock_frequency(), NANOSECONDS_PER_SECOND);
+        P::clock_ticks().saturating_add(ticks)
+    })
 }
 
 /// `poll(fds, nfds, timeout)`: as [`ppoll`] with a timeout of `timeout` milliseconds (an
@@ -94,7 +97,7 @@ pub fn poll<P: Platform>(
 ) -> Result<u64, Errno> {
     let milliseconds = timeout as u32 as i32;
     let deadline = if milliseconds < 0 {
-        Deadline::MAX
+        Some(Deadline::MAX)
     } else {
         deadline_in::<P>(milliseconds as u64 * 1_000_000)
     };
@@ -125,7 +128,7 @@ pub fn ppoll<P: Platform>(
     set_size: u64,
 ) -> Result<u64, Errno> {
     let deadline = if timeout == 0 {
-        Deadline::MAX
+        Some(Deadline::MAX)
     } else {
         let mut bytes = [0; TIMESPEC_SIZE];
         process
@@ -158,15 +161,16 @@ pub fn ppoll<P: Platform>(
     Ok(ready)
 }
 
-/// What both calls share once the timeout is a `deadline`: checks `count` against the
-/// open-file limit, copies the `struct pollfd`s at `fds` in once, fills in their returned
-/// events and copies them back, waiting until `deadline` if none reports any. Returns how
-/// many do and whether a wait ended at the deadline.
+/// What both calls share once the timeout is a `deadline` (`None` for no wait): checks
+/// `count` against the open-file limit, copies the `struct pollfd`s at `fds` in once, fills in
+/// their returned events and copies them back, waiting until `deadline` if none reports any.
+/// Returns how many do and whether a wait ended at the deadline (even one that passed while
+/// the array was read, so the remaining time is written back as zero).
 fn poll_fds<P: Platform>(
     process: &Process<P>,
     fds: u64,
     count: u64,
-    deadline: Deadline,
+    deadline: Option<Deadline>,
 ) -> Result<(u64, bool), Errno> {
     let count = u64::from(count as u32);
     let open_files = process
@@ -204,11 +208,13 @@ fn poll_fds<P: Platform>(
         entry[6..].copy_from_slice(&returned.to_ne_bytes());
         ready += u64::from(returned != 0);
     }
-    // Nothing becomes ready during a wait (see the module documentation): sleep it out.
-    let timed_out = ready == 0 && P::clock_ticks() < deadline;
-    if timed_out {
+    // Nothing becomes ready during a wait (see the module documentation): sleep it out. It
+    // returns at once if the deadline has passed.
+    let wait = deadline.filter(|_| ready == 0);
+    if let Some(deadline) = wait {
         thread::sleep_until::<P>(deadline);
     }
+    let timed_out = wait.is_some();
     process
         .write_user_memory(fds, array)
         .map_err(|_| Errno::EFAULT)?;

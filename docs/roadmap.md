@@ -120,9 +120,12 @@ console input (UART receive, virtio-console, M8) with `read`, `POLLIN` and a lin
 behind `TCSETS`, `TCSETSW` and `TCSETSF`, and pollers woken when input arrives; `SIGWINCH` on
 `TIOCSWINSZ` and `ppoll`'s signal mask applied during the wait, with signal delivery; sessions
 and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); `select`,
-`pselect6` and `epoll` (M7); checked by observation on a real Linux: the order of `ppoll`'s
-checks, whether `sigsetsize` is checked with no mask, `CLOCAL` on a serial console, and
-whether current glibc reads settings with `TCGETS2`.
+`pselect6` and `epoll` (M7); `poll` arrays copied in pieces with preemption points
+between them, once programs poll many thousands of descriptors; checked by observation on a
+real Linux: the order of `ppoll`'s checks, whether `sigsetsize` is checked with no mask,
+`CLOCAL` on a serial console, whether current glibc reads settings with `TCGETS2`, whether
+`ppoll` writes back the remaining time when something is ready at once, and whether `poll`
+of no descriptors at an address past user space is `EFAULT`.
 
 Thread-pointer follow-ups (D57): `CLONE_SETTLS` with `clone`; FS and GS selectors saved and
 reset per program; `ARCH_SET_GS` with the SWAPGS fence (D49); FSGSBASE for programs (the FS

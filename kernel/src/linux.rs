@@ -1332,11 +1332,16 @@ mod tests {
             process.write_user_memory(writable, &entries).unwrap();
             assert_eq!(call(&process, number::POLL, [writable, 2, 0, 0, 0, 0]), 2);
             assert_eq!(returned(2), [OUT, NVAL]);
-            // The timeout is an `int`: the upper half is ignored.
+            // The timeout is an `int`: the upper half is ignored, so nothing ready means no
+            // wait here, not 2^32 milliseconds.
+            process
+                .write_user_memory(writable, &pollfds(&[(0, IN)]))
+                .unwrap();
             assert_eq!(
-                call(&process, number::POLL, [writable, 2, 1 << 32, 0, 0, 0]),
-                2
+                call(&process, number::POLL, [writable, 1, 1 << 32, 0, 0, 0]),
+                0
             );
+            assert_eq!(returned(1), [0]);
         }
 
         // The errors, in Linux's order: the timeout's address, then its value, then the
