@@ -137,13 +137,14 @@ pub fn wait<P: Platform>(
         }),
     };
     let pointer = NonNull::from(&waiter);
+    let bucket_lock = key.bucket();
     {
-        let mut bucket = key.bucket().lock();
+        let mut bucket = bucket_lock.lock();
         still_expected()?;
         bucket.push_back(pointer);
     }
     let unparked = waiter.parker.park_until::<P>(deadline);
-    let mut bucket = key.bucket().lock();
+    let mut bucket = bucket_lock.lock();
     if !bucket.link(pointer).queued {
         return Ok(0);
     }
