@@ -103,8 +103,8 @@ pub mod number {
         pub const CLOCK_NANOSLEEP: u64 = 230;
         pub const EXIT_GROUP: u64 = 231;
         pub const TGKILL: u64 = 234;
-        pub const PPOLL: u64 = 271;
         pub const NEWFSTATAT: u64 = 262;
+        pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
@@ -249,7 +249,8 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
     pub const ENOEXEC: Self = Self(8);
-    /// Bad file descriptor.
+    /// Bad file descriptor: here, one that is not open; so far only the standard descriptors
+    /// are.
     pub const EBADF: Self = Self(9);
     /// Try again: here, the random number generator is not seeded yet (`getrandom` with
     /// `GRND_NONBLOCK`), a real-time signal finds the signal queue full (`rt_sigqueueinfo`,
@@ -265,15 +266,15 @@ impl Errno {
     pub const EEXIST: Self = Self(17);
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
+    /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
+    /// `statx`).
+    pub const ENOTDIR: Self = Self(20);
     /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
     /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
     /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`).
     pub const EINVAL: Self = Self(22);
-    /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
-    /// `statx`).
-    pub const ENOTDIR: Self = Self(20);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
     /// Not seekable: here, the console (`lseek`).

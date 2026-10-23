@@ -3004,7 +3004,6 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   absolute realtime sleepers re-evaluated once the wall clock can be set; `EINTR` and `rem`
   once signals can arrive during a sleep.
 
-
 ## D74 The console's status: `fstat`, `newfstatat` and `statx` on the standard descriptors; `lseek` refused — Decided by the build loop (the console's values, the lookup rules and the scope decided by research)
 - **Why.** M6's next startup step. glibc's stdio calls `fstat` (since 2.33 on 64-bit as
   `newfstatat(fd, "", buf, AT_EMPTY_PATH)`) on a stream before its first write: a character
@@ -3041,7 +3040,9 @@ reason `ppoll` exists. With D70's handoff in place, it now does what Linux does:
   up on `statx`. `EFAULT` for the result buffer comes last.
 - **`lseek`** (research): `EBADF`, then `EINVAL` for a `whence` past `SEEK_HOLE` (an `unsigned
   int`), then `ESPIPE`; the offset is never looked at. To confirm against a running Linux: that
-  `EINVAL` for `whence` comes before `ESPIPE` on a terminal.
+  `EINVAL` for `whence` comes before `ESPIPE` on a terminal, and whether `newfstatat` accepts
+  `statx`'s synchronisation bits (0x2000, 0x4000), which `fstatat(2)` does not list and this
+  refuses with `EINVAL`.
 - **Left for the descriptor table (M7)** (research): `fcntl`, `close`, `dup` and their kin
   change or report per-descriptor state (`FD_CLOEXEC`, a closed descriptor), which needs the
   table; `read` waits for console input (M8), as D61 decided. For the record, the console's

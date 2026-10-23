@@ -73,7 +73,9 @@ pub struct Status {
 /// A device number: its major and minor parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Device {
+    /// The driver's number.
     pub major: u32,
+    /// The device's number among the driver's.
     pub minor: u32,
 }
 
