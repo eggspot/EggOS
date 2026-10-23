@@ -446,11 +446,15 @@ fn user_exception<P: Platform>(
 /// Sends the program, whose registers are `context` after the exception it raised, the
 /// signal Linux sends for that exception ([`fault::classify`]), forced: its handler runs if it
 /// has one and neither blocks nor ignores the signal, else the process ends with it
-/// ([`signals::deliver_fault`]). Breaks when the process ends.
+/// ([`signals::deliver_fault`]). Breaks when the process ends. The program's first FP/SIMD
+/// instruction is no fault: it gives the thread its registers and runs again (D54).
 #[cold]
 #[inline(never)]
 fn signal_fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
     let exception = context.last_exception();
+    if process::first_fp_use::<P>(exception.kind) {
+        return ControlFlow::Continue(());
+    }
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, context, &fault)
 }

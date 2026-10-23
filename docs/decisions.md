@@ -1818,6 +1818,101 @@ A review of D39-D41 (sleeping, secondary CPUs, per-CPU interrupts) found one def
   first program built from our own Rust source; the shootdown with `clone`; `madvise`
   (`MADV_DONTNEED` zeroes private pages), `mremap` and `MAP_POPULATE` when a program needs them.
 
+## D54 FP/SIMD registers per thread: given on first use, saved on every switch away, loaded again only when the CPU no longer holds them; the RISC-V kernel builds soft-float — Decided by the build loop (save/restore design decided by research; first-use allocation and the switch-path check chosen by the build loop; their cost accepted by research under D78)
+- **Why now.** M6's next step: every compiled program uses FP/SIMD within its first
+  instructions (SSE2 is part of the x86_64 ABI, NEON of AArch64's, F and D of RV64GC's, and
+  libc's and Rust's `memcpy` use them), and since D49 they trapped and ended the program.
+- **When a thread gets them: on first use.** Each CPU leaves FP/SIMD off for user mode
+  (x86_64 `CR0.TS`, AArch64 `CPACR_EL1.FPEN = 0b01`, RISC-V `sstatus.FS = Off`), so a
+  program's first FP/SIMD instruction traps as an illegal instruction. The thread's handler
+  calls `process::first_fp_use` (the Linux layer does, in its cold exception path), which
+  allocates an `FpState` (64-byte aligned: 512 bytes of registers on x86_64, 528 on
+  AArch64 and 264 on RISC-V, in blocks of 512, 576 and 320) holding what Linux starts a
+  program with (all zero; x87 control word `0x037F`, `MXCSR` `0x1F80`; `FPCR` and `fcsr` 0),
+  loads it, turns FP/SIMD on and resumes the program
+  at the same instruction. A second illegal instruction is a real one (`SIGILL`). Kernel
+  threads, and programs that never use FP/SIMD, have no state and cost nothing. The research
+  recommended giving every user thread its state at creation (every real program traps at
+  once anyway); the build loop chose first use so that a thread that never uses them pays no
+  memory and the existing process-switch path stays as it was for them, at the cost of one
+  trap per thread lifetime.
+- **Switching (research): save eagerly, load lazily.** A switch away from a thread that has
+  FP/SIMD registers saves them (`FXSAVE64`; `stp q` pairs and `FPCR`/`FPSR`; `fsd` and
+  `fcsr`, skipped on RISC-V unless `sstatus.FS` is Dirty), so balancing can move it to any
+  CPU (D44). A switch to one loads them unless this CPU still holds them: its last owner was
+  this thread (thread ids are never reused) and the thread has not loaded them on another CPU
+  since. A switch to a program that has none, while FP/SIMD is on, first loads the initial
+  values over the registers if they hold a program's, then turns FP/SIMD off: off alone would
+  leave another program's values where some CPUs read them speculatively. That clearing runs
+  only when a program that never used FP/SIMD follows one that did, out of line, from one
+  read-only initial state (512, 576 and 320 bytes of kernel data). A program
+  never runs with registers another left, not even with FP/SIMD off (no LazyFP,
+  CVE-2018-3665: Linux, FreeBSD and macOS all switched to eager saving for it). On AMD CPUs that leave the x87 error pointers alone in
+  `FXRSTOR` (CVE-2006-1056), an x87 load before every load resets them to the kernel's.
+- **The switch-path cost: accepted by research (D78, 2026-10-23).** Every switch now looks at
+  one per-CPU flag (does the running thread have FP/SIMD registers?) and the next thread's
+  `user` flag, both on cache lines the switch reads anyway, and goes to an out-of-line copy of
+  the switch only when FP/SIMD work may be needed. In QEMU's instruction counts that is about
+  five instructions per switch: `thread_yield_round_trip` +8.0 to +10.9%,
+  `thread_wait_wake_round_trip` +6.7 to +7.2%, `process_switch_round_trip` +3.2 to +4.4% (two
+  more loads for a user thread). The system-call paths are unchanged; x86_64's
+  `linux_page_fault` measures 1137.57 against `main`'s 1135.70 on the same machine (+0.16%,
+  about two instructions, with no change on the fault path: the first-use check sits in
+  `signal_fault`, which page faults reach only when they are not resolved). Alternatives
+  rejected: trapping on every switch back (lazy restore) leaves the previous owner's values in
+  the registers, the LazyFP leak; folding the flag into `finish_switch`'s existing exited-slot
+  check would leave the benchmarks flat but only because they run with no FP/SIMD owner on the
+  CPU, while every real workload would still pay; one combined flag byte saves no instruction
+  on AArch64 and RISC-V (still two loads, an or and a branch) and one on x86_64. The research
+  found one further cut: test only the outgoing thread's flag on the switch, and load or clear
+  the incoming program's registers on its way back to user mode, behind the address space's
+  existing compare (Linux's shape, with a pending bit in the same word as the active address
+  space so system calls keep one compare), on the condition that the system-call paths stay
+  flat. Built and measured, it cut `thread_yield_round_trip` to +3.3 to +5.5% and
+  `thread_wait_wake_round_trip` to +2.4 to +3.6%, but made `process_switch_round_trip` +11.6
+  to +15.1%, `fp_process_switch_round_trip` +6 to +7% and x86_64's `linux_syscall_round_trip`
+  +1.6%, so by the research's own condition it was dropped. What remains is the price of
+  eager saving, which LazyFP requires: Linux tests every outgoing task's FP state on every
+  switch, kernel threads included, and FreeBSD (FreeBSD-SA-18:07), Windows (ADV180016) and
+  macOS moved to eager handling for the same CVE. The baseline lines of these nine
+  benchmarks and x86_64's `linux_page_fault` were updated to the numbers above, no others.
+- **The kernel stays FP-free on every architecture.** AArch64 and x86_64 were already
+  soft-float targets. RISC-V moves from `riscv64gc-unknown-none-elf` (hard-float ABI, which
+  may use FP registers in kernel code, which would now silently corrupt a program's) to
+  `riscv64imac-unknown-none-elf`; the save and restore routines and the test program enable D
+  locally (`.option arch, +d`). AArch64 keeps EL1 untrapped (`FPEN 0b01` traps EL0 only), so
+  the kernel saves and loads without turning anything on; x86_64 and RISC-V turn the unit on
+  first.
+- **What programs are told.** `AT_HWCAP` now reports FP and ASIMD on AArch64 (from
+  `ID_AA64PFR0_EL1`), F and D on RISC-V (RV64GC, which every RISC-V Linux distribution
+  requires), and the full `CPUID.1:EDX` on x86_64. x86_64 sets `CR4.OSFXSR` and
+  `OSXMMEXCPT`; `OSXSAVE` stays clear, so `CPUID` tells programs not to use AVX.
+- **Tests.** QEMU self-test `processes_keep_their_fp_registers_across_switches`: two programs
+  on one CPU (and later two per CPU on every CPU, moving between them) each check that their
+  registers start at zero though another program's are loaded, fill every FP/SIMD register
+  (both halves of the 128-bit ones) and the rounding mode, and check them after each of 20
+  yields. Without the switch's save and load it fails. The Linux self-test's `SIGILL` case now
+  runs a really undefined instruction (`udf`, `unimp`, `ud2`), which first gets FP/SIMD
+  registers and is then killed. Host tests cover the first-use path's calls and the initial
+  state's layout. New benchmark `fp_process_switch_round_trip` (two FP programs switching,
+  with their checks).
+- **Follow-ups.** AVX and AVX-512 through `XSAVE`/`XSAVEOPT` (sized from CPUID leaf 0xD,
+  `XCR0` set), then SVE/SME on AArch64 and V on RISC-V, each with a first-use trap of its own
+  as Linux does for the large states; FP/SIMD state in signal frames (with `MXCSR` checked
+  against `MXCSR_MASK` on `sigreturn`); `fork` and `clone` copying or starting it; #XM and #MF
+  (x87 and SSE exceptions a program unmasks), already `SIGFPE`, given their own `FPE_*`
+  codes rather than `FPE_INTDIV`;
+  skipping the AMD x87 pointer reset on CPUs with CPUID 0x80000008:EBX[2]; `execve` in a
+  running thread dropping or resetting the state; `SIGKILL`, not `SIGILL`, when there is no
+  memory for the state; skipping the save on a thread's last switch, when it exits; a
+  per-architecture "has FP" check read at boot before `start_fp` and `AT_HWCAP` rely on it (a
+  RISC-V hart without F and D, or an AArch64 core without FP, would otherwise trap in the
+  kernel's load; QEMU's machines all have them); 64-byte alignment for x86_64 only (it pads
+  the other states); host tests of every `CpuFp::switch` transition, and `MXCSR` and x87
+  checks in the x86_64 test program. Programs run
+  directly from kernel code (`run_user` in self-tests and benchmarks) get whatever FP/SIMD
+  state the CPU has: only our own test programs do that.
+
 ## D55 Linux startup calls, first part: `writev`, `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`; processes get ids — Decided by the build loop (`uname`'s values decided by research)
 (D54, FP/SIMD state per thread, is taken by PR #47, which waits for the owner's OK on its
 switch-path cost; this entry follows it.)

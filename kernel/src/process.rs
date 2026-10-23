@@ -35,15 +35,15 @@ use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions};
 use crate::sync::SpinLock;
-use crate::thread::{self, JoinHandle, SpawnError};
+use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU32, Ordering};
-use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
+use eggos_hal::{ExceptionKind, Platform};
 
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
@@ -213,7 +213,8 @@ impl<P: Platform> Process<P> {
     }
 
     /// A process whose address space maps the HAL's test program
-    /// ([`Platform::user_test_program`]) at [`TEST_PROGRAM_ADDRESS`], [`Attributes::USER_TEXT`].
+    /// ([`Platform::user_test_program`]) at [`TEST_PROGRAM_ADDRESS`], [`Attributes::USER_TEXT`],
+    /// on as many pages as it takes.
     ///
     /// # Safety
     /// As [`Self::new`].
@@ -222,11 +223,11 @@ impl<P: Platform> Process<P> {
     ) -> Result<Self, &'static str> {
         // SAFETY: the caller's guarantees.
         let mut process = unsafe { Self::new(kernel) }?;
-        process.map_new_page(
-            TEST_PROGRAM_ADDRESS,
-            Attributes::USER_TEXT,
-            P::user_test_program().code,
-        )?;
+        let mut virt = TEST_PROGRAM_ADDRESS;
+        for page in P::user_test_program().code.chunks(FRAME_SIZE as usize) {
+            process.map_new_page(virt, Attributes::USER_TEXT, page)?;
+            virt += FRAME_SIZE;
+        }
         Ok(process)
     }
 
@@ -820,6 +821,18 @@ where
     address_space::release_ended::<P>(here, root);
 }
 
+/// For a thread's handler ([`spawn`]), on an exception of `kind`: whether it was the
+/// program's first use of FP/SIMD, which traps as an illegal instruction until the thread has
+/// registers of its own (D54). If so, the thread now has them (`thread::start_fp`) and the
+/// handler resumes the program, which runs the instruction again. A second illegal
+/// instruction, or one with no memory left for the registers, is the handler's. Kept out of the
+/// loop in `run`, where system calls would pay for it.
+#[cold]
+#[inline(never)]
+pub fn first_fp_use<P: Platform>(kind: ExceptionKind) -> bool {
+    kind == ExceptionKind::IllegalInstruction && thread::start_fp::<P>() == FpStart::Started
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1247,6 +1260,50 @@ mod tests {
         // The thread held the last reference: its CPU let the process go.
         assert_eq!(here.active_address_space(), cpu::NO_ADDRESS_SPACE);
         assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn a_first_illegal_instruction_gives_fp_registers_and_runs_again() {
+        use crate::tests::{FpCall, fp_calls};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        thread::start::<P>().unwrap();
+        static EXITS: AtomicU64 = AtomicU64::new(0);
+        EXITS.store(0, Ordering::Relaxed);
+        // SAFETY: as above.
+        let process = Arc::new(unsafe { Process::<P>::with_test_program(&kernel) }.unwrap());
+        let context = Process::<P>::test_program_context(|program| program.illegal_instruction);
+        let illegal = context.pc();
+        fp_calls();
+        let thread = spawn::<P, _>(process, context, move |_, _, exit| {
+            let UserExit::Exception(exception) = exit else {
+                panic!("not an exception: {exit:?}");
+            };
+            assert_eq!(exception.kind, ExceptionKind::IllegalInstruction);
+            assert_eq!(exception.pc, illegal);
+            EXITS.fetch_add(1, Ordering::Relaxed);
+            if first_fp_use::<P>(exception.kind) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        })
+        .unwrap();
+        thread.join::<P>();
+        assert_eq!(EXITS.load(Ordering::Relaxed), 2);
+        let calls = fp_calls();
+        let calls = calls
+            .strip_prefix(&[FpCall::SetUser(false)])
+            .unwrap_or(&calls);
+        let [
+            FpCall::SetUser(true),
+            FpCall::Restore(loaded),
+            FpCall::Save(saved),
+        ] = calls
+        else {
+            panic!("unexpected FP/SIMD calls: {calls:?}");
+        };
+        assert_eq!(loaded, saved);
     }
 
     #[test]

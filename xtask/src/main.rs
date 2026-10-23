@@ -50,7 +50,7 @@ pub const ARCHES: &[Arch] = &[
     },
     Arch {
         name: "riscv64",
-        target: "riscv64gc-unknown-none-elf",
+        target: "riscv64imac-unknown-none-elf",
         qemu: "qemu-system-riscv64",
         machine_args: &["-machine", "virt", "-bios", "default"],
     },

@@ -11,6 +11,7 @@
 //! from the firmware's ACPI tables (see [`crate::acpi`]).
 
 mod exception;
+mod fp;
 mod port;
 mod random;
 mod thread;
@@ -696,13 +697,10 @@ impl Platform for X86_64 {
     }
 
     fn linux_hardware_capabilities() -> [u64; 2] {
-        /// `CPUID.1:EDX` bits user mode cannot use while FP/SIMD traps (D49): FPU, MMX, FXSR,
-        /// SSE, SSE2.
-        const FLOATING_POINT: u32 = 1 | 1 << 23 | 1 << 24 | 1 << 25 | 1 << 26;
         let features = core::arch::x86_64::__cpuid(1).edx;
         // `AT_HWCAP2` stays 0: its `FSGSBASE` bit would tell programs they may set their GS
         // base, which needs D49's SWAPGS fence first.
-        [u64::from(features & !FLOATING_POINT), 0]
+        [u64::from(features), 0]
     }
 
     fn make_instructions_visible(_start: usize, _length: usize) {
@@ -760,6 +758,21 @@ impl Platform for X86_64 {
         // calling convention requires a call to preserve, so to each thread the call is an
         // ordinary function call.
         unsafe { thread::eggos_switch_thread(save, resume) }
+    }
+
+    unsafe fn set_user_fp(on: bool) {
+        // SAFETY: the caller's contract is `set_user`'s.
+        unsafe { fp::set_user(on) }
+    }
+
+    unsafe fn save_fp(state: *mut crate::fp::FpState) {
+        // SAFETY: the caller's contract is `save`'s.
+        unsafe { fp::save(state) }
+    }
+
+    unsafe fn restore_fp(state: *const crate::fp::FpState) {
+        // SAFETY: the caller's contract is `restore`'s.
+        unsafe { fp::restore(state) }
     }
 
     fn cpus(cpu: &mut dyn FnMut(u64)) {

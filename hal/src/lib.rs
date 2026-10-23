@@ -12,6 +12,7 @@ pub mod arch;
 pub mod cpu;
 mod exception;
 pub mod fdt;
+pub mod fp;
 mod interrupt;
 pub mod memory;
 pub mod paging;
@@ -188,10 +189,10 @@ pub trait Platform: 'static {
 
     /// What user programs may run beyond the base instruction set, as Linux's `AT_HWCAP` and
     /// `AT_HWCAP2` encode it for the architecture (D51): only what user mode really runs as
-    /// the kernel sets it up. While FP/SIMD traps (D49), that is nothing on AArch64, the base
-    /// letters without F, D or V on RISC-V, and on x86_64 `CPUID.1:EDX` without the FPU, MMX,
-    /// FXSR, SSE and SSE2 bits, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set
-    /// their GS base, D49's trigger).
+    /// the kernel sets it up. FP/SIMD, which programs get on first use (D54): FP and ASIMD on
+    /// AArch64 (no SVE or SME), RV64GC's letters with F and D on RISC-V (no V), and on x86_64
+    /// `CPUID.1:EDX`, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set their GS
+    /// base, D49's trigger).
     fn linux_hardware_capabilities() -> [u64; 2];
 
     /// Hands the kernel's random number generator (D56) the seed material the machine offers,
@@ -256,6 +257,37 @@ pub trait Platform: 'static {
     /// since, whose stack is still allocated: resuming a context twice runs two threads on one
     /// stack.
     unsafe fn switch_thread(save: *mut usize, resume: usize);
+
+    /// Turns the FP/SIMD registers on for user mode on this CPU, or off, so that a program's
+    /// first FP/SIMD instruction traps as an illegal instruction (D54, see [`fp`]). While they
+    /// are off for user mode, x86_64 and RISC-V turn them off for the kernel too, so
+    /// [`Self::save_fp`] and [`Self::restore_fp`] need them on. Each CPU starts with them off.
+    ///
+    /// # Safety
+    /// Interrupts must be masked. Turning them on lets the next program run with whatever the
+    /// registers hold: the caller first loads that program's own ([`Self::restore_fp`]), or
+    /// knows they are still its own. Turning them off still leaves the values where some CPUs
+    /// read them speculatively (LazyFP): before a program runs with them off, they must hold
+    /// no other program's.
+    unsafe fn set_user_fp(on: bool);
+
+    /// Saves this CPU's FP/SIMD registers in `*state`. On RISC-V, only if a program changed
+    /// them since they were last saved or loaded (`sstatus.FS` is Dirty): otherwise `*state`
+    /// already holds them.
+    ///
+    /// # Safety
+    /// Interrupts must be masked, the registers must be on ([`Self::set_user_fp`]), and
+    /// `state` must be valid for a write. On RISC-V, `*state` must be where they were last
+    /// saved or loaded, as the skip above relies on.
+    unsafe fn save_fp(state: *mut fp::FpState);
+
+    /// Loads this CPU's FP/SIMD registers from `*state`.
+    ///
+    /// # Safety
+    /// Interrupts must be masked, the registers must be on ([`Self::set_user_fp`]), and
+    /// `state` must be valid for a read and hold what [`Self::save_fp`] or
+    /// [`fp::FpState::new`] wrote.
+    unsafe fn restore_fp(state: *const fp::FpState);
 
     /// Calls `cpu` with the hardware id of every CPU the firmware describes as usable, the
     /// boot CPU included, in the firmware's order (D40). Built from the firmware's description

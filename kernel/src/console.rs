@@ -135,6 +135,15 @@ mod tests {
         unsafe fn switch_thread(_save: *mut usize, _resume: usize) {
             unreachable!("not used in tests")
         }
+        unsafe fn set_user_fp(_on: bool) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn save_fp(_state: *mut eggos_hal::fp::FpState) {
+            unreachable!("not used in tests")
+        }
+        unsafe fn restore_fp(_state: *const eggos_hal::fp::FpState) {
+            unreachable!("not used in tests")
+        }
         fn cpus(_cpu: &mut dyn FnMut(u64)) {
             unreachable!("not used in tests")
         }

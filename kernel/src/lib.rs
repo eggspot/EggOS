@@ -181,6 +181,22 @@ pub(crate) mod tests {
         core::mem::take(&mut *DROPPED_TRANSLATIONS.lock().unwrap())
     }
 
+    /// A call the scheduler made to the test platform's FP/SIMD methods (D54).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum FpCall {
+        SetUser(bool),
+        Save(usize),
+        Restore(usize),
+    }
+
+    /// The FP/SIMD calls, in order.
+    static FP_CALLS: std::sync::Mutex<Vec<FpCall>> = std::sync::Mutex::new(Vec::new());
+
+    /// The FP/SIMD calls the test platform received since the last call, which clears them.
+    pub(crate) fn fp_calls() -> Vec<FpCall> {
+        core::mem::take(&mut *FP_CALLS.lock().unwrap())
+    }
+
     /// What the test platform's console received.
     static CONSOLE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
@@ -328,6 +344,9 @@ pub(crate) mod tests {
             let spin = crate::process::TEST_PROGRAM_ADDRESS + program.spin as u64;
             let floating_point =
                 crate::process::TEST_PROGRAM_ADDRESS + program.floating_point as u64;
+            let illegal_instruction =
+                crate::process::TEST_PROGRAM_ADDRESS + program.illegal_instruction as u64;
+            let fp_registers = crate::process::TEST_PROGRAM_ADDRESS + program.fp_registers as u64;
             let linux_hello = crate::process::TEST_PROGRAM_ADDRESS + program.linux_hello as u64;
             let linux_hello_line = crate::process::TEST_PROGRAM_ADDRESS + TEST_PROGRAM_LINE as u64;
             let linux_start = crate::process::TEST_PROGRAM_ADDRESS + program.linux_start as u64;
@@ -397,13 +416,24 @@ pub(crate) mod tests {
                     pc,
                     address: Some(context.syscall_result()),
                 }),
-                pc if pc == floating_point => context.simulate_exception(Exception {
-                    kind: ExceptionKind::IllegalInstruction,
-                    name: "test floating-point trap",
-                    code: 0,
-                    pc,
-                    address: None,
-                }),
+                pc if pc == floating_point || pc == illegal_instruction => context
+                    .simulate_exception(Exception {
+                        kind: ExceptionKind::IllegalInstruction,
+                        name: "test illegal instruction",
+                        code: 0,
+                        pc,
+                        address: None,
+                    }),
+                pc if (fp_registers..fp_registers + 3).contains(&pc) => {
+                    let (number, next) = match pc - fp_registers {
+                        0 => (TestProgram::SYSCALL_FIRST, pc + 1),
+                        1 => (TestProgram::SYSCALL_NULL, pc + 1),
+                        _ if context.syscall_result() == 0 => (TestProgram::SYSCALL_NULL, pc),
+                        _ => (TestProgram::SYSCALL_REPORT, pc + 1),
+                    };
+                    context.simulate_syscall(number, [0; 6], next);
+                    UserExit::Syscall
+                }
                 pc if pc == null_syscalls => {
                     context.simulate_syscall(TestProgram::SYSCALL_NULL, [0; 6], pc);
                     UserExit::Syscall
@@ -599,6 +629,8 @@ pub(crate) mod tests {
                 code: &TEST_PROGRAM_CODE,
                 checks: 0,
                 floating_point: 20,
+                fp_registers: 28,
+                illegal_instruction: 32,
                 null_syscalls: 12,
                 spin: 16,
                 linux_hello: 21,
@@ -645,6 +677,18 @@ pub(crate) mod tests {
         }
         fn random_seeds(seed: &mut dyn FnMut(eggos_hal::random::SeedSource, &[u8])) {
             seed(eggos_hal::random::SeedSource::CpuInstruction, &[0x5e; 32]);
+        }
+        unsafe fn set_user_fp(on: bool) {
+            FP_CALLS.lock().unwrap().push(FpCall::SetUser(on));
+        }
+        unsafe fn save_fp(state: *mut eggos_hal::fp::FpState) {
+            FP_CALLS.lock().unwrap().push(FpCall::Save(state as usize));
+        }
+        unsafe fn restore_fp(state: *const eggos_hal::fp::FpState) {
+            FP_CALLS
+                .lock()
+                .unwrap()
+                .push(FpCall::Restore(state as usize));
         }
         fn cpus(cpu: &mut dyn FnMut(u64)) {
             cpu(0);

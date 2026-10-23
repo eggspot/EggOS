@@ -191,14 +191,24 @@ pub struct TestProgram {
     /// came back unchanged (anything else if not). Then it loads a word from the address system
     /// call 1 returned, which the kernel makes a kernel address, so the program faults there.
     pub checks: usize,
-    /// Runs one floating-point instruction, which must trap: user programs get no FP/SIMD
-    /// registers until they are saved per thread. If it does not, it goes on as
+    /// Runs one floating-point instruction, which traps while the CPU has FP/SIMD off for user
+    /// mode, as it has for a program that never used them (D54). If it does not, it goes on as
     /// `null_syscalls`.
     pub floating_point: usize,
     /// Makes system call 2 in a loop.
     pub null_syscalls: usize,
     /// Loops forever without a system call, for an interrupt to stop.
     pub spin: usize,
+    /// Checks its FP/SIMD registers keep their values while it makes system calls (D54): makes
+    /// system call 0 and takes its result as a seed; adds every bit set in its FP/SIMD
+    /// registers and control register (`FPCR`, `fcsr`; not `MXCSR`) to a difference word,
+    /// as a new program's are all zero; puts seed + n in register n (both halves of the
+    /// 128-bit ones) and the seed's low two bits in the rounding mode (not on x86_64); then
+    /// makes system call 2 until it returns nonzero, adding to the difference word after each
+    /// call what changed. Then system call 1 with the difference word, 0 if nothing changed.
+    pub fp_registers: usize,
+    /// Runs an instruction that is undefined on the architecture (`udf`, `unimp`, `ud2`).
+    pub illegal_instruction: usize,
     /// A Linux program: writes [`Self::LINUX_HELLO`] to standard output, writes one byte from
     /// address 0 (`EFAULT`), makes system call [`Self::LINUX_UNKNOWN_SYSCALL`] (`ENOSYS`), then
     /// calls `exit_group(0)` if each returned what Linux returns, `exit_group(1)` if not. In

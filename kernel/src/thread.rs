@@ -63,13 +63,15 @@ use crate::heap::{FrameSource, GlobalFrames};
 use crate::sync::{SpinLock, SpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use core::alloc::Layout;
+use core::cell::{Cell, OnceCell, UnsafeCell};
 use core::fmt;
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use eggos_hal::Platform;
+use eggos_hal::fp::FpState;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::time::mul_div_ceil;
 
@@ -185,6 +187,27 @@ struct Thread {
     /// Whether it runs a program in user mode ([`spawn_user`]), where it reaches no preemption
     /// point until a system call, an interrupt or an exception (D48).
     user: bool,
+    /// A user thread's FP/SIMD registers, once its program has used them ([`start_fp`], D54).
+    fp: OnceCell<FpRegisters>,
+}
+
+/// A thread's FP/SIMD registers (D54): where they are saved, and the CPU that last loaded them.
+/// Only switches to and from the thread, with the scheduler's lock held, and the thread itself
+/// while it runs ([`start_fp`]) touch them.
+#[derive(Debug)]
+struct FpRegisters {
+    /// Allocated by [`start_fp`], freed with the thread. A raw pointer: the switch writes the
+    /// registers through it while the scheduler holds only shared references to the thread.
+    state: NonNull<FpState>,
+    /// The CPU that last loaded them ([`CpuFp::switch`]).
+    cpu: Cell<*const Cpu>,
+}
+
+impl Drop for FpRegisters {
+    fn drop(&mut self) {
+        // SAFETY: allocated with this layout in `start_fp`, owned only by `self`.
+        unsafe { alloc::alloc::dealloc(self.state.as_ptr().cast(), Layout::new::<FpState>()) };
+    }
 }
 
 impl Thread {
@@ -207,6 +230,7 @@ impl Thread {
             wake_at: 0,
             cpu,
             user,
+            fp: OnceCell::new(),
         })
     }
 
@@ -233,8 +257,9 @@ struct ThreadBox(NonNull<Thread>);
 
 // SAFETY: a `ThreadBox` owns its `Thread` as a `Box` would. Everything in a `Thread` is `Send`
 // (its `cpu` is a shared reference to a `Sync` block) but its `next` link, a raw pointer that
-// only the `ThreadList` holding the thread follows, with the scheduler's lock held, so moving
-// the owner to another CPU shares nothing unguarded.
+// only the `ThreadList` holding the thread follows, with the scheduler's lock held, and its FP
+// registers' pointers, which only the scheduler's switches, with the lock held, and the thread
+// itself follow; so moving the owner to another CPU shares nothing unguarded.
 unsafe impl Send for ThreadBox {}
 
 impl ThreadBox {
@@ -701,6 +726,103 @@ struct Scheduler {
     /// here, cleared by the idle thread when it next looks at the ready threads: until then,
     /// further threads made ready here need no interrupt of their own.
     wakeup_sent: bool,
+    /// Whose FP/SIMD registers the CPU holds (D54).
+    fp: CpuFp,
+}
+
+/// What a CPU's FP/SIMD registers are cleared to before a program that has none runs
+/// ([`CpuFp::clear_and_turn_off`]).
+static INITIAL_FP_STATE: FpState = FpState::new();
+
+/// Whose FP/SIMD registers a CPU holds, and whether user mode may use them (D54).
+#[derive(Debug)]
+struct CpuFp {
+    /// The thread whose registers were last loaded or saved here: they are still in the CPU's
+    /// registers. Thread ids are never reused, so one that exited never matches again. None
+    /// when they hold no program's values, but [`FpState::new`]'s or the firmware's.
+    owner: Option<ThreadId>,
+    /// Whether they are on for user mode ([`Platform::set_user_fp`]): while a thread that has
+    /// FP registers runs here, and from then until a program without any is about to run.
+    user_on: bool,
+    /// Whether the running thread has FP registers, so they are this CPU's ([`Self::owner`]
+    /// is it) and on: a switch away saves them. With a user thread to switch to, the one thing
+    /// a switch looks at before [`Self::switch`] (kernel threads switch without it).
+    running_has_fp: bool,
+}
+
+impl CpuFp {
+    const fn new() -> Self {
+        Self {
+            owner: None,
+            user_on: false,
+            running_has_fp: false,
+        }
+    }
+
+    /// On a switch from `previous` to `next` on `here`, either of which has FP registers or
+    /// runs a program: saves `previous`'s if it has any (they are this CPU's), then loads
+    /// `next`'s unless they are still here, or clears them and turns them off if `next` runs
+    /// a program that has none.
+    fn switch<P: Platform>(&mut self, previous: &Thread, next: &Thread, here: &'static Cpu) {
+        if self.running_has_fp
+            && let Some(registers) = previous.fp.get()
+        {
+            debug_assert_eq!(self.owner, Some(previous.id));
+            // SAFETY: interrupts are masked, as the kernel runs. The registers are on: they
+            // were turned on when `previous`, which has FP registers, was switched to (or gave
+            // itself some, `start_fp`), and stay on while it runs. `state` is allocated and
+            // only the scheduler, holding its lock, and `previous` follow it, which no longer
+            // runs. The registers were last saved or loaded with `state`, as `owner` says.
+            unsafe { P::save_fp(registers.state.as_ptr()) };
+        }
+        self.running_has_fp = false;
+        match next.fp.get() {
+            Some(registers) => self.load::<P>(next.id, registers, here),
+            None if next.user && self.user_on => self.clear_and_turn_off::<P>(),
+            None => {}
+        }
+    }
+
+    /// Before a program that has no FP/SIMD registers runs, with them on: loads
+    /// [`INITIAL_FP_STATE`] over whatever program's they hold, then turns them off. Off alone
+    /// is not enough: some CPUs read registers that are off speculatively, and the program
+    /// could read another's that way (LazyFP, CVE-2018-3665). Out of line, as it runs only
+    /// when a program that has never used FP/SIMD follows one that has.
+    #[cold]
+    #[inline(never)]
+    fn clear_and_turn_off<P: Platform>(&mut self) {
+        if self.owner.take().is_some() {
+            // SAFETY: interrupts are masked and the registers on (`user_on`). The initial state
+            // is a static, valid for a read, holding `FpState::new`'s values. The previous
+            // owner's registers were saved when it was switched away from.
+            unsafe { P::restore_fp(&INITIAL_FP_STATE) };
+        }
+        // SAFETY: interrupts are masked; turning them off only makes FP/SIMD trap, and they
+        // hold no program's values.
+        unsafe { P::set_user_fp(false) };
+        self.user_on = false;
+    }
+
+    /// Turns the registers on for thread `id`, running next on `here`, and loads its own
+    /// unless the CPU still holds them: it was the last owner here and has not loaded them on
+    /// another CPU since.
+    fn load<P: Platform>(&mut self, id: ThreadId, registers: &FpRegisters, here: &'static Cpu) {
+        self.running_has_fp = true;
+        if !self.user_on {
+            // SAFETY: interrupts are masked; the thread's own registers are loaded below, or
+            // are still the CPU's, before it runs.
+            unsafe { P::set_user_fp(true) };
+            self.user_on = true;
+        }
+        if self.owner != Some(id) || !ptr::eq(registers.cpu.get(), here) {
+            // SAFETY: interrupts are masked and the registers on. `state` is allocated and
+            // holds what `FpState::new` or a save wrote; only the scheduler, holding its lock,
+            // and the thread follow it.
+            unsafe { P::restore_fp(registers.state.as_ptr()) };
+            self.owner = Some(id);
+            registers.cpu.set(here);
+        }
+    }
 }
 
 impl Scheduler {
@@ -715,6 +837,7 @@ impl Scheduler {
             slice_end: 0,
             armed: u64::MAX,
             wakeup_sent: false,
+            fp: CpuFp::new(),
         }
     }
 
@@ -1043,6 +1166,64 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
     Ok(handle)
 }
 
+/// What [`start_fp`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FpStart {
+    /// The thread had no FP/SIMD registers and now has them, as a new program's, on.
+    Started,
+    /// It had them already, so the trap was not about them.
+    AlreadyHad,
+    /// It is a kernel thread (running a program directly, as self-tests do), which never has
+    /// FP/SIMD registers.
+    KernelThread,
+    /// There was no memory for them.
+    OutOfMemory,
+}
+
+/// Gives the running thread, a user thread whose program just trapped on an illegal
+/// instruction, FP/SIMD registers if it has none yet (D54): a new program's values
+/// ([`FpState::new`]), loaded and on for user mode on this CPU, so the instruction can run
+/// again. Call it with interrupts masked and no lock held. Once per thread at most; a thread
+/// that never uses them costs nothing.
+#[cold]
+#[inline(never)]
+pub(crate) fn start_fp<P: Platform>() -> FpStart {
+    let layout = Layout::new::<FpState>();
+    // SAFETY: `FpState` is not zero-sized.
+    let Some(state) = NonNull::new(unsafe { alloc::alloc::alloc(layout) }.cast::<FpState>()) else {
+        return FpStart::OutOfMemory;
+    };
+    // SAFETY: just allocated with `FpState`'s layout, so valid for a write and aligned.
+    unsafe { state.as_ptr().write(FpState::new()) };
+    let registers = FpRegisters {
+        state,
+        cpu: Cell::new(ptr::null()),
+    };
+    let here = cpu::current::<P>();
+    let mut schedulers = SCHEDULER.lock();
+    let scheduler = schedulers.of(here);
+    let running = scheduler
+        .current
+        .as_ref()
+        .expect("a user thread runs")
+        .get();
+    let refused = if !running.user {
+        Some(FpStart::KernelThread)
+    } else if running.fp.get().is_some() {
+        Some(FpStart::AlreadyHad)
+    } else {
+        None
+    };
+    if let Some(refused) = refused {
+        drop(schedulers);
+        drop(registers);
+        return refused;
+    }
+    let registers = running.fp.get_or_init(|| registers);
+    scheduler.fp.load::<P>(running.id, registers, here);
+    FpStart::Started
+}
+
 /// Lets the next ready thread run, if there is one; returns when this thread's turn comes
 /// again.
 pub fn yield_now<P: Platform>() {
@@ -1187,6 +1368,41 @@ fn block<P: Platform>(
 /// or the idle slot for the idle thread), given `here` too. Returns when the running thread is
 /// resumed.
 fn switch_to<P: Platform>(
+    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    here: &'static Cpu,
+    next: ThreadBox,
+    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+) {
+    let fp = &schedulers.of(here).fp;
+    let next_thread = next.get();
+    if fp.running_has_fp || next_thread.user && (fp.user_on || next_thread.fp.get().is_some()) {
+        return switch_to_with_fp::<P>(schedulers, here, next, park);
+    }
+    switch_now::<P>(schedulers, here, next, park);
+}
+
+/// [`switch_to`] when the running thread or `next` has FP/SIMD registers or runs a program:
+/// [`CpuFp::switch`] first.
+#[inline(never)]
+fn switch_to_with_fp<P: Platform>(
+    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    here: &'static Cpu,
+    next: ThreadBox,
+    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+) {
+    let scheduler = schedulers.of(here);
+    let running = scheduler
+        .current
+        .as_ref()
+        .expect("a thread is ready, so one runs")
+        .get();
+    scheduler.fp.switch::<P>(running, next.get(), here);
+    switch_now::<P>(schedulers, here, next, park);
+}
+
+/// The switch itself: see [`switch_to`].
+#[inline(always)]
+fn switch_now<P: Platform>(
     mut schedulers: SpinLockGuard<'_, Schedulers>,
     here: &'static Cpu,
     next: ThreadBox,
@@ -1949,6 +2165,68 @@ mod tests {
     }
 
     #[test]
+    fn a_program_without_fp_registers_runs_after_they_are_cleared() {
+        use crate::tests::{FpCall, fp_calls};
+        let _frames = host::frames_for_test();
+        let here = cpu::current::<P>();
+        let thread = |id, user, fp| Thread {
+            id: ThreadId(id),
+            context: 0,
+            stack: None,
+            joined: Arc::new(Joined {
+                finished: AtomicBool::new(false),
+                joiners: WaitQueue::new(),
+            }),
+            next: None,
+            wake_at: 0,
+            cpu: here,
+            user,
+            fp,
+        };
+        let layout = Layout::new::<FpState>();
+        // SAFETY: `FpState` is not zero-sized.
+        let state = NonNull::new(unsafe { alloc::alloc::alloc(layout) }.cast::<FpState>()).unwrap();
+        // SAFETY: just allocated with `FpState`'s layout.
+        unsafe { state.as_ptr().write(FpState::new()) };
+        let with_fp = thread(
+            u64::MAX - 1,
+            true,
+            OnceCell::from(FpRegisters {
+                state,
+                cpu: Cell::new(ptr::null()),
+            }),
+        );
+        let without_fp = thread(u64::MAX - 2, true, OnceCell::new());
+        let kernel = thread(u64::MAX - 3, false, OnceCell::new());
+        let mut fp = CpuFp::new();
+        fp_calls();
+        fp.switch::<P>(&without_fp, &with_fp, here);
+        fp.switch::<P>(&with_fp, &without_fp, here);
+        let state = state.as_ptr() as usize;
+        let initial = &raw const INITIAL_FP_STATE as usize;
+        assert_eq!(
+            fp_calls(),
+            [
+                FpCall::SetUser(true),
+                FpCall::Restore(state),
+                FpCall::Save(state),
+                FpCall::Restore(initial),
+                FpCall::SetUser(false),
+            ]
+        );
+        assert_eq!(fp.owner, None);
+        fp.switch::<P>(&without_fp, &with_fp, here);
+        assert_eq!(fp_calls(), [FpCall::SetUser(true), FpCall::Restore(state)]);
+        fp.switch::<P>(&with_fp, &kernel, here);
+        assert_eq!(fp_calls(), [FpCall::Save(state)]);
+        fp.switch::<P>(&kernel, &without_fp, here);
+        assert_eq!(
+            fp_calls(),
+            [FpCall::Restore(initial), FpCall::SetUser(false)]
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "overflowed its stack")]
     fn a_clobbered_canary_stops_the_kernel_when_checked() {
         // No scheduler and no frame allocator: the thread never runs, and its stack is leaked
@@ -1971,6 +2249,7 @@ mod tests {
             wake_at: 0,
             cpu: cpu::current::<P>(),
             user: false,
+            fp: OnceCell::new(),
         });
         thread.check_stack();
         memory[0] = 0;
