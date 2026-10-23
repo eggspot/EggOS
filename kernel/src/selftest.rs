@@ -745,8 +745,32 @@ fn processes_with_data<P: Platform>(
 /// handler yields, so the others run (and load their address spaces) on its CPU, then reads the
 /// process's data page through [`Process::with_user_memory`], which must load its own again.
 /// After the threads end, every frame the processes took must be free and no CPU may keep an
-/// address space loaded, even one that several CPUs had loaded at once.
+/// address space loaded, even one that several CPUs had loaded at once. The processes run
+/// twice, and everything the second round took must be freed: the first may grow the heap's
+/// size classes, whose frames stay with them (D30).
 fn processes_keep_their_own_memory<P: Platform>(
+    memory: &mut Memory<P>,
+    count: usize,
+    threads_each: usize,
+) -> Result<(), &'static str> {
+    run_processes_reading_their_own_memory(memory, count, threads_each)?;
+    if !release_loaded_address_spaces::<P>(|| true) {
+        return Err("a CPU kept an ended process's address space loaded");
+    }
+    let before = free_frames().ok_or("there is no frame allocator")?;
+    run_processes_reading_their_own_memory(memory, count, threads_each)?;
+    let freed = || free_frames() == Some(before);
+    if !release_loaded_address_spaces::<P>(freed) {
+        return Err("a CPU kept an ended process's address space loaded");
+    }
+    if !freed() {
+        return Err("the processes' frames and tables were not all freed");
+    }
+    Ok(())
+}
+
+/// One round of [`processes_keep_their_own_memory`]: the processes' threads, until they end.
+fn run_processes_reading_their_own_memory<P: Platform>(
     memory: &mut Memory<P>,
     count: usize,
     threads_each: usize,
@@ -754,7 +778,6 @@ fn processes_keep_their_own_memory<P: Platform>(
     const CALLS: u64 = 20;
     /// A read that did not show the process's own page, or an exception.
     const WRONG: u64 = u64::MAX;
-    let before = free_frames().ok_or("there is no frame allocator")?;
     let processes = processes_with_data(memory, count)?;
     let mut threads = Vec::new();
     let threads_of = processes
@@ -802,15 +825,7 @@ fn processes_keep_their_own_memory<P: Platform>(
             _ => result = Err("a process's thread ended early"),
         }
     }
-    result?;
-    let freed = || free_frames() == Some(before);
-    if !release_loaded_address_spaces::<P>(freed) {
-        return Err("a CPU kept an ended process's address space loaded");
-    }
-    if !freed() {
-        return Err("the processes' frames and tables were not all freed");
-    }
-    Ok(())
+    result
 }
 
 /// Programs must each keep their own FP/SIMD registers, whatever ran in between (D54): `count`
