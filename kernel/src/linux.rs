@@ -444,7 +444,7 @@ pub fn handle<P: Platform>(
 ) -> ControlFlow<()> {
     match exit {
         UserExit::Syscall => syscall(process, thread, context),
-        UserExit::Interrupt => signals::deliver_sent(process, thread, context),
+        UserExit::Interrupt => signals::deliver_sent_on_interrupt(process, thread, context),
         UserExit::Exception(exception) => user_exception(
             process,
             thread,

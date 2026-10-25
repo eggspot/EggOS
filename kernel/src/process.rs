@@ -1190,22 +1190,22 @@ where
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        if thread::preemption_point_before_user_mode::<P>() {
+        let exit = if thread::preemption_point_before_user_mode::<P>() {
             if process.has_ended() {
                 break;
             }
-            ended = handler(&process, &mut context, UserExit::Interrupt).is_break();
-            continue;
-        }
-        process.load_here();
-        // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
-        // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
-        // contract); the `Arc` keeps it allocated, and its mappings change only through
-        // `AddressSpace::change_pages` and its kin, on this thread or on another CPU, whose
-        // change marks this CPU stale or, for a process with threads on several CPUs, shoots
-        // its translations down before any frame is reused (D94). Nothing switches this CPU's
-        // threads or address space before `run_user` returns.
-        let exit = unsafe { P::run_user(&mut context) };
+            UserExit::Interrupt
+        } else {
+            process.load_here();
+            // SAFETY: interrupts are masked, as the kernel runs. The process's address space
+            // is loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
+            // contract); the `Arc` keeps it allocated, and its mappings change only through
+            // `AddressSpace::change_pages` and its kin, on this thread or on another CPU, whose
+            // change marks this CPU stale or, for a process with threads on several CPUs,
+            // shoots its translations down before any frame is reused (D94). Nothing switches
+            // this CPU's threads or address space before `run_user` returns.
+            unsafe { P::run_user(&mut context) }
+        };
         ended = handler(&process, &mut context, exit).is_break();
     }
     let here = cpu::current::<P>();

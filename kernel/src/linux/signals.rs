@@ -1560,7 +1560,7 @@ pub fn take_in_sent<P: Platform>(process: &Process<P>, thread: &mut LinuxThread)
 /// On the way back to user mode (an interrupt, the scheduler's look, a call that may have
 /// waited), delivers the signals other threads sent the thread, if any were sent since it last
 /// looked, as [`deliver`] does; a load and a compare when none were.
-#[inline(always)]
+#[inline]
 pub fn deliver_sent<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1581,6 +1581,17 @@ fn take_in_and_deliver<P: Platform>(
 ) -> ControlFlow<()> {
     take_in_sent(process, thread);
     deliver(process, thread, context)
+}
+
+/// [`deliver_sent`] for an interrupt or the scheduler's look: out of line, so the thread
+/// loop, which the system calls share, keeps its registers.
+#[inline(never)]
+pub fn deliver_sent_on_interrupt<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    deliver_sent(process, thread, context)
 }
 
 /// Delivers the signals due during a call that blocks a mask of its own, as [`deliver`] does,
