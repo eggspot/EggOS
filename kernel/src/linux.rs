@@ -5027,12 +5027,14 @@ mod tests {
         process
             .write_user_memory(set, &(1u64 << (rt - 1)).to_ne_bytes())
             .unwrap();
+        let no_wait = SCRATCH + 0x280;
+        process.write_user_memory(no_wait, &[0; 16]).unwrap();
         let wait = |thread: &mut LinuxThread| {
             let taken = call_as(
                 &process,
                 thread,
                 number::RT_SIGTIMEDWAIT,
-                [set, waited, 0, 8, 0, 0],
+                [set, waited, no_wait, 8, 0, 0],
             );
             (taken, read_siginfo(&process, waited).2)
         };

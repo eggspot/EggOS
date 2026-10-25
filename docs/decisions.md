@@ -4239,13 +4239,16 @@ the license, by an explicit instruction recorded here.
   as Linux reports the shared pending set with the thread's.
 - **Bounded, and `SIG_IGN`.** What waits stays bounded as in D95: a standard signal already
   waiting is not left again, `SIGCONT` removes the stop signals waiting for any thread and a
-  stop signal a `SIGCONT`, a real-time signal over `RLIMIT_SIGPENDING` is `EAGAIN`. An
+  stop signal a `SIGCONT`, a real-time signal over `RLIMIT_SIGPENDING` is `EAGAIN` unless
+  sent with `kill`, which Linux queues past the limit too (independent review). An
   action that newly ignores a signal removes its waiting instances too (POSIX).
 - **Differences from Linux kept.** A standard signal taken in by a thread that already has
   it pending is merged with it (Linux keeps one in the thread's set and one in the shared
   set, so it may run twice; POSIX allows either). Once taken in, a signal is the thread's: a
   handler's mask blocking it delays it until the handler returns, where Linux could hand it
-  to another thread meanwhile. `SIGCONT` sent to the process discards the stop signals waiting
+  to another thread meanwhile; likewise a thread that takes it in on its way into
+  `rt_sigprocmask` (which takes in before it changes the mask, so the call sees what was sent
+  before it) keeps it if the new mask blocks it. `SIGCONT` sent to the process discards the stop signals waiting
   for any thread and the receiver's, not every thread's pending ones (as D95 does for a
   thread). A signal every thread blocks keeps the process's threads interrupting themselves
   once each time they are switched in, until one takes it (the cost D95 accepted for a thread

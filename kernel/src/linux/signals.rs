@@ -673,7 +673,8 @@ impl Signals {
     /// Sends the signal `info` describes to the process, for the first of its threads that
     /// takes it in without blocking it, or while waiting for it ([`LockedSignals::take_in_sent`]),
     /// as Linux's shared pending signals. It counts toward `RLIMIT_SIGPENDING` as
-    /// [`Self::send_to_thread`] says, and what waits stays bounded the same way: a standard
+    /// [`Self::send_to_thread`] says, but a real-time signal sent with `kill` (a `si_code` of
+    /// 0 or more) is queued past the limit, as on Linux. What waits stays bounded: a standard
     /// signal already waiting is not left again, and, as POSIX requires, `SIGCONT` removes
     /// the stop signals waiting and a stop signal a `SIGCONT` waiting.
     pub fn send_to_process(&mut self, info: Info, queue_limit: u64) -> Result<(), QueueFull> {
@@ -692,6 +693,8 @@ impl Signals {
             if block.is_left_for(ANY_THREAD, signal) {
                 return Ok(());
             }
+            charge(&QUEUED_SIGNALS);
+        } else if info.code() >= 0 {
             charge(&QUEUED_SIGNALS);
         } else if !try_charge(&QUEUED_SIGNALS, queue_limit) {
             return Err(QueueFull);
