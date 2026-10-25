@@ -336,8 +336,9 @@ pub(crate) fn local_unseen_by_scheduler<P: Platform>() -> u64 {
     unsafe { P::cpu_local_u64::<{ core::mem::offset_of!(Cpu, unseen_by_scheduler) }>() }
 }
 
-/// Raises the wake-up interrupt on `cpu`, which must not be the calling CPU: it stops waiting
-/// for an interrupt, and whatever the caller wrote before is visible to it (D41).
+/// Raises the wake-up interrupt on `cpu`, which must not be the calling CPU (that is
+/// [`interrupt_here`]): it stops waiting for an interrupt, and whatever the caller wrote before
+/// is visible to it (D41).
 /// Call it with interrupts masked, as the kernel runs.
 ///
 /// A CPU that has not reported in yet is left alone (D43): a thread can be placed on it once
@@ -353,6 +354,15 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
     if cpu.is_online() {
         P::wake_cpu(cpu.hardware_id());
     }
+}
+
+/// Raises the wake-up interrupt on the calling CPU, which runs with interrupts masked: it is
+/// taken once they are unmasked, at the latest as soon as the CPU runs user mode, which then
+/// comes back to the kernel at once.
+#[cold]
+#[inline(never)]
+pub fn interrupt_here<P: Platform>() {
+    P::wake_cpu(current::<P>().hardware_id());
 }
 
 /// For this CPU, with interrupts masked: if another CPU asked a shootdown of it since it last

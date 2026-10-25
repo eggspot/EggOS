@@ -2435,7 +2435,8 @@ fn secondary_cpus_start_and_report_in<P: Platform>(
 /// own block and in no other CPU's. Fails if a CPU's interrupt controller or timer is not set up,
 /// or a wake-up goes to the wrong CPU (both checked by breaking them). Runs once the CPUs have
 /// started; on one CPU (the benchmarks) it has nothing to check, and the QEMU boot tests' four
-/// CPUs are checked by `secondary_cpus_start_and_report_in`.
+/// CPUs are checked by `secondary_cpus_start_and_report_in`. Then the CPU running it raises the
+/// wake-up interrupt on itself ([`cpu::interrupt_here`]) and must take it once.
 fn cpus_take_their_own_interrupts<P: Platform>() -> Result<(), &'static str> {
     let cpus = cpu::CPUS.all();
     let Some((boot, secondaries)) = cpus.split_first() else {
@@ -2461,6 +2462,16 @@ fn cpus_take_their_own_interrupts<P: Platform>() -> Result<(), &'static str> {
         if others != others_before || boot.wakeups() != boot_before {
             return Err("a wake-up interrupt reached a CPU it was not sent to");
         }
+    }
+    let here = cpu::current::<P>();
+    let before = here.wakeups();
+    cpu::interrupt_here::<P>();
+    let deadline = P::clock_ticks() + WAKEUP_TIMEOUT_MS * (P::clock_frequency() / 1000);
+    while here.wakeups() == before && P::clock_ticks() < deadline {
+        P::interrupt_window();
+    }
+    if here.wakeups() != before + 1 {
+        return Err("a CPU did not take the wake-up interrupt it raised on itself");
     }
     Ok(())
 }

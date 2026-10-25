@@ -99,11 +99,13 @@ pub fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
 }
 
 /// `poll(fds, nfds, timeout)`: as [`ppoll`] with a timeout of `timeout` milliseconds (an
-/// `int`: negative waits for good, 0 not at all) and no signal mask. x86_64 only: AArch64 and
-/// RISC-V have only `ppoll`, which their C libraries' `poll` calls.
+/// `int`: negative waits for good, 0 not at all) and no signal mask, failing with `EINTR` when
+/// a signal is due, which is delivered after it. x86_64 only: AArch64 and RISC-V have only
+/// `ppoll`, which their C libraries' `poll` calls.
 #[cfg(target_arch = "x86_64")]
 pub fn poll<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     fds: u64,
     count: u64,
     timeout: u64,
@@ -114,9 +116,9 @@ pub fn poll<P: Platform>(
     } else {
         deadline_in::<P>(milliseconds as u64 * 1_000_000)
     };
-    match poll_fds(process, fds, count, deadline, None)? {
+    match poll_fds(process, thread, fds, count, deadline)? {
         Polled::Ready(ready) => Ok(ready),
-        Polled::Interrupted => unreachable!("a wait that is not interruptible was interrupted"),
+        Polled::Interrupted => Err(Errno::EINTR),
     }
 }
 
@@ -125,9 +127,9 @@ pub fn poll<P: Platform>(
 /// those asked for (see `events`), and returns how many report any. If none does, it first
 /// waits for one until the `struct timespec` at `timeout` has passed, for good if that is
 /// null, not at all if it is zero. With a `sigmask`, the signals in that set are blocked
-/// instead of the thread's during the call (D71): if none reports events and a signal is due
-/// under it, the call delivers it and, once a handler starts, fails with `EINTR`, the
-/// handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
+/// instead of the thread's during the call (D71). If none reports events and a signal is due,
+/// before or during the wait (another thread sent it, D95), the call delivers it and, once a
+/// handler starts, fails with `EINTR`, the handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
 /// action ignores is taken and the call goes on, as Linux restarts it, unless the time left
 /// could not be written back (below): then it fails with `EINTR`, as Linux's does, since it
 /// cannot restart with the time left. Otherwise the thread's mask is back when it returns, and
@@ -162,8 +164,7 @@ pub fn ppoll<P: Platform>(
     };
     let thread_mask = mask.map(|mask| signals::replace_blocked(process, thread, mask));
     loop {
-        let interruptible = thread_mask.map(|_| &*thread);
-        let polled = poll_fds(process, fds, count, deadline, interruptible);
+        let polled = poll_fds(process, thread, fds, count, deadline);
         let time_left_written =
             write_back_time_left::<P>(process, timeout, &requested_timeout, deadline);
         let result = match polled {
@@ -302,14 +303,15 @@ fn parse_timeout(bytes: [u8; TIMESPEC_SIZE]) -> Result<Option<u64>, Errno> {
 /// What both calls share once the timeout is a `deadline` (`None` for no wait): checks
 /// `count` against the open-file limit, copies the `struct pollfd`s at `fds` in once, fills in
 /// their returned events and copies them back, waiting until `deadline` if none reports any.
-/// When `interruptible` is the calling thread, a signal due to it before the wait
-/// ([`signals::is_due`]) interrupts it, as on Linux even with no deadline.
+/// A signal due to `thread`, the caller, before or during the wait ([`signals::is_due`]: one
+/// another thread sent, or one the call's mask unblocked) interrupts it, as on Linux even
+/// with no deadline.
 fn poll_fds<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     fds: u64,
     count: u64,
     deadline: Option<Deadline>,
-    interruptible: Option<&LinuxThread>,
 ) -> Result<Polled, Errno> {
     let count = u64::from(count as u32);
     let open_files = process
@@ -347,9 +349,17 @@ fn poll_fds<P: Platform>(
         entry[6..].copy_from_slice(&returned.to_ne_bytes());
         ready += u64::from(returned != 0);
     }
-    let interrupted = ready == 0 && interruptible.is_some_and(signals::is_due);
+    let mut interrupted = ready == 0 && signals::is_due(thread);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
-        let _ = thread::sleep_until::<P>(process, deadline);
+        while P::clock_ticks() < deadline {
+            if thread::sleep_until::<P>(process, thread, deadline).is_break() {
+                break;
+            }
+            if signals::is_due(thread) {
+                interrupted = true;
+                break;
+            }
+        }
     }
     process
         .write_user_memory(fds, array)

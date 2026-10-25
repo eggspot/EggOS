@@ -4112,3 +4112,101 @@ the license, by an explicit instruction recorded here.
   the need on AArch64 and RISC-V but not on x86, where the cost is. The baseline lines of
   those three results and riscv64's `linux_page_fault` are updated; the others stay within
   the gate.
+
+## D95 Signals between a process's threads — Decided by the build loop
+
+- **What.** `tkill`, `tgkill` and `rt_tgsigqueueinfo` reach every thread of the caller's
+  process, not only the caller (D63, D68, D91). Threads of other processes stay `ESRCH` until
+  there are other Linux processes to reach.
+- **Where a sent signal waits.** Each thread's blocked mask and pending set stay its own, in
+  its `LinuxThread`, which only its loop touches, so the system-call path reads them without a
+  lock. A signal for another thread goes into the process's signal block (`sent_to_threads`,
+  under the signals lock, next to the actions and the queued `siginfo_t`s), tagged with the
+  thread's id, and counts toward `RLIMIT_SIGPENDING` there. The target takes it in later
+  (`LockedSignals::take_in_sent`) and handles it exactly as if it were sent then
+  (`LockedSignals::send`): blocked or ignored by its mask at that moment, `SIGCONT` and the stop
+  signals cancelling, a standard signal kept once with its first `siginfo_t`. Moving every
+  thread's state into the process (a table under the lock) would let the sender decide at
+  once, but costs a lookup on every signal call, a heap table for single-threaded processes,
+  and room in `Process`, which is at its 256-byte class. A real-time signal over the limit is
+  `EAGAIN` for the sender, as on Linux; a standard one is queued past it; without memory to
+  record any signal it is `EAGAIN` too. What taking in would undo is undone when a signal is
+  left, so what waits for a thread that never takes in (blocked in a `futex` wait for good)
+  stays bounded however often it is sent signals: a standard signal already waiting is not
+  left again (Linux's second instance of a pending standard signal is a no-op too), `SIGCONT`
+  removes the stop signals waiting and a stop signal a `SIGCONT` waiting (its discarding of
+  the stop signals stays), and a discard request (below) removes the signals it covers: at
+  most one entry per standard signal, the real-time ones the limit allows, and one request
+  more than signals.
+- **How the target notices.** `Process::signals_sent`, a wrapping 16-bit count in the padding
+  next to `ended` (no growth), goes up after each signal sent to another thread; each thread
+  keeps the count it last saw (a thread that missed exactly 65,536 sends would take them in at
+  the next one: the count wraps). The sender then interrupts every other CPU (as `exit_group`
+  does, D91) and wakes the target if it sleeps. Sleeps now wait on a futex word per thread
+  (`!3 - 4 * tid` in the kernel's half, which no program's futex can name, D92 had one word per
+  process), and `sleep_until` returns once a signal was taken in (after a wake it takes in
+  whatever the count says). A running thread compares the counts on an interrupt (out of line),
+  after `sched_yield` and `futex`, the calls that may switch it out, and before the signal
+  calls of its own (`rt_sigprocmask`, `rt_sigpending`, `rt_sigtimedwait`, a signal to itself),
+  so they see what was sent before them; the sleeps deliver after they end. Nothing else on
+  the system-call path looks: the calls after which signals are delivered are a bit set now
+  (one test on the other calls' path).
+- **A thread switched back in.** While signals sent to threads wait to be taken in
+  (`Process::set_sent_signals_waiting`, set and cleared under the signals lock), a thread the
+  scheduler switches back in raises the wake-up interrupt on its own CPU before it runs the
+  program (`cpu::interrupt_here`), so it comes back at once and takes them in: without it, a
+  thread alone on its CPU (no tick armed) running a loop or calls that never switch would never
+  see them. The check is in the branch the scheduler's look already takes (one more load
+  there, none on the system-call path), and after the preemption points `write` and
+  `getrandom` pass, where a thread switched out resumes without that look. `Platform::wake_cpu` now takes the calling CPU too:
+  AArch64 sends the SGI with GICv2's "this CPU only" filter, which a uniprocessor GIC (the
+  benchmarks' one CPU) needs; x86_64's fixed IPI and RISC-V's SBI IPI name their own CPU as
+  any other. A boot self-test checks that a CPU takes the interrupt it raised on itself.
+- **`SIGKILL`** sent to another thread ends the process at once, as on Linux, so a thread
+  blocked in a `futex` wait cannot keep it alive.
+- **An exited first thread** (Linux's thread group leader, a zombie while others run) takes
+  signals and never delivers them: `tgkill` to it returns 0, `SIGKILL` included, which on Linux
+  leaves the group alone too (`complete_signal` returns for a thread-directed signal that no
+  live thread wants). Other exited threads are `ESRCH`.
+- **`SIG_IGN` for every thread.** Setting an action that newly ignores a signal, with other
+  threads running, leaves each of them a discard request in the same list as the signals sent
+  to them, in order, and counts as a signal sent: each discards the instances pending when it
+  was asked, blocked or not, as POSIX requires, and keeps those sent after. A blocked signal
+  that its action ignores, by `SIG_IGN` or by default (`SIGCHLD`), stays pending otherwise, as
+  on Linux (the first version discarded every ignored pending signal on each take-in, which
+  lost a `SIGCHLD` blocked for `sigwaitinfo`).
+- **The waits.** `rt_sigtimedwait` waits on after a signal outside its set that is not due, and
+  fails with `EINTR` for one that is due (delivered after it); `rt_sigsuspend` and `pause` are
+  woken; `poll` and `ppoll` are interrupted by a due signal with or without a mask (Linux's
+  `EINTR`; musl's AArch64 and RISC-V `pause` is `ppoll` without one); `nanosleep` and
+  `clock_nanosleep` sleep out their time and deliver after; a stopped thread stays stopped.
+- **Not yet.** Process-directed signals (`kill`, `rt_sigqueueinfo` to the process) still go to
+  the caller, which Linux allows when it does not block them; one it blocks should go to any
+  thread that does not (Linux's shared pending). A `futex` wait and the sleeps are not
+  interrupted (`EINTR`, `rem`). Every other CPU is interrupted for each signal sent, not only
+  the target's (no thread records its CPU yet). A thread that never takes in (blocked in a
+  `futex` wait for good) keeps the process's switched-in threads interrupting themselves once
+  each time they are switched in.
+- **Tests.** Host tests: threads queue real-time signals for each other and each takes its
+  own in send order; a signal sent to another thread is pending only once it comes back, then
+  delivered (`SIGUSR1` ends the process); `SIGKILL` ends it at once; an exited first thread
+  takes signals, `SIGKILL` included, and the process goes on; `SIG_IGN` discards another
+  thread's blocked pending signal and leaves a blocked `SIGCHLD` pending; an exited thread is
+  `ESRCH`; the GIC's SGI to this CPU. QEMU self-tests on aarch64, riscv64 and x86_64: the std
+  program sends `SIGUSR1` with `pthread_kill` to a thread waiting in `sigsuspend` and to one
+  running a `sched_yield` loop, and each runs the handler itself; a CPU takes the wake-up
+  interrupt it raises on itself (four CPUs, and one in the benchmarks).
+- **Cost.** Measured against `main` on the same machine (`-icount`): `linux_syscall_round_trip`
+  129.18 ns on both on x86_64; aarch64 124.65 and riscv64 163.27 ns, under their baseline
+  lines; every benchmark within the gate. The first versions cost +14% (the thread loop's
+  handler inlined twice, for the scheduler's look) and then +2.3% on x86_64 (handing the
+  handler an interrupt from the look's branch, with the loop's exit value merged); the look
+  now only interrupts its own CPU, out of the loop's way, and costs nothing measurable.
+- **Review (independent, before merge).** It found the thread switched back in that never
+  took in (above: first left as "within its time slice", which a CPU with no tick armed breaks)
+  and the discarded blocked signals; both fixed, with the tests above. Its second pass found
+  the same for a thread switched out inside `write` or `getrandom` (fixed above), and that
+  repeated `SIG_IGN` requests should merge (they do) and flush again as on Linux (they do).
+  Its third found that repeated standard signals to a thread that never takes in grew without
+  bound and inflated the system's queued-signal count (now compacted as above, with a host
+  test sending one signal a hundred times).

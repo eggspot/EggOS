@@ -12,9 +12,11 @@
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
 //! which makes its own block on the heap, which also queues its threads' pending signals'
 //! [`Info`], each tagged with its thread. Each thread has its own blocked mask, pending signals
-//! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91); signals reach only
-//! the thread that sends them so far. A signal a call makes due (sent to the caller, unblocked,
-//! or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
+//! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91). A signal sent to
+//! another thread of the process waits in the process's block until that thread takes it in
+//! ([`take_in_sent`], D95): woken from a sleep, interrupted on another CPU, or on its way back
+//! from an interrupt or a call that may switch it out. A signal a call makes due (sent to the
+//! caller, unblocked, or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
 //! with the fault's `siginfo_t`, or, as on Linux, by the default action if the program blocks
@@ -193,6 +195,8 @@ struct ActionsAndQueue {
     restorers: [u64; COUNT],
     masks: [u64; COUNT],
     queue: VecDeque<Queued>,
+    sent_to_threads: Vec<SentToThread>,
+    threads: Vec<u32>,
     trampoline: u64,
 }
 
@@ -201,6 +205,32 @@ struct ActionsAndQueue {
 struct Queued {
     thread: u32,
     info: Info,
+}
+
+/// What one thread left for another in the process's block, which takes it in, in order
+/// ([`LockedSignals::take_in_sent`]), for the thread whose id is `thread`.
+#[derive(Debug, Clone, Copy)]
+struct SentToThread {
+    thread: u32,
+    sent: Sent,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Sent {
+    /// A signal sent to it, counted toward `RLIMIT_SIGPENDING` until taken in.
+    Signal(Info),
+    /// The signals in the set were ignored: those pending are discarded, blocked or not.
+    Discard(u64),
+}
+
+impl SentToThread {
+    fn is_signal(&self) -> bool {
+        matches!(self.sent, Sent::Signal(_))
+    }
+}
+
+fn signals_among(sent: &[SentToThread]) -> usize {
+    sent.iter().filter(|sent| sent.is_signal()).count()
 }
 
 const _: () = assert!(core::mem::size_of::<ActionsAndQueue>() <= crate::heap::MAX_BLOCK);
@@ -215,6 +245,8 @@ impl ActionsAndQueue {
             restorers: [0; COUNT],
             masks: [0; COUNT],
             queue: VecDeque::new(),
+            sent_to_threads: Vec::new(),
+            threads: Vec::new(),
             trampoline: 0,
         }
     }
@@ -234,11 +266,64 @@ impl ActionsAndQueue {
         self.restorers[index] = action.restorer;
         self.masks[index] = action.mask;
     }
+
+    /// Removes the signals in `set` left for `thread` and not taken in yet, giving back what
+    /// they counted toward `RLIMIT_SIGPENDING`: whether `SIGCONT` was among them.
+    fn remove_left_for(&mut self, thread: u32, set: u64) -> bool {
+        let (mut removed, mut sigcont) = (0, false);
+        self.sent_to_threads.retain(|left| match left.sent {
+            Sent::Signal(info) if left.thread == thread && bit(info.signal()) & set != 0 => {
+                removed += 1;
+                sigcont |= info.signal() == SIGCONT;
+                false
+            }
+            _ => true,
+        });
+        uncharge(&QUEUED_SIGNALS, removed);
+        sigcont
+    }
+
+    /// Whether signal `signal` is left for `thread`, not taken in yet.
+    fn is_left_for(&self, thread: u32, signal: u32) -> bool {
+        self.sent_to_threads.iter().any(|left| {
+            left.thread == thread
+                && matches!(left.sent, Sent::Signal(info) if info.signal() == signal)
+        })
+    }
+
+    /// Leaves `thread` a request to discard its pending signals in `set`, in room the caller
+    /// reserved. The signals in `set` left for it go now, as taking them in and then
+    /// discarding them would (a `SIGCONT` among them still discards the stop signals), and the
+    /// request joins the last thing left for the thread if that is a request too.
+    fn leave_discard(&mut self, thread: u32, set: u64) {
+        let set = match self.remove_left_for(thread, set) {
+            true => set | STOP_SIGNALS,
+            false => set,
+        };
+        match self
+            .sent_to_threads
+            .iter_mut()
+            .rev()
+            .find(|left| left.thread == thread)
+        {
+            Some(SentToThread {
+                sent: Sent::Discard(earlier),
+                ..
+            }) => *earlier |= set,
+            _ => self.sent_to_threads.push(SentToThread {
+                thread,
+                sent: Sent::Discard(set),
+            }),
+        }
+    }
 }
 
 impl Drop for ActionsAndQueue {
     fn drop(&mut self) {
-        uncharge(&QUEUED_SIGNALS, self.queue.len());
+        uncharge(
+            &QUEUED_SIGNALS,
+            self.queue.len() + signals_among(&self.sent_to_threads),
+        );
     }
 }
 
@@ -500,6 +585,101 @@ impl Signals {
         }
     }
 
+    /// Counts thread `id`, not the process's first, as one of the process's threads, which
+    /// [`Self::send_to_thread`] can reach until [`Self::remove_thread`]. `Err` without memory
+    /// for the record.
+    pub fn add_thread(&mut self, id: u32) -> Result<(), QueueFull> {
+        if self.actions_and_queue.is_none() {
+            self.actions_and_queue = Some(actions_and_queue_block().ok_or(QueueFull)?);
+        }
+        let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
+        block.threads.try_reserve(1).map_err(|_| QueueFull)?;
+        block.threads.push(id);
+        Ok(())
+    }
+
+    /// Thread `id` has exited: no signal reaches it any more, and those sent to it and not yet
+    /// taken in go.
+    pub fn remove_thread(&mut self, id: u32) {
+        if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+            block.threads.retain(|&thread| thread != id);
+            let signals = signals_among(&block.sent_to_threads);
+            block.sent_to_threads.retain(|sent| sent.thread != id);
+            uncharge(
+                &QUEUED_SIGNALS,
+                signals - signals_among(&block.sent_to_threads),
+            );
+        }
+    }
+
+    /// Whether `id` is one of the process's threads other than its first that has not exited.
+    pub fn has_thread(&self, id: u32) -> bool {
+        self.actions_and_queue
+            .as_deref()
+            .is_some_and(|[block]| block.threads.contains(&id))
+    }
+
+    /// Sends the signal `info` describes to thread `id`, another of the process's threads,
+    /// which takes it in ([`LockedSignals::take_in_sent`]) and handles it as if sent to itself
+    /// then ([`LockedSignals::send`]). It counts toward `RLIMIT_SIGPENDING`, `queue_limit`,
+    /// meanwhile: a real-time signal that finds the queued signals at the limit is not sent
+    /// ([`QueueFull`]), as on Linux, nor is any signal without memory to record it; a standard
+    /// signal is queued past the limit, keeping its `siginfo_t`. What taking in would undo is
+    /// undone now, so what waits for a thread stays bounded however often it is sent signals:
+    /// a standard signal already waiting is not left again (it keeps its first `siginfo_t`),
+    /// `SIGCONT` removes the stop signals waiting, and a stop signal a `SIGCONT` waiting, whose
+    /// discarding of the stop signals stays.
+    pub fn send_to_thread(
+        &mut self,
+        id: u32,
+        info: Info,
+        queue_limit: u64,
+    ) -> Result<(), QueueFull> {
+        let signal = info.signal();
+        let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
+        block
+            .sent_to_threads
+            .try_reserve(2)
+            .map_err(|_| QueueFull)?;
+        if signal < FIRST_REAL_TIME {
+            if signal == SIGCONT {
+                block.remove_left_for(id, STOP_SIGNALS);
+            } else if bit(signal) & STOP_SIGNALS != 0 && block.remove_left_for(id, bit(SIGCONT)) {
+                block.leave_discard(id, STOP_SIGNALS);
+            }
+            if block.is_left_for(id, signal) {
+                return Ok(());
+            }
+            charge(&QUEUED_SIGNALS);
+        } else if !try_charge(&QUEUED_SIGNALS, queue_limit) {
+            return Err(QueueFull);
+        }
+        block.sent_to_threads.push(SentToThread {
+            thread: id,
+            sent: Sent::Signal(info),
+        });
+        Ok(())
+    }
+
+    /// How many signals and requests wait in the block for thread `id` to take them in.
+    #[cfg(test)]
+    pub fn left_for(&self, id: u32) -> usize {
+        self.actions_and_queue.as_deref().map_or(0, |[block]| {
+            block
+                .sent_to_threads
+                .iter()
+                .filter(|left| left.thread == id)
+                .count()
+        })
+    }
+
+    /// Whether anything waits in the block for a thread to take it in.
+    pub fn has_sent_to_threads(&self) -> bool {
+        self.actions_and_queue
+            .as_deref()
+            .is_some_and(|[block]| !block.sent_to_threads.is_empty())
+    }
+
     /// The address of the process's return trampoline, 0 until it is mapped.
     pub fn trampoline(&self) -> u64 {
         self.actions_and_queue
@@ -631,6 +811,75 @@ impl LockedSignals<'_> {
         }
         self.thread.blocked &= !bit(signal);
         let _ = self.send(Info::from_kernel(signal), u64::MAX);
+    }
+
+    /// Takes in what other threads left this one, in the order they left it: the signals they
+    /// sent ([`Signals::send_to_thread`]), each as if sent now, and the signals ignored since
+    /// ([`Self::discard_from_other_threads`]), whose pending instances are discarded, blocked
+    /// or not. Returns whether its pending signals changed.
+    pub fn take_in_sent(&mut self) -> bool {
+        let before = self.thread.pending;
+        let thread = self.id;
+        if let Some([block]) = self.actions_and_queue.as_deref_mut()
+            && block
+                .sent_to_threads
+                .iter()
+                .any(|sent| sent.thread == thread)
+        {
+            let mut left = core::mem::take(&mut block.sent_to_threads);
+            left.retain(|sent| {
+                if sent.thread != thread {
+                    return true;
+                }
+                match sent.sent {
+                    Sent::Signal(info) => {
+                        uncharge(&QUEUED_SIGNALS, 1);
+                        let _ = self.send(info, u64::MAX);
+                    }
+                    Sent::Discard(set) => self.discard(set),
+                }
+                false
+            });
+            if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+                block.sent_to_threads = left;
+            }
+        }
+        self.thread.pending != before
+    }
+
+    /// Asks every other thread of the process, those [`Signals::add_thread`] counted and
+    /// `first`, its first thread if it is another one that has not exited, to discard its
+    /// pending signals in `set`, which are now ignored, as POSIX requires: false if there was
+    /// no memory to ask, or no thread to ask. The signals in `set` waiting for a thread go at
+    /// once, and a request right after another for the same thread joins it, so a thread that
+    /// does not take in holds at most one more request than signals waiting, of which there
+    /// are at most one per standard signal and as many real-time ones as `RLIMIT_SIGPENDING`
+    /// allows.
+    pub fn discard_from_other_threads(&mut self, first: Option<u32>, set: u64) -> bool {
+        let caller = self.id;
+        let Some([block]) = self.actions_and_queue.as_deref_mut() else {
+            return false;
+        };
+        let count = block.threads.len() + 1;
+        let other = |threads: &[u32], index: usize| {
+            threads
+                .get(index)
+                .copied()
+                .or(first)
+                .filter(|&thread| thread != caller)
+        };
+        let others = (0..count)
+            .filter(|&index| other(&block.threads, index).is_some())
+            .count();
+        if block.sent_to_threads.try_reserve(others).is_err() {
+            return false;
+        }
+        for index in 0..count {
+            if let Some(thread) = other(&block.threads, index) {
+                block.leave_discard(thread, set);
+            }
+        }
+        others > 0
     }
 
     /// Discards the thread's pending signals in `set`, with their queued [`Info`].
@@ -911,10 +1160,10 @@ pub fn rt_sigaction<P: Platform>(
     };
     let signal = signal as u32;
     // Copied out before the program's memory is touched: the lock is never held across a copy.
-    let previous = {
+    let (previous, asked) = {
         let mut guard = process.signals().lock();
         let mut signals = thread.signals(&mut guard);
-        match new {
+        let previous = match new {
             None => signals.action(signal).ok_or(Errno::EINVAL)?,
             Some(new) => signals
                 .set_action(signal, new)
@@ -922,8 +1171,19 @@ pub fn rt_sigaction<P: Platform>(
                     ChangeError::Invalid => Errno::EINVAL,
                     ChangeError::OutOfMemory => Errno::ENOMEM,
                 })?,
+        };
+        let ignored = new.is_some() && signals.ignores(signal);
+        let first = process.id().get();
+        let first = (process.first_thread_status().is_none()).then_some(first);
+        let asked = ignored && signals.discard_from_other_threads(first, bit(signal));
+        if asked {
+            process.set_sent_signals_waiting(true);
         }
+        (previous, asked)
     };
+    if asked {
+        process.record_signal_sent();
+    }
     if let Some(address) = pointer(old) {
         process
             .write_user_memory(address, &previous.to_bytes())
@@ -959,6 +1219,7 @@ pub fn rt_sigprocmask<P: Platform>(
     if set_size != SET_SIZE {
         return Err(Errno::EINVAL);
     }
+    take_in_sent(process, thread);
     let set = match pointer(set) {
         None => None,
         Some(address) => {
@@ -1052,15 +1313,11 @@ fn send_to_self<P: Platform>(
     signal: u64,
     info: impl FnOnce(u32) -> Info,
 ) -> Result<u64, Errno> {
+    take_in_sent(process, thread);
     match signal as u32 {
         0 => Ok(0),
         signal if signal as usize <= COUNT => {
-            let queue_limit = process
-                .credentials_and_limits()
-                .lock()
-                .limits
-                .get(super::limits::resource::SIGPENDING)
-                .map_or(u64::MAX, |limit| limit.soft);
+            let queue_limit = queue_limit(process);
             thread
                 .signals(&mut process.signals().lock())
                 .send(info(signal), queue_limit)
@@ -1069,6 +1326,88 @@ fn send_to_self<P: Platform>(
         }
         _ => Err(Errno::EINVAL),
     }
+}
+
+fn queue_limit<P: Platform>(process: &Process<P>) -> u64 {
+    process
+        .credentials_and_limits()
+        .lock()
+        .limits
+        .get(super::limits::resource::SIGPENDING)
+        .map_or(u64::MAX, |limit| limit.soft)
+}
+
+/// What thread `id` of `process` is to a signal sent to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A thread that has not exited: its first thread, or one [`Signals::add_thread`] counted.
+    Live,
+    /// Its first thread, exited while others go on: as Linux's thread group leader, it still
+    /// takes signals, which it never delivers, `SIGKILL` included (Linux's `complete_signal`
+    /// leaves the group alone for a thread-directed signal no live thread wants).
+    ExitedFirst,
+    /// No thread of the process.
+    None,
+}
+
+fn target<P: Platform>(process: &Process<P>, signals: &Signals, id: u32) -> Target {
+    if id == process.id().get() {
+        match process.first_thread_status() {
+            None => Target::Live,
+            Some(_) => Target::ExitedFirst,
+        }
+    } else if signals.has_thread(id) {
+        Target::Live
+    } else {
+        Target::None
+    }
+}
+
+/// Sends `signal` to thread `id` of the caller's process, as `tgkill` and `rt_tgsigqueueinfo`
+/// do: to the caller as [`send_to_self`]; to another thread, `ESRCH` unless it is one of the
+/// process's ([`Target`]), then `EINVAL` for a signal outside 0 to 64, and 0 only checks.
+/// To a first thread that has exited, a signal is accepted and goes nowhere. Otherwise
+/// `SIGKILL` ends the process at once, as on Linux, and another signal waits in the process's
+/// signal state until the thread takes it in ([`take_in_sent`]), which it is woken from a
+/// sleep and interrupted to do. `EAGAIN` as [`Signals::send_to_thread`] says.
+fn send_to_thread<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    id: u32,
+    signal: u64,
+    info: impl FnOnce(u32) -> Info,
+) -> Result<u64, Errno> {
+    if id == thread.id() {
+        return send_to_self(process, thread, signal, info);
+    }
+    let queue_limit = queue_limit(process);
+    {
+        let mut signals = process.signals().lock();
+        let target = target(process, &signals, id);
+        if target == Target::None {
+            return Err(Errno::ESRCH);
+        }
+        let signal = match signal as u32 {
+            0 => return Ok(0),
+            signal if signal as usize <= COUNT => signal,
+            _ => return Err(Errno::EINVAL),
+        };
+        if target == Target::ExitedFirst {
+            return Ok(0);
+        }
+        if signal == SIGKILL {
+            drop(signals);
+            let _ = super::end_process::<P, ()>(process, ProcessExit::Killed { signal });
+            return Ok(0);
+        }
+        signals
+            .send_to_thread(id, info(signal), queue_limit)
+            .map_err(|QueueFull| Errno::EAGAIN)?;
+        process.set_sent_signals_waiting(true);
+    }
+    process.record_signal_sent();
+    super::thread::wake_sleep(process, id);
+    Ok(0)
 }
 
 /// The process's id as a `pid_t`.
@@ -1102,10 +1441,10 @@ pub fn kill<P: Platform>(
     })
 }
 
-/// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller being the only thread it
-/// reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
-/// caller's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal when the queued
-/// signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
+/// `tkill(tid, signal)`: sends `signal` to thread `tid` of the caller's process, the only
+/// threads it reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that
+/// is not the process's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal
+/// when the queued signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1122,8 +1461,8 @@ pub fn tkill<P: Platform>(
 }
 
 /// `tgkill(tgid, tid, signal)`: as [`tkill`], with the thread's process (its thread group)
-/// named too: `EINVAL` if either id is not positive, then `ESRCH` unless both are the
-/// caller's.
+/// named too: `EINVAL` if either id is not positive, then `ESRCH` unless `tgid` is the
+/// caller's process and `tid` one of its threads.
 pub fn tgkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1136,11 +1475,11 @@ pub fn tgkill<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let own = own_id(process);
-    if tgid != own || tid as u32 != thread.id() {
+    if tgid != own {
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
-    send_to_self(process, thread, signal, |signal| {
+    send_to_thread(process, thread, tid as u32, signal, |signal| {
         Info::sent(signal, code::TKILL, own as u32, uid)
     })
 }
@@ -1203,10 +1542,10 @@ pub fn rt_sigqueueinfo<P: Platform>(
 }
 
 /// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
-/// process `tgid`, the caller being the only thread it reaches yet: after `EFAULT`, `EINVAL`
-/// if either id is not
-/// positive, then `EPERM` for a reserved `si_code` unless `tid` is the caller's, then `ESRCH`
-/// unless both ids are the caller's.
+/// process `tgid`, the caller's threads being the only ones it reaches yet: after `EFAULT`,
+/// `EINVAL` if either id is not positive, then `EPERM` for a reserved `si_code` unless `tid`
+/// is the caller's, then `ESRCH` unless `tgid` is the caller's process and `tid` one of its
+/// threads.
 pub fn rt_tgsigqueueinfo<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1225,10 +1564,10 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
     if !own_thread && is_reserved_for_kernel_and_kill(&bytes) {
         return Err(Errno::EPERM);
     }
-    if tgid != own || !own_thread {
+    if tgid != own {
         return Err(Errno::ESRCH);
     }
-    send_to_self(process, thread, signal, |signal| {
+    send_to_thread(process, thread, tid as u32, signal, |signal| {
         Info::queued(signal, bytes)
     })
 }
@@ -1238,7 +1577,8 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
 /// `info` unless that is null, and returns its number. If none is pending, it first waits
 /// until the `struct timespec` at `timeout` has passed (on the monotonic clock, rounded up to
 /// a clock tick), for good if that is null, not at all if it is zero, then fails with `EAGAIN`.
-/// Nothing can send the thread a signal while it waits yet, so the wait is slept out. As Linux,
+/// A signal another thread sends wakes it: one in the set is taken, any other due one makes
+/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. As Linux,
 /// in this order: `EINVAL` if `sigsetsize` is not 8; `EFAULT` if the set is not the program's
 /// memory; `EFAULT` if `timeout` is not, and `EINVAL` for negative seconds or nanoseconds
 /// outside 0 to 999999999; then, with the signal taken, `EFAULT` if `info` is not the program's
@@ -1252,23 +1592,31 @@ pub fn rt_sigtimedwait<P: Platform>(
     set_size: u64,
 ) -> Result<u64, Errno> {
     let wanted = read_set(process, set, set_size)? & !UNBLOCKABLE;
+    take_in_sent(process, thread);
     let deadline = match pointer(timeout) {
         None => Some(u64::MAX),
         Some(address) => super::poll::deadline_in::<P>(
             super::poll::read_timeout(process, address)?.unwrap_or(u64::MAX),
         ),
     };
-    let mut take = || {
+    let take = |thread: &mut LinuxThread| {
         thread
             .signals(&mut process.signals().lock())
             .take_waited(wanted)
     };
-    let taken = match take() {
-        Some(taken) => taken,
-        None => {
-            let deadline = deadline.ok_or(Errno::EAGAIN)?;
-            let _ = super::thread::sleep_until::<P>(process, deadline);
-            take().ok_or(Errno::EAGAIN)?
+    let taken = loop {
+        if let Some(taken) = take(thread) {
+            break taken;
+        }
+        let deadline = deadline.ok_or(Errno::EAGAIN)?;
+        if is_due(thread) {
+            return Err(Errno::EINTR);
+        }
+        if P::clock_ticks() >= deadline {
+            return Err(Errno::EAGAIN);
+        }
+        if super::thread::sleep_until::<P>(process, thread, deadline).is_break() {
+            return Err(Errno::EINTR);
         }
     };
     if let Some(address) = pointer(info) {
@@ -1301,10 +1649,10 @@ pub fn read_set<P: Platform>(
 /// signals in the set at `mask` instead of the thread's (never `SIGKILL` or `SIGSTOP`) until a
 /// signal starts its handler, then fails with `EINTR`. The handler's frame holds the mask the
 /// thread had before, which `rt_sigreturn` restores, as on Linux. A signal its action ignores
-/// is taken and the wait goes on, as Linux restarts the call after one. Nothing can send the
-/// thread a signal while it waits yet, so with none due under the new mask it waits for good,
-/// as on Linux when none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is
-/// not 8, then `EFAULT` if the set is not the program's memory. Sets the call's result;
+/// is taken and the wait goes on, as Linux restarts the call after one. Another thread's
+/// signal wakes it (D95); with none due under the new mask it waits for good, as on Linux when
+/// none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is not 8, then
+/// `EFAULT` if the set is not the program's memory. Sets the call's result;
 /// breaks when a signal ends the process.
 pub fn rt_sigsuspend<P: Platform>(
     process: &Process<P>,
@@ -1347,7 +1695,7 @@ fn suspend<P: Platform>(
         None => thread.signal_state().blocked,
     };
     while !deliver_restoring_mask(process, thread, context, Some(thread_mask))? {
-        super::thread::sleep_until::<P>(process, u64::MAX)?;
+        super::thread::sleep_until::<P>(process, thread, u64::MAX)?;
     }
     ControlFlow::Continue(())
 }
@@ -1370,6 +1718,64 @@ pub fn replace_blocked<P: Platform>(
 pub fn is_due(thread: &LinuxThread) -> bool {
     let signals = thread.signal_state();
     signals.pending & !signals.blocked != 0
+}
+
+/// Takes in the signals other threads sent the thread since it last looked, if any
+/// ([`LockedSignals::take_in_sent`]): whether its pending signals changed.
+pub fn take_in_sent<P: Platform>(process: &Process<P>, thread: &mut LinuxThread) -> bool {
+    if process.signals_sent() == thread.signals_seen() {
+        return false;
+    }
+    take_in_sent_now(process, thread)
+}
+
+/// Takes in what other threads left the thread ([`LockedSignals::take_in_sent`]), whatever the
+/// count of signals sent says (it wraps): whether its pending signals changed.
+pub fn take_in_sent_now<P: Platform>(process: &Process<P>, thread: &mut LinuxThread) -> bool {
+    thread.set_signals_seen(process.signals_sent());
+    let mut guard = process.signals().lock();
+    let changed = thread.signals(&mut guard).take_in_sent();
+    if !guard.has_sent_to_threads() {
+        process.set_sent_signals_waiting(false);
+    }
+    changed
+}
+
+/// On the way back to user mode (an interrupt, a call that may have switched the thread out),
+/// delivers the signals other threads sent the thread, if any were sent since it last looked,
+/// as [`deliver`] does; a load and a compare when none were.
+#[inline]
+pub fn deliver_sent<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    if process.signals_sent() == thread.signals_seen() {
+        return ControlFlow::Continue(());
+    }
+    take_in_and_deliver(process, thread, context)
+}
+
+#[cold]
+#[inline(never)]
+fn take_in_and_deliver<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    take_in_sent(process, thread);
+    deliver(process, thread, context)
+}
+
+/// [`deliver_sent`] for an interrupt: out of line, so the thread loop, which the system calls
+/// share, keeps its registers.
+#[inline(never)]
+pub fn deliver_sent_on_interrupt<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    deliver_sent(process, thread, context)
 }
 
 /// Delivers the signals due during a call that blocks a mask of its own, as [`deliver`] does,
@@ -1400,6 +1806,7 @@ pub fn rt_sigpending<P: Platform>(
     if !super::ends_in_user_space::<P>(set, set_size) {
         return Err(Errno::EFAULT);
     }
+    take_in_sent(process, thread);
     let pending = thread
         .signals(&mut process.signals().lock())
         .blocked_pending()
@@ -1469,7 +1876,9 @@ fn deliver_with<P: Platform>(
             Some(Delivery::Kill(signal)) => {
                 return super::end_process(process, ProcessExit::Killed { signal });
             }
-            Some(Delivery::Stop(_)) => super::thread::sleep_until::<P>(process, u64::MAX)?,
+            Some(Delivery::Stop(_)) => loop {
+                super::thread::sleep_until::<P>(process, thread, u64::MAX)?;
+            },
             Some(Delivery::Handler {
                 signal,
                 action,

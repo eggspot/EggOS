@@ -39,7 +39,7 @@ use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -173,6 +173,12 @@ pub struct Process<P: Platform> {
     exit: SpinLock<Option<ProcessExit>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
+    /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
+    /// wrapping.
+    signals_sent: AtomicU16,
+    /// Whether signals sent to its threads wait for one to take them in
+    /// ([`Self::set_sent_signals_waiting`]).
+    sent_signals_waiting: AtomicBool,
     /// Its threads that run its program and have not exited ([`Self::add_thread`]).
     threads: AtomicU32,
     /// The status its first thread ended with on its own, [`NO_STATUS`] until it has
@@ -239,6 +245,8 @@ impl<P: Platform> Process<P> {
             frame_offset,
             exit: SpinLock::new(None),
             ended: AtomicBool::new(false),
+            signals_sent: AtomicU16::new(0),
+            sent_signals_waiting: AtomicBool::new(false),
             threads: AtomicU32::new(0),
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
@@ -1062,6 +1070,52 @@ impl<P: Platform> Process<P> {
         ended
     }
 
+    /// How many times one of its threads sent another a signal, wrapping: a thread compares it
+    /// with the count it last saw to learn whether it should look for signals sent to it.
+    pub fn signals_sent(&self) -> u16 {
+        self.signals_sent.load(Ordering::Acquire)
+    }
+
+    /// Records that a thread sent another a signal, now in the process's signal state, or
+    /// that its pending signals may have changed (another thread ignored a signal), and
+    /// interrupts every other CPU, as [`Self::exit`] does, so a thread running the program
+    /// there comes back to the kernel to see it ([`spawn`]'s handler gets the interrupt).
+    pub fn record_signal_sent(&self) {
+        self.signals_sent.fetch_add(1, Ordering::Release);
+        interrupt_other_cpus::<P>();
+    }
+
+    /// Records whether signals sent to its threads wait in its signal state for one to take
+    /// them in. Set and cleared under the signals lock. While set, each of its threads that the
+    /// scheduler switches back in interrupts its CPU before it runs the program again, so it
+    /// comes back to the kernel at once to look (see [`spawn`]).
+    pub fn set_sent_signals_waiting(&self, waiting: bool) {
+        self.sent_signals_waiting.store(waiting, Ordering::Relaxed);
+    }
+
+    /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise
+    /// [`Self::interrupt_here_if_sent_signals_wait`].
+    #[inline]
+    fn after_look(&self) -> ControlFlow<()> {
+        if self.has_ended() {
+            return ControlFlow::Break(());
+        }
+        self.interrupt_here_if_sent_signals_wait();
+        ControlFlow::Continue(())
+    }
+
+    /// For a thread of the process that may have been switched out and back in: if signals
+    /// sent to its threads wait to be taken in, interrupts this CPU, so the thread comes back
+    /// from user mode at once and its handler can take in what was sent to it. Called after
+    /// the scheduler's look before user mode ([`spawn`]'s loop) and after the preemption points a
+    /// system call passes on the process's behalf.
+    #[inline]
+    pub fn interrupt_here_if_sent_signals_wait(&self) {
+        if self.sent_signals_waiting.load(Ordering::Relaxed) {
+            cpu::interrupt_here::<P>();
+        }
+    }
+
     /// Records the status the process's first thread ended with while others go on (Linux's
     /// `exit`): the process ends with it if they all end that way too, as Linux reports its
     /// thread group leader's.
@@ -1169,7 +1223,7 @@ where
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
+        if thread::preemption_point_before_user_mode::<P>() && process.after_look().is_break() {
             break;
         }
         process.load_here();

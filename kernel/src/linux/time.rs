@@ -10,7 +10,7 @@
 //! per-thread CPU time; until then they are invalid, as Linux's are for a process that does
 //! not exist, and `clock()` reports that it cannot tell.
 
-use super::thread;
+use super::thread::{self, LinuxThread};
 use super::{Errno, poll};
 use crate::process::Process;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -127,9 +127,13 @@ pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u6
     })
 }
 
-fn sleep_until_nanoseconds<P: Platform>(process: &Process<P>, deadline: u64) {
+fn sleep_until_nanoseconds<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    deadline: u64,
+) {
     let deadline = first_tick_at(deadline, nanoseconds_per_tick::<P>());
-    let _ = thread::sleep_until::<P>(process, deadline);
+    let _ = thread::sleep_through::<P>(process, thread, deadline);
 }
 
 fn timespec(nanoseconds: u64) -> [u8; TIMESPEC_SIZE] {
@@ -261,8 +265,12 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
 
 /// `nanosleep(req, rem)`: sleeps for the `struct timespec` at `req` on the monotonic clock, as
 /// [`clock_nanosleep`] does with `CLOCK_MONOTONIC` and no flags.
-pub fn nanosleep<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
-    sleep_for::<P>(process, req)
+pub fn nanosleep<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    req: u64,
+) -> Result<u64, Errno> {
+    sleep_for::<P>(process, thread, req)
 }
 
 /// `clock_nanosleep(clock, flags, req, rem)`: sleeps on clock `clock` for the `struct
@@ -272,10 +280,12 @@ pub fn nanosleep<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Err
 /// for, `EOPNOTSUPP` for one it cannot sleep on (the raw, coarse and thread CPU-time ones),
 /// then `EFAULT` if `req` is not the program's memory, then `EINVAL` for negative seconds or
 /// nanoseconds outside 0 to 999999999; the alarm clocks, which need a real-time clock device,
-/// are `EOPNOTSUPP` after those checks, as on Linux without one. Nothing can send the thread
-/// a signal while it sleeps yet, so the sleep is never interrupted and `rem` is never written.
+/// are `EOPNOTSUPP` after those checks, as on Linux without one. A signal another thread
+/// sends the sleeper is delivered once the sleep ends: it does not interrupt the sleep yet, so
+/// `rem` is never written.
 pub fn clock_nanosleep<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     clock_id: u64,
     flags: u64,
     req: u64,
@@ -292,17 +302,21 @@ pub fn clock_nanosleep<P: Platform>(
         return Err(Errno::EOPNOTSUPP);
     }
     if flags & TIMER_ABSTIME == 0 {
-        return sleep_for::<P>(process, req);
+        return sleep_for::<P>(process, thread, req);
     }
     let deadline = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    sleep_until_nanoseconds::<P>(process, deadline);
+    sleep_until_nanoseconds::<P>(process, thread, deadline);
     Ok(0)
 }
 
-fn sleep_for<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
+fn sleep_for<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    req: u64,
+) -> Result<u64, Errno> {
     let duration = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
     let deadline = monotonic_nanoseconds::<P>().saturating_add(duration);
-    sleep_until_nanoseconds::<P>(process, deadline);
+    sleep_until_nanoseconds::<P>(process, thread, deadline);
     Ok(0)
 }
 

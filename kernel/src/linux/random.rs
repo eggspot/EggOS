@@ -75,12 +75,9 @@ pub fn getrandom<P: Platform>(
         return Err(Errno::EFAULT);
     }
     let mut written = 0u64;
-    // Cannot overflow `usize`: at most `MAX_RW_COUNT`.
     let _ = random::fill_with::<P>(length as usize, |chunk| {
-        // A page at a time, so the count stops exactly where the memory does.
         let mut done = 0;
         while done < chunk.len() {
-            // Cannot wrap: the range ends within user space.
             let address = buffer.wrapping_add(written);
             let piece = (chunk.len() - done).min((FRAME_SIZE - address % FRAME_SIZE) as usize);
             if process
@@ -93,8 +90,8 @@ pub fn getrandom<P: Platform>(
             written += piece as u64;
         }
         if written.is_multiple_of(PREEMPTION_INTERVAL) {
-            // System calls may pass one (`linux::handle`).
             thread::preemption_point::<P>();
+            process.interrupt_here_if_sent_signals_wait();
         }
         ControlFlow::Continue(())
     });
