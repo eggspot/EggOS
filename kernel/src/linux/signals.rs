@@ -20,7 +20,8 @@
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
 //! with the fault's `siginfo_t`, or, as on Linux, by the default action if the program blocks
-//! or ignores it.
+//! or ignores it. The signals lock is never held across a copy to or from the program's
+//! memory.
 
 use super::Errno;
 use super::fault::Fault;
@@ -1251,20 +1252,17 @@ pub enum DefaultAction {
 }
 
 /// Signal `signal`'s default action (1 to 64; the generic numbers, which AArch64, RISC-V and
-/// x86_64 share), as signal(7) lists it. Every real-time signal, 32 to 64, terminates.
+/// x86_64 share), as signal(7) lists it. Every other standard signal and every real-time
+/// signal, 32 to 64, terminates.
 pub const fn default_action(signal: u32) -> DefaultAction {
+    use super::signal::*;
     use DefaultAction::*;
     match signal {
-        // SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV, SIGXCPU, SIGXFSZ, SIGSYS.
-        3..=8 | 11 | 24 | 25 | 31 => Core,
-        // SIGCHLD, SIGURG, SIGWINCH.
-        17 | 23 | 28 => Ignore,
-        // SIGCONT.
-        18 => Continue,
-        // SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU.
-        19..=22 => Stop,
-        // SIGHUP, SIGINT, SIGKILL, SIGUSR1, SIGUSR2, SIGPIPE, SIGALRM, SIGTERM, SIGSTKFLT,
-        // SIGVTALRM, SIGPROF, SIGIO, SIGPWR, and the real-time signals.
+        SIGQUIT | SIGILL | SIGTRAP | SIGABRT | SIGBUS | SIGFPE | SIGSEGV | SIGXCPU | SIGXFSZ
+        | SIGSYS => Core,
+        SIGCHLD | SIGURG | SIGWINCH => Ignore,
+        SIGCONT => Continue,
+        SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU => Stop,
         _ => Terminate,
     }
 }
@@ -1311,7 +1309,6 @@ pub fn rt_sigaction<P: Platform>(
         }
     };
     let signal = signal as u32;
-    // Copied out before the program's memory is touched: the lock is never held across a copy.
     let (previous, asked) = {
         let mut guard = process.signals().lock();
         let mut signals = thread.signals(&mut guard);
@@ -1601,9 +1598,9 @@ fn send_to_process<P: Platform>(
     Ok(0)
 }
 
-/// The process's id as a `pid_t`.
+/// The process's id as a `pid_t`, which it fits: a [`crate::process::ProcessId`] is at most
+/// `i32::MAX`.
 fn own_id<P: Platform>(process: &Process<P>) -> i32 {
-    // At most `i32::MAX` (`ProcessId`).
     process.id().get() as i32
 }
 
@@ -1623,8 +1620,9 @@ pub fn kill<P: Platform>(
 ) -> Result<u64, Errno> {
     let own = own_id(process);
     let pid = pid as u32 as i32;
-    // -1 is never a group, even process 1's.
-    if pid == -1 || (pid != own && pid != 0 && pid != own.wrapping_neg()) {
+    let every_process_but_the_caller = -1;
+    if pid == every_process_but_the_caller || (pid != own && pid != 0 && pid != own.wrapping_neg())
+    {
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
@@ -2105,8 +2103,9 @@ pub fn deliver_fault<P: Platform>(
 /// [`deliver`], with `fault` the fault whose signal is due, if one is: its handler's frame
 /// describes it. The first frame written saves `mask_to_restore`, if any, instead of the
 /// thread's mask, as Linux's does after `rt_sigsuspend` changed it, and is written after the
-/// call's result is set as `interrupted` says, if a signal interrupted the call. Continues
-/// with whether a handler started.
+/// call's result is set as `interrupted` says, if a signal interrupted the call. A frame that
+/// cannot be written sends `SIGSEGV`, by its default action if it was `SIGSEGV`'s own frame,
+/// as on Linux. Continues with whether a handler started.
 fn deliver_with<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -2117,7 +2116,6 @@ fn deliver_with<P: Platform>(
 ) -> ControlFlow<(), bool> {
     let mut started_handler = false;
     loop {
-        // The lock is never held across a copy to the program's memory.
         let (delivery, state) = {
             let mut guard = process.signals().lock();
             let mut signals = thread.signals(&mut guard);
@@ -2160,8 +2158,6 @@ fn deliver_with<P: Platform>(
                         started_handler = true;
                         mask_to_restore = None;
                     }
-                    // As Linux: `SIGSEGV`, by its default action if it was the signal whose
-                    // frame failed.
                     Err(BadFrame) => {
                         if signal == SIGSEGV {
                             signals.reset_handler(SIGSEGV);
@@ -2205,8 +2201,9 @@ fn start_handler<P: Platform>(
     } else {
         stack.wrapping_sub(signal_frame::RED_ZONE)
     };
-    // A nested handler's frame must stay on the alternate stack, as on Linux.
-    if already_on && !alternate.is_on(signal_frame::lowest_address(top)) {
+    let nested_frame_leaves_alternate_stack =
+        already_on && !alternate.is_on(signal_frame::lowest_address(top));
+    if nested_frame_leaves_alternate_stack {
         return Err(BadFrame);
     }
     let saved = Saved {
@@ -2258,8 +2255,9 @@ fn load_frame_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
 /// its frame saved (see [`signal_frame`]), its FP/SIMD registers too, and returns the restored
 /// result register, which the dispatcher writes back unchanged. A frame that is not the program's
 /// memory, whose FP/SIMD records are not in Linux's shape, or whose FP/SIMD values a load would
-/// fault on, sends `SIGSEGV` (whatever the program blocked or ignored), as on Linux, and changes
-/// nothing else. The signals the restored mask unblocks are delivered next.
+/// fault on, sends `SIGSEGV` (whatever the program blocked or ignored), as on Linux, changes
+/// nothing else and returns 0, which only a `SIGSEGV` handler's frame shows. The signals the
+/// restored mask unblocks are delivered next.
 pub fn rt_sigreturn<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -2281,7 +2279,6 @@ pub fn rt_sigreturn<P: Platform>(
             note_taken_in(process, &guard);
             Ok(signal_frame::result(&saved.registers))
         }
-        // As Linux, 0: only a `SIGSEGV` handler's frame can show it.
         Err(BadFrame) => {
             thread.signals(&mut process.signals().lock()).force(SIGSEGV);
             Ok(0)
@@ -2320,12 +2317,14 @@ mod tests {
     fn actions_change_except_sigkill_s_and_sigstop_s() {
         let (mut process, mut thread) = (Signals::new(), ThreadSignals::new());
         let mut signals = process.with_thread(&mut thread, 1);
-        // Setting the default action changes nothing: no table is made.
         assert_eq!(
             signals.set_action(13, Action::default()),
             Ok(Action::default())
         );
-        assert!(signals.actions_and_queue.is_none());
+        assert!(
+            signals.actions_and_queue.is_none(),
+            "setting the default action makes no table"
+        );
         for signal in [SIGKILL, SIGSTOP, 0, 65] {
             let ignore = Action {
                 handler: IGNORE,
@@ -2337,7 +2336,6 @@ mod tests {
             );
         }
         assert!(signals.actions_and_queue.is_none());
-        // A handler: unknown flags cleared, SIGKILL and SIGSTOP left out of its mask.
         let handler = Action {
             handler: 0x40_1000,
             flags: flag::SIGINFO | flag::ONSTACK | flag::UNSUPPORTED | 1 << 40,
@@ -2346,8 +2344,15 @@ mod tests {
         };
         assert_eq!(signals.set_action(11, handler), Ok(Action::default()));
         let kept = signals.action(11).unwrap();
-        assert_eq!(kept.flags, flag::SIGINFO | flag::ONSTACK);
-        assert_eq!(kept.mask, !UNBLOCKABLE);
+        assert_eq!(
+            kept.flags,
+            flag::SIGINFO | flag::ONSTACK,
+            "unknown flags cleared"
+        );
+        assert_eq!(
+            kept.mask, !UNBLOCKABLE,
+            "SIGKILL and SIGSTOP left out of a handler's mask"
+        );
         assert_eq!(signals.set_action(11, Action::default()), Ok(kept));
         assert_eq!(signals.action(11), Some(Action::default()));
         assert_eq!(signals.action(64), Some(Action::default()));
@@ -2387,25 +2392,29 @@ mod tests {
         let flags = |stack: AlternateStack, sp| {
             u32::from_ne_bytes(stack.to_bytes(sp)[8..12].try_into().unwrap())
         };
-        // Its top is on it (the stack grows down); its base and below, and above its top,
-        // are off it.
-        assert_eq!(flags(stack, 0x7000_4000), stack_flag::ONSTACK);
+        assert_eq!(
+            flags(stack, 0x7000_4000),
+            stack_flag::ONSTACK,
+            "the top is on the stack, which grows down"
+        );
         assert_eq!(flags(stack, 0x7000_4001), 0);
         assert_eq!(flags(stack, 0x7000_0000), 0);
         assert_eq!(flags(stack, 0x6fff_ffff), 0);
-        // A disarmed stack is never reported as in use.
         let disarmed = AlternateStack {
             autodisarm: true,
             ..stack
         };
-        assert_eq!(flags(disarmed, 0x7000_1000), stack_flag::AUTODISARM);
+        assert_eq!(
+            flags(disarmed, 0x7000_1000),
+            stack_flag::AUTODISARM,
+            "a disarmed stack is never reported as in use"
+        );
         assert_eq!(flags(AlternateStack::default(), 0), stack_flag::DISABLE);
     }
 
     #[test]
     fn default_actions_are_signal_7_s() {
         use DefaultAction::*;
-        // signal(7)'s table, by number.
         let core = [3, 4, 5, 6, 7, 8, 11, 24, 25, 31];
         let stop = [19, 20, 21, 22];
         let expected = |signal| {
@@ -2436,7 +2445,6 @@ mod tests {
         const SIGTSTP: u32 = 20;
         let (mut process, mut thread) = (Signals::new(), ThreadSignals::new());
         let mut signals = process.with_thread(&mut thread, 1);
-        // Ignored and not blocked: discarded when sent.
         signals.send(by_kill(SIGCHLD), NO_LIMIT).unwrap();
         let ignore = Action {
             handler: IGNORE,
@@ -2444,26 +2452,35 @@ mod tests {
         };
         signals.set_action(SIGUSR1, ignore).unwrap();
         signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
-        assert_eq!(signals.thread.pending, 0);
-        // Blocked: pending, ignored or not, and reported; an ignored one is discarded once
-        // unblocked, a terminating one ends the process.
+        assert_eq!(
+            signals.thread.pending, 0,
+            "ignored and not blocked: discarded when sent"
+        );
         signals.thread.blocked = bit(SIGCHLD) | bit(SIGUSR1) | bit(SIGABRT);
         for signal in [SIGCHLD, SIGUSR1, SIGABRT] {
             signals.send(by_kill(signal), NO_LIMIT).unwrap();
         }
-        assert_eq!(signals.blocked_pending(), signals.thread.blocked);
+        assert_eq!(
+            signals.blocked_pending(),
+            signals.thread.blocked,
+            "blocked: pending and reported, ignored or not"
+        );
         assert_eq!(signals.next_delivery(), None);
         signals.thread.blocked = 0;
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGABRT)));
-        // The ignored ones after it go on the next look.
-        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(
+            signals.next_delivery(),
+            None,
+            "the ignored ones after it go on the next look"
+        );
         assert_eq!(signals.thread.pending, 0);
-        // Setting an action that ignores a pending signal discards it, blocked or not.
         signals.thread.blocked = bit(SIGABRT);
         signals.send(by_kill(SIGABRT), NO_LIMIT).unwrap();
         signals.set_action(SIGABRT, ignore).unwrap();
-        assert_eq!(signals.thread.pending, 0);
-        // A handler runs, with where the signal came from.
+        assert_eq!(
+            signals.thread.pending, 0,
+            "an action that ignores a pending signal discards it, blocked or not"
+        );
         let handler = Action {
             handler: 0x40_1000,
             ..Action::default()
@@ -2480,19 +2497,24 @@ mod tests {
             })
         );
         assert_eq!(signals.thread.pending, 0);
-        // The default action again: due.
         signals.set_action(SIGUSR1, Action::default()).unwrap();
         signals.send(by_kill(SIGUSR1), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGUSR1)));
-        // Lowest number first; SIGKILL whatever the mask said.
         signals.thread.blocked = 0;
         signals.send(by_kill(64), NO_LIMIT).unwrap();
         signals.send(by_kill(SIGKILL), NO_LIMIT).unwrap();
-        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGKILL)));
+        assert_eq!(
+            signals.next_delivery(),
+            Some(Delivery::Kill(SIGKILL)),
+            "SIGKILL first, whatever the mask said, then the lowest number"
+        );
         assert_eq!(signals.next_delivery(), Some(Delivery::Kill(64)));
-        // A terminal's stop signals are discarded (an orphaned process group); SIGSTOP stops.
         signals.send(by_kill(SIGTSTP), NO_LIMIT).unwrap();
-        assert_eq!(signals.next_delivery(), None);
+        assert_eq!(
+            signals.next_delivery(),
+            None,
+            "a terminal's stop signal is discarded in an orphaned process group"
+        );
         signals.send(by_kill(SIGSTOP), NO_LIMIT).unwrap();
         assert_eq!(signals.next_delivery(), Some(Delivery::Stop(SIGSTOP)));
     }
@@ -2609,10 +2631,13 @@ mod tests {
         assert_eq!(signals.thread.pending, bit(SIGCONT));
         signals.send(by_kill(21), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(21));
-        // SIGSTOP cannot be blocked: sent, it is pending until delivered.
         signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
         signals.send(by_kill(SIGSTOP), NO_LIMIT).unwrap();
-        assert_eq!(signals.thread.pending, bit(SIGSTOP));
+        assert_eq!(
+            signals.thread.pending,
+            bit(SIGSTOP),
+            "SIGSTOP cannot be blocked: pending until delivered"
+        );
         signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
         assert_eq!(signals.thread.pending, bit(SIGCONT));
         signals.thread.blocked = 0;
@@ -2879,17 +2904,16 @@ mod tests {
                 ..handler
             }
         );
-        // Removed as it was taken: the next one is by the default action.
         assert_eq!(
             signals.action(SIGUSR1),
             Some(Action {
                 handler: DEFAULT,
                 ..action
-            })
+            }),
+            "SA_RESETHAND's handler is removed as it is taken"
         );
         signals.enter_handler(SIGUSR1, &action);
         assert_eq!(signals.thread.blocked, bit(SIGUSR1) | bit(SIGUSR2));
-        // With SA_NODEFER the signal itself stays unblocked; SIGKILL never is.
         signals.thread.blocked = 0;
         let nodefer = Action {
             flags: flag::NODEFER,
@@ -2897,9 +2921,11 @@ mod tests {
             ..handler
         };
         signals.enter_handler(SIGUSR1, &nodefer);
-        assert_eq!(signals.thread.blocked, bit(SIGSEGV));
-        // An alternate stack is kept while a handler runs, unless it has SS_AUTODISARM:
-        // then it is disabled.
+        assert_eq!(
+            signals.thread.blocked,
+            bit(SIGSEGV),
+            "with SA_NODEFER the signal stays unblocked, and SIGKILL is never blocked"
+        );
         signals
             .change_alternate_stack(0x7000_0000, 0, MIN_STACK_SIZE, 0)
             .unwrap();
@@ -2911,22 +2937,29 @@ mod tests {
             .unwrap();
         let armed = signals.thread.alternate_stack;
         signals.enter_handler(SIGUSR1, &handler);
-        assert_eq!(signals.thread.alternate_stack, AlternateStack::default());
-        // rt_sigreturn restores the mask, without SIGKILL, and the stack the frame saved.
+        assert_eq!(
+            signals.thread.alternate_stack,
+            AlternateStack::default(),
+            "SS_AUTODISARM disables the alternate stack while a handler runs"
+        );
         signals.restore(u64::MAX, armed.to_bytes(0), 0);
         assert_eq!(signals.thread.blocked, !UNBLOCKABLE);
         assert_eq!(signals.thread.alternate_stack, armed);
-        // Not while the thread is on its alternate stack, nor an invalid one: as Linux, the
-        // stack is left as it was.
         let plain = AlternateStack {
             autodisarm: false,
             ..armed
         };
         signals.thread.alternate_stack = plain;
         signals.restore(0, AlternateStack::default().to_bytes(0), 0x7000_0100);
-        assert_eq!(signals.thread.alternate_stack, plain);
+        assert_eq!(
+            signals.thread.alternate_stack, plain,
+            "not restored while the thread is on its alternate stack"
+        );
         signals.restore(0, AlternateStack { size: 1, ..plain }.to_bytes(0), 0);
-        assert_eq!(signals.thread.alternate_stack, plain);
+        assert_eq!(
+            signals.thread.alternate_stack, plain,
+            "an invalid stack is not restored"
+        );
         assert_eq!(signals.thread.blocked, 0);
     }
 
@@ -2935,7 +2968,6 @@ mod tests {
         const SIGSEGV: u32 = 11;
         let (mut process, mut thread) = (Signals::new(), ThreadSignals::new());
         let mut signals = process.with_thread(&mut thread, 1);
-        // Blocked, with a handler: unblocked, by the default action.
         let handler = Action {
             handler: 0x40_1000,
             ..Action::default()
@@ -2944,16 +2976,22 @@ mod tests {
         signals.thread.blocked = bit(SIGSEGV) | bit(1);
         signals.force(SIGSEGV);
         assert_eq!(signals.thread.blocked, bit(1));
-        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGSEGV)));
-        // Ignored: by the default action.
+        assert_eq!(
+            signals.next_delivery(),
+            Some(Delivery::Kill(SIGSEGV)),
+            "blocked, with a handler: unblocked, by the default action"
+        );
         let ignore = Action {
             handler: IGNORE,
             ..Action::default()
         };
         signals.set_action(SIGSEGV, ignore).unwrap();
         signals.force(SIGSEGV);
-        assert_eq!(signals.next_delivery(), Some(Delivery::Kill(SIGSEGV)));
-        // Caught and not blocked: its handler runs.
+        assert_eq!(
+            signals.next_delivery(),
+            Some(Delivery::Kill(SIGSEGV)),
+            "ignored: by the default action"
+        );
         signals.set_action(SIGSEGV, handler).unwrap();
         signals.force(SIGSEGV);
         assert_eq!(

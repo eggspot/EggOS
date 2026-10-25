@@ -704,8 +704,10 @@ pub(crate) mod x86_64 {
 
     const _: () = assert!(core::mem::offset_of!(Registers, vector) == 15 * 8);
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) == 22 * 8);
-    // `TSS.RSP0` must be 16-byte aligned: the CPU aligns it down before pushing.
-    const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) % 16 == 0);
+    const _: () = assert!(
+        core::mem::offset_of!(Registers, kernel_rsp) % 16 == 0,
+        "TSS.RSP0 must be 16-byte aligned: the CPU aligns it down before pushing"
+    );
     const _: () = assert!(core::mem::offset_of!(Registers, fs_base) == 23 * 8);
     const _: () = assert!(core::mem::offset_of!(Registers, fs_base_id) == 24 * 8);
 
@@ -850,10 +852,9 @@ mod tests {
         assert_eq!(context.thread_pointer(), 0);
         assert_eq!(context.set_thread_pointer(0x7000_1000), Ok(()));
         assert_eq!(context.thread_pointer(), 0x7000_1000);
-        // Only x86_64's FS base must stay a user address; elsewhere the program could set
-        // anything itself.
         let kernel = 0xffff_8000_0000_0000;
-        if cfg!(target_arch = "x86_64") {
+        let only_user_addresses = cfg!(target_arch = "x86_64");
+        if only_user_addresses {
             assert_eq!(
                 context.set_thread_pointer(kernel),
                 Err(InvalidThreadPointer)
@@ -904,9 +905,8 @@ mod tests {
         assert_eq!(context.syscall_arguments(), [0; 6]);
         assert_eq!(context.syscall_number(), 0);
         context.set_syscall_result(42);
-        // The result goes where the ABI returns it: the first argument's register on AArch64
-        // and RISC-V, the number's on x86_64.
-        if cfg!(target_arch = "x86_64") {
+        let result_in_number_register = cfg!(target_arch = "x86_64");
+        if result_in_number_register {
             assert_eq!(context.syscall_number(), 42);
         } else {
             assert_eq!(context.syscall_arguments(), [42, 0, 0, 0, 0, 0]);
@@ -947,8 +947,6 @@ mod tests {
                 (0x40_0000, 0x7000, 7)
             );
             assert_eq!(context.arch.vector, x86_64::RESTORE_ALL_VECTOR);
-            // After a system call the way back would load `rcx` and `r11` from `rip` and
-            // `rflags`; setting every register makes it load them too.
             context.arch.vector = x86_64::SYSCALL_VECTOR;
             registers.rcx = 0x40_1000;
             registers.rip = 0x40_2000;
@@ -958,8 +956,8 @@ mod tests {
         assert_eq!((context.pc(), context.stack()), (0x40_2000, 0x6000));
         #[cfg(target_arch = "riscv64")]
         {
-            // `x0` is always zero.
-            registers.x[0] = 0;
+            let hardwired_zero = 0;
+            registers.x[0] = hardwired_zero;
         }
         assert_eq!(context.registers(), registers);
         #[cfg(target_arch = "x86_64")]
