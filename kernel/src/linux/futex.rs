@@ -45,6 +45,13 @@ pub struct Key {
 }
 
 impl Key {
+    /// What [`interrupt`] leaves in the link of a waiter it unlinked: an address no word of 4
+    /// bytes has, in no address space.
+    const INTERRUPTED: Self = Self {
+        space_and_kind: u64::MAX,
+        address: u64::MAX,
+    };
+
     pub const fn new(space: u32, address: u64, shared: bool) -> Self {
         Self {
             space_and_kind: (space as u64) << 1 | shared as u64,
@@ -123,7 +130,6 @@ impl Default for WaitSlot {
 struct Link {
     next: Option<NonNull<Waiter>>,
     queued: bool,
-    interrupted: bool,
     key: Key,
 }
 
@@ -165,7 +171,6 @@ impl Bucket {
         *self.link(waiter) = Link {
             next: None,
             queued: true,
-            interrupted: false,
             key,
         };
         let mut last = None;
@@ -254,7 +259,6 @@ fn wait_in<P: Platform, const INTERRUPTIBLE: bool>(
         link: UnsafeCell::new(Link {
             next: None,
             queued: false,
-            interrupted: false,
             key,
         }),
     };
@@ -275,7 +279,7 @@ fn wait_in<P: Platform, const INTERRUPTIBLE: bool>(
     // queued), so nothing but this thread reaches its link any more, and whoever unlinked it
     // wrote the link before it unparked the parker or released the bucket's lock, which this
     // thread has observed since.
-    let interrupted = INTERRUPTIBLE && unsafe { (*waiter.link.get()).interrupted };
+    let interrupted = INTERRUPTIBLE && unsafe { (*waiter.link.get()).key } == Key::INTERRUPTED;
     match interrupted {
         true => Err(Errno::EINTR),
         false => Ok(0),
@@ -300,7 +304,7 @@ pub fn interrupt<P: Platform>(slot: &WaitSlot) {
         let thread_slot = unsafe { candidate.as_ref() }.thread_slot;
         if thread_slot == Some(NonNull::from(slot)) {
             bucket.unlink(previous, candidate);
-            bucket.link(candidate).interrupted = true;
+            bucket.link(candidate).key = Key::INTERRUPTED;
             bucket.unpark::<P>(candidate);
             return;
         }
