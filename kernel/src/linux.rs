@@ -132,6 +132,7 @@ pub mod number {
         pub const NEWFSTATAT: u64 = 262;
         pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
+        pub const GET_ROBUST_LIST: u64 = 274;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
@@ -153,6 +154,7 @@ pub mod number {
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const FUTEX: u64 = 98;
         pub const SET_ROBUST_LIST: u64 = 99;
+        pub const GET_ROBUST_LIST: u64 = 100;
         pub const NANOSLEEP: u64 = 101;
         pub const CLOCK_SETTIME: u64 = 112;
         pub const CLOCK_GETTIME: u64 = 113;
@@ -229,6 +231,7 @@ pub mod number {
             UNAME,
             SET_TID_ADDRESS,
             SET_ROBUST_LIST,
+            GET_ROBUST_LIST,
             SCHED_YIELD,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
@@ -614,7 +617,8 @@ fn out_of_line_result<P: Platform>(
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),
-        number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
+        number::SET_ROBUST_LIST => identity::set_robust_list(thread, first, second),
+        number::GET_ROBUST_LIST => identity::get_robust_list(process, thread, first, second, third),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
@@ -718,6 +722,10 @@ pub fn exit_thread<P: Platform>(
     thread
         .signals(&mut process.signals().lock())
         .discard(u64::MAX);
+    let robust_list = thread.robust_list();
+    if robust_list != 0 {
+        futex::release_robust_list(process, thread.id(), robust_list);
+    }
     let address = thread.clear_child_tid();
     if address != 0 {
         let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
@@ -4402,6 +4410,151 @@ mod tests {
             handle(&process, &mut first, &mut context, UserExit::Syscall),
             ControlFlow::Break(()),
             "a thread of an ended process went back to its program after a call out of line"
+        );
+    }
+
+    fn write_u64(process: &Process<P>, address: u64, value: u64) {
+        process
+            .write_user_memory(address, &value.to_ne_bytes())
+            .unwrap();
+    }
+
+    fn write_u32(process: &Process<P>, address: u64, value: u32) {
+        process
+            .write_user_memory(address, &value.to_ne_bytes())
+            .unwrap();
+    }
+
+    fn read_u32(process: &Process<P>, address: u64) -> u32 {
+        let mut bytes = [0; 4];
+        process.read_user_memory(address, &mut bytes).unwrap();
+        u32::from_ne_bytes(bytes)
+    }
+
+    #[test]
+    fn get_robust_list_reports_the_caller_s_head_and_its_size() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let (head, size) = (SCRATCH, SCRATCH + 8);
+        let get = |thread: &mut LinuxThread, tid: u64, head: u64| {
+            call_as(
+                &process,
+                thread,
+                number::GET_ROBUST_LIST,
+                [tid, head, size, 0, 0, 0],
+            )
+        };
+        assert_eq!(get(&mut second, 0, head), 0);
+        let mut bytes = [0u8; 16];
+        process.read_user_memory(head, &mut bytes).unwrap();
+        assert_eq!(bytes[..8], 0u64.to_ne_bytes());
+        assert_eq!(bytes[8..], 24u64.to_ne_bytes());
+        let list = SCRATCH + 0x100;
+        let set = [list, 24, 0, 0, 0, 0];
+        assert_eq!(
+            call_as(&process, &mut second, number::SET_ROBUST_LIST, set),
+            0
+        );
+        assert_eq!(second.robust_list(), list);
+        assert_eq!(first.robust_list(), 0);
+        let tid = u64::from(second.id());
+        assert_eq!(get(&mut second, tid, head), 0);
+        process.read_user_memory(head, &mut bytes[..8]).unwrap();
+        assert_eq!(bytes[..8], list.to_ne_bytes());
+        assert_eq!(get(&mut first, tid, head), Errno::ESRCH.result());
+        assert_eq!(get(&mut second, 0, 0), Errno::EFAULT.result());
+        let refused = [list, 16, 0, 0, 0, 0];
+        assert_eq!(
+            call_as(&process, &mut second, number::SET_ROBUST_LIST, refused),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(second.robust_list(), list);
+    }
+
+    #[test]
+    fn a_thread_s_exit_releases_the_robust_locks_it_holds() {
+        use futex::robust::{OWNER_DIED, PRIORITY_INHERITANCE, WAITERS};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, SCRATCH + 0xff0);
+        let tid = second.id();
+        let head = SCRATCH;
+        let entry = |n: u64| SCRATCH + 0x100 * n;
+        let lock = |n: u64| entry(n) - 0x10;
+        write_u64(&process, head, entry(1));
+        write_u64(&process, head + 8, (-0x10i64) as u64);
+        write_u64(&process, head + 16, entry(5));
+        write_u64(&process, entry(1), entry(2));
+        write_u64(&process, entry(2), entry(3) | PRIORITY_INHERITANCE);
+        write_u64(&process, entry(3), entry(4));
+        write_u64(&process, entry(4), head);
+        write_u32(&process, lock(1), tid | WAITERS);
+        write_u32(&process, lock(2), tid);
+        write_u32(&process, lock(3), tid | WAITERS);
+        write_u32(&process, lock(4), (tid + 1) | WAITERS);
+        write_u32(&process, lock(5), tid);
+        second.set_robust_list(head);
+
+        let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(!process.has_ended());
+        assert_eq!(read_u32(&process, lock(1)), WAITERS | OWNER_DIED);
+        assert_eq!(read_u32(&process, lock(2)), OWNER_DIED);
+        assert_eq!(read_u32(&process, lock(3)), WAITERS | OWNER_DIED);
+        assert_eq!(read_u32(&process, lock(4)), (tid + 1) | WAITERS);
+        assert_eq!(read_u32(&process, lock(5)), OWNER_DIED);
+        assert_eq!(read_u32(&process, SCRATCH + 0xff0), 0);
+    }
+
+    #[test]
+    fn a_robust_list_that_loops_or_faults_ends_the_walk() {
+        use futex::robust::OWNER_DIED;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let first = take_first_thread(&process);
+        let mut looping = second_thread(&process, &first, 0);
+        let tid = looping.id();
+        let (head, entry, pending) = (SCRATCH, SCRATCH + 0x100, SCRATCH + 0x200);
+        write_u64(&process, head, entry);
+        write_u64(&process, head + 8, 8);
+        write_u64(&process, head + 16, pending);
+        write_u64(&process, entry, entry);
+        write_u32(&process, entry + 8, tid);
+        write_u32(&process, pending + 8, tid);
+        looping.set_robust_list(head);
+        let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut looping, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(read_u32(&process, entry + 8), OWNER_DIED);
+        assert_eq!(read_u32(&process, pending + 8), OWNER_DIED);
+
+        let mut faulting = second_thread(&process, &first, 0);
+        let tid = faulting.id();
+        write_u64(&process, entry, 0x10);
+        write_u32(&process, entry + 8, tid);
+        write_u32(&process, pending + 8, tid);
+        faulting.set_robust_list(head);
+        let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut faulting, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(read_u32(&process, entry + 8), OWNER_DIED);
+        assert_eq!(
+            read_u32(&process, pending + 8),
+            tid,
+            "a fault did not end the walk"
         );
     }
 

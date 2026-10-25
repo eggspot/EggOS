@@ -37,6 +37,7 @@ pub fn sleep_until<P: Platform>(process: &Process<P>, deadline: u64) -> ControlF
 pub struct LinuxThread {
     id: u32,
     clear_child_tid: u64,
+    robust_list: u64,
     signals: ThreadSignals,
 }
 
@@ -46,6 +47,7 @@ impl LinuxThread {
         Self {
             id: process.id().get(),
             clear_child_tid: 0,
+            robust_list: 0,
             signals: ThreadSignals::new(),
         }
     }
@@ -57,6 +59,7 @@ impl LinuxThread {
         Self {
             id,
             clear_child_tid,
+            robust_list: 0,
             signals: self.signals.for_new_thread(),
         }
     }
@@ -74,6 +77,17 @@ impl LinuxThread {
     /// Sets the address its exit clears and wakes as a futex (`set_tid_address`).
     pub fn set_clear_child_tid(&mut self, address: u64) {
         self.clear_child_tid = address;
+    }
+
+    /// The head of its robust futex list (`set_robust_list`), 0 for none: its exit releases
+    /// the locks on the list that it holds ([`super::futex::release_robust_list`]).
+    pub fn robust_list(&self) -> u64 {
+        self.robust_list
+    }
+
+    /// Sets the head of its robust futex list (`set_robust_list`).
+    pub fn set_robust_list(&mut self, head: u64) {
+        self.robust_list = head;
     }
 
     /// Its signal state joined with its process's, `process`, whose lock the caller holds.

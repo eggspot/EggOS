@@ -389,6 +389,87 @@ pub fn futex<P: Platform>(
     }
 }
 
+/// The bits of a robust lock's word ([`release_robust_list`]): a waiter may be blocked on it,
+/// its owner died holding it, and the owner's thread id.
+pub mod robust {
+    pub const WAITERS: u32 = 0x8000_0000;
+    pub const OWNER_DIED: u32 = 0x4000_0000;
+    pub const OWNER: u32 = 0x3fff_ffff;
+    /// At most this many locks on one list are released, so a list that loops ends.
+    pub const LIST_LIMIT: usize = 2048;
+    /// Set in a pointer to a lock entry, the lock is a priority-inheritance one.
+    pub const PRIORITY_INHERITANCE: u64 = 1;
+}
+
+/// Releases the robust locks thread `tid` of `process` holds as it exits, from the list whose
+/// head (Linux's `struct robust_list_head`: the first entry, the signed offset from each entry
+/// to its lock word, the entry being taken or released) is at `head`, as Linux: each lock word
+/// whose owner is `tid` keeps its waiters bit, gets the owner-died bit and no owner, and one
+/// waiter on it as a shared futex is woken (none for a priority-inheritance lock); every entry
+/// up to [`robust::LIST_LIMIT`], until the list comes back to its head, then the pending
+/// entry. A word or pointer that is not the program's memory ends the walk.
+pub fn release_robust_list<P: Platform>(process: &Process<P>, tid: u32, head: u64) {
+    let Ok([first, offset, pending]) = read_user_words::<P, 3>(process, head) else {
+        return;
+    };
+    let address = |entry: u64| entry & !robust::PRIORITY_INHERITANCE;
+    let mut entry = first;
+    for _ in 0..robust::LIST_LIMIT {
+        if address(entry) == head {
+            break;
+        }
+        let Ok([next]) = read_user_words::<P, 1>(process, address(entry)) else {
+            return;
+        };
+        if address(entry) != address(pending)
+            && release_robust_lock(process, tid, entry, offset).is_err()
+        {
+            return;
+        }
+        entry = next;
+    }
+    if address(pending) != 0 {
+        let _ = release_robust_lock(process, tid, pending, offset);
+    }
+}
+
+fn release_robust_lock<P: Platform>(
+    process: &Process<P>,
+    tid: u32,
+    entry: u64,
+    offset: u64,
+) -> Result<(), Errno> {
+    let address = (entry & !robust::PRIORITY_INHERITANCE).wrapping_add(offset);
+    if !address.is_multiple_of(WORD_SIZE)
+        || address > <P::PageTableFormat as Format>::USER_END - WORD_SIZE
+    {
+        return Err(Errno::EFAULT);
+    }
+    let word = read_word(process, address)?;
+    if word & robust::OWNER != tid {
+        return Ok(());
+    }
+    let released = word & robust::WAITERS | robust::OWNER_DIED;
+    process
+        .write_user_memory(address, &released.to_ne_bytes())
+        .map_err(|_| Errno::EFAULT)?;
+    if word & robust::WAITERS != 0 && entry & robust::PRIORITY_INHERITANCE == 0 {
+        wake::<P>(Key::new(process.id().get(), address, true), MATCH_ANY, 1);
+    }
+    Ok(())
+}
+
+fn read_user_words<P: Platform, const N: usize>(
+    process: &Process<P>,
+    address: u64,
+) -> Result<[u64; N], Errno> {
+    let mut bytes = [[0; 8]; N];
+    process
+        .read_user_memory(address, bytes.as_flattened_mut())
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(bytes.map(u64::from_ne_bytes))
+}
+
 fn check_word<P: Platform>(process: &Process<P>, address: u64, shared: bool) -> Result<(), Errno> {
     if !address.is_multiple_of(WORD_SIZE) {
         return Err(Errno::EINVAL);
