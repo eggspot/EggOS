@@ -14,7 +14,7 @@
 //! back needs a count of live blocks per frame (D30 follow-up).
 //!
 //! Interrupt and exception handlers must not allocate: the heap's lock does not mask
-//! interrupts (see [`SpinLock`]), so a handler allocating while the code it interrupted holds
+//! interrupts (see [`LeafSpinLock`]), so a handler allocating while the code it interrupted holds
 //! the lock would wait forever. Threads on other CPUs wait for it (D43).
 
 use crate::memory::{self, FrameAllocator, MAX_ORDER};
