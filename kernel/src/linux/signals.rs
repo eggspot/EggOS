@@ -719,7 +719,7 @@ impl Signals {
 
     /// The ids of the process's threads that [`Self::add_thread`] counted and that have not
     /// exited: all but its first.
-    pub fn other_threads(&self) -> &[u32] {
+    fn other_threads(&self) -> &[u32] {
         self.actions_and_queue
             .as_deref()
             .map_or(&[], |[block]| &block.threads)
@@ -1137,7 +1137,7 @@ impl LockedSignals<'_> {
 
     /// Records the signals the thread waits for in `rt_sigtimedwait` ([`ThreadSignals::waited`]),
     /// none once it no longer waits, taking in those sent to the process at once.
-    pub fn set_waited(&mut self, waited: u64) {
+    fn set_waited(&mut self, waited: u64) {
         self.thread.waited = waited;
         if waited != 0 && waited & self.left_for_process() != 0 {
             self.take_in_sent();
@@ -1568,7 +1568,8 @@ fn own_id<P: Platform>(process: &Process<P>) -> i32 {
 /// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
 /// is looked at, as on Linux; then `EINVAL` for a signal outside 0 to 64, and 0, which only
 /// checks the target. `pid` is a `pid_t`: the register's upper half is ignored. The signal's
-/// `siginfo_t` says `SI_USER` from the caller.
+/// `siginfo_t` says `SI_USER` from the caller. A thread of the process that does not block it
+/// takes it ([`Signals::send_to_process`]).
 pub fn kill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1665,7 +1666,8 @@ fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
 /// `siginfo_t` as written, with `signal` as its `si_signo` and only its first
 /// [`KEPT_INFO_SIZE`] bytes; Linux's `E2BIG` for a `si_code` it does not know with more bytes
-/// is not checked. `tgid` is a `pid_t`.
+/// is not checked. `tgid` is a `pid_t`. A thread of the process that does not block the signal
+/// takes it ([`Signals::send_to_process`]).
 pub fn rt_sigqueueinfo<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1724,7 +1726,8 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
 /// until the `struct timespec` at `timeout` has passed (on the monotonic clock, rounded up to
 /// a clock tick), for good if that is null, not at all if it is zero, then fails with `EAGAIN`.
 /// A signal another thread sends wakes it: one in the set is taken, any other due one makes
-/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. As Linux,
+/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. A signal in the set
+/// sent to the process is taken too, one at a time, blocked or not (D96). As Linux,
 /// in this order: `EINVAL` if `sigsetsize` is not 8; `EFAULT` if the set is not the program's
 /// memory; `EFAULT` if `timeout` is not, and `EINVAL` for negative seconds or nanoseconds
 /// outside 0 to 999999999; then, with the signal taken, `EFAULT` if `info` is not the program's
@@ -1965,7 +1968,8 @@ pub fn deliver_restoring_mask<P: Platform>(
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
-/// others were delivered or wait for their handler) to `set`, its first `sigsetsize` bytes: as
+/// others were delivered or wait for their handler), with the process's that no thread took
+/// yet, to `set`, its first `sigsetsize` bytes: as
 /// on Linux, any size up to 8 is taken, a larger one is `EINVAL`, then `EFAULT` if `set` is
 /// not the program's writable memory.
 pub fn rt_sigpending<P: Platform>(
