@@ -4324,3 +4324,14 @@ the license, by an explicit instruction recorded here.
   with `EINTR` and the time left once another thread's `pthread_kill` runs its handler, and a
   thread parked in `std::thread::park` (a `futex` wait) runs the handler and stays parked
   until unparked.
+- **Cost.** Measured against `main` on the same machine (`-icount`), every benchmark identical
+  but `futex_wait_wake_round_trip`, which got faster: 459.05 → 455.05 ns (aarch64), 558.06 →
+  554.06 (riscv64), 479.03 → 473.03 (x86_64); its baseline lines are updated. The kernel's own
+  waits (`futex::wait`) are not interruptible and keep their bucket index in the waiter as
+  before, with one more word (the thread's slot, none for them); a new waiter is linked in with
+  the link it was built with instead of writing it again, which pays for that word and more;
+  an interruption is marked by the waiter's key, with no flag of its own. The first version
+  made every wait publish and clear a slot: +4.4% (aarch64), +2.5% (riscv64), +1.7% (x86_64).
+  The Linux thread's waits pay the slot's store, a fence and a clear, against a park and a
+  thread switch. The system-call round trip is untouched: the sleeps and `futex` moved from
+  the calls delivered after into the ones that deliver themselves, on the out-of-line path.
