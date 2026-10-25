@@ -5237,6 +5237,23 @@ mod tests {
             ControlFlow::Continue(())
         );
         assert_eq!(context.syscall_result(), Errno::EFAULT.result());
+        write_timespec(&process, req, 0, 0);
+        send();
+        let mut context = sleep([req, rem, 0, 0, 0, 0], number::NANOSLEEP);
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(
+            context.syscall_result(),
+            0,
+            "a sleep whose time is up returns 0, a signal due or not"
+        );
         assert_eq!(process.exit_status(), None);
     }
 
@@ -5284,19 +5301,27 @@ mod tests {
                 assert_eq!(context.syscall_result(), Errno::EINTR.result());
             }
         }
-        send();
-        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
-        context.simulate_syscall(number::FUTEX, [word, wait, 8, 0, 0, 0], 0x40_0004);
-        assert_eq!(
-            handle_first(&process, &mut context, UserExit::Syscall),
-            ControlFlow::Continue(())
-        );
-        assert_eq!(context.pc(), HANDLER);
-        assert_eq!(
-            handler_returns(&process, &mut context),
-            ControlFlow::Continue(())
-        );
-        assert_eq!(context.syscall_result(), Errno::EAGAIN.result());
+        let past = SCRATCH + 0x160;
+        write_timespec(&process, past, 0, 0);
+        let wait_bitset = u64::from(op::WAIT_BITSET | op::PRIVATE_FLAG);
+        for (arguments, expected) in [
+            ([word, wait, 8, 0, 0, 0], Errno::EAGAIN),
+            ([word, wait_bitset, 7, past, 0, u64::MAX], Errno::ETIMEDOUT),
+        ] {
+            send();
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            context.simulate_syscall(number::FUTEX, arguments, 0x40_0004);
+            assert_eq!(
+                handle_first(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.syscall_result(), expected.result());
+        }
         assert_eq!(process.exit_status(), None);
     }
 

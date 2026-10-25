@@ -749,16 +749,17 @@ impl Signals {
     /// Where thread `id` waits ([`LinuxThread::wait_slot`]), if it is one of the process's
     /// threads that [`Self::add_thread`] counted, or `first`, its first thread, recorded once
     /// it started another.
-    fn wait_slot(&self, id: u32, first: u32) -> Option<&WaitSlot> {
+    fn wait_slot(&self, id: u32, first: u32) -> Option<Arc<WaitSlot>> {
         let [block] = self.actions_and_queue.as_deref()?;
-        match id == first {
-            true => block.first_thread_wait_slot.as_deref(),
+        let slot = match id == first {
+            true => block.first_thread_wait_slot.as_ref(),
             false => block
                 .threads
                 .iter()
                 .find(|thread| thread.id == id)
-                .map(|thread| &*thread.wait_slot),
-        }
+                .map(|thread| &thread.wait_slot),
+        };
+        slot.cloned()
     }
 
     /// Where each of the process's threads but `caller` waits: those [`Self::add_thread`]
@@ -1530,7 +1531,7 @@ fn send_to_thread<P: Platform>(
         return send_to_self(process, thread, signal, info);
     }
     let queue_limit = queue_limit(process);
-    {
+    let target_slot = {
         let mut signals = process.signals().lock();
         let target = target(process, &signals, id);
         if target == Target::None {
@@ -1553,10 +1554,11 @@ fn send_to_thread<P: Platform>(
             .send_to_thread(id, info(signal), queue_limit)
             .map_err(|QueueFull| Errno::EAGAIN)?;
         process.set_sent_signals_waiting(true);
-        process.record_signal_sent();
-        if let Some(slot) = signals.wait_slot(id, process.id().get()) {
-            super::thread::interrupt::<P>(slot);
-        }
+        signals.wait_slot(id, process.id().get())
+    };
+    process.record_signal_sent();
+    if let Some(slot) = target_slot {
+        super::thread::interrupt::<P>(&slot);
     }
     Ok(0)
 }

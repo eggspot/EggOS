@@ -4282,6 +4282,9 @@ the license, by an explicit instruction recorded here.
   - A `futex` wait with no timeout is made again once the handler returns if its action has
     `SA_RESTART`, and fails with `EINTR` otherwise (Linux's `-ERESTARTSYS`); with a timeout it
     fails with `EINTR` (`-ERESTART_RESTARTBLOCK`).
+  - Time comes before signals, as on Linux: a sleep whose time is up returns 0 and a `futex`
+    wait whose deadline has passed `ETIMEDOUT` (after `EAGAIN` for a changed word), a signal
+    due or not, which is delivered after.
   - If no handler starts (the due signals were discarded: a stop signal in an orphaned process
     group, an action changed to `SIG_IGN` meanwhile), the sleep or wait goes on in the kernel to
     the same deadline, the futex word checked again, which is what Linux's restart does. A
@@ -4319,7 +4322,8 @@ the license, by an explicit instruction recorded here.
   call returns `EINTR` after `rt_sigreturn`), an absolute one (`rem` untouched), and one with
   an unwritable `rem` (`EFAULT`); a `futex` wait interrupted with and without `SA_RESTART` and
   with a timeout (restarted only in the second case: program counter, number and arguments as
-  made), and one whose word changed (`EAGAIN`, the handler still run). QEMU self-tests on
+  made), one whose word changed (`EAGAIN`) and one whose deadline has passed (`ETIMEDOUT`),
+  the handler still run, and a sleep of no time with a signal due (0). QEMU self-tests on
   aarch64, riscv64 and x86_64: the std program's thread sleeping in `nanosleep` for 10 s ends
   with `EINTR` and the time left once another thread's `pthread_kill` runs its handler, and a
   thread parked in `std::thread::park` (a `futex` wait) runs the handler and stays parked

@@ -527,7 +527,8 @@ struct Call {
 
 impl Call {
     /// Runs the call, a wait ending at `deadline`, for `thread` of `process`: `EINTR` when
-    /// the wait was interrupted ([`interrupt`]) or a signal was sent before it began.
+    /// the wait was interrupted ([`interrupt`]) or a signal was sent before it began, after
+    /// `EAGAIN` and `ETIMEDOUT`, as Linux checks the word, then the time, then signals.
     fn run<P: Platform>(
         self,
         process: &Process<P>,
@@ -592,6 +593,9 @@ impl Call {
                 let unless_signalled_or_ended = unless_signalled_or_ended(process, thread);
                 wait_interruptibly::<P>(key(address), bitset, deadline, thread.wait_slot(), || {
                     expect_word(process, address, value)?;
+                    if P::clock_ticks() >= deadline {
+                        return Err(Errno::ETIMEDOUT);
+                    }
                     unless_signalled_or_ended()
                 })
             }

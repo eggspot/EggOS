@@ -132,7 +132,8 @@ pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u6
 
 /// Sleeps `thread`, the calling thread of `process`, until the monotonic clock reads
 /// `deadline` nanoseconds, never earlier, then sets the call's result, 0, and delivers what is
-/// due. A due signal interrupts the sleep: the time left is written to the `struct timespec`
+/// due, as Linux does once the time is up, a signal due or not. Before, a due signal
+/// interrupts the sleep: the time left is written to the `struct timespec`
 /// at `remaining`, if it is not `None` or null (`EFAULT` if it is not the program's writable
 /// memory, the sleep over), and the call fails with `EINTR` if a handler starts; if none does
 /// (the signals were discarded), the sleep goes on to its deadline, as Linux restarts it.
@@ -147,6 +148,9 @@ fn sleep_until_nanoseconds<P: Platform>(
     let deadline_tick = first_tick_at(deadline, nanoseconds_per_tick::<P>());
     loop {
         thread::sleep_until::<P>(process, thread, deadline_tick)?;
+        if P::clock_ticks() >= deadline_tick {
+            break;
+        }
         if signals::is_due(thread) {
             let left = timespec(deadline.saturating_sub(monotonic_nanoseconds::<P>()));
             if let Some(remaining) = remaining.filter(|&address| address != 0)
@@ -158,8 +162,6 @@ fn sleep_until_nanoseconds<P: Platform>(
             if signals::deliver_interrupting(process, thread, context, Interrupted::Fails)? {
                 return ControlFlow::Continue(());
             }
-        } else if P::clock_ticks() >= deadline_tick {
-            break;
         }
     }
     context.set_syscall_result(0);
