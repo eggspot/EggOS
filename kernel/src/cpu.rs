@@ -9,7 +9,7 @@
 use crate::address_space::LazilyLoaded;
 use crate::heap::{FrameSource, GlobalFrames};
 use crate::random::CpuKey;
-use crate::sync::SpinLock;
+use crate::sync::LeafSpinLock;
 use crate::thread::{self, CpuScheduler, STACK_ORDER, STACK_SIZE};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -67,7 +67,7 @@ pub struct Cpu {
     /// none is. Only the CPU itself takes the lock, off the hot paths.
     ///
     /// [`AddressSpace::load_lazily`]: crate::address_space::AddressSpace::load_lazily
-    pub(crate) lazily_loaded: SpinLock<Option<LazilyLoaded>>,
+    pub(crate) lazily_loaded: LeafSpinLock<Option<LazilyLoaded>>,
     /// Shootdowns other CPUs have asked of this CPU since boot ([`Self::request_shootdown`]): each
     /// asks it to drop every user translation it has cached. Other CPUs add to it.
     shootdowns_requested: AtomicU64,
@@ -77,7 +77,7 @@ pub struct Cpu {
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
     /// The CPU's key of the random number generator (D56). Only the CPU itself takes the lock.
-    pub(crate) random: SpinLock<CpuKey>,
+    pub(crate) random: LeafSpinLock<CpuKey>,
 }
 
 /// The top bit of [`Cpu::unseen_by_scheduler`]: another CPU asks this CPU's scheduler to look at
@@ -107,11 +107,11 @@ impl Cpu {
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
             active_address_space: AtomicU64::new(NO_ADDRESS_SPACE),
-            lazily_loaded: SpinLock::new(None),
+            lazily_loaded: LeafSpinLock::new_leaf(None),
             shootdowns_requested: AtomicU64::new(0),
             shootdowns_served: AtomicU64::new(0),
             scheduler: CpuScheduler::new(),
-            random: SpinLock::new(CpuKey::new()),
+            random: LeafSpinLock::new_leaf(CpuKey::new()),
         }
     }
 
