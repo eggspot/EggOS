@@ -3965,4 +3965,4 @@ the license, by an explicit instruction recorded here.
   reached through a `&Waiter` held across the unpark, and those baseline lines are tightened.
   `linux_page_fault` reads 0.4–0.8% above its baseline on this branch and on `main` alike
   (aarch64 1384.65 against 1384.64 on `main`); nothing else moves. The sleeps themselves are
-  not on a benchmarked path; they take a bucket lock where they took the scheduler's alone.
+  not on a benchmarked path; they take a futex bucket lock as well as the scheduler's.
