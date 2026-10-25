@@ -819,7 +819,7 @@ fn first_to_take(due: u64) -> u32 {
 /// The stop signals: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU`.
 const STOP_SIGNALS: u64 = bit(SIGSTOP) | bit(20) | bit(21) | bit(22);
 
-/// What delivering a signal does, for [`Signals::next_delivery`].
+/// What delivering a signal does, for [`LockedSignals::next_delivery`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
     /// The process ends with this signal.
@@ -1105,7 +1105,7 @@ pub fn kill<P: Platform>(
 /// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller's one thread being the
 /// only one: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
 /// caller's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal when the queued
-/// signals are at `RLIMIT_SIGPENDING` (see [`Signals::send`]).
+/// signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,

@@ -1004,7 +1004,8 @@ impl<P: Platform> Process<P> {
     /// Records how the process ended, unless it already has: the first to end it wins (say,
     /// two threads calling `exit_group`). Its other threads stop running its program: each
     /// other CPU is asked to look at its scheduler, which a thread of the process does before
-    /// it runs the program again ([`run`]), and a CPU running one in user mode is interrupted.
+    /// it runs the program again (see [`spawn`]), and a CPU running one in user mode is
+    /// interrupted.
     pub fn exit(&self, how: ProcessExit) {
         self.exit.lock().get_or_insert(how);
         self.ended.store(true, Ordering::Release);
@@ -1013,10 +1014,22 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// Whether the process has ended ([`Self::exit`]): its threads end at their next system
-    /// call that blocks or their next return to user mode after an interrupt.
+    /// Whether the process has ended ([`Self::exit`]): its threads stop instead of running its
+    /// program again.
     pub fn has_ended(&self) -> bool {
         self.ended.load(Ordering::Acquire)
+    }
+
+    /// For a call that passes preemption points on the process's behalf, which may take the
+    /// look an ending process asked this CPU for: whether the process has ended. If it has,
+    /// this CPU is asked to look again, so the calling thread stops before it returns to user
+    /// mode.
+    pub fn has_ended_and_will_stop(&self) -> bool {
+        let ended = self.has_ended();
+        if ended {
+            cpu::current::<P>().request_reschedule();
+        }
+        ended
     }
 
     /// Records the status the process's first thread ended with while others go on (Linux's
@@ -1117,12 +1130,14 @@ where
     thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
 }
 
-/// A user thread's loop (see [`spawn`]).
+/// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
+/// (started by a thread as another ended it) never runs the program.
 fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
 where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
-    loop {
+    let mut ended = process.has_ended();
+    while !ended {
         // First, as it may switch threads: nothing may between loading and running.
         if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
             break;
@@ -1134,9 +1149,7 @@ where
         // below, on this thread (`AddressSpace::change_pages`). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
-        if handler(&process, &mut context, exit).is_break() {
-            break;
-        }
+        ended = handler(&process, &mut context, exit).is_break();
     }
     let here = cpu::current::<P>();
     let root = process.address_space().root();

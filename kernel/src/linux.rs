@@ -507,7 +507,9 @@ fn signal_fault<P: Platform>(
 
 /// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
 /// as a call of its own, the loop's state spills around it (+8 to +10% on the system-call
-/// round trip when D55's calls tipped the inliner).
+/// round trip when D55's calls tipped the inliner). A number past the table answers `ENOSYS`
+/// with its own store: sharing the others' cost AArch64's round trip two branches (+1.6%,
+/// D91).
 #[inline(always)]
 fn syscall<P: Platform>(
     process: &Arc<Process<P>>,
@@ -728,8 +730,7 @@ pub fn exit_thread<P: Platform>(
 
 /// `exit(status)` ([`exit_thread`]) and `exit_group(status)`, which ends the process, every
 /// thread of it, with `status`, of which Linux keeps the low 8 bits. One call out of line for
-/// both, as before threads: two made the system-call loop's code longer (+1.6% on AArch64's
-/// round trip).
+/// both, as before threads, so the system-call loop's code stays as it was.
 #[inline(never)]
 fn exit<P: Platform>(
     process: &Process<P>,
@@ -902,7 +903,8 @@ fn ends_in_user_space<P: Platform>(buffer: u64, count: u64) -> bool {
 /// space, to the console, and returns how many it copied: fewer if it reached a byte that is
 /// not the program's memory. Chunks never cross a page, so the count is exact, and a
 /// preemption point follows each, so a long write does not keep its CPU from the threads
-/// waiting for it.
+/// waiting for it. It stops early once the process has ended (another thread's `exit_group`),
+/// and the thread stops before it returns to user mode.
 fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> u64 {
     let mut chunk = [0u8; WRITE_CHUNK];
     let mut written = 0;
@@ -918,6 +920,9 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         P::console_write(bytes);
         written += length as u64;
         crate::thread::preemption_point::<P>();
+        if process.has_ended_and_will_stop() {
+            break;
+        }
     }
     written
 }
