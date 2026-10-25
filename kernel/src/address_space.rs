@@ -35,8 +35,8 @@
 //! (D94): it asks every other CPU that keeps the address space loaded to drop its user
 //! translations (`Cpu::request_shootdown`), sends it the wake-up interrupt, and waits until
 //! each has, serving requests made of its own CPU meanwhile (`cpu::serve_shootdowns`), as
-//! every CPU does on each interrupt and while it waits for a contended lock, so two CPUs
-//! that shoot each other down with interrupts masked both go on. Only then may the frames
+//! every CPU does on the wake-up interrupt and while it waits for a contended lock that is
+//! not a leaf lock, so two CPUs that shoot each other down with interrupts masked both go on. Only then may the frames
 //! unmapped go to someone else. [`AddressSpace::with_active`] on another CPU still needs the
 //! address space unchanged meanwhile. [`AddressSpace::unmap`] takes `&mut self`, for an
 //! address space not shared yet.
@@ -164,9 +164,9 @@ impl<P: Platform> AddressSpace<P> {
     /// makes sure no CPU goes on using what it cached of the old entries (see the module
     /// documentation). Allowed while the address space is loaded on any CPU, and in use on
     /// others if it was spread over CPUs ([`Self::spread_over_cpus`]); otherwise used on at
-    /// most this one. Call it with interrupts masked, and do not block until it returns. It
-    /// may wait for other CPUs, which must not wait for a lock it holds in a way other than
-    /// [`crate::sync::SpinLock::lock`].
+    /// most this one. Call it with interrupts masked, holding no leaf lock
+    /// ([`crate::sync::LeafSpinLock`]), and do not block until it returns: it may wait for
+    /// other CPUs, which serve it while they wait for any other lock it holds.
     #[inline(always)]
     pub fn change_pages(
         &self,

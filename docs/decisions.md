@@ -4017,3 +4017,84 @@ the license, by an explicit instruction recorded here.
   the pending entry released, the tid word cleared after; a list that loops ends at the cap
   and still releases the pending entry; a pointer that is not memory ends the walk, the
   pending entry included. Nothing in the QEMU self-tests uses a robust mutex yet.
+
+## D94 TLB shootdown: a process's threads run in parallel on every CPU — Decided by the build loop (user-memory races and the cost decided by research)
+- **Why.** D91 kept every thread of a multi-threaded process on the CPU that called `clone`:
+  changed mappings were only marked stale on other CPUs (D53), which is sound only while no
+  other CPU runs the process meanwhile. Threads ran concurrently there, not in parallel, so a
+  threaded program used one CPU of the machine. D91 named the shootdown as next.
+- **The shootdown.** `clone` marks the process's address space spread over CPUs
+  (`AddressSpace::spread_over_cpus`, never cleared) before the new thread can run, and new
+  threads are placed as any other (`CpuPlacement` and pinning are gone). When a spread
+  address space's mappings are removed or changed (`change_pages`, `move_pages`,
+  `unmap_pages`), the changing CPU drops its own translations, then asks every other CPU that
+  keeps the address space loaded to drop every user translation it has cached
+  (`Cpu::request_shootdown`, a per-CPU counter), sends it the wake-up interrupt, and waits
+  until each has served the requests asked of it until then (`shootdowns_served` reaching
+  what `shootdowns_requested` said). A CPU serves (`cpu::serve_shootdowns`: one full drop of
+  its user translations, then the counter) on the wake-up interrupt, so one running the
+  program in user mode stops using the old entries before the change returns. An address space
+  that was never spread keeps D53's lazy marking: a single-threaded process pays one flag load.
+- **No deadlock with interrupts masked.** The kernel runs with interrupts masked, and the
+  waiting CPU holds the process's regions lock, which a CPU taking a page fault or copying user
+  memory may be waiting for, as may a CPU waiting for a futex bucket whose holder waits for the
+  regions lock (the futex value check). So a CPU serves the requests asked of it while it waits:
+  in its own shootdown's wait, and while it waits for a contended `SpinLock` (the lock's wait
+  duty, set when the secondary CPUs start: `sync::set_wait_duty`). A `LeafSpinLock` skips the
+  duty, so taking it stays free of calls: the heap, the scheduler, the frame allocator, page
+  tables and each CPU's own locks, whose holders take only leaf locks and never wait for
+  another CPU, so a CPU waiting for one waits only for code that finishes on its own.
+- **Frames reused only once no CPU can write them.** `munmap`'s frame list is linked through
+  the frames themselves (`FramesToFree`), written as each page is unmapped; a CPU still
+  writing through its old translation would overwrite the links (the new self-test crashed the
+  kernel exactly so before this was fixed). On a spread address space `unmap_pages` therefore
+  first makes the pages inaccessible, keeping their frames (`PageChange::Inaccessible`), shoots
+  the old translations down, and only then unmaps them and hands the frames over; a thread that
+  touches them meanwhile faults and waits for the regions lock.
+- **User memory other threads use at the same time (research: Rust-for-Linux's `UserSlice`,
+  Asterinas' `VmReader`/`VmWriter`, futex(2), the kernel's robust-futex documents, Linux's
+  futex wait path).** Bulk copies stay plain copies through the direct map: the kernel reaches
+  user memory only through raw pointers and reads each byte once into its own buffer, so a
+  racing write leaves the bytes copied unspecified, as on Linux, and cannot change the
+  kernel's control flow (volatile or atomic word copies would cost every large `write` and buy
+  nothing). Words used as atomics go through `Process::with_user_word`, an `AtomicU32` on the
+  frame's direct-map alias (same physical memory and memory type as the program's mapping, so
+  coherent on all three architectures): the futex value check is an acquire load under the
+  bucket lock, and a robust lock's release a compare-and-exchange loop, which no longer loses a
+  waiter that sets the waiters bit while the owner exits (D93's open point).
+- **`getcpu`.** `getcpu(cpu, node, cache)` writes the CPU's number and node 0, each unless
+  null, `EFAULT` for memory the program cannot write; musl's `sched_getcpu` uses it, and the new
+  self-test checks with it that two threads ran on two CPUs.
+- **Not yet.** Every CPU that keeps the address space loaded is asked, not only those running
+  the process's threads, and each drops every user translation instead of the range;
+  broadcast invalidation (AArch64's inner-shareable `tlbi`, RISC-V's SBI remote fence or
+  Svinval) would need no interrupt. `with_active` and `with_user_memory` of a spread address
+  space from a CPU that is not running its thread still need it unchanged meanwhile. Signals
+  between threads, `wait4` and a process-wide completion come next.
+- **Tests.** QEMU self-tests on aarch64, riscv64 and x86_64 with every CPU running: the std
+  program's checks again (`std::thread`, `Mutex`, `Condvar` and joins across CPUs), and a new
+  mode of it in which one thread unmaps a page another thread writes in a loop on another CPU:
+  the writer must fault into its `SIGSEGV` handler at once (without the shootdown the kernel
+  crashes); skipped when one CPU runs, as in the benchmarks. Host tests: a shootdown asks only
+  CPUs holding the address space and waits until they serve, a CPU serves the requests up to
+  when it looked, a spread address space's `unmap_pages` hands every frame over (a mapped and
+  a kept page), `getcpu`.
+- **Cost (decided by research: unavoidable).** Measured against `main` on the same machine
+  (`-icount`, so instruction counts): `futex_wait_wake_round_trip` +1.3% on x86_64 (473.03 →
+  479.03 ns) and +1.5% on riscv64 (550.06 → 558.06), unchanged on aarch64;
+  `linux_mmap_munmap` +1.7% on x86_64 (360.09 → 366.09), +0.8% on riscv64, +0.6% on
+  aarch64; nothing else moves. The first versions cost far more (yield +3–6%, the timer
+  interrupt +7%, the heap +4–16%, munmap +3–4%): serving on every interrupt, a call in every
+  lock's contended path and a second page walk on munmap; serving on the wake-up interrupt
+  only, leaf locks without the duty and one walk with one flag load cut them to the above.
+  Experiments placed what is left: the futex cost is the call in the bucket lock's contended
+  path (with buckets as leaf locks it is gone), the munmap cost is the `spread` flag and the
+  branches of the two-step unmap. Research: a bucket or regions holder can block a shootdown,
+  so their waiters must serve, and Linux, Windows and macOS pay for the same deadlock freedom
+  with interrupts that stay deliverable while a CPU spins (IRQs on while spinning, the IPI
+  level above spin locks' level, a pmap loop that serves pending flushes), which a kernel
+  running with interrupts masked has only in software. The cheaper options cost more (the
+  futex wait enqueuing, dropping the bucket and re-checking: a second bucket round trip) or
+  break a rule (an assembly trampoline that hides the call); broadcast invalidation removes
+  the need on AArch64 and RISC-V but not on x86, where the cost is. The baseline lines of
+  those three results are updated; the others stay within the gate.
