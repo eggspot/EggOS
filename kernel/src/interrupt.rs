@@ -14,7 +14,9 @@ use eggos_hal::{Interrupt, Platform};
 /// Handles `interrupt`, which this CPU has taken; the interrupted code resumes afterwards.
 pub fn handle<P: Platform>(interrupt: Interrupt) {
     cpu::current::<P>().count(interrupt);
-    cpu::serve_shootdowns::<P>();
+    if interrupt == Interrupt::Wakeup {
+        cpu::serve_shootdowns::<P>();
+    }
 }
 
 /// How many timer interrupts this CPU has taken since boot.

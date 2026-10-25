@@ -946,21 +946,48 @@ impl<P: Platform> Process<P> {
         write: bool,
         access: impl FnOnce(&AtomicU32) -> R,
     ) -> Result<R, InvalidUserAddress> {
-        if !address.is_multiple_of(4) {
+        if !address.is_multiple_of(4) || address >= <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let mut access = Some(access);
-        let mut result = None;
-        self.copy_user_pages(address, 4, write, |kernel, _, _| {
-            // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's
-            // frames through the direct map (`copy_user_pages`' promise), mapped with the
-            // same memory type as the program's mapping; the regions' lock keeps the frame the
-            // process's while `access` runs, and every access to it, the program's and the
-            // kernel's, is atomic or the program's own.
-            let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
-            result = access.take().map(|access| access(word));
-        })?;
-        result.ok_or(InvalidUserAddress)
+        let regions = self.regions.lock();
+        let kernel = self.in_direct_map(&regions, address, write)?;
+        // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
+        // through the direct map (`in_direct_map`' promise), mapped with the same memory type
+        // as the program's mapping; the regions' lock, held until `access` returns, keeps the
+        // frame the process's, and every access to the word, the program's and the kernel's,
+        // is atomic or the program's own.
+        let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
+        Ok(access(word))
+    }
+
+    /// Where the kernel reaches user address `virt` through the direct map, with the regions'
+    /// lock held (`regions`): its page must be a user page of normal memory (and writable, if
+    /// `write`); a page in a region the program has not touched yet is mapped first, zeroed,
+    /// as the program's own access would (D52). See `copy_user_pages`.
+    #[inline]
+    fn in_direct_map(
+        &self,
+        regions: &Regions,
+        virt: u64,
+        write: bool,
+    ) -> Result<*mut u8, InvalidUserAddress> {
+        let page = virt & !(FRAME_SIZE - 1);
+        let (frame, attributes) = match self.space.translate(page) {
+            Some(mapped) => mapped,
+            None => {
+                let access = if write { Access::Write } else { Access::Read };
+                self.populate(regions, page, access, true)
+                    .map_err(|_| InvalidUserAddress)?
+            }
+        };
+        if !attributes.user
+            || attributes.memory_type != MemoryType::Normal
+            || (write && !attributes.writable)
+        {
+            return Err(InvalidUserAddress);
+        }
+        let phys = frame + virt % FRAME_SIZE;
+        Ok((phys as usize).wrapping_add(self.frame_offset) as *mut u8)
     }
 
     /// Walks `length` bytes of user memory from `address` a page at a time and hands each
@@ -992,31 +1019,13 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let access = if write { Access::Write } else { Access::Read };
         let regions = self.regions.lock();
         let mut done = 0;
         while done < length {
             let virt = address + done as u64;
-            let page = virt & !(FRAME_SIZE - 1);
-            let (frame, attributes) = match self.space.translate(page) {
-                Some(mapped) => mapped,
-                None => self
-                    .populate(&regions, page, access, true)
-                    .map_err(|_| InvalidUserAddress)?,
-            };
-            let phys = frame + virt % FRAME_SIZE;
-            if !attributes.user
-                || attributes.memory_type != MemoryType::Normal
-                || (write && !attributes.writable)
-            {
-                return Err(InvalidUserAddress);
-            }
+            let kernel = self.in_direct_map(&regions, virt, write)?;
             let in_page = (FRAME_SIZE - virt % FRAME_SIZE).min((length - done) as u64) as usize;
-            copy(
-                (phys as usize).wrapping_add(self.frame_offset) as *mut u8,
-                done,
-                in_page,
-            );
+            copy(kernel, done, in_page);
             done += in_page;
         }
         Ok(())

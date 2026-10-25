@@ -357,7 +357,7 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
 
 /// For this CPU, with interrupts masked: if another CPU asked a shootdown of it since it last
 /// served one ([`Cpu::request_shootdown`]), drops every user translation it has cached and
-/// tells them. Called on every interrupt, while waiting for a contended lock and while
+/// tells them. Called on the wake-up interrupt, while waiting for a contended lock and while
 /// waiting for a shootdown of its own, so a CPU that waits for this one with interrupts
 /// masked never waits for good. Two loads when nothing was asked.
 #[inline]

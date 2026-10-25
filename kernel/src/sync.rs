@@ -39,14 +39,7 @@ impl<T> SpinLock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // Laid out away from the free case, which then falls straight through.
-            core::hint::cold_path();
-            // Wait with plain loads, so a waiting CPU does not keep taking the cache line from
-            // the holder.
-            while self.locked.load(Ordering::Relaxed) {
-                do_wait_duty();
-                core::hint::spin_loop();
-            }
+            wait_until_free(&self.locked);
         }
         SpinLockGuard {
             lock: self,
@@ -83,13 +76,20 @@ pub fn set_wait_duty(duty: fn()) {
     WAIT_DUTY.store(duty as *mut (), Ordering::Release);
 }
 
-#[inline]
-fn do_wait_duty() {
+/// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking
+/// the cache line from the holder, doing the wait duty meanwhile. Out of line: the free case
+/// falls straight through without its code around it.
+#[cold]
+#[inline(never)]
+fn wait_until_free(locked: &AtomicBool) {
     let duty = WAIT_DUTY.load(Ordering::Acquire);
-    if !duty.is_null() {
-        // SAFETY: only `set_wait_duty` stores a non-null value, and it stores a `fn()`.
-        let duty: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(duty) };
-        duty();
+    while locked.load(Ordering::Relaxed) {
+        if !duty.is_null() {
+            // SAFETY: only `set_wait_duty` stores a non-null value, and it stores a `fn()`.
+            let duty: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(duty) };
+            duty();
+        }
+        core::hint::spin_loop();
     }
 }
 
