@@ -15,8 +15,8 @@
 //! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91). A signal sent to
 //! another thread of the process waits in the process's block until that thread takes it in
 //! ([`take_in_sent`], D95): woken from a sleep, interrupted on another CPU, or on its way back
-//! from an interrupt or a call that may switch it out. A signal a call makes due (sent to the caller, unblocked,
-//! or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
+//! from an interrupt or a call that may switch it out. A signal a call makes due (sent to the
+//! caller, unblocked, or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
 //! with the fault's `siginfo_t`, or, as on Linux, by the default action if the program blocks
@@ -543,16 +543,16 @@ impl Signals {
     /// Sends the signal `info` describes to thread `id`, another of the process's threads,
     /// which takes it in ([`LockedSignals::take_in_sent`]) and handles it as if sent to itself
     /// then ([`LockedSignals::send`]). It counts toward `RLIMIT_SIGPENDING`, `queue_limit`,
-    /// meanwhile: as there, a real-time signal not sent with `kill` that finds the queued
-    /// signals at the limit is not sent ([`QueueFull`]), nor is any signal without memory to
-    /// record it.
+    /// meanwhile: a real-time signal that finds the queued signals at the limit is not sent
+    /// ([`QueueFull`]), as on Linux, nor is any signal without memory to record it; a standard
+    /// signal is queued past the limit, keeping its `siginfo_t`.
     pub fn send_to_thread(
         &mut self,
         id: u32,
         info: Info,
         queue_limit: u64,
     ) -> Result<(), QueueFull> {
-        let exempt_from_limit = info.signal() < FIRST_REAL_TIME || info.code() == code::USER;
+        let exempt_from_limit = info.signal() < FIRST_REAL_TIME;
         let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
         block
             .sent_to_threads
@@ -1293,9 +1293,8 @@ pub fn kill<P: Platform>(
 
 /// `tkill(tid, signal)`: sends `signal` to thread `tid` of the caller's process, the only
 /// threads it reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that
-/// is not the process's, then as [`kill`], with `SI_TKILL`. `EAGAIN`
-/// for a real-time signal when the queued signals are at `RLIMIT_SIGPENDING` (see
-/// [`LockedSignals::send`]).
+/// is not the process's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal
+/// when the queued signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1501,8 +1500,8 @@ pub fn read_set<P: Platform>(
 /// thread had before, which `rt_sigreturn` restores, as on Linux. A signal its action ignores
 /// is taken and the wait goes on, as Linux restarts the call after one. Another thread's
 /// signal wakes it (D95); with none due under the new mask it waits for good, as on Linux when
-/// none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is
-/// not 8, then `EFAULT` if the set is not the program's memory. Sets the call's result;
+/// none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is not 8, then
+/// `EFAULT` if the set is not the program's memory. Sets the call's result;
 /// breaks when a signal ends the process.
 pub fn rt_sigsuspend<P: Platform>(
     process: &Process<P>,
@@ -1581,9 +1580,9 @@ pub fn take_in_sent<P: Platform>(process: &Process<P>, thread: &mut LinuxThread)
     thread.signals(&mut process.signals().lock()).take_in_sent()
 }
 
-/// On the way back to user mode (an interrupt, the scheduler's look, a call that may have
-/// waited), delivers the signals other threads sent the thread, if any were sent since it last
-/// looked, as [`deliver`] does; a load and a compare when none were.
+/// On the way back to user mode (an interrupt, a call that may have switched the thread out),
+/// delivers the signals other threads sent the thread, if any were sent since it last looked,
+/// as [`deliver`] does; a load and a compare when none were.
 #[inline]
 pub fn deliver_sent<P: Platform>(
     process: &Process<P>,
@@ -1607,8 +1606,8 @@ fn take_in_and_deliver<P: Platform>(
     deliver(process, thread, context)
 }
 
-/// [`deliver_sent`] for an interrupt or the scheduler's look: out of line, so the thread
-/// loop, which the system calls share, keeps its registers.
+/// [`deliver_sent`] for an interrupt: out of line, so the thread loop, which the system calls
+/// share, keeps its registers.
 #[inline(never)]
 pub fn deliver_sent_on_interrupt<P: Platform>(
     process: &Process<P>,

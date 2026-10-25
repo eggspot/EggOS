@@ -4129,10 +4129,12 @@ the license, by an explicit instruction recorded here.
   thread's state into the process (a table under the lock) would let the sender decide at
   once, but costs a lookup on every signal call, a heap table for single-threaded processes,
   and room in `Process`, which is at its 256-byte class. A real-time signal over the limit is
-  `EAGAIN` for the sender, as on Linux; without memory to record any signal it is `EAGAIN` too.
+  `EAGAIN` for the sender, as on Linux; a standard one is queued past it; without memory to
+  record any signal it is `EAGAIN` too.
 - **How the target notices.** `Process::signals_sent`, a wrapping 16-bit count in the padding
   next to `ended` (no growth), goes up after each signal sent to another thread; each thread
-  keeps the count it last saw. The sender then interrupts every other CPU (as `exit_group`
+  keeps the count it last saw (a thread that missed exactly 65,536 sends would take them in at
+  the next one: the count wraps). The sender then interrupts every other CPU (as `exit_group`
   does, D91) and wakes the target if it sleeps. Sleeps now wait on a futex word per thread
   (`!3 - 4 * tid` in the kernel's half, which no program's futex can name, D92 had one word per
   process), and `sleep_until` returns once a signal was taken in. A running thread compares

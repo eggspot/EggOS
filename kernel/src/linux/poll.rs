@@ -100,8 +100,8 @@ pub fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
 
 /// `poll(fds, nfds, timeout)`: as [`ppoll`] with a timeout of `timeout` milliseconds (an
 /// `int`: negative waits for good, 0 not at all) and no signal mask, failing with `EINTR` when
-/// a signal is due, which is delivered after it. x86_64 only: AArch64 and
-/// RISC-V have only `ppoll`, which their C libraries' `poll` calls.
+/// a signal is due, which is delivered after it. x86_64 only: AArch64 and RISC-V have only
+/// `ppoll`, which their C libraries' `poll` calls.
 #[cfg(target_arch = "x86_64")]
 pub fn poll<P: Platform>(
     process: &Process<P>,
@@ -128,8 +128,8 @@ pub fn poll<P: Platform>(
 /// waits for one until the `struct timespec` at `timeout` has passed, for good if that is
 /// null, not at all if it is zero. With a `sigmask`, the signals in that set are blocked
 /// instead of the thread's during the call (D71). If none reports events and a signal is due,
-/// before or during the wait (another thread sent it, D95), the call delivers it and, once a handler starts, fails with `EINTR`, the
-/// handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
+/// before or during the wait (another thread sent it, D95), the call delivers it and, once a
+/// handler starts, fails with `EINTR`, the handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
 /// action ignores is taken and the call goes on, as Linux restarts it, unless the time left
 /// could not be written back (below): then it fails with `EINTR`, as Linux's does, since it
 /// cannot restart with the time left. Otherwise the thread's mask is back when it returns, and
