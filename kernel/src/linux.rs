@@ -516,17 +516,17 @@ fn syscall<P: Platform>(
 ) -> ControlFlow<()> {
     let [first, second, third, ..] = context.syscall_arguments();
     let number = context.syscall_number();
-    let result = if number > number::LAST {
-        Err(Errno::ENOSYS)
-    } else {
-        match number {
-            number::WRITE => write::<P>(process, first, second, third),
-            number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
-            number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
-                memory_call::<P>(process, number, context.syscall_arguments())
-            }
-            _ => return out_of_line_call::<P>(process, thread, number, context),
+    if number > number::LAST {
+        context.set_syscall_result(Errno::ENOSYS.result());
+        return ControlFlow::Continue(());
+    }
+    let result = match number {
+        number::WRITE => write::<P>(process, first, second, third),
+        number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
+        number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
+            memory_call::<P>(process, number, context.syscall_arguments())
         }
+        _ => return out_of_line_call::<P>(process, thread, number, context),
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
     ControlFlow::Continue(())
