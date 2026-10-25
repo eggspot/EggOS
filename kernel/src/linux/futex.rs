@@ -13,7 +13,7 @@ use crate::thread::{ParkEnd, Parker};
 use core::cell::UnsafeCell;
 use core::ops::ControlFlow;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use eggos_hal::Platform;
 use eggos_hal::paging::Format;
 use eggos_hal::user::UserContext;
@@ -90,14 +90,15 @@ impl Bucket {
 struct Waiter {
     bitset: u32,
     parker: Parker,
-    slot: NonNull<WaitSlot>,
-    interrupted: AtomicBool,
+    bucket_index: AtomicUsize,
+    thread_slot: Option<NonNull<WaitSlot>>,
     link: UnsafeCell<Link>,
 }
 
 /// Where a thread waits, while it does: the index of the bucket its waiter is in, which
 /// [`requeue`] keeps up to date, so [`interrupt`] finds the waiter without knowing its word.
-/// A Linux thread has one for its life (each wait it makes passes it to [`wait`]).
+/// A Linux thread has one for its life (each wait it makes passes it to
+/// [`wait_interruptibly`]).
 #[derive(Debug)]
 pub struct WaitSlot {
     bucket_index: AtomicUsize,
@@ -122,7 +123,20 @@ impl Default for WaitSlot {
 struct Link {
     next: Option<NonNull<Waiter>>,
     queued: bool,
+    interrupted: bool,
     key: Key,
+}
+
+impl Waiter {
+    fn lock_current_bucket(&self) -> SpinLockGuard<'static, Bucket> {
+        loop {
+            let index = self.bucket_index.load(Ordering::Acquire);
+            let bucket = BUCKETS[index].lock();
+            if self.bucket_index.load(Ordering::Relaxed) == index {
+                return bucket;
+            }
+        }
+    }
 }
 
 impl WaitSlot {
@@ -151,6 +165,7 @@ impl Bucket {
         *self.link(waiter) = Link {
             next: None,
             queued: true,
+            interrupted: false,
             key,
         };
         let mut last = None;
@@ -200,10 +215,7 @@ pub fn wait<P: Platform>(
     deadline: u64,
     still_expected: impl FnOnce() -> Result<(), Errno>,
 ) -> Result<u64, Errno> {
-    let slot = WaitSlot {
-        bucket_index: AtomicUsize::new(key.bucket_index()),
-    };
-    wait_in::<P, false>(key, bitset, deadline, &slot, still_expected)
+    wait_in::<P, false>(key, bitset, deadline, None, still_expected)
 }
 
 /// Waits as [`wait`] does, or until [`interrupt`] ends the wait through `slot`, the waiting
@@ -219,7 +231,7 @@ pub fn wait_interruptibly<P: Platform>(
     slot.bucket_index
         .store(key.bucket_index(), Ordering::Relaxed);
     fence(Ordering::SeqCst);
-    let waited = wait_in::<P, true>(key, bitset, deadline, slot, still_expected);
+    let waited = wait_in::<P, true>(key, bitset, deadline, Some(slot), still_expected);
     slot.bucket_index
         .store(WaitSlot::NOT_WAITING, Ordering::Relaxed);
     waited
@@ -230,34 +242,41 @@ fn wait_in<P: Platform, const INTERRUPTIBLE: bool>(
     key: Key,
     bitset: u32,
     deadline: u64,
-    slot: &WaitSlot,
+    thread_slot: Option<&WaitSlot>,
     still_expected: impl FnOnce() -> Result<(), Errno>,
 ) -> Result<u64, Errno> {
+    let index = key.bucket_index();
     let waiter = Waiter {
         bitset,
         parker: Parker::new(),
-        slot: NonNull::from(slot),
-        interrupted: AtomicBool::new(false),
+        bucket_index: AtomicUsize::new(index),
+        thread_slot: thread_slot.map(NonNull::from),
         link: UnsafeCell::new(Link {
             next: None,
             queued: false,
+            interrupted: false,
             key,
         }),
     };
     let pointer = NonNull::from(&waiter);
     {
-        let mut bucket = BUCKETS[key.bucket_index()].lock();
+        let mut bucket = BUCKETS[index].lock();
         still_expected()?;
         bucket.push_back(pointer, key);
     }
-    if waiter.parker.park_until::<P>(deadline) == ParkEnd::DeadlineReached
-        && let Some(mut bucket) = slot.lock_current_bucket()
-        && bucket.link(pointer).queued
-    {
-        bucket.remove(pointer);
-        return Err(Errno::ETIMEDOUT);
+    if waiter.parker.park_until::<P>(deadline) == ParkEnd::DeadlineReached {
+        let mut bucket = waiter.lock_current_bucket();
+        if bucket.link(pointer).queued {
+            bucket.remove(pointer);
+            return Err(Errno::ETIMEDOUT);
+        }
     }
-    match INTERRUPTIBLE && waiter.interrupted.load(Ordering::Relaxed) {
+    // SAFETY: the waiter is unlinked (its parker was unparked, or its bucket showed it not
+    // queued), so nothing but this thread reaches its link any more, and whoever unlinked it
+    // wrote the link before it unparked the parker or released the bucket's lock, which this
+    // thread has observed since.
+    let interrupted = INTERRUPTIBLE && unsafe { (*waiter.link.get()).interrupted };
+    match interrupted {
         true => Err(Errno::EINTR),
         false => Ok(0),
     }
@@ -276,12 +295,12 @@ pub fn interrupt<P: Platform>(slot: &WaitSlot) {
     let mut following = bucket.head;
     while let Some(candidate) = following {
         following = bucket.link(candidate).next;
-        // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its slot
-        // pointer is only compared.
-        let waiter = unsafe { candidate.as_ref() };
-        if core::ptr::eq(waiter.slot.as_ptr(), slot) {
-            waiter.interrupted.store(true, Ordering::Relaxed);
+        // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its
+        // thread's slot pointer is only compared.
+        let thread_slot = unsafe { candidate.as_ref() }.thread_slot;
+        if thread_slot == Some(NonNull::from(slot)) {
             bucket.unlink(previous, candidate);
+            bucket.link(candidate).interrupted = true;
             bucket.unpark::<P>(candidate);
             return;
         }
@@ -387,11 +406,17 @@ pub fn requeue<P: Platform>(
             woken += 1;
             continue;
         }
-        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held,
-        // and its thread's slot with it: the slot outlives the wait. The index is atomic.
-        unsafe { candidate.as_ref().slot.as_ref() }
-            .bucket_index
-            .store(to_index, Ordering::Release);
+        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held;
+        // its bucket index is atomic.
+        let waiter = unsafe { candidate.as_ref() };
+        waiter.bucket_index.store(to_index, Ordering::Release);
+        if let Some(thread_slot) = waiter.thread_slot {
+            // SAFETY: the slot of the waiter's thread outlives the wait
+            // ([`wait_interruptibly`]); its bucket index is atomic.
+            unsafe { thread_slot.as_ref() }
+                .bucket_index
+                .store(to_index, Ordering::Release);
+        }
         match &mut to_bucket {
             Some(bucket) => bucket.push_back(candidate, to),
             None => from_bucket.push_back(candidate, to),
