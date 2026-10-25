@@ -60,7 +60,7 @@
 
 use crate::cpu::{self, Cpu};
 use crate::heap::{FrameSource, GlobalFrames};
-use crate::sync::{SpinLock, SpinLockGuard};
+use crate::sync::{LeafSpinLock, LeafSpinLockGuard, SpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::alloc::Layout;
@@ -635,7 +635,11 @@ impl Parker {
     }
 
     #[inline(never)]
-    fn park_sleeping<P: Platform>(&self, schedulers: SpinLockGuard<'_, Schedulers>, deadline: u64) {
+    fn park_sleeping<P: Platform>(
+        &self,
+        schedulers: LeafSpinLockGuard<'_, Schedulers>,
+        deadline: u64,
+    ) {
         block::<P>(schedulers, |schedulers, here, thread| {
             *self.parked(schedulers) = Some(Parked::Sleeping(thread.0, here));
             let scheduler = schedulers.of(here);
@@ -727,7 +731,7 @@ struct Schedulers {
     next_placement: usize,
 }
 
-static SCHEDULER: SpinLock<Schedulers> = SpinLock::new(Schedulers {
+static SCHEDULER: LeafSpinLock<Schedulers> = LeafSpinLock::new_leaf(Schedulers {
     slice_ticks: 0,
     next_placement: 0,
 });
@@ -1542,7 +1546,7 @@ fn preemption_point_timer_fired<P: Platform>() {
 /// waits (a wait queue, the sleepers). The next ready thread on this CPU runs, or its idle
 /// thread if none is. The scheduler must have started on this CPU.
 fn block<P: Platform>(
-    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
 ) {
     timer_events::<P>(&mut schedulers);
@@ -1563,7 +1567,7 @@ fn block<P: Platform>(
 /// or the idle slot for the idle thread), given `here` too. Returns when the running thread is
 /// resumed.
 fn switch_to<P: Platform>(
-    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
     here: &'static Cpu,
     next: ThreadBox,
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
@@ -1580,7 +1584,7 @@ fn switch_to<P: Platform>(
 /// [`CpuFp::switch`] first.
 #[inline(never)]
 fn switch_to_with_fp<P: Platform>(
-    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
     here: &'static Cpu,
     next: ThreadBox,
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
@@ -1598,7 +1602,7 @@ fn switch_to_with_fp<P: Platform>(
 /// The switch itself: see [`switch_to`].
 #[inline(always)]
 fn switch_now<P: Platform>(
-    mut schedulers: SpinLockGuard<'_, Schedulers>,
+    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
     here: &'static Cpu,
     next: ThreadBox,
     park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),

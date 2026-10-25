@@ -48,7 +48,7 @@
 use crate::cpu::{self, Cpu};
 use crate::memory;
 use crate::paging::{MAX_ROOTS, MapError, PageChange, PageTables};
-use crate::sync::SpinLock;
+use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::marker::PhantomData;
@@ -60,7 +60,7 @@ use eggos_hal::paging::{Attributes, Format};
 /// A user address space. See the module documentation.
 #[derive(Debug)]
 pub struct AddressSpace<P: Platform> {
-    tables: SpinLock<PageTables<P::PageTableFormat>>,
+    tables: LeafSpinLock<PageTables<P::PageTableFormat>>,
     /// The tables' roots, which never change: what a CPU switches to, without the lock.
     roots: [u64; MAX_ROOTS],
     /// The kernel's tables' roots, to switch back to.
@@ -90,7 +90,7 @@ impl<P: Platform> AddressSpace<P> {
         let mut roots = [0; MAX_ROOTS];
         roots[..tables.roots().len()].copy_from_slice(tables.roots());
         Ok(Self {
-            tables: SpinLock::new(tables),
+            tables: LeafSpinLock::new_leaf(tables),
             roots,
             kernel_roots,
             owns_frames: false,
