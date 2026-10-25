@@ -4050,8 +4050,9 @@ the license, by an explicit instruction recorded here.
   CPU also needs a full fence between its record and its first table walk, or the changer can
   read its old record and skip it while its walk still reads the old entry. x86's `mov cr3`
   and AArch64's `dsb` before the switch give that order, RISC-V's `sfence.vma` does not, so
-  `switch_lazily` and `with_active` make a full fence after the record (both cold; from the
-  independent review).
+  `Platform::switch_address_space` now promises it and RISC-V's starts with `fence rw, rw`
+  (from the independent review; a fence in the kernel's switch path cost every process switch
+  on x86_64 and AArch64 0.5–0.9% for an order they already had).
 - **Frames reused only once no CPU can write them.** `munmap`'s frame list is linked through
   the frames themselves (`FramesToFree`), written as each page is unmapped; a CPU still
   writing through its old translation would overwrite the links (the new self-test crashed the
