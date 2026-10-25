@@ -180,7 +180,7 @@ impl<P: Platform> AddressSpace<P> {
             .lock()
             .change_user_pages(virt, length, change, unmapped);
         // Even after an error: part of the range may have changed.
-        self.drop_old_translations(virt, length);
+        self.drop_old_translations(virt, length, self.spread.load(Ordering::Relaxed));
         result
     }
 
@@ -200,13 +200,18 @@ impl<P: Platform> AddressSpace<P> {
         length: u64,
         unmapped: impl FnMut(u64),
     ) -> Result<(), MapError> {
-        if !self.spread.load(Ordering::Relaxed) {
-            return self.change_pages(virt, length, |_, _| PageChange::Unmap, unmapped);
+        let spread = self.spread.load(Ordering::Relaxed);
+        if spread {
+            self.take_out_of_use(virt, length);
         }
-        self.take_out_of_use(virt, length);
-        self.tables
-            .lock()
-            .change_user_pages(virt, length, |_, _| PageChange::Unmap, unmapped)
+        let result =
+            self.tables
+                .lock()
+                .change_user_pages(virt, length, |_, _| PageChange::Unmap, unmapped);
+        if !spread {
+            self.drop_old_translations(virt, length, false);
+        }
+        result
     }
 
     /// [`Self::unmap_pages`]' first step for an address space spread over CPUs: every page
@@ -221,7 +226,7 @@ impl<P: Platform> AddressSpace<P> {
             |_, _| PageChange::Inaccessible,
             |_| unreachable!("nothing is unmapped"),
         );
-        self.drop_old_translations(virt, length);
+        self.drop_old_translations(virt, length, true);
     }
 
     /// Moves every page of user `from..from + length` that is mapped or kept to the same
@@ -236,19 +241,21 @@ impl<P: Platform> AddressSpace<P> {
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
             tables.move_user_pages(from, to, length, frames)
         };
+        let spread = self.spread.load(Ordering::Relaxed);
         match result {
-            Ok(()) => self.drop_old_translations(from, length),
-            Err(_) => self.drop_old_translations(to, length),
+            Ok(()) => self.drop_old_translations(from, length, spread),
+            Err(_) => self.drop_old_translations(to, length, spread),
         }
         result
     }
 
     /// After mappings in user `virt..virt + length` were removed or changed: drops this
     /// CPU's cached translations of them if it has the address space loaded, and has every
-    /// other CPU that keeps it loaded drop them: by a shootdown if it was spread over CPUs,
+    /// other CPU that keeps it loaded drop them: by a shootdown if it is `spread` over CPUs,
     /// else by marking it stale (`Cpu::mark_stale`). Increases too: a stale entry with less
     /// access raises a permission fault that is never retried (D52).
-    fn drop_old_translations(&self, virt: u64, length: u64) {
+    #[inline(always)]
+    fn drop_old_translations(&self, virt: u64, length: u64, spread: bool) {
         let here = cpu::current::<P>();
         let root = self.root();
         if here.active_address_space() == root {
@@ -257,7 +264,7 @@ impl<P: Platform> AddressSpace<P> {
         // The entries before any look at another CPU's record (`mark_stale` explains why a
         // record read before a switch is fine).
         fence(Ordering::SeqCst);
-        if self.spread.load(Ordering::Relaxed) {
+        if spread {
             shoot_down_elsewhere::<P>(cpu::CPUS.all(), here, root);
         } else {
             mark_stale_elsewhere(cpu::CPUS.all(), here, root);
