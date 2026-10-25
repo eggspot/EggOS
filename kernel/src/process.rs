@@ -1008,7 +1008,7 @@ impl<P: Platform> Process<P> {
     /// interrupted.
     pub fn exit(&self, how: ProcessExit) {
         self.exit.lock().get_or_insert(how);
-        self.ended.store(true, Ordering::Release);
+        self.ended.store(true, Ordering::Relaxed);
         if self.threads() > 1 {
             interrupt_other_cpus::<P>();
         }
@@ -1017,7 +1017,7 @@ impl<P: Platform> Process<P> {
     /// Whether the process has ended ([`Self::exit`]): its threads stop instead of running its
     /// program again.
     pub fn has_ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
+        self.ended.load(Ordering::Relaxed)
     }
 
     /// For a call that passes preemption points on the process's behalf, which may take the

@@ -3875,7 +3875,13 @@ the license, by an explicit instruction recorded here.
   thread, so every thread of a multi-threaded process runs on that one CPU, which is the one
   that changes its mappings. Threads run concurrently there (preemption), not in parallel;
   the shootdown that lets them spread is the next item.
-- **Not yet (next).** The shootdown, then threads spread over CPUs. Signals between threads: `kill`, `tkill`, `tgkill` and the queueing
+- **Not yet (next).** The shootdown, then threads spread over CPUs; until then the
+  interrupts `Process::exit` sends other CPUs find none of the process's threads there, and
+  a pinned thread at the front of a busy CPU's ready threads hides the others behind it from
+  an idle CPU (stealing looks at the front only). A new thread starts with the initial
+  FP/SIMD state, where Linux copies the caller's (its rounding mode and exception masks
+  included). A thread stopped by `SIGSTOP`'s default action sleeps for good, so it outlives
+  its process's end like the waits below. Signals between threads: `kill`, `tkill`, `tgkill` and the queueing
   calls still reach only the caller (another thread's id is `ESRCH`), a process-directed
   signal goes to the calling thread, and `SIG_IGN` discards only the caller's pending signal.
   A thread of an ended process that sleeps in `nanosleep`, `ppoll`, `rt_sigsuspend`, `pause`
