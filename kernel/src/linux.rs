@@ -4406,6 +4406,36 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_of_an_ended_process_does_not_sleep() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, SCRATCH);
+        let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let an_hour = SCRATCH + 0x100;
+        let mut timespec = [0u8; 16];
+        timespec[..8].copy_from_slice(&3600u64.to_ne_bytes());
+        process.write_user_memory(an_hour, &timespec).unwrap();
+        let mut context = called(number::CLOCK_NANOSLEEP, [1, 0, an_hour, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let mask = SCRATCH + 0x200;
+        process.write_user_memory(mask, &[0; 8]).unwrap();
+        let mut context = called(number::RT_SIGSUSPEND, [mask, 8, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+    }
+
+    #[test]
     fn each_thread_blocks_and_queues_its_own_signals() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();

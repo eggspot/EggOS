@@ -3,7 +3,9 @@
 //! first line (arguments, the environment, a `HashMap` with random keys, the heap, the
 //! clocks, sleeping, formatting floats, threads, standard output), writes
 //! `EGGOS-USER: a std program built from Rust source ran its checks` if every check passed,
-//! and exits with 0; otherwise it names each check that failed and exits with 1.
+//! and exits with 0; otherwise it names each check that failed and exits with 1. Given
+//! [`EXIT_FROM_A_THREAD`] as its only argument, it instead ends from a thread while its other
+//! threads wait ([`exit_from_a_thread`]).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -16,6 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 pub const PASSED_LINE: &str = "EGGOS-USER: a std program built from Rust source ran its checks";
 
 const ARGUMENTS_AFTER_PROGRAM_NAME: [&str; 2] = ["first", "second"];
+
+/// The argument that runs [`exit_from_a_thread`] instead of the checks.
+pub const EXIT_FROM_A_THREAD: &str = "exit-from-a-thread";
 
 const SLEEP: Duration = Duration::from_millis(2);
 
@@ -40,6 +45,9 @@ const CHECKS: [Check; 10] = [
 ];
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some(EXIT_FROM_A_THREAD) {
+        exit_from_a_thread();
+    }
     let mut output = std::io::stdout().lock();
     let mut failed = false;
     for (name, check) in CHECKS {
@@ -55,6 +63,22 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
     }
+}
+
+/// Exits with 0 from a thread while the main thread sleeps in `nanosleep` for an hour and
+/// another thread waits on a futex for good; exits with 1 if the main thread wakes first.
+pub fn exit_from_a_thread() -> ! {
+    std::thread::spawn(|| {
+        loop {
+            std::thread::park();
+        }
+    });
+    std::thread::spawn(|| {
+        std::thread::sleep(SLEEP);
+        std::process::exit(0)
+    });
+    std::thread::sleep(Duration::from_secs(3600));
+    std::process::exit(1)
 }
 
 fn arguments() -> bool {

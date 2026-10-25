@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 40] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 41] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -174,6 +174,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 40] {
         (
             "linux_programs_built_with_rust_std_run",
             linux_programs_built_with_rust_std_run::<P>,
+        ),
+        (
+            "linux_programs_end_from_a_thread_while_others_wait",
+            linux_programs_end_from_a_thread_while_others_wait::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1749,6 +1753,15 @@ static STD_PROGRAM: RustProgram = RustProgram {
     failure_signals: &[(SIGABRT, "the std Rust program panicked: it aborted")],
 };
 
+static STD_PROGRAM_EXITING_FROM_A_THREAD: RustProgram = RustProgram {
+    arguments_after_path: &[b"exit-from-a-thread"],
+    failure_statuses: &[(
+        1,
+        "the std Rust program's main thread woke from its sleep before the process ended",
+    )],
+    ..STD_PROGRAM
+};
+
 const SIGABRT: u32 = 6;
 
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
@@ -1763,6 +1776,12 @@ fn linux_programs_built_with_rust_std_run<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM)
+}
+
+fn linux_programs_end_from_a_thread_while_others_wait<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM_EXITING_FROM_A_THREAD)
 }
 
 fn run_rust_program<P: Platform>(
@@ -2261,7 +2280,8 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
         return Err("a futex waiter that timed out was left queued");
     }
     let parker = thread::Parker::new();
-    parker.unpark::<P>();
+    // SAFETY: `parker` is in place until this function returns.
+    unsafe { thread::Parker::unpark::<P>(&parker) };
     if parker.park_until::<P>(u64::MAX) != thread::ParkEnd::Unparked {
         return Err("an unpark before the park did not end it at once");
     }

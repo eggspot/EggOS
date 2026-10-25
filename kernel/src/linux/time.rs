@@ -10,9 +10,9 @@
 //! per-thread CPU time; until then they are invalid, as Linux's are for a process that does
 //! not exist, and `clock()` reports that it cannot tell.
 
+use super::thread;
 use super::{Errno, poll};
 use crate::process::Process;
-use crate::thread;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::time::{mul_div_ceil, ratio_ceil};
@@ -127,8 +127,9 @@ pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u6
     })
 }
 
-fn sleep_until_nanoseconds<P: Platform>(deadline: u64) {
-    thread::sleep_until::<P>(first_tick_at(deadline, nanoseconds_per_tick::<P>()));
+fn sleep_until_nanoseconds<P: Platform>(process: &Process<P>, deadline: u64) {
+    let deadline = first_tick_at(deadline, nanoseconds_per_tick::<P>());
+    let _ = thread::sleep_until::<P>(process, deadline);
 }
 
 fn timespec(nanoseconds: u64) -> [u8; TIMESPEC_SIZE] {
@@ -294,13 +295,14 @@ pub fn clock_nanosleep<P: Platform>(
         return sleep_for::<P>(process, req);
     }
     let deadline = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    sleep_until_nanoseconds::<P>(deadline);
+    sleep_until_nanoseconds::<P>(process, deadline);
     Ok(0)
 }
 
 fn sleep_for<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
     let duration = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    sleep_until_nanoseconds::<P>(monotonic_nanoseconds::<P>().saturating_add(duration));
+    let deadline = monotonic_nanoseconds::<P>().saturating_add(duration);
+    sleep_until_nanoseconds::<P>(process, deadline);
     Ok(0)
 }
 
