@@ -333,7 +333,7 @@ fn futex_wait_wake_round_trip<P: Platform>(n: u64) {
     static TURN: AtomicU64 = AtomicU64::new(0);
     fn wait_for_turn<P: Platform>(key: Key, turn: u64) {
         while TURN.load(Ordering::Relaxed) != turn {
-            let _ = futex::wait::<P>(key, u32::MAX, u64::MAX, None, || {
+            let _ = futex::wait::<P>(key, u32::MAX, u64::MAX, || {
                 match TURN.load(Ordering::Relaxed) == turn {
                     true => Err(Errno::EAGAIN),
                     false => Ok(()),

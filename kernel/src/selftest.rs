@@ -2191,7 +2191,7 @@ fn futex_waiters_are_requeued_in_order<P: Platform>() -> Result<(), &'static str
         .enumerate()
     {
         let waiter = thread::spawn::<P, _>(move || {
-            let woken = futex::wait::<P>(key, bitset, u64::MAX, None, counted);
+            let woken = futex::wait::<P>(key, bitset, u64::MAX, counted);
             assert_eq!(woken, Ok(0), "a requeued futex waiter was not woken");
         })
         .map_err(|_| "could not start five futex waiters")?;
@@ -2231,7 +2231,7 @@ fn futex_waiters_are_requeued_in_order<P: Platform>() -> Result<(), &'static str
         TIMED_OUT.store(false, Ordering::Relaxed);
         let deadline = P::clock_ticks() + (2 << attempt) * millisecond;
         let timed = thread::spawn::<P, _>(move || {
-            let ended = futex::wait::<P>(FROM, u32::MAX, deadline, None, counted);
+            let ended = futex::wait::<P>(FROM, u32::MAX, deadline, counted);
             TIMED_OUT.store(ended == Err(linux::Errno::ETIMEDOUT), Ordering::Relaxed);
         })
         .map_err(|_| "could not start a futex waiter")?;
@@ -2267,7 +2267,7 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
     const SHARED: Key = Key::new(u32::MAX, 0x1000, true);
     let millisecond = P::clock_frequency() / 1000;
     let wait_forever = |bitset: u32| {
-        futex::wait::<P>(KEY, bitset, u64::MAX, None, || {
+        futex::wait::<P>(KEY, bitset, u64::MAX, || {
             QUEUED.fetch_add(1, Ordering::Relaxed);
             Ok(())
         })
@@ -2309,13 +2309,13 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
     for waiter in waiters {
         waiter.join::<P>();
     }
-    if futex::wait::<P>(KEY, u32::MAX, u64::MAX, None, || Err(linux::Errno::EAGAIN))
+    if futex::wait::<P>(KEY, u32::MAX, u64::MAX, || Err(linux::Errno::EAGAIN))
         != Err(linux::Errno::EAGAIN)
     {
         return Err("a futex wait did not end with the word's error");
     }
     let deadline = P::clock_ticks() + millisecond;
-    if futex::wait::<P>(KEY, u32::MAX, deadline, None, || Ok(())) != Err(linux::Errno::ETIMEDOUT) {
+    if futex::wait::<P>(KEY, u32::MAX, deadline, || Ok(())) != Err(linux::Errno::ETIMEDOUT) {
         return Err("a futex wait with a deadline did not time out");
     }
     if P::clock_ticks() < deadline {

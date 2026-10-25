@@ -4265,3 +4265,62 @@ the license, by an explicit instruction recorded here.
 - **Cost.** No hot path changes: the caller-takes-it test is on `kill`'s path only, the mask
   changes add one test of the block's list when they unblock something, and the system-call
   round trip and the thread loop are untouched.
+
+## D97 Signals interrupt `futex` waits and sleeps: `EINTR`, `rem`, `SA_RESTART` — Decided by the build loop (the wake-up path decided by research)
+
+- **What.** A signal another thread sends (`tkill`, `tgkill`, `rt_tgsigqueueinfo`, or `kill`
+  and `rt_sigqueueinfo` to the process, D95, D96) ends the target's `futex` wait or sleep, and
+  the call ends as Linux's does. This replaces D95's "`nanosleep` and `clock_nanosleep` sleep
+  out their time and deliver after" and its "Not yet" for `futex`.
+- **How the call ends**, decided once the first handler to start is known (Linux decides it in
+  `handle_signal` from the call's `-ERESTART*` code):
+  - `nanosleep` and a relative `clock_nanosleep` write the time left to `rem`, unless it is
+    null, as soon as a signal is due (Linux's `nanosleep_copyout`), then fail with `EINTR` if
+    a handler starts, whatever its `SA_RESTART` (Linux's `-ERESTART_RESTARTBLOCK`); an
+    unwritable `rem` makes the call fail with `EFAULT`, the sleep over, as on Linux. An
+    absolute `clock_nanosleep` writes nothing.
+  - A `futex` wait with no timeout is made again once the handler returns if its action has
+    `SA_RESTART`, and fails with `EINTR` otherwise (Linux's `-ERESTARTSYS`); with a timeout it
+    fails with `EINTR` (`-ERESTART_RESTARTBLOCK`).
+  - If no handler starts (the due signals were discarded: a stop signal in an orphaned process
+    group, an action changed to `SIG_IGN` meanwhile), the sleep or wait goes on in the kernel to
+    the same deadline, the futex word checked again, which is what Linux's restart does. A
+    `SIGKILL` or a default action that ends the process ends it; `SIGSTOP` stops the thread.
+- **Restarting a call** is the HAL's new `UserContext::restart_syscall(number,
+  first_argument)`: the program counter goes back over the call instruction (`svc` and `ecall`
+  are 4 bytes, `syscall` 2) and the registers the result overwrote get the call's number and
+  first argument back, so the handler's frame saves a context that makes the call again when
+  `rt_sigreturn` restores it, as Linux's restart does. It is applied right before the first
+  handler's frame is written (`signals::deliver_interrupting`, `Interrupted`).
+- **How the sender reaches a waiting thread** (research: three options weighed). Each Linux
+  thread has a wait slot (`futex::WaitSlot`, the index of the futex bucket its waiter is in,
+  kept by `requeue` when it moves the waiter), shared with the process's signal block, which
+  records every thread's slot (the first thread's once it starts the second). A sender bumps
+  the count of signals sent and calls `futex::interrupt` on the target's slot: it locks that one
+  bucket, finds the waiter by its slot and ends its wait with `EINTR`; every sleep waits on the
+  thread's own sleep word in the same table, so one path covers sleeps and `futex` waits. A
+  waiter publishes its slot and a sender bumps the count, each followed by a `SeqCst` fence,
+  so either the sender finds the slot or the waiter sees the count before it waits (its
+  `still_expected` check fails with `EINTR`). Rejected: scanning all 256 buckets per signal
+  (every `tgkill` would touch every bucket of every process: Go's runtime sends `SIGURG` to
+  threads every 10 ms, and its idle threads almost always sit in a `futex` wait), and Linux's
+  model of an interruptible park in the scheduler (it changes the scheduler core to cover the
+  same two kinds of wait). Linux's `signal_wake_up` likewise touches only the target.
+- **A stopped thread** (`SIGSTOP`) now waits for its process's end without taking in signals,
+  so one sent to the process stays for its other threads (the D96 review's follow-up).
+- **Differences from Linux kept.** A signal the waiting thread blocks still ends its `futex`
+  wait for a moment (the sender cannot see the target's mask, D96); the thread checks the word
+  again and waits on, so a word that changed with no `FUTEX_WAKE` returns `EAGAIN` where Linux
+  would sleep on; callers loop on `futex` anyway (a spurious return is allowed). Every other
+  CPU is still interrupted for each signal sent (D95).
+- **Tests.** HAL host test: a restarted call's program counter, number and arguments on the
+  host's architecture. Kernel host tests: a signal sent by another thread interrupts
+  `nanosleep` and a relative `clock_nanosleep` (handler runs, `rem` holds the time left, the
+  call returns `EINTR` after `rt_sigreturn`), an absolute one (`rem` untouched), and one with
+  an unwritable `rem` (`EFAULT`); a `futex` wait interrupted with and without `SA_RESTART` and
+  with a timeout (restarted only in the second case: program counter, number and arguments as
+  made), and one whose word changed (`EAGAIN`, the handler still run). QEMU self-tests on
+  aarch64, riscv64 and x86_64: the std program's thread sleeping in `nanosleep` for 10 s ends
+  with `EINTR` and the time left once another thread's `pthread_kill` runs its handler, and a
+  thread parked in `std::thread::park` (a `futex` wait) runs the handler and stays parked
+  until unparked.

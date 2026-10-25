@@ -190,40 +190,43 @@ impl Bucket {
 
 /// Waits on `key` until a [`wake`] whose bitset shares a bit with `bitset` takes this
 /// waiter (on `key`, or on the word a [`requeue`] moved it to), or the clock reaches
-/// `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none), or [`interrupt`] ends it
-/// through `slot`, the waiting thread's, if it has one. `still_expected` runs first, with the
-/// word's bucket locked so no wake can slip in between, and after `slot` shows where the
-/// thread waits, so an [`interrupt`] after anything it reads finds the waiter: its error, such
-/// as `EAGAIN` when the word no longer holds the expected value, ends the call at once.
-/// `ETIMEDOUT` at the deadline, `EINTR` when interrupted. Call it as a blocking system call
-/// runs: with interrupts masked and no lock held.
+/// `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none). `still_expected` runs first,
+/// with the word's bucket locked so no wake can slip in between: its error, such as `EAGAIN`
+/// when the word no longer holds the expected value, ends the call at once. `ETIMEDOUT` at the
+/// deadline. Call it as a blocking system call runs: with interrupts masked and no lock held.
 pub fn wait<P: Platform>(
     key: Key,
     bitset: u32,
     deadline: u64,
-    slot: Option<&WaitSlot>,
     still_expected: impl FnOnce() -> Result<(), Errno>,
 ) -> Result<u64, Errno> {
-    let index = key.bucket_index();
-    let unshared = WaitSlot::new();
-    let slot = match slot {
-        Some(slot) => {
-            slot.bucket_index.store(index, Ordering::Relaxed);
-            fence(Ordering::SeqCst);
-            slot
-        }
-        None => {
-            unshared.bucket_index.store(index, Ordering::Relaxed);
-            &unshared
-        }
+    let slot = WaitSlot {
+        bucket_index: AtomicUsize::new(key.bucket_index()),
     };
-    let waited = wait_in::<P>(key, bitset, deadline, slot, still_expected);
+    wait_in::<P, false>(key, bitset, deadline, &slot, still_expected)
+}
+
+/// Waits as [`wait`] does, or until [`interrupt`] ends the wait through `slot`, the waiting
+/// thread's: `EINTR` then. `still_expected` runs after `slot` shows where the thread waits, so
+/// an [`interrupt`] after anything it reads finds the waiter.
+pub fn wait_interruptibly<P: Platform>(
+    key: Key,
+    bitset: u32,
+    deadline: u64,
+    slot: &WaitSlot,
+    still_expected: impl FnOnce() -> Result<(), Errno>,
+) -> Result<u64, Errno> {
+    slot.bucket_index
+        .store(key.bucket_index(), Ordering::Relaxed);
+    fence(Ordering::SeqCst);
+    let waited = wait_in::<P, true>(key, bitset, deadline, slot, still_expected);
     slot.bucket_index
         .store(WaitSlot::NOT_WAITING, Ordering::Relaxed);
     waited
 }
 
-fn wait_in<P: Platform>(
+#[inline(always)]
+fn wait_in<P: Platform, const INTERRUPTIBLE: bool>(
     key: Key,
     bitset: u32,
     deadline: u64,
@@ -247,15 +250,14 @@ fn wait_in<P: Platform>(
         still_expected()?;
         bucket.push_back(pointer, key);
     }
-    let ended = waiter.parker.park_until::<P>(deadline);
-    if ended == ParkEnd::DeadlineReached
+    if waiter.parker.park_until::<P>(deadline) == ParkEnd::DeadlineReached
         && let Some(mut bucket) = slot.lock_current_bucket()
         && bucket.link(pointer).queued
     {
         bucket.remove(pointer);
         return Err(Errno::ETIMEDOUT);
     }
-    match waiter.interrupted.load(Ordering::Relaxed) {
+    match INTERRUPTIBLE && waiter.interrupted.load(Ordering::Relaxed) {
         true => Err(Errno::EINTR),
         false => Ok(0),
     }
@@ -549,16 +551,10 @@ impl Call {
                     return Err(Errno::EINVAL);
                 }
                 let unless_signalled_or_ended = unless_signalled_or_ended(process, thread);
-                wait::<P>(
-                    key(address),
-                    bitset,
-                    deadline,
-                    Some(thread.wait_slot()),
-                    || {
-                        expect_word(process, address, value)?;
-                        unless_signalled_or_ended()
-                    },
-                )
+                wait_interruptibly::<P>(key(address), bitset, deadline, thread.wait_slot(), || {
+                    expect_word(process, address, value)?;
+                    unless_signalled_or_ended()
+                })
             }
         }
     }

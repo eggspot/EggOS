@@ -38,11 +38,11 @@ pub fn sleep_until<P: Platform>(
     let key = sleep_key(process, thread.id);
     let mut taken_in = signals::take_in_sent(process, thread);
     while !taken_in && !process.has_ended() {
-        let slept = futex::wait::<P>(
+        let slept = futex::wait_interruptibly::<P>(
             key,
             u32::MAX,
             deadline,
-            Some(&thread.wait_slot),
+            &thread.wait_slot,
             unless_signalled_or_ended(process, thread),
         );
         if slept == Err(Errno::ETIMEDOUT) || P::clock_ticks() >= deadline {
@@ -75,16 +75,12 @@ pub fn unless_signalled_or_ended<P: Platform>(
 pub fn wait_for_end<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
     let key = sleep_key(process, thread.id);
     while !process.has_ended() {
-        let _ = futex::wait::<P>(
-            key,
-            u32::MAX,
-            u64::MAX,
-            Some(&thread.wait_slot),
-            || match process.has_ended() {
+        let _ = futex::wait_interruptibly::<P>(key, u32::MAX, u64::MAX, &thread.wait_slot, || {
+            match process.has_ended() {
                 true => Err(Errno::EINTR),
                 false => Ok(()),
-            },
-        );
+            }
+        });
     }
 }
 
