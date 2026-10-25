@@ -4464,6 +4464,7 @@ mod tests {
         assert_eq!(get(&mut second, tid, head), 0);
         process.read_user_memory(head, &mut bytes[..8]).unwrap();
         assert_eq!(bytes[..8], list.to_ne_bytes());
+        assert_eq!(get(&mut second, tid | 1 << 32, head), 0);
         assert_eq!(get(&mut first, tid, head), Errno::ESRCH.result());
         assert_eq!(get(&mut second, 0, 0), Errno::EFAULT.result());
         let refused = [list, 16, 0, 0, 0, 0];

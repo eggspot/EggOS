@@ -106,9 +106,9 @@ pub fn set_robust_list(thread: &mut LinuxThread, head: u64, length: u64) -> Resu
 }
 
 /// `get_robust_list(tid, head, length)`: writes the robust list head of thread `tid` (0 for
-/// the caller) to `head` and the head's size to `length`, or `EFAULT` if either is not the
-/// program's writable memory. Another thread's id is `ESRCH` until a thread can reach
-/// another's state, as for `tkill` (D91).
+/// the caller; a C `int`, so the low 32 bits) to `head` and the head's size to `length`, or
+/// `EFAULT` if either is not the program's writable memory. Another thread's id is `ESRCH`
+/// until a thread can reach another's state, as for `tkill` (D91).
 pub fn get_robust_list<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -116,7 +116,8 @@ pub fn get_robust_list<P: Platform>(
     head: u64,
     length: u64,
 ) -> Result<u64, Errno> {
-    if tid != 0 && tid != u64::from(thread.id()) {
+    let tid = tid as u32;
+    if tid != 0 && tid != thread.id() {
         return Err(Errno::ESRCH);
     }
     process

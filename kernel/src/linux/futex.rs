@@ -1,6 +1,7 @@
 //! `futex`: threads wait until a 32-bit word in their memory changes, and are woken by
 //! whoever changes it (D89, D90). Waiters are kept per word in a fixed table of
 //! buckets, each a list of waiters on their own stacks, so waiting and waking never allocate.
+//! A thread's exit releases the robust locks it holds ([`release_robust_list`], D93).
 
 use super::Errno;
 use super::time;
