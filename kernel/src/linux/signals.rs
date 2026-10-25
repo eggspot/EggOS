@@ -1469,8 +1469,6 @@ fn deliver_with<P: Platform>(
             Some(Delivery::Kill(signal)) => {
                 return super::end_process(process, ProcessExit::Killed { signal });
             }
-            // Stopped until `SIGCONT` or `SIGKILL`, which only another process could send:
-            // none can reach it yet, so for good, as on Linux when no one sends either.
             Some(Delivery::Stop(_)) => super::thread::sleep_until::<P>(process, u64::MAX)?,
             Some(Delivery::Handler {
                 signal,
