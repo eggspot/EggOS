@@ -29,8 +29,8 @@ const MATCH_ANY: u32 = u32::MAX;
 const WORD_SIZE: u64 = 4;
 const BUCKET_COUNT: usize = 256;
 
-/// The word a waiter waits on: the address space it is in, by its process's id while a
-/// process has one thread and no memory shared with another, its user address, and whether
+/// The word a waiter waits on: the address space it is in, by its process's id, which all its
+/// threads share, while no memory is shared with another process, its user address, and whether
 /// the futex is shared (no `FUTEX_PRIVATE_FLAG`): as on Linux, private and shared waits on one
 /// word are apart, and a wake reaches only its own kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +45,10 @@ impl Key {
             space_and_kind: (space as u64) << 1 | shared as u64,
             address,
         }
+    }
+
+    fn space(self) -> u32 {
+        (self.space_and_kind >> 1) as u32
     }
 
     fn bucket_index(self) -> usize {
@@ -209,6 +213,32 @@ pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
     woken
 }
 
+/// Wakes every waiter in address space `space` (see [`Key::new`]), on any word, as an ended
+/// process's threads must stop waiting; returns how many it woke. Each wakes as from a
+/// [`wake`].
+pub fn wake_space<P: Platform>(space: u32) -> u32 {
+    let mut woken = 0;
+    for bucket in &BUCKETS {
+        let mut bucket = bucket.lock();
+        let mut previous = None;
+        let mut following = bucket.head;
+        while let Some(candidate) = following {
+            let link = bucket.link(candidate);
+            following = link.next;
+            if link.key.space() == space {
+                bucket.unlink(previous, candidate);
+                // SAFETY: a waiter in the bucket, in place while the bucket's lock is held;
+                // its parker is only read.
+                unsafe { candidate.as_ref() }.parker.unpark::<P>();
+                woken += 1;
+            } else {
+                previous = Some(candidate);
+            }
+        }
+    }
+    woken
+}
+
 /// Wakes at most `wake_limit` of the waiters on `from`, in the order they began to wait, and
 /// moves at most `requeue_limit` of the next ones to `to`, behind its own waiters and in the
 /// same order, whatever their bitsets; returns how many it woke and how many it moved.
@@ -276,8 +306,9 @@ pub fn requeue<P: Platform>(
 /// and its flags (`ENOSYS`), a requeue's negative counts, the bitset and each word's alignment
 /// (`EINVAL`), then the words themselves (`EFAULT`, then `EAGAIN`). A requeue's second count
 /// is the `timeout` argument's low 32 bits, and it returns how many it woke and moved
-/// together. A waiting thread cannot be interrupted by a signal yet: only its own process
-/// could send one, and its only thread is waiting. The other operations are `ENOSYS`.
+/// together. A waiting thread cannot be interrupted by a signal yet: signals reach only the
+/// thread that sends them so far (D91); it stops waiting when its process ends. The other
+/// operations are `ENOSYS`.
 pub fn futex<P: Platform>(
     process: &Process<P>,
     address: u64,

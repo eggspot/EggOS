@@ -35,15 +35,18 @@ use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
-use crate::thread::{self, FpStart, JoinHandle, SpawnError};
+use crate::thread::{self, CpuPlacement, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
+
+/// [`Process::first_thread_status`] before the first thread has ended: no status, which is 8 bits.
+const NO_STATUS: u32 = u32::MAX;
 
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
@@ -168,11 +171,18 @@ pub struct Process<P: Platform> {
     frame_offset: usize,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
     exit: SpinLock<Option<ProcessExit>>,
+    /// Set once [`Self::exit`] has run: its threads run no more of its program.
+    ended: AtomicBool,
+    /// Its threads that run its program and have not exited ([`Self::add_thread`]).
+    threads: AtomicU32,
+    /// The status its first thread ended with on its own, [`NO_STATUS`] until it has
+    /// ([`Self::record_first_thread_status`]).
+    first_thread_status: AtomicU32,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
     credentials_and_limits: SpinLock<CredentialsAndLimits>,
-    /// Its signal state and its one thread's ([`Self::signals`]).
+    /// Its signal state, which its threads share ([`Self::signals`]).
     signals: SpinLock<Signals>,
 }
 
@@ -199,6 +209,13 @@ impl ProcessId {
     }
 }
 
+/// An id for a thread that is not a process's first (`clone`), from the processes' ids: Linux
+/// gives threads and processes ids from one space, the first thread's being its process's.
+/// `None` once every id has been given out.
+pub fn allocate_thread_id() -> Option<u32> {
+    ProcessId::allocate().map(ProcessId::get)
+}
+
 impl<P: Platform> Process<P> {
     /// A process with an empty address space sharing the kernel half of `kernel`.
     ///
@@ -221,6 +238,9 @@ impl<P: Platform> Process<P> {
             program_break: SpinLock::new(None),
             frame_offset,
             exit: SpinLock::new(None),
+            ended: AtomicBool::new(false),
+            threads: AtomicU32::new(0),
+            first_thread_status: AtomicU32::new(NO_STATUS),
             id,
             credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
             signals: SpinLock::new(Signals::new()),
@@ -244,9 +264,9 @@ impl<P: Platform> Process<P> {
         self.credentials_and_limits.get_mut()
     }
 
-    /// Its signal actions and its thread's blocked signals and alternate stack
-    /// (`rt_sigaction`, `rt_sigprocmask`, `sigaltstack`; D60). Never held while user memory is
-    /// copied.
+    /// Its signal actions (`rt_sigaction`, D60) and the `siginfo_t`s queued with its threads'
+    /// pending signals; each thread's own state joins it under this lock (D91). Never held
+    /// while user memory is copied.
     pub fn signals(&self) -> &SpinLock<Signals> {
         &self.signals
     }
@@ -982,9 +1002,63 @@ impl<P: Platform> Process<P> {
     }
 
     /// Records how the process ended, unless it already has: the first to end it wins (say,
-    /// two threads calling `exit_group`).
+    /// two threads calling `exit_group`). Its other threads stop running its program: each
+    /// other CPU is asked to look at its scheduler, which a thread of the process does before
+    /// it runs the program again (see [`spawn`]), and a CPU running one in user mode is
+    /// interrupted.
     pub fn exit(&self, how: ProcessExit) {
         self.exit.lock().get_or_insert(how);
+        self.ended.store(true, Ordering::Relaxed);
+        if self.threads() > 1 {
+            interrupt_other_cpus::<P>();
+        }
+    }
+
+    /// Whether the process has ended ([`Self::exit`]): its threads stop instead of running its
+    /// program again.
+    pub fn has_ended(&self) -> bool {
+        self.ended.load(Ordering::Relaxed)
+    }
+
+    /// For a call that passes preemption points on the process's behalf, which may take the
+    /// look an ending process asked this CPU for: whether the process has ended. If it has,
+    /// this CPU is asked to look again, so the calling thread stops before it returns to user
+    /// mode.
+    pub fn has_ended_and_will_stop(&self) -> bool {
+        let ended = self.has_ended();
+        if ended {
+            cpu::current::<P>().request_reschedule();
+        }
+        ended
+    }
+
+    /// Records the status the process's first thread ended with while others go on (Linux's
+    /// `exit`): the process ends with it if they all end that way too, as Linux reports its
+    /// thread group leader's.
+    pub fn record_first_thread_status(&self, status: u8) {
+        self.first_thread_status
+            .store(u32::from(status), Ordering::Release);
+    }
+
+    /// The status recorded by [`Self::record_first_thread_status`], if any.
+    pub fn first_thread_status(&self) -> Option<u8> {
+        u8::try_from(self.first_thread_status.load(Ordering::Acquire)).ok()
+    }
+
+    /// Its threads that run its program and have not exited.
+    pub fn threads(&self) -> u32 {
+        self.threads.load(Ordering::Acquire)
+    }
+
+    /// Counts a thread that will run the process's program, before it starts.
+    pub fn add_thread(&self) {
+        self.threads.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Counts a thread out, as it exits or could not start: true if it was the last, which
+    /// then ends the process.
+    pub fn remove_thread(&self) -> bool {
+        self.threads.fetch_sub(1, Ordering::AcqRel) == 1
     }
 
     /// How the process ended, or `None` while it has not.
@@ -1053,17 +1127,35 @@ where
     P: Platform,
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
 {
-    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
+    spawn_placed(process, context, handler, CpuPlacement::Spread)
 }
 
-/// A user thread's loop (see [`spawn`]).
+/// [`spawn`], placed as `placement` says.
+pub fn spawn_placed<P, H>(
+    process: Arc<Process<P>>,
+    context: UserContext,
+    handler: H,
+    placement: CpuPlacement,
+) -> Result<JoinHandle, SpawnError>
+where
+    P: Platform,
+    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
+{
+    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler), placement)
+}
+
+/// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
+/// (started by a thread as another ended it) never runs the program.
 fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
 where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
-    loop {
+    let mut ended = process.has_ended();
+    while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        thread::preemption_point_before_user_mode::<P>();
+        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
+            break;
+        }
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
         // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
@@ -1071,9 +1163,7 @@ where
         // below, on this thread (`AddressSpace::change_pages`). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
-        if handler(&process, &mut context, exit).is_break() {
-            break;
-        }
+        ended = handler(&process, &mut context, exit).is_break();
     }
     let here = cpu::current::<P>();
     let root = process.address_space().root();
@@ -1081,6 +1171,21 @@ where
     // If only CPUs still hold the process (this was its last thread), they let it go: this one
     // now, the others, woken, when they idle.
     address_space::release_ended::<P>(here, root);
+}
+
+/// Asks every other online CPU to look at its scheduler and interrupts it: a thread of an ended
+/// process that runs there in user mode comes back to the kernel, and one about to return to
+/// user mode, or switched in there next, looks first ([`run`]).
+#[cold]
+#[inline(never)]
+fn interrupt_other_cpus<P: Platform>() {
+    let here = cpu::current::<P>();
+    for &other in cpu::CPUS.all() {
+        if !core::ptr::eq(other, here) && other.is_online() {
+            other.request_reschedule();
+            cpu::wake::<P>(other);
+        }
+    }
 }
 
 /// For a thread's handler ([`spawn`]), on an exception of `kind`: whether it was the

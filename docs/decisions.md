@@ -3818,3 +3818,92 @@ the license, by an explicit instruction recorded here.
 - **Next.** `clone` for threads (`CLONE_VM | CLONE_THREAD | ...`, `CLONE_SETTLS`,
   `CLONE_CHILD_CLEARTID`'s shared wake, `CLONE_PARENT_SETTID`), with a futex wait interrupted
   by a signal handler then returning `EINTR`.
+
+## D91 `clone` for threads: each thread's own Linux state, `exit` for one thread and `exit_group` for all — Decided by the build loop (errors and exit status decided by research)
+- **Why.** Rust's `std::thread`, musl's and glibc's `pthread_create` and every threaded
+  program start threads with `clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+  CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID,
+  ...)` and join them through the futex `CLONE_CHILD_CLEARTID` wakes (D89's and D90's
+  "Next"). A process had one thread until now, with that thread's state in the process.
+- **Each thread's own state.** A `LinuxThread` (`kernel/src/linux/thread.rs`) holds the
+  thread's id, its `clear_child_tid` (`set_tid_address`, now remembered, and
+  `CLONE_CHILD_CLEARTID`) and its signal state (`ThreadSignals`: blocked, pending, alternate
+  stack). The thread's loop owns it, boxed, and hands it to every system call
+  (`linux::handle`); the process keeps what threads share (`signals::Signals`: the actions
+  and the queued `siginfo_t`s, each queued one now tagged with its thread's id). A signal call
+  joins the two under the process's lock (`LockedSignals`). The first thread's id is the
+  process's; the others' come from the same counter, as Linux gives threads and processes
+  ids from one space. `gettid` is the thread's.
+- **`clone`.** Only a new thread of the caller's process: `CLONE_VM | CLONE_SIGHAND |
+  CLONE_THREAD`, with any of `CLONE_FS`, `CLONE_FILES`, `CLONE_SYSVSEM` (shared anyway),
+  `CLONE_SETTLS`, `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID`, `CLONE_CHILD_CLEARTID`,
+  `CLONE_DETACHED` (ignored, as on Linux), `CLONE_PTRACE`, `CLONE_UNTRACED`, `CLONE_IO`. The
+  child returns 0 on the given stack (the caller's if 0) with the caller's other registers,
+  its thread pointer `tls` with `CLONE_SETTLS`; its id goes to the id words before it runs
+  (faults ignored); it blocks what the caller blocks, with nothing pending and no alternate
+  stack. Arguments in each architecture's order (x86_64 `child_tid` before `tls`, AArch64
+  and RISC-V after). The flags' upper 32 bits and the exit signal are ignored.
+- **Errors (research: clone(2), fork(2), musl's and glibc's callers, LTP's `clone*`
+  descriptions).** Linux's `EINVAL` combinations in Linux's order (`CLONE_PIDFD` with
+  `CLONE_PARENT_SETTID`; `CLONE_NEWNS` or `CLONE_NEWUSER` with `CLONE_FS`; `CLONE_THREAD`
+  without `CLONE_SIGHAND`; `CLONE_SIGHAND` without `CLONE_VM`; `CLONE_THREAD` with
+  `CLONE_NEWUSER` or `CLONE_NEWPID`; `CLONE_PIDFD` with `CLONE_DETACHED` or `CLONE_THREAD`),
+  then `EINVAL` for namespaces and `CLONE_PIDFD`, as on a Linux built without them (sandbox
+  and pidfd probes read it as unavailable); then `ENOSYS` for a new process (no `CLONE_VM`,
+  `CLONE_VFORK`, `CLONE_PARENT`) until processes can be created: fork(2) documents it as
+  "not supported", and `fork`, `posix_spawn` and their callers report it instead of retrying
+  as they would on `EAGAIN`. x86_64's `EPERM` for a thread pointer outside user space, as
+  `arch_prctl`. `EAGAIN` when ids run out, `ENOMEM` without memory for the thread.
+- **Ending threads.** `exit` ends the calling thread: if others go on, the 32-bit word at its
+  `clear_child_tid` becomes 0 (faults ignored) and one waiter on it as a shared futex is woken
+  if it is aligned; its queued signals go. The last thread to end ends the process, with the
+  first thread's status if that one ended earlier with `exit` (research: Linux reports the
+  thread group leader's), else its own. `exit_group`, a fatal signal and the out-of-memory
+  kill end the process: `Process::exit` records how, marks it ended, and, if it has other
+  threads, asks every other CPU to look at its scheduler and interrupts it; a thread of an
+  ended process stops at its next preemption point before user mode that looks
+  (`preemption_point_before_user_mode` now says whether it looked) and after any system call
+  handled out of line, and its futex waits are woken (`futex::wake_space`). None of this is
+  on the system-call path.
+- **One CPU per process, for now.** Changed mappings are dropped from other CPUs' caches
+  lazily (D53): a CPU that keeps the address space loaded is marked stale and switches again
+  before it next uses it, with no interrupt, which was sound while a process had one thread.
+  Two threads of a process running on two CPUs at once would let one keep using
+  translations, and the frames behind them, that the other just unmapped. Until changed
+  mappings are shot down on other CPUs, `clone` pins the calling thread and the new one to
+  the caller's CPU (`thread::CpuPlacement::WithCaller`): load balancing never moves a pinned
+  thread, so every thread of a multi-threaded process runs on that one CPU, which is the one
+  that changes its mappings. Threads run concurrently there (preemption), not in parallel;
+  the shootdown that lets them spread is the next item.
+- **Not yet (next).** The shootdown, then threads spread over CPUs; until then the
+  interrupts `Process::exit` sends other CPUs find none of the process's threads there, and
+  a pinned thread at the front of a busy CPU's ready threads hides the others behind it from
+  an idle CPU (stealing looks at the front only). A new thread starts with the initial
+  FP/SIMD state, where Linux copies the caller's (its rounding mode and exception masks
+  included). A thread stopped by `SIGSTOP`'s default action sleeps for good, so it outlives
+  its process's end like the waits below. Signals between threads: `kill`, `tkill`, `tgkill` and the queueing
+  calls still reach only the caller (another thread's id is `ESRCH`), a process-directed
+  signal goes to the calling thread, and `SIG_IGN` discards only the caller's pending signal.
+  A thread of an ended process that sleeps in `nanosleep`, `ppoll`, `rt_sigsuspend`, `pause`
+  or `rt_sigtimedwait` ends only when its wait does. Both need the same thing: a way to wake
+  another thread's wait, then a pending signal checked on the way back to user mode. Then the
+  robust list (`set_robust_list` is still checked and not remembered), `clone3`, and new
+  processes (`fork`, `wait4`).
+- **Cost.** In the first version the thread's state sat in the loop's closure next to the
+  benchmark's own counter; the out-of-line calls take the state's address, so the counter
+  lived in memory: `linux_syscall_round_trip` +3.1% to +5.4%. Boxed, the loop holds one
+  pointer. Ending a single-threaded process scanned the 256 futex buckets and took the signal
+  lock to drop the thread's queue (`linux_page_fault`, whose program exits each run, +1.2%);
+  both now happen only when other threads exist. On AArch64 the unknown call's `ENOSYS` then
+  shared its result store with the other calls, two branches more (+1.6%); it has its own
+  now. Against `main` on the same machine afterwards: `linux_syscall_round_trip` −0.7%
+  (x86_64), 0.0% (aarch64), −0.7% against the baseline (riscv64); `linux_page_fault` +0.2% to
+  +0.4% (the boxed state and the thread count per spawn, within the gate); nothing else
+  moves.
+- **Tests.** The std test program (D86) starts four threads that add to a shared atomic and
+  return their `ThreadId`s, joins them, and hands a value to a thread through a `Mutex` and a
+  `Condvar`, on aarch64, riscv64 and x86_64. Host tests: `clone`'s refusals in order (and
+  x86_64's `EPERM`), thread ids, `set_tid_address`, a thread's exit clearing its word and
+  leaving the process, the last one ending it, the first thread's status, `exit_group`, a
+  thread of an ended process stopping after an out-of-line call, and each thread's own mask
+  and queued `siginfo_t`; load balancing never taking a pinned thread.

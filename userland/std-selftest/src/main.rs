@@ -1,13 +1,15 @@
 //! The kernel's boot self-tests run this program, built with Rust's standard library and
 //! linked with musl, as a Linux program: it uses what a typical Rust program uses from its
 //! first line (arguments, the environment, a `HashMap` with random keys, the heap, the
-//! clocks, sleeping, formatting floats, standard output), writes
+//! clocks, sleeping, formatting floats, threads, standard output), writes
 //! `EGGOS-USER: a std program built from Rust source ran its checks` if every check passed,
 //! and exits with 0; otherwise it names each check that failed and exits with 1.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 /// The line written when every check passed.
@@ -19,7 +21,9 @@ const SLEEP: Duration = Duration::from_millis(2);
 
 type Check = (&'static str, fn() -> bool);
 
-const CHECKS: [Check; 8] = [
+const THREADS: u64 = 4;
+
+const CHECKS: [Check; 10] = [
     ("the arguments are the program's", arguments),
     ("the environment holds TERM", environment),
     ("a HashMap with random keys counts words", hash_map),
@@ -28,6 +32,11 @@ const CHECKS: [Check; 8] = [
     ("floats format as on Linux", float_formatting),
     ("sleeping takes at least its time", sleeping),
     ("the realtime clock reads", realtime_clock),
+    ("threads run, share memory and are joined", threads),
+    (
+        "a mutex and its condition variable hand work over",
+        condition_variable,
+    ),
 ];
 
 fn main() -> ExitCode {
@@ -113,6 +122,47 @@ fn sleeping() -> bool {
     let start = Instant::now();
     std::thread::sleep(SLEEP);
     start.elapsed() >= SLEEP
+}
+
+fn threads() -> bool {
+    let total = Arc::new(AtomicU64::new(0));
+    let handles: Vec<_> = (1..=THREADS)
+        .map(|value| {
+            let total = Arc::clone(&total);
+            std::thread::spawn(move || {
+                total.fetch_add(value, Ordering::SeqCst);
+                std::thread::current().id()
+            })
+        })
+        .collect();
+    let mut ids: Vec<_> = handles
+        .into_iter()
+        .filter_map(|handle| handle.join().ok())
+        .collect();
+    ids.push(std::thread::current().id());
+    ids.sort_by_key(|id| format!("{id:?}"));
+    ids.dedup();
+    ids.len() == THREADS as usize + 1 && total.load(Ordering::SeqCst) == THREADS * (THREADS + 1) / 2
+}
+
+fn condition_variable() -> bool {
+    let shared = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+    let worker = {
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let (slot, ready) = &*shared;
+            let mut slot = slot.lock().unwrap();
+            while slot.is_none() {
+                slot = ready.wait(slot).unwrap();
+            }
+            slot.map(|value: u64| value * 2)
+        })
+    };
+    std::thread::sleep(SLEEP);
+    let (slot, ready) = &*shared;
+    *slot.lock().unwrap() = Some(21);
+    ready.notify_one();
+    worker.join().ok().flatten() == Some(42)
 }
 
 fn realtime_clock() -> bool {

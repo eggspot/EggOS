@@ -502,6 +502,7 @@ fn remap_error(error: RegionError) -> Errno {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux::thread::LinuxThread;
     use crate::linux::{handle, number};
     use crate::memory::FRAMES;
     use crate::paging::PageTables;
@@ -545,7 +546,12 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, 0);
         context.simulate_syscall(number, arguments, 0x40_0004);
         assert_eq!(
-            handle(process, &mut context, UserExit::Syscall),
+            handle(
+                process,
+                &mut LinuxThread::first(process),
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Continue(())
         );
         context.syscall_result()
