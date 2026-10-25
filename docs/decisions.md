@@ -4004,6 +4004,12 @@ the license, by an explicit instruction recorded here.
   on one CPU and the kernel is not preempted (D91), and it needs a compare-and-exchange on
   user memory once they spread. Another thread's list through `get_robust_list`, and the
   credential check Linux makes for another process's, come with signals between threads.
+- **From the independent review, open.** A pending entry whose word is 0 (a thread that died
+  between unlocking and waking) should still wake one waiter: it matters once a thread can be
+  killed alone or the walk runs at the process's end. `execve`, when it comes, clears the
+  head. `get_robust_list` writes the head before the size, and a `next` that cannot be read
+  ends the walk before its entry's lock is released; both differ from Linux only for programs
+  passing bad pointers. No test watches the wake itself yet.
 - **Tests.** Host tests: `get_robust_list` for the caller (0 before `set_robust_list`, its
   head after, with size 24), `ESRCH` for another thread's id, `EFAULT`; `set_robust_list`'s
   `EINVAL` keeping the old head; an exit releasing its locks with a negative offset, the
