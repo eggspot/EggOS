@@ -150,7 +150,10 @@ pub trait Platform: 'static {
     /// architecture tags them apart (AArch64). Instructions [`Self::make_instructions_visible`]
     /// made visible on any CPU before the switch are visible to this CPU's instruction fetch
     /// after it (on RISC-V the switch runs `fence.i`), so a program loaded on one CPU runs on
-    /// another once that CPU switches to its address space (D48).
+    /// another once that CPU switches to its address space (D48). Every store this CPU made
+    /// before the switch is visible to other CPUs before the new tables' first walk reads an
+    /// entry (on RISC-V the switch starts with a full fence), so a CPU that changes an entry,
+    /// fences, then finds no record of this switch knows this CPU walks the new entry (D94).
     ///
     /// # Safety
     /// Everything [`Self::activate_page_tables`] requires (interrupts masked, the tables in

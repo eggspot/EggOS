@@ -446,15 +446,23 @@ fn release_robust_lock<P: Platform>(
     {
         return Err(Errno::EFAULT);
     }
-    let word = read_word(process, address)?;
-    if word & robust::OWNER != tid {
-        return Ok(());
-    }
-    let released = word & robust::WAITERS | robust::OWNER_DIED;
-    process
-        .write_user_memory(address, &released.to_ne_bytes())
-        .map_err(|_| Errno::EFAULT)?;
-    if word & robust::WAITERS != 0 && entry & robust::PRIORITY_INHERITANCE == 0 {
+    let released = process
+        .with_user_word(address, true, |word| {
+            word.try_update(Ordering::SeqCst, Ordering::Relaxed, |value| {
+                (value & robust::OWNER == tid)
+                    .then_some(value & robust::WAITERS | robust::OWNER_DIED)
+            })
+        })
+        .or_else(
+            |_| match read_word(process, address)? & robust::OWNER == tid {
+                true => Err(Errno::EFAULT),
+                false => Ok(Err(0)),
+            },
+        )?;
+    if let Ok(old) = released
+        && old & robust::WAITERS != 0
+        && entry & robust::PRIORITY_INHERITANCE == 0
+    {
         wake::<P>(Key::new(process.id().get(), address, true), MATCH_ANY, 1);
     }
     Ok(())
@@ -496,11 +504,9 @@ fn wake_limit(value: u64) -> u32 {
 }
 
 fn read_word<P: Platform>(process: &Process<P>, address: u64) -> Result<u32, Errno> {
-    let mut word = [0; WORD_SIZE as usize];
     process
-        .read_user_memory(address, &mut word)
-        .map_err(|_| Errno::EFAULT)?;
-    Ok(u32::from_ne_bytes(word))
+        .with_user_word(address, false, |word| word.load(Ordering::Acquire))
+        .map_err(|_| Errno::EFAULT)
 }
 
 #[cfg(test)]

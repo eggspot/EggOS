@@ -25,16 +25,21 @@
 //!
 //! Removing or changing mappings of a live address space ([`AddressSpace::change_pages`], the
 //! memory calls, D53) leaves translations CPUs may have cached behind: the CPU that changes
-//! them drops its own, and marks every other CPU that keeps the address space loaded
-//! (`Cpu::mark_stale`), so that CPU switches to it again, dropping what it cached, before
-//! it next uses it. No interrupt to the other CPUs: while a process has one thread, the one
-//! changing its mappings, no other CPU uses its address space meanwhile, and the thread
-//! reaches another CPU only through the scheduler's locks, after the mark. A process with
-//! more threads keeps them all on one CPU for good (`clone` pins them there, D91), so the CPU
-//! changing its mappings is the only one running them. Threads of one process on several
-//! CPUs at once, or [`AddressSpace::with_active`] on another CPU, need a shootdown first
-//! (roadmap). [`AddressSpace::unmap`] takes `&mut self`, for an address space
-//! not shared yet.
+//! them drops its own, and every other CPU that keeps the address space loaded must drop
+//! them before it next uses them. While a process has one thread, the one changing its
+//! mappings, no other CPU uses its address space meanwhile, and the thread reaches another
+//! CPU only through the scheduler's locks: those CPUs are only marked (`Cpu::mark_stale`), so
+//! they switch to it again, dropping what they cached, before they next use it, with no
+//! interrupt. Once a process starts a second thread ([`AddressSpace::spread_over_cpus`]),
+//! its threads run on several CPUs at once, and a change shoots the old translations down
+//! (D94): it asks every other CPU that keeps the address space loaded to drop its user
+//! translations (`Cpu::request_shootdown`), sends it the wake-up interrupt, and waits until
+//! each has, serving requests made of its own CPU meanwhile (`cpu::serve_shootdowns`), as
+//! every CPU does on the wake-up interrupt and while it waits for a contended lock that is
+//! not a leaf lock, so two CPUs that shoot each other down with interrupts masked both go on. Only then may the frames
+//! unmapped go to someone else. [`AddressSpace::with_active`] on another CPU still needs the
+//! address space unchanged meanwhile. [`AddressSpace::unmap`] takes `&mut self`, for an
+//! address space not shared yet.
 //!
 //! The frames user pages map belong to whoever mapped them, unless the address space was made
 //! to own them ([`AddressSpace::new_owning_frames`], as a process's is): then it frees them
@@ -43,25 +48,28 @@
 use crate::cpu::{self, Cpu};
 use crate::memory;
 use crate::paging::{MAX_ROOTS, MapError, PageChange, PageTables};
-use crate::sync::SpinLock;
+use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use core::any::Any;
 use core::marker::PhantomData;
 use core::ptr;
-use core::sync::atomic::{Ordering, fence};
+use core::sync::atomic::{AtomicBool, Ordering, fence};
 use eggos_hal::Platform;
 use eggos_hal::paging::{Attributes, Format};
 
 /// A user address space. See the module documentation.
 #[derive(Debug)]
 pub struct AddressSpace<P: Platform> {
-    tables: SpinLock<PageTables<P::PageTableFormat>>,
+    tables: LeafSpinLock<PageTables<P::PageTableFormat>>,
     /// The tables' roots, which never change: what a CPU switches to, without the lock.
     roots: [u64; MAX_ROOTS],
     /// The kernel's tables' roots, to switch back to.
     kernel_roots: [u64; MAX_ROOTS],
     /// Whether the frames user pages map are the address space's, freed with it.
     owns_frames: bool,
+    /// Whether threads using it may run on several CPUs at once ([`Self::spread_over_cpus`]):
+    /// changes are then shot down on other CPUs instead of marking them stale. Never cleared.
+    spread: AtomicBool,
     platform: PhantomData<fn() -> P>,
 }
 
@@ -82,10 +90,11 @@ impl<P: Platform> AddressSpace<P> {
         let mut roots = [0; MAX_ROOTS];
         roots[..tables.roots().len()].copy_from_slice(tables.roots());
         Ok(Self {
-            tables: SpinLock::new(tables),
+            tables: LeafSpinLock::new_leaf(tables),
             roots,
             kernel_roots,
             owns_frames: false,
+            spread: AtomicBool::new(false),
             platform: PhantomData,
         })
     }
@@ -103,6 +112,14 @@ impl<P: Platform> AddressSpace<P> {
         let mut space = unsafe { Self::new(kernel) }?;
         space.owns_frames = true;
         Ok(space)
+    }
+
+    /// From now on, threads using this address space may run on several CPUs at once: removed
+    /// or changed mappings are shot down on every other CPU that keeps it loaded before
+    /// [`Self::change_pages`] returns, not left for them to drop when they next use it (see the
+    /// module documentation). Call it before a second thread that uses it can run.
+    pub fn spread_over_cpus(&self) {
+        self.spread.store(true, Ordering::Relaxed);
     }
 
     /// The physical addresses of its root tables, one per [`eggos_hal::paging::Format::ROOTS`].
@@ -145,10 +162,11 @@ impl<P: Platform> AddressSpace<P> {
     /// access ([`eggos_hal::paging::Entry::Kept`]), to what `change` says (see
     /// [`PageTables::change_user_pages`]), handing each frame unmapped to `unmapped`; then
     /// makes sure no CPU goes on using what it cached of the old entries (see the module
-    /// documentation). Allowed while the address space is loaded on any CPU, but used on at
-    /// most this one: call it with interrupts masked, from a thread of a process whose threads
-    /// all run on this CPU (D91) or with the address space not in use, and do not block until
-    /// it returns.
+    /// documentation). Allowed while the address space is loaded on any CPU, and in use on
+    /// others if it was spread over CPUs ([`Self::spread_over_cpus`]); otherwise used on at
+    /// most this one. Call it with interrupts masked, holding no leaf lock
+    /// ([`crate::sync::LeafSpinLock`]), and do not block until it returns: it may wait for
+    /// other CPUs, which serve it while they wait for any other lock it holds.
     #[inline(always)]
     pub fn change_pages(
         &self,
@@ -162,8 +180,53 @@ impl<P: Platform> AddressSpace<P> {
             .lock()
             .change_user_pages(virt, length, change, unmapped);
         // Even after an error: part of the range may have changed.
-        self.drop_old_translations(virt, length);
+        self.drop_old_translations(virt, length, self.spread.load(Ordering::Relaxed));
         result
+    }
+
+    /// Unmaps every 4 KiB page of user `virt..virt + length` that is mapped or kept, handing
+    /// each frame to `unmapped` once no CPU can write it through what it cached, so the caller
+    /// may reuse it at once: as [`Self::change_pages`] with [`PageChange::Unmap`] for an
+    /// address space not spread over CPUs. Spread, the pages are first made inaccessible,
+    /// keeping their frames, and the old translations shot down; only then are they unmapped
+    /// and the frames handed over, since another CPU could otherwise write a frame through
+    /// its old translation after `unmapped` reused it (the frame lists of `munmap` are linked
+    /// through the frames themselves). Meanwhile the program faults on them. Used as
+    /// [`Self::change_pages`].
+    #[inline(always)]
+    pub fn unmap_pages(
+        &self,
+        virt: u64,
+        length: u64,
+        unmapped: impl FnMut(u64),
+    ) -> Result<(), MapError> {
+        let spread = self.spread.load(Ordering::Relaxed);
+        if spread {
+            self.take_out_of_use(virt, length);
+        }
+        let result =
+            self.tables
+                .lock()
+                .change_user_pages(virt, length, |_, _| PageChange::Unmap, unmapped);
+        if !spread {
+            self.drop_old_translations(virt, length, false);
+        }
+        result
+    }
+
+    /// [`Self::unmap_pages`]' first step for an address space spread over CPUs: every page
+    /// mapped in the range kept, inaccessible, and the old translations shot down. An error
+    /// comes back from the second step, whose walk stops at the same page.
+    #[cold]
+    #[inline(never)]
+    fn take_out_of_use(&self, virt: u64, length: u64) {
+        let _ = self.tables.lock().change_user_pages(
+            virt,
+            length,
+            |_, _| PageChange::Inaccessible,
+            |_| unreachable!("nothing is unmapped"),
+        );
+        self.drop_old_translations(virt, length, true);
     }
 
     /// Moves every page of user `from..from + length` that is mapped or kept to the same
@@ -178,18 +241,21 @@ impl<P: Platform> AddressSpace<P> {
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
             tables.move_user_pages(from, to, length, frames)
         };
+        let spread = self.spread.load(Ordering::Relaxed);
         match result {
-            Ok(()) => self.drop_old_translations(from, length),
-            Err(_) => self.drop_old_translations(to, length),
+            Ok(()) => self.drop_old_translations(from, length, spread),
+            Err(_) => self.drop_old_translations(to, length, spread),
         }
         result
     }
 
     /// After mappings in user `virt..virt + length` were removed or changed: drops this
-    /// CPU's cached translations of them if it has the address space loaded, and marks every
-    /// other CPU that keeps it loaded stale (`Cpu::mark_stale`). Increases too: a stale
-    /// entry with less access raises a permission fault that is never retried (D52).
-    fn drop_old_translations(&self, virt: u64, length: u64) {
+    /// CPU's cached translations of them if it has the address space loaded, and has every
+    /// other CPU that keeps it loaded drop them: by a shootdown if it is `spread` over CPUs,
+    /// else by marking it stale (`Cpu::mark_stale`). Increases too: a stale entry with less
+    /// access raises a permission fault that is never retried (D52).
+    #[inline(always)]
+    fn drop_old_translations(&self, virt: u64, length: u64, spread: bool) {
         let here = cpu::current::<P>();
         let root = self.root();
         if here.active_address_space() == root {
@@ -198,7 +264,11 @@ impl<P: Platform> AddressSpace<P> {
         // The entries before any look at another CPU's record (`mark_stale` explains why a
         // record read before a switch is fine).
         fence(Ordering::SeqCst);
-        mark_stale_elsewhere(cpu::CPUS.all(), here, root);
+        if spread {
+            shoot_down_elsewhere::<P>(cpu::CPUS.all(), here, root);
+        } else {
+            mark_stale_elsewhere(cpu::CPUS.all(), here, root);
+        }
     }
 
     /// The physical address `virt` translates to in this address space and the mapping's
@@ -217,8 +287,8 @@ impl<P: Platform> AddressSpace<P> {
     /// loaded lazily ([`Self::load_lazily`]) is unloaded first. The kernel reaches the user
     /// pages only through [`Platform::with_user_access`]. Mappings may change meanwhile only
     /// from this CPU ([`Self::change_pages`]): one changed from another CPU marks this one
-    /// stale, which the check on the way back stops at, as using an address space on two CPUs
-    /// at once needs a shootdown first (D53).
+    /// stale, which the check on the way back stops at (D53), unless the address space is
+    /// spread over CPUs, whose changes are shot down instead (D94).
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
         let root = self.roots()[0];
@@ -299,7 +369,8 @@ impl<P: Platform> AddressSpace<P> {
         // SAFETY: interrupts are masked (the caller's duty). The tables are in `P`'s format,
         // built by `PageTables`, and share the kernel's active half (`new`'s contract). `owner`
         // keeps them allocated, with mappings removed or changed only through `change_pages`,
-        // which marks this CPU if it is still loaded here (the caller's duty), and is
+        // which marks this CPU stale, or shoots its translations down if the address space is
+        // spread over CPUs, while it is loaded here (the caller's duty), and is
         // kept below until the CPU switches away from them. The previous address space, if
         // any, is no longer used: `with_active` never runs around this call (checked above),
         // and the kernel reaches user pages only after loading the address space it means.
@@ -430,6 +501,36 @@ fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
     for &other in cpus {
         if !ptr::eq(other, here) && other.active_address_space() == root {
             other.mark_stale(root);
+        }
+    }
+}
+
+/// Asks every CPU of `cpus` but `here` that keeps the address space whose first root is `root`
+/// loaded to drop its user translations, sends it the wake-up interrupt, and waits until each
+/// CPU has served the shootdowns asked of it until then, serving those asked of `here`
+/// meanwhile. Out of line: only processes with several threads take it.
+#[cold]
+#[inline(never)]
+fn shoot_down_elsewhere<P: Platform>(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
+    let mut asked = false;
+    for &other in cpus {
+        if !ptr::eq(other, here) && other.holds(root) {
+            other.request_shootdown();
+            cpu::wake::<P>(other);
+            asked = true;
+        }
+    }
+    if !asked {
+        return;
+    }
+    for &other in cpus {
+        if ptr::eq(other, here) {
+            continue;
+        }
+        let asked = other.shootdowns_requested();
+        while other.shootdowns_served() < asked {
+            cpu::serve_shootdowns::<P>();
+            core::hint::spin_loop();
         }
     }
 }
@@ -742,6 +843,109 @@ mod tests {
         assert!(!idle.holds(root) && !other.holds(root));
         mark_stale_elsewhere(&[here, keeping], here, root);
         assert_eq!(keeping.active_address_space(), root | cpu::STALE);
+    }
+
+    #[test]
+    fn a_shootdown_asks_the_cpus_that_hold_the_address_space_and_waits_until_they_serve_it() {
+        let _state = crate::thread::host::lock_kernel_state_for_test();
+        let (here, holding, other, idle) = (
+            Cpu::for_test(0),
+            Cpu::for_test(1),
+            Cpu::for_test(2),
+            Cpu::for_test(3),
+        );
+        let root = 0x8_0000;
+        here.set_active_address_space(root);
+        holding.set_active_address_space(root | cpu::STALE);
+        other.set_active_address_space(0x9_0000);
+        let served = std::thread::spawn(move || {
+            loop {
+                let requested = holding.shootdowns_requested();
+                if requested > holding.shootdowns_served() {
+                    cpu::serve_shootdowns_asked::<P>(holding, requested);
+                    return requested;
+                }
+                std::hint::spin_loop();
+            }
+        });
+        shoot_down_elsewhere::<P>(&[here, holding, other, idle], here, root);
+        assert_eq!(holding.shootdowns_served(), 1, "waited until it was served");
+        assert_eq!(served.join().unwrap(), 1);
+        for cpu in [here, other, idle] {
+            assert_eq!(
+                (cpu.shootdowns_requested(), cpu.shootdowns_served()),
+                (0, 0)
+            );
+        }
+        assert_eq!(
+            holding.active_address_space(),
+            root | cpu::STALE,
+            "left as it was"
+        );
+        shoot_down_elsewhere::<P>(&[here, other, idle], here, root);
+        assert_eq!(
+            holding.shootdowns_requested(),
+            1,
+            "nobody else holds it: no wait"
+        );
+    }
+
+    #[test]
+    fn a_cpu_serves_the_shootdowns_asked_of_it_up_to_when_it_looked() {
+        let _state = crate::thread::host::lock_kernel_state_for_test();
+        let cpu = Cpu::for_test(0);
+        cpu.request_shootdown();
+        cpu.request_shootdown();
+        assert_eq!(
+            (cpu.shootdowns_requested(), cpu.shootdowns_served()),
+            (2, 0)
+        );
+        cpu::serve_shootdowns_asked::<P>(cpu, 1);
+        assert_eq!(cpu.shootdowns_served(), 1);
+        cpu::serve_shootdowns_asked::<P>(cpu, cpu.shootdowns_requested());
+        assert_eq!(cpu.shootdowns_served(), 2);
+    }
+
+    #[test]
+    fn unmapping_pages_of_a_spread_address_space_hands_every_frame_over() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free_frames();
+        {
+            // SAFETY: as in `new_space`.
+            let space = unsafe { AddressSpace::<P>::new_owning_frames(&kernel) }.unwrap();
+            space.spread_over_cpus();
+            let frames: Vec<u64> = (0..2)
+                .map(|_| FRAMES.lock().as_mut().unwrap().allocate().unwrap())
+                .collect();
+            for (i, &frame) in frames.iter().enumerate() {
+                let virt = USER_VIRT + i as u64 * FRAME_SIZE;
+                space
+                    .map(virt, frame, FRAME_SIZE, Attributes::USER_READ_WRITE)
+                    .unwrap();
+            }
+            space
+                .change_pages(
+                    USER_VIRT + FRAME_SIZE,
+                    FRAME_SIZE,
+                    |_, _| PageChange::Inaccessible,
+                    |_| unreachable!(),
+                )
+                .unwrap();
+            let mut handed = Vec::new();
+            space
+                .unmap_pages(USER_VIRT, 2 * FRAME_SIZE, |frame| handed.push(frame))
+                .unwrap();
+            assert_eq!(handed, frames, "a mapped page and a kept one");
+            assert_eq!(space.translate(USER_VIRT), None);
+            assert_eq!(space.translate(USER_VIRT + FRAME_SIZE), None);
+            let mut frames_lock = FRAMES.lock();
+            for frame in handed {
+                // SAFETY: allocated above, unmapped and handed back by `unmap_pages`.
+                unsafe { frames_lock.as_mut().unwrap().free(frame) };
+            }
+        }
+        assert_eq!(free_frames(), before);
     }
 
     #[test]

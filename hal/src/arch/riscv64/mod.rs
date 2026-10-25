@@ -421,6 +421,9 @@ impl Platform for Riscv64 {
     }
 
     unsafe fn switch_address_space(roots: &[u64]) {
+        // SAFETY: a full fence orders this hart's earlier stores before its later accesses and
+        // table walks; it changes no memory contents.
+        unsafe { core::arch::asm!("fence rw, rw", options(nostack)) };
         // The same switch: `satp` holds one root for both halves, and the kernel's entries in
         // the new root are the active one's, so the kernel runs on at the same addresses.
         // SAFETY: the caller's guarantees include `activate_page_tables`'.

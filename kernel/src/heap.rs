@@ -14,11 +14,11 @@
 //! back needs a count of live blocks per frame (D30 follow-up).
 //!
 //! Interrupt and exception handlers must not allocate: the heap's lock does not mask
-//! interrupts (see [`SpinLock`]), so a handler allocating while the code it interrupted holds
+//! interrupts (see [`LeafSpinLock`]), so a handler allocating while the code it interrupted holds
 //! the lock would wait forever. Threads on other CPUs wait for it (D43).
 
 use crate::memory::{self, FrameAllocator, MAX_ORDER};
-use crate::sync::{SpinLock, SpinLockGuard};
+use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
 use eggos_hal::memory::FRAME_SIZE;
@@ -266,7 +266,7 @@ impl Heap {
 /// frame allocator. Lock order: this heap's lock, then [`memory::FRAMES`]; never the reverse.
 #[derive(Debug)]
 pub struct KernelHeap {
-    heap: SpinLock<Heap>,
+    heap: LeafSpinLock<Heap>,
 }
 
 impl Default for KernelHeap {
@@ -278,7 +278,7 @@ impl Default for KernelHeap {
 impl KernelHeap {
     pub const fn new() -> Self {
         Self {
-            heap: SpinLock::new(Heap::new()),
+            heap: LeafSpinLock::new_leaf(Heap::new()),
         }
     }
 
@@ -286,7 +286,7 @@ impl KernelHeap {
     /// CPU allocates since threads run on all of them (D43), so a held lock no longer means an
     /// interrupt handler broke the rule in the module documentation, as it did on one CPU.
     #[inline]
-    fn lock(&self) -> SpinLockGuard<'_, Heap> {
+    fn lock(&self) -> LeafSpinLockGuard<'_, Heap> {
         self.heap.lock()
     }
 

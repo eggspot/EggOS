@@ -10,7 +10,7 @@
 //! it is first used (D31).
 
 use crate::paging::PageTables;
-use crate::sync::SpinLock;
+use crate::sync::LeafSpinLock;
 use eggos_hal::memory::{FRAME_SIZE, MAX_RANGES};
 use eggos_hal::{MemoryMap, PhysicalRange, Platform};
 
@@ -24,7 +24,7 @@ pub struct Memory<P: Platform> {
 /// The kernel's frame allocator once its page tables are active: [`crate::paging::enable`]
 /// puts it here, and the kernel heap and everything else that needs frames take them from here.
 /// Lock order: the heap's lock ([`crate::heap::KernelHeap`]) before this one, never the reverse.
-pub static FRAMES: SpinLock<Option<FrameAllocator>> = SpinLock::new(None);
+pub static FRAMES: LeafSpinLock<Option<FrameAllocator>> = LeafSpinLock::new_leaf(None);
 
 /// Marks the end of the free stack. Never a frame address: frames are aligned to
 /// [`FRAME_SIZE`].

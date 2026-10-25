@@ -4,14 +4,16 @@ use core::cell::UnsafeCell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-/// A spin lock: [`SpinLock::lock`] busy-waits until the value is free.
+/// A spin lock: [`SpinLock::lock`] busy-waits until the value is free, doing what
+/// [`set_wait_duty`] gave it meanwhile unless `WAIT_DUTY` is false ([`LeafSpinLock`]).
 ///
 /// It does not mask interrupts, so an interrupt handler must never take a lock that the code it
 /// interrupted may hold: on a single CPU that would spin forever. Locks are held for a few
 /// instructions only; a critical section must not sleep or wait for an interrupt.
-pub struct SpinLock<T> {
+pub struct SpinLock<T, const WAIT_DUTY: bool = true> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
 }
@@ -19,7 +21,16 @@ pub struct SpinLock<T> {
 // SAFETY: the lock hands out at most one reference to the value at a time (see `lock`), so
 // sharing the lock between CPUs only ever moves the value's use from one to another, which
 // `T: Send` allows.
-unsafe impl<T: Send> Sync for SpinLock<T> {}
+unsafe impl<T: Send, const WAIT_DUTY: bool> Sync for SpinLock<T, WAIT_DUTY> {}
+
+/// A [`SpinLock`] whose waiters skip the wait duty, so taking it stays free of calls: only for
+/// a leaf lock, whose holder takes no lock but other leaf locks and never waits for another
+/// CPU. A CPU waiting for it then waits only for code that finishes on its own, and does its
+/// duty at its next wait for another lock or interrupt.
+pub type LeafSpinLock<T> = SpinLock<T, false>;
+
+/// A [`LeafSpinLock`]'s guard.
+pub type LeafSpinLockGuard<'a, T> = SpinLockGuard<'a, T, false>;
 
 impl<T> SpinLock<T> {
     pub const fn new(value: T) -> Self {
@@ -28,21 +39,31 @@ impl<T> SpinLock<T> {
             value: UnsafeCell::new(value),
         }
     }
+}
 
+impl<T> LeafSpinLock<T> {
+    pub const fn new_leaf(value: T) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
+        }
+    }
+}
+
+impl<T, const WAIT_DUTY: bool> SpinLock<T, WAIT_DUTY> {
     /// Waits until the lock is free, then holds it until the guard is dropped.
     #[inline]
-    pub fn lock(&self) -> SpinLockGuard<'_, T> {
+    pub fn lock(&self) -> SpinLockGuard<'_, T, WAIT_DUTY> {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // Laid out away from the free case, which then falls straight through.
-            core::hint::cold_path();
-            // Wait with plain loads, so a waiting CPU does not keep taking the cache line from
-            // the holder.
-            while self.locked.load(Ordering::Relaxed) {
-                core::hint::spin_loop();
+            if WAIT_DUTY {
+                wait_until_free(&self.locked);
+            } else {
+                core::hint::cold_path();
+                spin_until_free(&self.locked);
             }
         }
         SpinLockGuard {
@@ -58,7 +79,7 @@ impl<T> SpinLock<T> {
 
     /// Takes the lock if it is free; `None` if someone holds it.
     #[inline]
-    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T, WAIT_DUTY>> {
         self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
@@ -69,7 +90,45 @@ impl<T> SpinLock<T> {
     }
 }
 
-impl<T> SpinLock<T> {
+/// What a CPU does while it waits for a contended [`SpinLock`]: null for nothing, else a
+/// `fn()`. The kernel runs with interrupts masked, so a CPU that waits for this one to answer
+/// a request (a TLB shootdown) needs it answered here as well.
+static WAIT_DUTY: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// Has every CPU call `duty` while it waits for a contended [`SpinLock`]. `duty` must not take
+/// a [`SpinLock`] itself, and must work on any CPU at any point the kernel takes a lock.
+pub fn set_wait_duty(duty: fn()) {
+    WAIT_DUTY.store(duty as *mut (), Ordering::Release);
+}
+
+/// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking
+/// the cache line from the holder; inlined, and laid out away from the free case
+/// (`cold_path` before it), which then falls straight through.
+#[inline(always)]
+fn spin_until_free(locked: &AtomicBool) {
+    while locked.load(Ordering::Relaxed) {
+        core::hint::spin_loop();
+    }
+}
+
+/// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking
+/// the cache line from the holder, doing the wait duty meanwhile. Out of line: the free case
+/// falls straight through without its code around it.
+#[cold]
+#[inline(never)]
+fn wait_until_free(locked: &AtomicBool) {
+    let duty = WAIT_DUTY.load(Ordering::Acquire);
+    while locked.load(Ordering::Relaxed) {
+        if !duty.is_null() {
+            // SAFETY: only `set_wait_duty` stores a non-null value, and it stores a `fn()`.
+            let duty: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(duty) };
+            duty();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+impl<T, const WAIT_DUTY: bool> SpinLock<T, WAIT_DUTY> {
     /// A guard for this lock, which a guard given up with [`SpinLockGuard::leak`] left held;
     /// dropping it releases the lock. The scheduler hands its lock across a context switch this
     /// way: the thread that switches leaks the guard, the thread it resumes takes it over.
@@ -78,7 +137,7 @@ impl<T> SpinLock<T> {
     /// The lock must be held through a leaked guard, and each leak may be taken over once: the
     /// new guard is then the only access to the value.
     #[inline]
-    pub unsafe fn assume_locked(&self) -> SpinLockGuard<'_, T> {
+    pub unsafe fn assume_locked(&self) -> SpinLockGuard<'_, T, WAIT_DUTY> {
         debug_assert!(self.locked.load(Ordering::Relaxed), "the lock is not held");
         SpinLockGuard {
             lock: self,
@@ -87,7 +146,7 @@ impl<T> SpinLock<T> {
     }
 }
 
-impl<T> fmt::Debug for SpinLock<T> {
+impl<T, const WAIT_DUTY: bool> fmt::Debug for SpinLock<T, WAIT_DUTY> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpinLock")
             .field("locked", &self.locked.load(Ordering::Relaxed))
@@ -96,15 +155,15 @@ impl<T> fmt::Debug for SpinLock<T> {
 }
 
 /// Access to a [`SpinLock`]'s value; the lock is released when it is dropped.
-pub struct SpinLockGuard<'a, T> {
-    lock: &'a SpinLock<T>,
+pub struct SpinLockGuard<'a, T, const WAIT_DUTY: bool = true> {
+    lock: &'a SpinLock<T, WAIT_DUTY>,
     /// Makes the guard `Send` and `Sync` exactly when `&mut T` is: a shared guard hands out
     /// `&T`, so sharing it between threads needs `T: Sync` (the lock alone is `Sync` for any
     /// `T: Send`, which would otherwise let two threads reach a `Cell` through one guard).
     _value: PhantomData<&'a mut T>,
 }
 
-impl<T> SpinLockGuard<'_, T> {
+impl<T, const WAIT_DUTY: bool> SpinLockGuard<'_, T, WAIT_DUTY> {
     /// Gives up `guard` without releasing the lock, for [`SpinLock::assume_locked`] to take
     /// over.
     #[inline]
@@ -113,7 +172,7 @@ impl<T> SpinLockGuard<'_, T> {
     }
 }
 
-impl<T> Deref for SpinLockGuard<'_, T> {
+impl<T, const WAIT_DUTY: bool> Deref for SpinLockGuard<'_, T, WAIT_DUTY> {
     type Target = T;
     fn deref(&self) -> &T {
         // SAFETY: the guard exists only while its holder owns the lock, so no other reference
@@ -122,7 +181,7 @@ impl<T> Deref for SpinLockGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for SpinLockGuard<'_, T> {
+impl<T, const WAIT_DUTY: bool> DerefMut for SpinLockGuard<'_, T, WAIT_DUTY> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as in `deref`, and `&mut self` makes this the only reference through the
         // guard.
@@ -130,14 +189,14 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
     }
 }
 
-impl<T> Drop for SpinLockGuard<'_, T> {
+impl<T, const WAIT_DUTY: bool> Drop for SpinLockGuard<'_, T, WAIT_DUTY> {
     #[inline]
     fn drop(&mut self) {
         self.lock.locked.store(false, Ordering::Release);
     }
 }
 
-impl<T> fmt::Debug for SpinLockGuard<'_, T> {
+impl<T, const WAIT_DUTY: bool> fmt::Debug for SpinLockGuard<'_, T, WAIT_DUTY> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpinLockGuard").finish_non_exhaustive()
     }

@@ -5,12 +5,14 @@
 //! `EGGOS-USER: a std program built from Rust source ran its checks` if every check passed,
 //! and exits with 0; otherwise it names each check that failed and exits with 1. Given
 //! [`EXIT_FROM_A_THREAD`] as its only argument, it instead ends from a thread while its other
-//! threads wait ([`exit_from_a_thread`]).
+//! threads wait ([`exit_from_a_thread`]). Given [`UNMAP_UNDER_A_WRITING_THREAD`], it unmaps a
+//! page another thread is writing on another CPU ([`unmap_under_a_writing_thread`]).
 
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -22,7 +24,39 @@ const ARGUMENTS_AFTER_PROGRAM_NAME: [&str; 2] = ["first", "second"];
 /// The argument that runs [`exit_from_a_thread`] instead of the checks.
 pub const EXIT_FROM_A_THREAD: &str = "exit-from-a-thread";
 
+/// The argument that runs [`unmap_under_a_writing_thread`] instead of the checks.
+pub const UNMAP_UNDER_A_WRITING_THREAD: &str = "unmap-under-a-writing-thread";
+
+/// [`unmap_under_a_writing_thread`]'s exit statuses other than 0.
+pub mod unmap_status {
+    pub const KEPT_WRITING: u8 = 1;
+    pub const ONE_CPU: u8 = 3;
+    pub const NO_PAGE: u8 = 4;
+}
+
 const SLEEP: Duration = Duration::from_millis(2);
+
+const PAGE: usize = 4096;
+const PROT_READ_WRITE: i32 = 3;
+const MAP_PRIVATE_ANONYMOUS: i32 = 0x22;
+const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
+const SIGSEGV: i32 = 11;
+const WRITES_BEFORE_UNMAP: u64 = 100_000;
+
+unsafe extern "C" {
+    fn mmap(
+        address: *mut c_void,
+        length: usize,
+        protection: i32,
+        flags: i32,
+        descriptor: i32,
+        offset: i64,
+    ) -> *mut c_void;
+    fn munmap(address: *mut c_void, length: usize) -> i32;
+    fn sched_getcpu() -> i32;
+    fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
+    fn _exit(status: i32) -> !;
+}
 
 type Check = (&'static str, fn() -> bool);
 
@@ -45,8 +79,10 @@ const CHECKS: [Check; 10] = [
 ];
 
 fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some(EXIT_FROM_A_THREAD) {
-        exit_from_a_thread();
+    match std::env::args().nth(1).as_deref() {
+        Some(EXIT_FROM_A_THREAD) => exit_from_a_thread(),
+        Some(UNMAP_UNDER_A_WRITING_THREAD) => unmap_under_a_writing_thread(),
+        _ => {}
     }
     let mut output = std::io::stdout().lock();
     let mut failed = false;
@@ -79,6 +115,65 @@ pub fn exit_from_a_thread() -> ! {
     });
     std::thread::sleep(Duration::from_secs(3600));
     std::process::exit(1)
+}
+
+/// Has a thread write a page in a loop on another CPU, then unmaps the page: the writer must
+/// fault, and its `SIGSEGV` handler exits with 0, within a second. Exits with
+/// [`unmap_status::KEPT_WRITING`] if it goes on writing, [`unmap_status::ONE_CPU`] if the two
+/// threads ran on one CPU, [`unmap_status::NO_PAGE`] if the page could not be mapped.
+pub fn unmap_under_a_writing_thread() -> ! {
+    // SAFETY: an anonymous private mapping the kernel places; nothing else uses it.
+    let page = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            PAGE,
+            PROT_READ_WRITE,
+            MAP_PRIVATE_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if page == MAP_FAILED {
+        std::process::exit(unmap_status::NO_PAGE.into());
+    }
+    // SAFETY: `exit_on_fault` only calls `_exit`, which is async-signal-safe.
+    unsafe { signal(SIGSEGV, exit_on_fault) };
+    let writer_cpu = Arc::new(AtomicI32::new(-1));
+    let address = page as usize;
+    std::thread::spawn({
+        let writer_cpu = Arc::clone(&writer_cpu);
+        move || {
+            // SAFETY: a libc call with no arguments.
+            writer_cpu.store(unsafe { sched_getcpu() }, Ordering::SeqCst);
+            // SAFETY: the page is mapped, writable and aligned until the main thread unmaps it;
+            // only atomics reach it, and the write after the unmap faults, ending the process.
+            let word = unsafe { AtomicU64::from_ptr(address as *mut u64) };
+            let mut count = 0u64;
+            loop {
+                count += 1;
+                word.store(count, Ordering::Relaxed);
+            }
+        }
+    });
+    // SAFETY: the page stays mapped, aligned, until the `munmap` below; only atomics reach it.
+    let word = unsafe { AtomicU64::from_ptr(page.cast::<u64>()) };
+    while word.load(Ordering::Relaxed) < WRITES_BEFORE_UNMAP {
+        std::hint::spin_loop();
+    }
+    // SAFETY: a libc call with no arguments.
+    if unsafe { sched_getcpu() } == writer_cpu.load(Ordering::SeqCst) {
+        std::process::exit(unmap_status::ONE_CPU.into());
+    }
+    // SAFETY: the page came from `mmap` above; only the writer uses it, and its fault after
+    // this ends the process.
+    unsafe { munmap(page, PAGE) };
+    std::thread::sleep(Duration::from_secs(1));
+    std::process::exit(unmap_status::KEPT_WRITING.into())
+}
+
+extern "C" fn exit_on_fault(_signal: i32) {
+    // SAFETY: `_exit` ends the process at once.
+    unsafe { _exit(0) }
 }
 
 fn arguments() -> bool {
