@@ -11,9 +11,8 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io::Write;
-use std::os::unix::thread::{JoinHandleExt, RawPthread};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -57,7 +56,8 @@ unsafe extern "C" {
     fn sched_getcpu() -> i32;
     fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
     fn gettid() -> i32;
-    fn pthread_kill(thread: RawPthread, signal: i32) -> i32;
+    fn pthread_self() -> usize;
+    fn pthread_kill(thread: usize, signal: i32) -> i32;
     fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32;
     fn sigsuspend(mask: *const u64) -> i32;
     fn _exit(status: i32) -> !;
@@ -72,7 +72,7 @@ const SIG_BLOCK: i32 = 0;
 const SIGSET_WORDS: usize = 16;
 
 static HANDLED_BY: AtomicI32 = AtomicI32::new(0);
-static TARGET_READY: AtomicBool = AtomicBool::new(false);
+static READY_TARGET: AtomicUsize = AtomicUsize::new(0);
 
 const CHECKS: [Check; 11] = [
     ("the arguments are the program's", arguments),
@@ -310,12 +310,20 @@ fn handled_here() -> bool {
     HANDLED_BY.load(Ordering::SeqCst) == unsafe { gettid() }
 }
 
-fn send_when_ready(target: &std::thread::JoinHandle<bool>) -> bool {
-    while !TARGET_READY.swap(false, Ordering::SeqCst) {
-        std::thread::yield_now();
-    }
-    // SAFETY: the handle's thread is joined only after this, so its `pthread_t` is valid.
-    unsafe { pthread_kill(target.as_pthread_t(), SIGUSR1) == 0 }
+fn publish_self_as_target() {
+    // SAFETY: `pthread_self` has no preconditions.
+    READY_TARGET.store(unsafe { pthread_self() }, Ordering::SeqCst);
+}
+
+fn send_when_ready() -> bool {
+    let target = loop {
+        match READY_TARGET.swap(0, Ordering::SeqCst) {
+            0 => std::thread::yield_now(),
+            target => break target,
+        }
+    };
+    // SAFETY: the target thread published its own `pthread_t` and is joined only after this.
+    unsafe { pthread_kill(target, SIGUSR1) == 0 }
 }
 
 fn signals_between_threads() -> bool {
@@ -326,22 +334,22 @@ fn signals_between_threads() -> bool {
         blocked[0] = 1 << (SIGUSR1 - 1);
         // SAFETY: both sets are `sigset_t`-sized arrays that live across the calls.
         unsafe { pthread_sigmask(SIG_BLOCK, blocked.as_ptr(), std::ptr::null_mut()) };
-        TARGET_READY.store(true, Ordering::SeqCst);
+        publish_self_as_target();
         let none = [0u64; SIGSET_WORDS];
         // SAFETY: as above.
         unsafe { sigsuspend(none.as_ptr()) };
         handled_here()
     });
-    let sent_to_waiter = send_when_ready(&waiter);
+    let sent_to_waiter = send_when_ready();
     let waiter_handled = waiter.join().unwrap_or(false);
     let runner = std::thread::spawn(|| {
-        TARGET_READY.store(true, Ordering::SeqCst);
+        publish_self_as_target();
         while !handled_here() {
             std::thread::yield_now();
         }
         true
     });
-    let sent_to_runner = send_when_ready(&runner);
+    let sent_to_runner = send_when_ready();
     let runner_handled = runner.join().unwrap_or(false);
     sent_to_waiter && waiter_handled && sent_to_runner && runner_handled
 }
