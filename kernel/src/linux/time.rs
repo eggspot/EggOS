@@ -316,10 +316,11 @@ pub fn nanosleep<P: Platform>(
 /// raw, coarse and thread CPU-time ones), then `EFAULT` if `req` is not the program's memory,
 /// then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; the alarm clocks,
 /// which need a real-time clock device, are `EOPNOTSUPP` after those checks, as on Linux
-/// without one. A signal that is due during the sleep interrupts it: a relative sleep writes
-/// the time left to `rem`, unless it is null, and fails with `EINTR` if a handler
-/// starts, whatever its [`super::signals::flag::RESTART`], as on Linux
-/// ([`sleep_until_nanoseconds`]). Sets the call's result; breaks when the process ends.
+/// without one. A signal that is due during the sleep interrupts it, as on Linux: a relative
+/// sleep writes the time left to `rem`, unless it is null (`EFAULT`, the sleep over, if it
+/// cannot), and the call fails with `EINTR` if a handler starts, whatever its
+/// [`super::signals::flag::RESTART`]; if none starts, the sleep goes on. Sets the call's
+/// result; breaks when the process ends.
 pub fn clock_nanosleep<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
