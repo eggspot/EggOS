@@ -367,16 +367,40 @@ impl Errno {
     }
 }
 
-/// Linux's signal numbers, as far as the kernel sends or checks them (the generic ones, which
-/// AArch64, RISC-V and x86_64 share).
+/// Linux's standard signal numbers (the generic ones, which AArch64, RISC-V and x86_64 share);
+/// the real-time ones follow, up to 64.
 pub mod signal {
+    pub const SIGHUP: u32 = 1;
+    pub const SIGINT: u32 = 2;
+    pub const SIGQUIT: u32 = 3;
     pub const SIGILL: u32 = 4;
     pub const SIGTRAP: u32 = 5;
+    pub const SIGABRT: u32 = 6;
     pub const SIGBUS: u32 = 7;
     pub const SIGFPE: u32 = 8;
     pub const SIGKILL: u32 = 9;
+    pub const SIGUSR1: u32 = 10;
     pub const SIGSEGV: u32 = 11;
+    pub const SIGUSR2: u32 = 12;
+    pub const SIGPIPE: u32 = 13;
+    pub const SIGALRM: u32 = 14;
+    pub const SIGTERM: u32 = 15;
+    pub const SIGSTKFLT: u32 = 16;
+    pub const SIGCHLD: u32 = 17;
+    pub const SIGCONT: u32 = 18;
     pub const SIGSTOP: u32 = 19;
+    pub const SIGTSTP: u32 = 20;
+    pub const SIGTTIN: u32 = 21;
+    pub const SIGTTOU: u32 = 22;
+    pub const SIGURG: u32 = 23;
+    pub const SIGXCPU: u32 = 24;
+    pub const SIGXFSZ: u32 = 25;
+    pub const SIGVTALRM: u32 = 26;
+    pub const SIGPROF: u32 = 27;
+    pub const SIGWINCH: u32 = 28;
+    pub const SIGIO: u32 = 29;
+    pub const SIGPWR: u32 = 30;
+    pub const SIGSYS: u32 = 31;
 }
 
 /// The most `write` copies at a time, through a buffer on the kernel stack.
@@ -563,12 +587,12 @@ fn memory_call<P: Platform>(
 /// grows by adds to the thread loop that it is inlined into (the loop's registers spill, and
 /// every system call pays). After a call that can make a signal due, the signal is delivered
 /// before the program runs again ([`signals::deliver`]), which may end the process: then it
-/// breaks: so do the sleeps, after which a signal another thread sent may be due, and the
-/// calls that may switch the thread out (`sched_yield`, `futex`), which take in what other
-/// threads sent meanwhile ([`signals::deliver_sent`]); the others pay nothing for it.
-/// `rt_sigreturn` sets every register itself and returns the restored result register's value,
-/// so writing the result back changes nothing. The waits for a signal set their result and
-/// deliver it themselves.
+/// breaks; after `sched_yield`, which may switch the thread out, what other threads sent
+/// meanwhile is taken in and delivered ([`signals::deliver_sent`]); the others pay nothing
+/// for it. `rt_sigreturn` sets every register itself and returns the restored result
+/// register's value, so writing the result back changes nothing. The calls that wait (for a
+/// signal, for time, on a `futex`) set their result and deliver themselves, since a signal
+/// that interrupts them decides their result.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Arc<Process<P>>,
@@ -584,6 +608,9 @@ fn out_of_line_call<P: Platform>(
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
         },
+        number::NANOSLEEP => time::nanosleep(process, thread, context),
+        number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
+        number::FUTEX => futex::futex::<P>(process, thread, context),
         _ => {
             let result = match number {
                 number::CLONE => thread::clone::<P>(process, thread, context),
@@ -592,7 +619,7 @@ fn out_of_line_call<P: Platform>(
             context.set_syscall_result(result.unwrap_or_else(Errno::result));
             if !is_in(&SIGNALS_AFTER, number) {
                 ControlFlow::Continue(())
-            } else if is_in(&SWITCHING_CALLS, number) {
+            } else if number == number::SCHED_YIELD {
                 signals::deliver_sent(process, thread, context)
             } else {
                 signals::deliver(process, thread, context)
@@ -625,9 +652,10 @@ fn is_in(set: &CallSet, number: u64) -> bool {
         .is_some_and(|word| word >> (number % 64) & 1 != 0)
 }
 
-/// The calls after which [`out_of_line_call`] delivers signals: those that can make one due
-/// and the sleeps, and the calls that may switch the thread out ([`SWITCHING_CALLS`]). One
-/// bit test on the others' path, which a list of comparisons would lengthen with each call.
+/// The calls after which [`out_of_line_call`] delivers signals: those that can make one due,
+/// and `sched_yield`, which may switch the thread out (after it, only what other threads sent
+/// meanwhile is delivered, [`signals::deliver_sent`]). One bit test on the others' path,
+/// which a list of comparisons would lengthen with each call.
 const SIGNALS_AFTER: CallSet = call_set(&[
     number::KILL,
     number::TKILL,
@@ -638,17 +666,10 @@ const SIGNALS_AFTER: CallSet = call_set(&[
     number::RT_SIGACTION,
     number::RT_SIGRETURN,
     number::RT_SIGTIMEDWAIT,
-    number::NANOSLEEP,
-    number::CLOCK_NANOSLEEP,
     #[cfg(target_arch = "x86_64")]
     number::POLL,
     number::SCHED_YIELD,
-    number::FUTEX,
 ]);
-
-/// The calls of [`SIGNALS_AFTER`] that may switch the thread out without making a signal due:
-/// after them, only what other threads sent meanwhile ([`signals::deliver_sent`]).
-const SWITCHING_CALLS: CallSet = call_set(&[number::SCHED_YIELD, number::FUTEX]);
 
 /// The result of [`out_of_line_call`]'s call `number`.
 #[inline(always)]
@@ -659,7 +680,7 @@ fn out_of_line_result<P: Platform>(
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
     use credentials::Kind::{Group, User};
-    let [first, second, third, fourth, fifth, sixth] = context.syscall_arguments();
+    let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
@@ -700,9 +721,6 @@ fn out_of_line_result<P: Platform>(
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
-        number::NANOSLEEP => time::nanosleep(process, thread, first),
-        number::FUTEX => futex::futex::<P>(process, first, second, third, fourth, fifth, sixth),
-        number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, first, second, third),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
@@ -4332,8 +4350,13 @@ mod tests {
     ) -> LinuxThread {
         process.add_thread();
         let id = process::allocate_thread_id().unwrap();
-        process.signals().lock().add_thread(id).unwrap();
-        first.new_thread(id, clear_child_tid)
+        let second = first.new_thread(id, clear_child_tid);
+        process
+            .signals()
+            .lock()
+            .add_thread(&second, first, process.id().get())
+            .unwrap();
+        second
     }
 
     #[test]
@@ -5105,6 +5128,201 @@ mod tests {
         );
         assert_eq!(blocked_pending(&process, &mut second), 1 << (sigtstp - 1));
         assert_eq!(process.signals().lock().left_for(0), 1);
+    }
+
+    /// `process`'s first thread, kept for [`handle_first`], and a second thread that sends it
+    /// `signal` with `tgkill` whenever the returned function is called.
+    fn first_thread_and_sender(process: &Arc<Process<P>>, signal: u64) -> impl FnMut() + use<'_> {
+        let first = take_first_thread(process);
+        let mut second = second_thread(process, &first, 0);
+        let pid = u64::from(process.id().get());
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(process.id().get(), first);
+        move || {
+            assert_eq!(
+                call_as(
+                    process,
+                    &mut second,
+                    number::TGKILL,
+                    [pid, pid, signal, 0, 0, 0]
+                ),
+                0
+            );
+        }
+    }
+
+    fn caught_with(restart: u64) -> u64 {
+        restart
+            | if signals::HAS_RESTORER {
+                signals::flag::RESTORER
+            } else {
+                0
+            }
+    }
+
+    #[test]
+    fn a_signal_another_thread_sends_interrupts_a_sleep_which_writes_the_time_left() {
+        use time::{TIMER_ABSTIME, clock};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let sigusr1 = 10;
+        set_handler(&process, sigusr1, caught_with(signals::flag::RESTART), 0);
+        let mut send = first_thread_and_sender(&process, sigusr1);
+        let (req, rem) = (SCRATCH + 0x100, SCRATCH + 0x120);
+        let one_second = 1_000_000_000;
+        let monotonic = u64::from(clock::MONOTONIC as u32);
+        let sleep = |arguments: [u64; 6], number| {
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            context.simulate_syscall(number, arguments, 0x40_0004);
+            context
+        };
+        for (number, arguments) in [
+            (number::NANOSLEEP, [req, rem, 0, 0, 0, 0]),
+            (number::CLOCK_NANOSLEEP, [monotonic, 0, req, rem, 0, 0]),
+        ] {
+            write_timespec(&process, req, 1, 0);
+            write_timespec(&process, rem, -1, -1);
+            send();
+            let mut context = sleep(arguments, number);
+            let mut interrupted = context.clone();
+            interrupted.set_syscall_result(Errno::EINTR.result());
+            assert_eq!(
+                handle_first(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            let left = nanoseconds(read_timespec(&process, rem));
+            assert!(
+                left > one_second / 2 && left <= one_second,
+                "{left} ns left"
+            );
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.registers(), interrupted.registers());
+        }
+        let far = nanoseconds(read_timespec(&process, rem)) + 1000 * one_second;
+        write_timespec(&process, req, (far / one_second) as i64, 0);
+        write_timespec(&process, rem, 7, 7);
+        send();
+        let mut context = sleep(
+            [monotonic, TIMER_ABSTIME, req, rem, 0, 0],
+            number::CLOCK_NANOSLEEP,
+        );
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(read_timespec(&process, rem), (7, 7));
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.syscall_result(), Errno::EINTR.result());
+        write_timespec(&process, req, 1, 0);
+        send();
+        let mut context = sleep([req, READ_ONLY, 0, 0, 0, 0], number::NANOSLEEP);
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.syscall_result(), Errno::EFAULT.result());
+        write_timespec(&process, req, 0, 0);
+        send();
+        let mut context = sleep([req, rem, 0, 0, 0, 0], number::NANOSLEEP);
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(context.pc(), HANDLER);
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(
+            context.syscall_result(),
+            0,
+            "a sleep whose time is up returns 0, a signal due or not"
+        );
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn a_signal_interrupts_a_futex_wait_restarted_only_without_a_timeout_and_with_sa_restart() {
+        use futex::op;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let sigusr1 = 10;
+        set_handler(&process, sigusr1, caught_with(0), 0);
+        let mut send = first_thread_and_sender(&process, sigusr1);
+        let (word, timeout) = (SCRATCH + 0x140, SCRATCH + 0x150);
+        process
+            .write_user_memory(word, &7u32.to_ne_bytes())
+            .unwrap();
+        write_timespec(&process, timeout, 5, 0);
+        let wait = u64::from(op::WAIT | op::PRIVATE_FLAG);
+        let call_size = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        for (restart, timeout, restarted) in [
+            (0, 0, false),
+            (signals::flag::RESTART, 0, true),
+            (signals::flag::RESTART, timeout, false),
+        ] {
+            set_handler(&process, sigusr1, caught_with(restart), 0);
+            send();
+            let arguments = [word, wait, 7, timeout, 0, 0];
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            context.simulate_syscall(number::FUTEX, arguments, 0x40_0004);
+            assert_eq!(
+                handle_first(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            if restarted {
+                assert_eq!(context.pc(), 0x40_0004 - call_size);
+                assert_eq!(context.syscall_number(), number::FUTEX);
+                assert_eq!(context.syscall_arguments(), arguments);
+            } else {
+                assert_eq!(context.pc(), 0x40_0004);
+                assert_eq!(context.syscall_result(), Errno::EINTR.result());
+            }
+        }
+        let past = SCRATCH + 0x160;
+        write_timespec(&process, past, 0, 0);
+        let wait_bitset = u64::from(op::WAIT_BITSET | op::PRIVATE_FLAG);
+        for (arguments, expected) in [
+            ([word, wait, 8, 0, 0, 0], Errno::EAGAIN),
+            ([word, wait_bitset, 7, past, 0, u64::MAX], Errno::ETIMEDOUT),
+        ] {
+            send();
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            context.simulate_syscall(number::FUTEX, arguments, 0x40_0004);
+            assert_eq!(
+                handle_first(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.syscall_result(), expected.result());
+        }
+        assert_eq!(process.exit_status(), None);
     }
 
     #[test]

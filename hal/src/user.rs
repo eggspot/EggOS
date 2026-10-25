@@ -91,6 +91,15 @@ impl UserContext {
         self.arch.set_syscall_result(value);
     }
 
+    /// After [`UserExit::Syscall`]: makes the program make system call `number` again when it
+    /// runs, as Linux restarts a call a signal interrupted: its program counter goes back to
+    /// the call's instruction, and the registers the call's result may have overwritten get
+    /// back `number` and `first_argument`, the call's first argument. The other argument
+    /// registers are the program's, unchanged by the call.
+    pub fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+        self.arch.restart_syscall(number, first_argument);
+    }
+
     /// The program's thread pointer: where its thread-local storage is, in the register the
     /// architecture's ABI keeps it in (`TPIDR_EL0`, `tp`, the FS base). Zero for a new program,
     /// as Linux starts one.
@@ -472,6 +481,12 @@ pub(crate) mod aarch64 {
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[0] = value;
         }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SVC_SIZE: u64 = 4;
+            self.x[8] = number;
+            self.x[0] = first_argument;
+            self.elr = self.elr.wrapping_sub(SVC_SIZE);
+        }
         pub(crate) fn registers(&self) -> UserRegisters {
             UserRegisters {
                 x: self.x,
@@ -572,6 +587,12 @@ pub(crate) mod riscv64 {
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[10] = value;
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const ECALL_SIZE: u64 = 4;
+            self.x[17] = number;
+            self.x[10] = first_argument;
+            self.pc = self.pc.wrapping_sub(ECALL_SIZE);
         }
         pub(crate) fn registers(&self) -> UserRegisters {
             let mut x = self.x;
@@ -683,8 +704,10 @@ pub(crate) mod x86_64 {
 
     const _: () = assert!(core::mem::offset_of!(Registers, vector) == 15 * 8);
     const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) == 22 * 8);
-    // `TSS.RSP0` must be 16-byte aligned: the CPU aligns it down before pushing.
-    const _: () = assert!(core::mem::offset_of!(Registers, kernel_rsp) % 16 == 0);
+    const _: () = assert!(
+        core::mem::offset_of!(Registers, kernel_rsp) % 16 == 0,
+        "TSS.RSP0 must be 16-byte aligned: the CPU aligns it down before pushing"
+    );
     const _: () = assert!(core::mem::offset_of!(Registers, fs_base) == 23 * 8);
     const _: () = assert!(core::mem::offset_of!(Registers, fs_base_id) == 24 * 8);
 
@@ -751,6 +774,12 @@ pub(crate) mod x86_64 {
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.rax = value;
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SYSCALL_SIZE: u64 = 2;
+            self.rax = number;
+            self.rdi = first_argument;
+            self.rip = self.rip.wrapping_sub(SYSCALL_SIZE);
         }
         pub(crate) fn registers(&self) -> UserRegisters {
             UserRegisters {
@@ -823,10 +852,9 @@ mod tests {
         assert_eq!(context.thread_pointer(), 0);
         assert_eq!(context.set_thread_pointer(0x7000_1000), Ok(()));
         assert_eq!(context.thread_pointer(), 0x7000_1000);
-        // Only x86_64's FS base must stay a user address; elsewhere the program could set
-        // anything itself.
         let kernel = 0xffff_8000_0000_0000;
-        if cfg!(target_arch = "x86_64") {
+        let only_user_addresses = cfg!(target_arch = "x86_64");
+        if only_user_addresses {
             assert_eq!(
                 context.set_thread_pointer(kernel),
                 Err(InvalidThreadPointer)
@@ -856,6 +884,20 @@ mod tests {
     }
 
     #[test]
+    fn a_restarted_call_runs_its_instruction_again_with_its_number_and_arguments() {
+        const CALL_INSTRUCTION_SIZE: u64 = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        const EINTR_RESULT: u64 = 4u64.wrapping_neg();
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        let arguments = [11, 12, 13, 14, 15, 16];
+        context.simulate_syscall(98, arguments, 0x40_1004);
+        context.set_syscall_result(EINTR_RESULT);
+        context.restart_syscall(98, 11);
+        assert_eq!(context.pc(), 0x40_1004 - CALL_INSTRUCTION_SIZE);
+        assert_eq!(context.syscall_number(), 98);
+        assert_eq!(context.syscall_arguments(), arguments);
+    }
+
+    #[test]
     fn a_new_context_starts_at_its_entry_with_its_stack() {
         let mut context = UserContext::new(0x40_0000, 0x7000);
         assert_eq!(context.pc(), 0x40_0000);
@@ -863,9 +905,8 @@ mod tests {
         assert_eq!(context.syscall_arguments(), [0; 6]);
         assert_eq!(context.syscall_number(), 0);
         context.set_syscall_result(42);
-        // The result goes where the ABI returns it: the first argument's register on AArch64
-        // and RISC-V, the number's on x86_64.
-        if cfg!(target_arch = "x86_64") {
+        let result_in_number_register = cfg!(target_arch = "x86_64");
+        if result_in_number_register {
             assert_eq!(context.syscall_number(), 42);
         } else {
             assert_eq!(context.syscall_arguments(), [42, 0, 0, 0, 0, 0]);
@@ -906,8 +947,6 @@ mod tests {
                 (0x40_0000, 0x7000, 7)
             );
             assert_eq!(context.arch.vector, x86_64::RESTORE_ALL_VECTOR);
-            // After a system call the way back would load `rcx` and `r11` from `rip` and
-            // `rflags`; setting every register makes it load them too.
             context.arch.vector = x86_64::SYSCALL_VECTOR;
             registers.rcx = 0x40_1000;
             registers.rip = 0x40_2000;
@@ -917,8 +956,8 @@ mod tests {
         assert_eq!((context.pc(), context.stack()), (0x40_2000, 0x6000));
         #[cfg(target_arch = "riscv64")]
         {
-            // `x0` is always zero.
-            registers.x[0] = 0;
+            let hardwired_zero = 0;
+            registers.x[0] = hardwired_zero;
         }
         assert_eq!(context.registers(), registers);
         #[cfg(target_arch = "x86_64")]

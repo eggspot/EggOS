@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -62,7 +62,15 @@ unsafe extern "C" {
     fn sigsuspend(mask: *const u64) -> i32;
     fn kill(process: i32, signal: i32) -> i32;
     fn getpid() -> i32;
+    fn nanosleep(request: *const Timespec, remaining: *mut Timespec) -> i32;
     fn _exit(status: i32) -> !;
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+struct Timespec {
+    seconds: i64,
+    nanoseconds: i64,
 }
 
 type Check = (&'static str, fn() -> bool);
@@ -76,8 +84,19 @@ const SIGSET_WORDS: usize = 16;
 
 static HANDLED_BY: AtomicI32 = AtomicI32::new(0);
 static READY_TARGET: AtomicUsize = AtomicUsize::new(0);
+static WAITING_THREAD: AtomicI32 = AtomicI32::new(0);
+static HANDLED_WHILE_WAITING: AtomicI32 = AtomicI32::new(0);
+static RELEASED: AtomicBool = AtomicBool::new(false);
 
-const CHECKS: [Check; 12] = [
+const EINTR: i32 = 4;
+const LONG_SLEEP: Timespec = Timespec {
+    seconds: 10,
+    nanoseconds: 0,
+};
+const SEND_INTERVAL: Duration = Duration::from_millis(10);
+const MOST_SENDS: u32 = 500;
+
+const CHECKS: [Check; 13] = [
     ("the arguments are the program's", arguments),
     ("the environment holds TERM", environment),
     ("a HashMap with random keys counts words", hash_map),
@@ -98,6 +117,10 @@ const CHECKS: [Check; 12] = [
     (
         "a signal sent to the process runs its handler in a thread that does not block it",
         signals_to_the_process,
+    ),
+    (
+        "a signal ends a sleep with EINTR and the time left, and a futex wait runs its handler",
+        signals_interrupt_waits,
     ),
 ];
 
@@ -322,15 +345,96 @@ fn publish_self_as_target() {
     READY_TARGET.store(unsafe { pthread_self() }, Ordering::SeqCst);
 }
 
-fn send_when_ready() -> bool {
-    let target = loop {
+fn ready_target() -> usize {
+    loop {
         match READY_TARGET.swap(0, Ordering::SeqCst) {
             0 => std::thread::yield_now(),
             target => break target,
         }
-    };
+    }
+}
+
+fn send_when_ready() -> bool {
+    let target = ready_target();
     // SAFETY: the target thread published its own `pthread_t` and is joined only after this.
     unsafe { pthread_kill(target, SIGUSR1) == 0 }
+}
+
+/// Sends `SIGUSR1` to the thread that publishes itself next, every [`SEND_INTERVAL`], until
+/// `done` holds, or [`MOST_SENDS`] were sent: whether it held.
+fn send_until(done: impl Fn() -> bool) -> bool {
+    let target = ready_target();
+    for _ in 0..MOST_SENDS {
+        if done() {
+            return true;
+        }
+        // SAFETY: the target thread published its own `pthread_t` and is joined only after
+        // `done` holds or the sends end.
+        unsafe { pthread_kill(target, SIGUSR1) };
+        std::thread::sleep(SEND_INTERVAL);
+    }
+    done()
+}
+
+extern "C" fn record_handled_while_waiting(_signal: i32) {
+    // SAFETY: `gettid` has no preconditions and is async-signal-safe.
+    let here = unsafe { gettid() };
+    if WAITING_THREAD.load(Ordering::SeqCst) == here {
+        HANDLED_WHILE_WAITING.store(here, Ordering::SeqCst);
+    }
+}
+
+fn start_waiting() -> i32 {
+    // SAFETY: `gettid` has no preconditions.
+    let here = unsafe { gettid() };
+    WAITING_THREAD.store(here, Ordering::SeqCst);
+    here
+}
+
+fn sleep_until_interrupted() -> bool {
+    publish_self_as_target();
+    loop {
+        let here = start_waiting();
+        let mut left = Timespec::default();
+        // SAFETY: both pointers are to `struct timespec`s that live across the call.
+        let slept = unsafe { nanosleep(&LONG_SLEEP, &mut left) };
+        WAITING_THREAD.store(0, Ordering::SeqCst);
+        if slept != 0 {
+            let interrupted = std::io::Error::last_os_error().raw_os_error() == Some(EINTR);
+            let left_some = (0..LONG_SLEEP.seconds).contains(&left.seconds);
+            return interrupted
+                && left_some
+                && HANDLED_WHILE_WAITING.load(Ordering::SeqCst) == here;
+        }
+    }
+}
+
+fn park_until_released() -> bool {
+    publish_self_as_target();
+    let here = start_waiting();
+    while !RELEASED.load(Ordering::SeqCst) {
+        std::thread::park();
+    }
+    WAITING_THREAD.store(0, Ordering::SeqCst);
+    HANDLED_WHILE_WAITING.load(Ordering::SeqCst) == here
+}
+
+fn signals_interrupt_waits() -> bool {
+    // SAFETY: the handler only reads and stores atomics, which is async-signal-safe.
+    unsafe { signal(SIGUSR1, record_handled_while_waiting) };
+    HANDLED_WHILE_WAITING.store(0, Ordering::SeqCst);
+    let sleeper = std::thread::spawn(sleep_until_interrupted);
+    let sleep_ended = send_until(|| sleeper.is_finished());
+    let sleep_interrupted = sleeper.join().unwrap_or(false);
+    HANDLED_WHILE_WAITING.store(0, Ordering::SeqCst);
+    RELEASED.store(false, Ordering::SeqCst);
+    let parked = std::thread::spawn(park_until_released);
+    let handled_in_park = send_until(|| HANDLED_WHILE_WAITING.load(Ordering::SeqCst) != 0);
+    let still_parked = !parked.is_finished();
+    RELEASED.store(true, Ordering::SeqCst);
+    parked.thread().unpark();
+    let park_handled = parked.join().unwrap_or(false);
+    sleep_ended && sleep_interrupted && handled_in_park && still_parked && park_handled
 }
 
 fn signals_between_threads() -> bool {
