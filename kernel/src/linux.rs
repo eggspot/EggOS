@@ -54,13 +54,13 @@ pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
-use thread::LinuxThread;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Format;
 use eggos_hal::user::{UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
+use thread::LinuxThread;
 
 /// Linux's system-call numbers. x86_64 has its own table; AArch64 and RISC-V share the generic
 /// one (`asm-generic/unistd.h`).
@@ -626,9 +626,7 @@ fn out_of_line_result<P: Platform>(
         number::KILL => signals::kill(process, thread, first, second),
         number::TKILL => signals::tkill(process, thread, first, second),
         number::TGKILL => signals::tgkill(process, thread, first, second, third),
-        number::RT_SIGQUEUEINFO => {
-            signals::rt_sigqueueinfo(process, thread, first, second, third)
-        }
+        number::RT_SIGQUEUEINFO => signals::rt_sigqueueinfo(process, thread, first, second, third),
         number::RT_TGSIGQUEUEINFO => {
             signals::rt_tgsigqueueinfo(process, thread, first, second, third, fourth)
         }
@@ -3004,10 +3002,7 @@ mod tests {
             }
             #[cfg(target_arch = "riscv64")]
             let _ = (reported, kernel_half);
-            assert_eq!(
-                first_thread_signals(&process).blocked,
-                1 << (sigsegv - 1)
-            );
+            assert_eq!(first_thread_signals(&process).blocked, 1 << (sigsegv - 1));
             assert_eq!(
                 handler_returns(&process, &mut context),
                 ControlFlow::Continue(())
@@ -4220,5 +4215,197 @@ mod tests {
             }
         }
         assert_eq!(lseek(3, 0, 9), Errno::EBADF.result());
+    }
+
+    fn call_as(
+        process: &Arc<Process<P>>,
+        thread: &mut LinuxThread,
+        number: u64,
+        arguments: [u64; 6],
+    ) -> u64 {
+        let mut context = called(number, arguments);
+        assert_eq!(
+            handle(process, thread, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        context.syscall_result()
+    }
+
+    fn second_thread(
+        process: &Process<P>,
+        first: &LinuxThread,
+        clear_child_tid: u64,
+    ) -> LinuxThread {
+        process.add_thread();
+        first.new_thread(process::allocate_thread_id().unwrap(), clear_child_tid)
+    }
+
+    #[test]
+    fn clone_refuses_what_linux_refuses_and_new_processes_until_they_exist() {
+        use thread::flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let clone = |flags| call(&process, number::CLONE, [flags, 0, 0, 0, 0, 0]);
+        for flags in [
+            NEW_THREAD | PIDFD | PARENT_SETTID,
+            NEW_THREAD | NEWNS | FS,
+            NEW_THREAD | NEWUSER | FS,
+            VM | THREAD,
+            SIGHAND,
+            THREAD | SIGHAND,
+            NEW_THREAD | NEWPID,
+            VM | SIGHAND | PIDFD | DETACHED,
+            NEW_THREAD | PIDFD,
+            1 << 40 | SIGHAND | EXIT_SIGNAL,
+        ] {
+            assert_eq!(clone(flags), Errno::EINVAL.result(), "{flags:#x}");
+        }
+        const SIGCHLD: u64 = 17;
+        for flags in [
+            SIGCHLD,
+            VM | VFORK | SIGCHLD,
+            VM | SIGHAND,
+            NEW_THREAD | PARENT,
+            NEW_THREAD | NEWNS,
+            NEW_THREAD | 1 << 30,
+        ] {
+            assert_eq!(clone(flags), Errno::ENOSYS.result(), "{flags:#x}");
+        }
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            call(
+                &process,
+                number::CLONE,
+                [NEW_THREAD | SETTLS, 0, 0, 0, 1 << 63, 0]
+            ),
+            Errno::EPERM.result()
+        );
+        assert!(!process.has_ended());
+        assert!(process.remove_thread(), "a refused clone counted a thread");
+    }
+
+    #[test]
+    fn threads_have_their_own_ids_and_only_the_last_to_exit_ends_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let word = SCRATCH;
+        process.write_user_memory(word, &[0xff; 8]).unwrap();
+        let mut first = take_first_thread(&process);
+        assert_eq!(call_as(&process, &mut first, number::GETTID, [0; 6]), pid);
+        let mut second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        assert!(tid > pid);
+        assert_eq!(call_as(&process, &mut second, number::GETTID, [0; 6]), tid);
+        assert_eq!(call_as(&process, &mut second, number::GETPID, [0; 6]), pid);
+        assert_eq!(
+            call_as(
+                &process,
+                &mut second,
+                number::SET_TID_ADDRESS,
+                [word, 0, 0, 0, 0, 0]
+            ),
+            tid
+        );
+        assert_eq!(second.clear_child_tid(), word);
+
+        let mut context = called(number::EXIT, [3, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(!process.has_ended());
+        assert_eq!(process.exit_status(), None);
+        let mut bytes = [0u8; 8];
+        process.read_user_memory(word, &mut bytes).unwrap();
+        assert_eq!(bytes, [0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+
+        let mut context = called(number::EXIT, [0x107, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(process.has_ended());
+        assert_eq!(process.exit_status(), Some(ProcessExit::Exited(7)));
+    }
+
+    #[test]
+    fn exit_group_ends_the_process_whatever_threads_go_on() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, SCRATCH);
+        let mut context = called(number::EXIT_GROUP, [0x2a, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(process.has_ended());
+        assert_eq!(process.exit_status(), Some(ProcessExit::Exited(0x2a)));
+        let mut context = called(number::GETPID, [0; 6]);
+        let mut first = first;
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(()),
+            "a thread of an ended process went back to its program after a call out of line"
+        );
+    }
+
+    #[test]
+    fn each_thread_blocks_and_queues_its_own_signals() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let rt = 40u64;
+        let mut first = take_first_thread(&process);
+        let mask = SCRATCH + 0x300;
+        process
+            .write_user_memory(mask, &(1u64 << (rt - 1)).to_ne_bytes())
+            .unwrap();
+        let block = [0, mask, 0, 8, 0, 0];
+        assert_eq!(
+            call_as(&process, &mut first, number::RT_SIGPROCMASK, block),
+            0
+        );
+        let mut second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        assert_eq!(second.signal_state().blocked, 1 << (rt - 1));
+        assert_eq!(second.signal_state().pending, 0);
+
+        let (info, waited) = (SCRATCH, SCRATCH + 0x100);
+        write_siginfo(&process, info, signals::code::QUEUE, 0x11);
+        let queue = |thread: &mut LinuxThread, target| {
+            call_as(
+                &process,
+                thread,
+                number::RT_TGSIGQUEUEINFO,
+                [pid, target, rt, info, 0, 0],
+            )
+        };
+        assert_eq!(queue(&mut first, pid), 0);
+        write_siginfo(&process, info, signals::code::QUEUE, 0x22);
+        assert_eq!(queue(&mut second, tid), 0);
+        assert_eq!(queue(&mut first, tid), Errno::ESRCH.result());
+        assert_eq!(queue(&mut second, pid), Errno::ESRCH.result());
+
+        let set = SCRATCH + 0x200;
+        process
+            .write_user_memory(set, &(1u64 << (rt - 1)).to_ne_bytes())
+            .unwrap();
+        let wait = |thread: &mut LinuxThread| {
+            let taken = call_as(
+                &process,
+                thread,
+                number::RT_SIGTIMEDWAIT,
+                [set, waited, 0, 8, 0, 0],
+            );
+            (taken, read_siginfo(&process, waited).2)
+        };
+        assert_eq!(wait(&mut second), (rt, 0x22));
+        assert_eq!(wait(&mut first), (rt, 0x11));
+        assert_eq!(first.signal_state().pending, 0);
+        assert_eq!(second.signal_state().pending, 0);
     }
 }

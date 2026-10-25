@@ -24,8 +24,8 @@ use super::Errno;
 use super::fault::Fault;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
-use crate::process::{Process, ProcessExit};
 use super::thread::LinuxThread;
+use crate::process::{Process, ProcessExit};
 use crate::thread::{self, FpStart};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -446,7 +446,11 @@ impl Signals {
 
     /// The state of the thread whose id is `id` and whose own state is `thread`, joined with
     /// this, its process's, for as long as the caller holds both.
-    pub fn with_thread<'a>(&'a mut self, thread: &'a mut ThreadSignals, id: u32) -> LockedSignals<'a> {
+    pub fn with_thread<'a>(
+        &'a mut self,
+        thread: &'a mut ThreadSignals,
+        id: u32,
+    ) -> LockedSignals<'a> {
         LockedSignals {
             process: self,
             thread,
@@ -1108,7 +1112,13 @@ pub fn tkill<P: Platform>(
     tid: u64,
     signal: u64,
 ) -> Result<u64, Errno> {
-    tgkill(process, thread, u64::from(own_id(process) as u32), tid, signal)
+    tgkill(
+        process,
+        thread,
+        u64::from(own_id(process) as u32),
+        tid,
+        signal,
+    )
 }
 
 /// `tgkill(tgid, tid, signal)`: as [`tkill`], with the thread's process (its thread group)
@@ -1187,7 +1197,9 @@ pub fn rt_sigqueueinfo<P: Platform>(
             Errno::ESRCH
         });
     }
-    send_to_self(process, thread, signal, |signal| Info::queued(signal, bytes))
+    send_to_self(process, thread, signal, |signal| {
+        Info::queued(signal, bytes)
+    })
 }
 
 /// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
@@ -1215,7 +1227,9 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
     if tgid != own || !own_thread {
         return Err(Errno::ESRCH);
     }
-    send_to_self(process, thread, signal, |signal| Info::queued(signal, bytes))
+    send_to_self(process, thread, signal, |signal| {
+        Info::queued(signal, bytes)
+    })
 }
 
 /// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: takes the first pending signal in the
@@ -2065,7 +2079,11 @@ mod tests {
         signals.send(by_kill(SIGCONT), NO_LIMIT).unwrap();
         let [block] = signals.actions_and_queue.as_deref().unwrap();
         assert_eq!(
-            block.queue.iter().map(|queued| queued.info).collect::<Vec<_>>(),
+            block
+                .queue
+                .iter()
+                .map(|queued| queued.info)
+                .collect::<Vec<_>>(),
             [by_tkill(SIGUSR1), by_kill(SIGCONT)]
         );
         let taken: Vec<Info> = core::iter::from_fn(|| signals.take_waited(!UNBLOCKABLE)).collect();
