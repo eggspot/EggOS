@@ -4083,7 +4083,9 @@ the license, by an explicit instruction recorded here.
   (`-icount`, so instruction counts): `futex_wait_wake_round_trip` +1.3% on x86_64 (473.03 →
   479.03 ns) and +1.5% on riscv64 (550.06 → 558.06), unchanged on aarch64;
   `linux_mmap_munmap` +1.7% on x86_64 (360.09 → 366.09), +0.8% on riscv64, +0.6% on
-  aarch64; nothing else moves. The first versions cost far more (yield +3–6%, the timer
+  aarch64; `linux_page_fault` +0.3% on each (its fault takes the regions lock, which keeps
+  the duty), which puts riscv64 (1411.10 on `main`, 0.8% above its line already) just past
+  the gate at 1415.13; nothing else moves. The first versions cost far more (yield +3–6%, the timer
   interrupt +7%, the heap +4–16%, munmap +3–4%): serving on every interrupt, a call in every
   lock's contended path and a second page walk on munmap; serving on the wake-up interrupt
   only, leaf locks without the duty and one walk with one flag load cut them to the above.
@@ -4097,4 +4099,5 @@ the license, by an explicit instruction recorded here.
   futex wait enqueuing, dropping the bucket and re-checking: a second bucket round trip) or
   break a rule (an assembly trampoline that hides the call); broadcast invalidation removes
   the need on AArch64 and RISC-V but not on x86, where the cost is. The baseline lines of
-  those three results are updated; the others stay within the gate.
+  those three results and riscv64's `linux_page_fault` are updated; the others stay within
+  the gate.

@@ -47,7 +47,7 @@ riscv64 heap_allocate_free_small 57.00
 riscv64 linux_clock_monotonic_read 15.00
 riscv64 linux_exec_load 31638.49
 riscv64 linux_mmap_munmap 362.11
-riscv64 linux_page_fault 1400.53
+riscv64 linux_page_fault 1415.13
 riscv64 linux_syscall_round_trip 165.39
 riscv64 preemption_point_idle 6.00
 riscv64 process_switch_round_trip 598.45
