@@ -98,9 +98,17 @@ fn affinity() -> u64 {
     mpidr & 0xff_00ff_ffff
 }
 
-/// Sends the wake-up SGI to the CPU whose MPIDR affinity is `cpu`. A CPU that has not set its
-/// interrupts up yet is not woken (the caller's contract excludes it).
+/// Sends the wake-up SGI to the CPU whose MPIDR affinity is `cpu`, the calling CPU included. A
+/// CPU that has not set its interrupts up yet is not woken (the caller's contract excludes it).
 pub(super) fn wake(cpu: u64) {
+    // SAFETY: a barrier only. It completes the caller's writes to memory before the write that
+    // sends the SGI (device memory, which a store to normal memory does not otherwise precede),
+    // so the woken CPU sees them.
+    unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
+    if cpu == affinity() {
+        distributor().send_sgi_to_this_cpu(WAKEUP_SGI);
+        return;
+    }
     let Some(interface) = GIC_CPUS
         .iter()
         .position(|entry| entry.load(Ordering::Acquire) == cpu + 1)
@@ -111,10 +119,6 @@ pub(super) fn wake(cpu: u64) {
         );
         return;
     };
-    // SAFETY: a barrier only. It completes the caller's writes to memory before the write that
-    // sends the SGI (device memory, which a store to normal memory does not otherwise precede),
-    // so the woken CPU sees them.
-    unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
     distributor().send_sgi(WAKEUP_SGI, 1 << interface);
 }
 

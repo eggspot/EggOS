@@ -349,8 +349,9 @@ pub trait Platform: 'static {
 
     /// Raises [`Interrupt::Wakeup`] on the CPU with hardware id `cpu` (from [`Self::cpus`]),
     /// which must run the kernel's code (its [`cpu::CpuStart::entry`] was called, or it is the
-    /// boot CPU) and not be the calling CPU (D41). Whatever the caller wrote to memory before
-    /// the call is visible to that CPU once it takes the interrupt. Returns once the interrupt
-    /// is sent, which may be before it is taken. Interrupts must be masked, as the kernel runs.
+    /// boot CPU; D41), the calling CPU included, which takes it once it unmasks interrupts
+    /// (D95). Whatever the caller wrote to memory before the call is visible to that CPU once it
+    /// takes the interrupt. Returns once the interrupt is sent, which may be before it is taken.
+    /// Interrupts must be masked, as the kernel runs.
     fn wake_cpu(cpu: u64);
 }

@@ -27,6 +27,7 @@ const MAX_INTERRUPT_ID: u32 = 1019;
 const MAX_SGI_ID: u32 = 15;
 const SGIR_TARGET_LIST_SHIFT: u32 = 16;
 const SGIR_FILTER_TO_TARGET_LIST: u32 = 0b00 << 24;
+const SGIR_FILTER_TO_THIS_CPU: u32 = 0b10 << 24;
 
 /// Size of the distributor's register block in bytes.
 pub const DISTRIBUTOR_BLOCK_SIZE: usize = 0x1000;
@@ -87,6 +88,13 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
             GICD_SGIR,
             SGIR_FILTER_TO_TARGET_LIST | u32::from(targets) << SGIR_TARGET_LIST_SHIFT | id,
         );
+    }
+
+    /// Sends SGI `id` to the calling CPU's interface alone, which works on a uniprocessor GIC
+    /// too, where [`Self::this_cpu_target`] has no target to name.
+    pub fn send_sgi_to_this_cpu(&self, id: u32) {
+        assert!(id <= MAX_SGI_ID, "GIC SGI ID {id} out of range");
+        self.regs.write32(GICD_SGIR, SGIR_FILTER_TO_THIS_CPU | id);
     }
 }
 
@@ -162,6 +170,13 @@ mod tests {
         let gicd = Gicv2Distributor::new(FakeRegs::default());
         gicd.send_sgi(1, 0b0100);
         assert_eq!(gicd.regs.writes(), vec![(0xf00, 0b0100 << 16 | 1)]);
+    }
+
+    #[test]
+    fn an_sgi_to_this_cpu_uses_the_filter_and_names_no_target() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.send_sgi_to_this_cpu(1);
+        assert_eq!(gicd.regs.writes(), vec![(0xf00, 0b10 << 24 | 1)]);
     }
 
     #[test]
