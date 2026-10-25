@@ -1107,7 +1107,7 @@ impl<P: Platform> Process<P> {
     /// For a thread of the process that may have been switched out and back in: if signals
     /// sent to its threads wait to be taken in, interrupts this CPU, so the thread comes back
     /// from user mode at once and its handler can take in what was sent to it. Called after
-    /// the scheduler's look before user mode ([`run`]) and after the preemption points a
+    /// the scheduler's look before user mode ([`spawn`]'s loop) and after the preemption points a
     /// system call passes on the process's behalf.
     #[inline]
     pub fn interrupt_here_if_sent_signals_wait(&self) {

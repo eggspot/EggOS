@@ -4150,7 +4150,8 @@ the license, by an explicit instruction recorded here.
   program (`cpu::interrupt_here`), so it comes back at once and takes them in: without it, a
   thread alone on its CPU (no tick armed) running a loop or calls that never switch would never
   see them. The check is in the branch the scheduler's look already takes (one more load
-  there, none on the system-call path). `Platform::wake_cpu` now takes the calling CPU too:
+  there, none on the system-call path), and after the preemption points `write` and
+  `getrandom` pass, where a thread switched out resumes without that look. `Platform::wake_cpu` now takes the calling CPU too:
   AArch64 sends the SGI with GICv2's "this CPU only" filter, which a uniprocessor GIC (the
   benchmarks' one CPU) needs; x86_64's fixed IPI and RISC-V's SBI IPI name their own CPU as
   any other. A boot self-test checks that a CPU takes the interrupt it raised on itself.
@@ -4196,4 +4197,6 @@ the license, by an explicit instruction recorded here.
   now only interrupts its own CPU, out of the loop's way, and costs nothing measurable.
 - **Review (independent, before merge).** It found the thread switched back in that never
   took in (above: first left as "within its time slice", which a CPU with no tick armed breaks)
-  and the discarded blocked signals; both fixed, with the tests above.
+  and the discarded blocked signals; both fixed, with the tests above. Its second pass found
+  the same for a thread switched out inside `write` or `getrandom` (fixed above), and that
+  repeated `SIG_IGN` requests should merge (they do) and flush again as on Linux (they do).
