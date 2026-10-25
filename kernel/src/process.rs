@@ -45,6 +45,9 @@ use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
+/// [`Process::first_thread_status`] before the first thread has ended: no status, which is 8 bits.
+const NO_STATUS: u32 = u32::MAX;
+
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
 pub const TEST_PROGRAM_ADDRESS: u64 = 0x40_0000;
 
@@ -172,6 +175,9 @@ pub struct Process<P: Platform> {
     ended: AtomicBool,
     /// Its threads that run its program and have not exited ([`Self::add_thread`]).
     threads: AtomicU32,
+    /// The status its first thread ended with on its own, [`NO_STATUS`] until it has
+    /// ([`Self::record_first_thread_status`]).
+    first_thread_status: AtomicU32,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
@@ -234,6 +240,7 @@ impl<P: Platform> Process<P> {
             exit: SpinLock::new(None),
             ended: AtomicBool::new(false),
             threads: AtomicU32::new(0),
+            first_thread_status: AtomicU32::new(NO_STATUS),
             id,
             credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
             signals: SpinLock::new(Signals::new()),
@@ -1001,7 +1008,7 @@ impl<P: Platform> Process<P> {
     pub fn exit(&self, how: ProcessExit) {
         self.exit.lock().get_or_insert(how);
         self.ended.store(true, Ordering::Release);
-        if self.threads.load(Ordering::Acquire) > 1 {
+        if self.threads() > 1 {
             interrupt_other_cpus::<P>();
         }
     }
@@ -1010,6 +1017,24 @@ impl<P: Platform> Process<P> {
     /// call that blocks or their next return to user mode after an interrupt.
     pub fn has_ended(&self) -> bool {
         self.ended.load(Ordering::Acquire)
+    }
+
+    /// Records the status the process's first thread ended with while others go on (Linux's
+    /// `exit`): the process ends with it if they all end that way too, as Linux reports its
+    /// thread group leader's.
+    pub fn record_first_thread_status(&self, status: u8) {
+        self.first_thread_status
+            .store(u32::from(status), Ordering::Release);
+    }
+
+    /// The status recorded by [`Self::record_first_thread_status`], if any.
+    pub fn first_thread_status(&self) -> Option<u8> {
+        u8::try_from(self.first_thread_status.load(Ordering::Acquire)).ok()
+    }
+
+    /// Its threads that run its program and have not exited.
+    pub fn threads(&self) -> u32 {
+        self.threads.load(Ordering::Acquire)
     }
 
     /// Counts a thread that will run the process's program, before it starts.

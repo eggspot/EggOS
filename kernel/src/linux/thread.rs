@@ -77,6 +77,9 @@ pub mod flag {
     pub const PARENT: u64 = 0x8000;
     pub const THREAD: u64 = 0x1_0000;
     pub const NEWNS: u64 = 0x2_0000;
+    pub const NEWCGROUP: u64 = 0x200_0000;
+    pub const NEWUTS: u64 = 0x400_0000;
+    pub const NEWIPC: u64 = 0x800_0000;
     pub const SYSVSEM: u64 = 0x4_0000;
     pub const SETTLS: u64 = 0x8_0000;
     pub const PARENT_SETTID: u64 = 0x10_0000;
@@ -86,7 +89,11 @@ pub mod flag {
     pub const CHILD_SETTID: u64 = 0x100_0000;
     pub const NEWUSER: u64 = 0x1000_0000;
     pub const NEWPID: u64 = 0x2000_0000;
+    pub const NEWNET: u64 = 0x4000_0000;
     pub const IO: u64 = 0x8000_0000;
+
+    /// The namespaces a new thread or process may get, none of which exists yet.
+    pub const NAMESPACES: u64 = NEWNS | NEWCGROUP | NEWUTS | NEWIPC | NEWUSER | NEWPID | NEWNET;
 
     /// The bits that are the exit signal, not flags.
     pub const EXIT_SIGNAL: u64 = 0xff;
@@ -154,11 +161,13 @@ impl Arguments {
 /// `CLONE_NEWNS` or `CLONE_NEWUSER` with `CLONE_FS`, for `CLONE_THREAD` without
 /// `CLONE_SIGHAND`, for `CLONE_SIGHAND` without `CLONE_VM`, for `CLONE_THREAD` with
 /// `CLONE_NEWUSER` or `CLONE_NEWPID`, and for `CLONE_PIDFD` with `CLONE_DETACHED` or
-/// `CLONE_THREAD`; on x86_64, `EPERM` for a thread pointer outside user space; `EAGAIN` when
-/// ids run out; `ENOMEM` without memory for the thread. New processes (`fork`, `vfork`,
-/// `posix_spawn`'s clone) and the other flags (namespaces, pidfds, `CLONE_PARENT`) are
-/// `ENOSYS` until processes can be created. The flags' upper 32 bits are ignored, as Linux's
-/// `clone` does, and so is the exit signal, which a thread does not have.
+/// `CLONE_THREAD`; then `EINVAL` for namespaces and `CLONE_PIDFD`, which do not exist yet (as
+/// on a Linux built without them); `ENOSYS` for a new process (no `CLONE_VM`, or `CLONE_VFORK`
+/// or `CLONE_PARENT`: `fork`, `vfork`, `posix_spawn`), until processes can be created, which
+/// callers report as unsupported rather than retry; on x86_64, `EPERM` for a thread pointer
+/// outside user space; `EAGAIN` when ids run out; `ENOMEM` without memory for the thread. The
+/// flags' upper 32 bits are ignored, as Linux's `clone` does, and so is the exit signal, which
+/// a thread does not have.
 pub fn clone<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &LinuxThread,
@@ -175,7 +184,7 @@ pub fn clone<P: Platform>(
         || (any(flag::SIGHAND) && !any(flag::VM))
         || (any(flag::THREAD) && any(flag::NEWUSER | flag::NEWPID))
         || (any(flag::PIDFD) && any(flag::DETACHED | flag::THREAD));
-    if invalid {
+    if invalid || any(flag::NAMESPACES | flag::PIDFD) {
         return Err(Errno::EINVAL);
     }
     if !all(flag::NEW_THREAD) || flags & !(flag::NEW_THREAD | flag::THREAD_OPTIONS) != 0 {

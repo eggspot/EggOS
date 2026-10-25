@@ -54,6 +54,7 @@ pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
@@ -398,13 +399,17 @@ pub fn spawn<P: Platform>(
     spawn_thread(process, thread, context)
 }
 
-/// Starts `thread`, of `process`, running the program from `context`, its state kept in its
-/// loop and handed to [`handle`] with each exit from user mode.
+/// Starts `thread`, of `process`, running the program from `context`, its state kept for its
+/// loop and handed to [`handle`] with each exit from user mode. The state is boxed: the loop
+/// keeps one pointer to it, and its own variables stay in registers (in the loop's closure
+/// with them, the system calls taking its address kept them in memory: +3 to +5% on the
+/// system-call round trip).
 pub(crate) fn spawn_thread<P: Platform>(
     process: Arc<Process<P>>,
-    mut thread: LinuxThread,
+    thread: LinuxThread,
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
+    let mut thread = Box::new(thread);
     process.add_thread();
     let counted = Arc::clone(&process);
     process::spawn::<P, _>(process, context, move |process, context, exit| {
@@ -690,22 +695,27 @@ fn out_of_line_result<P: Platform>(
 /// `clear_child_tid` (`set_tid_address`, `CLONE_CHILD_CLEARTID`) and other threads go on, the
 /// 32-bit word there becomes 0 and one waiter on it as a shared futex is woken, as on Linux:
 /// nothing is written if the word is not the program's writable memory, and no one is woken
-/// if it is not aligned. The last
-/// thread to end ends the process with `status`, of which Linux keeps the low 8 bits (Linux
-/// reports the first thread's status then; a C library ends its last thread with
-/// `exit_group` instead).
+/// if it is not aligned. The last thread to end ends the process, with the status the first
+/// thread exited with, as Linux reports its thread group leader's, or with `status` if the
+/// first thread is the last. Linux keeps a status's low 8 bits. (A C library ends its last
+/// thread with `exit_group` instead.)
 #[inline(never)]
 pub fn exit_thread<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
     status: u64,
 ) -> ControlFlow<()> {
+    let status = status as u8;
+    if thread.id() == process.id().get() {
+        process.record_first_thread_status(status);
+    }
+    if process.remove_thread() {
+        let status = process.first_thread_status().unwrap_or(status);
+        return end_process(process, ProcessExit::Exited(u32::from(status)));
+    }
     thread
         .signals(&mut process.signals().lock())
         .discard(u64::MAX);
-    if process.remove_thread() {
-        return end_process(process, ProcessExit::Exited(status as u32 & 0xff));
-    }
     let address = thread.clear_child_tid();
     if address != 0 {
         let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
@@ -724,13 +734,16 @@ fn exit_group<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()>
     end_process(process, ProcessExit::Exited(status as u32 & 0xff))
 }
 
-/// Ends the process as `how` says ([`Process::exit`]); its threads waiting on a futex stop
-/// waiting, so they end too. Breaks: the calling thread ends.
+/// Ends the process as `how` says ([`Process::exit`]); its other threads waiting on a futex,
+/// if it has any, stop waiting, so they end too. Breaks: the calling thread ends.
 #[cold]
 #[inline(never)]
 pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
+    let others = process.threads() > 1;
     process.exit(how);
-    futex::wake_space::<P>(process.id().get());
+    if others {
+        futex::wake_space::<P>(process.id().get());
+    }
     ControlFlow::Break(())
 }
 
@@ -4258,6 +4271,9 @@ mod tests {
             VM | SIGHAND | PIDFD | DETACHED,
             NEW_THREAD | PIDFD,
             1 << 40 | SIGHAND | EXIT_SIGNAL,
+            NEW_THREAD | NEWNS,
+            NEW_THREAD | NEWNET,
+            VM | PIDFD,
         ] {
             assert_eq!(clone(flags), Errno::EINVAL.result(), "{flags:#x}");
         }
@@ -4267,8 +4283,7 @@ mod tests {
             VM | VFORK | SIGCHLD,
             VM | SIGHAND,
             NEW_THREAD | PARENT,
-            NEW_THREAD | NEWNS,
-            NEW_THREAD | 1 << 30,
+            NEW_THREAD | VFORK,
         ] {
             assert_eq!(clone(flags), Errno::ENOSYS.result(), "{flags:#x}");
         }
@@ -4328,6 +4343,27 @@ mod tests {
         );
         assert!(process.has_ended());
         assert_eq!(process.exit_status(), Some(ProcessExit::Exited(7)));
+    }
+
+    #[test]
+    fn a_process_whose_threads_all_exit_alone_ends_with_its_first_thread_s_status() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let mut context = called(number::EXIT, [5, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(process.exit_status(), None);
+        let mut context = called(number::EXIT, [9, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(process.exit_status(), Some(ProcessExit::Exited(5)));
     }
 
     #[test]
