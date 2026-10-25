@@ -74,8 +74,11 @@ unsafe impl Send for Bucket {}
 impl Bucket {
     fn unpark<P: Platform>(&mut self, waiter: NonNull<Waiter>) {
         // SAFETY: a waiter unlinked from this bucket with its lock still held, so its thread
-        // has not returned: it is in place until the unpark marks its parker unparked.
-        unsafe { Parker::unpark::<P>(NonNull::from(&(*waiter.as_ptr()).parker)) };
+        // has not returned and it is in place; only its parker's address is taken.
+        let parker = unsafe { &raw const (*waiter.as_ptr()).parker };
+        // SAFETY: the waiter's thread returns only once its parker is marked unparked, so the
+        // parker is in place until then.
+        unsafe { Parker::unpark::<P>(parker) };
     }
 }
 

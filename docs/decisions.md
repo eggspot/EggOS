@@ -3907,3 +3907,56 @@ the license, by an explicit instruction recorded here.
   leaving the process, the last one ending it, the first thread's status, `exit_group`, a
   thread of an ended process stopping after an out-of-line call, and each thread's own mask
   and queued `siginfo_t`; load balancing never taking a pinned thread.
+
+## D92 Review of D89–D91: a process's end wakes its threads' sleeps; `Parker::unpark` takes a pointer — Decided by the build loop
+- **Why.** The review step after D89–D91 (`futex`, its requeue, `clone` for threads): a
+  fresh, independent read of the futex table, the timed park, `clone`, `exit` and
+  `exit_group`.
+- **Bug: an ended process's sleeping threads stayed asleep.** D91 listed it under "Not yet":
+  a thread in `nanosleep`, `clock_nanosleep`, `ppoll`, `poll`, `rt_sigsuspend`, `pause`,
+  `rt_sigtimedwait` or a `SIGSTOP` stop slept on the scheduler's sleepers, which nothing
+  but the clock wakes, so after another thread's `exit_group` it ran out its timeout, or for
+  good without one. That held the process, its address space and its thread stacks, and a
+  launcher joining the main thread (the self-tests, the benchmarks) waited forever: a daemon's
+  main thread in `pause()` with a worker calling `exit()` hung. Every Linux sleep now goes
+  through `linux::thread::sleep_until`, which waits in the futex table on a word of the
+  process's address space past every user address (`SLEEP_WORD`, so no program's `futex` can
+  name it), with the process's end checked under the bucket's lock before it parks, so
+  `end_process`'s `futex::wake_space` wakes it and a sleep that starts after the end returns
+  at once. It says whether the process has ended: `rt_sigsuspend`, `pause` and a stop then
+  end the thread; the other calls return as they would and the thread stops on its way back
+  to user mode (D91). Waking another thread's sleep is also what signals between threads
+  need (D91's "Not yet"): a per-thread word can follow then.
+- **Soundness: `Parker::unpark` took `&self`.** A timed waiter whose timer already made it
+  ready can see `unparked` set without the scheduler's lock and return, dropping its `Waiter`
+  and `Parker` from its stack while the waker is still inside `unpark`, with a reference
+  argument that must stay valid for the whole call. Nothing was read after the store, so no
+  memory was misused, but code added after it would have been a use after free.
+  `unpark` is now `unsafe fn unpark(parker: *const Parker)`: it reaches the `Parker` only
+  through the pointer, last with the store; the futex table calls it through
+  `Bucket::unpark`, with the bucket's lock held.
+- **Checked and fine.** Waiter lifetime across wake, timeout and requeue (a timed-out waiter
+  re-locks its current bucket and checks `queued`; a requeue's move is seen through the
+  bucket index re-check); lock order (bucket, then memory, then scheduler; a requeue's two
+  buckets in index order); `futex`'s checks and errors in Linux's order, relative and absolute
+  timeouts, the bitset rules and requeue counts; `clone`'s flags, argument order per
+  architecture, child stack and return value, `CLONE_SETTLS`; the last thread's status, the
+  `CLONE_CHILD_CLEARTID` clear and wake, resources released once; pinned threads never
+  migrate.
+- **Left as is.** `clone` writes the `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` words
+  before the thread is spawned, so an `ENOMEM` leaves an id there for a thread that never
+  existed: writing them after the spawn would let the child run before its own word holds
+  its id if a write ever passed a preemption point, and callers ignore the words on failure.
+  `CLONE_THREAD` with `CLONE_PARENT` stays `ENOSYS` with the other new-process flags.
+- **Not yet.** A launcher still waits for the first thread, not the process: a main thread
+  that calls `pthread_exit` while workers go on reads as "ended without ending it" to the
+  self-tests. A process-wide completion comes with `wait4`. No test yet has a thread waiting
+  on a `CLONE_CHILD_CLEARTID` word when the exiting thread wakes it (musl's `pthread_join`
+  usually sees the word cleared first).
+- **Tests.** A new QEMU self-test, `linux_programs_end_from_a_thread_while_others_wait`: the
+  std test program, given `exit-from-a-thread`, exits from a thread while its main thread
+  sleeps in `nanosleep` for an hour and another thread waits on a futex for good; the main
+  thread's `join` returns, the status is 0 and every frame is freed, on aarch64, riscv64 and
+  x86_64 (with `nanosleep` on the old sleep, x86_64 hangs until the runner's 30 s limit).
+  Host test `a_thread_of_an_ended_process_does_not_sleep`: after `exit_group`, an hour's
+  `clock_nanosleep` and an `rt_sigsuspend` on another thread end that thread at once.

@@ -664,14 +664,15 @@ impl Parker {
     /// # Safety
     ///
     /// `parker` points to a `Parker` that stays in place until it is marked unparked.
-    pub unsafe fn unpark<P: Platform>(parker: NonNull<Self>) {
-        let parker = parker.as_ptr();
+    pub unsafe fn unpark<P: Platform>(parker: *const Self) {
         let mut schedulers = SCHEDULER.lock();
-        // SAFETY: the `Parker` is in place until the store below, as the caller promises,
-        // and `parked` is reached only with the scheduler's lock held, which `schedulers`
-        // proves.
-        let parked = unsafe { (*UnsafeCell::raw_get(&raw const (*parker).parked)).take() };
-        // SAFETY: as above; nothing reaches the `Parker` after this store.
+        // SAFETY: the `Parker` is in place until the store below, as the caller promises;
+        // only the address of its `parked` is taken.
+        let parked = unsafe { &raw const (*parker).parked };
+        // SAFETY: as above, and `parked` is reached only with the scheduler's lock held,
+        // which `schedulers` proves.
+        let parked = unsafe { (*UnsafeCell::raw_get(parked)).take() };
+        // SAFETY: the `Parker` is in place until this store; nothing reaches it after.
         unsafe { (*parker).unparked.store(true, Ordering::Release) };
         let thread = match parked {
             Some(Parked::Untimed(thread)) => thread,

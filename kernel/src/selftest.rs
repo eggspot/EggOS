@@ -2285,7 +2285,7 @@ fn futex_waiters_wake_in_order_and_time_out<P: Platform>() -> Result<(), &'stati
     }
     let parker = thread::Parker::new();
     // SAFETY: `parker` is in place until this function returns.
-    unsafe { thread::Parker::unpark::<P>(core::ptr::NonNull::from(&parker)) };
+    unsafe { thread::Parker::unpark::<P>(&parker) };
     if parker.park_until::<P>(u64::MAX) != thread::ParkEnd::Unparked {
         return Err("an unpark before the park did not end it at once");
     }

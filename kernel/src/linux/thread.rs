@@ -17,7 +17,7 @@ use eggos_hal::user::UserContext;
 /// The word a sleeping Linux thread waits on in the futex table: past every user address, so
 /// no program's `futex` call can name it, and in its process's address space, so ending the
 /// process ([`futex::wake_space`]) ends every such sleep.
-const SLEEP_WORD: u64 = u64::MAX & !3;
+const SLEEP_WORD: u64 = !3;
 
 /// Sleeps the calling thread of `process` until the clock reaches `deadline`
 /// ([`Platform::clock_ticks`], `u64::MAX` for none) or the process ends: `Break` if it has
