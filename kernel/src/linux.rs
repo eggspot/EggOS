@@ -985,6 +985,7 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         P::console_write(bytes);
         written += length as u64;
         crate::thread::preemption_point::<P>();
+        process.interrupt_here_if_sent_signals_wait();
         if process.has_ended_and_will_stop() {
             break;
         }

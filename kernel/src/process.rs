@@ -1093,18 +1093,27 @@ impl<P: Platform> Process<P> {
         self.sent_signals_waiting.store(waiting, Ordering::Relaxed);
     }
 
-    /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise, if
-    /// signals sent to its threads wait, interrupts this CPU, so the thread comes back from
-    /// user mode at once and its handler can take in what was sent to it.
+    /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise
+    /// [`Self::interrupt_here_if_sent_signals_wait`].
     #[inline]
     fn after_look(&self) -> ControlFlow<()> {
         if self.has_ended() {
             return ControlFlow::Break(());
         }
+        self.interrupt_here_if_sent_signals_wait();
+        ControlFlow::Continue(())
+    }
+
+    /// For a thread of the process that may have been switched out and back in: if signals
+    /// sent to its threads wait to be taken in, interrupts this CPU, so the thread comes back
+    /// from user mode at once and its handler can take in what was sent to it. Called after
+    /// the scheduler's look before user mode ([`run`]) and after the preemption points a
+    /// system call passes on the process's behalf.
+    #[inline]
+    pub fn interrupt_here_if_sent_signals_wait(&self) {
         if self.sent_signals_waiting.load(Ordering::Relaxed) {
             cpu::interrupt_here::<P>();
         }
-        ControlFlow::Continue(())
     }
 
     /// Records the status the process's first thread ended with while others go on (Linux's

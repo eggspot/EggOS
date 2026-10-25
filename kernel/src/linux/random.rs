@@ -93,8 +93,8 @@ pub fn getrandom<P: Platform>(
             written += piece as u64;
         }
         if written.is_multiple_of(PREEMPTION_INTERVAL) {
-            // System calls may pass one (`linux::handle`).
             thread::preemption_point::<P>();
+            process.interrupt_here_if_sent_signals_wait();
         }
         ControlFlow::Continue(())
     });

@@ -776,7 +776,9 @@ impl LockedSignals<'_> {
     /// Asks every other thread of the process, those [`Signals::add_thread`] counted and
     /// `first`, its first thread if it is another one that has not exited, to discard its
     /// pending signals in `set`, which are now ignored, as POSIX requires: false if there was
-    /// no memory to ask, or no thread to ask.
+    /// no memory to ask, or no thread to ask. A request right after another for the same thread
+    /// joins it, so a thread that does not take in holds at most one more entry than it has
+    /// signals waiting, which `RLIMIT_SIGPENDING` bounds.
     pub fn discard_from_other_threads(&mut self, first: Option<u32>, set: u64) -> bool {
         let caller = self.id;
         let Some([block]) = self.actions_and_queue.as_deref_mut() else {
@@ -795,14 +797,28 @@ impl LockedSignals<'_> {
         {
             return false;
         }
-        let before = block.sent_to_threads.len();
+        let mut asked = false;
         for thread in others {
-            block.sent_to_threads.push(SentToThread {
-                thread,
-                sent: Sent::Discard(set),
-            });
+            asked = true;
+            let last = block
+                .sent_to_threads
+                .iter_mut()
+                .rev()
+                .find(|sent| sent.thread == thread);
+            if let Some(SentToThread {
+                sent: Sent::Discard(earlier),
+                ..
+            }) = last
+            {
+                *earlier |= set;
+            } else {
+                block.sent_to_threads.push(SentToThread {
+                    thread,
+                    sent: Sent::Discard(set),
+                });
+            }
         }
-        block.sent_to_threads.len() > before
+        asked
     }
 
     /// Discards the thread's pending signals in `set`, with their queued [`Info`].
@@ -1083,10 +1099,9 @@ pub fn rt_sigaction<P: Platform>(
     };
     let signal = signal as u32;
     // Copied out before the program's memory is touched: the lock is never held across a copy.
-    let newly_ignored = {
+    let (previous, asked) = {
         let mut guard = process.signals().lock();
         let mut signals = thread.signals(&mut guard);
-        let was_ignored = signals.ignores(signal);
         let previous = match new {
             None => signals.action(signal).ok_or(Errno::EINVAL)?,
             Some(new) => signals
@@ -1096,16 +1111,15 @@ pub fn rt_sigaction<P: Platform>(
                     ChangeError::OutOfMemory => Errno::ENOMEM,
                 })?,
         };
-        let newly_ignored = new.is_some() && !was_ignored && signals.ignores(signal);
+        let ignored = new.is_some() && signals.ignores(signal);
         let first = process.id().get();
         let first = (process.first_thread_status().is_none()).then_some(first);
-        let asked = newly_ignored && signals.discard_from_other_threads(first, bit(signal));
+        let asked = ignored && signals.discard_from_other_threads(first, bit(signal));
         if asked {
             process.set_sent_signals_waiting(true);
         }
         (previous, asked)
     };
-    let (previous, asked) = newly_ignored;
     if asked {
         process.record_signal_sent();
     }
