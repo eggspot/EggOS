@@ -4130,7 +4130,14 @@ the license, by an explicit instruction recorded here.
   once, but costs a lookup on every signal call, a heap table for single-threaded processes,
   and room in `Process`, which is at its 256-byte class. A real-time signal over the limit is
   `EAGAIN` for the sender, as on Linux; a standard one is queued past it; without memory to
-  record any signal it is `EAGAIN` too.
+  record any signal it is `EAGAIN` too. What taking in would undo is undone when a signal is
+  left, so what waits for a thread that never takes in (blocked in a `futex` wait for good)
+  stays bounded however often it is sent signals: a standard signal already waiting is not
+  left again (Linux's second instance of a pending standard signal is a no-op too), `SIGCONT`
+  removes the stop signals waiting and a stop signal a `SIGCONT` waiting (its discarding of
+  the stop signals stays), and a discard request (below) removes the signals it covers: at
+  most one entry per standard signal, the real-time ones the limit allows, and one request
+  more than signals.
 - **How the target notices.** `Process::signals_sent`, a wrapping 16-bit count in the padding
   next to `ended` (no growth), goes up after each signal sent to another thread; each thread
   keeps the count it last saw (a thread that missed exactly 65,536 sends would take them in at
@@ -4200,3 +4207,6 @@ the license, by an explicit instruction recorded here.
   and the discarded blocked signals; both fixed, with the tests above. Its second pass found
   the same for a thread switched out inside `write` or `getrandom` (fixed above), and that
   repeated `SIG_IGN` requests should merge (they do) and flush again as on Linux (they do).
+  Its third found that repeated standard signals to a thread that never takes in grew without
+  bound and inflated the system's queued-signal count (now compacted as above, with a host
+  test sending one signal a hundred times).

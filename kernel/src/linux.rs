@@ -4812,6 +4812,45 @@ mod tests {
     }
 
     #[test]
+    fn what_waits_for_a_thread_stays_bounded_however_often_it_is_sent_signals() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        let mut tgkill = |signal: u64| {
+            call_as(
+                &process,
+                &mut first,
+                number::TGKILL,
+                [pid, tid, signal, 0, 0, 0],
+            )
+        };
+        let left = || process.signals().lock().left_for(tid as u32);
+        let (sigusr1, sigcont, sigtstp, sigttin) = (10, 18, 20, 21);
+        for _ in 0..100 {
+            assert_eq!(tgkill(sigusr1), 0);
+        }
+        assert_eq!(left(), 1);
+        assert_eq!(tgkill(sigtstp), 0);
+        assert_eq!(tgkill(sigcont), 0);
+        assert_eq!(left(), 2);
+        assert_eq!(tgkill(sigttin), 0);
+        assert_eq!(left(), 3);
+        for _ in 0..100 {
+            assert_eq!(tgkill(sigttin), 0);
+        }
+        assert_eq!(left(), 3);
+        assert!(signals::take_in_sent(&process, &mut second));
+        assert_eq!(left(), 0);
+        assert_eq!(
+            second.signal_state().pending,
+            1 << (sigusr1 - 1) | 1 << (sigttin - 1)
+        );
+    }
+
+    #[test]
     fn ignoring_a_signal_discards_it_from_every_thread_but_blocked_ones_ignored_by_default_stay() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();

@@ -266,6 +266,56 @@ impl ActionsAndQueue {
         self.restorers[index] = action.restorer;
         self.masks[index] = action.mask;
     }
+
+    /// Removes the signals in `set` left for `thread` and not taken in yet, giving back what
+    /// they counted toward `RLIMIT_SIGPENDING`: whether `SIGCONT` was among them.
+    fn remove_left_for(&mut self, thread: u32, set: u64) -> bool {
+        let (mut removed, mut sigcont) = (0, false);
+        self.sent_to_threads.retain(|left| match left.sent {
+            Sent::Signal(info) if left.thread == thread && bit(info.signal()) & set != 0 => {
+                removed += 1;
+                sigcont |= info.signal() == SIGCONT;
+                false
+            }
+            _ => true,
+        });
+        uncharge(&QUEUED_SIGNALS, removed);
+        sigcont
+    }
+
+    /// Whether signal `signal` is left for `thread`, not taken in yet.
+    fn is_left_for(&self, thread: u32, signal: u32) -> bool {
+        self.sent_to_threads.iter().any(|left| {
+            left.thread == thread
+                && matches!(left.sent, Sent::Signal(info) if info.signal() == signal)
+        })
+    }
+
+    /// Leaves `thread` a request to discard its pending signals in `set`, in room the caller
+    /// reserved. The signals in `set` left for it go now, as taking them in and then
+    /// discarding them would (a `SIGCONT` among them still discards the stop signals), and the
+    /// request joins the last thing left for the thread if that is a request too.
+    fn leave_discard(&mut self, thread: u32, set: u64) {
+        let set = match self.remove_left_for(thread, set) {
+            true => set | STOP_SIGNALS,
+            false => set,
+        };
+        match self
+            .sent_to_threads
+            .iter_mut()
+            .rev()
+            .find(|left| left.thread == thread)
+        {
+            Some(SentToThread {
+                sent: Sent::Discard(earlier),
+                ..
+            }) => *earlier |= set,
+            _ => self.sent_to_threads.push(SentToThread {
+                thread,
+                sent: Sent::Discard(set),
+            }),
+        }
+    }
 }
 
 impl Drop for ActionsAndQueue {
@@ -574,20 +624,32 @@ impl Signals {
     /// then ([`LockedSignals::send`]). It counts toward `RLIMIT_SIGPENDING`, `queue_limit`,
     /// meanwhile: a real-time signal that finds the queued signals at the limit is not sent
     /// ([`QueueFull`]), as on Linux, nor is any signal without memory to record it; a standard
-    /// signal is queued past the limit, keeping its `siginfo_t`.
+    /// signal is queued past the limit, keeping its `siginfo_t`. What taking in would undo is
+    /// undone now, so what waits for a thread stays bounded however often it is sent signals:
+    /// a standard signal already waiting is not left again (it keeps its first `siginfo_t`),
+    /// `SIGCONT` removes the stop signals waiting, and a stop signal a `SIGCONT` waiting, whose
+    /// discarding of the stop signals stays.
     pub fn send_to_thread(
         &mut self,
         id: u32,
         info: Info,
         queue_limit: u64,
     ) -> Result<(), QueueFull> {
-        let exempt_from_limit = info.signal() < FIRST_REAL_TIME;
+        let signal = info.signal();
         let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
         block
             .sent_to_threads
-            .try_reserve(1)
+            .try_reserve(2)
             .map_err(|_| QueueFull)?;
-        if exempt_from_limit {
+        if signal < FIRST_REAL_TIME {
+            if signal == SIGCONT {
+                block.remove_left_for(id, STOP_SIGNALS);
+            } else if bit(signal) & STOP_SIGNALS != 0 && block.remove_left_for(id, bit(SIGCONT)) {
+                block.leave_discard(id, STOP_SIGNALS);
+            }
+            if block.is_left_for(id, signal) {
+                return Ok(());
+            }
             charge(&QUEUED_SIGNALS);
         } else if !try_charge(&QUEUED_SIGNALS, queue_limit) {
             return Err(QueueFull);
@@ -597,6 +659,18 @@ impl Signals {
             sent: Sent::Signal(info),
         });
         Ok(())
+    }
+
+    /// How many signals and requests wait in the block for thread `id` to take them in.
+    #[cfg(test)]
+    pub fn left_for(&self, id: u32) -> usize {
+        self.actions_and_queue.as_deref().map_or(0, |[block]| {
+            block
+                .sent_to_threads
+                .iter()
+                .filter(|left| left.thread == id)
+                .count()
+        })
     }
 
     /// Whether anything waits in the block for a thread to take it in.
@@ -776,49 +850,36 @@ impl LockedSignals<'_> {
     /// Asks every other thread of the process, those [`Signals::add_thread`] counted and
     /// `first`, its first thread if it is another one that has not exited, to discard its
     /// pending signals in `set`, which are now ignored, as POSIX requires: false if there was
-    /// no memory to ask, or no thread to ask. A request right after another for the same thread
-    /// joins it, so a thread that does not take in holds at most one more entry than it has
-    /// signals waiting, which `RLIMIT_SIGPENDING` bounds.
+    /// no memory to ask, or no thread to ask. The signals in `set` waiting for a thread go at
+    /// once, and a request right after another for the same thread joins it, so a thread that
+    /// does not take in holds at most one more request than signals waiting, of which there
+    /// are at most one per standard signal and as many real-time ones as `RLIMIT_SIGPENDING`
+    /// allows.
     pub fn discard_from_other_threads(&mut self, first: Option<u32>, set: u64) -> bool {
         let caller = self.id;
         let Some([block]) = self.actions_and_queue.as_deref_mut() else {
             return false;
         };
-        let others = block
-            .threads
-            .iter()
-            .copied()
-            .chain(first)
-            .filter(|&thread| thread != caller);
-        if block
-            .sent_to_threads
-            .try_reserve(others.clone().count())
-            .is_err()
-        {
+        let count = block.threads.len() + 1;
+        let other = |threads: &[u32], index: usize| {
+            threads
+                .get(index)
+                .copied()
+                .or(first)
+                .filter(|&thread| thread != caller)
+        };
+        let others = (0..count)
+            .filter(|&index| other(&block.threads, index).is_some())
+            .count();
+        if block.sent_to_threads.try_reserve(others).is_err() {
             return false;
         }
-        let mut asked = false;
-        for thread in others {
-            asked = true;
-            let last = block
-                .sent_to_threads
-                .iter_mut()
-                .rev()
-                .find(|sent| sent.thread == thread);
-            if let Some(SentToThread {
-                sent: Sent::Discard(earlier),
-                ..
-            }) = last
-            {
-                *earlier |= set;
-            } else {
-                block.sent_to_threads.push(SentToThread {
-                    thread,
-                    sent: Sent::Discard(set),
-                });
+        for index in 0..count {
+            if let Some(thread) = other(&block.threads, index) {
+                block.leave_discard(thread, set);
             }
         }
-        asked
+        others > 0
     }
 
     /// Discards the thread's pending signals in `set`, with their queued [`Info`].
