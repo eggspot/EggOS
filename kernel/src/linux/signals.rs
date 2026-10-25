@@ -1293,7 +1293,7 @@ pub fn kill<P: Platform>(
 
 /// `tkill(tid, signal)`: sends `signal` to thread `tid` of the caller's process, the only
 /// threads it reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that
-/// is not the process's, then as [`kill`], with `SI_TKILL` (see [`send_to_thread`]). `EAGAIN`
+/// is not the process's, then as [`kill`], with `SI_TKILL`. `EAGAIN`
 /// for a real-time signal when the queued signals are at `RLIMIT_SIGPENDING` (see
 /// [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
@@ -1396,7 +1396,7 @@ pub fn rt_sigqueueinfo<P: Platform>(
 /// process `tgid`, the caller's threads being the only ones it reaches yet: after `EFAULT`,
 /// `EINVAL` if either id is not positive, then `EPERM` for a reserved `si_code` unless `tid`
 /// is the caller's, then `ESRCH` unless `tgid` is the caller's process and `tid` one of its
-/// threads (see [`send_to_thread`]).
+/// threads.
 pub fn rt_tgsigqueueinfo<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
