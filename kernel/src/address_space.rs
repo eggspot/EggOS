@@ -287,8 +287,8 @@ impl<P: Platform> AddressSpace<P> {
     /// loaded lazily ([`Self::load_lazily`]) is unloaded first. The kernel reaches the user
     /// pages only through [`Platform::with_user_access`]. Mappings may change meanwhile only
     /// from this CPU ([`Self::change_pages`]): one changed from another CPU marks this one
-    /// stale, which the check on the way back stops at, as using an address space on two CPUs
-    /// at once needs a shootdown first (D53).
+    /// stale, which the check on the way back stops at (D53), unless the address space is
+    /// spread over CPUs, whose changes are shot down instead (D94).
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
         let root = self.roots()[0];
