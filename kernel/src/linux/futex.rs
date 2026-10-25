@@ -4,15 +4,19 @@
 //! A thread's exit releases the robust locks it holds ([`release_robust_list`], D93).
 
 use super::Errno;
+use super::signals::{self, Interrupted};
+use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::time;
 use crate::process::Process;
 use crate::sync::{SpinLock, SpinLockGuard};
 use crate::thread::{ParkEnd, Parker};
 use core::cell::UnsafeCell;
+use core::ops::ControlFlow;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
 use eggos_hal::Platform;
 use eggos_hal::paging::Format;
+use eggos_hal::user::UserContext;
 
 /// The operations and flags of `futex`'s `op` argument.
 pub mod op {
@@ -86,8 +90,33 @@ impl Bucket {
 struct Waiter {
     bitset: u32,
     parker: Parker,
-    bucket_index: AtomicUsize,
+    slot: NonNull<WaitSlot>,
+    interrupted: AtomicBool,
     link: UnsafeCell<Link>,
+}
+
+/// Where a thread waits, while it does: the index of the bucket its waiter is in, which
+/// [`requeue`] keeps up to date, so [`interrupt`] finds the waiter without knowing its word.
+/// A Linux thread has one for its life (each wait it makes passes it to [`wait`]).
+#[derive(Debug)]
+pub struct WaitSlot {
+    bucket_index: AtomicUsize,
+}
+
+impl WaitSlot {
+    const NOT_WAITING: usize = usize::MAX;
+
+    pub const fn new() -> Self {
+        Self {
+            bucket_index: AtomicUsize::new(Self::NOT_WAITING),
+        }
+    }
+}
+
+impl Default for WaitSlot {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct Link {
@@ -96,13 +125,13 @@ struct Link {
     key: Key,
 }
 
-impl Waiter {
-    fn lock_current_bucket(&self) -> SpinLockGuard<'static, Bucket> {
+impl WaitSlot {
+    fn lock_current_bucket(&self) -> Option<SpinLockGuard<'static, Bucket>> {
         loop {
             let index = self.bucket_index.load(Ordering::Acquire);
-            let bucket = BUCKETS[index].lock();
+            let bucket = BUCKETS.get(index)?.lock();
             if self.bucket_index.load(Ordering::Relaxed) == index {
-                return bucket;
+                return Some(bucket);
             }
         }
     }
@@ -161,21 +190,51 @@ impl Bucket {
 
 /// Waits on `key` until a [`wake`] whose bitset shares a bit with `bitset` takes this
 /// waiter (on `key`, or on the word a [`requeue`] moved it to), or the clock reaches
-/// `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none). `still_expected` runs first,
-/// with the word's bucket locked so no wake can slip in between: its error, such as `EAGAIN`
-/// when the word no longer holds the expected value, ends the call at once. `ETIMEDOUT` at the
-/// deadline. Call it as a blocking system call runs: with interrupts masked and no lock held.
+/// `deadline` ([`Platform::clock_ticks`], `u64::MAX` for none), or [`interrupt`] ends it
+/// through `slot`, the waiting thread's, if it has one. `still_expected` runs first, with the
+/// word's bucket locked so no wake can slip in between, and after `slot` shows where the
+/// thread waits, so an [`interrupt`] after anything it reads finds the waiter: its error, such
+/// as `EAGAIN` when the word no longer holds the expected value, ends the call at once.
+/// `ETIMEDOUT` at the deadline, `EINTR` when interrupted. Call it as a blocking system call
+/// runs: with interrupts masked and no lock held.
 pub fn wait<P: Platform>(
     key: Key,
     bitset: u32,
     deadline: u64,
+    slot: Option<&WaitSlot>,
     still_expected: impl FnOnce() -> Result<(), Errno>,
 ) -> Result<u64, Errno> {
     let index = key.bucket_index();
+    let unshared = WaitSlot::new();
+    let slot = match slot {
+        Some(slot) => {
+            slot.bucket_index.store(index, Ordering::Relaxed);
+            fence(Ordering::SeqCst);
+            slot
+        }
+        None => {
+            unshared.bucket_index.store(index, Ordering::Relaxed);
+            &unshared
+        }
+    };
+    let waited = wait_in::<P>(key, bitset, deadline, slot, still_expected);
+    slot.bucket_index
+        .store(WaitSlot::NOT_WAITING, Ordering::Relaxed);
+    waited
+}
+
+fn wait_in<P: Platform>(
+    key: Key,
+    bitset: u32,
+    deadline: u64,
+    slot: &WaitSlot,
+    still_expected: impl FnOnce() -> Result<(), Errno>,
+) -> Result<u64, Errno> {
     let waiter = Waiter {
         bitset,
         parker: Parker::new(),
-        bucket_index: AtomicUsize::new(index),
+        slot: NonNull::from(slot),
+        interrupted: AtomicBool::new(false),
         link: UnsafeCell::new(Link {
             next: None,
             queued: false,
@@ -184,19 +243,48 @@ pub fn wait<P: Platform>(
     };
     let pointer = NonNull::from(&waiter);
     {
-        let mut bucket = BUCKETS[index].lock();
+        let mut bucket = BUCKETS[key.bucket_index()].lock();
         still_expected()?;
         bucket.push_back(pointer, key);
     }
-    if waiter.parker.park_until::<P>(deadline) == ParkEnd::Unparked {
-        return Ok(0);
+    let ended = waiter.parker.park_until::<P>(deadline);
+    if ended == ParkEnd::DeadlineReached
+        && let Some(mut bucket) = slot.lock_current_bucket()
+        && bucket.link(pointer).queued
+    {
+        bucket.remove(pointer);
+        return Err(Errno::ETIMEDOUT);
     }
-    let mut bucket = waiter.lock_current_bucket();
-    if !bucket.link(pointer).queued {
-        return Ok(0);
+    match waiter.interrupted.load(Ordering::Relaxed) {
+        true => Err(Errno::EINTR),
+        false => Ok(0),
     }
-    bucket.remove(pointer);
-    Err(Errno::ETIMEDOUT)
+}
+
+/// Ends the wait of the thread whose slot `slot` is, if it waits ([`wait`] returns `EINTR`):
+/// for a signal sent to it, which it then looks at. Call it after whatever the waiter's
+/// `still_expected` reads was changed: a wait that began before is ended, and one that
+/// begins after sees the change.
+pub fn interrupt<P: Platform>(slot: &WaitSlot) {
+    fence(Ordering::SeqCst);
+    let Some(mut bucket) = slot.lock_current_bucket() else {
+        return;
+    };
+    let mut previous = None;
+    let mut following = bucket.head;
+    while let Some(candidate) = following {
+        following = bucket.link(candidate).next;
+        // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its slot
+        // pointer is only compared.
+        let waiter = unsafe { candidate.as_ref() };
+        if core::ptr::eq(waiter.slot.as_ptr(), slot) {
+            waiter.interrupted.store(true, Ordering::Relaxed);
+            bucket.unlink(previous, candidate);
+            bucket.unpark::<P>(candidate);
+            return;
+        }
+        previous = Some(candidate);
+    }
 }
 
 /// Wakes the waiters on `key` whose bitset shares a bit with `bitset`, in the order they
@@ -297,9 +385,9 @@ pub fn requeue<P: Platform>(
             woken += 1;
             continue;
         }
-        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held;
-        // its bucket index is atomic.
-        unsafe { candidate.as_ref() }
+        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held,
+        // and its thread's slot with it: the slot outlives the wait. The index is atomic.
+        unsafe { candidate.as_ref().slot.as_ref() }
             .bucket_index
             .store(to_index, Ordering::Release);
         match &mut to_bucket {
@@ -317,75 +405,161 @@ pub fn requeue<P: Platform>(
 /// and its flags (`ENOSYS`), a requeue's negative counts, the bitset and each word's alignment
 /// (`EINVAL`), then the words themselves (`EFAULT`, then `EAGAIN`). A requeue's second count
 /// is the `timeout` argument's low 32 bits, and it returns how many it woke and moved
-/// together. A waiting thread is not interrupted by a signal yet: one another thread sends it
-/// is delivered once the wait ends (D95); it stops waiting when its process ends. The other
-/// operations are `ENOSYS`.
+/// together. The other operations are `ENOSYS`.
+///
+/// A wait ends when its process ends, and when a signal is due to the waiting thread,
+/// `thread`, as on Linux: if a handler starts, a wait with no timeout is made again once it
+/// returns if its action has [`super::signals::flag::RESTART`], and fails with `EINTR`
+/// otherwise; a wait with a timeout fails with `EINTR`. If no handler starts (the signals
+/// were discarded), the wait goes on, its word checked again, to the same deadline. With the
+/// program's registers `context`, whose result it sets; breaks when the process ends.
 pub fn futex<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [
+        address,
+        operation,
+        value,
+        timeout,
+        second_address,
+        third_value,
+    ] = context.syscall_arguments();
+    let operation = operation as u32;
+    let command = operation & !(op::PRIVATE_FLAG | op::CLOCK_REALTIME);
+    let deadline = match (command, timeout) {
+        (op::WAIT | op::WAIT_BITSET, 0) => Ok(u64::MAX),
+        (op::WAIT, _) => time::deadline_after::<P>(process, timeout),
+        (op::WAIT_BITSET, _) => time::deadline_at::<P>(process, timeout),
+        _ => Ok(u64::MAX),
+    };
+    let call = Call {
+        address,
+        command,
+        shared: operation & op::PRIVATE_FLAG == 0,
+        clock_realtime: operation & op::CLOCK_REALTIME != 0,
+        value,
+        timeout,
+        second_address,
+        third_value,
+    };
+    let result = loop {
+        match deadline.and_then(|deadline| call.run::<P>(process, thread, deadline)) {
+            Err(Errno::EINTR) => {}
+            result => break result,
+        }
+        if process.has_ended() {
+            return ControlFlow::Break(());
+        }
+        signals::take_in_sent(process, thread);
+        if !signals::is_due(thread) {
+            continue;
+        }
+        let interrupted = match timeout {
+            0 => Interrupted::RestartsIfAsked {
+                number: context.syscall_number(),
+                first_argument: address,
+            },
+            _ => Interrupted::Fails,
+        };
+        if signals::deliver_interrupting(process, thread, context, interrupted)? {
+            return ControlFlow::Continue(());
+        }
+    };
+    context.set_syscall_result(result.unwrap_or_else(Errno::result));
+    signals::deliver_sent(process, thread, context)
+}
+
+/// One `futex` call's arguments, decoded.
+#[derive(Debug, Clone, Copy)]
+struct Call {
     address: u64,
-    operation: u64,
+    command: u32,
+    shared: bool,
+    clock_realtime: bool,
     value: u64,
     timeout: u64,
     second_address: u64,
     third_value: u64,
-) -> Result<u64, Errno> {
-    let operation = operation as u32;
-    let command = operation & !(op::PRIVATE_FLAG | op::CLOCK_REALTIME);
-    let deadline = match (command, timeout) {
-        (op::WAIT | op::WAIT_BITSET, 0) => u64::MAX,
-        (op::WAIT, _) => time::deadline_after::<P>(process, timeout)?,
-        (op::WAIT_BITSET, _) => time::deadline_at::<P>(process, timeout)?,
-        _ => u64::MAX,
-    };
-    let bitset = match command {
-        op::WAIT | op::WAKE | op::REQUEUE | op::CMP_REQUEUE => MATCH_ANY,
-        op::WAIT_BITSET | op::WAKE_BITSET => third_value as u32,
-        _ => return Err(Errno::ENOSYS),
-    };
-    if operation & op::CLOCK_REALTIME != 0 && command != op::WAIT_BITSET {
-        return Err(Errno::ENOSYS);
-    }
-    if bitset == 0 {
-        return Err(Errno::EINVAL);
-    }
-    let shared = operation & op::PRIVATE_FLAG == 0;
-    let key = |address| Key::new(process.id().get(), address, shared);
-    match command {
-        op::WAKE | op::WAKE_BITSET => {
-            check_word(process, address, shared)?;
-            Ok(u64::from(wake::<P>(
-                key(address),
-                bitset,
-                wake_limit(value),
-            )))
+}
+
+impl Call {
+    /// Runs the call, a wait ending at `deadline`, for `thread` of `process`: `EINTR` when
+    /// the wait was interrupted ([`interrupt`]) or a signal was sent before it began.
+    fn run<P: Platform>(
+        self,
+        process: &Process<P>,
+        thread: &LinuxThread,
+        deadline: u64,
+    ) -> Result<u64, Errno> {
+        let Self {
+            address,
+            command,
+            shared,
+            clock_realtime,
+            value,
+            timeout,
+            second_address,
+            third_value,
+        } = self;
+        let bitset = match command {
+            op::WAIT | op::WAKE | op::REQUEUE | op::CMP_REQUEUE => MATCH_ANY,
+            op::WAIT_BITSET | op::WAKE_BITSET => third_value as u32,
+            _ => return Err(Errno::ENOSYS),
+        };
+        if clock_realtime && command != op::WAIT_BITSET {
+            return Err(Errno::ENOSYS);
         }
-        op::REQUEUE | op::CMP_REQUEUE => {
-            let (Ok(wake_limit), Ok(requeue_limit)) =
-                (u32::try_from(value as i32), u32::try_from(timeout as i32))
-            else {
-                return Err(Errno::EINVAL);
-            };
-            check_word(process, address, shared)?;
-            check_word(process, second_address, shared)?;
-            let (woken, requeued) = requeue::<P>(
-                key(address),
-                key(second_address),
-                wake_limit,
-                requeue_limit,
-                || match command {
-                    op::CMP_REQUEUE => expect_word(process, address, third_value),
-                    _ => Ok(()),
-                },
-            )?;
-            Ok(u64::from(woken) + u64::from(requeued))
+        if bitset == 0 {
+            return Err(Errno::EINVAL);
         }
-        _ => {
-            if !address.is_multiple_of(WORD_SIZE) {
-                return Err(Errno::EINVAL);
+        let key = |address| Key::new(process.id().get(), address, shared);
+        match command {
+            op::WAKE | op::WAKE_BITSET => {
+                check_word(process, address, shared)?;
+                Ok(u64::from(wake::<P>(
+                    key(address),
+                    bitset,
+                    wake_limit(value),
+                )))
             }
-            wait::<P>(key(address), bitset, deadline, || {
-                expect_word(process, address, value)
-            })
+            op::REQUEUE | op::CMP_REQUEUE => {
+                let (Ok(wake_limit), Ok(requeue_limit)) =
+                    (u32::try_from(value as i32), u32::try_from(timeout as i32))
+                else {
+                    return Err(Errno::EINVAL);
+                };
+                check_word(process, address, shared)?;
+                check_word(process, second_address, shared)?;
+                let (woken, requeued) = requeue::<P>(
+                    key(address),
+                    key(second_address),
+                    wake_limit,
+                    requeue_limit,
+                    || match command {
+                        op::CMP_REQUEUE => expect_word(process, address, third_value),
+                        _ => Ok(()),
+                    },
+                )?;
+                Ok(u64::from(woken) + u64::from(requeued))
+            }
+            _ => {
+                if !address.is_multiple_of(WORD_SIZE) {
+                    return Err(Errno::EINVAL);
+                }
+                let unless_signalled_or_ended = unless_signalled_or_ended(process, thread);
+                wait::<P>(
+                    key(address),
+                    bitset,
+                    deadline,
+                    Some(thread.wait_slot()),
+                    || {
+                        expect_word(process, address, value)?;
+                        unless_signalled_or_ended()
+                    },
+                )
+            }
         }
     }
 }

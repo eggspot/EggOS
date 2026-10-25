@@ -10,12 +10,15 @@
 //! per-thread CPU time; until then they are invalid, as Linux's are for a process that does
 //! not exist, and `clock()` reports that it cannot tell.
 
+use super::signals::{self, Interrupted};
 use super::thread::{self, LinuxThread};
 use super::{Errno, poll};
 use crate::process::Process;
+use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::time::{mul_div_ceil, ratio_ceil};
+use eggos_hal::user::UserContext;
 
 /// The clock ids (`CLOCK_*`) Linux numbers, the generic values, which x86_64 shares.
 pub mod clock {
@@ -127,13 +130,40 @@ pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u6
     })
 }
 
+/// Sleeps `thread`, the calling thread of `process`, until the monotonic clock reads
+/// `deadline` nanoseconds, never earlier, then sets the call's result, 0, and delivers what is
+/// due. A due signal interrupts the sleep: the time left is written to the `struct timespec`
+/// at `remaining`, if it is not `None` or null (`EFAULT` if it is not the program's writable
+/// memory, the sleep over), and the call fails with `EINTR` if a handler starts; if none does
+/// (the signals were discarded), the sleep goes on to its deadline, as Linux restarts it.
+/// Breaks when the process ends.
 fn sleep_until_nanoseconds<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
+    context: &mut UserContext,
     deadline: u64,
-) {
-    let deadline = first_tick_at(deadline, nanoseconds_per_tick::<P>());
-    let _ = thread::sleep_through::<P>(process, thread, deadline);
+    remaining: Option<u64>,
+) -> ControlFlow<()> {
+    let deadline_tick = first_tick_at(deadline, nanoseconds_per_tick::<P>());
+    loop {
+        thread::sleep_until::<P>(process, thread, deadline_tick)?;
+        if signals::is_due(thread) {
+            let left = timespec(deadline.saturating_sub(monotonic_nanoseconds::<P>()));
+            if let Some(remaining) = remaining.filter(|&address| address != 0)
+                && write(process, remaining, &left).is_err()
+            {
+                context.set_syscall_result(Errno::EFAULT.result());
+                return signals::deliver(process, thread, context);
+            }
+            if signals::deliver_interrupting(process, thread, context, Interrupted::Fails)? {
+                return ControlFlow::Continue(());
+            }
+        } else if P::clock_ticks() >= deadline_tick {
+            break;
+        }
+    }
+    context.set_syscall_result(0);
+    signals::deliver(process, thread, context)
 }
 
 fn timespec(nanoseconds: u64) -> [u8; TIMESPEC_SIZE] {
@@ -263,33 +293,60 @@ pub fn settimeofday<P: Platform>(process: &Process<P>, tv: u64, tz: u64) -> Resu
     Err(Errno::EPERM)
 }
 
-/// `nanosleep(req, rem)`: sleeps for the `struct timespec` at `req` on the monotonic clock, as
-/// [`clock_nanosleep`] does with `CLOCK_MONOTONIC` and no flags.
+/// `nanosleep(req, rem)`, with the program's registers `context`: sleeps for the `struct
+/// timespec` at `req` on the monotonic clock, as [`clock_nanosleep`] does with
+/// `CLOCK_MONOTONIC` and no flags. Sets the call's result; breaks when the process ends.
 pub fn nanosleep<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
-    req: u64,
-) -> Result<u64, Errno> {
-    sleep_for::<P>(process, thread, req)
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [req, rem, ..] = context.syscall_arguments();
+    match deadline_after_request::<P>(process, req) {
+        Ok(deadline) => sleep_until_nanoseconds::<P>(process, thread, context, deadline, Some(rem)),
+        Err(errno) => fail(context, errno),
+    }
 }
 
-/// `clock_nanosleep(clock, flags, req, rem)`: sleeps on clock `clock` for the `struct
-/// timespec` at `req`, or, with [`TIMER_ABSTIME`] in `flags`, until the clock reads it (at
-/// once if it has); its other bits are ignored, as on Linux. It never wakes early, and a
-/// sleep too long to count lasts for good. As Linux: `EINVAL` for a clock it does not answer
-/// for, `EOPNOTSUPP` for one it cannot sleep on (the raw, coarse and thread CPU-time ones),
-/// then `EFAULT` if `req` is not the program's memory, then `EINVAL` for negative seconds or
-/// nanoseconds outside 0 to 999999999; the alarm clocks, which need a real-time clock device,
-/// are `EOPNOTSUPP` after those checks, as on Linux without one. A signal another thread
-/// sends the sleeper is delivered once the sleep ends: it does not interrupt the sleep yet, so
-/// `rem` is never written.
+/// `clock_nanosleep(clock, flags, req, rem)`, with the program's registers `context`: sleeps
+/// on clock `clock` for the `struct timespec` at `req`, or, with [`TIMER_ABSTIME`] in
+/// `flags`, until the clock reads it (at once if it has); its other bits are ignored, as on
+/// Linux. It never wakes early, and a sleep too long to count lasts for good. As Linux:
+/// `EINVAL` for a clock it does not answer for, `EOPNOTSUPP` for one it cannot sleep on (the
+/// raw, coarse and thread CPU-time ones), then `EFAULT` if `req` is not the program's memory,
+/// then `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999; the alarm clocks,
+/// which need a real-time clock device, are `EOPNOTSUPP` after those checks, as on Linux
+/// without one. A signal that is due during the sleep interrupts it: a relative sleep writes
+/// the time left to `rem`, unless it is null, and fails with `EINTR` if a handler
+/// starts, whatever its [`super::signals::flag::RESTART`], as on Linux
+/// ([`sleep_until_nanoseconds`]). Sets the call's result; breaks when the process ends.
 pub fn clock_nanosleep<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [clock_id, flags, req, rem, ..] = context.syscall_arguments();
+    let relative = flags & TIMER_ABSTIME == 0;
+    let deadline = clock_for_sleep(process, clock_id, req).and_then(|()| match relative {
+        true => deadline_after_request::<P>(process, req),
+        false => Ok(poll::read_timeout(process, req)?.unwrap_or(u64::MAX)),
+    });
+    match deadline {
+        Ok(deadline) => {
+            let remaining = relative.then_some(rem);
+            sleep_until_nanoseconds::<P>(process, thread, context, deadline, remaining)
+        }
+        Err(errno) => fail(context, errno),
+    }
+}
+
+/// Checks that `clock_nanosleep` can sleep on clock `clock_id`, reading the request at `req`
+/// first for the alarm clocks, as Linux does.
+fn clock_for_sleep<P: Platform>(
+    process: &Process<P>,
     clock_id: u64,
-    flags: u64,
     req: u64,
-) -> Result<u64, Errno> {
+) -> Result<(), Errno> {
     let clock = match clock_id as u32 as i32 {
         clock::THREAD_CPUTIME_ID => return Err(Errno::EOPNOTSUPP),
         clock::REALTIME_ALARM | clock::BOOTTIME_ALARM => {
@@ -298,26 +355,22 @@ pub fn clock_nanosleep<P: Platform>(
         }
         _ => clock(clock_id).ok_or(Errno::EINVAL)?,
     };
-    if !clock.can_sleep {
-        return Err(Errno::EOPNOTSUPP);
+    match clock.can_sleep {
+        true => Ok(()),
+        false => Err(Errno::EOPNOTSUPP),
     }
-    if flags & TIMER_ABSTIME == 0 {
-        return sleep_for::<P>(process, thread, req);
-    }
-    let deadline = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    sleep_until_nanoseconds::<P>(process, thread, deadline);
-    Ok(0)
 }
 
-fn sleep_for<P: Platform>(
-    process: &Process<P>,
-    thread: &mut LinuxThread,
-    req: u64,
-) -> Result<u64, Errno> {
+/// The monotonic clock's nanoseconds once the duration in the `struct timespec` at `req` has
+/// passed from now, `u64::MAX` for one too long to count.
+fn deadline_after_request<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
     let duration = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
-    let deadline = monotonic_nanoseconds::<P>().saturating_add(duration);
-    sleep_until_nanoseconds::<P>(process, thread, deadline);
-    Ok(0)
+    Ok(monotonic_nanoseconds::<P>().saturating_add(duration))
+}
+
+fn fail(context: &mut UserContext, errno: Errno) -> ControlFlow<()> {
+    context.set_syscall_result(errno.result());
+    ControlFlow::Continue(())
 }
 
 #[cfg(test)]

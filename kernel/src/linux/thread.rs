@@ -2,10 +2,11 @@
 //! (`set_tid_address`, `clone`'s `CLONE_CHILD_CLEARTID`) and its signal state, which it keeps
 //! in its loop and its system calls reach through the [`LinuxThread`] they are given; and
 //! [`clone`], which starts a thread of the caller's process; and [`sleep_until`], where a
-//! Linux thread waits for time or for a signal until its process ends.
+//! Linux thread waits for time or for a signal until its process ends, and [`interrupt`],
+//! which ends a thread's sleep or `futex` wait for a signal sent to it.
 
 use super::Errno;
-use super::futex;
+use super::futex::{self, WaitSlot};
 use super::signals::{self, LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
 use alloc::sync::Arc;
@@ -35,27 +36,19 @@ pub fn sleep_until<P: Platform>(
     deadline: u64,
 ) -> ControlFlow<()> {
     let key = sleep_key(process, thread.id);
-    let mut woken = false;
-    loop {
-        let taken_in = match woken {
-            true => signals::take_in_sent_now(process, thread),
-            false => signals::take_in_sent(process, thread),
-        };
-        if taken_in || process.has_ended() {
-            break;
-        }
-        let seen = thread.signals_seen;
-        let slept = futex::wait::<P>(key, u32::MAX, deadline, || {
-            if process.has_ended() || process.signals_sent() != seen {
-                Err(Errno::EINTR)
-            } else {
-                Ok(())
-            }
-        });
+    let mut taken_in = signals::take_in_sent(process, thread);
+    while !taken_in && !process.has_ended() {
+        let slept = futex::wait::<P>(
+            key,
+            u32::MAX,
+            deadline,
+            Some(&thread.wait_slot),
+            unless_signalled_or_ended(process, thread),
+        );
         if slept == Err(Errno::ETIMEDOUT) || P::clock_ticks() >= deadline {
             break;
         }
-        woken = slept.is_ok();
+        taken_in = signals::take_in_sent_now(process, thread);
     }
     match process.has_ended() {
         true => ControlFlow::Break(()),
@@ -63,23 +56,43 @@ pub fn sleep_until<P: Platform>(
     }
 }
 
-/// Sleeps as [`sleep_until`] does, but on until `deadline` whatever signals arrive, for calls
-/// that signals do not interrupt yet.
-pub fn sleep_through<P: Platform>(
+/// A `futex` wait's last check for `thread`, the calling thread of `process`: `EINTR` if a
+/// signal was sent to it since it last took them in, or its process has ended, so it does
+/// not start waiting ([`futex::wait`]'s `still_expected`).
+pub fn unless_signalled_or_ended<P: Platform>(
     process: &Process<P>,
-    thread: &mut LinuxThread,
-    deadline: u64,
-) -> ControlFlow<()> {
-    while P::clock_ticks() < deadline {
-        sleep_until::<P>(process, thread, deadline)?;
+    thread: &LinuxThread,
+) -> impl FnOnce() -> Result<(), Errno> {
+    let seen = thread.signals_seen;
+    move || match process.has_ended() || process.signals_sent() != seen {
+        true => Err(Errno::EINTR),
+        false => Ok(()),
     }
-    ControlFlow::Continue(())
 }
 
-/// Wakes thread `id` of `process` from [`sleep_until`], if it sleeps there, to take in a
-/// signal sent to it.
-pub fn wake_sleep<P: Platform>(process: &Process<P>, id: u32) {
-    futex::wake::<P>(sleep_key(process, id), u32::MAX, 1);
+/// Waits until `process`, of which `thread` is the calling thread, ends, taking in nothing,
+/// as a stopped thread does: signals sent to the process stay for its other threads.
+pub fn wait_for_end<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
+    let key = sleep_key(process, thread.id);
+    while !process.has_ended() {
+        let _ = futex::wait::<P>(
+            key,
+            u32::MAX,
+            u64::MAX,
+            Some(&thread.wait_slot),
+            || match process.has_ended() {
+                true => Err(Errno::EINTR),
+                false => Ok(()),
+            },
+        );
+    }
+}
+
+/// Ends the sleep ([`sleep_until`]) or `futex` wait of the thread whose slot `slot` is
+/// ([`LinuxThread::wait_slot`]), if it is in one, for a signal sent to it, after the count of
+/// signals sent ([`Process::record_signal_sent`]) went up.
+pub fn interrupt<P: Platform>(slot: &WaitSlot) {
+    futex::interrupt::<P>(slot);
 }
 
 /// A Linux thread's own state. See the module documentation.
@@ -90,6 +103,7 @@ pub struct LinuxThread {
     robust_list: u64,
     signals: ThreadSignals,
     signals_seen: u16,
+    wait_slot: Arc<WaitSlot>,
 }
 
 impl LinuxThread {
@@ -101,6 +115,7 @@ impl LinuxThread {
             robust_list: 0,
             signals: ThreadSignals::new(),
             signals_seen: process.signals_sent(),
+            wait_slot: Arc::new(WaitSlot::new()),
         }
     }
 
@@ -114,12 +129,18 @@ impl LinuxThread {
             robust_list: 0,
             signals: self.signals.for_new_thread(),
             signals_seen: self.signals_seen,
+            wait_slot: Arc::new(WaitSlot::new()),
         }
     }
 
     /// Its id (Linux's `tid`).
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// Where it waits while it sleeps or waits on a `futex`, for [`interrupt`].
+    pub fn wait_slot(&self) -> &Arc<WaitSlot> {
+        &self.wait_slot
     }
 
     /// The address its exit clears and wakes as a futex, 0 for none.
@@ -306,12 +327,12 @@ pub fn clone<P: Platform>(
     } else {
         0
     };
+    let new = thread.new_thread(id, clear_child_tid);
     process
         .signals()
         .lock()
-        .add_thread(id)
+        .add_thread(&new, thread, process.id().get())
         .map_err(|_| Errno::ENOMEM)?;
-    let new = thread.new_thread(id, clear_child_tid);
     let id_bytes = id.to_ne_bytes();
     if any(flag::PARENT_SETTID) {
         let _ = process.write_user_memory(arguments.parent_tid, &id_bytes);

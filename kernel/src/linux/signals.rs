@@ -24,6 +24,7 @@
 
 use super::Errno;
 use super::fault::Fault;
+use super::futex::WaitSlot;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
 use super::thread::LinuxThread;
@@ -31,6 +32,7 @@ use crate::process::{Process, ProcessExit};
 use crate::thread::{self, FpStart};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -199,8 +201,16 @@ struct ActionsAndQueue {
     masks: [u64; COUNT],
     queue: VecDeque<Queued>,
     sent_to_threads: Vec<SentToThread>,
-    threads: Vec<u32>,
+    threads: Vec<OtherThread>,
+    first_thread_wait_slot: Option<Arc<WaitSlot>>,
     trampoline: u64,
+}
+
+/// One of the process's threads but its first, which [`Signals::add_thread`] counted.
+#[derive(Debug)]
+struct OtherThread {
+    id: u32,
+    wait_slot: Arc<WaitSlot>,
 }
 
 /// A pending signal's [`Info`], for the thread whose id is `thread`.
@@ -255,6 +265,7 @@ impl ActionsAndQueue {
             queue: VecDeque::new(),
             sent_to_threads: Vec::new(),
             threads: Vec::new(),
+            first_thread_wait_slot: None,
             trampoline: 0,
         }
     }
@@ -594,16 +605,30 @@ impl Signals {
         }
     }
 
-    /// Counts thread `id`, not the process's first, as one of the process's threads, which
-    /// [`Self::send_to_thread`] can reach until [`Self::remove_thread`]. `Err` without memory
-    /// for the record.
-    pub fn add_thread(&mut self, id: u32) -> Result<(), QueueFull> {
+    /// Counts `thread`, not the process's first, as one of the process's threads, which
+    /// [`Self::send_to_thread`] can reach until [`Self::remove_thread`], and records where it
+    /// waits, so a signal sent to it can end the wait ([`super::thread::interrupt`]); `caller`
+    /// is the thread that starts it, whose wait slot is recorded too if it is the first
+    /// thread, `first`, and has none recorded yet (the first thread starts the second). `Err`
+    /// without memory for the record.
+    pub fn add_thread(
+        &mut self,
+        thread: &LinuxThread,
+        caller: &LinuxThread,
+        first: u32,
+    ) -> Result<(), QueueFull> {
         if self.actions_and_queue.is_none() {
             self.actions_and_queue = Some(actions_and_queue_block().ok_or(QueueFull)?);
         }
         let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
         block.threads.try_reserve(1).map_err(|_| QueueFull)?;
-        block.threads.push(id);
+        block.threads.push(OtherThread {
+            id: thread.id(),
+            wait_slot: Arc::clone(thread.wait_slot()),
+        });
+        if caller.id() == first && block.first_thread_wait_slot.is_none() {
+            block.first_thread_wait_slot = Some(Arc::clone(caller.wait_slot()));
+        }
         Ok(())
     }
 
@@ -611,7 +636,7 @@ impl Signals {
     /// taken in go.
     pub fn remove_thread(&mut self, id: u32) {
         if let Some([block]) = self.actions_and_queue.as_deref_mut() {
-            block.threads.retain(|&thread| thread != id);
+            block.threads.retain(|thread| thread.id != id);
             let signals = signals_among(&block.sent_to_threads);
             block.sent_to_threads.retain(|sent| sent.thread != id);
             uncharge(
@@ -625,7 +650,7 @@ impl Signals {
     pub fn has_thread(&self, id: u32) -> bool {
         self.actions_and_queue
             .as_deref()
-            .is_some_and(|[block]| block.threads.contains(&id))
+            .is_some_and(|[block]| block.threads.iter().any(|thread| thread.id == id))
     }
 
     /// Sends the signal `info` describes to thread `id`, another of the process's threads,
@@ -720,12 +745,34 @@ impl Signals {
         })
     }
 
-    /// The ids of the process's threads that [`Self::add_thread`] counted and that have not
-    /// exited: all but its first.
-    fn other_threads(&self) -> &[u32] {
-        self.actions_and_queue
-            .as_deref()
-            .map_or(&[], |[block]| &block.threads)
+    /// Where thread `id` waits ([`LinuxThread::wait_slot`]), if it is one of the process's
+    /// threads that [`Self::add_thread`] counted, or `first`, its first thread, recorded once
+    /// it started another.
+    fn wait_slot(&self, id: u32, first: u32) -> Option<&WaitSlot> {
+        let [block] = self.actions_and_queue.as_deref()?;
+        match id == first {
+            true => block.first_thread_wait_slot.as_deref(),
+            false => block
+                .threads
+                .iter()
+                .find(|thread| thread.id == id)
+                .map(|thread| &*thread.wait_slot),
+        }
+    }
+
+    /// Where each of the process's threads but `caller` waits: those [`Self::add_thread`]
+    /// counted and `first`, its first thread, once it started another.
+    fn wait_slots_but(&self, caller: u32, first: u32) -> impl Iterator<Item = &WaitSlot> {
+        let block = self.actions_and_queue.as_deref().map(|[block]| block);
+        let first_slot = block
+            .filter(|_| caller != first)
+            .and_then(|block| block.first_thread_wait_slot.as_deref());
+        let others = block
+            .into_iter()
+            .flat_map(|block| &block.threads)
+            .filter(move |thread| thread.id != caller)
+            .map(|thread| &*thread.wait_slot);
+        first_slot.into_iter().chain(others)
     }
 
     /// How many signals and requests wait in the block for thread `id` to take them in.
@@ -943,10 +990,10 @@ impl LockedSignals<'_> {
             return false;
         };
         let count = block.threads.len() + 1;
-        let other = |threads: &[u32], index: usize| {
+        let other = |threads: &[OtherThread], index: usize| {
             threads
                 .get(index)
-                .copied()
+                .map(|thread| thread.id)
                 .or(first)
                 .filter(|&thread| thread != caller)
         };
@@ -1509,9 +1556,11 @@ fn send_to_thread<P: Platform>(
             .send_to_thread(id, info(signal), queue_limit)
             .map_err(|QueueFull| Errno::EAGAIN)?;
         process.set_sent_signals_waiting(true);
+        process.record_signal_sent();
+        if let Some(slot) = signals.wait_slot(id, process.id().get()) {
+            super::thread::interrupt::<P>(slot);
+        }
     }
-    process.record_signal_sent();
-    super::thread::wake_sleep(process, id);
     Ok(0)
 }
 
@@ -1545,16 +1594,9 @@ fn send_to_process<P: Platform>(
         process.set_sent_signals_waiting(true);
     }
     process.record_signal_sent();
-    let caller = thread.id();
-    let first = process.id().get();
-    if first != caller && process.first_thread_status().is_none() {
-        super::thread::wake_sleep(process, first);
-    }
     let signals = process.signals().lock();
-    for &id in signals.other_threads() {
-        if id != caller {
-            super::thread::wake_sleep(process, id);
-        }
+    for slot in signals.wait_slots_but(thread.id(), process.id().get()) {
+        super::thread::interrupt::<P>(slot);
     }
     Ok(0)
 }
@@ -1967,7 +2009,34 @@ pub fn deliver_restoring_mask<P: Platform>(
     context: &mut UserContext,
     thread_mask: Option<u64>,
 ) -> ControlFlow<(), bool> {
-    deliver_with(process, thread, context, None, thread_mask)
+    deliver_with(process, thread, context, None, thread_mask, None)
+}
+
+/// How a blocking call that a due signal interrupted ends if a handler starts for it, as
+/// Linux decides it once it knows which handler starts first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupted {
+    /// It fails with `EINTR`, whatever the handler's flags (Linux's `-ERESTARTNOHAND` and
+    /// `-ERESTART_RESTARTBLOCK`): the sleeps, and the waits with a timeout.
+    Fails,
+    /// It is made again once the handler returns if the handler's action has
+    /// [`flag::RESTART`], and fails with `EINTR` otherwise (Linux's `-ERESTARTSYS`): call
+    /// `number`, whose first argument was `first_argument`.
+    RestartsIfAsked { number: u64, first_argument: u64 },
+}
+
+/// Delivers the signals due to a call that one interrupted, as [`deliver`] does, but before
+/// the first handler starts, sets the call's result as `interrupted` says, so its frame and
+/// the return from it see that result. Continues with whether a handler started: if none did
+/// (the due signals were discarded), the call goes on as Linux restarts it, its result not
+/// set.
+pub fn deliver_interrupting<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    interrupted: Interrupted,
+) -> ControlFlow<(), bool> {
+    deliver_with(process, thread, context, None, None, Some(interrupted))
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
@@ -2011,7 +2080,7 @@ pub fn deliver<P: Platform>(
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
-    deliver_with(process, thread, context, None, None)?;
+    deliver_with(process, thread, context, None, None, None)?;
     ControlFlow::Continue(())
 }
 
@@ -2029,20 +2098,22 @@ pub fn deliver_fault<P: Platform>(
     thread
         .signals(&mut process.signals().lock())
         .force(fault.signal);
-    deliver_with(process, thread, context, Some(fault), None)?;
+    deliver_with(process, thread, context, Some(fault), None, None)?;
     ControlFlow::Continue(())
 }
 
 /// [`deliver`], with `fault` the fault whose signal is due, if one is: its handler's frame
 /// describes it. The first frame written saves `mask_to_restore`, if any, instead of the
-/// thread's mask, as Linux's does after `rt_sigsuspend` changed it. Continues with whether a
-/// handler started.
+/// thread's mask, as Linux's does after `rt_sigsuspend` changed it, and is written after the
+/// call's result is set as `interrupted` says, if a signal interrupted the call. Continues
+/// with whether a handler started.
 fn deliver_with<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
     mut fault: Option<&Fault>,
     mut mask_to_restore: Option<u64>,
+    mut interrupted: Option<Interrupted>,
 ) -> ControlFlow<(), bool> {
     let mut started_handler = false;
     loop {
@@ -2057,9 +2128,10 @@ fn deliver_with<P: Platform>(
             Some(Delivery::Kill(signal)) => {
                 return super::end_process(process, ProcessExit::Killed { signal });
             }
-            Some(Delivery::Stop(_)) => loop {
-                super::thread::sleep_until::<P>(process, thread, u64::MAX)?;
-            },
+            Some(Delivery::Stop(_)) => {
+                super::thread::wait_for_end(process, thread);
+                return ControlFlow::Break(());
+            }
             Some(Delivery::Handler {
                 signal,
                 action,
@@ -2067,6 +2139,16 @@ fn deliver_with<P: Platform>(
             }) => {
                 let described = fault.take_if(|fault| fault.signal == signal);
                 let saved_mask = mask_to_restore.unwrap_or(state.blocked);
+                match interrupted.take() {
+                    Some(Interrupted::RestartsIfAsked {
+                        number,
+                        first_argument,
+                    }) if action.flags & flag::RESTART != 0 => {
+                        context.restart_syscall(number, first_argument);
+                    }
+                    Some(_) => context.set_syscall_result(Errno::EINTR.result()),
+                    None => {}
+                }
                 let started = start_handler(
                     process, context, &state, saved_mask, &action, &info, described,
                 );

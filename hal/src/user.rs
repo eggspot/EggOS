@@ -91,6 +91,15 @@ impl UserContext {
         self.arch.set_syscall_result(value);
     }
 
+    /// After [`UserExit::Syscall`]: makes the program make system call `number` again when it
+    /// runs, as Linux restarts a call a signal interrupted: its program counter goes back to
+    /// the call's instruction, and the registers the call's result may have overwritten get
+    /// back `number` and `first_argument`, the call's first argument. The other argument
+    /// registers are the program's, unchanged by the call.
+    pub fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+        self.arch.restart_syscall(number, first_argument);
+    }
+
     /// The program's thread pointer: where its thread-local storage is, in the register the
     /// architecture's ABI keeps it in (`TPIDR_EL0`, `tp`, the FS base). Zero for a new program,
     /// as Linux starts one.
@@ -472,6 +481,12 @@ pub(crate) mod aarch64 {
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[0] = value;
         }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SVC_SIZE: u64 = 4;
+            self.x[8] = number;
+            self.x[0] = first_argument;
+            self.elr = self.elr.wrapping_sub(SVC_SIZE);
+        }
         pub(crate) fn registers(&self) -> UserRegisters {
             UserRegisters {
                 x: self.x,
@@ -572,6 +587,12 @@ pub(crate) mod riscv64 {
         }
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.x[10] = value;
+        }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const ECALL_SIZE: u64 = 4;
+            self.x[17] = number;
+            self.x[10] = first_argument;
+            self.pc = self.pc.wrapping_sub(ECALL_SIZE);
         }
         pub(crate) fn registers(&self) -> UserRegisters {
             let mut x = self.x;
@@ -752,6 +773,12 @@ pub(crate) mod x86_64 {
         pub(crate) fn set_syscall_result(&mut self, value: u64) {
             self.rax = value;
         }
+        pub(crate) fn restart_syscall(&mut self, number: u64, first_argument: u64) {
+            const SYSCALL_SIZE: u64 = 2;
+            self.rax = number;
+            self.rdi = first_argument;
+            self.rip = self.rip.wrapping_sub(SYSCALL_SIZE);
+        }
         pub(crate) fn registers(&self) -> UserRegisters {
             UserRegisters {
                 r8: self.r8,
@@ -853,6 +880,20 @@ mod tests {
             UserExit::Exception(exception)
         );
         assert_eq!(context.last_exception(), exception);
+    }
+
+    #[test]
+    fn a_restarted_call_runs_its_instruction_again_with_its_number_and_arguments() {
+        const CALL_INSTRUCTION_SIZE: u64 = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        const EINTR_RESULT: u64 = 4u64.wrapping_neg();
+        let mut context = UserContext::new(0x40_0000, 0x7000);
+        let arguments = [11, 12, 13, 14, 15, 16];
+        context.simulate_syscall(98, arguments, 0x40_1004);
+        context.set_syscall_result(EINTR_RESULT);
+        context.restart_syscall(98, 11);
+        assert_eq!(context.pc(), 0x40_1004 - CALL_INSTRUCTION_SIZE);
+        assert_eq!(context.syscall_number(), 98);
+        assert_eq!(context.syscall_arguments(), arguments);
     }
 
     #[test]
