@@ -5,7 +5,8 @@
 //! block ([`crate::cpu::Cpu`], D41). The count of timer interrupts the scheduler has not seen
 //! yet is also how its preemption points see the timer tick (D37), and shares its word with other
 //! CPUs' reschedule requests (D43), so preemption adds nothing to the interrupt path; a wake-up
-//! only has to end the CPU's wait for an interrupt.
+//! only has to end the CPU's wait for an interrupt, and have the CPU serve the TLB shootdowns
+//! asked of it (D94).
 
 use crate::cpu;
 use eggos_hal::{Interrupt, Platform};
@@ -13,6 +14,7 @@ use eggos_hal::{Interrupt, Platform};
 /// Handles `interrupt`, which this CPU has taken; the interrupted code resumes afterwards.
 pub fn handle<P: Platform>(interrupt: Interrupt) {
     cpu::current::<P>().count(interrupt);
+    cpu::serve_shootdowns::<P>();
 }
 
 /// How many timer interrupts this CPU has taken since boot.

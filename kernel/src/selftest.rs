@@ -50,7 +50,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 41] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 43] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -195,6 +195,14 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 41] {
         (
             "processes_run_on_every_cpu",
             processes_run_on_every_cpu::<P>,
+        ),
+        (
+            "linux_programs_with_threads_run_on_every_cpu",
+            linux_programs_with_threads_run_on_every_cpu::<P>,
+        ),
+        (
+            "linux_threads_stop_using_a_page_unmapped_on_another_cpu",
+            linux_threads_stop_using_a_page_unmapped_on_another_cpu::<P>,
         ),
     ]
 }
@@ -1762,6 +1770,19 @@ static STD_PROGRAM_EXITING_FROM_A_THREAD: RustProgram = RustProgram {
     ..STD_PROGRAM
 };
 
+static STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD: RustProgram = RustProgram {
+    arguments_after_path: &[b"unmap-under-a-writing-thread"],
+    failure_statuses: &[
+        (
+            1,
+            "a thread went on writing a page another thread unmapped on another CPU",
+        ),
+        (3, "the std Rust program's threads did not run on two CPUs"),
+        (4, "the std Rust program could not map a page"),
+    ],
+    ..STD_PROGRAM
+};
+
 const SIGABRT: u32 = 6;
 
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
@@ -1782,6 +1803,22 @@ fn linux_programs_end_from_a_thread_while_others_wait<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM_EXITING_FROM_A_THREAD)
+}
+
+/// The std program's checks again, with every CPU running (D94): its threads spread over
+/// them, so its `Mutex`, `Condvar` and joins go through futex words used on several CPUs.
+fn linux_programs_with_threads_run_on_every_cpu<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM)
+}
+
+/// One thread of the std program unmaps a page another writes in a loop on another CPU: the
+/// shootdown (D94) must make the writer fault at once.
+fn linux_threads_stop_using_a_page_unmapped_on_another_cpu<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD)
 }
 
 fn run_rust_program<P: Platform>(

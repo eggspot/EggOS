@@ -11,6 +11,7 @@
 
 use super::Errno;
 use super::thread::LinuxThread;
+use crate::cpu;
 use crate::process::Process;
 use eggos_hal::Platform;
 
@@ -85,6 +86,22 @@ pub fn gettid(thread: &LinuxThread) -> u64 {
 /// with `fork` and `clone`.
 pub fn getppid() -> u64 {
     0
+}
+
+/// `getcpu(cpu, node, cache)`: writes the number of the CPU the thread runs on to `cpu` and
+/// its NUMA node, 0 until there are nodes, to `node`, each unless it is null, or `EFAULT` if
+/// it is not the program's writable memory; `cache` is ignored, as on Linux. The thread may
+/// be on another CPU by the time the program reads it.
+pub fn getcpu<P: Platform>(process: &Process<P>, cpu: u64, node: u64) -> Result<u64, Errno> {
+    let index = cpu::current::<P>().index() as u32;
+    for (address, value) in [(cpu, index), (node, 0)] {
+        if address != 0 {
+            process
+                .write_user_memory(address, &value.to_ne_bytes())
+                .map_err(|_| Errno::EFAULT)?;
+        }
+    }
+    Ok(0)
 }
 
 /// `set_tid_address(address)`: the thread's exit clears the word at `address` and wakes a

@@ -53,7 +53,7 @@ pub mod time;
 pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
-use crate::thread::{CpuPlacement, JoinHandle, SpawnError};
+use crate::thread::{JoinHandle, SpawnError};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -134,6 +134,7 @@ pub mod number {
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const GET_ROBUST_LIST: u64 = 274;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
+        pub const GETCPU: u64 = 309;
         pub const PRLIMIT64: u64 = 302;
         pub const GETRANDOM: u64 = 318;
         pub const STATX: u64 = 332;
@@ -158,6 +159,7 @@ pub mod number {
         pub const NANOSLEEP: u64 = 101;
         pub const CLOCK_SETTIME: u64 = 112;
         pub const CLOCK_GETTIME: u64 = 113;
+        pub const GETCPU: u64 = 168;
         pub const CLOCK_GETRES: u64 = 114;
         pub const CLOCK_NANOSLEEP: u64 = 115;
         pub const SCHED_YIELD: u64 = 124;
@@ -233,6 +235,7 @@ pub mod number {
             SET_ROBUST_LIST,
             GET_ROBUST_LIST,
             SCHED_YIELD,
+            GETCPU,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
             GETRANDOM,
@@ -399,7 +402,7 @@ pub fn spawn<P: Platform>(
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
     let thread = LinuxThread::first(&process);
-    spawn_thread(process, thread, context, CpuPlacement::Spread)
+    spawn_thread(process, thread, context)
 }
 
 /// Starts `thread`, of `process`, running the program from `context`, its state kept for its
@@ -411,7 +414,6 @@ pub(crate) fn spawn_thread<P: Platform>(
     process: Arc<Process<P>>,
     thread: LinuxThread,
     context: UserContext,
-    placement: CpuPlacement,
 ) -> Result<JoinHandle, SpawnError> {
     let mut thread = Box::new(thread);
     process.add_thread();
@@ -419,7 +421,7 @@ pub(crate) fn spawn_thread<P: Platform>(
     let handler = move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
         handle(process, &mut thread, context, exit)
     };
-    process::spawn_placed::<P, _>(process, context, handler, placement).inspect_err(|_| {
+    process::spawn::<P, _>(process, context, handler).inspect_err(|_| {
         counted.remove_thread();
     })
 }
@@ -620,6 +622,7 @@ fn out_of_line_result<P: Platform>(
         number::SET_ROBUST_LIST => identity::set_robust_list(thread, first, second),
         number::GET_ROBUST_LIST => identity::get_robust_list(process, thread, first, second, third),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
+        number::GETCPU => identity::getcpu(process, first, second),
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
         number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
@@ -4473,6 +4476,26 @@ mod tests {
             Errno::EINVAL.result()
         );
         assert_eq!(second.robust_list(), list);
+    }
+
+    #[test]
+    fn getcpu_writes_the_cpu_and_node_it_is_given_room_for() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let (cpu_word, node_word) = (SCRATCH, SCRATCH + 4);
+        process.write_user_memory(cpu_word, &[0xff; 8]).unwrap();
+        let getcpu = |cpu, node| call(&process, number::GETCPU, [cpu, node, 0, 0, 0, 0]);
+        assert_eq!(getcpu(cpu_word, node_word), 0);
+        let mut bytes = [0u8; 8];
+        process.read_user_memory(cpu_word, &mut bytes).unwrap();
+        let index = crate::cpu::current::<P>().index() as u32;
+        assert_eq!(bytes[..4], index.to_ne_bytes());
+        assert_eq!(bytes[4..], 0u32.to_ne_bytes());
+        assert_eq!(getcpu(0, 0), 0);
+        assert_eq!(getcpu(0, node_word), 0);
+        assert_eq!(getcpu(8, 0), Errno::EFAULT.result());
+        assert_eq!(getcpu(cpu_word, 8), Errno::EFAULT.result());
     }
 
     #[test]

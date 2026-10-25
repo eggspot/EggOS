@@ -8,7 +8,6 @@ use super::Errno;
 use super::futex;
 use super::signals::{LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
-use crate::thread::CpuPlacement;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
@@ -250,7 +249,7 @@ pub fn clone<P: Platform>(
     if any(flag::CHILD_SETTID) {
         let _ = process.write_user_memory(arguments.child_tid, &id_bytes);
     }
-    super::spawn_thread(Arc::clone(process), new, child, CpuPlacement::WithCaller)
-        .map_err(|_| Errno::ENOMEM)?;
+    process.address_space().spread_over_cpus();
+    super::spawn_thread(Arc::clone(process), new, child).map_err(|_| Errno::ENOMEM)?;
     Ok(u64::from(id))
 }

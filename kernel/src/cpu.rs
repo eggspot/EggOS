@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering
 use eggos_hal::cpu::{
     CpuStart, HAL_CPU_LOCAL_OFFSET, HalCpuLocal, MAX_PAGE_TABLE_ROOTS, StartCpuError,
 };
+use eggos_hal::paging::Format;
 use eggos_hal::{Interrupt, Platform};
 
 /// More CPUs than any machine has, against a corrupt firmware table: the CPUs listed beyond it
@@ -67,6 +68,12 @@ pub struct Cpu {
     ///
     /// [`AddressSpace::load_lazily`]: crate::address_space::AddressSpace::load_lazily
     pub(crate) lazily_loaded: SpinLock<Option<LazilyLoaded>>,
+    /// Shootdowns other CPUs have asked of this CPU since boot ([`request_shootdown`]): each
+    /// asks it to drop every user translation it has cached. Other CPUs add to it.
+    shootdowns_requested: AtomicU64,
+    /// [`Self::shootdowns_requested`] as it was when this CPU last dropped its user
+    /// translations for them ([`serve_shootdowns`]). Changed only by the CPU itself.
+    shootdowns_served: AtomicU64,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
     /// The CPU's key of the random number generator (D56). Only the CPU itself takes the lock.
@@ -101,6 +108,8 @@ impl Cpu {
             online: AtomicBool::new(false),
             active_address_space: AtomicU64::new(NO_ADDRESS_SPACE),
             lazily_loaded: SpinLock::new(None),
+            shootdowns_requested: AtomicU64::new(0),
+            shootdowns_served: AtomicU64::new(0),
             scheduler: CpuScheduler::new(),
             random: SpinLock::new(CpuKey::new()),
         }
@@ -216,6 +225,25 @@ impl Cpu {
         );
     }
 
+    /// From another CPU, which has just removed or changed mappings of an address space this
+    /// CPU holds and will wait until it is served ([`Self::shootdowns_served`]): asks this CPU to
+    /// drop every user translation it has cached. The page-table writes before it are seen
+    /// by the CPU once it sees the request. The caller then sends the wake-up interrupt.
+    pub(crate) fn request_shootdown(&self) {
+        self.shootdowns_requested.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Shootdowns asked of this CPU since boot.
+    pub(crate) fn shootdowns_requested(&self) -> u64 {
+        self.shootdowns_requested.load(Ordering::Acquire)
+    }
+
+    /// Shootdowns this CPU has served since boot: once it reaches what
+    /// [`Self::shootdowns_requested`] said after a CPU asked one, that one is served.
+    pub(crate) fn shootdowns_served(&self) -> u64 {
+        self.shootdowns_served.load(Ordering::Acquire)
+    }
+
     /// For this CPU, with interrupts masked: records `root` as the first root of the user
     /// address space now active here ([`NO_ADDRESS_SPACE`] for none). Only the CPU itself
     /// stores to the record, and other CPUs only mark it ([`Self::mark_stale`]), so a plain
@@ -327,6 +355,27 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
     }
 }
 
+/// For this CPU, with interrupts masked: if another CPU asked a shootdown of it since it last
+/// served one ([`Cpu::request_shootdown`]), drops every user translation it has cached and
+/// tells them. Called on every interrupt, while waiting for a contended lock and while
+/// waiting for a shootdown of its own, so a CPU that waits for this one with interrupts
+/// masked never waits for good. Two loads when nothing was asked.
+#[inline]
+pub fn serve_shootdowns<P: Platform>() {
+    let here = current::<P>();
+    let requested = here.shootdowns_requested.load(Ordering::Acquire);
+    if here.shootdowns_served.load(Ordering::Relaxed) != requested {
+        serve_shootdowns_asked::<P>(here, requested);
+    }
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) fn serve_shootdowns_asked<P: Platform>(here: &Cpu, requested: u64) {
+    P::drop_user_translations(0, <P::PageTableFormat as Format>::USER_END);
+    here.shootdowns_served.store(requested, Ordering::Release);
+}
+
 /// Why [`start_secondaries`] stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartError {
@@ -359,6 +408,7 @@ pub struct StartSummary {
 pub unsafe fn start_secondaries<P: Platform>(roots: &[u64]) -> Result<StartSummary, StartError> {
     let mut ids = Vec::new();
     P::cpus(&mut |id| ids.push(id));
+    crate::sync::set_wait_duty(serve_shootdowns::<P>);
     let mut page_table_roots = [0; MAX_PAGE_TABLE_ROOTS];
     page_table_roots[..roots.len()].copy_from_slice(roots);
     let start = |id, start: &CpuStart| {

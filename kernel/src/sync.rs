@@ -4,9 +4,11 @@ use core::cell::UnsafeCell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-/// A spin lock: [`SpinLock::lock`] busy-waits until the value is free.
+/// A spin lock: [`SpinLock::lock`] busy-waits until the value is free, doing what
+/// [`set_wait_duty`] gave it meanwhile.
 ///
 /// It does not mask interrupts, so an interrupt handler must never take a lock that the code it
 /// interrupted may hold: on a single CPU that would spin forever. Locks are held for a few
@@ -42,6 +44,7 @@ impl<T> SpinLock<T> {
             // Wait with plain loads, so a waiting CPU does not keep taking the cache line from
             // the holder.
             while self.locked.load(Ordering::Relaxed) {
+                do_wait_duty();
                 core::hint::spin_loop();
             }
         }
@@ -66,6 +69,27 @@ impl<T> SpinLock<T> {
                 lock: self,
                 _value: PhantomData,
             })
+    }
+}
+
+/// What a CPU does while it waits for a contended [`SpinLock`]: null for nothing, else a
+/// `fn()`. The kernel runs with interrupts masked, so a CPU that waits for this one to answer
+/// a request (a TLB shootdown) needs it answered here as well.
+static WAIT_DUTY: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// Has every CPU call `duty` while it waits for a contended [`SpinLock`]. `duty` must not take
+/// a [`SpinLock`] itself, and must work on any CPU at any point the kernel takes a lock.
+pub fn set_wait_duty(duty: fn()) {
+    WAIT_DUTY.store(duty as *mut (), Ordering::Release);
+}
+
+#[inline]
+fn do_wait_duty() {
+    let duty = WAIT_DUTY.load(Ordering::Acquire);
+    if !duty.is_null() {
+        // SAFETY: only `set_wait_duty` stores a non-null value, and it stores a `fn()`.
+        let duty: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(duty) };
+        duty();
     }
 }
 

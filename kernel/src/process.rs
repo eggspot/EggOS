@@ -35,7 +35,7 @@ use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
-use crate::thread::{self, CpuPlacement, FpStart, JoinHandle, SpawnError};
+use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
@@ -476,21 +476,13 @@ impl<P: Platform> Process<P> {
     fn free_pages(&self, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
         let frame_offset = self.frame_offset;
-        let result = self.space.change_pages(
-            start,
-            end - start,
-            |_, _| PageChange::Unmap,
-            |frame| {
-                // SAFETY: the address space owns its frames (`Process::new`), so this one came
-                // from the frame allocator, whose offset `frame_offset` is; its entry no longer
-                // refers to it, and no program runs with what CPUs cached of the entry before
-                // `change_pages` returns, so nothing writes it any more.
-                unsafe { unmapped.push(frame, frame_offset) }
-            },
-        );
-        // Only now, with this CPU's translations of the range dropped and the others marked
-        // stale, may the frames go to someone else. Even after an error: those unmapped are no
-        // longer the address space's.
+        let result = self.space.unmap_pages(start, end - start, |frame| {
+            // SAFETY: the address space owns its frames (`Process::new`), so this one came from
+            // the frame allocator, whose offset `frame_offset` is; its entry no longer refers to
+            // it, and no CPU writes it through what it cached of the entry (`unmap_pages`), so
+            // nothing writes it any more.
+            unsafe { unmapped.push(frame, frame_offset) }
+        });
         if !unmapped.is_empty() {
             // SAFETY: every frame was pushed with `frame_offset` (above).
             let chain = unsafe { unmapped.chain(frame_offset) };
@@ -944,6 +936,33 @@ impl<P: Platform> Process<P> {
         })
     }
 
+    /// Runs `access` on the process's 32-bit word at user address `address`, which must be
+    /// 4-byte aligned, as an atomic other threads of the process may use at the same time
+    /// (futex words, D94). As [`Self::read_user_memory`] otherwise, and the page must also be
+    /// writable by the program if `write`.
+    pub fn with_user_word<R>(
+        &self,
+        address: u64,
+        write: bool,
+        access: impl FnOnce(&AtomicU32) -> R,
+    ) -> Result<R, InvalidUserAddress> {
+        if !address.is_multiple_of(4) {
+            return Err(InvalidUserAddress);
+        }
+        let mut access = Some(access);
+        let mut result = None;
+        self.copy_user_pages(address, 4, write, |kernel, _, _| {
+            // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's
+            // frames through the direct map (`copy_user_pages`' promise), mapped with the
+            // same memory type as the program's mapping; the regions' lock keeps the frame the
+            // process's while `access` runs, and every access to it, the program's and the
+            // kernel's, is atomic or the program's own.
+            let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
+            result = access.take().map(|access| access(word));
+        })?;
+        result.ok_or(InvalidUserAddress)
+    }
+
     /// Walks `length` bytes of user memory from `address` a page at a time and hands each
     /// piece to `copy` as (its address in the kernel's direct map, bytes done so far, its
     /// length), after checking that the page is a user page of normal memory (and writable, if
@@ -952,9 +971,11 @@ impl<P: Platform> Process<P> {
     /// space need not be loaded on this CPU: the copy goes through the direct map (the
     /// process's `frame_offset`), so it can never fault (D50, decided by research). That is
     /// sound because the process owns every frame its pages map and the regions' lock, held
-    /// throughout, keeps any from being unmapped or freed meanwhile. Copies move to user
-    /// addresses with fault fixups when another thread of the process can write the same page
-    /// meanwhile (`clone`): a plain copy racing it is undefined in Rust.
+    /// throughout, keeps any from being unmapped or freed meanwhile. Another thread of the
+    /// process may write the same bytes on another CPU meanwhile: the bytes copied are then
+    /// unspecified, as on Linux, and the kernel reads each once, into its own buffer, and
+    /// reaches user memory only through raw pointers (decided by research, D94). Words other
+    /// threads use as atomics go through [`Self::with_user_word`].
     fn copy_user_pages(
         &self,
         address: u64,
@@ -1127,21 +1148,7 @@ where
     P: Platform,
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
 {
-    spawn_placed(process, context, handler, CpuPlacement::Spread)
-}
-
-/// [`spawn`], placed as `placement` says.
-pub fn spawn_placed<P, H>(
-    process: Arc<Process<P>>,
-    context: UserContext,
-    handler: H,
-    placement: CpuPlacement,
-) -> Result<JoinHandle, SpawnError>
-where
-    P: Platform,
-    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
-{
-    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler), placement)
+    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
 }
 
 /// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
