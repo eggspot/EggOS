@@ -453,7 +453,12 @@ fn release_robust_lock<P: Platform>(
                     .then_some(value & robust::WAITERS | robust::OWNER_DIED)
             })
         })
-        .map_err(|_| Errno::EFAULT)?;
+        .or_else(
+            |_| match read_word(process, address)? & robust::OWNER == tid {
+                true => Err(Errno::EFAULT),
+                false => Ok(Err(0)),
+            },
+        )?;
     if let Ok(old) = released
         && old & robust::WAITERS != 0
         && entry & robust::PRIORITY_INHERITANCE == 0

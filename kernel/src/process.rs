@@ -954,8 +954,8 @@ impl<P: Platform> Process<P> {
         // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
         // through the direct map (`in_direct_map`' promise), mapped with the same memory type
         // as the program's mapping; the regions' lock, held until `access` returns, keeps the
-        // frame the process's, and every access to the word, the program's and the kernel's,
-        // is atomic or the program's own.
+        // frame the process's. The program's own accesses to the word are its own business;
+        // the kernel's other accesses to it hold the regions' lock too, so none races this.
         let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
         Ok(access(word))
     }
@@ -1175,8 +1175,10 @@ where
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
         // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
-        // contract); the `Arc` keeps it allocated, and its mappings change only in the handler
-        // below, on this thread (`AddressSpace::change_pages`). Nothing switches this CPU's
+        // contract); the `Arc` keeps it allocated, and its mappings change only through
+        // `AddressSpace::change_pages` and its kin, on this thread or on another CPU, whose
+        // change marks this CPU stale or, for a process with threads on several CPUs, shoots
+        // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
         ended = handler(&process, &mut context, exit).is_break();

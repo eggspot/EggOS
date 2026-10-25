@@ -4044,6 +4044,14 @@ the license, by an explicit instruction recorded here.
   duty, so taking it stays free of calls: the heap, the scheduler, the frame allocator, page
   tables and each CPU's own locks, whose holders take only leaf locks and never wait for
   another CPU, so a CPU waiting for one waits only for code that finishes on its own.
+- **A CPU loading the address space is never missed.** The changing CPU writes the entries,
+  makes a full fence, then reads the other CPUs' records; a CPU loading the address space
+  stores its record, then switches. That is a store-load pattern on both sides: the loading
+  CPU also needs a full fence between its record and its first table walk, or the changer can
+  read its old record and skip it while its walk still reads the old entry. x86's `mov cr3`
+  and AArch64's `dsb` before the switch give that order, RISC-V's `sfence.vma` does not, so
+  `switch_lazily` and `with_active` make a full fence after the record (both cold; from the
+  independent review).
 - **Frames reused only once no CPU can write them.** `munmap`'s frame list is linked through
   the frames themselves (`FramesToFree`), written as each page is unmapped; a CPU still
   writing through its old translation would overwrite the links (the new self-test crashed the
@@ -4061,7 +4069,9 @@ the license, by an explicit instruction recorded here.
   frame's direct-map alias (same physical memory and memory type as the program's mapping, so
   coherent on all three architectures): the futex value check is an acquire load under the
   bucket lock, and a robust lock's release a compare-and-exchange loop, which no longer loses a
-  waiter that sets the waiters bit while the owner exits (D93's open point).
+  waiter that sets the waiters bit while the owner exits (D93's open point). A lock word on a
+  page the program may only read is read and skipped unless the exiting thread owns it, as
+  Linux reads before it writes; one it owns ends the walk with `EFAULT`.
 - **`getcpu`.** `getcpu(cpu, node, cache)` writes the CPU's number and node 0, each unless
   null, `EFAULT` for memory the program cannot write; musl's `sched_getcpu` uses it, and the new
   self-test checks with it that two threads ran on two CPUs.

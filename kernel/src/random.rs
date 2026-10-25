@@ -22,7 +22,7 @@ pub mod blake2s;
 pub mod chacha20;
 
 use crate::cpu;
-use crate::sync::SpinLock;
+use crate::sync::{LeafSpinLock, SpinLock};
 use crate::thread::WaitQueue;
 use blake2s::Blake2s;
 use chacha20::{BLOCK_SIZE, KEY_SIZE};
@@ -53,7 +53,7 @@ static INPUT: SpinLock<Input> = SpinLock::new(Input {
 });
 
 /// The base key every CPU's key is derived from.
-static BASE_KEY: SpinLock<[u8; KEY_SIZE]> = SpinLock::new([0; KEY_SIZE]);
+static BASE_KEY: LeafSpinLock<[u8; KEY_SIZE]> = LeafSpinLock::new_leaf([0; KEY_SIZE]);
 
 /// The base key's generation: moved on by every [`reseed`], under [`BASE_KEY`]'s lock. Starts
 /// at 1, so a CPU key's 0 means it was never derived.

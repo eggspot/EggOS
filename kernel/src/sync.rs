@@ -62,13 +62,8 @@ impl<T, const WAIT_DUTY: bool> SpinLock<T, WAIT_DUTY> {
             if WAIT_DUTY {
                 wait_until_free(&self.locked);
             } else {
-                // Laid out away from the free case, which then falls straight through.
                 core::hint::cold_path();
-                // Wait with plain loads, so a waiting CPU does not keep taking the cache line
-                // from the holder.
-                while self.locked.load(Ordering::Relaxed) {
-                    core::hint::spin_loop();
-                }
+                spin_until_free(&self.locked);
             }
         }
         SpinLockGuard {
@@ -104,6 +99,16 @@ static WAIT_DUTY: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 /// a [`SpinLock`] itself, and must work on any CPU at any point the kernel takes a lock.
 pub fn set_wait_duty(duty: fn()) {
     WAIT_DUTY.store(duty as *mut (), Ordering::Release);
+}
+
+/// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking
+/// the cache line from the holder; inlined, and laid out away from the free case
+/// (`cold_path` before it), which then falls straight through.
+#[inline(always)]
+fn spin_until_free(locked: &AtomicBool) {
+    while locked.load(Ordering::Relaxed) {
+        core::hint::spin_loop();
+    }
 }
 
 /// Waits until `locked` reads false, with plain loads, so a waiting CPU does not keep taking

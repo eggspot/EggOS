@@ -145,19 +145,19 @@ pub fn unmap_under_a_writing_thread() -> ! {
         move || {
             // SAFETY: a libc call with no arguments.
             writer_cpu.store(unsafe { sched_getcpu() }, Ordering::SeqCst);
-            let word = address as *mut u64;
+            // SAFETY: the page is mapped, writable and aligned until the main thread unmaps it;
+            // only atomics reach it, and the write after the unmap faults, ending the process.
+            let word = unsafe { AtomicU64::from_ptr(address as *mut u64) };
             let mut count = 0u64;
             loop {
                 count += 1;
-                // SAFETY: the page is mapped and writable until the main thread unmaps it;
-                // the write that follows faults, and the handler ends the process.
-                unsafe { word.write_volatile(count) };
+                word.store(count, Ordering::Relaxed);
             }
         }
     });
-    let word = page as *const u64;
-    // SAFETY: the page stays mapped until the `munmap` below; the writer only stores to it.
-    while unsafe { word.read_volatile() } < WRITES_BEFORE_UNMAP {
+    // SAFETY: the page stays mapped, aligned, until the `munmap` below; only atomics reach it.
+    let word = unsafe { AtomicU64::from_ptr(page.cast::<u64>()) };
+    while word.load(Ordering::Relaxed) < WRITES_BEFORE_UNMAP {
         std::hint::spin_loop();
     }
     // SAFETY: a libc call with no arguments.

@@ -134,8 +134,8 @@ pub mod number {
         pub const SET_ROBUST_LIST: u64 = 273;
         pub const GET_ROBUST_LIST: u64 = 274;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
-        pub const GETCPU: u64 = 309;
         pub const PRLIMIT64: u64 = 302;
+        pub const GETCPU: u64 = 309;
         pub const GETRANDOM: u64 = 318;
         pub const STATX: u64 = 332;
         /// The highest number above.
@@ -159,7 +159,6 @@ pub mod number {
         pub const NANOSLEEP: u64 = 101;
         pub const CLOCK_SETTIME: u64 = 112;
         pub const CLOCK_GETTIME: u64 = 113;
-        pub const GETCPU: u64 = 168;
         pub const CLOCK_GETRES: u64 = 114;
         pub const CLOCK_NANOSLEEP: u64 = 115;
         pub const SCHED_YIELD: u64 = 124;
@@ -189,6 +188,7 @@ pub mod number {
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
+        pub const GETCPU: u64 = 168;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;

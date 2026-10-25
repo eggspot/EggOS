@@ -299,6 +299,7 @@ impl<P: Platform> AddressSpace<P> {
             "an address space was made active over another one on this CPU"
         );
         here.set_active_address_space(root);
+        record_before_walks();
         // SAFETY: interrupts are masked (the caller's duty, as the kernel runs). The tables
         // are in `P`'s format, built by `PageTables`, and their kernel half is the kernel's
         // active one: `new`'s caller guaranteed `kernel_roots` are the active kernel tables,
@@ -366,10 +367,12 @@ impl<P: Platform> AddressSpace<P> {
         );
         let root = self.roots()[0];
         here.set_active_address_space(root);
+        record_before_walks();
         // SAFETY: interrupts are masked (the caller's duty). The tables are in `P`'s format,
         // built by `PageTables`, and share the kernel's active half (`new`'s contract). `owner`
         // keeps them allocated, with mappings removed or changed only through `change_pages`,
-        // which marks this CPU if it is still loaded here (the caller's duty), and is
+        // which marks this CPU stale, or shoots its translations down if the address space is
+        // spread over CPUs, while it is loaded here (the caller's duty), and is
         // kept below until the CPU switches away from them. The previous address space, if
         // any, is no longer used: `with_active` never runs around this call (checked above),
         // and the kernel reaches user pages only after loading the address space it means.
@@ -502,6 +505,16 @@ fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
             other.mark_stale(root);
         }
     }
+}
+
+/// After a CPU recorded the address space it is about to switch to, before the switch: the
+/// record is seen by every other CPU before this one's table walks read an entry, so a CPU that
+/// changes an entry and then finds no record (`drop_old_translations`, its own full fence
+/// between) knows this one walks the new entry. A store-load order: x86's `mov cr3` and
+/// AArch64's `dsb` before the switch give it, RISC-V's `sfence.vma` does not (D94).
+#[inline(always)]
+fn record_before_walks() {
+    fence(Ordering::SeqCst);
 }
 
 /// Asks every CPU of `cpus` but `here` that keeps the address space whose first root is `root`
@@ -846,6 +859,7 @@ mod tests {
 
     #[test]
     fn a_shootdown_asks_the_cpus_that_hold_the_address_space_and_waits_until_they_serve_it() {
+        let _state = crate::thread::host::lock_kernel_state_for_test();
         let (here, holding, other, idle) = (
             Cpu::for_test(0),
             Cpu::for_test(1),
@@ -890,6 +904,7 @@ mod tests {
 
     #[test]
     fn a_cpu_serves_the_shootdowns_asked_of_it_up_to_when_it_looked() {
+        let _state = crate::thread::host::lock_kernel_state_for_test();
         let cpu = Cpu::for_test(0);
         cpu.request_shootdown();
         cpu.request_shootdown();
