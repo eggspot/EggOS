@@ -29,8 +29,9 @@
 //! (`clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`, ..., [`time`], D73), and
 //! the console's status with `fstat`, `newfstatat` and `statx` ([`stat`]) and `lseek`
 //! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
-//! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75).
-//! Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
+//! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75), and signals
+//! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
+//! D95). Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
@@ -589,24 +590,12 @@ fn out_of_line_call<P: Platform>(
                 _ => out_of_line_result(process, thread, number, context),
             };
             context.set_syscall_result(result.unwrap_or_else(Errno::result));
-            match number {
-                number::KILL
-                | number::TKILL
-                | number::TGKILL
-                | number::RT_SIGQUEUEINFO
-                | number::RT_TGSIGQUEUEINFO
-                | number::RT_SIGPROCMASK
-                | number::RT_SIGACTION
-                | number::RT_SIGRETURN
-                | number::RT_SIGTIMEDWAIT
-                | number::NANOSLEEP
-                | number::CLOCK_NANOSLEEP => signals::deliver(process, thread, context),
-                #[cfg(target_arch = "x86_64")]
-                number::POLL => signals::deliver(process, thread, context),
-                number::SCHED_YIELD | number::FUTEX => {
-                    signals::deliver_sent(process, thread, context)
-                }
-                _ => ControlFlow::Continue(()),
+            if !is_in(&SIGNALS_AFTER, number) {
+                ControlFlow::Continue(())
+            } else if is_in(&SWITCHING_CALLS, number) {
+                signals::deliver_sent(process, thread, context)
+            } else {
+                signals::deliver(process, thread, context)
             }
         }
     };
@@ -615,6 +604,51 @@ fn out_of_line_call<P: Platform>(
     }
     flow
 }
+
+/// A set of call numbers up to [`number::LAST`], a bit each.
+type CallSet = [u64; number::LAST as usize / 64 + 1];
+
+const fn call_set(numbers: &[u64]) -> CallSet {
+    let mut set = [0; number::LAST as usize / 64 + 1];
+    let mut index = 0;
+    while index < numbers.len() {
+        let number = numbers[index] as usize;
+        set[number / 64] |= 1 << (number % 64);
+        index += 1;
+    }
+    set
+}
+
+#[inline(always)]
+fn is_in(set: &CallSet, number: u64) -> bool {
+    set.get(number as usize / 64)
+        .is_some_and(|word| word >> (number % 64) & 1 != 0)
+}
+
+/// The calls after which [`out_of_line_call`] delivers signals: those that can make one due
+/// and the sleeps, and the calls that may switch the thread out ([`SWITCHING_CALLS`]). One
+/// bit test on the others' path, which a list of comparisons would lengthen with each call.
+const SIGNALS_AFTER: CallSet = call_set(&[
+    number::KILL,
+    number::TKILL,
+    number::TGKILL,
+    number::RT_SIGQUEUEINFO,
+    number::RT_TGSIGQUEUEINFO,
+    number::RT_SIGPROCMASK,
+    number::RT_SIGACTION,
+    number::RT_SIGRETURN,
+    number::RT_SIGTIMEDWAIT,
+    number::NANOSLEEP,
+    number::CLOCK_NANOSLEEP,
+    #[cfg(target_arch = "x86_64")]
+    number::POLL,
+    number::SCHED_YIELD,
+    number::FUTEX,
+]);
+
+/// The calls of [`SIGNALS_AFTER`] that may switch the thread out without making a signal due:
+/// after them, only what other threads sent meanwhile ([`signals::deliver_sent`]).
+const SWITCHING_CALLS: CallSet = call_set(&[number::SCHED_YIELD, number::FUTEX]);
 
 /// The result of [`out_of_line_call`]'s call `number`.
 #[inline(always)]
@@ -4737,6 +4771,42 @@ mod tests {
         let mut context = called(number::TKILL, [tid, 9, 0, 0, 0, 0]);
         assert_eq!(
             handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed { signal: 9 })
+        );
+    }
+
+    #[test]
+    fn an_exited_first_thread_takes_signals_it_never_delivers_but_sigkill_ends_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let mut context = called(number::EXIT, [3, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let sent = process.signals_sent();
+        let tgkill = |thread: &mut LinuxThread, signal| {
+            call_as(
+                &process,
+                thread,
+                number::TGKILL,
+                [pid, pid, signal, 0, 0, 0],
+            )
+        };
+        assert_eq!(tgkill(&mut second, 10), 0);
+        assert_eq!(tgkill(&mut second, 65), Errno::EINVAL.result());
+        assert_eq!(process.signals_sent(), sent);
+        assert_eq!(process.exit_status(), None);
+        let mut context = called(number::TGKILL, [pid, pid, 9, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(

@@ -317,8 +317,8 @@ pub fn requeue<P: Platform>(
 /// and its flags (`ENOSYS`), a requeue's negative counts, the bitset and each word's alignment
 /// (`EINVAL`), then the words themselves (`EFAULT`, then `EAGAIN`). A requeue's second count
 /// is the `timeout` argument's low 32 bits, and it returns how many it woke and moved
-/// together. A waiting thread cannot be interrupted by a signal yet: signals reach only the
-/// thread that sends them so far (D91); it stops waiting when its process ends. The other
+/// together. A waiting thread is not interrupted by a signal yet: one another thread sends it
+/// is delivered once the wait ends (D95); it stops waiting when its process ends. The other
 /// operations are `ENOSYS`.
 pub fn futex<P: Platform>(
     process: &Process<P>,

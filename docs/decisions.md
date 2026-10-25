@@ -4112,3 +4112,62 @@ the license, by an explicit instruction recorded here.
   the need on AArch64 and RISC-V but not on x86, where the cost is. The baseline lines of
   those three results and riscv64's `linux_page_fault` are updated; the others stay within
   the gate.
+
+## D95 Signals between a process's threads — Decided by the build loop
+
+- **What.** `tkill`, `tgkill` and `rt_tgsigqueueinfo` reach every thread of the caller's
+  process, not only the caller (D63, D68, D91). Threads of other processes stay `ESRCH` until
+  there are other Linux processes to reach.
+- **Where a sent signal waits.** Each thread's blocked mask and pending set stay its own, in
+  its `LinuxThread`, which only its loop touches, so the system-call path reads them without a
+  lock. A signal for another thread goes into the process's signal block (`sent_to_threads`,
+  under the signals lock, next to the actions and the queued `siginfo_t`s), tagged with the
+  thread's id, and counts toward `RLIMIT_SIGPENDING` there. The target takes it in later
+  (`LockedSignals::take_in_sent`) and handles it exactly as if it were sent then
+  (`LockedSignals::send`): blocked or ignored by its mask at that moment, `SIGCONT` and the stop
+  signals cancelling, a standard signal kept once with its first `siginfo_t`. Moving every
+  thread's state into the process (a table under the lock) would let the sender decide at
+  once, but costs a lookup on every signal call, a heap table for single-threaded processes,
+  and room in `Process`, which is at its 256-byte class. A real-time signal over the limit is
+  `EAGAIN` for the sender, as on Linux; without memory to record any signal it is `EAGAIN` too.
+- **How the target notices.** `Process::signals_sent`, a wrapping 16-bit count in the padding
+  next to `ended` (no growth), goes up after each signal sent to another thread; each thread
+  keeps the count it last saw. The sender then interrupts every other CPU (as `exit_group`
+  does, D91) and wakes the target if it sleeps. Sleeps now wait on a futex word per thread
+  (`!3 - 4 * tid` in the kernel's half, which no program's futex can name, D92 had one word per
+  process), and `sleep_until` returns once a signal was taken in. A running thread compares
+  the counts on an interrupt (out of line) and after `sched_yield` and `futex`, the calls that
+  may switch it out; the sleeps deliver after they end. Nothing else on the system-call path
+  looks: the calls after which signals are delivered are a bit set now (one test on the other
+  calls' path).
+- **`SIGKILL`** sent to another thread ends the process at once, as on Linux, so a thread
+  blocked in a `futex` wait cannot keep it alive.
+- **An exited first thread** (Linux's thread group leader, a zombie while others run) takes
+  signals and never delivers them: `tgkill` to it returns 0, `SIGKILL` still ends the process,
+  as Linux does. Other exited threads are `ESRCH`.
+- **`SIG_IGN` for every thread.** Setting an action that ignores a signal, with other threads
+  running, counts as a signal sent, and each thread taking in discards its pending instances,
+  blocked or not, as POSIX requires.
+- **The waits.** `rt_sigtimedwait` waits on after a signal outside its set that is not due, and
+  fails with `EINTR` for one that is due (delivered after it); `rt_sigsuspend` and `pause` are
+  woken; `poll` and `ppoll` are interrupted by a due signal with or without a mask (Linux's
+  `EINTR`; musl's AArch64 and RISC-V `pause` is `ppoll` without one); `nanosleep` and
+  `clock_nanosleep` sleep out their time and deliver after; a stopped thread stays stopped.
+- **Not yet.** Process-directed signals (`kill`, `rt_sigqueueinfo` to the process) still go to
+  the caller, which Linux allows when it does not block them; one it blocks should go to any
+  thread that does not (Linux's shared pending). A `futex` wait and the sleeps are not
+  interrupted (`EINTR`, `rem`). A thread switched back in at the scheduler's look before user
+  mode takes in at its next interrupt or switching call (within its time slice): calling the
+  loop's handler there cost +2.3% to +14% on the system-call round trip.
+- **Tests.** Host tests: threads queue real-time signals for each other and each takes its
+  own in send order; a signal sent to another thread is pending only once it comes back, then
+  delivered (`SIGUSR1` ends the process); `SIGKILL` ends it at once; an exited first thread
+  takes signals, `SIGKILL` included; `SIG_IGN` discards another thread's blocked pending
+  signal; an exited thread is `ESRCH`. QEMU self-tests on aarch64, riscv64 and x86_64: the std
+  program sends `SIGUSR1` with `pthread_kill` to a thread waiting in `sigsuspend` and to one
+  running a `sched_yield` loop, and each runs the handler itself.
+- **Cost.** Measured against `main` on the same machine (`-icount`): `linux_syscall_round_trip`
+  129.18 ns on both on x86_64; aarch64 124.65 and riscv64 163.27 ns, under their baseline
+  lines; every benchmark within the gate. The first versions cost +14% (the thread loop's
+  handler inlined twice, for the scheduler's look) and then +2.3% on x86_64 (the look's
+  branch alone); the look was dropped (above).

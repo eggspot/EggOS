@@ -12,8 +12,10 @@
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
 //! which makes its own block on the heap, which also queues its threads' pending signals'
 //! [`Info`], each tagged with its thread. Each thread has its own blocked mask, pending signals
-//! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91); signals reach only
-//! the thread that sends them so far. A signal a call makes due (sent to the caller, unblocked,
+//! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91). A signal sent to
+//! another thread of the process waits in the process's block until that thread takes it in
+//! ([`take_in_sent`], D95): woken from a sleep, interrupted on another CPU, or on its way back
+//! from an interrupt or a call that may switch it out. A signal a call makes due (sent to the caller, unblocked,
 //! or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
@@ -1187,22 +1189,38 @@ fn queue_limit<P: Platform>(process: &Process<P>) -> u64 {
         .map_or(u64::MAX, |limit| limit.soft)
 }
 
-/// Whether `id` is a thread of `process` that has not exited: its first thread, until it exits,
-/// or one [`Signals::add_thread`] counted.
-fn is_live_thread<P: Platform>(process: &Process<P>, signals: &Signals, id: u32) -> bool {
+/// What thread `id` of `process` is to a signal sent to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A thread that has not exited: its first thread, or one [`Signals::add_thread`] counted.
+    Live,
+    /// Its first thread, exited while others go on: as Linux's thread group leader, it still
+    /// takes signals, which it never delivers.
+    ExitedFirst,
+    /// No thread of the process.
+    None,
+}
+
+fn target<P: Platform>(process: &Process<P>, signals: &Signals, id: u32) -> Target {
     if id == process.id().get() {
-        process.first_thread_status().is_none()
+        match process.first_thread_status() {
+            None => Target::Live,
+            Some(_) => Target::ExitedFirst,
+        }
+    } else if signals.has_thread(id) {
+        Target::Live
     } else {
-        signals.has_thread(id)
+        Target::None
     }
 }
 
 /// Sends `signal` to thread `id` of the caller's process, as `tgkill` and `rt_tgsigqueueinfo`
-/// do: to the caller as [`send_to_self`]; to another thread, `ESRCH` unless it is one that has
-/// not exited, then `EINVAL` for a signal outside 0 to 64, and 0 only checks. `SIGKILL` ends
-/// the process at once, as on Linux; another signal waits in the process's signal state until
-/// the thread takes it in ([`take_in_sent`]), which it is woken from a sleep and interrupted
-/// to do. `EAGAIN` as [`Signals::send_to_thread`] says.
+/// do: to the caller as [`send_to_self`]; to another thread, `ESRCH` unless it is one of the
+/// process's ([`Target`]), then `EINVAL` for a signal outside 0 to 64, and 0 only checks.
+/// `SIGKILL` ends the process at once, as on Linux; another signal waits in the process's
+/// signal state until the thread takes it in ([`take_in_sent`]), which it is woken from a
+/// sleep and interrupted to do, or, for a first thread that has exited, is accepted and goes
+/// nowhere. `EAGAIN` as [`Signals::send_to_thread`] says.
 fn send_to_thread<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1216,7 +1234,8 @@ fn send_to_thread<P: Platform>(
     let queue_limit = queue_limit(process);
     {
         let mut signals = process.signals().lock();
-        if !is_live_thread(process, &signals, id) {
+        let target = target(process, &signals, id);
+        if target == Target::None {
             return Err(Errno::ESRCH);
         }
         let signal = match signal as u32 {
@@ -1227,6 +1246,9 @@ fn send_to_thread<P: Platform>(
         if signal == SIGKILL {
             drop(signals);
             let _ = super::end_process::<P, ()>(process, ProcessExit::Killed { signal });
+            return Ok(0);
+        }
+        if target == Target::ExitedFirst {
             return Ok(0);
         }
         signals
@@ -1269,10 +1291,11 @@ pub fn kill<P: Platform>(
     })
 }
 
-/// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller being the only thread it
-/// reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
-/// caller's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal when the queued
-/// signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
+/// `tkill(tid, signal)`: sends `signal` to thread `tid` of the caller's process, the only
+/// threads it reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that
+/// is not the process's, then as [`kill`], with `SI_TKILL` (see [`send_to_thread`]). `EAGAIN`
+/// for a real-time signal when the queued signals are at `RLIMIT_SIGPENDING` (see
+/// [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1289,8 +1312,8 @@ pub fn tkill<P: Platform>(
 }
 
 /// `tgkill(tgid, tid, signal)`: as [`tkill`], with the thread's process (its thread group)
-/// named too: `EINVAL` if either id is not positive, then `ESRCH` unless both are the
-/// caller's.
+/// named too: `EINVAL` if either id is not positive, then `ESRCH` unless `tgid` is the
+/// caller's process and `tid` one of its threads.
 pub fn tgkill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1370,10 +1393,10 @@ pub fn rt_sigqueueinfo<P: Platform>(
 }
 
 /// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
-/// process `tgid`, the caller being the only thread it reaches yet: after `EFAULT`, `EINVAL`
-/// if either id is not
-/// positive, then `EPERM` for a reserved `si_code` unless `tid` is the caller's, then `ESRCH`
-/// unless both ids are the caller's.
+/// process `tgid`, the caller's threads being the only ones it reaches yet: after `EFAULT`,
+/// `EINVAL` if either id is not positive, then `EPERM` for a reserved `si_code` unless `tid`
+/// is the caller's, then `ESRCH` unless `tgid` is the caller's process and `tid` one of its
+/// threads (see [`send_to_thread`]).
 pub fn rt_tgsigqueueinfo<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1405,7 +1428,8 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
 /// `info` unless that is null, and returns its number. If none is pending, it first waits
 /// until the `struct timespec` at `timeout` has passed (on the monotonic clock, rounded up to
 /// a clock tick), for good if that is null, not at all if it is zero, then fails with `EAGAIN`.
-/// Nothing can send the thread a signal while it waits yet, so the wait is slept out. As Linux,
+/// A signal another thread sends wakes it: one in the set is taken, any other due one makes
+/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. As Linux,
 /// in this order: `EINVAL` if `sigsetsize` is not 8; `EFAULT` if the set is not the program's
 /// memory; `EFAULT` if `timeout` is not, and `EINVAL` for negative seconds or nanoseconds
 /// outside 0 to 999999999; then, with the signal taken, `EFAULT` if `info` is not the program's
@@ -1475,9 +1499,9 @@ pub fn read_set<P: Platform>(
 /// signals in the set at `mask` instead of the thread's (never `SIGKILL` or `SIGSTOP`) until a
 /// signal starts its handler, then fails with `EINTR`. The handler's frame holds the mask the
 /// thread had before, which `rt_sigreturn` restores, as on Linux. A signal its action ignores
-/// is taken and the wait goes on, as Linux restarts the call after one. Nothing can send the
-/// thread a signal while it waits yet, so with none due under the new mask it waits for good,
-/// as on Linux when none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is
+/// is taken and the wait goes on, as Linux restarts the call after one. Another thread's
+/// signal wakes it (D95); with none due under the new mask it waits for good, as on Linux when
+/// none comes. As Linux, with the mask unchanged: `EINVAL` if `sigsetsize` is
 /// not 8, then `EFAULT` if the set is not the program's memory. Sets the call's result;
 /// breaks when a signal ends the process.
 pub fn rt_sigsuspend<P: Platform>(

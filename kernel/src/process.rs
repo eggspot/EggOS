@@ -1073,9 +1073,9 @@ impl<P: Platform> Process<P> {
     }
 
     /// Records that a thread sent another a signal, now in the process's signal state, or
-    /// that its pending signals may have changed (another thread ignored a signal), and asks
-    /// every other CPU to look, as [`Self::exit`] does, so a thread running the program there
-    /// comes back to the kernel to see it ([`spawn`]'s handler gets an interrupt then).
+    /// that its pending signals may have changed (another thread ignored a signal), and
+    /// interrupts every other CPU, as [`Self::exit`] does, so a thread running the program
+    /// there comes back to the kernel to see it ([`spawn`]'s handler gets the interrupt).
     pub fn record_signal_sent(&self) {
         self.signals_sent.fetch_add(1, Ordering::Release);
         interrupt_other_cpus::<P>();
@@ -1164,9 +1164,7 @@ fn free_frame(frame: u64) {
 /// Starts a thread of `process` that runs its program from `context` in user mode and hands
 /// every exit, with the program's registers, to `handler`, until it returns
 /// [`ControlFlow::Break`]: then the thread ends. On a system call the handler sets the result
-/// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on,
-/// and it gets one too when the scheduler looked before the program runs again (a switch,
-/// another CPU's request), so it can act on what changed meanwhile;
+/// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on;
 /// on an exception it decides the program's fate. It runs with interrupts masked, as the
 /// kernel does, and may block. Placed as [`thread::spawn`] places threads.
 pub fn spawn<P, H>(
@@ -1190,22 +1188,18 @@ where
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        let exit = if thread::preemption_point_before_user_mode::<P>() {
-            if process.has_ended() {
-                break;
-            }
-            UserExit::Interrupt
-        } else {
-            process.load_here();
-            // SAFETY: interrupts are masked, as the kernel runs. The process's address space
-            // is loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
-            // contract); the `Arc` keeps it allocated, and its mappings change only through
-            // `AddressSpace::change_pages` and its kin, on this thread or on another CPU, whose
-            // change marks this CPU stale or, for a process with threads on several CPUs,
-            // shoots its translations down before any frame is reused (D94). Nothing switches
-            // this CPU's threads or address space before `run_user` returns.
-            unsafe { P::run_user(&mut context) }
-        };
+        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
+            break;
+        }
+        process.load_here();
+        // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
+        // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
+        // contract); the `Arc` keeps it allocated, and its mappings change only through
+        // `AddressSpace::change_pages` and its kin, on this thread or on another CPU, whose
+        // change marks this CPU stale or, for a process with threads on several CPUs, shoots
+        // its translations down before any frame is reused (D94). Nothing switches this CPU's
+        // threads or address space before `run_user` returns.
+        let exit = unsafe { P::run_user(&mut context) };
         ended = handler(&process, &mut context, exit).is_break();
     }
     let here = cpu::current::<P>();
