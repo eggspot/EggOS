@@ -39,7 +39,7 @@ use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -173,6 +173,9 @@ pub struct Process<P: Platform> {
     exit: SpinLock<Option<ProcessExit>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
+    /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
+    /// wrapping.
+    signals_sent: AtomicU16,
     /// Its threads that run its program and have not exited ([`Self::add_thread`]).
     threads: AtomicU32,
     /// The status its first thread ended with on its own, [`NO_STATUS`] until it has
@@ -239,6 +242,7 @@ impl<P: Platform> Process<P> {
             frame_offset,
             exit: SpinLock::new(None),
             ended: AtomicBool::new(false),
+            signals_sent: AtomicU16::new(0),
             threads: AtomicU32::new(0),
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
@@ -1062,6 +1066,21 @@ impl<P: Platform> Process<P> {
         ended
     }
 
+    /// How many times one of its threads sent another a signal, wrapping: a thread compares it
+    /// with the count it last saw to learn whether it should look for signals sent to it.
+    pub fn signals_sent(&self) -> u16 {
+        self.signals_sent.load(Ordering::Acquire)
+    }
+
+    /// Records that a thread sent another a signal, now in the process's signal state, or
+    /// that its pending signals may have changed (another thread ignored a signal), and asks
+    /// every other CPU to look, as [`Self::exit`] does, so a thread running the program there
+    /// comes back to the kernel to see it ([`spawn`]'s handler gets an interrupt then).
+    pub fn record_signal_sent(&self) {
+        self.signals_sent.fetch_add(1, Ordering::Release);
+        interrupt_other_cpus::<P>();
+    }
+
     /// Records the status the process's first thread ended with while others go on (Linux's
     /// `exit`): the process ends with it if they all end that way too, as Linux reports its
     /// thread group leader's.
@@ -1145,7 +1164,9 @@ fn free_frame(frame: u64) {
 /// Starts a thread of `process` that runs its program from `context` in user mode and hands
 /// every exit, with the program's registers, to `handler`, until it returns
 /// [`ControlFlow::Break`]: then the thread ends. On a system call the handler sets the result
-/// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on;
+/// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on,
+/// and it gets one too when the scheduler looked before the program runs again (a switch,
+/// another CPU's request), so it can act on what changed meanwhile;
 /// on an exception it decides the program's fate. It runs with interrupts masked, as the
 /// kernel does, and may block. Placed as [`thread::spawn`] places threads.
 pub fn spawn<P, H>(
@@ -1169,8 +1190,12 @@ where
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
-            break;
+        if thread::preemption_point_before_user_mode::<P>() {
+            if process.has_ended() {
+                break;
+            }
+            ended = handler(&process, &mut context, UserExit::Interrupt).is_break();
+            continue;
         }
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is

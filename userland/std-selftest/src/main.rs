@@ -11,8 +11,9 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io::Write;
+use std::os::unix::thread::{JoinHandleExt, RawPthread};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -55,6 +56,10 @@ unsafe extern "C" {
     fn munmap(address: *mut c_void, length: usize) -> i32;
     fn sched_getcpu() -> i32;
     fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
+    fn gettid() -> i32;
+    fn pthread_kill(thread: RawPthread, signal: i32) -> i32;
+    fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32;
+    fn sigsuspend(mask: *const u64) -> i32;
     fn _exit(status: i32) -> !;
 }
 
@@ -62,7 +67,14 @@ type Check = (&'static str, fn() -> bool);
 
 const THREADS: u64 = 4;
 
-const CHECKS: [Check; 10] = [
+const SIGUSR1: i32 = 10;
+const SIG_BLOCK: i32 = 0;
+const SIGSET_WORDS: usize = 16;
+
+static HANDLED_BY: AtomicI32 = AtomicI32::new(0);
+static TARGET_READY: AtomicBool = AtomicBool::new(false);
+
+const CHECKS: [Check; 11] = [
     ("the arguments are the program's", arguments),
     ("the environment holds TERM", environment),
     ("a HashMap with random keys counts words", hash_map),
@@ -75,6 +87,10 @@ const CHECKS: [Check; 10] = [
     (
         "a mutex and its condition variable hand work over",
         condition_variable,
+    ),
+    (
+        "a signal sent to another thread runs its handler there",
+        signals_between_threads,
     ),
 ];
 
@@ -282,6 +298,52 @@ fn condition_variable() -> bool {
     *slot.lock().unwrap() = Some(21);
     ready.notify_one();
     worker.join().ok().flatten() == Some(42)
+}
+
+extern "C" fn record_handling_thread(_signal: i32) {
+    // SAFETY: `gettid` has no preconditions and is async-signal-safe.
+    HANDLED_BY.store(unsafe { gettid() }, Ordering::SeqCst);
+}
+
+fn handled_here() -> bool {
+    // SAFETY: as in `record_handling_thread`.
+    HANDLED_BY.load(Ordering::SeqCst) == unsafe { gettid() }
+}
+
+fn send_when_ready(target: &std::thread::JoinHandle<bool>) -> bool {
+    while !TARGET_READY.swap(false, Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    // SAFETY: the handle's thread is joined only after this, so its `pthread_t` is valid.
+    unsafe { pthread_kill(target.as_pthread_t(), SIGUSR1) == 0 }
+}
+
+fn signals_between_threads() -> bool {
+    // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+    unsafe { signal(SIGUSR1, record_handling_thread) };
+    let waiter = std::thread::spawn(|| {
+        let mut blocked = [0u64; SIGSET_WORDS];
+        blocked[0] = 1 << (SIGUSR1 - 1);
+        // SAFETY: both sets are `sigset_t`-sized arrays that live across the calls.
+        unsafe { pthread_sigmask(SIG_BLOCK, blocked.as_ptr(), std::ptr::null_mut()) };
+        TARGET_READY.store(true, Ordering::SeqCst);
+        let none = [0u64; SIGSET_WORDS];
+        // SAFETY: as above.
+        unsafe { sigsuspend(none.as_ptr()) };
+        handled_here()
+    });
+    let sent_to_waiter = send_when_ready(&waiter);
+    let waiter_handled = waiter.join().unwrap_or(false);
+    let runner = std::thread::spawn(|| {
+        TARGET_READY.store(true, Ordering::SeqCst);
+        while !handled_here() {
+            std::thread::yield_now();
+        }
+        true
+    });
+    let sent_to_runner = send_when_ready(&runner);
+    let runner_handled = runner.join().unwrap_or(false);
+    sent_to_waiter && waiter_handled && sent_to_runner && runner_handled
 }
 
 fn realtime_clock() -> bool {

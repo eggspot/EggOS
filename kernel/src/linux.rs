@@ -444,7 +444,7 @@ pub fn handle<P: Platform>(
 ) -> ControlFlow<()> {
     match exit {
         UserExit::Syscall => syscall(process, thread, context),
-        UserExit::Interrupt => ControlFlow::Continue(()),
+        UserExit::Interrupt => signals::deliver_sent(process, thread, context),
         UserExit::Exception(exception) => user_exception(
             process,
             thread,
@@ -576,7 +576,10 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGSUSPEND => signals::rt_sigsuspend(process, thread, context),
         #[cfg(target_arch = "x86_64")]
         number::PAUSE => signals::pause(process, thread, context),
-        number::PPOLL => poll::ppoll::<P>(process, thread, context),
+        number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
+            ControlFlow::Continue(()) => signals::deliver(process, thread, context),
+            ended => ended,
+        },
         _ => {
             let result = match number {
                 number::CLONE => thread::clone::<P>(process, thread, context),
@@ -591,8 +594,13 @@ fn out_of_line_call<P: Platform>(
                 | number::RT_TGSIGQUEUEINFO
                 | number::RT_SIGPROCMASK
                 | number::RT_SIGACTION
-                | number::RT_SIGRETURN => signals::deliver(process, thread, context),
-                _ => ControlFlow::Continue(()),
+                | number::RT_SIGRETURN
+                | number::RT_SIGTIMEDWAIT
+                | number::NANOSLEEP
+                | number::CLOCK_NANOSLEEP => signals::deliver(process, thread, context),
+                #[cfg(target_arch = "x86_64")]
+                number::POLL => signals::deliver(process, thread, context),
+                _ => signals::deliver_sent(process, thread, context),
             }
         }
     };
@@ -652,13 +660,13 @@ fn out_of_line_result<P: Platform>(
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
         number::TIME => time::time(process, first),
-        number::NANOSLEEP => time::nanosleep(process, first),
+        number::NANOSLEEP => time::nanosleep(process, thread, first),
         number::FUTEX => futex::futex::<P>(process, first, second, third, fourth, fifth, sixth),
-        number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, first, second, third),
+        number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, first, second, third),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
         #[cfg(target_arch = "x86_64")]
-        number::POLL => poll::poll::<P>(process, first, second, third),
+        number::POLL => poll::poll::<P>(process, thread, first, second, third),
         number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
         number::LSEEK => terminal::lseek(first, third),
         number::FSTAT => stat::fstat(process, first, second),
@@ -722,9 +730,11 @@ pub fn exit_thread<P: Platform>(
         let status = process.first_thread_status().unwrap_or(status);
         return end_process(process, ProcessExit::Exited(u32::from(status)));
     }
-    thread
-        .signals(&mut process.signals().lock())
-        .discard(u64::MAX);
+    {
+        let mut signals = process.signals().lock();
+        signals.remove_thread(thread.id());
+        thread.signals(&mut signals).discard(u64::MAX);
+    }
     let robust_list = thread.robust_list();
     if robust_list != 0 {
         futex::release_robust_list(process, thread.id(), robust_list);
@@ -4277,7 +4287,9 @@ mod tests {
         clear_child_tid: u64,
     ) -> LinuxThread {
         process.add_thread();
-        first.new_thread(process::allocate_thread_id().unwrap(), clear_child_tid)
+        let id = process::allocate_thread_id().unwrap();
+        process.signals().lock().add_thread(id).unwrap();
+        first.new_thread(id, clear_child_tid)
     }
 
     #[test]
@@ -4613,7 +4625,7 @@ mod tests {
     }
 
     #[test]
-    fn each_thread_blocks_and_queues_its_own_signals() {
+    fn threads_queue_signals_for_each_other_which_each_takes_in_order() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, pid) = process_with_stacks(&kernel);
@@ -4646,8 +4658,11 @@ mod tests {
         assert_eq!(queue(&mut first, pid), 0);
         write_siginfo(&process, info, signals::code::QUEUE, 0x22);
         assert_eq!(queue(&mut second, tid), 0);
-        assert_eq!(queue(&mut first, tid), Errno::ESRCH.result());
-        assert_eq!(queue(&mut second, pid), Errno::ESRCH.result());
+        write_siginfo(&process, info, signals::code::QUEUE, 0x33);
+        assert_eq!(queue(&mut first, tid), 0);
+        assert_eq!(second.signal_state().pending, 1 << (rt - 1));
+        assert_eq!(queue(&mut first, tid + 1000), Errno::ESRCH.result());
+        assert_eq!(queue(&mut first, i32::MAX as u64), Errno::ESRCH.result());
 
         let set = SCRATCH + 0x200;
         process
@@ -4663,8 +4678,129 @@ mod tests {
             (taken, read_siginfo(&process, waited).2)
         };
         assert_eq!(wait(&mut second), (rt, 0x22));
+        assert_eq!(wait(&mut second), (rt, 0x33));
         assert_eq!(wait(&mut first), (rt, 0x11));
         assert_eq!(first.signal_state().pending, 0);
         assert_eq!(second.signal_state().pending, 0);
+    }
+
+    #[test]
+    fn a_signal_sent_to_another_thread_is_delivered_when_it_comes_back() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        let tgkill = |thread: &mut LinuxThread, signal| {
+            call_as(
+                &process,
+                thread,
+                number::TGKILL,
+                [pid, tid, signal, 0, 0, 0],
+            )
+        };
+        assert_eq!(tgkill(&mut first, 0), 0);
+        assert_eq!(tgkill(&mut first, 65), Errno::EINVAL.result());
+        let sent = process.signals_sent();
+        let sigusr1 = 10;
+        assert_eq!(tgkill(&mut first, sigusr1), 0);
+        assert_ne!(process.signals_sent(), sent);
+        assert_eq!(second.signal_state().pending, 0);
+        assert_eq!(process.exit_status(), None);
+        let mut context = called(number::GETPID, [0; 6]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Interrupt),
+            ControlFlow::Break(())
+        );
+        assert_eq!(second.signals_seen(), process.signals_sent());
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed { signal: 10 })
+        );
+    }
+
+    #[test]
+    fn sigkill_sent_to_another_thread_ends_the_process_at_once() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        let mut context = called(number::TKILL, [tid, 9, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed { signal: 9 })
+        );
+    }
+
+    #[test]
+    fn ignoring_a_signal_discards_it_from_every_thread_and_an_exited_thread_is_gone() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let tid = u64::from(second.id());
+        let sigusr2 = 12u64;
+        process
+            .write_user_memory(SCRATCH + 0x300, &(1u64 << (sigusr2 - 1)).to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call_as(
+                &process,
+                &mut second,
+                number::RT_SIGPROCMASK,
+                [0, SCRATCH + 0x300, 0, 8, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::TGKILL,
+                [pid, tid, sigusr2, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(signals::take_in_sent(&process, &mut second));
+        assert_eq!(second.signal_state().pending, 1 << (sigusr2 - 1));
+        let action = SCRATCH + 0x400;
+        let words = [signals::IGNORE, 0, 0, 0];
+        process
+            .write_user_memory(action, &words.map(u64::to_ne_bytes).concat())
+            .unwrap();
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::RT_SIGACTION,
+                [sigusr2, action, 0, 8, 0, 0]
+            ),
+            0
+        );
+        assert!(signals::take_in_sent(&process, &mut second));
+        assert_eq!(second.signal_state().pending, 0);
+
+        let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::TGKILL,
+                [pid, tid, sigusr2, 0, 0, 0]
+            ),
+            Errno::ESRCH.result()
+        );
     }
 }

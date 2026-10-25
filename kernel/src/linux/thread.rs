@@ -6,29 +6,71 @@
 
 use super::Errno;
 use super::futex;
-use super::signals::{LockedSignals, Signals, ThreadSignals};
+use super::signals::{self, LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
-const SLEEP_WORD: u64 = !3;
+/// The futex key thread `id` of `process` sleeps on: a word in the kernel's half, which no
+/// program's futex can name, one per thread.
+fn sleep_key<P: Platform>(process: &Process<P>, id: u32) -> futex::Key {
+    const FIRST_SLEEP_WORD: u64 = !3;
+    futex::Key::new(
+        process.id().get(),
+        FIRST_SLEEP_WORD - 4 * u64::from(id),
+        false,
+    )
+}
 
-/// Sleeps the calling thread of `process` until the clock reaches `deadline`
-/// ([`Platform::clock_ticks`], `u64::MAX` for none) or the process ends: `Break` if it has
-/// ended, before or during the sleep, so the thread stops. Call it as a blocking system call
-/// runs: with interrupts masked and no lock held.
-pub fn sleep_until<P: Platform>(process: &Process<P>, deadline: u64) -> ControlFlow<()> {
-    let key = futex::Key::new(process.id().get(), SLEEP_WORD, false);
-    let _ = futex::wait::<P>(key, u32::MAX, deadline, || match process.has_ended() {
-        true => Err(Errno::ESRCH),
-        false => Ok(()),
-    });
+/// Sleeps `thread`, the calling thread of `process`, until the clock reaches `deadline`
+/// ([`Platform::clock_ticks`], `u64::MAX` for none), until another thread sends it a signal,
+/// which it has taken in when this returns ([`signals::take_in_sent`]), or until the process
+/// ends: `Break` if it has ended, before or during the sleep, so the thread stops. Call it as
+/// a blocking system call runs: with interrupts masked and no lock held.
+pub fn sleep_until<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    deadline: u64,
+) -> ControlFlow<()> {
+    let key = sleep_key(process, thread.id);
+    while !signals::take_in_sent(process, thread) && !process.has_ended() {
+        let seen = thread.signals_seen;
+        let slept = futex::wait::<P>(key, u32::MAX, deadline, || {
+            if process.has_ended() || process.signals_sent() != seen {
+                Err(Errno::EINTR)
+            } else {
+                Ok(())
+            }
+        });
+        if slept == Err(Errno::ETIMEDOUT) || P::clock_ticks() >= deadline {
+            break;
+        }
+    }
     match process.has_ended() {
         true => ControlFlow::Break(()),
         false => ControlFlow::Continue(()),
     }
+}
+
+/// Sleeps as [`sleep_until`] does, but on until `deadline` whatever signals arrive, for calls
+/// that signals do not interrupt yet.
+pub fn sleep_through<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    deadline: u64,
+) -> ControlFlow<()> {
+    while P::clock_ticks() < deadline {
+        sleep_until::<P>(process, thread, deadline)?;
+    }
+    ControlFlow::Continue(())
+}
+
+/// Wakes thread `id` of `process` from [`sleep_until`], if it sleeps there, to take in a
+/// signal sent to it.
+pub fn wake_sleep<P: Platform>(process: &Process<P>, id: u32) {
+    futex::wake::<P>(sleep_key(process, id), u32::MAX, 1);
 }
 
 /// A Linux thread's own state. See the module documentation.
@@ -38,6 +80,7 @@ pub struct LinuxThread {
     clear_child_tid: u64,
     robust_list: u64,
     signals: ThreadSignals,
+    signals_seen: u16,
 }
 
 impl LinuxThread {
@@ -48,6 +91,7 @@ impl LinuxThread {
             clear_child_tid: 0,
             robust_list: 0,
             signals: ThreadSignals::new(),
+            signals_seen: process.signals_sent(),
         }
     }
 
@@ -60,6 +104,7 @@ impl LinuxThread {
             clear_child_tid,
             robust_list: 0,
             signals: self.signals.for_new_thread(),
+            signals_seen: self.signals_seen,
         }
     }
 
@@ -92,6 +137,17 @@ impl LinuxThread {
     /// Its signal state joined with its process's, `process`, whose lock the caller holds.
     pub fn signals<'a>(&'a mut self, process: &'a mut Signals) -> LockedSignals<'a> {
         process.with_thread(&mut self.signals, self.id)
+    }
+
+    /// The count of signals sent to the process's threads ([`Process::signals_sent`]) when it
+    /// last took in those sent to it ([`signals::take_in_sent`]).
+    pub fn signals_seen(&self) -> u16 {
+        self.signals_seen
+    }
+
+    /// Records that it took in the signals sent to it up to `sent`.
+    pub fn set_signals_seen(&mut self, sent: u16) {
+        self.signals_seen = sent;
     }
 
     /// Its own signal state, as it is now.
@@ -241,6 +297,11 @@ pub fn clone<P: Platform>(
     } else {
         0
     };
+    process
+        .signals()
+        .lock()
+        .add_thread(id)
+        .map_err(|_| Errno::ENOMEM)?;
     let new = thread.new_thread(id, clear_child_tid);
     let id_bytes = id.to_ne_bytes();
     if any(flag::PARENT_SETTID) {
@@ -250,6 +311,9 @@ pub fn clone<P: Platform>(
         let _ = process.write_user_memory(arguments.child_tid, &id_bytes);
     }
     process.address_space().spread_over_cpus();
-    super::spawn_thread(Arc::clone(process), new, child).map_err(|_| Errno::ENOMEM)?;
+    super::spawn_thread(Arc::clone(process), new, child).map_err(|_| {
+        process.signals().lock().remove_thread(id);
+        Errno::ENOMEM
+    })?;
     Ok(u64::from(id))
 }
