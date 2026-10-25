@@ -521,8 +521,7 @@ fn syscall<P: Platform>(
     } else {
         match number {
             number::WRITE => write::<P>(process, first, second, third),
-            number::EXIT => return exit_thread(process, thread, first),
-            number::EXIT_GROUP => return exit_group(process, first),
+            number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
@@ -699,7 +698,7 @@ fn out_of_line_result<P: Platform>(
 /// thread exited with, as Linux reports its thread group leader's, or with `status` if the
 /// first thread is the last. Linux keeps a status's low 8 bits. (A C library ends its last
 /// thread with `exit_group` instead.)
-#[inline(never)]
+#[inline]
 pub fn exit_thread<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -727,11 +726,22 @@ pub fn exit_thread<P: Platform>(
     ControlFlow::Break(())
 }
 
-/// `exit_group(status)`: ends the process, every thread of it, with `status`, of which Linux
-/// keeps the low 8 bits.
+/// `exit(status)` ([`exit_thread`]) and `exit_group(status)`, which ends the process, every
+/// thread of it, with `status`, of which Linux keeps the low 8 bits. One call out of line for
+/// both, as before threads: two made the system-call loop's code longer (+1.6% on AArch64's
+/// round trip).
 #[inline(never)]
-fn exit_group<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
-    end_process(process, ProcessExit::Exited(status as u32 & 0xff))
+fn exit<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    number: u64,
+    status: u64,
+) -> ControlFlow<()> {
+    if number == number::EXIT {
+        exit_thread(process, thread, status)
+    } else {
+        end_process(process, ProcessExit::Exited(status as u32 & 0xff))
+    }
 }
 
 /// Ends the process as `how` says ([`Process::exit`]); its other threads waiting on a futex,
