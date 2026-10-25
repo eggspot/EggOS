@@ -355,6 +355,15 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
     }
 }
 
+/// Raises the wake-up interrupt on the calling CPU, which runs with interrupts masked: it is
+/// taken once they are unmasked, at the latest as soon as the CPU runs user mode, which then
+/// comes back to the kernel at once.
+#[cold]
+#[inline(never)]
+pub fn interrupt_here<P: Platform>() {
+    P::wake_cpu(current::<P>().hardware_id());
+}
+
 /// For this CPU, with interrupts masked: if another CPU asked a shootdown of it since it last
 /// served one ([`Cpu::request_shootdown`]), drops every user translation it has cached and
 /// tells them. Called on the wake-up interrupt, while waiting for a contended lock and while

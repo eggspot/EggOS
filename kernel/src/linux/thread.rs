@@ -35,7 +35,15 @@ pub fn sleep_until<P: Platform>(
     deadline: u64,
 ) -> ControlFlow<()> {
     let key = sleep_key(process, thread.id);
-    while !signals::take_in_sent(process, thread) && !process.has_ended() {
+    let mut woken = false;
+    loop {
+        let taken_in = match woken {
+            true => signals::take_in_sent_now(process, thread),
+            false => signals::take_in_sent(process, thread),
+        };
+        if taken_in || process.has_ended() {
+            break;
+        }
         let seen = thread.signals_seen;
         let slept = futex::wait::<P>(key, u32::MAX, deadline, || {
             if process.has_ended() || process.signals_sent() != seen {
@@ -47,6 +55,7 @@ pub fn sleep_until<P: Platform>(
         if slept == Err(Errno::ETIMEDOUT) || P::clock_ticks() >= deadline {
             break;
         }
+        woken = slept.is_ok();
     }
     match process.has_ended() {
         true => ControlFlow::Break(()),

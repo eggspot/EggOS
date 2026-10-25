@@ -773,6 +773,9 @@ pub fn exit_thread<P: Platform>(
     {
         let mut signals = process.signals().lock();
         signals.remove_thread(thread.id());
+        if !signals.has_sent_to_threads() {
+            process.set_sent_signals_waiting(false);
+        }
         thread.signals(&mut signals).discard(u64::MAX);
     }
     let robust_list = thread.robust_list();
@@ -4780,7 +4783,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exited_first_thread_takes_signals_it_never_delivers_but_sigkill_ends_the_process() {
+    fn an_exited_first_thread_takes_signals_it_never_delivers_sigkill_included() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, pid) = process_with_stacks(&kernel);
@@ -4802,30 +4805,23 @@ mod tests {
         };
         assert_eq!(tgkill(&mut second, 10), 0);
         assert_eq!(tgkill(&mut second, 65), Errno::EINVAL.result());
+        assert_eq!(tgkill(&mut second, 9), 0);
         assert_eq!(process.signals_sent(), sent);
         assert_eq!(process.exit_status(), None);
-        let mut context = called(number::TGKILL, [pid, pid, 9, 0, 0, 0]);
-        assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
-            ControlFlow::Break(())
-        );
-        assert_eq!(
-            process.exit_status(),
-            Some(ProcessExit::Killed { signal: 9 })
-        );
     }
 
     #[test]
-    fn ignoring_a_signal_discards_it_from_every_thread_and_an_exited_thread_is_gone() {
+    fn ignoring_a_signal_discards_it_from_every_thread_but_blocked_ones_ignored_by_default_stay() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, pid) = process_with_stacks(&kernel);
         let mut first = take_first_thread(&process);
         let mut second = second_thread(&process, &first, 0);
         let tid = u64::from(second.id());
-        let sigusr2 = 12u64;
+        let (sigusr2, sigchld) = (12u64, 17u64);
+        let blocked = 1u64 << (sigusr2 - 1) | 1 << (sigchld - 1);
         process
-            .write_user_memory(SCRATCH + 0x300, &(1u64 << (sigusr2 - 1)).to_ne_bytes())
+            .write_user_memory(SCRATCH + 0x300, &blocked.to_ne_bytes())
             .unwrap();
         assert_eq!(
             call_as(
@@ -4845,8 +4841,17 @@ mod tests {
             ),
             0
         );
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::TGKILL,
+                [pid, tid, sigchld, 0, 0, 0]
+            ),
+            0
+        );
         assert!(signals::take_in_sent(&process, &mut second));
-        assert_eq!(second.signal_state().pending, 1 << (sigusr2 - 1));
+        assert_eq!(second.signal_state().pending, blocked);
         let action = SCRATCH + 0x400;
         let words = [signals::IGNORE, 0, 0, 0];
         process
@@ -4862,7 +4867,9 @@ mod tests {
             0
         );
         assert!(signals::take_in_sent(&process, &mut second));
-        assert_eq!(second.signal_state().pending, 0);
+        assert_eq!(second.signal_state().pending, 1 << (sigchld - 1));
+        assert!(!signals::take_in_sent(&process, &mut second));
+        assert_eq!(second.signal_state().pending, 1 << (sigchld - 1));
 
         let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
         assert_eq!(

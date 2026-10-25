@@ -119,7 +119,7 @@ fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core:
 pub(crate) mod tests {
     use super::*;
 
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use eggos_hal::user::TestProgram;
     use eggos_hal::{Exception, ExceptionKind, Interrupt};
 
@@ -129,6 +129,10 @@ pub(crate) mod tests {
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
     static DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// Whether the test platform's one CPU raised the wake-up interrupt on itself
+    /// ([`Platform::wake_cpu`]) and has not taken it yet.
+    static WAKEUP_PENDING: AtomicBool = AtomicBool::new(false);
 
     /// The root the test platform's last [`Platform::switch_address_space`] switched to.
     static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -265,6 +269,10 @@ pub(crate) mod tests {
             DEADLINE.store(deadline, Ordering::Relaxed);
         }
         fn wait_for_interrupt() {
+            if WAKEUP_PENDING.swap(false, Ordering::Relaxed) {
+                interrupt::handle::<Self>(Interrupt::Wakeup);
+                return;
+            }
             // Sleeping until the deadline: jump the clock there and take the interrupt.
             let deadline = DEADLINE.swap(u64::MAX, Ordering::Relaxed);
             if deadline != u64::MAX {
@@ -273,6 +281,9 @@ pub(crate) mod tests {
             }
         }
         fn interrupt_window() {
+            if WAKEUP_PENDING.swap(false, Ordering::Relaxed) {
+                interrupt::handle::<Self>(Interrupt::Wakeup);
+            }
             // Time passes; the timer interrupt is taken once its deadline has.
             let now = CLOCK.fetch_add(1, Ordering::Relaxed);
             let deadline = DEADLINE.load(Ordering::Relaxed);
@@ -718,8 +729,9 @@ pub(crate) mod tests {
             }
             CPU_LOCAL.load(Ordering::Relaxed)
         }
-        fn wake_cpu(_cpu: u64) {
-            unreachable!("the test platform has one CPU")
+        fn wake_cpu(cpu: u64) {
+            assert_eq!(cpu, 0, "the test platform has one CPU");
+            WAKEUP_PENDING.store(true, Ordering::Relaxed);
         }
     }
 

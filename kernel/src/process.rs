@@ -176,6 +176,9 @@ pub struct Process<P: Platform> {
     /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
     /// wrapping.
     signals_sent: AtomicU16,
+    /// Whether signals sent to its threads wait for one to take them in
+    /// ([`Self::set_sent_signals_waiting`]).
+    sent_signals_waiting: AtomicBool,
     /// Its threads that run its program and have not exited ([`Self::add_thread`]).
     threads: AtomicU32,
     /// The status its first thread ended with on its own, [`NO_STATUS`] until it has
@@ -243,6 +246,7 @@ impl<P: Platform> Process<P> {
             exit: SpinLock::new(None),
             ended: AtomicBool::new(false),
             signals_sent: AtomicU16::new(0),
+            sent_signals_waiting: AtomicBool::new(false),
             threads: AtomicU32::new(0),
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
@@ -1081,6 +1085,28 @@ impl<P: Platform> Process<P> {
         interrupt_other_cpus::<P>();
     }
 
+    /// Records whether signals sent to its threads wait in its signal state for one to take
+    /// them in. Set and cleared under the signals lock. While set, each of its threads that the
+    /// scheduler switches back in interrupts its CPU before it runs the program again, so it
+    /// comes back to the kernel at once to look (see [`spawn`]).
+    pub fn set_sent_signals_waiting(&self, waiting: bool) {
+        self.sent_signals_waiting.store(waiting, Ordering::Relaxed);
+    }
+
+    /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise, if
+    /// signals sent to its threads wait, interrupts this CPU, so the thread comes back from
+    /// user mode at once and its handler can take in what was sent to it.
+    #[inline]
+    fn after_look(&self) -> ControlFlow<()> {
+        if self.has_ended() {
+            return ControlFlow::Break(());
+        }
+        if self.sent_signals_waiting.load(Ordering::Relaxed) {
+            cpu::interrupt_here::<P>();
+        }
+        ControlFlow::Continue(())
+    }
+
     /// Records the status the process's first thread ended with while others go on (Linux's
     /// `exit`): the process ends with it if they all end that way too, as Linux reports its
     /// thread group leader's.
@@ -1188,7 +1214,7 @@ where
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
-        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
+        if thread::preemption_point_before_user_mode::<P>() && process.after_look().is_break() {
             break;
         }
         process.load_here();
