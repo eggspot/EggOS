@@ -29,8 +29,8 @@ const MATCH_ANY: u32 = u32::MAX;
 const WORD_SIZE: u64 = 4;
 const BUCKET_COUNT: usize = 256;
 
-/// The word a waiter waits on: the address space it is in, by its process's id while a
-/// process has one thread and no memory shared with another, its user address, and whether
+/// The word a waiter waits on: the address space it is in, by its process's id, which all its
+/// threads share, while no memory is shared with another process, its user address, and whether
 /// the futex is shared (no `FUTEX_PRIVATE_FLAG`): as on Linux, private and shared waits on one
 /// word are apart, and a wake reaches only its own kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,8 +306,9 @@ pub fn requeue<P: Platform>(
 /// and its flags (`ENOSYS`), a requeue's negative counts, the bitset and each word's alignment
 /// (`EINVAL`), then the words themselves (`EFAULT`, then `EAGAIN`). A requeue's second count
 /// is the `timeout` argument's low 32 bits, and it returns how many it woke and moved
-/// together. A waiting thread cannot be interrupted by a signal yet: only its own process
-/// could send one, and its only thread is waiting. The other operations are `ENOSYS`.
+/// together. A waiting thread cannot be interrupted by a signal yet: signals reach only the
+/// thread that sends them so far (D91); it stops waiting when its process ends. The other
+/// operations are `ENOSYS`.
 pub fn futex<P: Platform>(
     process: &Process<P>,
     address: u64,

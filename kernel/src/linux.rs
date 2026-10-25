@@ -53,7 +53,7 @@ pub mod time;
 pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
-use crate::thread::{JoinHandle, SpawnError};
+use crate::thread::{CpuPlacement, JoinHandle, SpawnError};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -396,7 +396,7 @@ pub fn spawn<P: Platform>(
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
     let thread = LinuxThread::first(&process);
-    spawn_thread(process, thread, context)
+    spawn_thread(process, thread, context, CpuPlacement::Spread)
 }
 
 /// Starts `thread`, of `process`, running the program from `context`, its state kept for its
@@ -408,14 +408,15 @@ pub(crate) fn spawn_thread<P: Platform>(
     process: Arc<Process<P>>,
     thread: LinuxThread,
     context: UserContext,
+    placement: CpuPlacement,
 ) -> Result<JoinHandle, SpawnError> {
     let mut thread = Box::new(thread);
     process.add_thread();
     let counted = Arc::clone(&process);
-    process::spawn::<P, _>(process, context, move |process, context, exit| {
+    let handler = move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
         handle(process, &mut thread, context, exit)
-    })
-    .inspect_err(|_| {
+    };
+    process::spawn_placed::<P, _>(process, context, handler, placement).inspect_err(|_| {
         counted.remove_thread();
     })
 }

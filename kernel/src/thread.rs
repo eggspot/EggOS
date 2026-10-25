@@ -187,6 +187,8 @@ struct Thread {
     /// Whether it runs a program in user mode ([`spawn_user`]), where it reaches no preemption
     /// point until a system call, an interrupt or an exception (D48).
     user: bool,
+    /// Whether it stays on its CPU: load balancing never moves it ([`CpuPlacement`], D91).
+    pinned: bool,
     /// A user thread's FP/SIMD registers, once its program has used them ([`start_fp`], D54).
     fp: OnceCell<FpRegisters>,
 }
@@ -217,6 +219,7 @@ impl Thread {
         stack: Option<Stack>,
         cpu: &'static Cpu,
         user: bool,
+        pinned: bool,
     ) -> ThreadBox {
         ThreadBox::new(Self {
             id,
@@ -230,6 +233,7 @@ impl Thread {
             wake_at: 0,
             cpu,
             user,
+            pinned,
             fp: OnceCell::new(),
         })
     }
@@ -302,6 +306,14 @@ impl ThreadBox {
         // it finished before the lock was handed on (see `switch_to`), so nothing else reaches
         // it while this reference lives.
         unsafe { self.0.as_mut().cpu = cpu };
+    }
+
+    /// Keeps the thread, which runs on this CPU, on it from now on ([`CpuPlacement`]).
+    fn pin(&mut self) {
+        // SAFETY: owned by `self`, borrowed uniquely. The caller holds the scheduler's lock,
+        // which every other reader of a running thread's fields holds too, and the thread is
+        // the running one, which no switch saves or restores while the lock is held.
+        unsafe { self.0.as_mut().pinned = true };
     }
 
     /// The thread, taken out of its box.
@@ -784,7 +796,7 @@ impl Schedulers {
             let movable = scheduler
                 .ready
                 .front()
-                .is_some_and(|thread| thread.id != ThreadId::BOOT);
+                .is_some_and(|thread| thread.id != ThreadId::BOOT && !thread.pinned);
             if busy && movable {
                 let mut thread = scheduler.ready.pop_front().expect("a thread is ready");
                 thread.move_to(here);
@@ -999,12 +1011,13 @@ impl Scheduler {
         // SAFETY: the stack's frames are allocated, writable through the direct map and used
         // by nothing else; the idle thread never exits, so they stay allocated.
         let context = unsafe { P::prepare_thread(stack.top(), idle_thread::<P>, 0) };
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, here, false, false);
         self.idle = Some(Thread::boxed(
             ThreadId::next(),
             context,
             Some(stack),
             here,
+            false,
             false,
         ));
         self.current = Some(boot);
@@ -1256,7 +1269,7 @@ pub(crate) fn start_secondary<P: Platform>() {
         "a CPU started its scheduler twice"
     );
     scheduler.slice_ticks = slice_ticks;
-    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false));
+    scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false, false));
 }
 
 /// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
@@ -1270,20 +1283,33 @@ pub(crate) fn run_idle<P: Platform>() -> ! {
 pub fn spawn<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
 ) -> Result<JoinHandle, SpawnError> {
-    spawn_thread::<P, F>(function, false)
+    spawn_thread::<P, F>(function, false, CpuPlacement::Spread)
+}
+
+/// Where a new user thread runs ([`crate::process::spawn_placed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuPlacement {
+    /// As [`spawn`] places threads, free to move to idle CPUs later.
+    Spread,
+    /// On the calling thread's CPU, both kept there for good: a process whose threads all run
+    /// on one CPU never has its address space in use on two at once, which its changed
+    /// mappings need until other CPUs' cached translations can be shot down (D91).
+    WithCaller,
 }
 
 /// [`spawn`] for a thread that runs a program in user mode ([`crate::process::spawn`]): a CPU
 /// running it gets the wake-up interrupt with a reschedule request (D48).
 pub(crate) fn spawn_user<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
+    placement: CpuPlacement,
 ) -> Result<JoinHandle, SpawnError> {
-    spawn_thread::<P, F>(function, true)
+    spawn_thread::<P, F>(function, true, placement)
 }
 
 fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
     function: F,
     user: bool,
+    placement: CpuPlacement,
 ) -> Result<JoinHandle, SpawnError> {
     let stack = Stack::allocate().ok_or(SpawnError::OutOfMemory)?;
     let function: Box<dyn FnOnce() + Send> = Box::new(function);
@@ -1300,8 +1326,20 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
         drop(unsafe { Box::from_raw(start) });
         return Err(error);
     }
-    let cpu = schedulers.place(cpu::current::<P>());
-    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user);
+    let here = cpu::current::<P>();
+    let (cpu, pinned) = match placement {
+        CpuPlacement::Spread => (schedulers.place(here), false),
+        CpuPlacement::WithCaller => {
+            schedulers
+                .of(here)
+                .current
+                .as_mut()
+                .expect("a thread spawns threads")
+                .pin();
+            (here, true)
+        }
+    };
+    let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user, pinned);
     let handle = JoinHandle {
         id: thread.get().id,
         joined: thread.get().joined.clone(),
@@ -2141,7 +2179,7 @@ mod tests {
 
     /// A thread for the scheduler-state tests, which never runs.
     fn idle_thread_for_test(cpu: &'static Cpu) -> ThreadBox {
-        Thread::boxed(ThreadId::next(), 0, None, cpu, false)
+        Thread::boxed(ThreadId::next(), 0, None, cpu, false, false)
     }
 
     /// Takes every thread out of `scheduler`, so that it can be dropped.
@@ -2212,7 +2250,7 @@ mod tests {
         // A kernel thread passes a preemption point soon: the request alone does.
         assert!(scheduler.request_reschedule::<P>(other).is_none());
         empty(&mut scheduler);
-        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true));
+        scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true, false));
         // In user mode it may never pass one: the interrupt takes the CPU back.
         assert!(
             scheduler
@@ -2298,7 +2336,7 @@ mod tests {
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
-        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false);
+        let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false, false);
         schedulers.of(cpus[3]).ready.push_back(boot);
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;
@@ -2314,6 +2352,32 @@ mod tests {
         // A CPU never takes from itself.
         assert!(schedulers.steal_among(cpus, cpus[3]).is_none());
         drop(taken);
+        for &cpu in cpus {
+            empty(schedulers.of(cpu));
+        }
+    }
+
+    #[test]
+    fn an_idle_cpu_never_takes_a_pinned_thread() {
+        let cpus: Vec<&'static Cpu> = (0..2).map(Cpu::for_test).collect();
+        let cpus: &'static [&'static Cpu] = cpus.leak();
+        let mut schedulers = Schedulers {
+            slice_ticks: 0,
+            next_placement: 0,
+        };
+        schedulers.of(cpus[0]).current = Some(idle_thread_for_test(cpus[0]));
+        let busy = schedulers.of(cpus[1]);
+        busy.current = Some(idle_thread_for_test(cpus[1]));
+        busy.idle = Some(idle_thread_for_test(cpus[1]));
+        busy.current.as_mut().unwrap().pin();
+        let pinned = busy.current.take().unwrap();
+        assert!(pinned.get().pinned);
+        busy.current = Some(idle_thread_for_test(cpus[1]));
+        busy.ready.push_back(pinned);
+        assert!(schedulers.steal_among(cpus, cpus[0]).is_none());
+        let pinned = schedulers.of(cpus[1]).ready.pop_front().unwrap();
+        assert!(ptr::eq(pinned.get().cpu, cpus[1]));
+        drop(pinned);
         for &cpu in cpus {
             empty(schedulers.of(cpu));
         }
@@ -2364,6 +2428,7 @@ mod tests {
             wake_at: 0,
             cpu: here,
             user,
+            pinned: false,
             fp,
         };
         let layout = Layout::new::<FpState>();
@@ -2432,6 +2497,7 @@ mod tests {
             wake_at: 0,
             cpu: cpu::current::<P>(),
             user: false,
+            pinned: false,
             fp: OnceCell::new(),
         });
         thread.check_stack();

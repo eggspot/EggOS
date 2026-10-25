@@ -35,7 +35,7 @@ use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
-use crate::thread::{self, FpStart, JoinHandle, SpawnError};
+use crate::thread::{self, CpuPlacement, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
@@ -182,7 +182,7 @@ pub struct Process<P: Platform> {
     id: ProcessId,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
     credentials_and_limits: SpinLock<CredentialsAndLimits>,
-    /// Its signal state and its one thread's ([`Self::signals`]).
+    /// Its signal state, which its threads share ([`Self::signals`]).
     signals: SpinLock<Signals>,
 }
 
@@ -264,9 +264,9 @@ impl<P: Platform> Process<P> {
         self.credentials_and_limits.get_mut()
     }
 
-    /// Its signal actions and its thread's blocked signals and alternate stack
-    /// (`rt_sigaction`, `rt_sigprocmask`, `sigaltstack`; D60). Never held while user memory is
-    /// copied.
+    /// Its signal actions (`rt_sigaction`, D60) and the `siginfo_t`s queued with its threads'
+    /// pending signals; each thread's own state joins it under this lock (D91). Never held
+    /// while user memory is copied.
     pub fn signals(&self) -> &SpinLock<Signals> {
         &self.signals
     }
@@ -1127,7 +1127,21 @@ where
     P: Platform,
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
 {
-    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
+    spawn_placed(process, context, handler, CpuPlacement::Spread)
+}
+
+/// [`spawn`], placed as `placement` says.
+pub fn spawn_placed<P, H>(
+    process: Arc<Process<P>>,
+    context: UserContext,
+    handler: H,
+    placement: CpuPlacement,
+) -> Result<JoinHandle, SpawnError>
+where
+    P: Platform,
+    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
+{
+    thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler), placement)
 }
 
 /// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended

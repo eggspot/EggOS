@@ -10,11 +10,11 @@
 //! itself `SIGABRT` and expects to die of it.
 //!
 //! A process has an action per signal ([`Action`]), all `SIG_DFL` until it first changes one,
-//! which makes its own block on the heap, which also queues its pending signals' [`Info`]. Its
-//! thread has a blocked mask, pending signals and an alternate stack ([`ThreadSignals`]), which
-//! move to each thread when `clone` exists. A signal a call makes due (sent to the caller,
-//! unblocked, or no longer caught) is
-//! delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
+//! which makes its own block on the heap, which also queues its threads' pending signals'
+//! [`Info`], each tagged with its thread. Each thread has its own blocked mask, pending signals
+//! and alternate stack ([`ThreadSignals`], in its [`LinuxThread`], D91); signals reach only
+//! the thread that sends them so far. A signal a call makes due (sent to the caller, unblocked,
+//! or no longer caught) is delivered before the call returns ([`deliver`]): by its default action or `SIG_IGN`, or by
 //! a frame on the program's stack ([`signal_frame`]) from which its handler starts. A fault
 //! sends its signal before the program runs again ([`deliver_fault`], D65): to its handler,
 //! with the fault's `siginfo_t`, or, as on Linux, by the default action if the program blocks
@@ -156,7 +156,7 @@ pub struct Signals {
 #[derive(Debug)]
 pub struct LockedSignals<'a> {
     process: &'a mut Signals,
-    pub thread: &'a mut ThreadSignals,
+    thread: &'a mut ThreadSignals,
     id: u32,
 }
 
@@ -425,8 +425,8 @@ impl ThreadSignals {
         }
     }
 
-    /// A new thread's, made by thread `parent` whose state this is (`clone`): the same
-    /// blocked signals, nothing pending and, as on Linux for a thread sharing its parent's
+    /// The state of a thread that the thread with this state starts (`clone`): the same
+    /// blocked signals, nothing pending and, as on Linux for a thread sharing its starter's
     /// memory, no alternate stack.
     pub const fn for_new_thread(&self) -> Self {
         Self {
@@ -1102,8 +1102,8 @@ pub fn kill<P: Platform>(
     })
 }
 
-/// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller's one thread being the
-/// only one: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
+/// `tkill(tid, signal)`: sends `signal` to thread `tid`, the caller being the only thread it
+/// reaches yet: `EINVAL` for a `tid` that is not positive, then `ESRCH` for one that is not the
 /// caller's, then as [`kill`], with `SI_TKILL`. `EAGAIN` for a real-time signal when the queued
 /// signals are at `RLIMIT_SIGPENDING` (see [`LockedSignals::send`]).
 pub fn tkill<P: Platform>(
@@ -1203,7 +1203,8 @@ pub fn rt_sigqueueinfo<P: Platform>(
 }
 
 /// `rt_tgsigqueueinfo(tgid, tid, signal, info)`: as [`rt_sigqueueinfo`], to thread `tid` of
-/// process `tgid`, the caller's one thread: after `EFAULT`, `EINVAL` if either id is not
+/// process `tgid`, the caller being the only thread it reaches yet: after `EFAULT`, `EINVAL`
+/// if either id is not
 /// positive, then `EPERM` for a reserved `si_code` unless `tid` is the caller's, then `ESRCH`
 /// unless both ids are the caller's.
 pub fn rt_tgsigqueueinfo<P: Platform>(

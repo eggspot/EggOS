@@ -29,9 +29,11 @@
 //! (`Cpu::mark_stale`), so that CPU switches to it again, dropping what it cached, before
 //! it next uses it. No interrupt to the other CPUs: while a process has one thread, the one
 //! changing its mappings, no other CPU uses its address space meanwhile, and the thread
-//! reaches another CPU only through the scheduler's locks, after the mark. A second user at
-//! the same time (`clone`, or [`AddressSpace::with_active`] on another CPU) needs a
-//! shootdown first (roadmap). [`AddressSpace::unmap`] takes `&mut self`, for an address space
+//! reaches another CPU only through the scheduler's locks, after the mark. A process with
+//! more threads keeps them all on one CPU for good (`clone` pins them there, D91), so the CPU
+//! changing its mappings is the only one running them. Threads of one process on several
+//! CPUs at once, or [`AddressSpace::with_active`] on another CPU, need a shootdown first
+//! (roadmap). [`AddressSpace::unmap`] takes `&mut self`, for an address space
 //! not shared yet.
 //!
 //! The frames user pages map belong to whoever mapped them, unless the address space was made
@@ -144,8 +146,9 @@ impl<P: Platform> AddressSpace<P> {
     /// [`PageTables::change_user_pages`]), handing each frame unmapped to `unmapped`; then
     /// makes sure no CPU goes on using what it cached of the old entries (see the module
     /// documentation). Allowed while the address space is loaded on any CPU, but used on at
-    /// most this one: call it with interrupts masked, from the process's only thread or with
-    /// the address space not in use, and do not block until it returns.
+    /// most this one: call it with interrupts masked, from a thread of a process whose threads
+    /// all run on this CPU (D91) or with the address space not in use, and do not block until
+    /// it returns.
     #[inline(always)]
     pub fn change_pages(
         &self,

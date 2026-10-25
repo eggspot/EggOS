@@ -6,6 +6,7 @@
 use super::Errno;
 use super::signals::{LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
+use crate::thread::CpuPlacement;
 use alloc::sync::Arc;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
@@ -214,6 +215,7 @@ pub fn clone<P: Platform>(
     if any(flag::CHILD_SETTID) {
         let _ = process.write_user_memory(arguments.child_tid, &id_bytes);
     }
-    super::spawn_thread(Arc::clone(process), new, child).map_err(|_| Errno::ENOMEM)?;
+    super::spawn_thread(Arc::clone(process), new, child, CpuPlacement::WithCaller)
+        .map_err(|_| Errno::ENOMEM)?;
     Ok(u64::from(id))
 }
