@@ -132,9 +132,8 @@ pub fn deadline_at<P: Platform>(process: &Process<P>, address: u64) -> Result<u6
 
 /// Sleeps `thread`, the calling thread of `process`, until the monotonic clock reads
 /// `deadline` nanoseconds, never earlier, then sets the call's result, 0, and delivers what is
-/// due, as Linux does once the time is up, a signal due or not. Before, a due signal
-/// interrupts the sleep: the time left is written to the `struct timespec`
-/// at `remaining`, if it is not `None` or null (`EFAULT` if it is not the program's writable
+/// due, as Linux does once the time is up, a signal due or not. Until then, a due signal
+/// interrupts the sleep: the time left is written to the `struct timespec` at `remaining`, if it is not `None` or null (`EFAULT` if it is not the program's writable
 /// memory, the sleep over), and the call fails with `EINTR` if a handler starts; if none does
 /// (the signals were discarded), the sleep goes on to its deadline, as Linux restarts it.
 /// Breaks when the process ends.

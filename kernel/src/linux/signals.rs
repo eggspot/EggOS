@@ -608,7 +608,7 @@ impl Signals {
 
     /// Counts `thread`, not the process's first, as one of the process's threads, which
     /// [`Self::send_to_thread`] can reach until [`Self::remove_thread`], and records where it
-    /// waits, so a signal sent to it can end the wait ([`super::thread::interrupt`]); `caller`
+    /// waits, so a signal sent to it can end the wait ([`super::futex::interrupt`]); `caller`
     /// is the thread that starts it, whose wait slot is recorded too if it is the first
     /// thread, `first`, and has none recorded yet (the first thread starts the second). `Err`
     /// without memory for the record.
@@ -1558,7 +1558,7 @@ fn send_to_thread<P: Platform>(
     };
     process.record_signal_sent();
     if let Some(slot) = target_slot {
-        super::thread::interrupt::<P>(&slot);
+        super::futex::interrupt::<P>(&slot);
     }
     Ok(0)
 }
@@ -1595,7 +1595,7 @@ fn send_to_process<P: Platform>(
     process.record_signal_sent();
     let signals = process.signals().lock();
     for slot in signals.wait_slots_but(thread.id(), process.id().get()) {
-        super::thread::interrupt::<P>(slot);
+        super::futex::interrupt::<P>(slot);
     }
     Ok(0)
 }

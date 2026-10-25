@@ -2,8 +2,8 @@
 //! (`set_tid_address`, `clone`'s `CLONE_CHILD_CLEARTID`) and its signal state, which it keeps
 //! in its loop and its system calls reach through the [`LinuxThread`] they are given; and
 //! [`clone`], which starts a thread of the caller's process; and [`sleep_until`], where a
-//! Linux thread waits for time or for a signal until its process ends, and [`interrupt`],
-//! which ends a thread's sleep or `futex` wait for a signal sent to it.
+//! Linux thread waits for time or for a signal until its process ends, ended early by
+//! [`futex::interrupt`] for a signal sent to it.
 
 use super::Errno;
 use super::futex::{self, WaitSlot};
@@ -58,7 +58,7 @@ pub fn sleep_until<P: Platform>(
 
 /// A `futex` wait's last check for `thread`, the calling thread of `process`: `EINTR` if a
 /// signal was sent to it since it last took them in, or its process has ended, so it does
-/// not start waiting ([`futex::wait`]'s `still_expected`).
+/// not start waiting ([`futex::wait_interruptibly`]'s `still_expected`).
 pub fn unless_signalled_or_ended<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -82,13 +82,6 @@ pub fn wait_for_end<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
             }
         });
     }
-}
-
-/// Ends the sleep ([`sleep_until`]) or `futex` wait of the thread whose slot `slot` is
-/// ([`LinuxThread::wait_slot`]), if it is in one, for a signal sent to it, after the count of
-/// signals sent ([`Process::record_signal_sent`]) went up.
-pub fn interrupt<P: Platform>(slot: &WaitSlot) {
-    futex::interrupt::<P>(slot);
 }
 
 /// A Linux thread's own state. See the module documentation.
@@ -134,7 +127,9 @@ impl LinuxThread {
         self.id
     }
 
-    /// Where it waits while it sleeps or waits on a `futex`, for [`interrupt`].
+    /// Where it waits while it sleeps or waits on a `futex`, so a signal sent to it ends the
+    /// wait ([`futex::interrupt`], after the count of signals sent,
+    /// [`Process::record_signal_sent`], went up).
     pub fn wait_slot(&self) -> &Arc<WaitSlot> {
         &self.wait_slot
     }
