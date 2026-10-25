@@ -885,8 +885,9 @@ impl LockedSignals<'_> {
     /// sent ([`Signals::send_to_thread`]), each as if sent now, and the signals ignored since
     /// ([`Self::discard_from_other_threads`]), whose pending instances are discarded, blocked
     /// or not; and the signals sent to the process ([`Signals::send_to_process`]) that it does
-    /// not block or that it waits for ([`ThreadSignals::waited`]). Returns whether its pending
-    /// signals changed.
+    /// not block, and of those it blocks but waits for ([`ThreadSignals::waited`]), one, unless
+    /// one it waits for is pending already, so a signal is left for each other thread that
+    /// waits for it too. Returns whether its pending signals changed.
     pub fn take_in_sent(&mut self) -> bool {
         let before = self.thread.pending;
         let thread = self.id;
@@ -902,6 +903,11 @@ impl LockedSignals<'_> {
             let mut left = core::mem::take(&mut block.sent_to_threads);
             left.retain(|sent| {
                 if !is_for_this(sent) {
+                    return true;
+                }
+                let only_waited = sent.thread == ANY_THREAD
+                    && matches!(sent.sent, Sent::Signal(info) if bit(info.signal()) & self.thread.blocked != 0);
+                if only_waited && self.thread.pending & self.thread.waited != 0 {
                     return true;
                 }
                 match sent.sent {
@@ -1118,10 +1124,12 @@ impl LockedSignals<'_> {
 
     /// Blocks the signals in `blocked`, never `SIGKILL` or `SIGSTOP`, instead of the thread's,
     /// and returns the ones it blocked before. A signal sent to the process that it no longer
-    /// blocks is taken in at once ([`Self::take_in_sent`]): no other thread may ever unblock it.
+    /// blocks is taken in at once ([`Self::take_in_sent`]), as nothing else would tell the
+    /// thread to look for it.
     pub fn set_blocked(&mut self, blocked: u64) -> u64 {
         let previous = core::mem::replace(&mut self.thread.blocked, blocked & !UNBLOCKABLE);
-        if previous & !self.thread.blocked & self.left_for_process() != 0 {
+        let unblocked = previous & !self.thread.blocked;
+        if unblocked != 0 && unblocked & self.left_for_process() != 0 {
             self.take_in_sent();
         }
         previous
@@ -1131,7 +1139,7 @@ impl LockedSignals<'_> {
     /// none once it no longer waits, taking in those sent to the process at once.
     pub fn set_waited(&mut self, waited: u64) {
         self.thread.waited = waited;
-        if waited & self.left_for_process() != 0 {
+        if waited != 0 && waited & self.left_for_process() != 0 {
             self.take_in_sent();
         }
     }
@@ -1876,7 +1884,7 @@ pub fn replace_blocked<P: Platform>(
 /// waits in `signals`, the process's lock held, the threads switched back in no longer
 /// interrupt themselves to look ([`Process::set_sent_signals_waiting`]).
 fn note_taken_in<P: Platform>(process: &Process<P>, signals: &Signals) {
-    if !signals.has_sent_to_threads() {
+    if process.sent_signals_waiting() && !signals.has_sent_to_threads() {
         process.set_sent_signals_waiting(false);
     }
 }

@@ -4210,3 +4210,55 @@ the license, by an explicit instruction recorded here.
   Its third found that repeated standard signals to a thread that never takes in grew without
   bound and inflated the system's queued-signal count (now compacted as above, with a host
   test sending one signal a hundred times).
+
+## D96 Signals sent to the process — Decided by the build loop
+
+- **What.** `kill` and `rt_sigqueueinfo` to the caller's process (its id, its group) reach any
+  of its threads that does not block the signal, as Linux's shared pending signals do, not
+  only the caller (D63, D68, D95).
+- **Who takes it.** The caller, at once, as before, when it does not block the signal or is
+  the process's only thread: Linux may pick any thread that does not block it, and this one
+  costs nothing new. Otherwise the signal waits in the process's signal block, in the list
+  D95 keeps for signals sent to threads, tagged for any thread (tag 0, which no thread id is),
+  and the first thread that takes in without blocking it takes it, as if sent to it then
+  (`LockedSignals::take_in_sent`). Keeping it there, rather than in a shared pending set that
+  every delivery check would read, leaves each thread's checks as they are: the system-call
+  path and the thread loop read only the thread's own state, without the lock.
+- **How the threads notice.** As for a signal sent to a thread (D95): the count of signals
+  sent goes up and every other CPU is interrupted, and since the sender cannot see the other
+  threads' masks, which are private, every other thread's sleep is woken (one futex wake
+  each, under the signals lock, which no futex path takes). A woken thread that blocks the
+  signal goes back to sleep.
+- **A thread that unblocks it later.** Changing the mask takes in at once a waiting signal the
+  new mask no longer blocks: `rt_sigprocmask`, `rt_sigreturn`'s restored mask, and the masks
+  of `rt_sigsuspend` and `ppoll` (`LockedSignals::set_blocked`), so a signal every thread
+  blocked is delivered by the first to unblock it, as on Linux. `rt_sigtimedwait` takes in
+  the signals it waits for while it waits (`ThreadSignals::waited`, Linux's temporary
+  unblocking), so `sigwait` in a thread that blocks the signal, the usual way to handle
+  signals in one thread, gets it. `rt_sigpending` reports the waiting ones the caller blocks,
+  as Linux reports the shared pending set with the thread's.
+- **Bounded, and `SIG_IGN`.** What waits stays bounded as in D95: a standard signal already
+  waiting is not left again, `SIGCONT` removes the stop signals waiting for any thread and a
+  stop signal a `SIGCONT`, a real-time signal over `RLIMIT_SIGPENDING` is `EAGAIN`. An
+  action that newly ignores a signal removes its waiting instances too (POSIX).
+- **Differences from Linux kept.** A standard signal taken in by a thread that already has
+  it pending is merged with it (Linux keeps one in the thread's set and one in the shared
+  set, so it may run twice; POSIX allows either). Once taken in, a signal is the thread's: a
+  handler's mask blocking it delays it until the handler returns, where Linux could hand it
+  to another thread meanwhile. `SIGCONT` sent to the process discards the stop signals waiting
+  for any thread and the receiver's, not every thread's pending ones (as D95 does for a
+  thread). A signal every thread blocks keeps the process's threads interrupting themselves
+  once each time they are switched in, until one takes it (the cost D95 accepted for a thread
+  that never takes in).
+- **Tests.** Host tests: a signal sent to the process by a thread that blocks it is pending
+  for none, reported by `rt_sigpending`, and delivered by the other thread (`SIGUSR1` ends the
+  process); real-time signals every thread blocks are taken by `rt_sigtimedwait` in either
+  thread in send order, and a standard one by the first thread that unblocks it; a hundred
+  `kill`s leave one entry, `SIGCONT` and `SIGTSTP` cancel each other, `SIG_IGN` removes the
+  waiting one; the only thread keeps a signal it blocks. QEMU self-tests on aarch64, riscv64
+  and x86_64: the std program blocks `SIGUSR1`, `kill`s its own process, and a thread waiting
+  in `sigsuspend` with `SIGUSR1` unblocked, and then one running a `sched_yield` loop that
+  never blocked it, runs the handler.
+- **Cost.** No hot path changes: the caller-takes-it test is on `kill`'s path only, the mask
+  changes add one test of the block's list when they unblock something, and the system-call
+  round trip and the thread loop are untouched.

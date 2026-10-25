@@ -372,8 +372,10 @@ fn kill_own_process_when_ready() -> bool {
     while READY_TARGET.swap(0, Ordering::SeqCst) == 0 {
         std::thread::yield_now();
     }
-    // SAFETY: `getpid` and `kill` have no preconditions.
-    unsafe { kill(getpid(), SIGUSR1) == 0 }
+    // SAFETY: `getpid` has no preconditions.
+    let own = unsafe { getpid() };
+    // SAFETY: `kill` has no preconditions.
+    unsafe { kill(own, SIGUSR1) == 0 }
 }
 
 fn signals_to_the_process() -> bool {

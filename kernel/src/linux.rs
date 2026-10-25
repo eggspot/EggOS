@@ -4965,7 +4965,12 @@ mod tests {
         block_signals_in(&process, &mut first, 1 << (sigusr1 - 1));
         let sent = process.signals_sent();
         assert_eq!(
-            call_as(&process, &mut first, number::KILL, [pid, sigusr1, 0, 0, 0, 0]),
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr1, 0, 0, 0, 0]
+            ),
             0
         );
         assert_ne!(process.signals_sent(), sent);
@@ -5007,7 +5012,12 @@ mod tests {
             );
         }
         assert_eq!(
-            call_as(&process, &mut first, number::KILL, [pid, sigusr2, 0, 0, 0, 0]),
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr2, 0, 0, 0, 0]
+            ),
             0
         );
         assert!(!signals::take_in_sent(&process, &mut second));
@@ -5017,7 +5027,7 @@ mod tests {
         process
             .write_user_memory(set, &(1u64 << (rt - 1)).to_ne_bytes())
             .unwrap();
-        let mut wait = |thread: &mut LinuxThread| {
+        let wait = |thread: &mut LinuxThread| {
             let taken = call_as(
                 &process,
                 thread,
@@ -5059,7 +5069,12 @@ mod tests {
         block_signals_in(&process, &mut first, blocked);
         let mut second = second_thread(&process, &first, 0);
         let mut kill = |signal: u64| {
-            call_as(&process, &mut first, number::KILL, [pid, signal, 0, 0, 0, 0])
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, signal, 0, 0, 0, 0],
+            )
         };
         for _ in 0..100 {
             assert_eq!(kill(sigusr1), 0);
@@ -5099,7 +5114,12 @@ mod tests {
         let sigusr1 = 10u64;
         block_signals_in(&process, &mut first, 1 << (sigusr1 - 1));
         assert_eq!(
-            call_as(&process, &mut first, number::KILL, [pid, sigusr1, 0, 0, 0, 0]),
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr1, 0, 0, 0, 0]
+            ),
             0
         );
         assert_eq!(first.signal_state().pending, 1 << (sigusr1 - 1));
