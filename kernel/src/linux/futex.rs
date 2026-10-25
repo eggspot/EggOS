@@ -173,6 +173,16 @@ impl Bucket {
             queued: true,
             key,
         };
+        self.append(waiter);
+    }
+
+    /// Links `waiter`, built with its link unqueued, with no next waiter and its key, last.
+    fn push_back_new(&mut self, waiter: NonNull<Waiter>) {
+        self.link(waiter).queued = true;
+        self.append(waiter);
+    }
+
+    fn append(&mut self, waiter: NonNull<Waiter>) {
         let mut last = None;
         let mut following = self.head;
         while let Some(candidate) = following {
@@ -266,7 +276,7 @@ fn wait_in<P: Platform, const INTERRUPTIBLE: bool>(
     {
         let mut bucket = BUCKETS[index].lock();
         still_expected()?;
-        bucket.push_back(pointer, key);
+        bucket.push_back_new(pointer);
     }
     if waiter.parker.park_until::<P>(deadline) == ParkEnd::DeadlineReached {
         let mut bucket = waiter.lock_current_bucket();
