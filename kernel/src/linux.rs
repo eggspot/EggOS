@@ -47,12 +47,14 @@ pub mod signal_frame;
 pub mod signals;
 pub mod stat;
 pub mod terminal;
+pub mod thread;
 pub mod thread_pointer;
 pub mod time;
 pub mod trampoline;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
-use crate::thread::{self, JoinHandle, SpawnError};
+use crate::thread::{JoinHandle, SpawnError};
+use thread::LinuxThread;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::memory::FRAME_SIZE;
@@ -84,6 +86,7 @@ pub mod number {
         pub const PAUSE: u64 = 34;
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
+        pub const CLONE: u64 = 56;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
@@ -191,6 +194,7 @@ pub mod number {
         pub const GETEGID: u64 = 177;
         pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
+        pub const CLONE: u64 = 220;
         pub const MUNMAP: u64 = 215;
         pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
@@ -211,6 +215,7 @@ pub mod number {
             WRITEV,
             EXIT,
             EXIT_GROUP,
+            CLONE,
             BRK,
             MMAP,
             MUNMAP,
@@ -383,13 +388,31 @@ const STACK_IOVECS: usize = 8;
 /// The size of a `struct iovec`: a base address and a length.
 const IOVEC_SIZE: usize = 16;
 
-/// Starts a thread of `process` that runs its Linux program from `context` (see [`handle`]).
-/// Until `clone` exists, a process has this one thread.
+/// Starts the first thread of `process`, which runs its Linux program from `context` (see
+/// [`handle`]); `clone` starts the others.
 pub fn spawn<P: Platform>(
     process: Arc<Process<P>>,
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
-    process::spawn::<P, _>(process, context, handle::<P>)
+    let thread = LinuxThread::first(&process);
+    spawn_thread(process, thread, context)
+}
+
+/// Starts `thread`, of `process`, running the program from `context`, its state kept in its
+/// loop and handed to [`handle`] with each exit from user mode.
+pub(crate) fn spawn_thread<P: Platform>(
+    process: Arc<Process<P>>,
+    mut thread: LinuxThread,
+    context: UserContext,
+) -> Result<JoinHandle, SpawnError> {
+    process.add_thread();
+    let counted = Arc::clone(&process);
+    process::spawn::<P, _>(process, context, move |process, context, exit| {
+        handle(process, &mut thread, context, exit)
+    })
+    .inspect_err(|_| {
+        counted.remove_thread();
+    })
 }
 
 /// What a Linux program's thread does with an exit from user mode: see the module
@@ -404,14 +427,16 @@ pub fn spawn<P: Platform>(
 #[inline(always)]
 pub fn handle<P: Platform>(
     process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
     context: &mut UserContext,
     exit: UserExit,
 ) -> ControlFlow<()> {
     match exit {
-        UserExit::Syscall => syscall(process, context),
+        UserExit::Syscall => syscall(process, thread, context),
         UserExit::Interrupt => ControlFlow::Continue(()),
         UserExit::Exception(exception) => user_exception(
             process,
+            thread,
             context,
             exception.kind,
             exception.code,
@@ -434,23 +459,24 @@ pub fn handle<P: Platform>(
 #[inline(never)]
 fn user_exception<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     context: &mut UserContext,
     kind: ExceptionKind,
     code: u64,
     address: Option<u64>,
 ) -> ControlFlow<()> {
     let (Some(page_fault), Some(address)) = (P::page_fault(kind, code), address) else {
-        return signal_fault(process, context);
+        return signal_fault(process, thread, context);
     };
     match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
-        Err(UnresolvedFault::NotAllowed) => signal_fault(process, context),
-        Err(UnresolvedFault::OutOfMemory) => {
-            process.exit(ProcessExit::Killed {
+        Err(UnresolvedFault::NotAllowed) => signal_fault(process, thread, context),
+        Err(UnresolvedFault::OutOfMemory) => end_process(
+            process,
+            ProcessExit::Killed {
                 signal: signal::SIGKILL,
-            });
-            ControlFlow::Break(())
-        }
+            },
+        ),
     }
 }
 
@@ -461,20 +487,28 @@ fn user_exception<P: Platform>(
 /// instruction is no fault: it gives the thread its registers and runs again (D54).
 #[cold]
 #[inline(never)]
-fn signal_fault<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+fn signal_fault<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
     let exception = context.last_exception();
     if process::first_fp_use::<P>(exception.kind) {
         return ControlFlow::Continue(());
     }
     let fault = fault::classify(process, &exception, context.stack());
-    signals::deliver_fault(process, context, &fault)
+    signals::deliver_fault(process, thread, context, &fault)
 }
 
 /// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
 /// as a call of its own, the loop's state spills around it (+8 to +10% on the system-call
 /// round trip when D55's calls tipped the inliner).
 #[inline(always)]
-fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
+fn syscall<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
     let [first, second, third, ..] = context.syscall_arguments();
     let number = context.syscall_number();
     let result = if number > number::LAST {
@@ -482,11 +516,12 @@ fn syscall<P: Platform>(process: &Arc<Process<P>>, context: &mut UserContext) ->
     } else {
         match number {
             number::WRITE => write::<P>(process, first, second, third),
-            number::EXIT | number::EXIT_GROUP => return exit(process, first),
+            number::EXIT => return exit_thread(process, thread, first),
+            number::EXIT_GROUP => return exit_group(process, first),
             number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
                 memory_call::<P>(process, number, context.syscall_arguments())
             }
-            _ => return out_of_line_call::<P>(process, number, context),
+            _ => return out_of_line_call::<P>(process, thread, number, context),
         }
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -520,36 +555,46 @@ fn memory_call<P: Platform>(
 /// their result and deliver it themselves.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
-    process: &Process<P>,
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
     number: u64,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
-    match number {
-        number::RT_SIGSUSPEND => return signals::rt_sigsuspend(process, context),
+    let flow = match number {
+        number::RT_SIGSUSPEND => signals::rt_sigsuspend(process, thread, context),
         #[cfg(target_arch = "x86_64")]
-        number::PAUSE => return signals::pause(process, context),
-        number::PPOLL => return poll::ppoll::<P>(process, context),
-        _ => {}
+        number::PAUSE => signals::pause(process, thread, context),
+        number::PPOLL => poll::ppoll::<P>(process, thread, context),
+        _ => {
+            let result = match number {
+                number::CLONE => thread::clone::<P>(process, thread, context),
+                _ => out_of_line_result(process, thread, number, context),
+            };
+            context.set_syscall_result(result.unwrap_or_else(Errno::result));
+            match number {
+                number::KILL
+                | number::TKILL
+                | number::TGKILL
+                | number::RT_SIGQUEUEINFO
+                | number::RT_TGSIGQUEUEINFO
+                | number::RT_SIGPROCMASK
+                | number::RT_SIGACTION
+                | number::RT_SIGRETURN => signals::deliver(process, thread, context),
+                _ => ControlFlow::Continue(()),
+            }
+        }
+    };
+    if process.has_ended() {
+        return ControlFlow::Break(());
     }
-    let result = out_of_line_result(process, number, context);
-    context.set_syscall_result(result.unwrap_or_else(Errno::result));
-    match number {
-        number::KILL
-        | number::TKILL
-        | number::TGKILL
-        | number::RT_SIGQUEUEINFO
-        | number::RT_TGSIGQUEUEINFO
-        | number::RT_SIGPROCMASK
-        | number::RT_SIGACTION
-        | number::RT_SIGRETURN => signals::deliver(process, context),
-        _ => ControlFlow::Continue(()),
-    }
+    flow
 }
 
 /// The result of [`out_of_line_call`]'s call `number`.
 #[inline(always)]
 fn out_of_line_result<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     number: u64,
     context: &mut UserContext,
 ) -> Result<u64, Errno> {
@@ -559,27 +604,37 @@ fn out_of_line_result<P: Platform>(
         number::WRITEV => writev::<P>(process, first, second, third),
         number::GETPID => Ok(identity::getpid(process)),
         number::GETPPID => Ok(identity::getppid()),
-        number::GETTID => Ok(identity::gettid(process)),
+        number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
-        number::SET_TID_ADDRESS => Ok(identity::set_tid_address(process, first)),
+        number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),
         number::SET_ROBUST_LIST => identity::set_robust_list(first, second),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
         number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
-        number::RT_SIGACTION => signals::rt_sigaction(process, first, second, third, fourth),
-        number::RT_SIGPROCMASK => signals::rt_sigprocmask(process, first, second, third, fourth),
-        number::SIGALTSTACK => signals::sigaltstack(process, first, second, context.stack()),
-        number::RT_SIGPENDING => signals::rt_sigpending(process, first, second),
-        number::RT_SIGRETURN => signals::rt_sigreturn(process, context),
-        number::KILL => signals::kill(process, first, second),
-        number::TKILL => signals::tkill(process, first, second),
-        number::TGKILL => signals::tgkill(process, first, second, third),
-        number::RT_SIGQUEUEINFO => signals::rt_sigqueueinfo(process, first, second, third),
-        number::RT_TGSIGQUEUEINFO => {
-            signals::rt_tgsigqueueinfo(process, first, second, third, fourth)
+        number::RT_SIGACTION => {
+            signals::rt_sigaction(process, thread, first, second, third, fourth)
         }
-        number::RT_SIGTIMEDWAIT => signals::rt_sigtimedwait(process, first, second, third, fourth),
+        number::RT_SIGPROCMASK => {
+            signals::rt_sigprocmask(process, thread, first, second, third, fourth)
+        }
+        number::SIGALTSTACK => {
+            signals::sigaltstack(process, thread, first, second, context.stack())
+        }
+        number::RT_SIGPENDING => signals::rt_sigpending(process, thread, first, second),
+        number::RT_SIGRETURN => signals::rt_sigreturn(process, thread, context),
+        number::KILL => signals::kill(process, thread, first, second),
+        number::TKILL => signals::tkill(process, thread, first, second),
+        number::TGKILL => signals::tgkill(process, thread, first, second, third),
+        number::RT_SIGQUEUEINFO => {
+            signals::rt_sigqueueinfo(process, thread, first, second, third)
+        }
+        number::RT_TGSIGQUEUEINFO => {
+            signals::rt_tgsigqueueinfo(process, thread, first, second, third, fourth)
+        }
+        number::RT_SIGTIMEDWAIT => {
+            signals::rt_sigtimedwait(process, thread, first, second, third, fourth)
+        }
         number::CLOCK_GETTIME => time::clock_gettime(process, first, second),
         number::CLOCK_GETRES => time::clock_getres(process, first, second),
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
@@ -624,7 +679,7 @@ fn out_of_line_result<P: Platform>(
         number::MREMAP => memory::mremap::<P>(process, first, second, third, fourth, fifth),
         number::MADVISE => memory::madvise::<P>(process, first, second, third),
         number::SCHED_YIELD => {
-            thread::yield_now::<P>();
+            crate::thread::yield_now::<P>();
             Ok(0)
         }
         #[cfg(target_arch = "x86_64")]
@@ -633,11 +688,51 @@ fn out_of_line_result<P: Platform>(
     }
 }
 
-/// `exit(status)` and `exit_group(status)`: with one thread per process, ending the thread
-/// ends the process. Linux keeps the status's low 8 bits.
+/// `exit(status)`: ends the calling thread. Its queued signals go, and if it set a
+/// `clear_child_tid` (`set_tid_address`, `CLONE_CHILD_CLEARTID`) and other threads go on, the
+/// 32-bit word there becomes 0 and one waiter on it as a shared futex is woken, as on Linux:
+/// nothing is written if the word is not the program's writable memory, and no one is woken
+/// if it is not aligned. The last
+/// thread to end ends the process with `status`, of which Linux keeps the low 8 bits (Linux
+/// reports the first thread's status then; a C library ends its last thread with
+/// `exit_group` instead).
 #[inline(never)]
-fn exit<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
-    process.exit(ProcessExit::Exited(status as u32 & 0xff));
+pub fn exit_thread<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    status: u64,
+) -> ControlFlow<()> {
+    thread
+        .signals(&mut process.signals().lock())
+        .discard(u64::MAX);
+    if process.remove_thread() {
+        return end_process(process, ProcessExit::Exited(status as u32 & 0xff));
+    }
+    let address = thread.clear_child_tid();
+    if address != 0 {
+        let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
+        if cleared.is_ok() && address.is_multiple_of(4) {
+            let key = futex::Key::new(process.id().get(), address, true);
+            futex::wake::<P>(key, u32::MAX, 1);
+        }
+    }
+    ControlFlow::Break(())
+}
+
+/// `exit_group(status)`: ends the process, every thread of it, with `status`, of which Linux
+/// keeps the low 8 bits.
+#[inline(never)]
+fn exit_group<P: Platform>(process: &Process<P>, status: u64) -> ControlFlow<()> {
+    end_process(process, ProcessExit::Exited(status as u32 & 0xff))
+}
+
+/// Ends the process as `how` says ([`Process::exit`]); its threads waiting on a futex stop
+/// waiting, so they end too. Breaks: the calling thread ends.
+#[cold]
+#[inline(never)]
+pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
+    process.exit(how);
+    futex::wake_space::<P>(process.id().get());
     ControlFlow::Break(())
 }
 
@@ -801,7 +896,7 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         }
         P::console_write(bytes);
         written += length as u64;
-        thread::preemption_point::<P>();
+        crate::thread::preemption_point::<P>();
     }
     written
 }
@@ -817,6 +912,44 @@ mod tests {
     use eggos_hal::paging::Attributes;
 
     const DATA: u64 = 0x50_0000;
+
+    static FIRST_THREADS: std::sync::Mutex<alloc::collections::BTreeMap<u32, LinuxThread>> =
+        std::sync::Mutex::new(alloc::collections::BTreeMap::new());
+
+    fn take_first_thread(process: &Process<P>) -> LinuxThread {
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .remove(&process.id().get())
+            .unwrap_or_else(|| {
+                process.add_thread();
+                LinuxThread::first(process)
+            })
+    }
+
+    fn handle_first(
+        process: &Arc<Process<P>>,
+        context: &mut UserContext,
+        exit: UserExit,
+    ) -> ControlFlow<()> {
+        let mut thread = take_first_thread(process);
+        let flow = handle(process, &mut thread, context, exit);
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(process.id().get(), thread);
+        flow
+    }
+
+    fn first_thread_signals(process: &Process<P>) -> signals::ThreadSignals {
+        let thread = take_first_thread(process);
+        let state = thread.signal_state();
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(process.id().get(), thread);
+        state
+    }
 
     fn kernel_tables() -> PageTables<<P as Platform>::PageTableFormat> {
         let mut frames = memory::FRAMES.lock();
@@ -868,7 +1001,7 @@ mod tests {
         for fd in [0, 1, 2] {
             let mut context = called(number::WRITE, [fd, start, text.len() as u64, 0, 0, 0]);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Syscall),
+                handle_first(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Continue(())
             );
             assert_eq!(context.syscall_result(), text.len() as u64);
@@ -885,7 +1018,7 @@ mod tests {
         let write = |fd, buffer, count| {
             let mut context = called(number::WRITE, [fd, buffer, count, 0, 0, 0]);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Syscall),
+                handle_first(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Continue(())
             );
             context.syscall_result()
@@ -941,7 +1074,7 @@ mod tests {
     fn call(process: &Arc<Process<P>>, number: u64, arguments: [u64; 6]) -> u64 {
         let mut context = called(number, arguments);
         assert_eq!(
-            handle(process, &mut context, UserExit::Syscall),
+            handle_first(process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         context.syscall_result()
@@ -1733,7 +1866,7 @@ mod tests {
             let mut context = UserContext::new(0x40_0000, stack);
             context.simulate_syscall(number::SIGALTSTACK, [new, old, 0, 0, 0, 0], 0x40_0004);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Syscall),
+                handle_first(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Continue(())
             );
             context.syscall_result()
@@ -1774,7 +1907,7 @@ mod tests {
 
         let other = process_with_iovecs(&kernel, b"ab", &[]);
         assert_eq!(other.signals().lock().action(13), Some(Action::default()));
-        assert_eq!(other.signals().lock().thread(), Default::default());
+        assert_eq!(first_thread_signals(&other), Default::default());
     }
 
     /// `struct pollfd`s for `entries` (descriptor, requested events), as the program passes
@@ -2150,7 +2283,7 @@ mod tests {
         }
         let mut context = called(number::RT_SIGPROCMASK, [1, writable, 0, 8, 0, 0]);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2163,7 +2296,7 @@ mod tests {
         let pid = u64::from(process.id().get());
         let mut context = called(number::TGKILL, [pid, pid, sigabrt, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2181,7 +2314,7 @@ mod tests {
         let process = process_with_data(&kernel, b"ab");
         let mut context = called(1000, [0; 6]);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.syscall_result(), Errno::ENOSYS.result());
@@ -2189,7 +2322,7 @@ mod tests {
             let process = process_with_data(&kernel, b"ab");
             let mut context = called(exit, [0x1_2345, 0, 0, 0, 0, 0]);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Syscall),
+                handle_first(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Break(())
             );
             assert_eq!(process.exit_status(), Some(ProcessExit::Exited(0x45)));
@@ -2211,7 +2344,7 @@ mod tests {
                 address: Some(address),
             };
             let exit = context.simulate_exception(exception);
-            handle(process, &mut context, exit)
+            handle_first(process, &mut context, exit)
         };
         let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
         let with_region = |pages: u64| {
@@ -2285,7 +2418,7 @@ mod tests {
         let mut context = called(1000, [0; 6]);
         let process = process_with_data(&kernel, b"ab");
         assert_eq!(
-            handle(&process, &mut context, UserExit::Interrupt),
+            handle_first(&process, &mut context, UserExit::Interrupt),
             ControlFlow::Continue(())
         );
         use ExceptionKind::*;
@@ -2328,7 +2461,7 @@ mod tests {
             assert_eq!(
                 {
                     let exit = context.simulate_exception(exception);
-                    handle(&process, &mut context, exit)
+                    handle_first(&process, &mut context, exit)
                 },
                 ControlFlow::Break(()),
                 "{kind:?} {class:#x}"
@@ -2436,7 +2569,7 @@ mod tests {
         }
         context.set_registers(&registers);
         context.simulate_syscall(number::RT_SIGRETURN, [0; 6], to + 4);
-        handle(process, context, UserExit::Syscall)
+        handle_first(process, context, UserExit::Syscall)
     }
 
     #[test]
@@ -2473,7 +2606,7 @@ mod tests {
         let mut interrupted = context.clone();
         interrupted.set_syscall_result(0);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.pc(), HANDLER);
@@ -2510,7 +2643,7 @@ mod tests {
                 Some(Attributes::USER_TEXT)
             );
         }
-        let blocked = || process.signals().lock().thread().blocked;
+        let blocked = || first_thread_signals(&process).blocked;
         assert_eq!(blocked(), bit(sigusr1) | bit(sigusr2));
         process
             .write_user_memory(sigmask, &bit(sigusr2).to_ne_bytes())
@@ -2541,7 +2674,7 @@ mod tests {
         let mut interrupted = context.clone();
         interrupted.set_syscall_result(0);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.syscall_arguments()[0], sigusr2);
@@ -2590,7 +2723,7 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
         context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert!((base..ALTERNATE_STACK_TOP).contains(&context.stack()));
@@ -2598,7 +2731,7 @@ mod tests {
         let mut code = [0; 4];
         process.read_user_memory(info + 8, &mut code).unwrap();
         assert_eq!(i32::from_ne_bytes(code), 0, "SI_USER");
-        let alternate = || process.signals().lock().thread().alternate_stack;
+        let alternate = || first_thread_signals(&process).alternate_stack;
         assert_eq!(alternate().size, 0);
         assert_eq!(
             handler_returns(&process, &mut context),
@@ -2610,7 +2743,7 @@ mod tests {
         context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
         set_handler(&process, sigusr1, restorer, 0);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2631,7 +2764,7 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, 0x10_0000);
         context.simulate_syscall(number::RT_SIGRETURN, [0; 6], 0x40_0004);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2646,7 +2779,7 @@ mod tests {
             let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
             context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
             assert_eq!(
-                handle(&process, &mut context, UserExit::Syscall),
+                handle_first(&process, &mut context, UserExit::Syscall),
                 ControlFlow::Break(())
             );
             assert_eq!(
@@ -2680,7 +2813,7 @@ mod tests {
     fn frames_hold_the_fp_simd_registers_and_rt_sigreturn_loads_them() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
-        thread::start::<P>().unwrap();
+        crate::thread::start::<P>().unwrap();
         let sigusr1 = 10u64;
         let flags = signals::flag::SIGINFO
             | if signals::HAS_RESTORER {
@@ -2693,7 +2826,7 @@ mod tests {
             let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x40);
             context.simulate_syscall(number::KILL, [pid, sigusr1, 0, 0, 0, 0], 0x40_0004);
             assert_eq!(
-                handle(process, &mut context, UserExit::Syscall),
+                handle_first(process, &mut context, UserExit::Syscall),
                 ControlFlow::Continue(())
             );
             let [_, _, ucontext, ..] = context.syscall_arguments();
@@ -2840,7 +2973,7 @@ mod tests {
             assert_eq!(
                 {
                     let exit = context.simulate_exception(exception);
-                    handle(&process, &mut context, exit)
+                    handle_first(&process, &mut context, exit)
                 },
                 ControlFlow::Continue(())
             );
@@ -2872,7 +3005,7 @@ mod tests {
             #[cfg(target_arch = "riscv64")]
             let _ = (reported, kernel_half);
             assert_eq!(
-                process.signals().lock().thread().blocked,
+                first_thread_signals(&process).blocked,
                 1 << (sigsegv - 1)
             );
             assert_eq!(
@@ -2884,7 +3017,7 @@ mod tests {
         let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
         context.simulate_syscall(number::TGKILL, [pid, pid, sigsegv, 0, 0, 0], 0x40_0004);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.pc(), HANDLER);
@@ -2895,7 +3028,7 @@ mod tests {
         assert_eq!(
             {
                 let exit = context.simulate_exception(exception);
-                handle(&process, &mut context, exit)
+                handle_first(&process, &mut context, exit)
             },
             ControlFlow::Break(())
         );
@@ -2938,7 +3071,7 @@ mod tests {
             0x40_0004,
         );
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -2968,7 +3101,7 @@ mod tests {
             let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
             let exit = context.simulate_exception(exception(kind, class, 1 << 25, None));
             assert_eq!(
-                handle(&process, &mut context, exit),
+                handle_first(&process, &mut context, exit),
                 ControlFlow::Continue(())
             );
             assert_eq!(context.pc(), HANDLER);
@@ -3205,9 +3338,9 @@ mod tests {
             call(&process, number::TGKILL, [pid, pid, rt, 0, 0, 0]),
             eagain
         );
-        assert_eq!(process.signals().lock().thread().pending, 0);
+        assert_eq!(first_thread_signals(&process).pending, 0);
         assert_eq!(call(&process, number::KILL, [pid, rt, 0, 0, 0, 0]), 0);
-        assert_eq!(process.signals().lock().thread().pending, 1 << (rt - 1));
+        assert_eq!(first_thread_signals(&process).pending, 1 << (rt - 1));
     }
 
     #[test]
@@ -3232,7 +3365,7 @@ mod tests {
             0x40_0004,
         );
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.pc(), HANDLER);
@@ -3278,7 +3411,7 @@ mod tests {
                 0
             );
         }
-        let blocked = || process.signals().lock().thread().blocked;
+        let blocked = || first_thread_signals(&process).blocked;
         let mask = SCRATCH + 0x100;
         let during = bit(sigterm);
         process
@@ -3289,12 +3422,12 @@ mod tests {
         let mut interrupted = context.clone();
         interrupted.set_syscall_result(Errno::EINTR.result());
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.pc(), HANDLER);
         assert_eq!(context.syscall_arguments()[0], sigusr2);
-        assert_eq!(process.signals().lock().thread().pending, 0);
+        assert_eq!(first_thread_signals(&process).pending, 0);
         let in_sigusr1 = during | bit(sighup) | bit(sigusr1);
         assert_eq!(saved_mask(&process, &context), in_sigusr1);
         assert_eq!(blocked(), in_sigusr1 | bit(sigusr2));
@@ -3339,11 +3472,11 @@ mod tests {
                 call(&process, number::RT_SIGSUSPEND, [set, size, 0, 0, 0, 0]),
                 errno.result()
             );
-            assert_eq!(process.signals().lock().thread().blocked, before);
+            assert_eq!(first_thread_signals(&process).blocked, before);
         }
         let mut context = called(number::RT_SIGSUSPEND, [mask, 8, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -3385,7 +3518,7 @@ mod tests {
             .write_user_memory(mask, &0u64.to_ne_bytes())
             .unwrap();
         process.write_user_memory(timeout, &[0; 16]).unwrap();
-        let thread = || process.signals().lock().thread();
+        let thread = || first_thread_signals(&process);
         assert_eq!(
             call(&process, number::PPOLL, [fds, 1, timeout, mask, 8, 0]),
             1
@@ -3396,7 +3529,7 @@ mod tests {
         let mut interrupted = context.clone();
         interrupted.set_syscall_result(Errno::EINTR.result());
         assert_eq!(
-            handle(&process, &mut context, UserExit::Syscall),
+            handle_first(&process, &mut context, UserExit::Syscall),
             ControlFlow::Continue(())
         );
         assert_eq!(context.pc(), HANDLER);
@@ -3441,14 +3574,14 @@ mod tests {
             wait[8..].copy_from_slice(&wait_nanoseconds.to_ne_bytes());
             process.write_user_memory(timeout, &wait).unwrap();
             let mut context = called(number::PPOLL, [0, 0, timeout, mask, 8, 0]);
-            let flow = handle(&process, &mut context, UserExit::Syscall);
+            let flow = handle_first(&process, &mut context, UserExit::Syscall);
             if signal == sigchld {
                 assert_eq!(flow, ControlFlow::Continue(()));
                 assert_eq!(context.syscall_result(), 0);
                 let mut left = [0xffu8; 16];
                 process.read_user_memory(timeout, &mut left).unwrap();
                 assert_eq!(left, [0; 16]);
-                let thread = process.signals().lock().thread();
+                let thread = first_thread_signals(&process);
                 assert_eq!((thread.blocked, thread.pending), (before, 0));
             } else {
                 assert_eq!(flow, ControlFlow::Break(()));
@@ -3488,7 +3621,7 @@ mod tests {
             call(&process, number::PPOLL, [0, 0, timeout, mask, 8, 0]),
             Errno::EINTR.result()
         );
-        let thread = process.signals().lock().thread();
+        let thread = first_thread_signals(&process);
         assert_eq!((thread.blocked, thread.pending), (before, 0));
         let mut left = [0u8; 16];
         process.read_user_memory(timeout, &mut left).unwrap();
@@ -3789,7 +3922,7 @@ mod tests {
             assert_eq!(
                 {
                     let exit = context.simulate_exception(exception);
-                    handle(&process, &mut context, exit)
+                    handle_first(&process, &mut context, exit)
                 },
                 ControlFlow::Break(())
             );

@@ -416,6 +416,7 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
         .expect("the test program fits in memory");
     let context = Process::<P>::test_program_context(|program| program.linux_unknown_syscalls);
+    let mut linux_thread = linux::thread::LinuxThread::first(&program);
     let mut calls = 0;
     let Ok(thread) =
         process::spawn::<P, _>(Arc::new(program), context, move |process, context, exit| {
@@ -423,7 +424,7 @@ fn linux_syscall_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
                 calls += 1;
             }
             if calls < n {
-                linux::handle(process, context, exit)
+                linux::handle(process, &mut linux_thread, context, exit)
             } else {
                 ControlFlow::Break(())
             }

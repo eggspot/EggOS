@@ -39,7 +39,7 @@ use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
@@ -168,6 +168,10 @@ pub struct Process<P: Platform> {
     frame_offset: usize,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
     exit: SpinLock<Option<ProcessExit>>,
+    /// Set once [`Self::exit`] has run: its threads run no more of its program.
+    ended: AtomicBool,
+    /// Its threads that run its program and have not exited ([`Self::add_thread`]).
+    threads: AtomicU32,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
@@ -199,6 +203,13 @@ impl ProcessId {
     }
 }
 
+/// An id for a thread that is not a process's first (`clone`), from the processes' ids: Linux
+/// gives threads and processes ids from one space, the first thread's being its process's.
+/// `None` once every id has been given out.
+pub fn allocate_thread_id() -> Option<u32> {
+    ProcessId::allocate().map(ProcessId::get)
+}
+
 impl<P: Platform> Process<P> {
     /// A process with an empty address space sharing the kernel half of `kernel`.
     ///
@@ -221,6 +232,8 @@ impl<P: Platform> Process<P> {
             program_break: SpinLock::new(None),
             frame_offset,
             exit: SpinLock::new(None),
+            ended: AtomicBool::new(false),
+            threads: AtomicU32::new(0),
             id,
             credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
             signals: SpinLock::new(Signals::new()),
@@ -982,9 +995,32 @@ impl<P: Platform> Process<P> {
     }
 
     /// Records how the process ended, unless it already has: the first to end it wins (say,
-    /// two threads calling `exit_group`).
+    /// two threads calling `exit_group`). Its other threads stop running its program: each
+    /// other CPU is asked to look at its scheduler, which a thread of the process does before
+    /// it runs the program again ([`run`]), and a CPU running one in user mode is interrupted.
     pub fn exit(&self, how: ProcessExit) {
         self.exit.lock().get_or_insert(how);
+        self.ended.store(true, Ordering::Release);
+        if self.threads.load(Ordering::Acquire) > 1 {
+            interrupt_other_cpus::<P>();
+        }
+    }
+
+    /// Whether the process has ended ([`Self::exit`]): its threads end at their next system
+    /// call that blocks or their next return to user mode after an interrupt.
+    pub fn has_ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
+    }
+
+    /// Counts a thread that will run the process's program, before it starts.
+    pub fn add_thread(&self) {
+        self.threads.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Counts a thread out, as it exits or could not start: true if it was the last, which
+    /// then ends the process.
+    pub fn remove_thread(&self) -> bool {
+        self.threads.fetch_sub(1, Ordering::AcqRel) == 1
     }
 
     /// How the process ended, or `None` while it has not.
@@ -1063,7 +1099,9 @@ where
 {
     loop {
         // First, as it may switch threads: nothing may between loading and running.
-        thread::preemption_point_before_user_mode::<P>();
+        if thread::preemption_point_before_user_mode::<P>() && process.has_ended() {
+            break;
+        }
         process.load_here();
         // SAFETY: interrupts are masked, as the kernel runs. The process's address space is
         // loaded on this CPU, not stale, and shares the kernel's half (`Process::new`'s
@@ -1081,6 +1119,21 @@ where
     // If only CPUs still hold the process (this was its last thread), they let it go: this one
     // now, the others, woken, when they idle.
     address_space::release_ended::<P>(here, root);
+}
+
+/// Asks every other online CPU to look at its scheduler and interrupts it: a thread of an ended
+/// process that runs there in user mode comes back to the kernel, and one about to return to
+/// user mode, or switched in there next, looks first ([`run`]).
+#[cold]
+#[inline(never)]
+fn interrupt_other_cpus<P: Platform>() {
+    let here = cpu::current::<P>();
+    for &other in cpu::CPUS.all() {
+        if !core::ptr::eq(other, here) && other.is_online() {
+            other.request_reschedule();
+            cpu::wake::<P>(other);
+        }
+    }
 }
 
 /// For a thread's handler ([`spawn`]), on an exception of `kind`: whether it was the

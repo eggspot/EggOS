@@ -1490,15 +1490,20 @@ pub fn preemption_point<P: Platform>() {
 /// may find some it did not see itself (the thread before it exited, or switched to it from
 /// a yield or block, without looking), and their timer has fired already: unseen, nothing would
 /// arm it again or wake the sleepers while the program runs. As cheap as
-/// [`preemption_point`] when there is nothing to see.
+/// [`preemption_point`] when there is nothing to see. Returns whether the scheduler looked:
+/// the thread may have run on after a switch, or another CPU asked this one to look (an ended
+/// process's threads stop then, D91).
 #[inline]
-pub fn preemption_point_before_user_mode<P: Platform>() {
+#[must_use]
+pub fn preemption_point_before_user_mode<P: Platform>() -> bool {
+    let mut looked = false;
     loop {
         P::interrupt_window();
         if cpu::local_unseen_by_scheduler::<P>() == 0 {
-            return;
+            return looked;
         }
         preemption_point_timer_fired::<P>();
+        looked = true;
     }
 }
 

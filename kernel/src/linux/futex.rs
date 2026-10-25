@@ -47,6 +47,10 @@ impl Key {
         }
     }
 
+    fn space(self) -> u32 {
+        (self.space_and_kind >> 1) as u32
+    }
+
     fn bucket_index(self) -> usize {
         let mixed =
             (self.space_and_kind << 32 ^ self.address >> 2).wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -204,6 +208,32 @@ pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
             woken += 1;
         } else {
             previous = Some(candidate);
+        }
+    }
+    woken
+}
+
+/// Wakes every waiter in address space `space` (see [`Key::new`]), on any word, as an ended
+/// process's threads must stop waiting; returns how many it woke. Each wakes as from a
+/// [`wake`].
+pub fn wake_space<P: Platform>(space: u32) -> u32 {
+    let mut woken = 0;
+    for bucket in &BUCKETS {
+        let mut bucket = bucket.lock();
+        let mut previous = None;
+        let mut following = bucket.head;
+        while let Some(candidate) = following {
+            let link = bucket.link(candidate);
+            following = link.next;
+            if link.key.space() == space {
+                bucket.unlink(previous, candidate);
+                // SAFETY: a waiter in the bucket, in place while the bucket's lock is held;
+                // its parker is only read.
+                unsafe { candidate.as_ref() }.parker.unpark::<P>();
+                woken += 1;
+            } else {
+                previous = Some(candidate);
+            }
         }
     }
     woken

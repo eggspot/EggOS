@@ -71,6 +71,11 @@ impl UserContext {
         self.arch.stack()
     }
 
+    /// Sets the program's stack pointer, as `clone` does for a new thread's stack.
+    pub fn set_stack(&mut self, stack: u64) {
+        self.arch.set_stack(stack);
+    }
+
     /// After [`UserExit::Syscall`]: the system call's number.
     pub fn syscall_number(&self) -> u64 {
         self.arch.syscall_number()
@@ -453,6 +458,9 @@ pub(crate) mod aarch64 {
         pub(crate) fn stack(&self) -> u64 {
             self.sp
         }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.sp = stack;
+        }
         pub(crate) fn syscall_number(&self) -> u64 {
             self.x[8]
         }
@@ -550,6 +558,9 @@ pub(crate) mod riscv64 {
         }
         pub(crate) fn stack(&self) -> u64 {
             self.x[2]
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.x[2] = stack;
         }
         pub(crate) fn syscall_number(&self) -> u64 {
             self.x[17]
@@ -728,6 +739,9 @@ pub(crate) mod x86_64 {
         }
         pub(crate) fn stack(&self) -> u64 {
             self.rsp
+        }
+        pub(crate) fn set_stack(&mut self, stack: u64) {
+            self.rsp = stack;
         }
         pub(crate) fn syscall_number(&self) -> u64 {
             self.rax

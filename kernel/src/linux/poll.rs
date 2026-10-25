@@ -11,6 +11,7 @@
 //! pending signal interrupt it first (D71). Waking a poller early comes with the first
 //! descriptor whose readiness changes (console input, pipes).
 
+use super::thread::LinuxThread;
 use super::{Errno, ends_in_user_space, is_console, limits, signals};
 use crate::process::Process;
 use crate::thread;
@@ -114,7 +115,7 @@ pub fn poll<P: Platform>(
     } else {
         deadline_in::<P>(milliseconds as u64 * 1_000_000)
     };
-    match poll_fds(process, fds, count, deadline, false)? {
+    match poll_fds(process, fds, count, deadline, None)? {
         Polled::Ready(ready) => Ok(ready),
         Polled::Interrupted => unreachable!("a wait that is not interruptible was interrupted"),
     }
@@ -143,7 +144,11 @@ pub fn poll<P: Platform>(
 /// soft limit); `EFAULT` if the array is not the program's writable memory; `ENOMEM` if there
 /// is no memory to copy it. `nfds` is an `unsigned int`: the register's upper half is ignored.
 /// Sets the call's result; breaks when a signal ends the process.
-pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> ControlFlow<()> {
+pub fn ppoll<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
     let [fds, count, timeout, mask, set_size, _] = context.syscall_arguments();
     let Wait {
         requested_timeout,
@@ -156,15 +161,16 @@ pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
             return ControlFlow::Continue(());
         }
     };
-    let thread_mask = mask.map(|mask| signals::replace_blocked(process, mask));
+    let thread_mask = mask.map(|mask| signals::replace_blocked(process, thread, mask));
     loop {
-        let polled = poll_fds(process, fds, count, deadline, thread_mask.is_some());
+        let interruptible = thread_mask.map(|_| &*thread);
+        let polled = poll_fds(process, fds, count, deadline, interruptible);
         let time_left_written =
             write_back_time_left::<P>(process, timeout, &requested_timeout, deadline);
         let result = match polled {
             Ok(Polled::Interrupted) => {
                 context.set_syscall_result(Errno::EINTR.result());
-                if signals::deliver_restoring_mask(process, context, thread_mask)? {
+                if signals::deliver_restoring_mask(process, thread, context, thread_mask)? {
                     return ControlFlow::Continue(());
                 }
                 if time_left_written {
@@ -176,7 +182,7 @@ pub fn ppoll<P: Platform>(process: &Process<P>, context: &mut UserContext) -> Co
             Err(errno) => Err(errno),
         };
         if let Some(thread_mask) = thread_mask {
-            signals::replace_blocked(process, thread_mask);
+            signals::replace_blocked(process, thread, thread_mask);
         }
         context.set_syscall_result(result.unwrap_or_else(Errno::result));
         return ControlFlow::Continue(());
@@ -297,14 +303,14 @@ fn parse_timeout(bytes: [u8; TIMESPEC_SIZE]) -> Result<Option<u64>, Errno> {
 /// What both calls share once the timeout is a `deadline` (`None` for no wait): checks
 /// `count` against the open-file limit, copies the `struct pollfd`s at `fds` in once, fills in
 /// their returned events and copies them back, waiting until `deadline` if none reports any.
-/// When `interruptible`, a signal due before the wait ([`signals::is_due`]) interrupts it, as
-/// on Linux even with no deadline.
+/// When `interruptible` is the calling thread, a signal due to it before the wait
+/// ([`signals::is_due`]) interrupts it, as on Linux even with no deadline.
 fn poll_fds<P: Platform>(
     process: &Process<P>,
     fds: u64,
     count: u64,
     deadline: Option<Deadline>,
-    interruptible: bool,
+    interruptible: Option<&LinuxThread>,
 ) -> Result<Polled, Errno> {
     let count = u64::from(count as u32);
     let open_files = process
@@ -342,7 +348,7 @@ fn poll_fds<P: Platform>(
         entry[6..].copy_from_slice(&returned.to_ne_bytes());
         ready += u64::from(returned != 0);
     }
-    let interrupted = ready == 0 && interruptible && signals::is_due(process);
+    let interrupted = ready == 0 && interruptible.is_some_and(signals::is_due);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
         thread::sleep_until::<P>(deadline);
     }
