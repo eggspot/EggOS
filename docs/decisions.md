@@ -4316,6 +4316,14 @@ the license, by an explicit instruction recorded here.
   again and waits on, so a word that changed with no `FUTEX_WAKE` returns `EAGAIN` where Linux
   would sleep on; callers loop on `futex` anyway (a spurious return is allowed). Every other
   CPU is still interrupted for each signal sent (D95).
+- **Not yet.** The signal block records the first thread's wait slot once, when it starts the
+  second; `execve` (and `fork`), when they replace or copy a process's threads, must record
+  the new first thread's slot, or signals to it stop ending its waits (independent review).
+  `send_to_process` interrupts each thread with the signals lock held, which grows with the
+  thread count; taking the slots out and interrupting after the lock, as `send_to_thread`
+  does, goes with interrupting only the target's CPU. The std program's parked thread cannot
+  tell a restarted wait from one that returned (`park` loops); the host test checks the
+  restart.
 - **Tests.** HAL host test: a restarted call's program counter, number and arguments on the
   host's architecture. Kernel host tests: a signal sent by another thread interrupts
   `nanosleep` and a relative `clock_nanosleep` (handler runs, `rem` holds the time left, the
