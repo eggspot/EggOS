@@ -1093,6 +1093,12 @@ impl<P: Platform> Process<P> {
         self.sent_signals_waiting.store(waiting, Ordering::Relaxed);
     }
 
+    /// Whether signals sent to its threads wait to be taken in, as last set by
+    /// [`Self::set_sent_signals_waiting`].
+    pub fn sent_signals_waiting(&self) -> bool {
+        self.sent_signals_waiting.load(Ordering::Relaxed)
+    }
+
     /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise
     /// [`Self::interrupt_here_if_sent_signals_wait`].
     #[inline]

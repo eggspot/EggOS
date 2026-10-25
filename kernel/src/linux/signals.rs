@@ -186,6 +186,9 @@ pub struct ThreadSignals {
     pub pending: u64,
     /// The alternate stack for handlers with [`flag::ONSTACK`].
     pub alternate_stack: AlternateStack,
+    /// The signals `rt_sigtimedwait` waits for while it waits: a signal sent to the process
+    /// is taken in for them as for the unblocked ones ([`LockedSignals::take_in_sent`]).
+    pub waited: u64,
 }
 
 #[derive(Debug)]
@@ -208,7 +211,8 @@ struct Queued {
 }
 
 /// What one thread left for another in the process's block, which takes it in, in order
-/// ([`LockedSignals::take_in_sent`]), for the thread whose id is `thread`.
+/// ([`LockedSignals::take_in_sent`]), for the thread whose id is `thread`, or for the first
+/// thread that does not block it if `thread` is [`ANY_THREAD`].
 #[derive(Debug, Clone, Copy)]
 struct SentToThread {
     thread: u32,
@@ -228,6 +232,10 @@ impl SentToThread {
         matches!(self.sent, Sent::Signal(_))
     }
 }
+
+/// The tag of a signal sent to the process ([`Signals::send_to_process`]), which no thread
+/// id is.
+const ANY_THREAD: u32 = 0;
 
 fn signals_among(sent: &[SentToThread]) -> usize {
     sent.iter().filter(|sent| sent.is_signal()).count()
@@ -507,6 +515,7 @@ impl ThreadSignals {
                 size: 0,
                 autodisarm: false,
             },
+            waited: 0,
         }
     }
 
@@ -661,6 +670,64 @@ impl Signals {
         Ok(())
     }
 
+    /// Sends the signal `info` describes to the process, for the first of its threads that
+    /// takes it in without blocking it, or while waiting for it ([`LockedSignals::take_in_sent`]),
+    /// as Linux's shared pending signals. It counts toward `RLIMIT_SIGPENDING` as
+    /// [`Self::send_to_thread`] says, but a real-time signal sent with `kill` (a `si_code` of
+    /// 0 or more) is queued past the limit, as on Linux. What waits stays bounded: a standard
+    /// signal already waiting is not left again, and, as POSIX requires, `SIGCONT` removes
+    /// the stop signals waiting and a stop signal a `SIGCONT` waiting.
+    pub fn send_to_process(&mut self, info: Info, queue_limit: u64) -> Result<(), QueueFull> {
+        let signal = info.signal();
+        let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
+        block
+            .sent_to_threads
+            .try_reserve(1)
+            .map_err(|_| QueueFull)?;
+        if signal < FIRST_REAL_TIME {
+            if signal == SIGCONT {
+                block.remove_left_for(ANY_THREAD, STOP_SIGNALS);
+            } else if bit(signal) & STOP_SIGNALS != 0 {
+                block.remove_left_for(ANY_THREAD, bit(SIGCONT));
+            }
+            if block.is_left_for(ANY_THREAD, signal) {
+                return Ok(());
+            }
+            charge(&QUEUED_SIGNALS);
+        } else if info.code() >= 0 {
+            charge(&QUEUED_SIGNALS);
+        } else if !try_charge(&QUEUED_SIGNALS, queue_limit) {
+            return Err(QueueFull);
+        }
+        block.sent_to_threads.push(SentToThread {
+            thread: ANY_THREAD,
+            sent: Sent::Signal(info),
+        });
+        Ok(())
+    }
+
+    /// The signals sent to the process that no thread has taken in yet.
+    fn left_for_process(&self) -> u64 {
+        self.actions_and_queue.as_deref().map_or(0, |[block]| {
+            block
+                .sent_to_threads
+                .iter()
+                .filter(|left| left.thread == ANY_THREAD)
+                .fold(0, |set, left| match left.sent {
+                    Sent::Signal(info) => set | bit(info.signal()),
+                    Sent::Discard(_) => set,
+                })
+        })
+    }
+
+    /// The ids of the process's threads that [`Self::add_thread`] counted and that have not
+    /// exited: all but its first.
+    fn other_threads(&self) -> &[u32] {
+        self.actions_and_queue
+            .as_deref()
+            .map_or(&[], |[block]| &block.threads)
+    }
+
     /// How many signals and requests wait in the block for thread `id` to take them in.
     #[cfg(test)]
     pub fn left_for(&self, id: u32) -> usize {
@@ -706,7 +773,8 @@ impl LockedSignals<'_> {
     /// Sets `signal`'s action to `new`, without its unknown flags and with `SIGKILL` and
     /// `SIGSTOP` left out of its mask, and returns the action it had. The first change that
     /// changes anything makes the process's own table. An action that ignores the signal
-    /// discards it if pending, blocked or not, as POSIX requires.
+    /// discards it if pending, blocked or not, as POSIX requires, the thread's and the
+    /// process's ([`Signals::send_to_process`]).
     fn set_action(&mut self, signal: u32, new: Action) -> Result<Action, ChangeError> {
         let current = self.action(signal).ok_or(ChangeError::Invalid)?;
         if bit(signal) & UNBLOCKABLE != 0 {
@@ -728,6 +796,9 @@ impl LockedSignals<'_> {
         }
         if self.ignores(signal) {
             self.discard(bit(signal));
+            if let Some([block]) = self.actions_and_queue.as_deref_mut() {
+                block.remove_left_for(ANY_THREAD, bit(signal));
+            }
         }
         Ok(current)
     }
@@ -816,19 +887,30 @@ impl LockedSignals<'_> {
     /// Takes in what other threads left this one, in the order they left it: the signals they
     /// sent ([`Signals::send_to_thread`]), each as if sent now, and the signals ignored since
     /// ([`Self::discard_from_other_threads`]), whose pending instances are discarded, blocked
-    /// or not. Returns whether its pending signals changed.
+    /// or not; and the signals sent to the process ([`Signals::send_to_process`]) that it does
+    /// not block, and of those it blocks but waits for ([`ThreadSignals::waited`]), one, unless
+    /// one it waits for is pending already, so a signal is left for each other thread that
+    /// waits for it too. Returns whether its pending signals changed.
     pub fn take_in_sent(&mut self) -> bool {
         let before = self.thread.pending;
         let thread = self.id;
+        let wanted = !self.thread.blocked | self.thread.waited;
+        let is_for_this = move |sent: &SentToThread| match sent.sent {
+            _ if sent.thread == thread => true,
+            Sent::Signal(info) => sent.thread == ANY_THREAD && bit(info.signal()) & wanted != 0,
+            Sent::Discard(_) => false,
+        };
         if let Some([block]) = self.actions_and_queue.as_deref_mut()
-            && block
-                .sent_to_threads
-                .iter()
-                .any(|sent| sent.thread == thread)
+            && block.sent_to_threads.iter().any(is_for_this)
         {
             let mut left = core::mem::take(&mut block.sent_to_threads);
             left.retain(|sent| {
-                if sent.thread != thread {
+                if !is_for_this(sent) {
+                    return true;
+                }
+                let only_waited = sent.thread == ANY_THREAD
+                    && matches!(sent.sent, Sent::Signal(info) if bit(info.signal()) & self.thread.blocked != 0);
+                if only_waited && self.thread.pending & self.thread.waited != 0 {
                     return true;
                 }
                 match sent.sent {
@@ -1033,19 +1115,42 @@ impl LockedSignals<'_> {
         Ok(())
     }
 
-    /// What `rt_sigreturn` restores from a handler's frame: the blocked mask, without
-    /// `SIGKILL` and `SIGSTOP`, and the alternate stack the `stack_t` at `alternate_stack`
-    /// describes, unless changing it fails (the thread, whose stack pointer is `stack`, is on
-    /// its alternate stack, or the stack is invalid), which Linux ignores too.
+    /// What `rt_sigreturn` restores from a handler's frame: the blocked mask, as
+    /// [`Self::set_blocked`] sets it, and the alternate stack the `stack_t` at
+    /// `alternate_stack` describes, unless changing it fails (the thread, whose stack pointer
+    /// is `stack`, is on its alternate stack, or the stack is invalid), which Linux ignores too.
     fn restore(&mut self, blocked: u64, alternate_stack: [u8; STACK_SIZE], stack: u64) {
-        self.thread.blocked = blocked & !UNBLOCKABLE;
+        self.set_blocked(blocked);
         let (base, flags, size) = parse_stack(alternate_stack);
         let _ = self.change_alternate_stack(base, flags, size, stack);
     }
 
-    /// The pending signals that are blocked, as `rt_sigpending` reports them.
+    /// Blocks the signals in `blocked`, never `SIGKILL` or `SIGSTOP`, instead of the thread's,
+    /// and returns the ones it blocked before. A signal sent to the process that it no longer
+    /// blocks is taken in at once ([`Self::take_in_sent`]), as nothing else would tell the
+    /// thread to look for it.
+    pub fn set_blocked(&mut self, blocked: u64) -> u64 {
+        let previous = core::mem::replace(&mut self.thread.blocked, blocked & !UNBLOCKABLE);
+        let unblocked = previous & !self.thread.blocked;
+        if unblocked != 0 && unblocked & self.left_for_process() != 0 {
+            self.take_in_sent();
+        }
+        previous
+    }
+
+    /// Records the signals the thread waits for in `rt_sigtimedwait` ([`ThreadSignals::waited`]),
+    /// none once it no longer waits, taking in those sent to the process at once.
+    fn set_waited(&mut self, waited: u64) {
+        self.thread.waited = waited;
+        if waited != 0 && waited & self.left_for_process() != 0 {
+            self.take_in_sent();
+        }
+    }
+
+    /// The pending signals that are blocked, as `rt_sigpending` reports them: the thread's,
+    /// and those sent to the process that no thread has taken in yet.
     fn blocked_pending(&self) -> u64 {
-        self.thread.pending & self.thread.blocked
+        (self.thread.pending | self.left_for_process()) & self.thread.blocked
     }
 }
 
@@ -1237,16 +1342,16 @@ pub fn rt_sigprocmask<P: Platform>(
     };
     let previous = {
         let mut guard = process.signals().lock();
-        let signals = thread.signals(&mut guard);
-        let blocked = &mut signals.thread.blocked;
-        let previous = *blocked;
+        let mut signals = thread.signals(&mut guard);
+        let previous = signals.thread.blocked;
         if let Some((how, set)) = set {
-            *blocked = match how {
+            signals.set_blocked(match how {
                 how::BLOCK => previous | set,
                 how::UNBLOCK => previous & !set,
                 _ => set,
-            } & !UNBLOCKABLE;
+            });
         }
+        note_taken_in(process, &guard);
         previous
     };
     if let Some(address) = pointer(old) {
@@ -1410,6 +1515,50 @@ fn send_to_thread<P: Platform>(
     Ok(0)
 }
 
+/// Sends `signal` to the caller's process, as `kill` and `rt_sigqueueinfo` do: to the caller
+/// as [`send_to_self`] if it does not block the signal or is the process's only thread (Linux
+/// may pick any thread that does not block it); otherwise to the process, for the first of its
+/// threads that takes it in without blocking it ([`Signals::send_to_process`]), each of
+/// which is woken from a sleep and interrupted to look. `EAGAIN` as
+/// [`Signals::send_to_thread`] says.
+fn send_to_process<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    signal: u64,
+    info: impl FnOnce(u32) -> Info,
+) -> Result<u64, Errno> {
+    let number = signal as u32;
+    let for_caller = number == 0
+        || number as usize > COUNT
+        || thread.signal_state().blocked & bit(number) == 0
+        || process.threads() <= 1;
+    if for_caller {
+        return send_to_self(process, thread, signal, info);
+    }
+    take_in_sent(process, thread);
+    let queue_limit = queue_limit(process);
+    {
+        let mut signals = process.signals().lock();
+        signals
+            .send_to_process(info(number), queue_limit)
+            .map_err(|QueueFull| Errno::EAGAIN)?;
+        process.set_sent_signals_waiting(true);
+    }
+    process.record_signal_sent();
+    let caller = thread.id();
+    let first = process.id().get();
+    if first != caller && process.first_thread_status().is_none() {
+        super::thread::wake_sleep(process, first);
+    }
+    let signals = process.signals().lock();
+    for &id in signals.other_threads() {
+        if id != caller {
+            super::thread::wake_sleep(process, id);
+        }
+    }
+    Ok(0)
+}
+
 /// The process's id as a `pid_t`.
 fn own_id<P: Platform>(process: &Process<P>) -> i32 {
     // At most `i32::MAX` (`ProcessId`).
@@ -1422,7 +1571,8 @@ fn own_id<P: Platform>(process: &Process<P>) -> i32 {
 /// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
 /// is looked at, as on Linux; then `EINVAL` for a signal outside 0 to 64, and 0, which only
 /// checks the target. `pid` is a `pid_t`: the register's upper half is ignored. The signal's
-/// `siginfo_t` says `SI_USER` from the caller.
+/// `siginfo_t` says `SI_USER` from the caller. A thread of the process that does not block it
+/// takes it ([`Signals::send_to_process`]).
 pub fn kill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1436,7 +1586,7 @@ pub fn kill<P: Platform>(
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
-    send_to_self(process, thread, signal, |signal| {
+    send_to_process(process, thread, signal, |signal| {
         Info::sent(signal, code::USER, own as u32, uid)
     })
 }
@@ -1519,7 +1669,8 @@ fn is_reserved_for_kernel_and_kill(bytes: &[u8; KEPT_INFO_SIZE]) -> bool {
 /// the queued signals are at `RLIMIT_SIGPENDING`. Signal 0 only checks. The receiver gets the
 /// `siginfo_t` as written, with `signal` as its `si_signo` and only its first
 /// [`KEPT_INFO_SIZE`] bytes; Linux's `E2BIG` for a `si_code` it does not know with more bytes
-/// is not checked. `tgid` is a `pid_t`.
+/// is not checked. `tgid` is a `pid_t`. A thread of the process that does not block the signal
+/// takes it ([`Signals::send_to_process`]).
 pub fn rt_sigqueueinfo<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1536,7 +1687,7 @@ pub fn rt_sigqueueinfo<P: Platform>(
             Errno::ESRCH
         });
     }
-    send_to_self(process, thread, signal, |signal| {
+    send_to_process(process, thread, signal, |signal| {
         Info::queued(signal, bytes)
     })
 }
@@ -1578,7 +1729,8 @@ pub fn rt_tgsigqueueinfo<P: Platform>(
 /// until the `struct timespec` at `timeout` has passed (on the monotonic clock, rounded up to
 /// a clock tick), for good if that is null, not at all if it is zero, then fails with `EAGAIN`.
 /// A signal another thread sends wakes it: one in the set is taken, any other due one makes
-/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. As Linux,
+/// it fail with `EINTR` and is delivered (D95), and it waits on otherwise. A signal in the set
+/// sent to the process is taken too, one at a time, blocked or not (D96). As Linux,
 /// in this order: `EINVAL` if `sigsetsize` is not 8; `EFAULT` if the set is not the program's
 /// memory; `EFAULT` if `timeout` is not, and `EINVAL` for negative seconds or nanoseconds
 /// outside 0 to 999999999; then, with the signal taken, `EFAULT` if `info` is not the program's
@@ -1592,21 +1744,47 @@ pub fn rt_sigtimedwait<P: Platform>(
     set_size: u64,
 ) -> Result<u64, Errno> {
     let wanted = read_set(process, set, set_size)? & !UNBLOCKABLE;
-    take_in_sent(process, thread);
     let deadline = match pointer(timeout) {
         None => Some(u64::MAX),
         Some(address) => super::poll::deadline_in::<P>(
             super::poll::read_timeout(process, address)?.unwrap_or(u64::MAX),
         ),
     };
+    take_in_sent(process, thread);
+    set_waited(process, thread, wanted);
+    let taken = wait_for_signal(process, thread, wanted, deadline);
+    set_waited(process, thread, 0);
+    let taken = taken?;
+    if let Some(address) = pointer(info) {
+        process
+            .write_user_memory(address, &taken.to_bytes())
+            .map_err(|_| Errno::EFAULT)?;
+    }
+    Ok(u64::from(taken.signal()))
+}
+
+fn set_waited<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, waited: u64) {
+    let mut guard = process.signals().lock();
+    thread.signals(&mut guard).set_waited(waited);
+    note_taken_in(process, &guard);
+}
+
+/// [`rt_sigtimedwait`]'s wait, until `deadline` (`None` for a zero timeout): the signal in
+/// `wanted` it took.
+fn wait_for_signal<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    wanted: u64,
+    deadline: Option<u64>,
+) -> Result<Info, Errno> {
     let take = |thread: &mut LinuxThread| {
         thread
             .signals(&mut process.signals().lock())
             .take_waited(wanted)
     };
-    let taken = loop {
+    loop {
         if let Some(taken) = take(thread) {
-            break taken;
+            return Ok(taken);
         }
         let deadline = deadline.ok_or(Errno::EAGAIN)?;
         if is_due(thread) {
@@ -1618,13 +1796,7 @@ pub fn rt_sigtimedwait<P: Platform>(
         if super::thread::sleep_until::<P>(process, thread, deadline).is_break() {
             return Err(Errno::EINTR);
         }
-    };
-    if let Some(address) = pointer(info) {
-        process
-            .write_user_memory(address, &taken.to_bytes())
-            .map_err(|_| Errno::EFAULT)?;
     }
-    Ok(u64::from(taken.signal()))
 }
 
 /// The signal set at `address`, of `sigsetsize` bytes, as the calls that take one with no
@@ -1701,16 +1873,26 @@ fn suspend<P: Platform>(
 }
 
 /// Blocks the signals in `mask` (never `SIGKILL` or `SIGSTOP`) instead of the thread's, for a
-/// call that waits with a mask of its own, and returns the mask the thread had.
+/// call that waits with a mask of its own, and returns the mask the thread had
+/// ([`LockedSignals::set_blocked`]).
 pub fn replace_blocked<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
     mask: u64,
 ) -> u64 {
-    core::mem::replace(
-        &mut thread.signals(&mut process.signals().lock()).thread.blocked,
-        mask & !UNBLOCKABLE,
-    )
+    let mut guard = process.signals().lock();
+    let previous = thread.signals(&mut guard).set_blocked(mask);
+    note_taken_in(process, &guard);
+    previous
+}
+
+/// After the thread took in what waited for it, outside [`take_in_sent_now`]: once nothing
+/// waits in `signals`, the process's lock held, the threads switched back in no longer
+/// interrupt themselves to look ([`Process::set_sent_signals_waiting`]).
+fn note_taken_in<P: Platform>(process: &Process<P>, signals: &Signals) {
+    if process.sent_signals_waiting() && !signals.has_sent_to_threads() {
+        process.set_sent_signals_waiting(false);
+    }
 }
 
 /// Whether a signal is pending and not blocked: due, so a wait that has not started yet does
@@ -1735,9 +1917,7 @@ pub fn take_in_sent_now<P: Platform>(process: &Process<P>, thread: &mut LinuxThr
     thread.set_signals_seen(process.signals_sent());
     let mut guard = process.signals().lock();
     let changed = thread.signals(&mut guard).take_in_sent();
-    if !guard.has_sent_to_threads() {
-        process.set_sent_signals_waiting(false);
-    }
+    note_taken_in(process, &guard);
     changed
 }
 
@@ -1791,7 +1971,8 @@ pub fn deliver_restoring_mask<P: Platform>(
 }
 
 /// `rt_sigpending(set, sigsetsize)`: copies the thread's pending signals that are blocked (the
-/// others were delivered or wait for their handler) to `set`, its first `sigsetsize` bytes: as
+/// others were delivered or wait for their handler), with the process's that no thread took
+/// yet, to `set`, its first `sigsetsize` bytes: as
 /// on Linux, any size up to 8 is taken, a larger one is `EINVAL`, then `EFAULT` if `set` is
 /// not the program's writable memory.
 pub fn rt_sigpending<P: Platform>(
@@ -2009,11 +2190,13 @@ pub fn rt_sigreturn<P: Platform>(
     }) {
         Ok(saved) => {
             context.set_registers(&saved.registers);
-            thread.signals(&mut process.signals().lock()).restore(
+            let mut guard = process.signals().lock();
+            thread.signals(&mut guard).restore(
                 saved.blocked,
                 saved.alternate_stack,
                 context.stack(),
             );
+            note_taken_in(process, &guard);
             Ok(signal_frame::result(&saved.registers))
         }
         // As Linux, 0: only a `SIGSEGV` handler's frame can show it.

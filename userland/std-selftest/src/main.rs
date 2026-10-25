@@ -60,6 +60,8 @@ unsafe extern "C" {
     fn pthread_kill(thread: usize, signal: i32) -> i32;
     fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32;
     fn sigsuspend(mask: *const u64) -> i32;
+    fn kill(process: i32, signal: i32) -> i32;
+    fn getpid() -> i32;
     fn _exit(status: i32) -> !;
 }
 
@@ -69,12 +71,13 @@ const THREADS: u64 = 4;
 
 const SIGUSR1: i32 = 10;
 const SIG_BLOCK: i32 = 0;
+const SIG_UNBLOCK: i32 = 1;
 const SIGSET_WORDS: usize = 16;
 
 static HANDLED_BY: AtomicI32 = AtomicI32::new(0);
 static READY_TARGET: AtomicUsize = AtomicUsize::new(0);
 
-const CHECKS: [Check; 11] = [
+const CHECKS: [Check; 12] = [
     ("the arguments are the program's", arguments),
     ("the environment holds TERM", environment),
     ("a HashMap with random keys counts words", hash_map),
@@ -91,6 +94,10 @@ const CHECKS: [Check; 11] = [
     (
         "a signal sent to another thread runs its handler there",
         signals_between_threads,
+    ),
+    (
+        "a signal sent to the process runs its handler in a thread that does not block it",
+        signals_to_the_process,
     ),
 ];
 
@@ -352,6 +359,50 @@ fn signals_between_threads() -> bool {
     let sent_to_runner = send_when_ready();
     let runner_handled = runner.join().unwrap_or(false);
     sent_to_waiter && waiter_handled && sent_to_runner && runner_handled
+}
+
+fn change_mask(how: i32, signal: i32) {
+    let mut set = [0u64; SIGSET_WORDS];
+    set[0] = 1 << (signal - 1);
+    // SAFETY: `set` is a `sigset_t`-sized array that lives across the call.
+    unsafe { pthread_sigmask(how, set.as_ptr(), std::ptr::null_mut()) };
+}
+
+fn kill_own_process_when_ready() -> bool {
+    while READY_TARGET.swap(0, Ordering::SeqCst) == 0 {
+        std::thread::yield_now();
+    }
+    // SAFETY: `getpid` has no preconditions.
+    let own = unsafe { getpid() };
+    // SAFETY: `kill` has no preconditions.
+    unsafe { kill(own, SIGUSR1) == 0 }
+}
+
+fn signals_to_the_process() -> bool {
+    // SAFETY: as in `signals_between_threads`.
+    unsafe { signal(SIGUSR1, record_handling_thread) };
+    change_mask(SIG_BLOCK, SIGUSR1);
+    let waiter = std::thread::spawn(|| {
+        publish_self_as_target();
+        let none = [0u64; SIGSET_WORDS];
+        // SAFETY: `none` is a `sigset_t`-sized array that lives across the call.
+        unsafe { sigsuspend(none.as_ptr()) };
+        handled_here()
+    });
+    let sent_for_waiter = kill_own_process_when_ready();
+    let waiter_handled = waiter.join().unwrap_or(false);
+    let runner = std::thread::spawn(|| {
+        change_mask(SIG_UNBLOCK, SIGUSR1);
+        publish_self_as_target();
+        while !handled_here() {
+            std::thread::yield_now();
+        }
+        true
+    });
+    let sent_for_runner = kill_own_process_when_ready();
+    let runner_handled = runner.join().unwrap_or(false);
+    change_mask(SIG_UNBLOCK, SIGUSR1);
+    sent_for_waiter && waiter_handled && sent_for_runner && runner_handled && !handled_here()
 }
 
 fn realtime_clock() -> bool {

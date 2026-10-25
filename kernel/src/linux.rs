@@ -4926,4 +4926,205 @@ mod tests {
             Errno::ESRCH.result()
         );
     }
+
+    fn block_signals_in(process: &Arc<Process<P>>, thread: &mut LinuxThread, set: u64) {
+        let address = SCRATCH + 0x300;
+        process
+            .write_user_memory(address, &set.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call_as(
+                process,
+                thread,
+                number::RT_SIGPROCMASK,
+                [0, address, 0, 8, 0, 0]
+            ),
+            0
+        );
+    }
+
+    fn blocked_pending(process: &Arc<Process<P>>, thread: &mut LinuxThread) -> u64 {
+        let set = SCRATCH + 0x380;
+        assert_eq!(
+            call_as(process, thread, number::RT_SIGPENDING, [set, 8, 0, 0, 0, 0]),
+            0
+        );
+        let mut bytes = [0; 8];
+        process.read_user_memory(set, &mut bytes).unwrap();
+        u64::from_ne_bytes(bytes)
+    }
+
+    #[test]
+    fn a_signal_sent_to_the_process_goes_to_a_thread_that_does_not_block_it() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let mut second = second_thread(&process, &first, 0);
+        let sigusr1 = 10u64;
+        block_signals_in(&process, &mut first, 1 << (sigusr1 - 1));
+        let sent = process.signals_sent();
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr1, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_ne!(process.signals_sent(), sent);
+        assert_eq!(first.signal_state().pending, 0);
+        assert_eq!(blocked_pending(&process, &mut first), 1 << (sigusr1 - 1));
+        assert_eq!(second.signal_state().pending, 0);
+        let mut context = called(number::GETPID, [0; 6]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Interrupt),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed { signal: 10 })
+        );
+    }
+
+    #[test]
+    fn a_signal_every_thread_blocks_waits_for_one_that_waits_for_it_or_unblocks_it() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (rt, sigusr2) = (40u64, 12u64);
+        let blocked = 1u64 << (rt - 1) | 1 << (sigusr2 - 1);
+        let mut first = take_first_thread(&process);
+        block_signals_in(&process, &mut first, blocked);
+        let mut second = second_thread(&process, &first, 0);
+        let (info, waited, set) = (SCRATCH, SCRATCH + 0x100, SCRATCH + 0x200);
+        for value in [0x11, 0x22] {
+            write_siginfo(&process, info, signals::code::QUEUE, value);
+            assert_eq!(
+                call_as(
+                    &process,
+                    &mut first,
+                    number::RT_SIGQUEUEINFO,
+                    [pid, rt, info, 0, 0, 0]
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr2, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(!signals::take_in_sent(&process, &mut second));
+        assert_eq!(second.signal_state().pending, 0);
+        assert_eq!(blocked_pending(&process, &mut second), blocked);
+
+        process
+            .write_user_memory(set, &(1u64 << (rt - 1)).to_ne_bytes())
+            .unwrap();
+        let no_wait = SCRATCH + 0x280;
+        process.write_user_memory(no_wait, &[0; 16]).unwrap();
+        let wait = |thread: &mut LinuxThread| {
+            let taken = call_as(
+                &process,
+                thread,
+                number::RT_SIGTIMEDWAIT,
+                [set, waited, no_wait, 8, 0, 0],
+            );
+            (taken, read_siginfo(&process, waited).2)
+        };
+        assert_eq!(wait(&mut second), (rt, 0x11));
+        assert_eq!(second.signal_state().waited, 0);
+        assert_eq!(wait(&mut first), (rt, 0x22));
+        assert_eq!(first.signal_state().pending, 0);
+        assert_eq!(second.signal_state().pending, 0);
+        assert_eq!(process.signals().lock().left_for(0), 1);
+
+        let unblock = SCRATCH + 0x300;
+        process
+            .write_user_memory(unblock, &(1u64 << (sigusr2 - 1)).to_ne_bytes())
+            .unwrap();
+        let mut context = called(number::RT_SIGPROCMASK, [1, unblock, 0, 8, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed { signal: 12 })
+        );
+    }
+
+    #[test]
+    fn a_signal_sent_to_the_process_waits_once_and_ignoring_it_discards_it() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let (sigusr1, sigcont, sigtstp) = (10u64, 18u64, 20u64);
+        let blocked = 1u64 << (sigusr1 - 1) | 1 << (sigcont - 1) | 1 << (sigtstp - 1);
+        let mut first = take_first_thread(&process);
+        block_signals_in(&process, &mut first, blocked);
+        let mut second = second_thread(&process, &first, 0);
+        let mut kill = |signal: u64| {
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, signal, 0, 0, 0, 0],
+            )
+        };
+        for _ in 0..100 {
+            assert_eq!(kill(sigusr1), 0);
+        }
+        assert_eq!(kill(sigtstp), 0);
+        assert_eq!(kill(sigcont), 0);
+        assert_eq!(process.signals().lock().left_for(0), 2);
+        assert_eq!(kill(sigtstp), 0);
+        assert_eq!(
+            blocked_pending(&process, &mut second),
+            1 << (sigusr1 - 1) | 1 << (sigtstp - 1)
+        );
+        let action = SCRATCH + 0x400;
+        let words = [signals::IGNORE, 0, 0, 0];
+        process
+            .write_user_memory(action, &words.map(u64::to_ne_bytes).concat())
+            .unwrap();
+        assert_eq!(
+            call_as(
+                &process,
+                &mut second,
+                number::RT_SIGACTION,
+                [sigusr1, action, 0, 8, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(blocked_pending(&process, &mut second), 1 << (sigtstp - 1));
+        assert_eq!(process.signals().lock().left_for(0), 1);
+    }
+
+    #[test]
+    fn a_signal_the_only_thread_blocks_stays_its_own() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, pid) = process_with_stacks(&kernel);
+        let mut first = take_first_thread(&process);
+        let sigusr1 = 10u64;
+        block_signals_in(&process, &mut first, 1 << (sigusr1 - 1));
+        assert_eq!(
+            call_as(
+                &process,
+                &mut first,
+                number::KILL,
+                [pid, sigusr1, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(first.signal_state().pending, 1 << (sigusr1 - 1));
+        assert_eq!(process.signals().lock().left_for(0), 0);
+    }
 }
