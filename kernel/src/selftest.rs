@@ -1778,10 +1778,6 @@ fn linux_programs_built_with_rust_std_run<P: Platform>(
     run_rust_program(memory, &STD_PROGRAM)
 }
 
-/// A thread of a std program calls `exit` while its main thread sleeps in `nanosleep` and
-/// another waits on a futex: both stop, so the main thread's `join` returns and every frame
-/// is freed. A sleeper the process's end did not wake leaves the boot thread blocked, which
-/// the QEMU runner's timeout reports.
 fn linux_programs_end_from_a_thread_while_others_wait<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {

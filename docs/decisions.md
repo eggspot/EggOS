@@ -3961,7 +3961,7 @@ the license, by an explicit instruction recorded here.
   Host test `a_thread_of_an_ended_process_does_not_sleep`: after `exit_group`, an hour's
   `clock_nanosleep` and an `rt_sigsuspend` on another thread end that thread at once.
 - **Cost.** `futex_wait_wake_round_trip` is faster than on `main` (aarch64 466.05 → 457.05 ns,
-  riscv64 563.06 → 550.07, x86_64 482.03 → 473.03): a woken waiter's `Parker` is no longer
+  riscv64 563.06 → 550.07, x86_64 482.03 on `main`, 480.03 in the baseline → 473.03; `-icount` makes these exact): a woken waiter's `Parker` is no longer
   reached through a `&Waiter` held across the unpark, and those baseline lines are tightened.
   `linux_page_fault` reads 0.4–0.8% above its baseline on this branch and on `main` alike
   (aarch64 1384.65 against 1384.64 on `main`); nothing else moves. The sleeps themselves are
