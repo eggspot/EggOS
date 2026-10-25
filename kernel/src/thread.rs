@@ -658,11 +658,21 @@ impl Parker {
 
     /// Ends the park in [`Self::park_until`], or the next one if no thread is parked. The
     /// parked thread runs on its own CPU; that CPU's timer may still fire at the deadline,
-    /// and finds nothing due.
-    pub fn unpark<P: Platform>(&self) {
+    /// and finds nothing due. Takes a pointer, not a reference, because the parked thread may
+    /// drop the `Parker` as soon as it is marked unparked, before this call returns.
+    ///
+    /// # Safety
+    ///
+    /// `parker` points to a `Parker` that stays in place until it is marked unparked.
+    pub unsafe fn unpark<P: Platform>(parker: NonNull<Self>) {
+        let parker = parker.as_ptr();
         let mut schedulers = SCHEDULER.lock();
-        let parked = self.parked(&mut schedulers).take();
-        self.unparked.store(true, Ordering::Release);
+        // SAFETY: the `Parker` is in place until the store below, as the caller promises,
+        // and `parked` is reached only with the scheduler's lock held, which `schedulers`
+        // proves.
+        let parked = unsafe { (*UnsafeCell::raw_get(&raw const (*parker).parked)).take() };
+        // SAFETY: as above; nothing reaches the `Parker` after this store.
+        unsafe { (*parker).unparked.store(true, Ordering::Release) };
         let thread = match parked {
             Some(Parked::Untimed(thread)) => thread,
             Some(Parked::Sleeping(thread, cpu)) => {

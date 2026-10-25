@@ -1267,7 +1267,7 @@ pub fn rt_sigtimedwait<P: Platform>(
         Some(taken) => taken,
         None => {
             let deadline = deadline.ok_or(Errno::EAGAIN)?;
-            crate::thread::sleep_until::<P>(deadline);
+            let _ = super::thread::sleep_until::<P>(process, deadline);
             take().ok_or(Errno::EAGAIN)?
         }
     };
@@ -1347,7 +1347,7 @@ fn suspend<P: Platform>(
         None => thread.signal_state().blocked,
     };
     while !deliver_restoring_mask(process, thread, context, Some(thread_mask))? {
-        crate::thread::sleep_until::<P>(u64::MAX);
+        super::thread::sleep_until::<P>(process, u64::MAX)?;
     }
     ControlFlow::Continue(())
 }
@@ -1471,7 +1471,7 @@ fn deliver_with<P: Platform>(
             }
             // Stopped until `SIGCONT` or `SIGKILL`, which only another process could send:
             // none can reach it yet, so for good, as on Linux when no one sends either.
-            Some(Delivery::Stop(_)) => crate::thread::sleep_until::<P>(u64::MAX),
+            Some(Delivery::Stop(_)) => super::thread::sleep_until::<P>(process, u64::MAX)?,
             Some(Delivery::Handler {
                 signal,
                 action,

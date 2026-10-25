@@ -11,10 +11,9 @@
 //! pending signal interrupt it first (D71). Waking a poller early comes with the first
 //! descriptor whose readiness changes (console input, pipes).
 
-use super::thread::LinuxThread;
+use super::thread::{self, LinuxThread};
 use super::{Errno, ends_in_user_space, is_console, limits, signals};
 use crate::process::Process;
-use crate::thread;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
@@ -350,7 +349,7 @@ fn poll_fds<P: Platform>(
     }
     let interrupted = ready == 0 && interruptible.is_some_and(signals::is_due);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
-        thread::sleep_until::<P>(deadline);
+        let _ = thread::sleep_until::<P>(process, deadline);
     }
     process
         .write_user_memory(fds, array)

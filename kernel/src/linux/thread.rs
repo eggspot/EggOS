@@ -1,15 +1,39 @@
 //! Linux threads (D91): each thread's own state, its id, the address its exit clears and wakes
 //! (`set_tid_address`, `clone`'s `CLONE_CHILD_CLEARTID`) and its signal state, which it keeps
 //! in its loop and its system calls reach through the [`LinuxThread`] they are given; and
-//! [`clone`], which starts a thread of the caller's process.
+//! [`clone`], which starts a thread of the caller's process; and [`sleep_until`], where a
+//! Linux thread waits for time or for a signal until its process ends.
 
 use super::Errno;
+use super::futex;
 use super::signals::{LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
 use crate::thread::CpuPlacement;
 use alloc::sync::Arc;
+use core::ops::ControlFlow;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
+
+/// The word a sleeping Linux thread waits on in the futex table: past every user address, so
+/// no program's `futex` call can name it, and in its process's address space, so ending the
+/// process ([`futex::wake_space`]) ends every such sleep.
+const SLEEP_WORD: u64 = u64::MAX & !3;
+
+/// Sleeps the calling thread of `process` until the clock reaches `deadline`
+/// ([`Platform::clock_ticks`], `u64::MAX` for none) or the process ends: `Break` if it has
+/// ended, before or during the sleep, so the thread stops. Call it as a blocking system call
+/// runs: with interrupts masked and no lock held.
+pub fn sleep_until<P: Platform>(process: &Process<P>, deadline: u64) -> ControlFlow<()> {
+    let key = futex::Key::new(process.id().get(), SLEEP_WORD, false);
+    let _ = futex::wait::<P>(key, u32::MAX, deadline, || match process.has_ended() {
+        true => Err(Errno::ESRCH),
+        false => Ok(()),
+    });
+    match process.has_ended() {
+        true => ControlFlow::Break(()),
+        false => ControlFlow::Continue(()),
+    }
+}
 
 /// A Linux thread's own state. See the module documentation.
 #[derive(Debug)]

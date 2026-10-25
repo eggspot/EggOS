@@ -71,6 +71,14 @@ struct Bucket {
 // held.
 unsafe impl Send for Bucket {}
 
+impl Bucket {
+    fn unpark<P: Platform>(&mut self, waiter: NonNull<Waiter>) {
+        // SAFETY: a waiter unlinked from this bucket with its lock still held, so its thread
+        // has not returned: it is in place until the unpark marks its parker unparked.
+        unsafe { Parker::unpark::<P>(NonNull::from(&(*waiter.as_ptr()).parker)) };
+    }
+}
+
 struct Waiter {
     bitset: u32,
     parker: Parker,
@@ -200,11 +208,11 @@ pub fn wake<P: Platform>(key: Key, bitset: u32, limit: u32) -> u32 {
         let link = bucket.link(candidate);
         following = link.next;
         // SAFETY: a waiter in the bucket, in place while the bucket's lock is held; its
-        // bitset and parker are only read.
-        let waiter = unsafe { candidate.as_ref() };
-        if link.key == key && waiter.bitset & bitset != 0 {
+        // bitset is only read.
+        let waiter_bitset = unsafe { candidate.as_ref() }.bitset;
+        if link.key == key && waiter_bitset & bitset != 0 {
             bucket.unlink(previous, candidate);
-            waiter.parker.unpark::<P>();
+            bucket.unpark::<P>(candidate);
             woken += 1;
         } else {
             previous = Some(candidate);
@@ -227,9 +235,7 @@ pub fn wake_space<P: Platform>(space: u32) -> u32 {
             following = link.next;
             if link.key.space() == space {
                 bucket.unlink(previous, candidate);
-                // SAFETY: a waiter in the bucket, in place while the bucket's lock is held;
-                // its parker is only read.
-                unsafe { candidate.as_ref() }.parker.unpark::<P>();
+                bucket.unpark::<P>(candidate);
                 woken += 1;
             } else {
                 previous = Some(candidate);
@@ -282,15 +288,16 @@ pub fn requeue<P: Platform>(
             continue;
         }
         from_bucket.unlink(previous, candidate);
-        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held;
-        // its parker and bucket index are reached only through shared references.
-        let waiter = unsafe { candidate.as_ref() };
         if woken < wake_limit {
-            waiter.parker.unpark::<P>();
+            from_bucket.unpark::<P>(candidate);
             woken += 1;
             continue;
         }
-        waiter.bucket_index.store(to_index, Ordering::Release);
+        // SAFETY: a waiter that was in the bucket, in place while the bucket's lock is held;
+        // its bucket index is atomic.
+        unsafe { candidate.as_ref() }
+            .bucket_index
+            .store(to_index, Ordering::Release);
         match &mut to_bucket {
             Some(bucket) => bucket.push_back(candidate, to),
             None => from_bucket.push_back(candidate, to),
