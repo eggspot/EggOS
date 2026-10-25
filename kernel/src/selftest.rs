@@ -1814,11 +1814,19 @@ fn linux_programs_with_threads_run_on_every_cpu<P: Platform>(
 }
 
 /// One thread of the std program unmaps a page another writes in a loop on another CPU: the
-/// shootdown (D94) must make the writer fault at once.
+/// shootdown (D94) must make the writer fault at once. Needs two CPUs (the benchmarks boot
+/// one); with preemption on, so two threads placed on one CPU both run and the program says
+/// so instead of spinning for good.
 fn linux_threads_stop_using_a_page_unmapped_on_another_cpu<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    run_rust_program(memory, &STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD)
+    if cpu::CPUS.online() < 2 {
+        return Ok(());
+    }
+    thread::enable_preemption::<P>();
+    let result = run_rust_program(memory, &STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD);
+    thread::disable_preemption::<P>();
+    result
 }
 
 fn run_rust_program<P: Platform>(
