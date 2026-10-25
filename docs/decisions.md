@@ -3966,3 +3966,54 @@ the license, by an explicit instruction recorded here.
   `linux_page_fault` reads 0.4–0.8% above its baseline on this branch and on `main` alike
   (aarch64 1384.65 against 1384.64 on `main`); nothing else moves. The sleeps themselves are
   not on a benchmarked path; they take a futex bucket lock as well as the scheduler's.
+
+## D93 Robust futex lists: `set_robust_list` remembered, `get_robust_list`, released when a thread exits — Decided by the build loop (Linux's behaviour decided by research)
+- **Why.** The robust list is how a lock held by a thread that dies is handed on: the next
+  locker sees `EOWNERDEAD` instead of waiting for good. `set_robust_list` was checked and
+  ignored (D55), and `get_robust_list` was `ENOSYS`, which makes musl's
+  `pthread_mutexattr_setrobust` fail: musl asks for the list once before it allows robust
+  mutexes. D91 listed the list as next.
+- **Research (set_robust_list(2), get_robust_list(2), futex(2), the kernel's prose documents
+  on robust futexes and their ABI, musl's and glibc's mutex code; no kernel source).** The
+  head is three words: the first entry (the head's own address when empty), the signed
+  offset from each entry to its 32-bit lock word, and the entry being taken or released. An
+  entry's first word points to the next; bit 0 of a pointer marks the entry it points to as a
+  priority-inheritance lock. At a thread's exit, each lock word whose owner (the low 30 bits)
+  is the thread's id keeps its waiters bit (bit 31), gets the owner-died bit (bit 30) and no
+  owner, and if it had waiters one waiter on it as a shared futex is woken (never for a
+  priority-inheritance lock); the walk stops at the head, after 2048 entries (Linux's cap;
+  the ABI document's "more than a million" is a ceiling, not what Linux does), or at the
+  first word or pointer that is not the program's memory; the pending entry comes last, and
+  is skipped in the list so each lock is handled once. The walk comes before the
+  `CLONE_CHILD_CLEARTID` clear and wake: the head lives in the exiting thread's memory,
+  which a woken joiner may free. glibc waits on robust mutexes as shared futexes because the
+  kernel's wake is shared; musl registers the list only for process-shared robust mutexes
+  and releases its private ones itself in `pthread_exit`.
+- **What we do.** Each `LinuxThread` keeps its head (0 for none, as a new thread starts);
+  `set_robust_list` sets it after its length check (`EINVAL` unless 24, nothing else
+  checked). `get_robust_list(tid, head, length)` writes the head and 24 for the caller (tid 0
+  or its own id), `EFAULT` if either is not writable, `ESRCH` for another thread until one
+  thread can reach another's state, as `tkill` (D91). `exit` of a thread that leaves others
+  running walks its list (`futex::release_robust_list`) before the tid clear; a thread with
+  no list pays one compare, and nothing is added to the system-call path.
+- **Not yet.** The walk is skipped when the process ends (`exit_group`, a fatal signal, the
+  last thread's `exit`) and on `execve`: the lock words are the process's own memory and its
+  waiters are its own threads, which the end releases anyway (D92), so nothing can observe it
+  until memory is shared between processes, when every way a thread ends must walk it. A
+  word is read and then written, not swapped atomically: exact while a process's threads run
+  on one CPU and the kernel is not preempted (D91), and it needs a compare-and-exchange on
+  user memory once they spread. Another thread's list through `get_robust_list`, and the
+  credential check Linux makes for another process's, come with signals between threads.
+- **From the independent review, open.** A pending entry whose word is 0 (a thread that died
+  between unlocking and waking) should still wake one waiter: it matters once a thread can be
+  killed alone or the walk runs at the process's end. `execve`, when it comes, clears the
+  head. `get_robust_list` writes the head before the size, and a `next` that cannot be read
+  ends the walk before its entry's lock is released; both differ from Linux only for programs
+  passing bad pointers. No test watches the wake itself yet.
+- **Tests.** Host tests: `get_robust_list` for the caller (0 before `set_robust_list`, its
+  head after, with size 24), `ESRCH` for another thread's id, `EFAULT`; `set_robust_list`'s
+  `EINVAL` keeping the old head; an exit releasing its locks with a negative offset, the
+  waiters bit kept, a priority-inheritance entry released, another owner's lock untouched,
+  the pending entry released, the tid word cleared after; a list that loops ends at the cap
+  and still releases the pending entry; a pointer that is not memory ends the walk, the
+  pending entry included. Nothing in the QEMU self-tests uses a robust mutex yet.

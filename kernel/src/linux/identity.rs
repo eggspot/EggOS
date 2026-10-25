@@ -1,13 +1,13 @@
 //! Who a program is and where it runs (M6, D55): `getpid`, `getppid`, `gettid` and `uname`,
-//! and the thread bookkeeping C libraries and Rust's std do at startup, `set_tid_address`
-//! and `set_robust_list`.
+//! and the thread bookkeeping C libraries and Rust's std do at startup, `set_tid_address`,
+//! `set_robust_list` and `get_robust_list`.
 //!
 //! A process's first thread has the process's id, as on Linux, and the threads `clone` starts
 //! ids of their own (D91). The two bookkeeping calls register user memory the kernel touches
 //! when the thread exits: `set_tid_address`'s word is cleared and a futex there woken, which
-//! is how a thread waiting to join it learns it ended (see [`super::exit_thread`]); the robust
-//! list's futexes would be released, but the list is not remembered yet: it matters only for
-//! a thread that exits holding a lock shared with another.
+//! is how a thread waiting to join it learns it ended (see [`super::exit_thread`]); the locks
+//! on its robust list that it still holds are released, marked as their owner died, first
+//! ([`super::futex::release_robust_list`], D93).
 
 use super::Errno;
 use super::thread::LinuxThread;
@@ -94,15 +94,37 @@ pub fn set_tid_address(thread: &mut LinuxThread, address: u64) -> u64 {
     gettid(thread)
 }
 
-/// `set_robust_list(head, length)`: `EINVAL` unless `length` is the size of Linux's list head
-/// ([`ROBUST_LIST_HEAD_SIZE`]), as Linux; the head is not remembered yet (see the module
-/// documentation).
-pub fn set_robust_list(_head: u64, length: u64) -> Result<u64, Errno> {
-    if length == ROBUST_LIST_HEAD_SIZE {
-        Ok(0)
-    } else {
-        Err(Errno::EINVAL)
+/// `set_robust_list(head, length)`: the thread's robust futex list starts at `head` (0 for
+/// none); `EINVAL` unless `length` is the size of Linux's list head
+/// ([`ROBUST_LIST_HEAD_SIZE`]), as Linux, which checks nothing else.
+pub fn set_robust_list(thread: &mut LinuxThread, head: u64, length: u64) -> Result<u64, Errno> {
+    if length != ROBUST_LIST_HEAD_SIZE {
+        return Err(Errno::EINVAL);
     }
+    thread.set_robust_list(head);
+    Ok(0)
+}
+
+/// `get_robust_list(tid, head, length)`: writes the robust list head of thread `tid` (0 for
+/// the caller; a C `int`, so the low 32 bits) to `head` and the head's size to `length`, or
+/// `EFAULT` if either is not the program's writable memory. Another thread's id is `ESRCH`
+/// until a thread can reach another's state, as for `tkill` (D91).
+pub fn get_robust_list<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    tid: u64,
+    head: u64,
+    length: u64,
+) -> Result<u64, Errno> {
+    let tid = tid as u32;
+    if tid != 0 && tid != thread.id() {
+        return Err(Errno::ESRCH);
+    }
+    process
+        .write_user_memory(head, &thread.robust_list().to_ne_bytes())
+        .and_then(|()| process.write_user_memory(length, &ROBUST_LIST_HEAD_SIZE.to_ne_bytes()))
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(0)
 }
 
 /// `uname(buffer)`: copies `UTSNAME` to `buffer`, or `EFAULT` if it is not all the
@@ -135,13 +157,5 @@ mod tests {
         );
         assert_eq!(field(4), utsname::MACHINE);
         assert_eq!(field(5), "(none)");
-    }
-
-    #[test]
-    fn set_robust_list_takes_only_linux_s_head_size() {
-        assert_eq!(set_robust_list(0x1000, 24), Ok(0));
-        for length in [0, 16, 25, u64::MAX] {
-            assert_eq!(set_robust_list(0x1000, length), Err(Errno::EINVAL));
-        }
     }
 }
