@@ -562,9 +562,12 @@ fn memory_call<P: Platform>(
 /// grows by adds to the thread loop that it is inlined into (the loop's registers spill, and
 /// every system call pays). After a call that can make a signal due, the signal is delivered
 /// before the program runs again ([`signals::deliver`]), which may end the process: then it
-/// breaks. `rt_sigreturn` sets every register itself and returns the restored result
-/// register's value, so writing the result back changes nothing. The waits for a signal set
-/// their result and deliver it themselves.
+/// breaks: so do the sleeps, after which a signal another thread sent may be due, and the
+/// calls that may switch the thread out (`sched_yield`, `futex`), which take in what other
+/// threads sent meanwhile ([`signals::deliver_sent`]); the others pay nothing for it.
+/// `rt_sigreturn` sets every register itself and returns the restored result register's value,
+/// so writing the result back changes nothing. The waits for a signal set their result and
+/// deliver it themselves.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Arc<Process<P>>,
@@ -600,7 +603,10 @@ fn out_of_line_call<P: Platform>(
                 | number::CLOCK_NANOSLEEP => signals::deliver(process, thread, context),
                 #[cfg(target_arch = "x86_64")]
                 number::POLL => signals::deliver(process, thread, context),
-                _ => signals::deliver_sent(process, thread, context),
+                number::SCHED_YIELD | number::FUTEX => {
+                    signals::deliver_sent(process, thread, context)
+                }
+                _ => ControlFlow::Continue(()),
             }
         }
     };
