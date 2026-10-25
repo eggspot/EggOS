@@ -68,7 +68,7 @@ pub struct Cpu {
     ///
     /// [`AddressSpace::load_lazily`]: crate::address_space::AddressSpace::load_lazily
     pub(crate) lazily_loaded: SpinLock<Option<LazilyLoaded>>,
-    /// Shootdowns other CPUs have asked of this CPU since boot ([`request_shootdown`]): each
+    /// Shootdowns other CPUs have asked of this CPU since boot ([`Self::request_shootdown`]): each
     /// asks it to drop every user translation it has cached. Other CPUs add to it.
     shootdowns_requested: AtomicU64,
     /// [`Self::shootdowns_requested`] as it was when this CPU last dropped its user
@@ -361,7 +361,7 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
 /// waiting for a shootdown of its own, so a CPU that waits for this one with interrupts
 /// masked never waits for good. Two loads when nothing was asked.
 #[inline]
-pub fn serve_shootdowns<P: Platform>() {
+pub(crate) fn serve_shootdowns<P: Platform>() {
     let here = current::<P>();
     let requested = here.shootdowns_requested.load(Ordering::Acquire);
     if here.shootdowns_served.load(Ordering::Relaxed) != requested {
