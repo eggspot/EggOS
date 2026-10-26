@@ -560,10 +560,16 @@ fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let thread = linux::thread::LinuxThread::first(&program);
     let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0)
         .expect("/etc/motd is in the initramfs");
-    let file = thread.files().file(fd).expect("it was just opened");
     for _ in 0..n {
-        let read = linux::files::pread64(&program, &file, FILE_BENCH_MEMORY + 256, 64, 0)
-            .expect("the buffer is the program's");
+        let read = linux::files::pread64(
+            &program,
+            thread.files(),
+            black_box(fd),
+            FILE_BENCH_MEMORY + 256,
+            64,
+            0,
+        )
+        .expect("the buffer is the program's");
         black_box(read);
     }
 }

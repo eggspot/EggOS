@@ -17,7 +17,7 @@
 //! truncating or creating fails with `EROFS` as on a read-only Linux mount. A read copies
 //! the file's bytes straight from the archive in the kernel image to the program's buffer.
 
-use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
+use super::descriptors::{Descriptors, FileKind, OpenFile, open_file_limit, open_flag};
 use super::stat::at;
 use super::thread::LinuxThread;
 use super::{Errno, MAX_RW_COUNT};
@@ -315,14 +315,15 @@ pub fn read_regular<P: Platform>(
     }
 }
 
-/// `pread64(fd, buffer, count, offset)` on what `file` (descriptor `fd`'s) names: reads from
-/// `offset` without moving the description's. As Linux, in this order: `EINVAL` for a
-/// negative offset, `EBADF` unless open for reading, `ESPIPE` for the console, `EISDIR` for a
-/// directory, `EFAULT` if the buffer does not end within user space or nothing could be
-/// copied.
+/// `pread64(fd, buffer, count, offset)`: reads what descriptor `fd` names from `offset`
+/// without moving the description's offset. As Linux, in this order: `EINVAL` for a negative
+/// offset, `EBADF` unless `fd` is open for reading, `ESPIPE` for the console, `EFAULT` if the
+/// buffer does not end within user space, `EISDIR` for a directory, `EFAULT` if nothing could
+/// be copied.
 pub fn pread64<P: Platform>(
     process: &Process<P>,
-    file: &OpenFile,
+    files: &Descriptors,
+    fd: u64,
     buffer: u64,
     count: u64,
     offset: u64,
@@ -330,19 +331,20 @@ pub fn pread64<P: Platform>(
     if (offset as i64) < 0 {
         return Err(Errno::EINVAL);
     }
+    let file = files.file(fd)?;
     if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
         return Err(Errno::EBADF);
     }
-    let node = match file.kind() {
-        FileKind::Console => return Err(Errno::ESPIPE),
-        FileKind::Directory(_) => return Err(Errno::EISDIR),
-        FileKind::Regular(node) => *node,
-        FileKind::Path(_) => return Err(Errno::EBADF),
-    };
+    if *file.kind() == FileKind::Console {
+        return Err(Errno::ESPIPE);
+    }
     if !super::ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    copy_out(process, node, offset, buffer, count)
+    match file.kind() {
+        FileKind::Regular(node) => copy_out(process, *node, offset, buffer, count),
+        _ => Err(Errno::EISDIR),
+    }
 }
 
 /// `lseek`'s `whence` values (`SEEK_*`).

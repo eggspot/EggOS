@@ -307,36 +307,40 @@ pub struct MountReport {
     pub error: Option<initramfs::Error>,
 }
 
-/// Mounts the initramfs embedded in the kernel image as the root, unless a root is mounted
-/// already, and reports it. An archive that cannot be read leaves an empty root.
-pub fn mount_embedded_initramfs() -> MountReport {
+/// Mounts the initramfs embedded in the kernel image as the root and reports it; `None` if a
+/// root was mounted already. An archive that cannot be read leaves an empty root.
+pub fn mount_embedded_initramfs() -> Option<MountReport> {
+    if !ROOT.load(Ordering::Acquire).is_null() {
+        return None;
+    }
     let archive = initramfs::embedded();
     let (file_system, error) = match initramfs::Initramfs::parse(archive) {
         Ok(file_system) => (file_system, None),
         Err(error) => (initramfs::Initramfs::empty(), Some(error)),
     };
-    let nodes = file_system.node_count();
-    let file_system: &'static initramfs::Initramfs =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(file_system));
-    let mount = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mount {
-        root: Node::root_of(file_system),
-    }));
     let report = MountReport {
-        nodes,
+        nodes: file_system.node_count(),
         archive_size: archive.len(),
         error,
     };
+    let file_system = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(file_system));
+    // SAFETY: `file_system` came from `Box::into_raw` just above; it is freed below only if it
+    // is never published.
+    let root = Node::root_of(unsafe { &*file_system });
+    let mount = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mount { root }));
     match ROOT.compare_exchange(
         core::ptr::null_mut(),
         mount,
         Ordering::AcqRel,
         Ordering::Acquire,
     ) {
-        Ok(_) => report,
+        Ok(_) => Some(report),
         Err(_) => {
-            // SAFETY: `mount` came from `Box::into_raw` above and was never published.
+            // SAFETY: both came from `Box::into_raw` above and were never published.
             drop(unsafe { alloc::boxed::Box::from_raw(mount) });
-            report
+            // SAFETY: as above; nothing refers to it any more.
+            drop(unsafe { alloc::boxed::Box::from_raw(file_system) });
+            None
         }
     }
 }

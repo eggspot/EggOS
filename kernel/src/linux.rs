@@ -835,13 +835,7 @@ fn out_of_line_result<P: Platform>(
             second,
             stat::at::SYMLINK_NOFOLLOW,
         ),
-        number::PREAD64 => files::pread64(
-            process,
-            &*thread.files().file(first)?,
-            second,
-            third,
-            fourth,
-        ),
+        number::PREAD64 => files::pread64(process, thread.files(), first, second, third, fourth),
         number::GETDENTS64 => {
             files::getdents64(process, &*thread.files().file(first)?, second, third)
         }

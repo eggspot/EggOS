@@ -62,7 +62,9 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
                 }
-                report_root(console, vfs::mount_embedded_initramfs())?;
+                if let Some(report) = vfs::mount_embedded_initramfs() {
+                    report_root(console, report)?;
+                }
                 let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
                 // Benchmarks only mean something on a kernel that passed its self-tests.
                 #[cfg(feature = "qemu-bench")]
