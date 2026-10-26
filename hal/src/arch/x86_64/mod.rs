@@ -25,6 +25,8 @@ use crate::memory::{MemoryMap, PhysicalRange};
 use crate::paging::{self, KernelImage};
 use crate::{ExitStatus, Platform};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use eggos_drivers::pci::ecam::ecam_length;
+use eggos_drivers::pci::mcfg;
 use eggos_drivers::serial::{Ns16550, Uart};
 use port::PortIo;
 
@@ -660,6 +662,24 @@ impl Platform for X86_64 {
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
         region(timer::local_apic_registers());
         console_input::device_regions(region);
+    }
+
+    fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
+        acpi_table(signature)
+    }
+
+    fn device_apertures(aperture: &mut dyn FnMut(PhysicalRange)) {
+        let Some(mcfg) = acpi_table(b"MCFG") else {
+            return;
+        };
+        for region in mcfg::regions(mcfg) {
+            aperture(PhysicalRange::from_start_length(
+                region
+                    .base
+                    .saturating_add(u64::from(region.start_bus) << 20),
+                ecam_length(region.start_bus, region.end_bus),
+            ));
+        }
     }
 
     unsafe fn activate_page_tables(roots: &[u64]) {

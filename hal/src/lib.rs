@@ -142,12 +142,46 @@ pub trait Platform: 'static {
     /// set up the timer (as `kernel_main` runs).
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange));
 
+    /// Calls `aperture` for each range of device registers that the firmware's memory description
+    /// may cover but that the kernel must only reach as device memory, through a device window
+    /// (D110): the direct map leaves those pages out, so no page has two memory types (D33). On
+    /// x86_64, the PCI Express configuration space the `MCFG` names, which QEMU's loader lists as
+    /// reserved. The default: none.
+    fn device_apertures(_aperture: &mut dyn FnMut(PhysicalRange)) {}
+
+    /// The flattened device tree the firmware handed over (AArch64 and RISC-V), whole, for device
+    /// discovery (D110); `None` on a machine without one (the default) or when it is not valid.
+    /// The kernel only reads it.
+    fn device_tree() -> Option<&'static [u8]> {
+        None
+    }
+
+    /// The ACPI table with `signature` the firmware's root table lists (x86_64), its length and
+    /// checksum validated, for device discovery (D110): `MCFG` for PCI Express. `None` on a
+    /// machine without ACPI (the default) or without that table.
+    fn acpi_table(_signature: &[u8; 4]) -> Option<&'static [u8]> {
+        None
+    }
+
+    /// Whether a device-tree device that says neither `dma-coherent` nor `dma-noncoherent` has
+    /// coherent DMA: the architecture's convention (Linux's), true on RISC-V and false on Arm.
+    const DEVICE_TREE_DMA_COHERENT_BY_DEFAULT: bool = true;
+
+    /// Makes the kernel mappings just added to the active tables' device window (entries that
+    /// were invalid, D110) usable by this CPU from the next instruction on: on AArch64 the table
+    /// writes are completed for the walker (`dsb ishst; isb`), on RISC-V cached translations are
+    /// dropped (`sfence.vma`, a hart may cache invalid entries); x86 caches no invalid entries,
+    /// so the default does nothing. Other CPUs must not have reached `start..start + length`
+    /// before.
+    fn make_kernel_mappings_visible(_start: usize, _length: usize) {}
+
     /// Switches this CPU from the boot page tables to the page tables at physical addresses
     /// `roots` (one per [`paging::Format::ROOTS`]). The boot tables' identity map of the kernel
     /// is gone from then on: nothing is mapped in the low half.
     ///
     /// # Safety
-    /// The tables must be in [`Self::PageTableFormat`], stay unchanged and allocated for as long
+    /// The tables must be in [`Self::PageTableFormat`], stay unchanged (but for mappings added to
+    /// the device window, see [`Self::make_kernel_mappings_visible`]) and allocated for as long
     /// as they are active, and map at least: the kernel image at its virtual address (code
     /// executable, data and stack writable), every range of [`Self::physical_memory`] at
     /// [`Self::direct_map_offset`], and every [`Self::early_device_regions`] region at the same

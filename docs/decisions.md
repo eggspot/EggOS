@@ -5480,3 +5480,158 @@ the license, by an explicit instruction recorded here.
   first frame ≤ 100 ms, desktop ≤ 300 ms on the Mac's TCG, measured by the tests.
 - **Not in 0.3.0.** Selection and copy/paste, several windows, edge resize, the per-profile
   control side, a dock, launcher, settings, touch, anti-aliasing, a second font size.
+
+## D110 The driver model, device discovery and device windows — Decided by the build loop (the model's shape decided by research in issue #97's brief; the device window, the table on the heap, PCI id ranges and absent devices decided by research)
+
+- **What.** Item 11 of the v0.3.0 plan (D99), part 1, and slice 1 of issue #97 (M5): the
+  driver model, discovery from the device tree and from ACPI's `MCFG`, and device windows.
+  Slice 2, the virtio core, is D111. How to add a driver: docs/drivers.md.
+- **Drivers.** A driver is a `static` `DriverDescriptor`: a name, a probe pass, a match table
+  (`Compatible`, `PciId`, `PciIdRange`, `PciClass`, `AcpiHid`, `VirtioId`) and a probe
+  function taking `&mut dyn Probe` (the table, `map_window`, PCI configuration space, a
+  deadline on the platform clock). `devices::BUILTIN` lists the drivers cargo features build
+  in (`virtio`, `virtio-rng`; `qemu-test` enables them, the release kernel none yet), so a
+  driver not enabled is not linked (D18).
+- **Probing.** Passes run interrupt controllers, then buses, then devices; each offers every
+  unbound device, children added by an earlier driver included, to the driver whose match
+  ranks it best: a `compatible` string by its position in the device's list (most specific
+  first), so a board-specific driver beats a generic one whatever `BUILTIN`'s order; on PCI an
+  exact id 0, an id range 1, a class 2; equal ranks to the driver listed first. A probe binds
+  the device, refuses it with a reason the boot log prints, or says nothing is there
+  (`ProbeError::Absent`, an empty virtio-mmio slot), which leaves it unbound and is no failure.
+- **Discovery.** On aarch64 and riscv64, every enabled device-tree node with a `compatible`,
+  but the root and the CPUs: its `reg` with the parent's cells where every ancestor's `ranges`
+  is the identity, its first two interrupts decoded with their controller's
+  `#interrupt-cells` (`interrupts` through the inherited `interrupt-parent`, or
+  `interrupts-extended`), and its DMA coherence (`dma-coherent`, `dma-noncoherent`, else the
+  architecture's convention, Linux's: coherent on RISC-V, not on Arm). `Fdt::nodes` walks the
+  tree allocating nothing. On x86_64, the `MCFG`'s segment 0 ECAM window is mapped and every
+  function on its buses enumerated, bridges followed only to higher buses inside the range, each bus
+  scanned once (so a broken topology can neither loop nor list a function twice), memory BARs sized
+  with decoding off and status bits never written as ones, firmware's addresses kept. QEMU 10.2: 47
+  devices on aarch64 `virt`, 22 on riscv64 `virt`, 8 on q35.
+- **The table.** A `Vec` on the heap as large as what was found, boxed behind a null pointer
+  so its static costs nothing in the image (decided by research: a fixed 96-entry table, which
+  issue #97's brief suggested, cost 23 KiB of `.bss` on every machine and is far too small for
+  real ones, which have hundreds of devices; "no heap needed" did not forbid one, and
+  discovery runs after the heap is up). `devices::for_each` is the typed `devices` capability;
+  its CLI and MCP front-ends come with the MCP server (M10), a D22 gap of this release.
+- **Device windows** (decided by research). Drivers' registers are mapped at addresses of
+  their own: the device window is the root-level entry below the kernel image's (512 GiB on
+  AArch64 and x86_64, 1 GiB on RISC-V Sv39), whose next-level table is made with the kernel's
+  tables, so mappings added while they are active never change a root entry that user
+  address spaces copied (D45). Windows are handed out from its start, aligned to the largest
+  leaf the physical address allows (q35's 256 MiB ECAM takes 128 entries of 2 MiB), a block
+  inside pages already mapped reuses their window (QEMU's 32 virtio-mmio slots take 4 pages),
+  and they stay mapped. `Platform::make_kernel_mappings_visible` makes new entries usable on
+  the mapping CPU (`dsb ishst; isb`, `sfence.vma`, nothing on x86); windows are mapped at boot
+  on the boot CPU before any other starts. Options weighed: the direct map's addresses, as
+  D33's early devices use (a firmware range the direct map covers, such as q35's ECAM, which
+  QEMU's loader lists as reserved, would have two memory types, and 64-bit BARs may sit far
+  above RAM). The roadmap's "a device window behind a mapping call" is done for drivers.
+- **Apertures.** `Platform::device_apertures` names device registers the firmware's memory
+  map may cover; the direct map leaves them out as it does D38's early devices. x86_64 names
+  the `MCFG`'s ECAM, which the direct map mapped as cached normal memory before. The devices
+  self-test checks that no device register has a normal-memory alias.
+- **Matching virtio-pci** (decided by research). `PciIdRange` (0x1af4, 0x1040 to 0x107f)
+  instead of every function of the vendor, which would have probed legacy, transitional and
+  other 0x1af4 devices (ivshmem) only to refuse them.
+- **From issue #97's brief, decided by research there and kept:** static descriptors over a
+  dynamic registry (no heap, no linker tricks, the descriptors keep a loadable-module registry
+  possible); virtio-mmio on Arm and RISC-V, virtio-pci on x86 (no BAR allocator needed; PCI on
+  Arm and RISC-V later); MSI-X before the I/O APIC and the PLIC before AIA for device
+  interrupts (slice 3); AML deferred to M13; coherent DMA only at first (D111).
+- **Testing.** Host tests: the walker on QEMU 10.2's aarch64 and riscv64 trees (8 KiB each,
+  recompiled by `dtc` without QEMU's 1 MiB padding, in `hal/src/fdt/testdata/`) and on built
+  trees (nesting, `interrupts-extended`, disabled nodes, translating and missing `ranges`,
+  truncated and corrupt blobs); the platform bus on both trees; ECAM address math, the MCFG,
+  enumeration and BAR sizing on a fake configuration space; the capability walk; match
+  precedence and passes; device windows in active tables. QEMU self-test
+  `devices_are_discovered` on all three: the 32 or 8 virtio-mmio slots with their registers
+  and interrupts, the GIC and PL011 or the PLIC, q35's host bridge and the virtio-rng-pci
+  function with non-zero BARs, and no device register with a normal-memory alias.
+- **Cost.** Measured against `main` on the same machine. The release kernel, which enables no
+  driver yet, grows only by the model core and discovery: code and constants by 12.2 KiB on
+  aarch64, 10.6 KiB on riscv64 and 9.2 KiB on x86_64 (loaded size 476265 to 488530, 428944 to
+  439856 and 500541 to 510726 bytes), of which about 2.3 KiB on aarch64 is the property-name
+  match, kept inline for speed (a loop through `bcmp` saved 1.2 KiB but made the walk 18%
+  slower). Memory at run time: the device window's table (4 KiB) and the table of devices
+  (47 nodes of 240 bytes on aarch64 `virt`, 8 on q35), plus, on x86_64, the table mapping
+  ECAM with 2 MiB leaves. Boot to prompt stayed in `main`'s range (45 to 55 ms on aarch64, 60
+  to 75 on riscv64, 100 to 119 on x86_64 in four runs, D108). No existing benchmark moved by
+  more than 0.08% against `main`; `device_tree_walk` (75529 instructions on aarch64, 86792
+  on riscv64, 49163 on x86_64 for QEMU's 63-node aarch64 tree) is new in the baseline. A
+  lesson recorded for later statics: the first version kept the table and the virtio state
+  in statics whose initial bytes were not zero, so they went to `.data` between the heap's and
+  the frame allocator's statics, which then needed a base register each on RISC-V:
+  `heap_allocate_free_small` went from 57 to 60 instructions and `linux_fork` up 2.7% with no
+  heap code changed. Driver state is boxed behind null pointers now, all of it in `.bss`.
+- **Not yet.** Device interrupts for drivers (issue #97, slice 3); the GIC and UART addresses
+  from discovery instead of D12's; `ranges` translation; PCI on aarch64 and riscv64 (a BAR
+  allocator, GICv2m, AIA); ACPI devices beyond the `MCFG`; unmapping windows and unbinding
+  drivers (needs cross-CPU TLB shootdown for kernel mappings); the `devices` capability's CLI
+  and MCP front-ends (M10).
+
+## D111 The polled virtio core: virtio-mmio and virtio-pci, the split virtqueue, DMA regions and virtio-rng — Decided by the build loop (coherent DMA only decided by research in issue #97's brief)
+
+- **What.** Item 11 of the v0.3.0 plan (D99), part 1, and slice 2 of issue #97 (M8): the
+  virtio core that virtio-gpu (part 2) and virtio-input (item 12) build on, polled, proven by
+  virtio-rng on aarch64, riscv64 and x86_64.
+- **Transports.** One `Transport` trait that device drivers are generic over, in
+  `eggos-drivers` with host tests against fakes. virtio-mmio version 2 only: QEMU 10.2 still
+  makes virtio-mmio devices legacy unless told `-global virtio-mmio.force-legacy=false`
+  (checked: the property defaults to on), which xtask now passes; a legacy device is refused
+  with a message that names the option (checked by booting without it), and an empty slot is
+  absent whatever version it reads. Modern virtio-pci: the vendor capabilities (common,
+  notify, ISR, device, PCI configuration) read from the capability list, the BARs they name
+  mapped as device windows, memory decoding and bus mastering turned on; 16-bit fields
+  reached with 16-bit accesses (`RegisterIo` gains them), 64-bit ones as two 32-bit writes,
+  the notify offset checked against its region. QEMU gets `-device virtio-rng-device` on the
+  `virt` machines and `-device virtio-rng-pci,disable-legacy=on` on q35 in every run.
+- **Initialization.** Reset (status 0, read back until 0 or a deadline), `ACKNOWLEDGE`,
+  `DRIVER`, features (`VIRTIO_F_VERSION_1` required, `ACCESS_PLATFORM` accepted when offered,
+  as DMA addresses are physical ones), `FEATURES_OK` read back, the queues, `DRIVER_OK`;
+  `FAILED` on a refusal.
+- **The split virtqueue.** Descriptors, the available ring and the used ring in one DMA
+  region, reached only through raw volatile and atomic accesses, never references; indices
+  run free as wrapping `u16`s. Barriers per the spec: a release fence before the available
+  index is published, a full fence before the used ring's no-notify flag is read, an acquire
+  load of the used index before its element. Making a queue writes four words: free
+  descriptors come from a never-used counter, then a free list of returned chains (bounded by
+  the queue size, so a corrupt chain cannot loop). `DeviceSide` is the device's view, for host
+  tests and benchmarks.
+- **DMA regions.** `DmaRegion`: zeroed whole frames from the buddy allocator (D31), reached
+  through the direct map, the physical address as the device address (`DmaAddr`, kept apart
+  from CPU addresses so an IOMMU changes how regions are made, not drivers). Coherent devices
+  only: a probe refuses a non-coherent one (decided by research in issue #97's brief; cache
+  maintenance comes with hardware that needs it). A region goes back only with the
+  `ResetDone` proof that its device's status read back 0 after a reset; one dropped without it
+  is leaked, never freed under a device that may still write it.
+- **virtio-rng.** One request queue of 8 entries and a 1 KiB device-writable buffer in one
+  4 KiB region; a read posts the buffer, notifies if the device asks, polls the used ring
+  until a deadline (1 s), copies what the device wrote; a request still out when polling
+  stops is reclaimed first by the next read. The kernel's generator is not reseeded from it
+  yet (D56's follow-up).
+- **Testing.** 27 host tests of the virtio core against a fake transport and device: queue
+  wrap-around past 65536 requests, chain order and flags, a full queue, the reset handshake and
+  its timeout, feature negotiation and refusal, the status order, virtio-mmio probing (magic,
+  version 1 refused, empty slots), the PCI capabilities and register accesses, the queue
+  layout, the rng end to end. QEMU self-tests on all three: `virtio_rng_returns_bytes` (32
+  bytes twice, not zeros, not equal) and `dma_regions_are_zeroed_and_freed_after_reset` (a
+  region is whole aligned frames, zeroed, and given back; the rng device is reset, its region
+  freed, set up again on a fresh one and read, and the frames balance).
+- **Cost.** The virtio drivers are not in the release kernel yet (D18): only test and benchmark
+  kernels carry them. New gated benchmarks, in instructions under
+  `-icount` (docs/benchmarks.md): `virtqueue_submit_one` 47 on aarch64, 84 on riscv64, 55 on
+  x86_64; `virtqueue_round_trip_fake`, virtio-rng's read with a device that takes no time,
+  375, 353 and 233. The rng device takes one 4 KiB region and its transport a few hundred
+  bytes of heap.
+- **Not yet.** Interrupts instead of polling (issue #97, slice 3), event index, indirect
+  descriptors, more than one queue per device, the kernel's generator reseeded from
+  virtio-rng, virtio-gpu (item 11, part 2), virtio-input (item 12), virtio-blk (M7),
+  virtio-console and virtio-net, an IOMMU (virtio-iommu first), cache maintenance for
+  non-coherent DMA, the doorbell's ordering for real devices (Arm's `dmb osh`, RISC-V's
+  `fence w,o` rather than the full fence's `fence rw,rw`, for devices outside the CPUs'
+  coherence domain; real hardware, M13), and a used ring checked against the chains in flight,
+  so a faulty device cannot hand back a descriptor twice and corrupt the free list (found in
+  review).

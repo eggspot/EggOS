@@ -90,6 +90,16 @@ unsafe fn device_tree(address: usize) -> Option<(Fdt<'static>, usize)> {
     Some((Fdt::new(blob).ok()?, size))
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) unsafe fn device_tree_blob(address: usize) -> Option<&'static [u8]> {
+    // SAFETY: guaranteed by the caller.
+    let (_, size) = unsafe { device_tree(address) }?;
+    let virt = address.wrapping_add(CurrentPlatform::physical_memory_offset());
+    // SAFETY: `device_tree` checked the header and its size, which the caller guarantees are
+    // readable and not written while the kernel runs.
+    Some(unsafe { core::slice::from_raw_parts(virt as *const u8, size) })
+}
+
 /// The free memory the device tree at `address` describes: its RAM minus its reservations,
 /// the tree itself (the kernel reads it again for device discovery, M5) and the kernel image.
 /// Empty if there is no valid tree at `address`.

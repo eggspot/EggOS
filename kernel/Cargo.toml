@@ -6,12 +6,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-drivers = { path = "../drivers" }
 eggos-hal = { path = "../hal" }
 
 [lints]
 workspace = true
 
 [features]
-qemu-test = []
+virtio = []
+virtio-rng = ["virtio"]
+qemu-test = ["virtio-rng"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test"]

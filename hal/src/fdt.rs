@@ -1,14 +1,23 @@
 //! Reading a flattened device tree (FDT, "DTB"): the description of the machine that Arm and
-//! RISC-V firmware hands the kernel. Today the kernel reads what it needs to find its memory
-//! (the RAM in `/memory` nodes, and what the firmware reserved in the memory reservation block
-//! and `/reserved-memory`), its CPUs, the seeds in `/chosen`, and a hart's PLIC context. Full
-//! device discovery comes with the driver model (M5).
+//! RISC-V firmware hands the kernel. The kernel reads what it needs to find its memory (the RAM
+//! in `/memory` nodes, and what the firmware reserved in the memory reservation block and
+//! `/reserved-memory`), its CPUs, the seeds in `/chosen`, a hart's PLIC context, and every
+//! node for device discovery ([`Fdt::nodes`], the driver model's platform bus, M5).
 //!
 //! The format is from the public Devicetree Specification (v0.4, chapter 5): a 40-byte
 //! big-endian header, the memory reservation block (pairs of 64-bit address and size ending in
 //! a zero pair), and the structure block (a stream of 32-bit tokens, each node's properties
 //! before its children), whose property names live in the strings block. This module is
-//! architecture-independent and works on a byte slice.
+//! architecture-independent and works on a byte slice. It reads version 17 trees, the first
+//! with the structure block's size in the header, and requires the specification's alignment
+//! (the reservation block on 8 bytes, the structure block on 4), so every read is aligned, as
+//! the AArch64 kernel's `strict-align` build needs (D10).
+
+mod nodes;
+
+pub use nodes::{
+    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, Node,
+};
 
 use crate::memory::PhysicalRange;
 use crate::random::SeedSource;
@@ -24,12 +33,8 @@ const FDT_PROP: u32 = 3;
 const FDT_NOP: u32 = 4;
 const FDT_END: u32 = 9;
 
-/// The FDT version this reader understands: the tree's `version` must be at least this and
-/// its `last_comp_version` at most this.
 const SUPPORTED_VERSION: u32 = 17;
 
-/// Node levels tracked: the root, its children (memory nodes, `/reserved-memory`) and
-/// grandchildren (reserved regions). Deeper nodes are counted, not tracked.
 const MAX_DEPTH: usize = 3;
 
 /// Why a device tree was rejected.
@@ -71,12 +76,9 @@ impl<'a> Fdt<'a> {
     pub fn new(blob: &'a [u8]) -> Result<Self, Error> {
         let blob = blob.get(..total_size(blob)?).ok_or(Error::Truncated)?;
         let field = |offset| be32(blob, offset).ok_or(Error::Truncated);
-        // Version 17 added the structure block's size, which this reader relies on.
         if field(24)? > SUPPORTED_VERSION || field(20)? < SUPPORTED_VERSION {
             return Err(Error::UnsupportedVersion);
         }
-        // The specification aligns the reservation block to 8 bytes and the structure block
-        // to 4, so every read below is aligned (the AArch64 kernel is built `strict-align`, D10).
         if !field(16)?.is_multiple_of(8) || !field(8)?.is_multiple_of(4) {
             return Err(Error::Malformed);
         }
@@ -94,7 +96,6 @@ impl<'a> Fdt<'a> {
         Ok(Self {
             structure: section(8, Some(36))?,
             strings: section(12, Some(32))?,
-            // The reservation block has no size field; it ends at its zero entry.
             reservations: section(16, None)?,
         })
     }
@@ -120,11 +121,8 @@ impl<'a> Fdt<'a> {
         ram: &mut dyn FnMut(PhysicalRange),
         reserved: &mut dyn FnMut(PhysicalRange),
     ) -> Result<(), Error> {
-        /// What the walker knows about each open node.
         #[derive(Clone, Copy, Default)]
         struct Node<'a> {
-            /// Cells of the `reg` of this node's children (its own `#address-cells` and
-            /// `#size-cells`; 2 and 1 when absent, as the specification says).
             child_cells: (u32, u32),
             kind: Kind,
             reg: Option<&'a [u8]>,
@@ -136,13 +134,9 @@ impl<'a> Fdt<'a> {
             #[default]
             Other,
             Root,
-            /// A child of the root named `memory` or `memory@...`.
             NamedMemory,
-            /// A child of the root with any other name.
             RootChild,
-            /// `/reserved-memory`.
             ReservedMemory,
-            /// A child of `/reserved-memory`.
             Reserved,
         }
 
@@ -159,7 +153,6 @@ impl<'a> Fdt<'a> {
                     let parent = match depth.checked_sub(1) {
                         None => None,
                         Some(d) if d < MAX_DEPTH => Some(stack[d].kind),
-                        // Inside a node too deep to track: nothing of interest.
                         Some(_) => Some(Kind::Other),
                     };
                     let kind = match parent {
@@ -261,14 +254,12 @@ impl Fdt<'_> {
     /// `#address-cells` (the MPIDR affinity on Arm, the hart id on RISC-V). Other children,
     /// such as `cpu-map`, and ids wider than 64 bits are skipped.
     pub fn cpus(&self, cpu: &mut dyn FnMut(u64)) -> Result<(), Error> {
-        /// What the walker knows about an open child of `/cpus`.
         #[derive(Clone, Copy, Default)]
         struct Cpu<'a> {
             reg: Option<&'a [u8]>,
             is_cpu_type: bool,
             disabled: bool,
         }
-        // `/cpus`' `#address-cells`, once inside it; the specification's default otherwise.
         let mut address_cells = 2u32;
         let mut in_cpus = false;
         let mut child = Cpu::default();
@@ -402,14 +393,10 @@ impl<'a> Fdt<'a> {
     }
 }
 
-/// The `compatible` strings of a RISC-V PLIC.
 const PLIC_COMPATIBLES: [&[u8]; 2] = [b"riscv,plic0", b"sifive,plic-1.0.0"];
 
-/// The RISC-V interrupt cause a hart's supervisor external interrupt has, as a PLIC's
-/// `interrupts-extended` names it.
 const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 
-/// One token of the structure block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token<'a> {
     BeginNode(&'a [u8]),
@@ -418,8 +405,6 @@ enum Token<'a> {
 }
 
 impl<'a> Fdt<'a> {
-    /// The structure block's node and property tokens, in order, `FDT_NOP` skipped, until
-    /// `FDT_END`; an error ends them.
     fn tokens(&self) -> impl Iterator<Item = Result<Token<'a>, Error>> + 'a {
         let (structure, strings) = (self.structure, self.strings);
         let mut at = 0usize;
@@ -562,13 +547,11 @@ impl<'a> Fdt<'a> {
     }
 }
 
-/// The `/chosen` properties that hold seed material, and what each is.
 const SEED_PROPERTIES: [(&[u8], SeedSource); 2] = [
     (b"rng-seed", SeedSource::DeviceTreeRngSeed),
     (b"kaslr-seed", SeedSource::DeviceTreeKaslrSeed),
 ];
 
-/// The most seed properties [`take_seeds`] takes from one tree.
 const MAX_SEEDS: usize = 4;
 
 /// Hands each seed in `/chosen` of the tree at the start of `blob` (`rng-seed`, `kaslr-seed`)
@@ -582,7 +565,6 @@ pub fn take_seeds(
     blob: &mut [u8],
     seed: &mut dyn FnMut(SeedSource, &[u8]),
 ) -> Result<usize, Error> {
-    // (source, offset of the value in `blob`, its length)
     let mut found = [None; MAX_SEEDS];
     {
         let base = blob.as_ptr().addr();
@@ -604,9 +586,6 @@ pub fn take_seeds(
     for (source, start, length) in found.into_iter().flatten() {
         let value = start..start + length;
         seed(source, &blob[value]);
-        // The property's token, length and name offset precede the value; the walk above read
-        // the token after its padding, so the padded end is within the structure block, whose
-        // offset in the blob is 4-byte aligned. The value's words are overwritten too.
         let property = start - 12..align4(start + length);
         for word in blob[property].as_chunks_mut::<4>().0 {
             *word = FDT_NOP.to_be_bytes();
@@ -616,7 +595,6 @@ pub fn take_seeds(
     Ok(taken)
 }
 
-/// Decodes a `reg` property: (address, size) pairs of `cells` 32-bit cells each.
 fn decode_reg(
     reg: &[u8],
     (address_cells, size_cells): (u32, u32),
@@ -639,7 +617,6 @@ fn decode_reg(
     }
 }
 
-/// A big-endian number of 32-bit cells, if it fits in 64 bits.
 fn cells_value(cells: &[u8]) -> Option<u64> {
     let mut value = 0u64;
     for cell in cells.as_chunks::<4>().0 {
@@ -651,7 +628,6 @@ fn cells_value(cells: &[u8]) -> Option<u64> {
     Some(value)
 }
 
-/// The NUL-terminated string at `offset`, without its NUL.
 fn cstr(bytes: &[u8], offset: usize) -> Option<&[u8]> {
     let rest = bytes.get(offset..)?;
     let end = rest.iter().position(|&b| b == 0)?;
@@ -675,30 +651,29 @@ fn be64(bytes: &[u8], offset: usize) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// Builds device-tree blobs for tests, following the specification's layout.
     #[derive(Default)]
-    struct Builder {
+    pub(crate) struct Builder {
         structure: Vec<u8>,
         strings: Vec<u8>,
         reservations: Vec<(u64, u64)>,
     }
 
     impl Builder {
-        fn begin(&mut self, name: &str) -> &mut Self {
+        pub(crate) fn begin(&mut self, name: &str) -> &mut Self {
             self.token(FDT_BEGIN_NODE);
             self.structure.extend_from_slice(name.as_bytes());
             self.structure.push(0);
             self.pad();
             self
         }
-        fn end(&mut self) -> &mut Self {
+        pub(crate) fn end(&mut self) -> &mut Self {
             self.token(FDT_END_NODE);
             self
         }
-        fn prop(&mut self, name: &str, value: &[u8]) -> &mut Self {
+        pub(crate) fn prop(&mut self, name: &str, value: &[u8]) -> &mut Self {
             let offset = self.strings.len() as u32;
             self.strings.extend_from_slice(name.as_bytes());
             self.strings.push(0);
@@ -709,7 +684,7 @@ mod tests {
             self.pad();
             self
         }
-        fn cells(&mut self, name: &str, cells: &[u32]) -> &mut Self {
+        pub(crate) fn cells(&mut self, name: &str, cells: &[u32]) -> &mut Self {
             let value: Vec<u8> = cells.iter().flat_map(|c| c.to_be_bytes()).collect();
             self.prop(name, &value)
         }
@@ -721,7 +696,7 @@ mod tests {
                 self.structure.push(0);
             }
         }
-        fn build(&mut self) -> Vec<u8> {
+        pub(crate) fn build(&mut self) -> Vec<u8> {
             self.token(FDT_END);
             let reservations_offset = HEADER_LENGTH;
             let mut reservations = Vec::new();
@@ -764,7 +739,6 @@ mod tests {
         PhysicalRange::from_start_length(start, length)
     }
 
-    /// The shape of QEMU `virt`'s tree on RISC-V once OpenSBI has added its reservation.
     fn qemu_like() -> Vec<u8> {
         let mut b = Builder::default();
         b.reservations.push((0x8700_0000, 0x1000));
@@ -796,8 +770,6 @@ mod tests {
         b.build()
     }
 
-    /// QEMU `virt`'s RISC-V shape for interrupts: harts with their local interrupt controllers,
-    /// and a PLIC whose contexts go M-mode, S-mode for each hart in turn.
     fn with_plic(plic_first: bool, compatible: &[u8]) -> Vec<u8> {
         let mut b = Builder::default();
         b.begin("")
@@ -1004,8 +976,6 @@ mod tests {
         let fdt = Fdt::new(&blob).unwrap();
         let structure_offset = be32(&blob, 8).unwrap() as usize;
         let structure_size = be32(&blob, 36).unwrap() as usize;
-        // Every truncation and every single-byte corruption of the structure block is either
-        // read or rejected, never a panic or a hang.
         for cut in 0..structure_size {
             let short = Fdt {
                 structure: &fdt.structure[..cut],
@@ -1022,7 +992,6 @@ mod tests {
                 }
             }
         }
-        // Nesting deeper than the walker tracks is skipped, not a panic.
         let mut b = Builder::default();
         b.begin("")
             .cells("#address-cells", &[1])
@@ -1039,7 +1008,6 @@ mod tests {
             .end();
         let (ram, _) = memory_of(&b.build()).unwrap();
         assert_eq!(ram, [range(0x4000, 0x1000)]);
-        // An END_NODE without a node.
         let mut b = Builder::default();
         b.end();
         assert_eq!(memory_of(&b.build()).err(), Some(Error::Malformed));
@@ -1053,8 +1021,6 @@ mod tests {
 
     #[test]
     fn finds_enabled_cpus_in_order() {
-        // QEMU `virt`'s shape on RISC-V: one-cell hart ids, an interrupt controller inside each
-        // CPU and a `cpu-map` among them.
         let mut b = Builder::default();
         b.begin("")
             .cells("#address-cells", &[2])
@@ -1085,7 +1051,7 @@ mod tests {
             .end()
             .end()
             .end()
-            .end() // cpus
+            .end()
             .begin("memory@80000000")
             .prop("device_type", b"memory\0")
             .end()
@@ -1095,7 +1061,6 @@ mod tests {
 
     #[test]
     fn decodes_two_cell_cpu_ids_and_ignores_cpus_outside_cpus() {
-        // Arm: MPIDR affinity in two cells, Aff3 in the high one.
         let mut b = Builder::default();
         b.begin("")
             .begin("soc")
@@ -1138,8 +1103,6 @@ mod tests {
         assert_eq!(cpus_of(&b.build()), Err(Error::Malformed));
     }
 
-    /// A tree with QEMU `virt`'s `/chosen` seeds, the RNG seed of an odd length so its value
-    /// is padded, and a nested node with a property of the same name, which is not a seed.
     fn with_seeds() -> Vec<u8> {
         let mut b = Builder::default();
         b.begin("")
@@ -1194,7 +1157,6 @@ mod tests {
                 (SeedSource::DeviceTreeKaslrSeed, vec![0x5a; 8]),
             ]
         );
-        // The tree still reads, without the seeds; the rest is as it was.
         assert_eq!(
             chosen_of(&blob),
             [(b"bootargs".to_vec(), b"console=ttyS0\0".to_vec())]
@@ -1208,9 +1170,7 @@ mod tests {
                 .windows(8)
                 .any(|bytes| bytes == [0xa5; 8] || bytes == [0x5a; 8])
         );
-        // The nested property is not a seed and stays.
         assert!(blob.windows(4).any(|bytes| bytes == [0x77; 4]));
-        // Taking again finds nothing.
         assert_eq!(
             take_seeds(&mut blob, &mut |_, _| panic!("no seed left")),
             Ok(0)

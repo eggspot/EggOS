@@ -61,6 +61,28 @@ result is an instruction count per iteration (D27), gated against `benchmarks/ba
   and exits, and the parent goes on at the child's point of no return. Includes the children's
   start-ups and exits, the last ones waited for after the parent ends.
 
+## Drivers
+
+None of these allocates or touches a device, and they run before the user-mode benchmarks, so
+the frame allocator and the heap are as the other benchmarks expect (D111).
+
+- `virtqueue_submit_one`: what a virtio driver pays per request before the doorbell: a
+  one-buffer chain made available on the split virtqueue (a descriptor from the free list,
+  the ring slot, a release fence, the published index) and the notification check (a full
+  fence and the used ring's flag). The queue has 16384 entries in a static of the benchmark
+  kernel, more than the iterations, so nothing is ever completed; a full queue would be made
+  again (O(1)).
+- `virtqueue_round_trip_fake`: virtio-rng's read (D111) with a device that takes no time: the
+  driver submits a 32-byte device-writable buffer and checks for a notification, the fake
+  device (`virtio::queue::DeviceSide`) takes the chain, fills the bytes and returns it, the
+  driver pops it (freeing the chain) and copies the bytes out. Without the doorbell's MMIO
+  write and the device's own time, which an emulated device makes host-dependent.
+- `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
+  fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
+  nodes): the header checked, the token stream read, each node's context and the properties
+  discovery uses decoded, and the enabled nodes with a `compatible` counted. About what the
+  device-tree platform bus pays per walk at boot (it walks twice, D110).
+
 ## Host tests of the benchmarks
 
 The benchmarks' host tests run on a counting platform: its clock advances one tick per read,

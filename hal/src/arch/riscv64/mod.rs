@@ -443,6 +443,18 @@ impl Platform for Riscv64 {
         console_input::device_regions(region);
     }
 
+    fn device_tree() -> Option<&'static [u8]> {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_blob(device_tree()) }
+    }
+
+    fn make_kernel_mappings_visible(_start: usize, _length: usize) {
+        // SAFETY: a full fence orders the table writes before the walks that follow, and
+        // `sfence.vma` drops whatever this hart cached, invalid entries included; neither changes
+        // memory contents.
+        unsafe { core::arch::asm!("fence rw, rw", "sfence.vma", options(nostack)) };
+    }
+
     unsafe fn activate_page_tables(roots: &[u64]) {
         let [root] = roots else {
             panic!("Sv39 page tables have one root");

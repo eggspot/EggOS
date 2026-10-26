@@ -94,6 +94,12 @@ holds what used to be written in them.
   architectures, not a documented guarantee: a QEMU upgrade that changes it shows up as `.bss`
   failing). QEMU hands over zeroed memory, so without this the `.bss` self-test would pass even
   if the entry point never cleared `.bss`.
+- **Devices** (D110, D111). Every run (tests, benchmarks, `cargo xtask run`) gets a virtio
+  entropy device, `-device virtio-rng-device` on the Arm and RISC-V `virt` machines and
+  `-device virtio-rng-pci,disable-legacy=on` (modern only) on q35, which the self-tests read.
+  The `virt` machines also get `-global virtio-mmio.force-legacy=false`: QEMU (10.2 included)
+  still makes virtio-mmio devices legacy (version 1) by default, which EggOS refuses. A release
+  kernel has no virtio driver yet, so the device only shows in its device count.
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 

@@ -56,8 +56,15 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 /// [`Memory`]) returning `Err(reason)` on failure.
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
+fn virtio_rng_returns_bytes<P: Platform>(_memory: &mut Memory<P>) -> Result<(), &'static str> {
+    #[cfg(any(test, feature = "virtio-rng"))]
+    return crate::devices::selftest::virtio_rng_returns_bytes::<P>();
+    #[cfg(not(any(test, feature = "virtio-rng")))]
+    Ok(())
+}
+
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 48] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 51] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -81,6 +88,15 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 48] {
         (
             "heap_allocates_in_the_direct_map",
             heap_allocates_in_the_direct_map::<P>,
+        ),
+        (
+            "devices_are_discovered",
+            crate::devices::selftest::devices_are_discovered::<P>,
+        ),
+        ("virtio_rng_returns_bytes", virtio_rng_returns_bytes::<P>),
+        (
+            "dma_regions_are_zeroed_and_freed_after_reset",
+            crate::devices::selftest::dma_regions_are_zeroed_and_freed_after_reset::<P>,
         ),
         (
             "address_spaces_keep_user_pages_apart",

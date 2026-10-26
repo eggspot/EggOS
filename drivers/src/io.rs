@@ -9,6 +9,8 @@
 pub trait RegisterIo {
     fn read8(&self, offset: usize) -> u8;
     fn write8(&self, offset: usize, value: u8);
+    fn read16(&self, offset: usize) -> u16;
+    fn write16(&self, offset: usize, value: u16);
     fn read32(&self, offset: usize) -> u32;
     fn write32(&self, offset: usize, value: u32);
 }
@@ -66,6 +68,21 @@ impl RegisterIo for Mmio {
         let address = self.checked_address(offset, 1);
         // SAFETY: as in `read8`.
         unsafe { core::ptr::write_volatile(address as *mut u8, value) }
+    }
+
+    #[inline]
+    fn read16(&self, offset: usize) -> u16 {
+        let address = self.checked_address(offset, 2);
+        // SAFETY: `Mmio::new`'s contract makes every in-bounds offset a valid device register,
+        // and `checked_address` has checked bounds and 2-byte alignment.
+        unsafe { core::ptr::read_volatile(address as *const u16) }
+    }
+
+    #[inline]
+    fn write16(&self, offset: usize, value: u16) {
+        let address = self.checked_address(offset, 2);
+        // SAFETY: as in `read16`.
+        unsafe { core::ptr::write_volatile(address as *mut u16, value) }
     }
 
     #[inline]
@@ -151,6 +168,12 @@ pub(crate) mod fake {
         fn write8(&self, offset: usize, value: u8) {
             self.write(offset, value.into());
         }
+        fn read16(&self, offset: usize) -> u16 {
+            self.read(offset) as u16
+        }
+        fn write16(&self, offset: usize, value: u16) {
+            self.write(offset, value.into());
+        }
         fn read32(&self, offset: usize) -> u32 {
             self.read(offset)
         }
@@ -172,8 +195,10 @@ mod tests {
         let regs = unsafe { Mmio::new(block.as_mut_ptr() as usize, 16) };
         regs.write32(8, 0xdead_beef);
         regs.write8(4, 0x5a);
+        regs.write16(12, 0x1234);
         assert_eq!(regs.read32(8), 0xdead_beef);
         assert_eq!(regs.read8(4), 0x5a);
+        assert_eq!(regs.read16(12), 0x1234);
         assert_eq!(block[2], 0xdead_beef);
     }
 
