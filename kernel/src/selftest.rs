@@ -1381,7 +1381,7 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
         let handler = {
             let (stops, failure) = (stops.clone(), failure.clone());
             let mut walks = 0;
-            move |process: &mut Arc<Process<P>>, context: &mut UserContext, exit| {
+            move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
                 let fail = |reason| {
                     failure.lock().get_or_insert(reason);
                     ControlFlow::Break(())

@@ -32,7 +32,7 @@ use super::{Errno, futex, signals};
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind};
-use crate::{address_space, cpu, random, thread};
+use crate::{random, thread};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -509,7 +509,7 @@ impl InitialStack {
 
 /// `execve(path, argv, envp)`: [`execveat`] from the working directory with no flags.
 pub fn execve<P: Platform>(
-    process: &mut Arc<Process<P>>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
@@ -538,7 +538,7 @@ pub fn execve<P: Platform>(
 /// `ENOENT` for one that names an interpreter; `ENOMEM`. On success it does not return: the
 /// new program starts.
 pub fn execveat<P: Platform>(
-    process: &mut Arc<Process<P>>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
@@ -572,7 +572,7 @@ struct Prepared<P: Platform> {
 
 #[inline(never)]
 fn execute<P: Platform>(
-    process: &mut Arc<Process<P>>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
     request: Request,
@@ -582,8 +582,10 @@ fn execute<P: Platform>(
             if !process.end_for_exec() {
                 return ControlFlow::Break(());
             }
-            start(process, thread, context, prepared);
-            signals::deliver(process, thread, context)
+            let next = start(process, thread, context, prepared);
+            let _ = signals::deliver(&next, thread, context);
+            process.hand_over(next, context);
+            ControlFlow::Break(())
         }
         Err(errno) => {
             context.set_syscall_result(errno.result());
@@ -669,11 +671,11 @@ fn may_execute(attributes: &vfs::Attributes, credentials: &Credentials) -> bool 
 }
 
 fn start<P: Platform>(
-    process: &mut Arc<Process<P>>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
     prepared: Prepared<P>,
-) {
+) -> Arc<Process<P>> {
     let Prepared {
         image,
         context: started,
@@ -702,10 +704,7 @@ fn start<P: Platform>(
     thread::with_running_fp::<P, _>(|state| *state = FpState::new());
     image.add_thread();
     *context = started;
-    let old = core::mem::replace(process, Arc::new(image));
-    let root = old.address_space().root();
-    drop(old);
-    address_space::release_ended::<P>(cpu::current::<P>(), root);
+    Arc::new(image)
 }
 
 struct Strings {
