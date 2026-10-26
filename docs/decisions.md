@@ -5014,6 +5014,13 @@ the license, by an explicit instruction recorded here.
   and +0.52%. Each process the new benchmarks start runs code QEMU translates again, so a
   RISC-V benchmark boot no longer fits the boot tests' 30 s on CI's runners: benchmark boots
   get 90 s (`cargo xtask bench`), the other boot tests keep 30 s.
+- **Review fixes' cost (decided by research, D78).** A futex space per new memory (one
+  compare-and-swap) and the record's drop without recursion raised riscv64 `linux_fork` by
+  2.07% (112889.24 to 115232.84 ns, its baseline line moved) and `linux_exec_load` by 0.12% to
+  0.18% on all three (within the gate); aarch64 and x86_64 `linux_fork` moved less than 0.1%.
+  The few instructions added buy futex words that never collide between memories and a drop
+  that cannot overflow the kernel stack; most of the riscv64 shift, on code the per-page copy
+  does not share, is taken for a state-only shift of the kind D102 recorded.
 - **Decided by research: the memory's pointer is accepted (D78).** The remaining costs are the
   one dependent load of the shared memory per call, which Linux pays as the task's `mm`
   pointer; the sharing is what `vfork` and `posix_spawn` need (glibc's writes its error into

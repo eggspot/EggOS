@@ -57,7 +57,7 @@ riscv64 linux_dup3_close 201.11
 riscv64 linux_exec_load 31638.49
 riscv64 linux_execve 63908.08
 riscv64 linux_file_read 393.61
-riscv64 linux_fork 112889.24
+riscv64 linux_fork 115232.84
 riscv64 linux_mmap_munmap 376.08
 riscv64 linux_openat_close 1473.50
 riscv64 linux_page_fault 1430.28
