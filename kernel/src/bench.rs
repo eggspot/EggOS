@@ -20,6 +20,10 @@ use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
+use eggos_drivers::dma::DmaAddr;
+use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
+use eggos_drivers::virtio::rng as virtio_rng;
+use eggos_hal::fdt::Fdt;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 use eggos_hal::user::{UserContext, UserExit};
@@ -38,7 +42,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 33] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 36] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -80,6 +84,11 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 33] {
         }),
         ("random_fill_16", |_, n| random_fill::<P, 16>(n)),
         ("random_fill_4096", |_, n| random_fill::<P, 4096>(n)),
+        ("virtqueue_submit_one", |_, n| virtqueue_submit_one(n)),
+        ("virtqueue_round_trip_fake", |_, n| {
+            virtqueue_round_trip_fake(n)
+        }),
+        ("device_tree_walk", |_, n| device_tree_walk(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -154,6 +163,110 @@ fn random_fill<P: Platform, const N: usize>(n: u64) {
     for _ in 0..n {
         random::fill::<P>(&mut bytes);
         black_box(&mut bytes);
+    }
+}
+
+#[repr(C, align(4096))]
+struct QueueMemory<const BYTES: usize>(core::cell::UnsafeCell<[u8; BYTES]>);
+
+// SAFETY: only the virtqueue benchmarks reach the memory, through raw pointers, one at a time
+// on the one CPU the benchmarks run on.
+unsafe impl<const BYTES: usize> Sync for QueueMemory<BYTES> {}
+
+const SUBMIT_QUEUE_SIZE: u16 = 16384;
+const ROUND_TRIP_QUEUE_SIZE: u16 = virtio_rng::QUEUE_SIZE;
+const ROUND_TRIP_BUFFER: usize = 1024;
+const ROUND_TRIP_BYTES: usize = 32;
+
+static SUBMIT_QUEUE: QueueMemory<{ queue::memory_size(SUBMIT_QUEUE_SIZE) }> = QueueMemory(
+    core::cell::UnsafeCell::new([0; queue::memory_size(SUBMIT_QUEUE_SIZE)]),
+);
+static ROUND_TRIP_QUEUE: QueueMemory<4096> = QueueMemory(core::cell::UnsafeCell::new([0; 4096]));
+
+fn virtqueue_submit_one(n: u64) {
+    let memory = SUBMIT_QUEUE.0.get().cast::<u8>();
+    let new_queue = || {
+        // SAFETY: the static holds `memory_size(SUBMIT_QUEUE_SIZE)` bytes, page-aligned, which
+        // only this benchmark uses; with no device, its address stands for the device's.
+        unsafe { SplitQueue::new(memory, DmaAddr::new(memory as u64), SUBMIT_QUEUE_SIZE) }
+    };
+    let Ok(mut queue) = new_queue() else {
+        return;
+    };
+    let request = [Buffer {
+        addr: DmaAddr::new(0x1000),
+        len: 64,
+        device_writes: true,
+    }];
+    for _ in 0..n {
+        if queue.free_descriptors() == 0 {
+            let Ok(fresh) = new_queue() else {
+                return;
+            };
+            queue = fresh;
+        }
+        black_box(queue.submit(black_box(&request)).ok());
+        black_box(queue.should_notify());
+    }
+}
+
+fn virtqueue_round_trip_fake(n: u64) {
+    let memory = ROUND_TRIP_QUEUE.0.get().cast::<u8>();
+    let buffer = memory.wrapping_add(ROUND_TRIP_BUFFER);
+    // SAFETY: the static holds 4096 page-aligned bytes, the queue's `memory_size` of them first
+    // and the request buffer after them, which only this benchmark uses; the fake device reaches
+    // them at the CPU's addresses.
+    let queue =
+        unsafe { SplitQueue::new(memory, DmaAddr::new(memory as u64), ROUND_TRIP_QUEUE_SIZE) };
+    let Ok(mut queue) = queue else {
+        return;
+    };
+    // SAFETY: the same ring, set up just above; the device side lives no longer than the queue.
+    let mut device = unsafe { queue::DeviceSide::new(memory, ROUND_TRIP_QUEUE_SIZE) };
+    let request = [Buffer {
+        addr: DmaAddr::new(buffer as u64),
+        len: ROUND_TRIP_BYTES as u32,
+        device_writes: true,
+    }];
+    let mut bytes = [0u8; ROUND_TRIP_BYTES];
+    for i in 0..n {
+        if queue.submit(&request).is_err() {
+            return;
+        }
+        black_box(queue.should_notify());
+        if let Some(head) = device.next_available() {
+            let (addr, len, _, _) = device.descriptor(head);
+            for offset in 0..len as usize {
+                let byte = (addr.get() as *mut u8).wrapping_add(offset);
+                // SAFETY: the request buffer the driver posted, inside the static.
+                unsafe { byte.write_volatile(i as u8) };
+            }
+            device.put_used(head, len);
+        }
+        let Some(used) = queue.pop_used() else {
+            return;
+        };
+        for (offset, byte) in bytes.iter_mut().take(used.len as usize).enumerate() {
+            // SAFETY: the request buffer, which the fake device handed back.
+            *byte = unsafe { buffer.wrapping_add(offset).read_volatile() };
+        }
+        black_box(&mut bytes);
+    }
+}
+
+const DEVICE_TREE: &[u8] = include_bytes!("../../hal/src/fdt/testdata/qemu-aarch64-virt.dtb");
+
+fn device_tree_walk(n: u64) {
+    for _ in 0..n {
+        let Ok(tree) = Fdt::new(black_box(DEVICE_TREE)) else {
+            return;
+        };
+        let devices = tree
+            .nodes()
+            .filter_map(Result::ok)
+            .filter(|node| node.enabled && !node.compatible.is_empty())
+            .count();
+        black_box(devices);
     }
 }
 
