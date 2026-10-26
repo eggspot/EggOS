@@ -6132,6 +6132,11 @@ the license, by an explicit instruction recorded here.
   kernel, the tests or xtask reads DWARF (the benchmark investigations use symbols, with
   `llvm-objdump` and `llvm-nm`), so the release profile now has `strip = "debuginfo"`: symbols
   stay, no host path remains in the images, and the download shrinks about 5x (note 9).
+  The hosts still differ slightly, though no path is left: CI's release initramfs is 32 to
+  40 bytes smaller than this Mac's on each architecture, and CI's x86_64 image is 464 bytes
+  larger (602,800 bytes against 602,336); aarch64's and riscv64's images are equal. The
+  baseline holds CI's sizes, as its header asks, so both hosts pass; finding the codegen
+  difference between hosts is a follow-up.
 - **Screenshot.** `cargo xtask screenshot --arch <arch>` boots the release image headless,
   types `uname -a` and `ls /bin`, checks the display against the host's render (as the
   boot-to-prompt test does), and saves QMP's `screendump` as `docs/images/desktop.png` with our
@@ -6150,12 +6155,12 @@ the license, by an explicit instruction recorded here.
   command line the kernel does not parse yet (a follow-up); a clock the user's image carries
   always would print on every user's console.
 - **Measured** on this Mac (QEMU 10.2, release builds). Images without debug information:
-  aarch64 700,192 bytes, riscv64 797,688, x86_64 602,336 (the new `release_image_bytes`
-  lines; 3,290,704, 4,219,064 and 3,138,864 with it). Boot to prompt
+  aarch64 700,192 bytes, riscv64 797,688, x86_64 602,336 (602,800 on CI, the
+  `release_image_bytes` lines; 3,290,704, 4,219,064 and 3,138,864 with it). Boot to prompt
   under `-icount`: aarch64 1,011,024 ns, riscv64 839,900, x86_64 1,643,938 here, CI's
   1,007,440, 831,400 and 1,312,500 in the `boot_to_prompt` lines; wall clock with the
   display, from `cargo xtask release`: 85, 90 and 133 ms. The release kernel's code is unchanged (the clock exists only with the feature), so
   no existing benchmark moved beyond its gate and no other baseline line changed. The
   committed screenshot is 27,482 bytes.
-- **Follow-ups.** Run the PowerShell script in the Windows CI job; generate the what's-new
+- **Follow-ups.** Find why CI's and this Mac's builds differ by a few bytes; run the PowerShell script in the Windows CI job; generate the what's-new
   section from the merged PRs.
