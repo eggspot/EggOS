@@ -118,6 +118,20 @@ impl UserContext {
         self.arch.set_thread_pointer(value)
     }
 
+    /// x86_64: the program's GS base, 0 until [`Self::set_gs_base`] sets another.
+    #[cfg(target_arch = "x86_64")]
+    pub fn gs_base(&self) -> u64 {
+        self.arch.gs_base()
+    }
+
+    /// x86_64: sets the program's GS base, as `arch_prctl(ARCH_SET_GS)` does; it takes effect
+    /// when the program runs again. A value at or above the end of user space is refused and
+    /// the GS base left as it was, as for [`Self::set_thread_pointer`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_gs_base(&mut self, value: u64) -> Result<(), InvalidThreadPointer> {
+        self.arch.set_gs_base(value)
+    }
+
     /// Every register of the program's that user mode can change, but the thread pointer where
     /// it is a system register (`TPIDR_EL0`, the FS base): what a signal frame saves (M6).
     pub fn registers(&self) -> UserRegisters {
@@ -652,20 +666,25 @@ pub(crate) mod x86_64 {
         /// The kernel's stack pointer while the program runs; `TSS.RSP0` points here.
         pub(crate) kernel_rsp: u64,
         /// The FS base: the thread pointer. Programs cannot write it themselves (`CR4.FSGSBASE`
-        /// is clear), so it is never saved; the way in loads it with `wrmsr` only when this
-        /// CPU's FS base belongs to another value of `fs_base_id`.
+        /// is clear), so it is never saved; the way in loads it, with `gs_base`, only when this
+        /// CPU's segment bases belong to another value of `segment_bases_id`.
         pub(crate) fs_base: u64,
-        /// Names `fs_base`'s value: 0 for a context whose FS base was never set (0), and a
-        /// new number, from [`NEXT_FS_BASE_ID`], each time it is set. The way in compares it
-        /// with the one this CPU's FS base was last loaded for (`X86Tables::fs_base_id`).
-        pub(crate) fs_base_id: u64,
+        /// Names the values of `fs_base` and `gs_base`: 0 for a context that never set either
+        /// (both 0), and a new number, from [`NEXT_SEGMENT_BASES_ID`], each time one is set. The
+        /// way in compares it with the one this CPU's bases were last loaded for
+        /// (`X86Tables::segment_bases_id`).
+        pub(crate) segment_bases_id: u64,
         /// After a page fault, the faulting address (`CR2`), kept by the way out of `run_user`
         /// for [`super::UserContext::last_exception`] (with `vector` and `error_code`).
         pub(crate) fault_address: u64,
+        /// The GS base the program runs with (`arch_prctl(ARCH_SET_GS)`, D118): Windows
+        /// programs find their thread environment block through it. Loaded with `fs_base`.
+        pub(crate) gs_base: u64,
     }
 
-    /// The next [`Registers::fs_base_id`]: never 0, never reused (2^64 settings).
-    static NEXT_FS_BASE_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    /// The next [`Registers::segment_bases_id`]: never 0, never reused (2^64 settings).
+    static NEXT_SEGMENT_BASES_ID: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(1);
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
     #[cfg_attr(not(target_os = "none"), allow(dead_code))]
@@ -709,7 +728,8 @@ pub(crate) mod x86_64 {
         "TSS.RSP0 must be 16-byte aligned: the CPU aligns it down before pushing"
     );
     const _: () = assert!(core::mem::offset_of!(Registers, fs_base) == 23 * 8);
-    const _: () = assert!(core::mem::offset_of!(Registers, fs_base_id) == 24 * 8);
+    const _: () = assert!(core::mem::offset_of!(Registers, segment_bases_id) == 24 * 8);
+    const _: () = assert!(core::mem::offset_of!(Registers, gs_base) == 26 * 8);
 
     impl Registers {
         pub(crate) fn new(pc: u64, stack: u64) -> Self {
@@ -738,8 +758,9 @@ pub(crate) mod x86_64 {
                 ss: 0,
                 kernel_rsp: 0,
                 fs_base: 0,
-                fs_base_id: 0,
+                segment_bases_id: 0,
                 fault_address: 0,
+                gs_base: 0,
             }
         }
         pub(crate) fn thread_pointer(&self) -> u64 {
@@ -754,8 +775,27 @@ pub(crate) mod x86_64 {
                 return Err(super::InvalidThreadPointer);
             }
             self.fs_base = value;
-            self.fs_base_id = NEXT_FS_BASE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            self.name_new_segment_bases();
             Ok(())
+        }
+        pub(crate) fn gs_base(&self) -> u64 {
+            self.gs_base
+        }
+        pub(crate) fn set_gs_base(
+            &mut self,
+            value: u64,
+        ) -> Result<(), super::InvalidThreadPointer> {
+            use crate::paging::Format;
+            if value >= crate::paging::x86_64::X86_64::USER_END {
+                return Err(super::InvalidThreadPointer);
+            }
+            self.gs_base = value;
+            self.name_new_segment_bases();
+            Ok(())
+        }
+        fn name_new_segment_bases(&mut self) {
+            self.segment_bases_id =
+                NEXT_SEGMENT_BASES_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
         pub(crate) fn pc(&self) -> u64 {
             self.rip

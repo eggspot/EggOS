@@ -5,11 +5,11 @@
 //! set with `arch_prctl(ARCH_SET_FS)`, here.
 //!
 //! `arch_prctl` answers as Linux does on a CPU without CPUID faulting (decided by research,
-//! D57): the FS base can be set and read, the GS base read (always 0), and `ARCH_GET_CPUID`
-//! says `CPUID` works. `ARCH_SET_GS` is refused with `EINVAL`, as a code the kernel lacks,
-//! until the SWAPGS fence (D49) lets a program choose its GS base; no C library or Rust's std
-//! sets it. Every other code (shadow stacks, AMX permissions, vDSO mapping, LAM) is `EINVAL`
-//! too, which their callers take as the feature being absent.
+//! D57): the FS and GS bases can be set and read, and `ARCH_GET_CPUID` says `CPUID` works.
+//! The GS base is where the Windows layer keeps a thread's environment block (D118), which the
+//! SWAPGS fence on the HAL's exception entry makes safe to choose (D49). Every other code
+//! (shadow stacks, AMX permissions, vDSO mapping, LAM) is `EINVAL`, which their callers take
+//! as the feature being absent.
 
 use super::Errno;
 use crate::process::Process;
@@ -49,12 +49,30 @@ pub fn arch_prctl<P: Platform>(
             .map_err(|_| Errno::EPERM),
         code::ARCH_SET_FS => Err(Errno::EPERM),
         code::ARCH_GET_FS => write_word(process, address, context.thread_pointer()),
-        // No program can set its GS base, which starts at zero (the HAL's promise).
-        code::ARCH_GET_GS => write_word(process, address, 0),
+        #[cfg(target_arch = "x86_64")]
+        code::ARCH_SET_GS if address < <P::PageTableFormat as Format>::USER_END => context
+            .set_gs_base(address)
+            .map(|()| 0)
+            .map_err(|_| Errno::EPERM),
+        #[cfg(target_arch = "x86_64")]
+        code::ARCH_SET_GS => Err(Errno::EPERM),
+        code::ARCH_GET_GS => write_word(process, address, gs_base(context)),
         code::ARCH_GET_CPUID => Ok(1),
         // CPUID faulting is not offered, whatever the CPU has.
         code::ARCH_SET_CPUID => Err(Errno::ENODEV),
         _ => Err(Errno::EINVAL),
+    }
+}
+
+fn gs_base(context: &UserContext) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        context.gs_base()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = context;
+        0
     }
 }
 

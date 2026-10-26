@@ -3167,9 +3167,25 @@ mod tests {
         }
         assert_eq!(prctl(get_cpuid, 0), Ok(1));
         assert_eq!(prctl(set_cpuid, 0), Err(Errno::ENODEV));
-        for unknown in [code::ARCH_SET_GS.into(), 0x3001, 0x5001, 0x1023, 0] {
+        for unknown in [0x3001, 0x5001, 0x1023, 0] {
             assert_eq!(prctl(unknown, 0x7000_2000), Err(Errno::EINVAL));
         }
+        let set_gs = u64::from(code::ARCH_SET_GS);
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(prctl(set_gs, end), Err(Errno::EPERM));
+            assert_eq!(prctl(1 << 32 | set_gs, 0x7000_3000), Ok(0));
+            assert_eq!(prctl(get_gs, DATA + 4096 + 32), Ok(0));
+            let mut word = [0u8; 8];
+            process
+                .read_user_memory(DATA + 4096 + 32, &mut word)
+                .unwrap();
+            assert_eq!(word, 0x7000_3000u64.to_ne_bytes());
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        assert_eq!(prctl(set_gs, 0x7000_2000), Err(Errno::EINVAL));
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(context.gs_base(), 0x7000_3000);
         assert_eq!(context.thread_pointer(), 0x7000_1000);
         let mut words = [0u8; 16];
         process

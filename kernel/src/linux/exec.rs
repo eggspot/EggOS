@@ -632,6 +632,22 @@ fn prepare<P: Platform>(
     let name = name.of(request.dirfd, path)?;
     let list = strings.list()?;
     let (arguments, environment) = list.split_at(argument_count);
+    let interpreter = match interpreter_for(image) {
+        Some(interpreter) => Some(read_interpreter(thread, interpreter)?),
+        None => None,
+    };
+    let mut interpreted = Vec::new();
+    let (image, name, arguments) = match &interpreter {
+        Some((interpreter, image)) => {
+            interpreted
+                .try_reserve_exact(arguments.len() + 2)
+                .map_err(|_| Errno::ENOMEM)?;
+            interpreted.extend([interpreter.path, name]);
+            interpreted.extend_from_slice(arguments);
+            (*image, interpreter.path, &interpreted[..])
+        }
+        None => (image, name, arguments),
+    };
     let files = match thread.files().is_shared() {
         true => Some(thread.files().copy()?),
         false => None,
@@ -643,6 +659,48 @@ fn prepare<P: Platform>(
         context,
         files,
     })
+}
+
+/// A program format the kernel does not run itself but starts through an interpreter program
+/// of an optional component, as Linux's `binfmt_misc` does (D118): a file that starts with
+/// `magic` runs as the program at `path` with the arguments `path`, the file's name as
+/// `execve` was given it, then the file's own arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interpreter {
+    pub magic: &'static [u8],
+    pub path: &'static [u8],
+}
+
+/// The Windows layer (D118): PE executables (`MZ`) run on x86_64 only.
+pub const WINDOWS_LAYER: Interpreter = Interpreter {
+    magic: b"MZ",
+    path: b"/usr/lib/eggos/windows",
+};
+
+#[cfg(target_arch = "x86_64")]
+const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER];
+#[cfg(not(target_arch = "x86_64"))]
+const INTERPRETERS: &[Interpreter] = &[];
+
+/// The interpreter that starts `image` on this architecture, if any.
+pub fn interpreter_for(image: &[u8]) -> Option<Interpreter> {
+    INTERPRETERS
+        .iter()
+        .find(|interpreter| image.starts_with(interpreter.magic))
+        .copied()
+}
+
+fn read_interpreter(
+    thread: &LinuxThread,
+    interpreter: Interpreter,
+) -> Result<(Interpreter, &'static [u8]), Errno> {
+    let not_installed = |_| Errno::ENOEXEC;
+    let node = find(thread, at::FDCWD as u64, interpreter.path).map_err(not_installed)?;
+    let attributes = node.attributes();
+    if attributes.kind != NodeKind::Regular {
+        return Err(Errno::ENOEXEC);
+    }
+    Ok((interpreter, node.read(0, attributes.size as usize)))
 }
 
 fn find(thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
@@ -1346,6 +1404,19 @@ mod tests {
                 "the program headers are not in a segment"
             ))
         );
+    }
+
+    #[test]
+    fn windows_programs_start_through_the_windows_layer_on_x86_64_only() {
+        let windows = interpreter_for(b"MZ\x90\0rest of the file");
+        match cfg!(target_arch = "x86_64") {
+            true => assert_eq!(windows, Some(WINDOWS_LAYER)),
+            false => assert_eq!(windows, None),
+        }
+        assert_eq!(WINDOWS_LAYER.path, b"/usr/lib/eggos/windows");
+        for image in [&b"\x7fELF"[..], b"#!/bin/eggsh", b"M", b"", b"ZM"] {
+            assert_eq!(interpreter_for(image), None);
+        }
     }
 
     #[test]
