@@ -36,6 +36,8 @@ pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only d
 /// Must match the runner's.
 pub const CONSOLE_INPUT_SCRIPT: &[u8] = b"EggOS reads its console\r";
 
+const CONSOLE_INPUT_LINE: &[u8] = b"EggOS reads its console\n";
+
 /// CPUs the QEMU boot tests run with (`-smp`). Must match `TEST_CPUS` in `xtask`. The
 /// benchmarks run on one.
 #[cfg(all(feature = "qemu-test", not(feature = "qemu-bench")))]
@@ -55,7 +57,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 44] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 45] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -182,6 +184,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 44] {
         (
             "linux_programs_built_with_rust_std_run",
             linux_programs_built_with_rust_std_run::<P>,
+        ),
+        (
+            "linux_programs_read_the_console_through_its_line_discipline",
+            linux_programs_read_the_console_through_its_line_discipline::<P>,
         ),
         (
             "linux_programs_end_from_a_thread_while_others_wait",
@@ -335,26 +341,26 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
 }
 
 /// The bytes the QEMU runner types after [`console::INPUT_READY_LINE`] must reach
-/// [`console::read_input`] through the console's receive interrupt, the only path that queues
-/// them, whole and in order. Waits up to 2 s of clock time, taking interrupts without sleeping,
-/// so a clock that runs ahead while the CPU sleeps (QEMU's `-icount sleep=off`) still leaves the
-/// host time to type. Only kernels built for the boot tests (`qemu-test`) and host tests check
+/// [`console::read_input`] through the console's receive interrupt, the only path that gives
+/// the line discipline input, whole and in order, as one line ([`CONSOLE_INPUT_LINE`]). Waits
+/// up to 2 s of clock time, taking interrupts without sleeping, so a clock that runs ahead
+/// while the CPU sleeps (QEMU's `-icount sleep=off`) still leaves the host time to type. Only kernels built for the boot tests (`qemu-test`) and host tests check
 /// it: elsewhere nobody types the script, and the boot must not wait for it.
 fn console_input_arrives_by_interrupt<P: Platform>() -> Result<(), &'static str> {
     if !cfg!(any(test, feature = "qemu-test")) {
         return Ok(());
     }
     let give_up = P::clock_ticks() + 2 * P::clock_frequency();
-    let mut received = [0u8; CONSOLE_INPUT_SCRIPT.len() + 1];
+    let mut received = [0u8; CONSOLE_INPUT_LINE.len() + 1];
     let mut length = 0;
-    while length < CONSOLE_INPUT_SCRIPT.len() {
+    while length < CONSOLE_INPUT_LINE.len() {
         if P::clock_ticks() > give_up {
             return Err("the console's input did not arrive within 2 s");
         }
         P::interrupt_window();
         length += console::read_input(&mut received[length..]);
     }
-    if received[..length] != *CONSOLE_INPUT_SCRIPT {
+    if received[..length] != *CONSOLE_INPUT_LINE {
         return Err("the console's input arrived changed, out of order or with extra bytes");
     }
     Ok(())
@@ -1804,6 +1810,15 @@ static STD_PROGRAM_EXITING_FROM_A_THREAD: RustProgram = RustProgram {
     ..STD_PROGRAM
 };
 
+static STD_PROGRAM_READING_THE_CONSOLE: RustProgram = RustProgram {
+    arguments_after_path: &[b"read-the-console"],
+    failure_statuses: &[(
+        1,
+        "a console check of the std Rust program failed: it named it on the console",
+    )],
+    ..STD_PROGRAM
+};
+
 static STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD: RustProgram = RustProgram {
     arguments_after_path: &[b"unmap-under-a-writing-thread"],
     failure_statuses: &[
@@ -1831,6 +1846,12 @@ fn linux_programs_built_with_rust_std_run<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM)
+}
+
+fn linux_programs_read_the_console_through_its_line_discipline<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM_READING_THE_CONSOLE)
 }
 
 fn linux_programs_end_from_a_thread_while_others_wait<P: Platform>(
