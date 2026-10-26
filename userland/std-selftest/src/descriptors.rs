@@ -91,7 +91,7 @@ fn close_range(first: u32, last: u32, flags: u32) -> i64 {
 /// Whether every call answered as on Linux, naming on standard output each group of calls
 /// that did not. Leaves the descriptors as it found them.
 pub fn descriptors_behave_as_on_linux() -> bool {
-    let checks: [(&str, fn() -> bool); 4] = [
+    let checks: [crate::Check; 4] = [
         (
             "duplicates take the lowest free number",
             duplicates_take_the_lowest_free_number,

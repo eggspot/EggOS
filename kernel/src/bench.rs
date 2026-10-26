@@ -38,7 +38,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 26] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 27] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -94,6 +94,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 26] {
         ("linux_exec_load", linux_exec_load::<P>),
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
+        ("linux_dup3_close", linux_dup3_close::<P>),
     ]
 }
 
@@ -512,6 +513,24 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
+/// `dup3` of the standard output to descriptor 3, close-on-exec, then `close` of it (D101):
+/// the open-file limit read, the descriptor table locked, the open file description's count
+/// taken and dropped, as a shell redirects a command's output. Without the trap from user
+/// mode (`linux_syscall_round_trip` has it).
+fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{self, Descriptors, open_flag};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    let flags = u64::from(open_flag::CLOEXEC);
+    for _ in 0..n {
+        let fd = descriptors::dup3(&program, &files, 1, black_box(3), flags)
+            .expect("descriptor 1 is open and 3 below the limit");
+        descriptors::close(&files, black_box(fd)).expect("descriptor 3 was just opened");
+    }
+}
+
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
 /// (D48): per iteration two system calls, two thread switches and two address-space switches,
 /// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
@@ -769,8 +788,9 @@ mod tests {
                 (linux_exec, _),
                 (linux_page_fault, _),
                 (linux_mmap_munmap, _),
+                (linux_dup3_close, _),
             ],
-        ) = all.split_at(all.len() - 8)
+        ) = all.split_at(all.len() - 9)
         else {
             unreachable!()
         };
@@ -783,7 +803,8 @@ mod tests {
                 *linux_syscall,
                 *linux_exec,
                 *linux_page_fault,
-                *linux_mmap_munmap
+                *linux_mmap_munmap,
+                *linux_dup3_close
             ],
             [
                 "syscall_round_trip",
@@ -793,7 +814,8 @@ mod tests {
                 "linux_syscall_round_trip",
                 "linux_exec_load",
                 "linux_page_fault",
-                "linux_mmap_munmap"
+                "linux_mmap_munmap",
+                "linux_dup3_close"
             ]
         );
         assert_eq!(
@@ -855,6 +877,8 @@ mod tests {
         linux_exec_load::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         linux_page_fault::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_dup3_close::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
     }
 
