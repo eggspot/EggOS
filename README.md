@@ -24,13 +24,17 @@ EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop.
    folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
    `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
 3. Run the script. It picks your machine's architecture, checks the image against `SHA256SUMS`
-   (`sha256sum -c SHA256SUMS` or `shasum -a 256 -c SHA256SUMS` checks it by hand) and boots it:
+   (`sha256sum -c --ignore-missing SHA256SUMS` or `shasum -a 256 -c --ignore-missing SHA256SUMS`
+   checks it by hand) and boots it:
 
 ```
 sh run-eggos.sh                       # a QEMU window with the desktop; the console here too
 sh run-eggos.sh riscv64 --serial      # another architecture, no window: the console here only
 .\run-eggos.ps1 -Arch x86_64 -Serial  # Windows PowerShell
 ```
+
+On Windows, if PowerShell refuses to run a downloaded script, start it with
+`powershell -ExecutionPolicy Bypass -File run-eggos.ps1`.
 
 The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
