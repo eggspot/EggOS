@@ -6302,8 +6302,9 @@ the license, by an explicit instruction recorded here.
   hardware needs a way to run a Windows program inside the benchmark kernel; it comes with
   item 19.
 - **Cost (accepted by research, D78).** The layer is in images only with a Windows program,
-  so only the kernel grows, and only on x86_64: `release_image_bytes` +288 bytes (603,264;
-  the interpreter hook in `execve`, `ARCH_SET_GS`, the GS base load and the fence). On aarch64
+  so only the kernel grows, and only on x86_64: CI's `release_image_bytes` +752 bytes
+  (603,728; the interpreter hook in `execve`, whose second caller of the path lookup and
+  permission check keeps them out of line, `ARCH_SET_GS`, the GS base load and the fence). On aarch64
   and riscv64 the image is byte for byte the size of `main`'s: the hook folds away where the
   table is empty (`ANY_INTERPRETER`), which also keeps `execve`'s helpers inlined there (a
   first version that left the dead path in grew those images by 216 and 384 bytes). x86_64's
