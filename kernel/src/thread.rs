@@ -1364,8 +1364,6 @@ pub(crate) fn start_fp<P: Platform>() -> FpStart {
     start_fp_with::<P>(state)
 }
 
-/// [`start_fp`] with `state` as the thread's registers instead of a new program's: those a
-/// thread or process inherited from the thread that started it (`clone`).
 #[cold]
 #[inline(never)]
 pub(crate) fn start_fp_from<P: Platform>(state: Box<FpState>) -> FpStart {

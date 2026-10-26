@@ -77,8 +77,9 @@ pub fn vfork<P: Platform>(
 /// while its memory is shared.
 ///
 /// Errors: `EINVAL` for an exit signal past 64; `ENOSYS` for `CLONE_SIGHAND` (sharing signal
-/// actions between processes), `CLONE_PARENT` and unknown flags; on x86_64, `EPERM` for a
-/// thread pointer outside user space; `EAGAIN` when ids run out; `ENOMEM` without memory for
+/// actions between processes), `CLONE_PARENT` and unknown flags, and for a copy of memory
+/// that has had `MAP_SHARED` anonymous memory, which the copy would stop sharing; on x86_64,
+/// `EPERM` for a thread pointer outside user space; `EAGAIN` when ids run out; `ENOMEM` without memory for
 /// the child, its copy of the caller's memory or its thread, with the caller untouched.
 pub fn clone_process<P: Platform>(
     process: &Arc<Process<P>>,
@@ -119,6 +120,7 @@ pub fn clone_process<P: Platform>(
     let child = Arc::new(process.new_child(memory).map_err(|error| match error {
         NewChildError::OutOfIds => Errno::EAGAIN,
         NewChildError::OutOfMemory => Errno::ENOMEM,
+        NewChildError::SharedAnonymousMemory => Errno::ENOSYS,
     })?);
     let id = child.id().get();
     let clear_child_tid = match any(flag::CHILD_CLEARTID) {

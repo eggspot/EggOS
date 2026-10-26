@@ -4914,9 +4914,12 @@ the license, by an explicit instruction recorded here.
   child runs. Its FP/SIMD registers are a copy of the caller's, given to it when its program
   first uses them (the trap D54 already takes), and threads started with `CLONE_THREAD` now get
   the same instead of a new program's (D91's "not yet").
-- **Futex words follow the memory.** Futex keys and `wake_space` use the memory's futex space
-  (the id of the process that made it, so unchanged for every process that shares nothing):
-  a `CLONE_VM` child and its parent wait and wake on the same words. Ending a process wakes
+- **Futex words follow the memory.** Futex keys and `wake_space` use the memory's futex space,
+  a number each memory gets as it is made (`Process::new`, an `execve`'s image, a copy) from a
+  counter of its own and never reuses: a `CLONE_VM` child and its parent wait and wake on the
+  same words, and no two memories ever share a space (a process id would not do: a creator
+  that execs while a `CLONE_VM` child keeps its old memory would give the new memory the
+  old one's space, and words at one address in the two would collide). Ending a process wakes
   every waiter in its memory's space, so another process sharing it may see a spurious wake,
   which futex callers allow.
 - **`CLONE_VFORK`.** The calling thread sleeps on a futex word in the kernel's half of its
@@ -4930,12 +4933,25 @@ the license, by an explicit instruction recorded here.
   `execve` do too while another process shares the memory, as Linux does when it releases
   the memory, so a parent sharing it can wait on the word.
 - **Refused (decided by research).** `EINVAL` for an exit signal past 64 (clone3 refuses an
-  invalid one; the value is otherwise kept, for `wait4`'s `__WCLONE` rule); `ENOSYS` for
+  invalid one; Linux's older `clone` takes the byte as it is, and kept here only up to 64,
+  for `wait4`'s `__WCLONE` rule); `ENOSYS` for
   `CLONE_SIGHAND` without `CLONE_THREAD` (sharing signal actions between processes: only the
   long-gone LinuxThreads used it) and for `CLONE_PARENT` (no process table to find the
   grandparent in; revisit with `wait4`), callers' "not supported"; the existing `EINVAL`
   combinations and namespaces first, in Linux's order. `EAGAIN` when ids run out; no
   `RLIMIT_NPROC` count yet.
+- **Shared anonymous memory and `fork` (decided by research; supersedes D53's plan for
+  now).** `mmap` with `MAP_SHARED` (or `MAP_SHARED_VALIDATE`) and `MAP_ANONYMOUS` still behaves
+  as private memory within one memory, which `CLONE_VM` children share, so threads, `vfork`
+  and `posix_spawn` see it shared. A copy would make parent and child stop sharing it
+  silently, so the memory is marked when such a mapping is made, and a `fork` (any `clone`
+  without `CLONE_VM`) of a marked memory fails with `ENOSYS`, which fork(2)'s callers report
+  rather than retry. The mark is the memory's, not a region's, and stays until `execve` gives
+  the process new memory (unmapping the region does not lift it): a flag per region would change
+  the region list's layout and merge rule on the `mmap`/`munmap` paths for a case no v0.3.0
+  program has (musl, Rust's std, a shell and the core utilities map nothing shared; the users
+  are servers with shared buffers and process-shared mutexes). Sharing such frames across
+  `fork` comes with copy-on-write, which brings per-frame counts and an entry mark (roadmap).
 - **Exit records until `wait4` (item 7).** The record of how a process ended (`PidRecord`,
   shared by the images `execve` starts, D103) now also lists its children: each child's id,
   exit signal and its own record, added before the child runs and removed if it cannot start.
@@ -4943,10 +4959,16 @@ the license, by an explicit instruction recorded here.
   stays in its parent's list, as a zombie, until `wait4` reads and removes it (item 7) or the
   parent's record goes (the parent and every image of it ended and nothing holds it), which
   stands in for reparenting to an `init` that reaps. Nothing is kept by pid in a global table.
+  Dropping a record drops its children's records in a loop, not by recursion, so a chain of
+  generations (a `vfork` of a `vfork` of ...) never runs the kernel stack out.
   Item 7 adds `wait4` on this list, `SIGCHLD` to the parent with the stored exit signal, and
   reparenting to pid 1; until then a child whose parent ended still reads its old parent's id
   from `getppid`. The self-tests and benchmarks read the list through
   `Process::children` (crate-internal), which `wait4` replaces for programs.
+- **FP/SIMD registers at `execve`.** Registers a thread inherited and has not used yet are
+  forgotten as `execve` starts the new program (`LinuxThread::start_image`), which starts with a
+  new program's, as Linux resets them at `exec`: a `vfork` child that execs before any FP use no
+  longer hands its parent's rounding mode and other control state to the new program.
 - **Review fixes (D103).** The console's foreground is forgotten by the reader that became it
   only if it still is that one (`console::forget_this_foreground`, a pointer compare), not by
   process id: an old program's thread that became the foreground just as `execve` ended it no
@@ -4958,14 +4980,19 @@ the license, by an explicit instruction recorded here.
   vfork parent woken once by its child's exit, its exec and its own process's end, `clone`'s
   refusals (and x86_64's `EPERM` for a process), `fork` without frames (`ENOMEM`, nothing
   taken, nothing recorded), `getppid`, a child's copied action, and the tid word of a child
-  sharing the memory cleared by its `exit_group`. In QEMU on aarch64, riscv64 and x86_64,
+  sharing the memory cleared by its `exit_group`; futex spaces apart for a creator's `execve`
+  image and a `CLONE_VM` child; a marked memory never copied (`ENOSYS` through `clone` after
+  `mmap(MAP_SHARED)`), shared and copied again after `execve`; `execve` forgetting inherited
+  FP/SIMD registers; a record of 100,000 generations dropped without recursion. In QEMU on aarch64, riscv64 and x86_64,
   the std program, run twice with every frame of the second run freed: a child of
   `clone(CLONE_VFORK | SIGCHLD)` changes its copy of a stack word, a heap word and a static
   and checks its parent's id, while the parent keeps its own; musl's `fork`; descriptors
   copied (the child reads the parent's file, then closes its copy, which the parent keeps) and
   shared with `CLONE_FILES` (the child's close closes the parent's); musl's `vfork` (`clone` on
   AArch64 and RISC-V, `vfork` on x86_64), whose child yields, writes a static the parent
-  reads, and execs the program's file, which checks its parent's id. The kernel checks each
+  reads, and execs the program's file, which checks its parent's id and that its rounding mode
+  is the default although the parent set round-toward-zero before the `vfork` (the check fails
+  without the `execve` fix above). The kernel checks each
   child's status and exit signal in the parent's list.
 - **Cost.** Two new benchmarks (docs/benchmarks.md): `linux_fork`, a `clone(CLONE_VFORK |
   SIGCHLD)` of the runtime's small self-test program with an eager copy and the child's

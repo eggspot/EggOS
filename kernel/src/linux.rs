@@ -5848,6 +5848,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_fork_of_memory_with_shared_anonymous_memory_is_enosys() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
+        let private = crate::linux::memory::map::PRIVATE | crate::linux::memory::map::ANONYMOUS;
+        let shared = crate::linux::memory::map::SHARED | crate::linux::memory::map::ANONYMOUS;
+        let mmap = |flags| call(&process, number::MMAP, [0, 4096, 3, flags, u64::MAX, 0]);
+        assert!(mmap(private) < Errno::EINVAL.result());
+        assert!(mmap(shared) < Errno::EINVAL.result());
+        assert_eq!(fork(), Errno::ENOSYS.result());
+        assert!(process.children().is_empty());
+    }
+
+    #[test]
+    fn execve_forgets_the_fp_registers_a_thread_inherited() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut thread = LinuxThread::first(&process);
+        thread.inherit_fp(Some(Box::new(eggos_hal::fp::FpState::new())));
+        thread.start_image(process.id().get());
+        assert!(thread.take_inherited_fp().is_none());
+    }
+
     fn child_thread(
         parent: &Arc<Process<P>>,
         memory: process::ChildMemory,

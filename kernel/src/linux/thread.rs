@@ -181,15 +181,17 @@ impl LinuxThread {
 
     /// Makes it the only thread of the program `execve` starts: its id becomes `id`, the
     /// process's, as when another thread than the first calls `execve`; nothing to clear and
-    /// wake at its exit, no robust futex list, no alternate signal stack, and no signals seen
-    /// yet in the new process. Its blocked and pending signals, descriptor table and working
-    /// directory stay.
+    /// wake at its exit, no robust futex list, no alternate signal stack, no signals seen
+    /// yet in the new process, and no FP/SIMD registers inherited from its starter (the new
+    /// program's first use gets a new program's). Its blocked and pending signals, descriptor
+    /// table and working directory stay.
     pub fn start_image(&mut self, id: u32) {
         self.id = id;
         self.clear_child_tid = 0;
         self.robust_list = 0;
         self.signals.alternate_stack = ThreadSignals::new().alternate_stack;
         self.signals_seen = 0;
+        self.inherited_fp = None;
     }
 
     /// Its descriptor table (D101).

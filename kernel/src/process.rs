@@ -203,6 +203,12 @@ struct Memory<P: Platform> {
     program_break: SpinLock<Option<ProgramBreak>>,
     frame_offset: usize,
     futex_space: u32,
+    shared_anonymous: AtomicBool,
+}
+
+enum CopyError {
+    OutOfMemory,
+    SharedAnonymous,
 }
 
 impl<P: Platform> Memory<P> {
@@ -213,14 +219,21 @@ impl<P: Platform> Memory<P> {
             program_break: SpinLock::new(None),
             frame_offset,
             futex_space,
+            shared_anonymous: AtomicBool::new(false),
         }
     }
 
-    fn copy(&self, futex_space: u32) -> Result<Self, MapError> {
-        let mut space = self.space.new_owning_frames_beside()?;
+    fn copy(&self, futex_space: u32) -> Result<Self, CopyError> {
+        let mut space = self
+            .space
+            .new_owning_frames_beside()
+            .map_err(|_| CopyError::OutOfMemory)?;
         let program_break = self.program_break.lock();
         let regions = self.regions.lock();
-        let copied_regions = regions.try_copy().ok_or(MapError::OutOfMemory)?;
+        if self.shared_anonymous.load(Ordering::Relaxed) {
+            return Err(CopyError::SharedAnonymous);
+        }
+        let copied_regions = regions.try_copy().ok_or(CopyError::OutOfMemory)?;
         let frame_offset = self.frame_offset;
         let at = |frame: u64| (frame as usize).wrapping_add(frame_offset) as *mut u8;
         self.space
@@ -235,13 +248,15 @@ impl<P: Platform> Memory<P> {
                 if attributes.is_some_and(|attributes| attributes.executable) {
                     P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
                 }
-            })?;
+            })
+            .map_err(|_| CopyError::OutOfMemory)?;
         Ok(Self {
             space,
             regions: SpinLock::new(copied_regions),
             program_break: SpinLock::new(*program_break),
             frame_offset,
             futex_space,
+            shared_anonymous: AtomicBool::new(false),
         })
     }
 }
@@ -258,6 +273,17 @@ impl<P: Platform> PidRecord<P> {
             exit: None,
             handed_over: None,
             children: Vec::new(),
+        }
+    }
+}
+
+impl<P: Platform> Drop for PidRecord<P> {
+    fn drop(&mut self) {
+        let mut orphans = core::mem::take(&mut self.children);
+        while let Some(child) = orphans.pop() {
+            if let Ok(mut record) = Arc::try_unwrap(child.record) {
+                orphans.append(&mut record.get_mut().children);
+            }
         }
     }
 }
@@ -291,6 +317,9 @@ pub enum NewChildError {
     OutOfIds,
     /// There was no memory for the process or its copy of the parent's.
     OutOfMemory,
+    /// The parent's memory has had shared anonymous memory (`MAP_SHARED`), which a copy would
+    /// stop sharing ([`Process::mark_shared_anonymous`]).
+    SharedAnonymousMemory,
 }
 
 /// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
@@ -316,6 +345,14 @@ impl ProcessId {
     }
 }
 
+fn allocate_futex_space() -> Option<u32> {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |space| {
+        (space <= i32::MAX as u32).then_some(space + 1)
+    })
+    .ok()
+}
+
 /// An id for a thread that is not a process's first (`clone`), from the processes' ids: Linux
 /// gives threads and processes ids from one space, the first thread's being its process's.
 /// `None` once every id has been given out.
@@ -339,8 +376,9 @@ impl<P: Platform> Process<P> {
             .ok_or("there is no frame allocator")?
             .physical_memory_offset();
         let id = ProcessId::allocate().ok_or("out of process ids")?;
+        let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
         Ok(Self::with_memory(
-            Arc::new(Memory::new(space, frame_offset, id.get())),
+            Arc::new(Memory::new(space, frame_offset, futex_space)),
             Arc::new(SpinLock::new(PidRecord::new())),
             id,
             0,
@@ -390,8 +428,9 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy()
             .ok_or("no memory for the credentials and limits")?;
+        let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
         Ok(Self::with_memory(
-            Arc::new(Memory::new(space, self.memory.frame_offset, self.id.get())),
+            Arc::new(Memory::new(space, self.memory.frame_offset, futex_space)),
             Arc::clone(&self.record),
             self.id,
             self.parent,
@@ -410,11 +449,13 @@ impl<P: Platform> Process<P> {
         let id = ProcessId::allocate().ok_or(NewChildError::OutOfIds)?;
         let memory = match memory {
             ChildMemory::Shared => Arc::clone(&self.memory),
-            ChildMemory::Copied => Arc::new(
-                self.memory
-                    .copy(id.get())
-                    .map_err(|_| NewChildError::OutOfMemory)?,
-            ),
+            ChildMemory::Copied => {
+                let futex_space = allocate_futex_space().ok_or(NewChildError::OutOfIds)?;
+                Arc::new(self.memory.copy(futex_space).map_err(|error| match error {
+                    CopyError::OutOfMemory => NewChildError::OutOfMemory,
+                    CopyError::SharedAnonymous => NewChildError::SharedAnonymousMemory,
+                })?)
+            }
         };
         let credentials_and_limits = self
             .credentials_and_limits
@@ -477,12 +518,19 @@ impl<P: Platform> Process<P> {
         self.parent
     }
 
-    /// The futex space of the process's memory: its own id, or for a process sharing its
-    /// parent's memory (`CLONE_VM`), the id of the process that made that memory, so futex
-    /// words in it are one word to every process using it.
+    /// The futex space of the process's memory: a number of its own, given to each memory as
+    /// it is made and never to another, so futex words in it are one word to every process
+    /// using it (`CLONE_VM`) and apart from every other memory's.
     #[inline]
     pub fn futex_space(&self) -> u32 {
         self.memory.futex_space
+    }
+
+    /// Records that the process's memory has shared anonymous memory (`mmap` with
+    /// `MAP_SHARED`), before it is mapped: from then on until `execve` gives the process new
+    /// memory, a child cannot get a copy of it ([`NewChildError::SharedAnonymousMemory`]).
+    pub fn mark_shared_anonymous(&self) {
+        self.memory.shared_anonymous.store(true, Ordering::Relaxed);
     }
 
     /// Whether another process uses this process's memory (`CLONE_VM` without
@@ -2086,7 +2134,7 @@ mod tests {
             let child = parent.new_child(ChildMemory::Copied).unwrap();
             assert_ne!(child.id(), parent.id());
             assert_eq!(child.parent_id(), parent.id().get());
-            assert_eq!(child.futex_space(), child.id().get());
+            assert_ne!(child.futex_space(), parent.futex_space());
             assert!(!parent.shares_memory() && !child.shares_memory());
             let (parent_frame, attributes) = parent.address_space().translate(DATA).unwrap();
             let (child_frame, child_attributes) = child.address_space().translate(DATA).unwrap();
@@ -2163,15 +2211,62 @@ mod tests {
         let used = free();
         let child = parent.new_child(ChildMemory::Shared).unwrap();
         assert_eq!(free(), used);
-        assert_eq!(child.futex_space(), parent.id().get());
+        assert_eq!(child.futex_space(), parent.futex_space());
         assert!(parent.shares_memory() && child.shares_memory());
         child.write_user_memory(DATA, b"SHARED").unwrap();
         assert_eq!(&page_bytes(&parent, DATA)[..6], b"SHARED");
         let image = child.new_image().unwrap();
-        assert_eq!(image.futex_space(), child.id().get());
+        assert_ne!(image.futex_space(), parent.futex_space());
         assert_eq!(image.parent_id(), parent.id().get());
+        let parent_image = parent.new_image().unwrap();
+        assert_ne!(parent_image.futex_space(), child.futex_space());
+        assert_ne!(parent_image.futex_space(), image.futex_space());
         drop((child, image));
         assert!(!parent.shares_memory());
+    }
+
+    #[test]
+    fn memory_with_shared_anonymous_memory_is_shared_with_children_and_never_copied() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let parent = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
+        parent.mark_shared_anonymous();
+        let before = free();
+        assert_eq!(
+            parent.new_child(ChildMemory::Copied).err(),
+            Some(NewChildError::SharedAnonymousMemory)
+        );
+        assert_eq!(free(), before);
+        let sharer = parent.new_child(ChildMemory::Shared).unwrap();
+        assert_eq!(
+            sharer.new_child(ChildMemory::Copied).err(),
+            Some(NewChildError::SharedAnonymousMemory)
+        );
+        let image = parent.new_image().unwrap();
+        assert!(image.new_child(ChildMemory::Copied).is_ok());
+    }
+
+    #[test]
+    fn a_record_of_a_hundred_thousand_generations_is_dropped_without_recursion() {
+        let mut youngest = Arc::new(SpinLock::new(PidRecord::<P>::new()));
+        for _ in 0..100_000 {
+            let mut parent = PidRecord::new();
+            parent.children.push(Child {
+                id: ProcessId(1),
+                exit_signal: 17,
+                record: youngest,
+            });
+            youngest = Arc::new(SpinLock::new(parent));
+        }
+        let still_held = Arc::new(SpinLock::new(PidRecord::<P>::new()));
+        youngest.lock().children.push(Child {
+            id: ProcessId(2),
+            exit_signal: 17,
+            record: Arc::clone(&still_held),
+        });
+        drop(youngest);
+        assert_eq!(Arc::strong_count(&still_held), 1);
     }
 
     #[test]

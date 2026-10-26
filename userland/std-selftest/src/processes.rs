@@ -2,7 +2,8 @@
 //! copy of the memory changes its stack, heap and a static while the parent keeps its own; a
 //! child from musl's `fork`; descriptors copied, and shared with `CLONE_FILES`; and a child of
 //! `vfork` running on the parent's memory until it execs this program's file, which checks
-//! its parent. Each child ends with its own status, which the kernel checks.
+//! its parent and that it starts with a new program's floating-point state, not the rounding
+//! mode its parent set before the `vfork`. Each child ends with its own status, which the kernel checks.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::process::ExitCode;
@@ -41,6 +42,14 @@ const BEFORE: u64 = 0x1111_2222_3333_4444;
 const CHANGED: u64 = 0x5555_6666_7777_8888;
 const YIELDS_BEFORE_EXEC: u32 = 20;
 
+const FE_TONEAREST: i32 = 0;
+#[cfg(target_arch = "x86_64")]
+const FE_TOWARDZERO: i32 = 0xc00;
+#[cfg(target_arch = "aarch64")]
+const FE_TOWARDZERO: i32 = 0xc0_0000;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const FE_TOWARDZERO: i32 = 1;
+
 static IN_A_STATIC: AtomicU64 = AtomicU64::new(BEFORE);
 static VFORK_CHILD_EXECS: AtomicU64 = AtomicU64::new(0);
 
@@ -64,6 +73,8 @@ mod libc {
         pub fn close(fd: i32) -> i32;
         pub fn fcntl(fd: i32, command: i32, ...) -> i32;
         pub fn syscall(number: i64, ...) -> i64;
+        pub fn fesetround(mode: i32) -> i32;
+        pub fn fegetround() -> i32;
     }
 }
 
@@ -205,6 +216,16 @@ fn exec_from_vfork_child(arguments: &[*const c_char; 4]) -> ! {
     exit_child(child_status::WRONG)
 }
 
+fn set_rounding(mode: i32) -> bool {
+    // SAFETY: `fesetround` changes only this thread's floating-point control state.
+    unsafe { libc::fesetround(mode) == 0 }
+}
+
+fn rounding() -> i32 {
+    // SAFETY: `fegetround` only reads this thread's floating-point control state.
+    unsafe { libc::fegetround() }
+}
+
 fn vfork_child_runs_on_the_memory_until_it_execs() -> bool {
     let Ok(parent) = CString::new(getpid().to_string()) else {
         return false;
@@ -216,13 +237,18 @@ fn vfork_child_runs_on_the_memory_until_it_execs() -> bool {
         std::ptr::null(),
     ];
     VFORK_CHILD_EXECS.store(0, Ordering::SeqCst);
+    let rounding_changed = set_rounding(FE_TOWARDZERO);
     // SAFETY: the child runs on this thread's stack and memory until it execs or ends, as
     // vfork(2) allows: it only calls a function that yields, writes a static and execs.
     let child = unsafe { libc::vfork() };
     if child == 0 {
         exec_from_vfork_child(&arguments);
     }
-    child > 0 && VFORK_CHILD_EXECS.load(Ordering::SeqCst) == 1
+    let rounding_restored = set_rounding(FE_TONEAREST);
+    rounding_changed
+        && rounding_restored
+        && child > 0
+        && VFORK_CHILD_EXECS.load(Ordering::SeqCst) == 1
 }
 
 type Check = (&'static str, fn() -> bool);
@@ -262,7 +288,8 @@ pub fn spawned_by_vfork() -> ExitCode {
     let parent = std::env::args()
         .nth(2)
         .and_then(|text| text.parse::<i32>().ok());
-    let status = match parent == Some(getppid()) && getpid() != getppid() {
+    let new_program_state = rounding() == FE_TONEAREST;
+    let status = match parent == Some(getppid()) && getpid() != getppid() && new_program_state {
         true => child_status::SPAWNED_BY_VFORK,
         false => child_status::WRONG,
     };
