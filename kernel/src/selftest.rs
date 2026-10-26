@@ -2857,6 +2857,9 @@ mod tests {
         fn exit(_status: eggos_hal::ExitStatus) -> ! {
             unreachable!("not used in tests")
         }
+        fn restart() -> ! {
+            unreachable!("not used in tests")
+        }
         fn halt() -> ! {
             unreachable!("not used in tests")
         }
@@ -2989,6 +2992,9 @@ mod tests {
             unreachable!("not used in tests")
         }
         fn exit(_status: eggos_hal::ExitStatus) -> ! {
+            unreachable!("not used in tests")
+        }
+        fn restart() -> ! {
             unreachable!("not used in tests")
         }
         fn halt() -> ! {

@@ -267,6 +267,7 @@ const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
 
 /// PSCI 0.2+ `SYSTEM_OFF` and 64-bit `CPU_ON` function IDs (Arm DEN 0022, 5.1).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
+const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const PSCI_CPU_ON: u64 = 0xc400_0003;
 /// PSCI return codes `CPU_ON` gives (Arm DEN 0022, 5.2.2).
 const PSCI_SUCCESS: i64 = 0;
@@ -297,6 +298,23 @@ fn uart0() -> Pl011<Mmio> {
     Pl011::new(unsafe { Mmio::new(DIRECT_MAP_OFFSET + UART0_BASE, pl011::REGISTER_BLOCK_SIZE) })
 }
 
+fn psci_system_call(function: u64) {
+    // SAFETY: SYSTEM_OFF and SYSTEM_RESET take no arguments, touch none of our memory and do
+    // not return on success; QEMU `virt` provides PSCI over HVC when EL2 is not emulated.
+    // SMCCC v1.0 lets the callee corrupt x0-x17, so all of them are declared clobbered.
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            inout("x0") function => _,
+            out("x1") _, out("x2") _, out("x3") _, out("x4") _, out("x5") _,
+            out("x6") _, out("x7") _, out("x8") _, out("x9") _, out("x10") _,
+            out("x11") _, out("x12") _, out("x13") _, out("x14") _, out("x15") _,
+            out("x16") _, out("x17") _,
+            options(nomem, nostack),
+        );
+    }
+}
+
 #[derive(Debug)]
 pub struct Aarch64;
 
@@ -319,22 +337,12 @@ impl Platform for Aarch64 {
     }
 
     fn exit(_status: ExitStatus) -> ! {
-        // PSCI has no exit status; the QEMU runner reads the verdict from the console.
-        // SAFETY: SYSTEM_OFF takes no arguments, touches none of our memory and does not
-        // return on success; QEMU `virt` provides PSCI over HVC when EL2 is not emulated.
-        // SMCCC v1.0 lets the callee corrupt x0-x17, so all of them are declared clobbered.
-        // If PSCI returns an error we fall through and halt.
-        unsafe {
-            core::arch::asm!(
-                "hvc #0",
-                inout("x0") PSCI_SYSTEM_OFF => _,
-                out("x1") _, out("x2") _, out("x3") _, out("x4") _, out("x5") _,
-                out("x6") _, out("x7") _, out("x8") _, out("x9") _, out("x10") _,
-                out("x11") _, out("x12") _, out("x13") _, out("x14") _, out("x15") _,
-                out("x16") _, out("x17") _,
-                options(nomem, nostack),
-            );
-        }
+        psci_system_call(PSCI_SYSTEM_OFF);
+        Self::halt()
+    }
+
+    fn restart() -> ! {
+        psci_system_call(PSCI_SYSTEM_RESET);
         Self::halt()
     }
 

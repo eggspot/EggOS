@@ -36,7 +36,8 @@
 //! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
 //! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103), and
 //! children waited for with `wait4` and `waitid` ([`wait`], D105) and process groups,
-//! sessions and the console's foreground group ([`job_control`], D105). Every
+//! sessions and the console's foreground group ([`job_control`], D105), and the machine
+//! powered off, halted or reset with `reboot` ([`reboot`], D106). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -55,6 +56,7 @@ pub mod memory;
 pub mod poll;
 pub mod process_table;
 pub mod random;
+pub mod reboot;
 pub mod signal_frame;
 pub mod signals;
 pub mod stat;
@@ -152,6 +154,7 @@ pub mod number {
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
         pub const SETTIMEOFDAY: u64 = 164;
+        pub const REBOOT: u64 = 169;
         pub const GETTID: u64 = 186;
         pub const TKILL: u64 = 200;
         pub const TIME: u64 = 201;
@@ -229,6 +232,7 @@ pub mod number {
         pub const RT_SIGTIMEDWAIT: u64 = 137;
         pub const RT_SIGQUEUEINFO: u64 = 138;
         pub const RT_SIGRETURN: u64 = 139;
+        pub const REBOOT: u64 = 142;
         pub const SETREGID: u64 = 143;
         pub const SETGID: u64 = 144;
         pub const SETREUID: u64 = 145;
@@ -308,6 +312,7 @@ pub mod number {
             SETSID,
             GETSID,
             PRCTL,
+            REBOOT,
             BRK,
             MMAP,
             MUNMAP,
@@ -859,6 +864,7 @@ fn out_of_line_result<P: Platform>(
         number::SETSID => job_control::setsid(process),
         number::GETSID => job_control::getsid(process, first),
         number::PRCTL => job_control::prctl(process, first, second),
+        number::REBOOT => reboot::reboot(process, first, second, third),
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),

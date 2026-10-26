@@ -58,6 +58,10 @@ pub trait Platform: 'static {
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 
+    /// Resets the machine, which boots again as from power-on (or, under QEMU's `-no-reboot`,
+    /// ends QEMU). Parks the CPU if the machine offers no way to reset it.
+    fn restart() -> !;
+
     /// Parks the current CPU forever, waiting for interrupts.
     fn halt() -> !;
 

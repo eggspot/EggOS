@@ -321,6 +321,12 @@ const PVH_MAX_MEMMAP_ENTRIES: usize = 1024;
 /// The direct map: the start of the high half (PML4 entry 256, D29).
 const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
 
+const RESET_CONTROL_PORT: u16 = 0xcf9;
+const RESET_CONTROL_SYSTEM_RESET: u8 = 0x02;
+const RESET_CONTROL_FULL_RESET: u8 = 0x06;
+const KEYBOARD_CONTROLLER_COMMAND_PORT: u16 = 0x64;
+const KEYBOARD_CONTROLLER_PULSE_RESET: u8 = 0xfe;
+
 /// `IA32_EFER` and its no-execute enable bit; `CR0.WP`, which makes read-only pages read-only
 /// for the kernel too.
 const EFER: u32 = 0xc000_0080;
@@ -512,6 +518,24 @@ impl Platform for X86_64 {
         // the tables are missing or malformed we fall through and halt.
         if let Some(target) = s5_target() {
             enter_s5(target);
+        }
+        Self::halt()
+    }
+
+    fn restart() -> ! {
+        for (register, value) in [
+            (RESET_CONTROL_PORT, RESET_CONTROL_SYSTEM_RESET),
+            (RESET_CONTROL_PORT, RESET_CONTROL_FULL_RESET),
+            (
+                KEYBOARD_CONTROLLER_COMMAND_PORT,
+                KEYBOARD_CONTROLLER_PULSE_RESET,
+            ),
+        ] {
+            // SAFETY: port 0xCF9 is the chipset's reset control register on PC chipsets (QEMU's
+            // q35 among them), and writing the full-reset value resets the machine; the 8042's
+            // command port takes the pulse-reset-line command where there is no such register.
+            // The machine is going down: nothing else drives these ports.
+            unsafe { port::out8(register, value) };
         }
         Self::halt()
     }

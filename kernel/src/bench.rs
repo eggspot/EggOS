@@ -749,6 +749,9 @@ mod tests {
         fn exit(_status: ExitStatus) -> ! {
             unreachable!("not used in tests")
         }
+        fn restart() -> ! {
+            unreachable!("not used in tests")
+        }
         fn halt() -> ! {
             unreachable!("not used in tests")
         }

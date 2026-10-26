@@ -5154,3 +5154,100 @@ the license, by an explicit instruction recorded here.
   what the gate measures against `main`. Only those six baseline lines moved. Follow-ups: a
   pid hash or radix table with constant-time lookup (then the lines go back down), and
   benchmarks of `fork` and `vfork` with `wait4`.
+
+## D106 init as pid 1, started by the release kernel, and `reboot(2)` — Decided by the build loop (the boot mode, init's path and configuration, the power-off request, `HALT` and init's end decided by research)
+
+- **What.** Item 8 of the v0.3.0 plan (D99). The release kernel (no kernel feature) no longer
+  runs the self-tests and halts: it starts every CPU, turns preemption on and runs `/init` from
+  the initramfs as process 1, named as the process orphans go to (`Table::set_init`, D105), so
+  an orphan's `getppid` is 1 once init runs. `reboot(2)` (169 on x86_64, 142 generic) powers
+  off, halts or resets the machine.
+- **Boot mode (decided by research).** `BootMode` (`Init`, `SelfTests`, `Benchmarks`) is a
+  constant from the existing features: `qemu-bench` benchmarks, `qemu-test` (and host tests)
+  self-tests, none the release kernel. No new feature: the shipped build is the default one,
+  and a feature that must be remembered is one that gets forgotten. The self-tests stay in the
+  test kernels, which CI boots; in the release kernel they are dead code, so its image shrinks.
+  Starting the secondary CPUs and turning preemption on were done only by self-tests; the
+  release path does both itself (`init::run`). Options weighed: keep running the self-tests
+  at every boot (no other OS does; +0.3 s per boot), a subset, or an `init` feature.
+- **Where init is (decided by research).** Exactly `/init`, Linux's initramfs default, with no
+  search list (`/sbin/init` and the rest exist for real root file systems, and we have none).
+  xtask builds `userland/init` (our own runtime, no debug information or symbols, 14-16 KiB)
+  into the release kernel's initramfs at `/init`. It starts with `argv` `/init`, the console on
+  descriptors 0 to 2, `HOME=/` and `TERM=linux`.
+- **Init.** It writes `EggOS <version>`, ignores the signals a terminal or a process could end
+  it with (`SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGPIPE`, `SIGTERM`, `SIGTSTP`,
+  `SIGTTIN`, `SIGTTOU`; `SIGCHLD` keeps its default so children become zombies it reaps), and
+  forks the login program, which resets those signals, makes a session of its own (`setsid`),
+  takes the console from init's session (`TIOCSCTTY` with 1, as root) and makes its group the
+  foreground one (`TIOCSPGRP`), so `^C` reaches the shell and never init; then `execve` with
+  `PATH=/bin`. Init waits with `wait4(-1)`, so every child that ends is reaped as it ends,
+  orphans included. A login program that is missing makes init say so and only reap children,
+  for good, asleep in `rt_sigsuspend` once it has none (no polling: the initramfs is read-only,
+  so it cannot appear; once `kill` reaches other processes, `SIGHUP` will make init look
+  again).
+- **Configuration (decided by research).** An optional `/etc/eggos/init.conf`, `key=value`
+  lines read once at start: `login=` the login program and its arguments (default `/bin/eggsh`,
+  item 9), `login-exit=` `respawn` (default), `poweroff`, `restart` or `halt`. No file ships by
+  default. Nothing comes from the kernel: there is no command line. A directory of per-component
+  files can follow when components install login services (D18).
+- **Respawn back-off (decided by research).** A login program that ran 5 s or more starts again
+  at once; one that ended sooner waits 1 s, then twice as long each early end, up to 30 s, the
+  delay starting over after a run of 5 s. Init says each end and each delay. Pure logic with
+  host tests (`userland/init/src/backoff.rs`), as is the configuration's parsing.
+- **How the shell powers off (decided by research).** No reserved exit statuses: they would
+  collide with an ordinary `exit N`. The `poweroff`, `reboot` and `halt` utilities (item 10)
+  call `reboot(2)` themselves as root; init takes the machine down itself when its
+  configuration's `login-exit` says so (what the boot tests use). Busybox's protocol (`SIGUSR1`
+  halt, `SIGUSR2` power-off, `SIGTERM` reboot to pid 1) follows once `kill` reaches other
+  processes; init already ignores those signals.
+- **`reboot(2)` (decided by research).** As Linux: `EPERM` unless the caller's effective user
+  id is 0 (standing in for `CAP_SYS_BOOT`), checked first; `EINVAL` unless magic is
+  `0xfee1dead` and magic2 one of `0x28121969`, `0x05121996`, `0x16041998`, `0x20112000`; then
+  `CAD_ON` and `CAD_OFF` succeed and change nothing, `POWER_OFF`, `HALT`, `RESTART` and
+  `RESTART2` (its command string unread) take the machine down, `KEXEC`, `SW_SUSPEND` and any
+  other command `EINVAL`, as a kernel built without them answers. Each says Linux's line
+  (`reboot: Power down`, `reboot: System halted`, `reboot: Restarting system`). Nothing is
+  synced: there is no writable file system.
+- **The HAL.** `Platform::restart` joins `exit` (power-off): AArch64 PSCI `SYSTEM_RESET`
+  (HVC, as `SYSTEM_OFF` and `CPU_ON`), RISC-V SBI SRST cold reboot, x86_64 the reset control
+  register (0xCF9: 0x02 then 0x06) then the 8042's pulse-reset command (0xFE to port 0x64);
+  each parks the CPU if the machine did not reset. RISC-V's power-off falls back to the legacy
+  SBI shutdown when SRST is missing. x86_64's power-off stays ACPI S5 from the FADT (QEMU's
+  port 0x604 is that same register on q35, so no QEMU-only port is written).
+- **Stopping the other CPUs (decided by research).** Linux's halt stops every CPU, and so must
+  ours: `cpu::stop_others` sets a flag, asks every other CPU a TLB shootdown (D94) and sends
+  it the wake-up interrupt; serving a shootdown is the cold path that checks the flag and
+  parks the CPU, as it takes the interrupt or as it waits for a lock with the wait duty. The
+  first version checked the flag in the wake-up interrupt's handler: one load and branch there
+  made riscv64's shared trap path longer, and `breakpoint_round_trip` went from 126 to 128 ns
+  against `main`'s CI run; in the shootdown's cold path the trap path is as on `main` (126).
+  `reboot` and init's end use it.
+- **Init ending (decided by research).** Fatal, as on Linux: the kernel writes
+  `Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000XX00` (the wait status:
+  the exit status in bits 8-15, or the signal), or `No working init found` with the reason when
+  `/init` could not start, parks the other CPUs and halts (no power-off: the message stays on
+  the screen, Linux's default without `panic=`, and a test that sees no power-off fails).
+- **Tests.** Host tests for the `reboot` checks and commands, the wait status, init's
+  configuration and back-off, and the QEMU verdicts. On every architecture `cargo xtask qemu`
+  boots the release kernel twice more with a test initramfs (`/init`, an `init.conf` and the std
+  program as the login program, `init-login`): it checks it is init's child leading the
+  console's session and foreground group, that an orphan it makes is reparented to init
+  (`getppid` 1) and reaped by it (`getpgid` `ESRCH`), and that `reboot` with bad magic fails with
+  `EINVAL`; then init powers off (QEMU exits 0, `reboot: Power down`) or, with
+  `login-exit=restart` under `-no-reboot`, resets (QEMU exits 0, `reboot: Restarting system`).
+- **Cost.** The release kernel's loaded size (text + data + bss, init's 14-16 KiB included)
+  shrinks from 491017 to 384497 bytes on aarch64 (-21.7%), 435148 to 333672 on riscv64 (-23.3%)
+  and 508045 to 398173 on x86_64 (-21.6%): the self-tests are no longer linked in. Boot to a
+  ready system, measured as QEMU's wall-clock time to init's ready line, against `main`'s
+  release kernel to the end of its self-tests (it then halts, never ready), 4 CPUs on this Mac:
+  0.032 s against 0.325 s on aarch64, 0.051 s against 0.362 s on riscv64, 0.087 s against
+  0.435 s on x86_64. Benchmarks: every line within the gate and within 0.3% of `main`'s CI
+  run (the two riscv64 SBI timer benchmarks aside, which local QEMU's firmware makes slower and
+  the gate skips). No baseline line changed.
+- **Not done yet (follow-ups).** Pid 1 is not protected from `SIGKILL` and default actions sent
+  by others (Linux drops them; `kill` to other processes does not exist yet). `TIOCNOTTY`, so
+  init could give the console up instead of the login program taking it. Init's shutdown
+  signals and `SIGHUP` to look for the login program again. `RESTART2`'s string, a reset
+  through the FADT's reset register on x86_64, and the release kernel's idle memory measured
+  per release.

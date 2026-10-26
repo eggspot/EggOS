@@ -16,6 +16,7 @@ pub mod cpu;
 pub mod elf;
 pub mod exception;
 pub mod heap;
+pub mod init;
 pub mod interrupt;
 pub mod linux;
 pub mod memory;
@@ -40,10 +41,31 @@ pub static HEAP: heap::KernelHeap = heap::KernelHeap::new();
 /// Kernel version, taken from the workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// What a kernel does once it is up (D106), chosen by how it was built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootMode {
+    /// The release kernel: starts `/init` as process 1 ([`init`]).
+    Init,
+    /// A test kernel (`qemu-test`, and host tests): runs the self-tests.
+    SelfTests,
+    /// A benchmark kernel (`qemu-bench`): runs the self-tests, then the benchmarks.
+    Benchmarks,
+}
+
+/// This kernel's [`BootMode`].
+pub const BOOT_MODE: BootMode = if cfg!(feature = "qemu-bench") {
+    BootMode::Benchmarks
+} else if cfg!(any(test, feature = "qemu-test")) {
+    BootMode::SelfTests
+} else {
+    BootMode::Init
+};
+
 /// Runs the architecture-independent part of boot on platform `P`, writing progress to
-/// `console`.
+/// `console`, then what [`BOOT_MODE`] says.
 ///
-/// Returns how the boot went; the architecture entry point turns that into a machine exit.
+/// Returns how the boot went; the architecture entry point turns that into a machine exit. A
+/// release kernel returns only once init has ended, a failure.
 pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     cpu::init_boot_cpu::<P>();
     let free_memory = P::memory_map();
@@ -64,6 +86,10 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 }
                 if let Some(report) = vfs::mount_embedded_initramfs() {
                     report_root(console, report)?;
+                }
+                if BOOT_MODE == BootMode::Init {
+                    init::run(console, &mut memory)?;
+                    return Ok(false);
                 }
                 let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
                 // Benchmarks only mean something on a kernel that passed its self-tests.
@@ -282,6 +308,9 @@ pub(crate) mod tests {
             Ok(())
         }
         fn exit(_status: ExitStatus) -> ! {
+            unreachable!("not used in tests")
+        }
+        fn restart() -> ! {
             unreachable!("not used in tests")
         }
         fn halt() -> ! {

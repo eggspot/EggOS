@@ -357,6 +357,25 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
     }
 }
 
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// Stops every CPU but the calling one, as the machine halts, powers off or resets (`reboot`,
+/// or init ending): each is asked a shootdown and sent the wake-up interrupt, and parks with
+/// interrupts masked where it serves it: as it takes the interrupt,
+/// which a CPU running user mode or waiting for an interrupt does at once, or as it waits for a
+/// lock that has the wait duty. So the wake-up interrupt's path is unchanged. Returns once the
+/// interrupts are sent, which may be before they are taken.
+#[cold]
+#[inline(never)]
+pub fn stop_others<P: Platform>() {
+    STOPPING.store(true, Ordering::Release);
+    let here = current::<P>().index();
+    for cpu in CPUS.all().iter().filter(|cpu| cpu.index() != here) {
+        cpu.request_shootdown();
+        wake::<P>(cpu);
+    }
+}
+
 /// Raises the wake-up interrupt on the calling CPU, which runs with interrupts masked: it is
 /// taken once they are unmasked, at the latest as soon as the CPU runs user mode, which then
 /// comes back to the kernel at once.
@@ -383,6 +402,9 @@ pub(crate) fn serve_shootdowns<P: Platform>() {
 #[cold]
 #[inline(never)]
 pub(crate) fn serve_shootdowns_asked<P: Platform>(here: &Cpu, requested: u64) {
+    if STOPPING.load(Ordering::Acquire) {
+        P::halt()
+    }
     P::drop_user_translations(0, <P::PageTableFormat as Format>::USER_END);
     here.shootdowns_served.store(requested, Ordering::Release);
 }
