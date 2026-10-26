@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "hal", "drivers", "userland/runtime", "userland/init", "userland/eggsh", "userland/selftest", "userland/std-selftest", "xtask"]
+members = ["kernel", "hal", "drivers", "userland/runtime", "userland/init", "userland/eggsh", "userland/coreutils", "userland/selftest", "userland/std-selftest", "xtask"]
 
 [workspace.package]
 version = "0.2.0"
