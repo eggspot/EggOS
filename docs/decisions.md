@@ -4622,8 +4622,8 @@ the license, by an explicit instruction recorded here.
   `poll`, ...) now finds it in the table: the table's lock taken and released and the open file
   description's count taken and dropped, where it compared the number with 2 before. Two new
   benchmarks gate it (docs/benchmarks.md): `linux_descriptor_lookup`, that lookup alone, and
-  `linux_dup3_close` (`dup3` to descriptor 3, then `close`, without the trap): 184.52, 201.11
-  and 189.09 ns on aarch64, riscv64 and x86_64. The system-call dispatch and the calls that take
+  `linux_dup3_close` (`dup3` to descriptor 3, then `close`, without the trap): 36.03, 28.03
+  and 27.02 ns, and 184.52, 201.11 and 189.09 ns, on aarch64, riscv64 and x86_64. The system-call dispatch and the calls that take
   no descriptor are unchanged. Every other benchmark is as on `main` but for the one-time table
   of each process: about 245 instructions per process (three allocations and their frees),
   +0.03% on `linux_page_fault` (one process per 512 pages) and +0.02% on
