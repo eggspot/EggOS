@@ -4984,7 +4984,9 @@ the license, by an explicit instruction recorded here.
   `linux_execve` rose +6.2%, +3.2% and +0.5%, but `main`'s kernel with this change's test
   program (which grew about 4.8 KiB by its two loop modes, and is the program that benchmark
   execs) measures +6.0%, +2.9% and +0.0% already: the kernel's own share is +0.17%, +0.27%
-  and +0.52%.
+  and +0.52%. Each process the new benchmarks start runs code QEMU translates again, so a
+  RISC-V benchmark boot no longer fits the boot tests' 30 s on CI's runners: benchmark boots
+  get 90 s (`cargo xtask bench`), the other boot tests keep 30 s.
 - **Decided by research: the memory's pointer is accepted (D78).** The remaining costs are the
   one dependent load of the shared memory per call, which Linux pays as the task's `mm`
   pointer; the sharing is what `vfork` and `posix_spawn` need (glibc's writes its error into

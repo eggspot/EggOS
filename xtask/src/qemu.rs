@@ -122,6 +122,8 @@ pub enum Expect {
 /// A boot test that has not powered off by then has hung.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
+const BENCHMARK_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Start of the kernel's boot banner (`EggOS <version> (<arch>)`, see `eggos_kernel::boot`).
 /// Seeing it twice means the machine reset and booted again.
 const BANNER_PREFIX: &str = "EggOS ";
@@ -200,6 +202,10 @@ pub fn boot_test(
     let rx = echo_console_to_stderr(child.stdout.take().expect("stdout is piped"));
     let mut keyboard = child.stdin.take().expect("stdin is piped");
 
+    let timeout = match expect {
+        Expect::Benchmarks => BENCHMARK_BOOT_TIMEOUT,
+        _ => BOOT_TIMEOUT,
+    };
     let started = Instant::now();
     let mut console = Vec::new();
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
@@ -221,13 +227,13 @@ pub fn boot_test(
                 arch.name
             ));
         }
-        if started.elapsed() > BOOT_TIMEOUT {
+        if started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!(
                 "{}: no power-off within {}s (kernel hung?)",
                 arch.name,
-                BOOT_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
