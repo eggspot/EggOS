@@ -5037,3 +5037,95 @@ the license, by an explicit instruction recorded here.
   lines changed only where the gate flagged them (`linux_execve` on aarch64 and riscv64,
   riscv64 `linux_file_read`, `linux_mmap_munmap` and `linux_page_fault`) and for the two new
   benchmarks.
+
+## D105 `wait4`, zombies, reparenting, `SIGCHLD`, process groups, sessions and the console's foreground group — Decided by the build loop (when the console becomes a controlling terminal and where orphans go decided by research)
+
+- **What.** Item 7 of the v0.3.0 plan (D99): a parent waits for its children, and minimal job
+  control. `wait4` (61 on x86_64, 260 generic) and `waitid` (247, 95); `setpgid`, `getpgid`,
+  `setsid`, `getsid` and x86_64's `getpgrp`; `prctl` with `PR_SET_CHILD_SUBREAPER` and
+  `PR_GET_CHILD_SUBREAPER` (every other option `EINVAL`, as Linux answers one it does not know,
+  instead of `ENOSYS` for the whole call); `TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP` and `TIOCGSID`
+  on the console; `^C` and `^\` reach every process of the console's foreground group.
+- **A process table.** One table (`linux::process_table`), sorted by process id, under one leaf
+  lock (nothing else is locked under it, nothing freed under it: it holds weak references
+  only), replaces D104's list of children in each process's record. Each entry: the parent (0
+  for the kernel), the exit signal, the process group and session, the end once it came (a
+  zombie), the real user id at the end, a count of children (so a process without children
+  pays no scan at its end), the subreaper flag, whether `SIGCHLD` is ignored or has
+  `SA_NOCLDWAIT`, whether the process ran `execve` (`setpgid`'s `EACCES`), and a weak
+  reference to its current program's `Process` (type-erased) with its first thread's wait
+  slot, through which a signal sent from outside reaches it. `Process` loses its `parent`
+  field (getppid reads the table) and the record its children; a record dropped for a process
+  that never ended as a Linux process does (a host test's, a failed `clone`'s) removes its
+  entry, handing its children over. The table is pure logic with its own host tests; the
+  global one is `TABLE`.
+- **Zombies and reaping.** `end_process` records the end in the table once (`wait::process_ended`):
+  the process stays as a zombie until its parent reaps it with `wait4` or `waitid` (unless
+  `WNOWAIT`), or is removed at once if nobody can wait for it: the kernel is its parent, or the
+  parent ignores `SIGCHLD` or set `SA_NOCLDWAIT` and the exit signal is `SIGCHLD`, as wait(2)
+  and POSIX say (a wait then blocks until the last child ends, then fails with `ECHILD`).
+  Nothing about a process outlives its reaping: the entry goes, and the `Process` is freed when
+  its last thread lets go of it, as before.
+- **Waiting.** Selection as Linux reads `pid`: one child, the caller's group (0), any (-1), a
+  group (below -1, `ESRCH` for `INT_MIN`); by exit signal, `SIGCHLD` children by default,
+  "clone" children with `__WCLONE`, all with `__WALL`; `__WNOTHREAD` accepted (each process
+  waits for its own children). A wait that finds children but none ended sleeps on its
+  process's child-wait key (futex space 0, bit 63 set plus the parent's id) until a child's end
+  wakes it; a global count of children's ends, read before looking, keeps a wait from
+  sleeping after an end it missed. Signals interrupt it as they do `read` and futex waits
+  (D97): the handler runs and the call fails with `EINTR`, or is restarted with `SA_RESTART`
+  (`ERESTARTSYS`); a process's end wakes it. The status is Linux's (`exit << 8`, or the signal);
+  no core-dump bit, as there are no core dumps; resource usage is written as zeros; a status or
+  `rusage` pointer that is not writable is `EFAULT` after the child was reaped, as Linux puts
+  it after release. `waitid` writes `SIGCHLD`, `CLD_EXITED` or `CLD_KILLED`, the child's id,
+  real user id and status, and zeros with `WNOHANG` and nothing ended; `P_PIDFD` is `EINVAL`
+  (no pidfds).
+- **`SIGCHLD`.** A child's end sends its exit signal (D104's `clone` argument; `SIGCHLD` for
+  `fork` and `vfork`; none for 0) to its parent with Linux's `siginfo_t` (`CLD_EXITED` or
+  `CLD_KILLED`, `si_pid`, `si_uid`, `si_status`), queued for the process and delivered by the
+  first thread that does not block it (`signals::send_from_outside`, which generalises D100's
+  terminal sender: the target's first thread's wait slot from the table, the others' from its
+  signal state). Its default action ignores it. `SA_NOCLDSTOP` is kept but changes nothing:
+  processes do not stop yet (below).
+- **Orphans (decided by research).** A process that ends hands its children to the nearest
+  living ancestor that set `PR_SET_CHILD_SUBREAPER`, else to init, else to the kernel (parent 0,
+  reaped as they end); their exit signal becomes `SIGCHLD`, and children that ended already are
+  told to the new parent, which reaps them at once if it cannot wait for them. Init is the
+  process the kernel names (`Table::set_init`), which item 8's `/init`, pid 1, will be; there
+  is none until then, and a host test's process with id 1 must not collect every other test's
+  orphans. The QEMU test's program is not pid 1, so it checks reparenting through the ABI as
+  a subreaper (prctl(2): kept across `execve`, not inherited). Options weighed: always pid 1
+  (untestable through the ABI before init exists, and fragile in parallel host tests).
+  `getppid` now reports the new parent, which fixes D104's "an orphan still reports the old
+  parent's id".
+- **Groups and sessions.** A process the kernel starts leads a new session and group; a child
+  is in its parent's. `setpgid` as Linux: the caller or one of its children, `EINVAL` for a
+  negative group, `ESRCH` for anything else, `EACCES` for a child that ran `execve`, `EPERM`
+  for a session leader, a child in another session or a group not in the caller's session;
+  `setsid` `EPERM` for a group leader; `getpgid` and `getsid` for any process in the table,
+  `ESRCH` otherwise.
+- **The console as a controlling terminal (decided by research).** A process the kernel starts
+  gets the console as its session's controlling terminal if the console is no session's yet:
+  its descriptors 0 to 2 are the console already, so its start stands in for the `open` without
+  `O_NOCTTY` by which a session leader acquires a terminal on Linux. Options weighed: acquiring
+  at the first `read`, `poll` or job-control `ioctl` (a rule Linux does not have:
+  `tcgetpgrp` would succeed where Linux answers `ENOTTY`), or only by `TIOCSCTTY` (nothing
+  would set it until `/init` does). The foreground group starts as the leader's. `TIOCSPGRP`
+  hands it to a group of the session (`ENOTTY` if the console is not the caller's controlling
+  terminal, `EINVAL` negative, `EPERM` outside the session); `TIOCGPGRP` and `TIOCGSID` report
+  it; `TIOCSCTTY` takes the console for a session leader without one (`EPERM` if another
+  session has it, unless the argument is 1 and the caller privileged). The leader's end hangs
+  up the session: the foreground group gets `SIGHUP` and `SIGCONT`, and the console is no
+  session's. This replaces D100's `console::Foreground` hook (the last reader), its
+  `reader_id`, `set_foreground` and `forget_foreground`, and their calls in `read`, `poll`,
+  `execve` and the process's end.
+- **Not done yet (follow-ups).** Stopping and continuing (`SIGSTOP`, `SIGTSTP`, `WUNTRACED`,
+  `WCONTINUED`, `SA_NOCLDSTOP`): accepted, nothing reports, since processes do not stop (D63).
+  With them: `SIGTTIN` for a background group reading the console and `SIGTTOU` for one
+  changing its settings or the foreground group (today both just work), and `SIGHUP` with
+  `SIGCONT` to a group orphaned with stopped members. `kill` still reaches only the caller (its
+  own id, 0 or minus its group): sending to other processes and groups needs the table's
+  running references and permission checks. `TIOCNOTTY`. `prctl`'s naming and dumpable
+  options (programs ignore their `EINVAL`). A signal sent to a process between its `execve`'s
+  point of no return and the new program's start goes to the old program, which has ended,
+  and is lost. Process ids are still never reused.
