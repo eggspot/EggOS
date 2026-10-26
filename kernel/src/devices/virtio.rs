@@ -144,7 +144,6 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         };
         slot.get_or_insert(capability);
     }
-    pci::enable_memory_and_bus_master(config, function.address);
     let (Some(common), Some(notify)) = (common, notify) else {
         return Err(ProbeError::Refused(
             virtio::Error::BadCapabilities.description(),
@@ -181,6 +180,9 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         notify.notify_off_multiplier,
         device.map(&mut regs).transpose()?,
     );
+    if let Some(config) = probe.pci_config() {
+        pci::enable_memory_and_bus_master(config, function.address);
+    }
     add_device(probe, id, &node, AnyTransport::Pci(transport))
 }
 

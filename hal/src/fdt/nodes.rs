@@ -296,27 +296,21 @@ enum Property {
 
 fn property(name: &[u8]) -> Option<Property> {
     use Property::*;
-    let candidates: &[(&[u8], Property)] = match name.len() {
-        3 => &[(b"reg", Reg)],
-        6 => &[(b"status", Status)],
-        7 => &[(b"phandle", Phandle)],
-        10 => &[(b"compatible", Compatible), (b"interrupts", Interrupts)],
-        11 => &[(b"#size-cells", SizeCells)],
-        12 => &[(b"dma-coherent", DmaCoherent)],
-        13 => &[(b"linux,phandle", Phandle)],
-        14 => &[(b"#address-cells", AddressCells)],
-        15 => &[(b"dma-noncoherent", DmaNoncoherent)],
-        16 => &[
-            (b"interrupt-parent", InterruptParent),
-            (b"#interrupt-cells", InterruptCells),
-        ],
-        19 => &[(b"interrupts-extended", InterruptsExtended)],
+    Some(match name {
+        b"compatible" => Compatible,
+        b"reg" => Reg,
+        b"interrupts" => Interrupts,
+        b"interrupts-extended" => InterruptsExtended,
+        b"interrupt-parent" => InterruptParent,
+        b"phandle" | b"linux,phandle" => Phandle,
+        b"#interrupt-cells" => InterruptCells,
+        b"#address-cells" => AddressCells,
+        b"#size-cells" => SizeCells,
+        b"status" => Status,
+        b"dma-coherent" => DmaCoherent,
+        b"dma-noncoherent" => DmaNoncoherent,
         _ => return None,
-    };
-    candidates
-        .iter()
-        .find(|(known, _)| *known == name)
-        .map(|&(_, property)| property)
+    })
 }
 
 fn apply<'a>(node: &mut Node<'a>, own: &mut Level, name: &[u8], value: &'a [u8]) {
