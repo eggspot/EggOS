@@ -12,15 +12,14 @@ pub(super) fn discover(
     let tree = Fdt::new(blob).map_err(|_| "the device tree's header is not valid")?;
     let mut controllers = [(0u32, 0u32); MAX_CONTROLLERS];
     let mut known = 0;
-    for node in tree.nodes() {
-        let node = node.map_err(|_| "the device tree is malformed")?;
+    each_node(&tree, &mut |node| {
         if let (Some(phandle), Some(cells)) = (node.phandle, node.interrupt_cells)
             && known < MAX_CONTROLLERS
         {
             controllers[known] = (phandle, cells);
             known += 1;
         }
-    }
+    })?;
     let controllers = &controllers[..known];
     let cells_of = |phandle| {
         controllers
@@ -28,20 +27,29 @@ pub(super) fn discover(
             .find_map(|&(known, cells)| (known == phandle).then_some(cells))
     };
     let mut cpus_depth = None;
-    for node in tree.nodes() {
-        let node = node.map_err(|_| "the device tree is malformed")?;
+    each_node(&tree, &mut |node| {
         match cpus_depth {
-            Some(depth) if node.depth > depth => continue,
+            Some(depth) if node.depth > depth => return,
             _ => cpus_depth = None,
         }
         if node.depth == 1 && node.name == b"cpus" {
             cpus_depth = Some(node.depth);
-            continue;
+            return;
         }
         if node.depth == 0 || !node.enabled || node.compatible.is_empty() {
-            continue;
+            return;
         }
-        table.add(device(&node, &cells_of, coherent_by_default));
+        table.add(device(node, &cells_of, coherent_by_default));
+    })
+}
+
+#[inline(never)]
+fn each_node(
+    tree: &Fdt<'static>,
+    visit: &mut dyn FnMut(&Node<'static>),
+) -> Result<(), &'static str> {
+    for node in tree.nodes() {
+        visit(&node.map_err(|_| "the device tree is malformed")?);
     }
     Ok(())
 }

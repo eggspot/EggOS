@@ -25,6 +25,7 @@ pub mod window;
 
 use crate::memory::Memory;
 use crate::sync::LeafSpinLock;
+use core::fmt::Write;
 use core::mem::MaybeUninit;
 use eggos_drivers::pci::{self, ConfigSpace};
 use eggos_hal::fdt::InterruptSpecifier;
@@ -455,12 +456,10 @@ impl core::fmt::Display for DeviceNode {
         match self.identity {
             Identity::DeviceTree { name, compatible } => {
                 let first = compatible.split(|&byte| byte == 0).next().unwrap_or(&[]);
-                write!(
-                    f,
-                    "{} ({})",
-                    core::str::from_utf8(name).unwrap_or("?"),
-                    core::str::from_utf8(first).unwrap_or("?")
-                )?;
+                write_ascii(f, name)?;
+                f.write_str(" (")?;
+                write_ascii(f, first)?;
+                f.write_str(")")?;
             }
             Identity::Pci(function) => write!(
                 f,
@@ -488,6 +487,13 @@ impl core::fmt::Display for DeviceNode {
             }
         }
     }
+}
+
+fn write_ascii(f: &mut core::fmt::Formatter<'_>, bytes: &[u8]) -> core::fmt::Result {
+    bytes.iter().try_for_each(|&byte| {
+        let printable = byte.is_ascii_graphic() || byte == b' ';
+        f.write_char(if printable { char::from(byte) } else { '?' })
+    })
 }
 
 #[cfg(test)]

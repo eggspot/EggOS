@@ -278,22 +278,56 @@ impl<'a> Fdt<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Property {
+    Compatible,
+    Reg,
+    Interrupts,
+    InterruptsExtended,
+    InterruptParent,
+    Phandle,
+    InterruptCells,
+    AddressCells,
+    SizeCells,
+    Status,
+    DmaCoherent,
+    DmaNoncoherent,
+}
+
+const PROPERTIES: [(&[u8], Property); 13] = [
+    (b"compatible", Property::Compatible),
+    (b"reg", Property::Reg),
+    (b"interrupts", Property::Interrupts),
+    (b"interrupts-extended", Property::InterruptsExtended),
+    (b"interrupt-parent", Property::InterruptParent),
+    (b"phandle", Property::Phandle),
+    (b"linux,phandle", Property::Phandle),
+    (b"#interrupt-cells", Property::InterruptCells),
+    (b"#address-cells", Property::AddressCells),
+    (b"#size-cells", Property::SizeCells),
+    (b"status", Property::Status),
+    (b"dma-coherent", Property::DmaCoherent),
+    (b"dma-noncoherent", Property::DmaNoncoherent),
+];
+
 fn apply<'a>(node: &mut Node<'a>, own: &mut Level, name: &[u8], value: &'a [u8]) {
-    let cell = || be32(value, 0);
-    match name {
-        b"compatible" => node.compatible = value,
-        b"reg" => node.reg = value,
-        b"interrupts" => node.interrupts = value,
-        b"interrupts-extended" => node.interrupts_extended = value,
-        b"interrupt-parent" => node.interrupt_parent = cell(),
-        b"phandle" | b"linux,phandle" => node.phandle = cell(),
-        b"#interrupt-cells" => node.interrupt_cells = cell(),
-        b"#address-cells" => own.address_cells = cell().unwrap_or(2),
-        b"#size-cells" => own.size_cells = cell().unwrap_or(1),
-        b"status" => node.enabled = value == b"okay\0" || value == b"ok\0",
-        b"dma-coherent" => node.dma_coherent = true,
-        b"dma-noncoherent" => node.dma_noncoherent = true,
-        _ => {}
+    let Some(&(_, property)) = PROPERTIES.iter().find(|(known, _)| *known == name) else {
+        return;
+    };
+    let cell = be32(value, 0);
+    match property {
+        Property::Compatible => node.compatible = value,
+        Property::Reg => node.reg = value,
+        Property::Interrupts => node.interrupts = value,
+        Property::InterruptsExtended => node.interrupts_extended = value,
+        Property::InterruptParent => node.interrupt_parent = cell,
+        Property::Phandle => node.phandle = cell,
+        Property::InterruptCells => node.interrupt_cells = cell,
+        Property::AddressCells => own.address_cells = cell.unwrap_or(2),
+        Property::SizeCells => own.size_cells = cell.unwrap_or(1),
+        Property::Status => node.enabled = value == b"okay\0" || value == b"ok\0",
+        Property::DmaCoherent => node.dma_coherent = true,
+        Property::DmaNoncoherent => node.dma_noncoherent = true,
     }
 }
 
