@@ -7,6 +7,11 @@
 //! is a binary search among them. File contents are never copied: a read returns a slice of
 //! the archive. Members of other types (symbolic links, devices) are skipped for now.
 //!
+//! Regular files that share an inode number and say they have more than one link are hard
+//! links to one file (D108), as `cpio` and Linux's `gen_init_cpio` write them: the data is in
+//! one of them (the last, by those writers), the others are empty, and every name reads that
+//! data and reports the same file id, attributes and link count.
+//!
 //! Member paths may start with `./` or `/`; `.` (or an empty path) is the root itself. Every
 //! member's parent directory must come earlier in the archive, components must be non-empty
 //! names of at most [`super::NAME_MAX`] bytes other than `.` and `..`, and no path may appear
@@ -57,6 +62,8 @@ struct Entry {
     group: u32,
     modified: u32,
     links: u32,
+    archive_inode: u32,
+    file_id: u32,
 }
 
 /// A mounted initramfs: see the module documentation.
@@ -92,6 +99,8 @@ impl Initramfs {
             group: 0,
             modified: 0,
             links: 2,
+            archive_inode: 0,
+            file_id: ROOT + 1,
         }
     }
 
@@ -153,10 +162,16 @@ impl Initramfs {
                     DIRECTORY => 2,
                     _ => 1,
                 },
+                archive_inode: match kind {
+                    REGULAR if member.links > 1 => member.inode,
+                    _ => 0,
+                },
+                file_id: 0,
             });
         }
         let mut file_system = Self { archive, entries };
         file_system.index()?;
+        file_system.join_hard_links()?;
         Ok(file_system)
     }
 
@@ -207,6 +222,41 @@ impl Initramfs {
             self.entries[index].parent = parent;
             if self.entries[index].mode & FILE_TYPE == DIRECTORY {
                 self.entries[parent as usize].links += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn join_hard_links(&mut self) -> Result<(), Error> {
+        for (node, entry) in self.entries.iter_mut().enumerate() {
+            entry.file_id = node as u32 + 1;
+        }
+        let mut linked = Vec::new();
+        for (node, entry) in self.entries.iter().enumerate() {
+            if entry.archive_inode != 0 {
+                linked.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+                linked.push((entry.archive_inode, node as u32));
+            }
+        }
+        linked.sort_unstable();
+        for group in linked.chunk_by(|a, b| a.0 == b.0) {
+            let holder = group
+                .iter()
+                .map(|&(_, node)| self.entries[node as usize])
+                .filter(|entry| entry.size > 0)
+                .max_by_key(|entry| entry.data_start)
+                .unwrap_or(self.entries[group[0].1 as usize]);
+            let file_id = group[0].1 + 1;
+            for &(_, node) in group {
+                let entry = &mut self.entries[node as usize];
+                entry.data_start = holder.data_start;
+                entry.size = holder.size;
+                entry.mode = holder.mode;
+                entry.owner = holder.owner;
+                entry.group = holder.group;
+                entry.modified = holder.modified;
+                entry.links = group.len() as u32;
+                entry.file_id = file_id;
             }
         }
         Ok(())
@@ -292,7 +342,7 @@ impl FileSystem for Initramfs {
         Attributes {
             kind: self.kind(node),
             permissions: entry.mode & 0o7777,
-            file_id: node + 1,
+            file_id: u64::from(entry.file_id),
             links: entry.links,
             owner: entry.owner,
             group: entry.group,
@@ -491,6 +541,34 @@ pub mod tests {
             Initramfs::parse(truncated).err(),
             Some(Error::Archive(cpio::Error::Truncated))
         );
+    }
+
+    #[test]
+    fn hard_links_share_the_data_attributes_and_file_id_of_their_file() {
+        let bytes = cpio::tests::archive_with_inodes(&[
+            (("bin", 0o040755, 0, b""), 1, 2),
+            (("bin/ls", 0o100755, 0, b""), 7, 3),
+            (("bin/cat", 0o100755, 0, b""), 7, 3),
+            (("bin/coreutils", 0o100755, 9, b"program"), 7, 3),
+            (("bin/alone", 0o100644, 0, b"own"), 8, 2),
+            (("bin/plain", 0o100644, 0, b"plain"), 7, 1),
+        ]);
+        let file_system = Initramfs::parse(Box::leak(bytes.into_boxed_slice())).unwrap();
+        let bin = file_system.lookup(file_system.root(), b"bin").unwrap();
+        let node = |name: &[u8]| file_system.lookup(bin, name).unwrap();
+        let program = file_system.attributes(node(b"coreutils"));
+        assert_eq!((program.links, program.size, program.modified), (3, 7, 9));
+        for name in [&b"ls"[..], b"cat", b"coreutils"] {
+            assert_eq!(file_system.read(node(name), 0, 64), b"program");
+            assert_eq!(file_system.attributes(node(name)), program);
+        }
+        let alone = file_system.attributes(node(b"alone"));
+        assert_eq!((alone.links, alone.size), (1, 3));
+        let plain = file_system.attributes(node(b"plain"));
+        assert_eq!((plain.links, plain.size), (1, 5));
+        assert_ne!(plain.file_id, program.file_id);
+        assert_ne!(alone.file_id, program.file_id);
+        assert_eq!(file_system.read(node(b"plain"), 0, 64), b"plain");
     }
 
     #[test]
