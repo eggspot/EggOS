@@ -1339,8 +1339,6 @@ where
     let here = cpu::current::<P>();
     let root = process.address_space().root();
     drop(process);
-    // If only CPUs still hold the process (this was its last thread), they let it go: this one
-    // now, the others, woken, when they idle.
     address_space::release_ended::<P>(here, root);
 }
 
