@@ -232,6 +232,12 @@ struct Linux {
     group: i32,
 }
 
+impl Linux {
+    fn has_the_terminal(&self) -> bool {
+        self.group != 0
+    }
+}
+
 impl Files for Linux {
     fn kind(&mut self, path: &[u8]) -> Kind {
         let mut status = [0u8; STAT_SIZE];
@@ -266,7 +272,10 @@ impl System for Linux {
     }
 
     fn read(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read {
-        if descriptor == TERMINAL && self.group != 0 && !wait_for_input_or_interrupt(descriptor) {
+        if descriptor == TERMINAL
+            && self.has_the_terminal()
+            && !wait_for_input_or_interrupt(descriptor)
+        {
             return Read::Interrupted;
         }
         let read = call(
