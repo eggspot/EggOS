@@ -13,6 +13,37 @@ AI-native operating system written from scratch in Rust, with its own kernel (no
 
 EggOS is open source and open for funding. If you want to help build it, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
 
+## Try EggOS
+EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop. These steps apply
+from v0.3.0, the first release with the desktop, `SHA256SUMS` and the run scripts.
+
+![The EggOS desktop: the top bar, the wallpaper and the shell in a terminal window](docs/images/desktop.png)
+
+1. Install [QEMU](https://www.qemu.org/download/) (macOS: `brew install qemu`; Debian or Ubuntu:
+   `sudo apt install qemu-system`; Windows: the QEMU installer, with its folder on `PATH`).
+2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest) (v0.3.0 or later), download into one
+   folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
+   `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
+3. Run the script. It picks your machine's architecture, checks the image against `SHA256SUMS`
+   (`sha256sum -c --ignore-missing SHA256SUMS` or `shasum -a 256 -c --ignore-missing SHA256SUMS`
+   checks it by hand) and boots it:
+
+```
+sh run-eggos.sh                       # a QEMU window with the desktop; the console here too
+sh run-eggos.sh riscv64 --serial      # another architecture, no window: the console here only
+.\run-eggos.ps1 -Arch x86_64 -Serial  # Windows PowerShell
+```
+
+On Windows, if PowerShell refuses to run a downloaded script, start it with
+`powershell -ExecutionPolicy Bypass -File run-eggos.ps1`.
+
+The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
+shell in a terminal window you can move, focus and minimise with the mouse. Type at the
+`eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
+`sleep`, `true`, `false`, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
+[core utilities](docs/coreutils.md)). Quit with Ctrl-A then X on that terminal, or close the
+window. What does not work yet: [docs/limitations.md](docs/limitations.md).
+
 ## Layout
 | Path | What |
 |------|------|
@@ -31,6 +62,8 @@ cargo xtask ci                   # everything CI runs, cheapest first
 cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
 cargo xtask bench --arch all     # benchmarks (instruction counts), checked against benchmarks/baseline.txt
 cargo xtask run --arch aarch64   # boot interactively: display in a window, console here (quit: Ctrl-A then X)
+cargo xtask release              # the release files in target/release-dist/: images, SHA256SUMS, run scripts, notes
+cargo xtask screenshot --arch aarch64   # docs/images/desktop.png from the release image's display
 ```
 QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`, `qemu-system-x86_64`) must be on `PATH` for the
 boot commands.

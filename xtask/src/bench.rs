@@ -6,6 +6,12 @@
 //! result is an instruction count per iteration: deterministic, independent of how fast or
 //! busy the host is, and therefore comparable with a committed number. A result above its
 //! baseline by more than the tolerance is a regression and fails the run.
+//!
+//! Two more results per architecture come from the release kernel (D116): `boot_to_prompt`,
+//! the guest time from the kernel's entry to the shell waiting at its first prompt, read by a
+//! kernel built with `qemu-boot-clock` and booted serial-only under the same `-icount`; and
+//! `release_image_bytes`, the size of the image `cargo xtask release` ships, which may not grow
+//! at all without a baseline update (CLAUDE.md, note 8).
 
 use crate::{Arch, qemu};
 use std::collections::BTreeMap;
@@ -30,6 +36,11 @@ const BENCH_CPUS: u32 = 1;
 const TOLERANCE_RELATIVE: f64 = 0.01;
 const TOLERANCE_ABSOLUTE_NS: f64 = 0.5;
 
+const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
+
+/// Results that are sizes in bytes, gated exactly: any growth fails.
+const SIZES: &[&str] = &[RELEASE_IMAGE_BYTES];
+
 /// Header of the baseline file, rewritten by `--update-baseline`.
 const BASELINE_HEADER: &str = "\
 # EggOS boot-time benchmark baseline, written by `cargo xtask bench --arch all --update-baseline`.
@@ -39,8 +50,9 @@ const BASELINE_HEADER: &str = "\
 # 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
 # slower, and say why in the PR (CLAUDE.md, \"Never merge a performance regression\").
 # `<arch> firmware <version>` names the firmware the results were recorded with: benchmarks
-# that run inside it are gated only on the same firmware. Record the baseline with CI's QEMU
-# (Ubuntu 24.04 packages).
+# that run inside it are gated only on the same firmware, and `<arch> qemu <version>` names
+# the QEMU that QEMU-dependent results (boot_to_prompt) were recorded with, likewise. Record
+# the baseline with CI's QEMU (Ubuntu 24.04 packages).
 ";
 
 /// Benchmarks that execute firmware code (the SBI implementation on RISC-V), so their counts
@@ -52,15 +64,22 @@ const FIRMWARE_DEPENDENT: &[(&str, &str, &[&str])] = &[(
     &["timer_arm", "timer_interrupt_round_trip"],
 )];
 
+/// Benchmarks whose counts depend on the QEMU version, which builds each machine's devices
+/// and tables (Ubuntu 24.04's QEMU and QEMU 10.2 differ by up to 20% on x86_64's boot): those
+/// are compared only when QEMU's version matches the baseline's `<arch> qemu <version>` line.
+const QEMU_DEPENDENT: &[&str] = &["boot_to_prompt"];
+
 /// Results in nanoseconds (= instructions, under icount) per iteration, keyed by
 /// (architecture, benchmark).
 type Results = BTreeMap<(String, String), f64>;
 
-/// A set of results and the firmware version each architecture ran with (when it matters).
+/// A set of results and the firmware and QEMU versions each architecture ran with (when they
+/// matter).
 #[derive(Debug, Default, PartialEq)]
 struct Measurements {
     results: Results,
     firmware: BTreeMap<String, String>,
+    qemu: BTreeMap<String, String>,
 }
 
 fn baseline_path() -> PathBuf {
@@ -96,6 +115,12 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
         if let Some(version) = firmware_version(arch.name, &console) {
             measured.firmware.insert(arch.name.to_owned(), version);
         }
+        for (name, value) in release_kernel_results(arch)? {
+            measured.results.insert((arch.name.to_owned(), name), value);
+        }
+        measured
+            .qemu
+            .insert(arch.name.to_owned(), qemu_version(arch)?);
     }
 
     let path = baseline_path();
@@ -130,6 +155,43 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
     }
 }
 
+fn qemu_version(arch: &Arch) -> Result<String, String> {
+    let output = std::process::Command::new(arch.qemu)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("could not run {} --version: {e}", arch.qemu))?;
+    parse_qemu_version(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| format!("{} --version printed no version", arch.qemu))
+}
+
+fn parse_qemu_version(text: &str) -> Option<String> {
+    text.lines()
+        .next()?
+        .split_whitespace()
+        .skip_while(|word| *word != "version")
+        .nth(1)
+        .map(str::to_owned)
+}
+
+fn release_kernel_results(arch: &Arch) -> Result<Vec<(String, f64)>, String> {
+    let image = crate::build_kernel(arch, None)?;
+    let bytes = std::fs::metadata(&image)
+        .map_err(|e| format!("{}: {e}", image.display()))?
+        .len();
+    let kernel = crate::build_boot_clock_kernel(arch)?;
+    let console = qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::BootClock,
+        BENCH_CPUS,
+        qemu::Display::Absent,
+        ICOUNT_ARGS,
+    )?;
+    let mut results = parse_console(&console)?;
+    results.push((RELEASE_IMAGE_BYTES.to_owned(), bytes as f64));
+    Ok(results)
+}
+
 /// The baseline with the results of the architectures in `ran` replaced by `measured`'s,
 /// except firmware-dependent results measured on other firmware than the baseline's: those
 /// keep their baseline value (with its firmware line), so updating from a machine whose QEMU
@@ -145,16 +207,25 @@ fn updated_baseline(
             .get(arch)
             .is_some_and(|then| measured.firmware.get(arch) != Some(then))
     };
+    let other_qemu = |arch: &str| {
+        baseline
+            .qemu
+            .get(arch)
+            .is_some_and(|then| measured.qemu.get(arch) != Some(then))
+    };
+    let elsewhere = |arch: &str, name: &str| {
+        (is_firmware_dependent(arch, name) && other_firmware(arch))
+            || (QEMU_DEPENDENT.contains(&name) && other_qemu(arch))
+    };
     let mut kept = Vec::new();
     let mut merged = Measurements::default();
     for ((arch, name), value) in &baseline.results {
-        let keep = !ran.contains(&arch.as_str())
-            || (is_firmware_dependent(arch, name) && other_firmware(arch));
+        let keep = !ran.contains(&arch.as_str()) || elsewhere(arch, name);
         if keep {
             if ran.contains(&arch.as_str()) {
                 kept.push(format!(
-                    "kept {arch} {name} {value:.2}: measured on other firmware than the \
-                     baseline's (record it with CI's QEMU)"
+                    "kept {arch} {name} {value:.2}: measured on other firmware or QEMU than \
+                     the baseline's (record it with CI's QEMU)"
                 ));
             }
             merged.results.insert((arch.clone(), name.clone()), *value);
@@ -165,12 +236,17 @@ fn updated_baseline(
             merged.firmware.insert(arch.clone(), version.clone());
         }
     }
+    for (arch, version) in &baseline.qemu {
+        if !ran.contains(&arch.as_str()) || other_qemu(arch) {
+            merged.qemu.insert(arch.clone(), version.clone());
+        }
+    }
     for ((arch, name), value) in measured.results {
-        if is_firmware_dependent(&arch, &name) && other_firmware(&arch) {
+        if elsewhere(&arch, &name) {
             if !merged.results.contains_key(&(arch.clone(), name.clone())) {
                 kept.push(format!(
-                    "not recorded: {arch} {name} {value:.2} was measured on other firmware \
-                     than the baseline's (record it with CI's QEMU)"
+                    "not recorded: {arch} {name} {value:.2} was measured on other firmware or \
+                     QEMU than the baseline's (record it with CI's QEMU)"
                 ));
             }
             continue;
@@ -179,6 +255,9 @@ fn updated_baseline(
     }
     for (arch, version) in measured.firmware {
         merged.firmware.entry(arch).or_insert(version);
+    }
+    for (arch, version) in measured.qemu {
+        merged.qemu.entry(arch).or_insert(version);
     }
     (merged, kept)
 }
@@ -242,6 +321,10 @@ fn parse_baseline(text: &str) -> Result<Measurements, String> {
                 .insert(arch.to_owned(), version.to_owned());
             continue;
         }
+        if let [arch, "qemu", version] = words[..] {
+            baseline.qemu.insert(arch.to_owned(), version.to_owned());
+            continue;
+        }
         let [arch, name, value] = words[..] else {
             return Err(format!("malformed baseline line `{line}`"));
         };
@@ -259,6 +342,9 @@ fn write_baseline(path: &Path, baseline: &Measurements) -> Result<(), String> {
     let mut text = BASELINE_HEADER.to_owned();
     for (arch, version) in &baseline.firmware {
         writeln!(text, "{arch} firmware {version}").expect("writing to a String");
+    }
+    for (arch, version) in &baseline.qemu {
+        writeln!(text, "{arch} qemu {version}").expect("writing to a String");
     }
     for ((arch, name), value) in &baseline.results {
         writeln!(text, "{arch} {name} {value:.2}").expect("writing to a String");
@@ -298,11 +384,26 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
                 name(then)
             );
         }
+        let (now, then) = (measured.qemu.get(*arch), baseline.qemu.get(*arch));
+        if now != then {
+            let name = |v: Option<&String>| v.map_or("unknown".to_owned(), String::clone);
+            let _ = writeln!(
+                report.text,
+                "  {arch}: QEMU {}, baseline recorded with QEMU {}",
+                name(now),
+                name(then)
+            );
+        }
     }
     for ((arch, name), &now) in &measured.results {
         let key = (arch.clone(), name.clone());
+        let exact = SIZES.contains(&name.as_str());
+        let unit = if exact { "bytes" } else { "ns" };
         let Some(&before) = baseline.results.get(&key) else {
-            let _ = writeln!(report.text, "  {arch} {name}: {now:.2} ns (no baseline)");
+            let _ = writeln!(
+                report.text,
+                "  {arch} {name}: {now:.2} {unit} (no baseline)"
+            );
             report
                 .failures
                 .push(format!("{arch} {name}: no baseline (new benchmark?)"));
@@ -313,24 +414,35 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
         } else {
             0.0
         };
-        let limit = before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS;
+        let limit = match exact {
+            true => before,
+            false => before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS,
+        };
+        let faster_than = match exact {
+            true => before,
+            false => before * (1.0 - TOLERANCE_RELATIVE) - TOLERANCE_ABSOLUTE_NS,
+        };
         let other_firmware = is_firmware_dependent(arch, name)
             && measured.firmware.get(arch) != baseline.firmware.get(arch);
+        let other_qemu = QEMU_DEPENDENT.contains(&name.as_str())
+            && measured.qemu.get(arch) != baseline.qemu.get(arch);
         let note = if other_firmware {
             "  not gated: firmware differs from the baseline's"
+        } else if other_qemu {
+            "  not gated: QEMU differs from the baseline's"
         } else if now > limit {
             report.failures.push(format!(
-                "{arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%)"
+                "{arch} {name}: {now:.2} {unit}, baseline {before:.2} {unit} ({change:+.1}%)"
             ));
             "  REGRESSION"
-        } else if now < before * (1.0 - TOLERANCE_RELATIVE) - TOLERANCE_ABSOLUTE_NS {
+        } else if now < faster_than {
             "  faster: consider --update-baseline"
         } else {
             ""
         };
         let _ = writeln!(
             report.text,
-            "  {arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%){note}"
+            "  {arch} {name}: {now:.2} {unit}, baseline {before:.2} {unit} ({change:+.1}%){note}"
         );
     }
     for (arch, name) in baseline.results.keys() {
@@ -356,6 +468,7 @@ mod tests {
                 .map(|&(a, n, v)| ((a.to_owned(), n.to_owned()), v))
                 .collect(),
             firmware: BTreeMap::new(),
+            qemu: BTreeMap::new(),
         }
     }
 
@@ -424,6 +537,93 @@ mod tests {
         let slower = compare(&baseline, &results(&[("a", "x", 101.6)]), &["a"]);
         assert_eq!(slower.failures.len(), 1);
         assert!(slower.text.contains("REGRESSION"));
+    }
+
+    #[test]
+    fn boot_to_prompt_is_gated_only_on_the_baseline_s_qemu() {
+        let on = |version: &str, value: f64| {
+            let mut m = results(&[("x86_64", "boot_to_prompt", value), ("x86_64", "y", 4.0)]);
+            m.qemu.insert("x86_64".into(), version.into());
+            m
+        };
+        let baseline = on("8.2.2", 100.0);
+        assert_eq!(
+            compare(&baseline, &on("8.2.2", 120.0), &["x86_64"])
+                .failures
+                .len(),
+            1
+        );
+        let other = compare(&baseline, &on("10.2.2", 120.0), &["x86_64"]);
+        assert!(other.failures.is_empty(), "{:?}", other.failures);
+        assert!(other.text.contains("not gated: QEMU differs"));
+        let (merged, kept) = updated_baseline(on("8.2.2", 100.0), on("10.2.2", 120.0), &["x86_64"]);
+        assert_eq!(merged, on("8.2.2", 100.0));
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let text = {
+            let dir = std::env::temp_dir().join(format!("eggos-qemu-test-{}", std::process::id()));
+            let path = dir.join("baseline.txt");
+            write_baseline(&path, &baseline).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            std::fs::remove_dir(&dir).unwrap();
+            text
+        };
+        assert!(text.contains("\nx86_64 qemu 8.2.2\n"));
+        assert_eq!(parse_baseline(&text).unwrap(), baseline);
+    }
+
+    #[test]
+    fn reads_qemu_s_version_from_its_first_line() {
+        assert_eq!(
+            parse_qemu_version("QEMU emulator version 10.2.2\nCopyright (c) 2003-2025\n")
+                .as_deref(),
+            Some("10.2.2")
+        );
+        assert_eq!(
+            parse_qemu_version("QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.4)\n")
+                .as_deref(),
+            Some("8.2.2")
+        );
+        assert_eq!(parse_qemu_version(""), None);
+    }
+
+    #[test]
+    fn a_size_may_not_grow_by_one_byte() {
+        let baseline = results(&[
+            ("a", "release_image_bytes", 1000.0),
+            ("a", "input_key_to_bytes", 300.0),
+        ]);
+        let same = compare(&baseline, &baseline, &["a"]);
+        assert!(same.failures.is_empty());
+        let within_the_time_gate = results(&[
+            ("a", "release_image_bytes", 1000.0),
+            ("a", "input_key_to_bytes", 301.0),
+        ]);
+        assert!(
+            compare(&baseline, &within_the_time_gate, &["a"])
+                .failures
+                .is_empty()
+        );
+        let grown = compare(
+            &baseline,
+            &results(&[
+                ("a", "release_image_bytes", 1001.0),
+                ("a", "input_key_to_bytes", 300.0),
+            ]),
+            &["a"],
+        );
+        assert_eq!(grown.failures.len(), 1, "{:?}", grown.failures);
+        assert!(grown.failures[0].contains("1001.00 bytes"));
+        let shrunk = compare(
+            &baseline,
+            &results(&[
+                ("a", "release_image_bytes", 999.0),
+                ("a", "input_key_to_bytes", 300.0),
+            ]),
+            &["a"],
+        );
+        assert!(shrunk.failures.is_empty());
+        assert!(shrunk.text.contains("faster"));
     }
 
     #[test]

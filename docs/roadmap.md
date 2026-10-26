@@ -107,12 +107,23 @@ Must-have, in order:
     capabilities: users can double-click the title bar to maximise the terminal; users see a
     pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
     users see a boot screen with the logo and progress before the desktop; users can drag a
-    window partly off screen; users see the wall clock once an RTC driver sets it; users can
-    save a screenshot with `cargo xtask screenshot`; users with a display smaller than
+    window partly off screen; users see the wall clock once an RTC driver sets it; users with a display smaller than
     658x458 get a full-screen terminal; console output never waits for the desktop's repaint
     (D115's review follow-ups).
-15. Release engineering: `cargo xtask release`, boot-to-prompt time in the benchmarks, README
-    "Try EggOS" and a limitations doc.
+15. **done** — users can now download one image per architecture, `SHA256SUMS` and a run
+    script, run it, and boot EggOS in a QEMU window with its desktop and terminal, or on the
+    serial console alone with `--serial`, at an `eggsh` prompt (D116): `cargo xtask release`
+    builds and boots the release image of each architecture and writes
+    `eggos-<version>-<arch>.elf`, `SHA256SUMS` (our own SHA-256), `run-eggos.sh`,
+    `run-eggos.ps1` (QEMU's arguments generated from `cargo xtask run`'s, the image checked
+    before it boots) and a `RELEASE-NOTES.md` skeleton with each image's size and boot-to-prompt
+    time; `cargo xtask bench` gates `boot_to_prompt` (guest time from kernel entry to the
+    shell's first prompt, deterministic under `-icount`) and `release_image_bytes` (exactly);
+    `cargo xtask screenshot` saves the desktop as a PNG from our own encoder; README "Try
+    EggOS" and `docs/limitations.md`. The shipped images carry symbols but no debug
+    information (`strip = "debuginfo"`), about 5x smaller. Next, as user capabilities: users on
+    Windows get a run script tested on
+    Windows in CI; users see the release's what's-new written from the merged PRs.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
