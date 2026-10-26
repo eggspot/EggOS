@@ -18,6 +18,8 @@ aarch64 frame_contiguous_allocate_free 159.00
 aarch64 frame_free_allocate 19.15
 aarch64 futex_wait_wake_round_trip 455.05
 aarch64 futex_wake_empty 20.00
+aarch64 gfx_glyph_cell 561.56
+aarch64 gfx_terminal_line 45341.56
 aarch64 heap_allocate_free_small 50.00
 aarch64 input_event_queue_push_pop 68.00
 aarch64 input_key_to_bytes 313.01
@@ -39,6 +41,8 @@ aarch64 process_syscall_round_trip 117.40
 aarch64 random_fill_16 1323.00
 aarch64 random_fill_4096 87816.16
 aarch64 syscall_round_trip 106.17
+aarch64 term_feed_line 6046.56
+aarch64 term_scroll_line 540783.08
 aarch64 thread_wait_wake_round_trip 218.06
 aarch64 thread_yield_round_trip 131.08
 aarch64 timer_arm 6.00
@@ -58,6 +62,8 @@ riscv64 frame_contiguous_allocate_free 203.00
 riscv64 frame_free_allocate 20.17
 riscv64 futex_wait_wake_round_trip 554.06
 riscv64 futex_wake_empty 27.00
+riscv64 gfx_glyph_cell 680.59
+riscv64 gfx_terminal_line 56240.69
 riscv64 heap_allocate_free_small 57.00
 riscv64 input_event_queue_push_pop 69.01
 riscv64 input_key_to_bytes 385.01
@@ -79,6 +85,8 @@ riscv64 process_syscall_round_trip 156.39
 riscv64 random_fill_16 1998.00
 riscv64 random_fill_4096 131313.16
 riscv64 syscall_round_trip 148.27
+riscv64 term_feed_line 6839.81
+riscv64 term_scroll_line 669769.34
 riscv64 thread_wait_wake_round_trip 222.07
 riscv64 thread_yield_round_trip 162.10
 riscv64 timer_arm 266.01
@@ -98,6 +106,8 @@ x86_64 frame_contiguous_allocate_free 152.00
 x86_64 frame_free_allocate 19.06
 x86_64 futex_wait_wake_round_trip 473.03
 x86_64 futex_wake_empty 25.00
+x86_64 gfx_glyph_cell 689.53
+x86_64 gfx_terminal_line 59319.64
 x86_64 heap_allocate_free_small 48.00
 x86_64 input_event_queue_push_pop 66.00
 x86_64 input_key_to_bytes 334.00
@@ -119,6 +129,8 @@ x86_64 process_syscall_round_trip 117.66
 x86_64 random_fill_16 1237.00
 x86_64 random_fill_4096 79921.61
 x86_64 syscall_round_trip 107.44
+x86_64 term_feed_line 5949.24
+x86_64 term_scroll_line 196729.62
 x86_64 thread_wait_wake_round_trip 206.05
 x86_64 thread_yield_round_trip 122.07
 x86_64 timer_arm 33.00

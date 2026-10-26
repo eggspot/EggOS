@@ -2561,6 +2561,10 @@ mod tests {
         assert_eq!(read(8), b"\x18\x00\x50\x00\x00\x00\x00\x00");
         process.write_user_memory(writable, &[0; 8]).unwrap();
         assert_eq!(ioctl(2, request::TIOCSWINSZ, writable), 0);
+        crate::linux::terminal::set_window_size(49, 158, 8, 16);
+        assert_eq!(ioctl(1, request::TIOCGWINSZ, writable), 0);
+        assert_eq!(read(8), b"\x31\x00\x9e\x00\xf0\x04\x10\x03");
+        crate::linux::terminal::set_window_size(0, 0, 0, 0);
 
         assert_eq!(ioctl(3, request::TCGETS, writable), Errno::EBADF.result());
         assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());

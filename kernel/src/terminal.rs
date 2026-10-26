@@ -75,7 +75,6 @@ pub fn stop() {
 /// Writes `bytes` to the platform's console and feeds them to the terminal, in one step under
 /// the terminal's lock, then asks the drawing thread to show them. Called by
 /// [`console::write`] while the terminal [`is_active`].
-#[cold]
 #[inline(never)]
 pub fn write_mirrored<P: Platform>(bytes: &[u8]) {
     let mut screen = SCREEN.lock();

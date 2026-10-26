@@ -360,14 +360,20 @@ pub trait InputSink {
     fn view(&mut self, change: ViewMove);
 }
 
-const fn view_key(code: u16) -> Option<ViewMove> {
-    match code {
-        key::PAGE_UP => Some(ViewMove::PageBack),
-        key::PAGE_DOWN => Some(ViewMove::PageForward),
-        key::HOME => Some(ViewMove::Oldest),
-        key::END => Some(ViewMove::Live),
-        _ => None,
+#[cold]
+#[inline(never)]
+fn move_view_with_key(code: u16, modifiers: Modifiers, sink: &mut dyn InputSink) {
+    if !modifiers.contains(Modifiers::SHIFT) {
+        return;
     }
+    let change = match code {
+        key::PAGE_UP => ViewMove::PageBack,
+        key::PAGE_DOWN => ViewMove::PageForward,
+        key::HOME => ViewMove::Oldest,
+        key::END => ViewMove::Live,
+        _ => return,
+    };
+    sink.view(change);
 }
 
 impl InputState {
@@ -431,12 +437,14 @@ impl InputState {
         let modifiers = self.keyboard.modifiers();
         let pressed = change == KeyChange::Pressed;
         if pressed {
-            let bytes = keymap::encode(event.code, modifiers, self.cursor_keys);
-            if bytes.is_empty()
-                && modifiers.contains(Modifiers::SHIFT)
-                && let Some(change) = view_key(event.code)
-            {
-                sink.view(change);
+            let bytes = match self.cursor_keys {
+                CursorKeys::Normal => keymap::encode(event.code, modifiers, CursorKeys::Normal),
+                CursorKeys::Application => {
+                    keymap::encode(event.code, modifiers, CursorKeys::Application)
+                }
+            };
+            if bytes.is_empty() {
+                move_view_with_key(event.code, modifiers, sink);
             }
             sink.bytes(bytes.as_bytes());
             self.repeat.pressed(
