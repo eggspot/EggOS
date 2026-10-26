@@ -124,14 +124,33 @@ pub fn send_to_running<P: Platform>(running: &process_table::Running, info: Info
     }
 }
 
-/// Records `process`, whose first thread waits on `thread`'s slot, as the program its id runs
-/// now, for signals sent to it from outside.
-pub fn record_running<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) {
-    let running = process_table::Running {
+fn running<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) -> process_table::Running {
+    process_table::Running {
         process: Arc::downgrade(process) as _,
         first_thread: Arc::clone(thread.wait_slot()),
+    }
+}
+
+/// Records `process`, whose first thread waits on `thread`'s slot, as the program its id runs
+/// now, for signals sent to it from outside, adding it to the process table as one the kernel
+/// started if it is not there yet; then, with the table's lock still held, does `also`.
+pub fn record_running<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &LinuxThread,
+    also: impl FnOnce(&mut process_table::Table, u32),
+) {
+    let running = running(process, thread);
+    let id = process.id().get();
+    let added = {
+        let mut table = TABLE.lock();
+        let added = table.add_if_missing(id);
+        table.set_running(id, running);
+        also(&mut table, id);
+        added
     };
-    TABLE.lock().set_running(process.id().get(), running);
+    if added.is_ok() {
+        process.note_in_table();
+    }
 }
 
 struct Request {

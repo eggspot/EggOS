@@ -193,6 +193,15 @@ impl Table {
         }
     }
 
+    /// Adds process `id` as [`Self::add`] does for one the kernel started, unless it is in the
+    /// table already.
+    pub fn add_if_missing(&mut self, id: u32) -> Result<(), Errno> {
+        match self.index(id) {
+            Some(_) => Ok(()),
+            None => self.add(id, None),
+        }
+    }
+
     /// Sets the signal process `id`'s end sends its parent (0 for none).
     pub fn set_exit_signal(&mut self, id: u32, signal: u8) {
         if let Some(entry) = self.entry_mut(id) {

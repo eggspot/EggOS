@@ -265,14 +265,16 @@ impl<P: Platform> Memory<P> {
 
 struct PidRecord<P: Platform> {
     id: ProcessId,
+    in_table: bool,
     exit: Option<ProcessExit>,
     handed_over: Option<(usize, Arc<Process<P>>)>,
 }
 
 impl<P: Platform> PidRecord<P> {
-    fn new(id: ProcessId) -> Self {
+    fn new(id: ProcessId, in_table: bool) -> Self {
         Self {
             id,
+            in_table,
             exit: None,
             handed_over: None,
         }
@@ -281,6 +283,9 @@ impl<P: Platform> PidRecord<P> {
 
 impl<P: Platform> Drop for PidRecord<P> {
     fn drop(&mut self) {
+        if !self.in_table {
+            return;
+        }
         let notice = process_table::TABLE.lock().remove_unended(self.id.get());
         if let Some(notice) = notice {
             crate::linux::wait::notify::<P>(notice);
@@ -364,13 +369,9 @@ impl<P: Platform> Process<P> {
             .physical_memory_offset();
         let id = ProcessId::allocate().ok_or("out of process ids")?;
         let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
-        process_table::TABLE
-            .lock()
-            .add(id.get(), None)
-            .map_err(|_| "no memory for the process table")?;
         Ok(Self::with_memory(
             Arc::new(Memory::new(space, frame_offset, futex_space)),
-            Arc::new(SpinLock::new(PidRecord::new(id))),
+            Arc::new(SpinLock::new(PidRecord::new(id, false))),
             id,
             CredentialsAndLimits::default(),
             Signals::new(),
@@ -456,25 +457,28 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy_actions()
             .ok_or(NewChildError::OutOfMemory)?;
-        process_table::TABLE
-            .lock()
-            .add(id.get(), Some(self.id.get()))
-            .map_err(|_| NewChildError::OutOfMemory)?;
+        {
+            let mut table = process_table::TABLE.lock();
+            table
+                .add_if_missing(self.id.get())
+                .and_then(|()| table.add(id.get(), Some(self.id.get())))
+                .map_err(|_| NewChildError::OutOfMemory)?;
+        }
+        self.record.lock().in_table = true;
         Ok(Self::with_memory(
             memory,
-            Arc::new(SpinLock::new(PidRecord::new(id))),
+            Arc::new(SpinLock::new(PidRecord::new(id, true))),
             id,
             credentials_and_limits,
             signals,
         ))
     }
 
-    /// Sets the signal this process's end sends its parent, 0 for none (`clone`'s exit
-    /// signal): its parent learns of the end with `wait4` all the same.
-    pub fn set_exit_signal(&self, exit_signal: u8) {
-        process_table::TABLE
-            .lock()
-            .set_exit_signal(self.id.get(), exit_signal);
+    /// Records that the process is in the process table, which it leaves as its record goes
+    /// unless it ended as a zombie: a process the kernel starts is added as it starts
+    /// (`linux::spawn`), so one that never runs a Linux program costs the table nothing.
+    pub fn note_in_table(&self) {
+        self.record.lock().in_table = true;
     }
 
     /// The id of this process's parent in the process table, 0 for the kernel (`getppid`):
@@ -1435,6 +1439,13 @@ impl<P: Platform> Process<P> {
     /// with the count it last saw to learn whether it should look for signals sent to it.
     pub fn signals_sent(&self) -> u16 {
         self.signals_sent.load(Ordering::Acquire)
+    }
+
+    /// Records that a signal was sent to the process from outside that its threads would
+    /// discard as they take it in (ignored): one that looks for signals sent to it, or waits for
+    /// them, takes it in then, but none is interrupted for it.
+    pub fn record_ignored_signal_sent(&self) {
+        self.signals_sent.fetch_add(1, Ordering::Release);
     }
 
     /// Records that a thread sent another a signal, now in the process's signal state, or

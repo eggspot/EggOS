@@ -136,8 +136,10 @@ pub fn clone_process<P: Platform>(
         keeps_alternate_stack,
     );
     first.inherit_fp(running_fp::<P>());
-    child.set_exit_signal(arguments.exit_signal as u8);
-    super::wait::record_running(&child, &first);
+    let exit_signal = arguments.exit_signal as u8;
+    super::wait::record_running(&child, &first, |table, id| {
+        table.set_exit_signal(id, exit_signal)
+    });
     let id_bytes = id.to_ne_bytes();
     if any(flag::PARENT_SETTID) {
         let _ = process.write_user_memory(arguments.parent_tid, &id_bytes);

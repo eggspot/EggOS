@@ -712,12 +712,10 @@ fn start<P: Platform>(
     }
     thread::with_running_fp::<P, _>(|state| *state = FpState::new());
     image.add_thread();
-    super::wait::record_running(&image, thread);
-    {
-        let mut table = super::process_table::TABLE.lock();
+    super::wait::record_running(&image, thread, |table, id| {
         table.mark_executed(id);
         table.set_no_zombie_children(id, sigchld_ignored);
-    }
+    });
     *context = started;
     image
 }

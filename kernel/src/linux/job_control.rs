@@ -42,8 +42,7 @@ mod option {
 /// For the first thread of a process the kernel starts, `thread`: records it running, and
 /// gives its session the console as controlling terminal if the console is no session's.
 pub fn start_session_leader<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) {
-    wait::record_running(process, thread);
-    TABLE.lock().give_console_if_free(process.id().get());
+    wait::record_running(process, thread, |table, id| table.give_console_if_free(id));
 }
 
 fn target(caller: u32, pid: u64) -> Result<u32, Errno> {

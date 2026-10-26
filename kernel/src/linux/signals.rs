@@ -1716,20 +1716,28 @@ fn send_to_process<P: Platform>(
 /// console's signal characters, D105), for the first of its threads that takes it in without
 /// blocking it: the wait of its first thread, `first_thread`, is ended, and those of the
 /// threads the process's signal state records, so a waiting thread looks; a running one is
-/// interrupted. Nothing for a process that has ended, nor without memory to record the
-/// signal.
+/// interrupted, unless the process ignores the signal: then it is taken in at the threads'
+/// next look (a thread that blocks it still finds it pending, as on Linux). Nothing for a
+/// process that has ended, nor without memory to record the signal.
 pub fn send_from_outside<P: Platform>(process: &Process<P>, first_thread: &WaitSlot, info: Info) {
     if process.has_ended() {
         return;
     }
-    {
+    let ignored = {
         let mut signals = process.signals().lock();
         if signals.send_to_process(info, u64::MAX).is_err() {
             return;
         }
-        process.set_sent_signals_waiting(true);
+        let ignored = signals.ignores(info.signal());
+        if !ignored {
+            process.set_sent_signals_waiting(true);
+        }
+        ignored
+    };
+    match ignored {
+        true => process.record_ignored_signal_sent(),
+        false => process.record_signal_sent(),
     }
-    process.record_signal_sent();
     super::futex::interrupt::<P>(first_thread);
     let signals = process.signals().lock();
     for slot in signals.wait_slots_but(NO_THREAD, process.id().get()) {

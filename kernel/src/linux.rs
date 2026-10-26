@@ -3042,7 +3042,7 @@ mod tests {
 
     fn register_running(process: &Arc<Process<P>>) {
         let thread = take_first_thread(process);
-        wait::record_running(process, &thread);
+        wait::record_running(process, &thread, |_, _| {});
         FIRST_THREADS
             .lock()
             .unwrap()
@@ -5447,7 +5447,7 @@ mod tests {
         let process = process_for_status(&kernel);
         let id = process.id().get();
         let mut thread = take_first_thread(&process);
-        wait::record_running(&process, &thread);
+        wait::record_running(&process, &thread, |_, _| {});
         process_table::TABLE.lock().set_child_subreaper(id, true);
         let path = at_path(&process, b"/usr/libexec/program");
         let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
@@ -5973,7 +5973,9 @@ mod tests {
     ) -> (Arc<Process<P>>, LinuxThread) {
         let first = take_first_thread(parent);
         let child = Arc::new(parent.new_child(memory).unwrap());
-        child.set_exit_signal(17);
+        process_table::TABLE
+            .lock()
+            .set_exit_signal(child.id().get(), 17);
         child.add_thread();
         let thread = first.new_process_thread(
             child.id().get(),
@@ -6087,6 +6089,7 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (parent, _) = process_with_stacks(&kernel);
+        register_running(&parent);
         ignore(&parent, u64::from(signal::SIGCHLD));
         let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
         assert!(has_children(&parent));
@@ -6102,6 +6105,7 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (reaper, reaper_id) = process_with_stacks(&kernel);
+        register_running(&reaper);
         assert_eq!(call(&reaper, number::PRCTL, [36, 1, 0, 0, 0, 0]), 0);
         assert_eq!(call(&reaper, number::PRCTL, [37, SCRATCH, 0, 0, 0, 0]), 0);
         assert_eq!(read_bytes(&reaper, SCRATCH, 4), 1u32.to_ne_bytes());
@@ -6113,7 +6117,9 @@ mod tests {
         let middle_id = u64::from(middle.id().get());
         let mut first = middle_thread;
         let orphan = Arc::new(middle.new_child(process::ChildMemory::Copied).unwrap());
-        orphan.set_exit_signal(17);
+        process_table::TABLE
+            .lock()
+            .set_exit_signal(orphan.id().get(), 17);
         let orphan_id = u64::from(orphan.id().get());
         let mut orphan_thread = first.new_process_thread(
             orphan.id().get(),
