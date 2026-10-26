@@ -673,6 +673,7 @@ struct PollSink {
     length: usize,
     queue: Option<&'static KernelEventQueue>,
     views: [Option<ViewMove>; POLL_VIEW_MOVES],
+    queued: bool,
 }
 
 impl InputSink for PollSink {
@@ -690,6 +691,7 @@ impl InputSink for PollSink {
     fn event(&mut self, event: InputEvent) {
         if let Some(queue) = self.queue {
             queue.push(event);
+            self.queued = true;
         }
     }
 
@@ -708,6 +710,19 @@ pub fn poll<P: Platform>() -> Option<u64> {
     poll_devices::<P>(&INPUT, subscribed_events(), screen(), Timing::now::<P>())
 }
 
+fn hand_over<P: Platform>(sink: &PollSink) {
+    if terminal::keys_go_to_console() {
+        for change in sink.views.into_iter().flatten() {
+            terminal::move_view::<P>(change);
+        }
+        if sink.length > 0 {
+            terminal::move_view::<P>(ViewMove::Live);
+            console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
+        }
+    }
+    terminal::tick::<P>(sink.queued);
+}
+
 fn poll_devices<P: Platform>(
     devices: &LeafSpinLock<Option<Box<Input>>>,
     queue: Option<&'static KernelEventQueue>,
@@ -721,6 +736,7 @@ fn poll_devices<P: Platform>(
             length: 0,
             queue,
             views: [None; POLL_VIEW_MOVES],
+            queued: false,
         };
         let (last, next) = {
             let mut input = devices.lock();
@@ -753,13 +769,7 @@ fn poll_devices<P: Platform>(
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
         };
-        for change in sink.views.into_iter().flatten() {
-            terminal::move_view::<P>(change);
-        }
-        if sink.length > 0 {
-            terminal::move_view::<P>(ViewMove::Live);
-            console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
-        }
+        hand_over::<P>(&sink);
         if last {
             return Some(next);
         }

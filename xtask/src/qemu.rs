@@ -10,8 +10,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use eggos_drivers::desktop::Desktop;
 use eggos_drivers::display::Damage;
-use eggos_drivers::terminal::{TERM_BACKGROUND, Terminal, TextArea};
+use eggos_drivers::input::{AxisRange, scale_to_screen};
+use eggos_drivers::terminal::Terminal;
 
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
@@ -318,7 +320,7 @@ pub enum Display {
 
 const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
-const TERMINAL_LINE_1280X800: &str = "boot: terminal 158x49";
+const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
 
 const TERMINAL_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -448,7 +450,15 @@ pub fn boot_test(
                 if let (Some(port), Some(at)) = (qmp_port, at)
                     && terminal_frames.len() < prompts.min(2)
                 {
-                    terminal_frames.push(check_terminal_frame(arch, port, &mut console, &rx, at));
+                    let with_pointer = prompts == PROMPT_SESSION_FRAME_PROMPT;
+                    terminal_frames.push(check_terminal_frame(
+                        arch,
+                        port,
+                        &mut console,
+                        &rx,
+                        at,
+                        with_pointer,
+                    ));
                 }
                 let text = String::from_utf8_lossy(&console);
                 shell_scripts_to_type(&text, &PROMPT_SESSION, &mut shell_typed)
@@ -817,26 +827,131 @@ fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
     Some(&console[end + 1..])
 }
 
-/// What a `width` by `height` display shows once the release kernel's terminal was fed
-/// `stream`, rendered by the same terminal engine on the host; `None` when not one cell fits.
-pub fn terminal_picture(width: u32, height: u32, stream: &[u8]) -> Option<Picture> {
-    let area = TextArea::full_screen(width, height)?;
+/// What a `width` by `height` display shows once the release kernel's desktop is in
+/// `desktop`'s state with its clock at `up 0:00` and its terminal was fed `stream`, rendered
+/// by the same desktop and terminal engine on the host.
+pub fn desktop_picture(desktop: &Desktop, stream: &[u8]) -> Option<Picture> {
+    let screen = desktop.screen();
+    let (width, height) = (screen.width, screen.height);
+    let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
     terminal.feed(stream);
-    let mut pixels = vec![TERM_BACKGROUND; width as usize * height as usize];
-    terminal.render(
-        &mut pixels,
-        width as usize,
-        area.x,
-        area.y,
-        &mut Damage::new(),
-    );
+    let mut pixels = vec![0; width as usize * height as usize];
+    desktop.draw(&mut pixels, width as usize, screen);
+    if desktop.terminal_shown() {
+        terminal.render(
+            &mut pixels,
+            width as usize,
+            area.x,
+            area.y,
+            &mut Damage::new(),
+        );
+    }
     Some(Picture {
         width,
         height,
         pixels,
     })
+}
+
+fn with_uptime(desktop: &Desktop, picture: &mut Picture, seconds: u64) {
+    let mut desktop_then = Desktop::new(picture.width, picture.height).expect("the desktop fits");
+    desktop_then.set_uptime(seconds, &mut Damage::new());
+    let clock = desktop.clock_rect();
+    desktop_then.draw(&mut picture.pixels, picture.width as usize, clock);
+}
+
+const TABLET_RANGE: AxisRange = AxisRange { min: 0, max: 32767 };
+
+fn tablet_value(pixel: u32, size: u32) -> i32 {
+    let span = TABLET_RANGE.max as u64;
+    ((u64::from(pixel) * span + u64::from(size) / 2) / u64::from(size)) as i32
+}
+
+/// A pointer step the boot-to-prompt test takes on the desktop through QMP: the tablet moved
+/// to (`x`, `y`), then the left button pressed or released, if `button` says so.
+#[derive(Debug, Clone, Copy)]
+struct PointerStep {
+    x: u32,
+    y: u32,
+    button: Option<bool>,
+}
+
+fn pointer_steps(desktop: &Desktop) -> Vec<(&'static str, Vec<PointerStep>)> {
+    let minimise = desktop.minimise_control();
+    let chip = desktop.chip();
+    let title = desktop.title_bar();
+    let step = |x, y, button| PointerStep { x, y, button };
+    let (grab_x, grab_y) = (title.x + title.width / 2, title.y + title.height / 2);
+    vec![
+        (
+            "the window minimised to its chip",
+            vec![
+                step(minimise.x + 10, minimise.y + 14, Some(true)),
+                step(minimise.x + 10, minimise.y + 14, Some(false)),
+            ],
+        ),
+        (
+            "the window restored from its chip",
+            vec![
+                step(chip.x + 10, chip.y + 10, Some(true)),
+                step(chip.x + 10, chip.y + 10, Some(false)),
+            ],
+        ),
+        (
+            "the window dragged 100 px right and down",
+            vec![
+                step(grab_x, grab_y, Some(true)),
+                step(grab_x + 50, grab_y + 50, None),
+                step(grab_x + 100, grab_y + 100, None),
+                step(grab_x + 100, grab_y + 100, Some(false)),
+            ],
+        ),
+    ]
+}
+
+fn send_pointer_step(qmp: &mut Qmp, step: PointerStep, screen: (u32, u32)) -> Result<(), String> {
+    qmp.send_input(&[
+        InputEvent::Absolute {
+            axis: "x",
+            value: tablet_value(step.x, screen.0),
+        },
+        InputEvent::Absolute {
+            axis: "y",
+            value: tablet_value(step.y, screen.1),
+        },
+    ])?;
+    std::thread::sleep(DEVICE_PAUSE);
+    if let Some(down) = step.button {
+        qmp.send_input(&[InputEvent::Button {
+            button: "left",
+            down,
+        }])?;
+        std::thread::sleep(DEVICE_PAUSE);
+    }
+    Ok(())
+}
+
+fn apply_pointer_step(desktop: &mut Desktop, step: PointerStep) {
+    let screen = desktop.screen();
+    let mut damage = Damage::new();
+    desktop.pointer_moved(
+        scale_to_screen(
+            tablet_value(step.x, screen.width),
+            TABLET_RANGE,
+            screen.width,
+        ),
+        scale_to_screen(
+            tablet_value(step.y, screen.height),
+            TABLET_RANGE,
+            screen.height,
+        ),
+        &mut damage,
+    );
+    if let Some(pressed) = step.button {
+        desktop.left_button(pressed, &mut damage);
+    }
 }
 
 fn check_terminal_frame(
@@ -845,13 +960,53 @@ fn check_terminal_frame(
     console: &mut Vec<u8>,
     output: &mpsc::Receiver<Vec<u8>>,
     at: &str,
+    with_pointer: bool,
 ) -> Result<(), String> {
+    let mut qmp = Qmp::connect(port)?;
+    let (width, height) = screen_size(&mut qmp, arch)?;
+    let mut desktop = Desktop::new(width, height)
+        .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    check_desktop_frame(arch, &mut qmp, console, output, at, &desktop)?;
+    if !with_pointer {
+        return Ok(());
+    }
+    for (state, steps) in pointer_steps(&desktop) {
+        for step in steps {
+            send_pointer_step(&mut qmp, step, (width, height))?;
+            apply_pointer_step(&mut desktop, step);
+        }
+        check_desktop_frame(arch, &mut qmp, console, output, state, &desktop)?;
+    }
+    Ok(())
+}
+
+fn screen_size(qmp: &mut Qmp, arch: &Arch) -> Result<(u32, u32), String> {
+    let path = screendump_path(arch, "")?;
+    qmp.screendump(&path)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let picture = Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((picture.width, picture.height))
+}
+
+fn screendump_path(arch: &Arch, suffix: &str) -> Result<std::path::PathBuf, String> {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::workspace_root().join("target"));
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-    let path = target.join(format!("screendump-{}.ppm", arch.name));
-    let mut qmp = Qmp::connect(port)?;
+    Ok(target.join(format!("screendump-{}{suffix}.ppm", arch.name)))
+}
+
+const CLOCK_SECONDS_ACCEPTED: u64 = 120;
+
+fn check_desktop_frame(
+    arch: &Arch,
+    qmp: &mut Qmp,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    at: &str,
+    desktop: &Desktop,
+) -> Result<(), String> {
+    let path = screendump_path(arch, "")?;
     let started = Instant::now();
     loop {
         console.extend(output.try_iter().flatten());
@@ -864,16 +1019,15 @@ fn check_terminal_frame(
                 arch.name
             )
         })?;
-        let expected =
-            terminal_picture(picture.width, picture.height, stream).ok_or_else(|| {
-                format!(
-                    "{}: a {}x{} display holds no terminal",
-                    arch.name, picture.width, picture.height
-                )
-            })?;
-        if picture == expected {
+        let mut expected = desktop_picture(desktop, stream)
+            .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?;
+        let matched = (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
+            with_uptime(desktop, &mut expected, seconds);
+            picture == expected
+        });
+        if matched {
             eprintln!(
-                "xtask: {}: the display shows the terminal at {at} ({}x{}, hash {:#x})",
+                "xtask: {}: the display shows the desktop at {at} ({}x{}, hash {:#x})",
                 arch.name,
                 picture.width,
                 picture.height,
@@ -882,12 +1036,13 @@ fn check_terminal_frame(
             return Ok(());
         }
         if started.elapsed() > TERMINAL_FRAME_TIMEOUT {
-            let expected_path = target.join(format!("screendump-{}-expected.ppm", arch.name));
+            with_uptime(desktop, &mut expected, 0);
+            let expected_path = screendump_path(arch, "-expected")?;
             std::fs::write(&expected_path, expected.to_ppm())
                 .map_err(|e| format!("{}: {e}", expected_path.display()))?;
             return Err(format!(
-                "{}: at {at} the display shows a picture with hash {:#x}, not the terminal the \
-                 host renders ({:#x}); compare {} with {}",
+                "{}: at {at} the display shows a picture with hash {:#x}, not the desktop the \
+                 host renders ({:#x} with the clock at up 0:00); compare {} with {}",
                 arch.name,
                 picture.hash(),
                 expected.hash(),
@@ -1212,25 +1367,51 @@ mod tests {
 
     #[test]
     fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line() {
-        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 158x49\r\nEggOS 0.2.0\r\neggsh:/# ";
+        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 80x24\r\nEggOS 0.2.0\r\neggsh:/# ";
         assert_eq!(
             terminal_stream(console),
             Some(&b"EggOS 0.2.0\r\neggsh:/# "[..])
         );
-        assert_eq!(terminal_stream(b"EggOS\r\nboot: terminal 158x49"), None);
+        assert_eq!(terminal_stream(b"EggOS\r\nboot: terminal 80x24"), None);
         assert_eq!(terminal_stream(b"EggOS\r\nboot: no display\r\nx"), None);
     }
 
     #[test]
-    fn the_expected_terminal_picture_is_the_engine_s_render_of_the_stream() {
-        let picture = terminal_picture(1024, 768, b"eggsh:/# ").unwrap();
+    fn the_expected_picture_is_the_desktop_with_the_engine_s_render_of_the_stream() {
+        let desktop = Desktop::new(1024, 768).unwrap();
+        let picture = desktop_picture(&desktop, b"eggsh:/# ").unwrap();
         assert_eq!((picture.width, picture.height), (1024, 768));
         assert_eq!(picture.pixels.len(), 1024 * 768);
-        assert_eq!(picture.pixels[0], TERM_BACKGROUND);
-        let cursor = picture.pixels[8 * 1024 + 8 + 9 * 8];
+        assert_eq!(picture.pixels[10], eggos_drivers::desktop::colour::BAR);
+        let area = desktop.text_area();
+        let cursor = picture.pixels[(area.y as usize) * 1024 + area.x as usize + 9 * 8];
         assert_eq!(cursor, eggos_drivers::terminal::TERM_CURSOR);
-        assert_ne!(picture, terminal_picture(1024, 768, b"eggsh:/#").unwrap());
-        assert!(terminal_picture(20, 20, b"").is_none());
+        assert_ne!(picture, desktop_picture(&desktop, b"eggsh:/#").unwrap());
+    }
+
+    #[test]
+    fn a_pointer_step_lands_on_the_pixel_it_aims_at() {
+        for (pixel, size) in [(0, 1280), (348, 1280), (1279, 1280), (213, 800), (799, 800)] {
+            let value = tablet_value(pixel, size);
+            assert_eq!(scale_to_screen(value, TABLET_RANGE, size), pixel);
+        }
+    }
+
+    #[test]
+    fn the_pointer_steps_minimise_restore_and_drag_the_window() {
+        let mut desktop = Desktop::new(1280, 800).unwrap();
+        let window = desktop.window();
+        let states: Vec<_> = pointer_steps(&desktop)
+            .into_iter()
+            .map(|(_, steps)| {
+                for step in steps {
+                    apply_pointer_step(&mut desktop, step);
+                }
+                (desktop.minimised(), desktop.window())
+            })
+            .collect();
+        let dragged = eggos_drivers::display::Rect::new(window.x + 100, window.y + 100, 658, 430);
+        assert_eq!(states, [(true, window), (false, window), (false, dragged)]);
     }
 
     #[test]

@@ -18,7 +18,7 @@ const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 const CPU_START_TIMEOUT_MS: u64 = 1000;
 
 /// The start of the line the kernel writes once the graphical terminal shows the console, before
-/// its grid's columns and rows (`158x49`): from the next line on, the serial console and the
+/// its window's grid's columns and rows (`80x24`): from the next line on, the serial console and the
 /// terminal receive the same bytes. Must match the QEMU runner's.
 pub const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
@@ -56,7 +56,7 @@ pub fn run<P: Platform, W: Write>(
     if let Err(error) = input::start_polling::<P>() {
         writeln!(console, "input: not polled: {error:?}")?;
     }
-    if let Some(area) = terminal::start::<P>() {
+    if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
             console,
             "{TERMINAL_LINE_PREFIX}{}x{}",

@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+pub mod desktop;
 pub mod display;
 pub mod dma;
 pub mod font;
