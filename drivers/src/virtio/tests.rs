@@ -426,6 +426,10 @@ fn mmio_probing_accepts_only_version_2_devices() {
         MmioTransport::new(Shared(&mmio_regs(2, 0))).err(),
         Some(Error::NoDevice)
     );
+    assert_eq!(
+        MmioTransport::new(Shared(&mmio_regs(1, 0))).err(),
+        Some(Error::NoDevice)
+    );
     let not_virtio = FakeRegs::default();
     not_virtio.script_reads(0x000, &[0x1234]);
     assert_eq!(

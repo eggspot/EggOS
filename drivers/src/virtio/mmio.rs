@@ -41,22 +41,22 @@ pub struct MmioTransport<R: RegisterIo> {
 }
 
 impl<R: RegisterIo> MmioTransport<R> {
-    /// The device behind the register block `regs`. Refuses blocks without the magic value, a
-    /// legacy (version 1) device, versions other than 2 and an empty slot (device id 0).
+    /// The device behind the register block `regs`. Refuses blocks without the magic value, an
+    /// empty slot (device id 0, whatever its version), a legacy (version 1) device and versions
+    /// other than 2.
     pub fn new(regs: R) -> Result<Self, Error> {
         if regs.read32(MAGIC_VALUE) != MAGIC {
             return Err(Error::NotVirtio);
-        }
-        match regs.read32(VERSION) {
-            2 => {}
-            1 => return Err(Error::LegacyVersion),
-            version => return Err(Error::UnsupportedVersion(version)),
         }
         let device_type = regs.read32(DEVICE_ID);
         if device_type == 0 {
             return Err(Error::NoDevice);
         }
-        Ok(Self { regs, device_type })
+        match regs.read32(VERSION) {
+            2 => Ok(Self { regs, device_type }),
+            1 => Err(Error::LegacyVersion),
+            version => Err(Error::UnsupportedVersion(version)),
+        }
     }
 
     /// The device's vendor id.
