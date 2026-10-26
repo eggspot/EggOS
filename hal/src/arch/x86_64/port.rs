@@ -48,6 +48,18 @@ impl RegisterIo for PortIo {
     }
 
     #[inline]
+    fn read16(&self, offset: usize) -> u16 {
+        // SAFETY: as in `read8`.
+        unsafe { in16(self.port(offset, 2)) }
+    }
+
+    #[inline]
+    fn write16(&self, offset: usize, value: u16) {
+        // SAFETY: as in `read8`.
+        unsafe { out16(self.port(offset, 2), value) }
+    }
+
+    #[inline]
     fn read32(&self, offset: usize) -> u32 {
         // SAFETY: as in `read8`.
         unsafe { in32(self.port(offset, 4)) }

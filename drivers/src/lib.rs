@@ -6,7 +6,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod dma;
 pub mod interrupt;
 pub mod io;
+pub mod pci;
 pub mod serial;
 pub mod timer;
+pub mod virtio;
