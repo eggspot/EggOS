@@ -5230,6 +5230,15 @@ mod tests {
             ),
             Errno::EINVAL.result()
         );
+        let empty = at_path(&process, b"");
+        assert_eq!(
+            call(&process, number::EXECVEAT, [FDCWD, empty, 0, 0, 1, 0]),
+            Errno::ENOENT.result()
+        );
+        assert_eq!(
+            call(&process, number::EXECVEAT, [FDCWD, UNMAPPED, 0, 0, 1, 0]),
+            Errno::EFAULT.result()
+        );
         assert!(!process.has_ended());
         assert_eq!(process.exit_status(), None);
     }
@@ -5275,6 +5284,162 @@ mod tests {
             .lock()
             .unwrap()
             .insert(current.id().get(), thread);
+    }
+
+    fn exec_in(
+        process: &Arc<Process<P>>,
+        thread: &mut LinuxThread,
+        number: u64,
+        arguments: [u64; 6],
+    ) -> (UserContext, Arc<Process<P>>) {
+        let mut context = called(number, arguments);
+        assert_eq!(
+            handle(process, thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(()),
+            "{:#x}",
+            context.syscall_result()
+        );
+        let current = process.take_handed_over(&context).unwrap();
+        (context, current)
+    }
+
+    #[test]
+    fn execve_makes_the_saved_and_file_system_ids_the_effective_ones() {
+        use credentials::{Ids, Kind};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let set = |kind, ids| {
+            let mut locked = process.credentials_and_limits().lock();
+            locked.credentials.set_ids(kind, ids).unwrap();
+        };
+        let user = Ids {
+            real: 1000,
+            effective: 1000,
+            saved: 0,
+            filesystem: 1000,
+        };
+        set(Kind::User, user);
+        set(
+            Kind::Group,
+            Ids {
+                saved: 0,
+                ..Ids::all(100)
+            },
+        );
+        let path = at_path(&process, b"/usr/libexec/program");
+        let mut thread = take_first_thread(&process);
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let locked = current.credentials_and_limits().lock();
+        assert_eq!(locked.credentials.ids(Kind::User), Ids::all(1000));
+        assert_eq!(locked.credentials.ids(Kind::Group), Ids::all(100));
+        drop(locked);
+        assert_eq!(
+            process
+                .credentials_and_limits()
+                .lock()
+                .credentials
+                .ids(Kind::User),
+            user
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
+    }
+
+    #[test]
+    fn execve_forgets_the_console_s_foreground_so_the_old_program_is_freed() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let mut thread = take_first_thread(&process);
+        terminal::become_foreground(&process, &thread);
+        let reader = crate::console::reader_id(process.id().get(), thread.id());
+        assert!(crate::console::is_foreground(reader));
+        let path = at_path(&process, b"/usr/libexec/program");
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        assert!(!crate::console::is_foreground(reader));
+        assert_eq!(Arc::strong_count(&process), 1);
+        terminal::become_foreground(&current, &thread);
+        assert!(crate::console::is_foreground(reader));
+        crate::console::forget_foreground(current.id().get());
+    }
+
+    #[test]
+    fn execve_from_another_thread_gives_it_the_process_s_id_and_a_table_of_its_own() {
+        use descriptors::open_flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let program = open_at(&process, FDCWD, b"/usr/libexec/program", PATH);
+        let first = take_first_thread(&process);
+        let mut second = first.new_thread(
+            process.id().get() + 1_000_000,
+            0,
+            first.files().share(),
+            first.working_directory().share(),
+        );
+        process.add_thread();
+        assert!(second.files().is_shared());
+        const CROSSING: u64 = SCRATCH + FRAME_SIZE - 3;
+        process.write_user_memory(CROSSING, b"crossing\0").unwrap();
+        process
+            .write_user_memory(ARGUMENT_LIST, &CROSSING.to_ne_bytes())
+            .unwrap();
+        process
+            .write_user_memory(ARGUMENT_LIST + 8, &[0; 8])
+            .unwrap();
+        let empty = at_path(&process, b"");
+        let (context, current) = exec_in(
+            &process,
+            &mut second,
+            number::EXECVEAT,
+            [program, empty, ARGUMENT_LIST, 0, stat::at::EMPTY_PATH, 0],
+        );
+        assert_eq!(second.id(), process.id().get());
+        assert!(!second.files().is_shared());
+        assert!(first.files().file(program).is_ok());
+        let mut pointer = [0u8; 8];
+        current
+            .read_user_memory(context.stack() + 8, &mut pointer)
+            .unwrap();
+        let mut argument = [0u8; 9];
+        current
+            .read_user_memory(u64::from_ne_bytes(pointer), &mut argument)
+            .unwrap();
+        assert_eq!(&argument, b"crossing\0");
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), second);
+    }
+
+    #[test]
+    fn execve_loses_to_an_exit_that_came_first_and_no_later_exit_records_anything() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let exited = process_for_status(&kernel);
+        assert!(exited.exit(ProcessExit::Exited(3)));
+        assert!(!exited.end_for_exec());
+        assert_eq!(exited.exit_status(), Some(ProcessExit::Exited(3)));
+        let path = at_path(&exited, b"/usr/libexec/program");
+        let mut context = called(number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let mut thread = take_first_thread(&exited);
+        assert_eq!(
+            handle(&exited, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(exited.take_handed_over(&context).is_none());
+        let replaced = process_for_status(&kernel);
+        assert!(replaced.end_for_exec());
+        assert!(!replaced.end_for_exec());
+        assert!(!replaced.exit(ProcessExit::Exited(4)));
+        assert_eq!(
+            end_process::<P, ()>(&replaced, ProcessExit::Killed { signal: 9 }),
+            ControlFlow::Break(())
+        );
+        assert_eq!(replaced.exit_status(), None);
     }
 
     #[test]

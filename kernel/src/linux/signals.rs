@@ -557,6 +557,15 @@ impl Signals {
     /// from another thread takes); no other thread and no return trampoline, since the
     /// program's memory is new. Moved, not copied, so nothing is allocated.
     pub fn take_for_exec(&mut self, thread: u32, new_thread: u32) -> Self {
+        self.take_for_exec_charged_to(thread, new_thread, &QUEUED_SIGNALS)
+    }
+
+    fn take_for_exec_charged_to(
+        &mut self,
+        thread: u32,
+        new_thread: u32,
+        queued: &AtomicU64,
+    ) -> Self {
         let Some(mut boxed) = self.actions_and_queue.take() else {
             return Self::new();
         };
@@ -578,7 +587,7 @@ impl Signals {
             .sent_to_threads
             .retain(|left| left.thread == thread || left.thread == ANY_THREAD);
         uncharge(
-            &QUEUED_SIGNALS,
+            queued,
             before - block.queue.len() - signals_among(&block.sent_to_threads),
         );
         for left in &mut block.sent_to_threads {
@@ -2379,6 +2388,91 @@ mod tests {
 
     fn by_tkill(signal: u32) -> Info {
         Info::sent(signal, code::TKILL, 7, 0)
+    }
+
+    #[test]
+    fn exec_keeps_the_caller_s_and_the_process_s_signals_and_resets_the_actions() {
+        let info = |signal| Info::sent(signal, code::USER, 1, 0);
+        let slot = Arc::new(WaitSlot::new());
+        let mut block = ActionsAndQueue::new();
+        block.handlers[0] = 0x1234;
+        block.flags[0] = 4;
+        block.restorers[0] = 0x5678;
+        block.masks[0] = 3;
+        block.handlers[1] = IGNORE;
+        block.flags[1] = 4;
+        block.queue.extend([
+            Queued {
+                thread: 7,
+                info: info(34),
+            },
+            Queued {
+                thread: 8,
+                info: info(35),
+            },
+            Queued {
+                thread: 7,
+                info: info(36),
+            },
+        ]);
+        block.sent_to_threads.extend([
+            SentToThread {
+                thread: 8,
+                sent: Sent::Signal(info(10)),
+            },
+            SentToThread {
+                thread: ANY_THREAD,
+                sent: Sent::Signal(info(12)),
+            },
+            SentToThread {
+                thread: 7,
+                sent: Sent::Signal(info(2)),
+            },
+            SentToThread {
+                thread: 7,
+                sent: Sent::Discard(1),
+            },
+        ]);
+        block.threads.push(OtherThread {
+            id: 8,
+            wait_slot: Arc::clone(&slot),
+        });
+        block.first_thread_wait_slot = Some(slot);
+        block.trampoline = 0x9000;
+        let mut signals = Signals {
+            actions_and_queue: Some(Box::new([block])),
+        };
+        let queued = AtomicU64::new(10);
+        let mut next = signals.take_for_exec_charged_to(7, 5, &queued);
+        assert!(signals.actions_and_queue.is_none());
+        assert_eq!(queued.load(Ordering::Relaxed), 8);
+        let [block] = &mut **next.actions_and_queue.as_mut().unwrap();
+        assert_eq!(block.handlers[..2], [DEFAULT, IGNORE]);
+        assert!(block.flags.iter().all(|&flags| flags == 0));
+        assert!(block.restorers.iter().all(|&restorer| restorer == 0));
+        assert!(block.masks.iter().all(|&mask| mask == 0));
+        let queue: Vec<(u32, u32)> = block
+            .queue
+            .iter()
+            .map(|queued| (queued.thread, queued.info.signal()))
+            .collect();
+        assert_eq!(queue, [(5, 34), (5, 36)]);
+        let left: Vec<u32> = block
+            .sent_to_threads
+            .iter()
+            .map(|left| left.thread)
+            .collect();
+        assert_eq!(left, [ANY_THREAD, 5, 5]);
+        assert!(block.threads.is_empty() && block.first_thread_wait_slot.is_none());
+        assert_eq!(block.trampoline, 0);
+        block.queue.clear();
+        block.sent_to_threads.clear();
+        assert!(
+            Signals::new()
+                .take_for_exec(7, 5)
+                .actions_and_queue
+                .is_none()
+        );
     }
 
     #[test]

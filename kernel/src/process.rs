@@ -181,7 +181,7 @@ pub struct Process<P: Platform> {
     /// the machine is the direct map's (a boot self-test checks it).
     frame_offset: usize,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
-    exit: Arc<SpinLock<ExitRecord<P>>>,
+    record: Arc<SpinLock<PidRecord<P>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
     /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
@@ -203,7 +203,7 @@ pub struct Process<P: Platform> {
     signals: SpinLock<Signals>,
 }
 
-struct ExitRecord<P: Platform> {
+struct PidRecord<P: Platform> {
     exit: Option<ProcessExit>,
     handed_over: Option<(usize, Arc<Process<P>>)>,
 }
@@ -259,7 +259,7 @@ impl<P: Platform> Process<P> {
             regions: SpinLock::new(Regions::new()),
             program_break: SpinLock::new(None),
             frame_offset,
-            exit: Arc::new(SpinLock::new(ExitRecord {
+            record: Arc::new(SpinLock::new(PidRecord {
                 exit: None,
                 handed_over: None,
             })),
@@ -294,7 +294,7 @@ impl<P: Platform> Process<P> {
             regions: SpinLock::new(Regions::new()),
             program_break: SpinLock::new(None),
             frame_offset: self.frame_offset,
-            exit: Arc::clone(&self.exit),
+            record: Arc::clone(&self.record),
             ended: AtomicBool::new(false),
             signals_sent: AtomicU16::new(0),
             sent_signals_waiting: AtomicBool::new(false),
@@ -1098,7 +1098,7 @@ impl<P: Platform> Process<P> {
     /// interrupted. Returns whether this call ended it.
     pub fn exit(&self, how: ProcessExit) -> bool {
         let ended = {
-            let mut record = self.exit.lock();
+            let mut record = self.record.lock();
             let ended = !self.ended.load(Ordering::Relaxed);
             if ended {
                 record.exit.get_or_insert(how);
@@ -1118,7 +1118,7 @@ impl<P: Platform> Process<P> {
     /// process has ended already (another thread's `exit_group` or a fatal signal came first).
     pub fn end_for_exec(&self) -> bool {
         {
-            let _exit = self.exit.lock();
+            let _exit = self.record.lock();
             if self.ended.load(Ordering::Relaxed) {
                 return false;
             }
@@ -1134,13 +1134,13 @@ impl<P: Platform> Process<P> {
     /// whose registers are `context`: that thread's loop runs `next`'s program once its
     /// handler breaks ([`spawn`]); the process's other threads end.
     pub fn hand_over(&self, next: Arc<Self>, context: &UserContext) {
-        self.exit.lock().handed_over = Some((ptr::from_ref(context).addr(), next));
+        self.record.lock().handed_over = Some((ptr::from_ref(context).addr(), next));
     }
 
     /// Takes the process [`Self::hand_over`] handed this one over to, if it was for the thread
     /// whose registers are `context`.
     pub fn take_handed_over(&self, context: &UserContext) -> Option<Arc<Self>> {
-        let mut record = self.exit.lock();
+        let mut record = self.record.lock();
         match &record.handed_over {
             Some((thread, _)) if *thread == ptr::from_ref(context).addr() => {
                 record.handed_over.take().map(|(_, next)| next)
@@ -1251,7 +1251,7 @@ impl<P: Platform> Process<P> {
     /// How the process ended, or `None` while it has not; after an `execve`, how the program
     /// started in its place ended ([`Self::new_image`]).
     pub fn exit_status(&self) -> Option<ProcessExit> {
-        self.exit.lock().exit
+        self.record.lock().exit
     }
 }
 
@@ -1322,32 +1322,23 @@ where
 
 /// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
 /// (started by a thread as another ended it) never runs the program.
-fn run<P: Platform, H>(mut process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
+fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
 where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
-    loop {
-        run_until_break(&process, &mut context, &mut handler);
-        let Some(next) = process.take_handed_over(&context) else {
-            break;
-        };
-        let here = cpu::current::<P>();
-        let root = process.address_space().root();
-        process = next;
-        address_space::release_ended::<P>(here, root);
+    let mut next = Some(process);
+    while let Some(process) = next {
+        next = run_program(process, &mut context, &mut handler);
     }
-    let here = cpu::current::<P>();
-    let root = process.address_space().root();
-    drop(process);
-    address_space::release_ended::<P>(here, root);
 }
 
 #[inline(always)]
-fn run_until_break<P: Platform, H>(
-    process: &Arc<Process<P>>,
+fn run_program<P: Platform, H>(
+    process: Arc<Process<P>>,
     context: &mut UserContext,
     handler: &mut H,
-) where
+) -> Option<Arc<Process<P>>>
+where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
     let mut ended = process.has_ended();
@@ -1365,8 +1356,23 @@ fn run_until_break<P: Platform, H>(
         // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(context) };
-        ended = handler(process, context, exit).is_break();
+        ended = handler(&process, context, exit).is_break();
     }
+    leave_program(process, context)
+}
+
+#[cold]
+#[inline(never)]
+fn leave_program<P: Platform>(
+    process: Arc<Process<P>>,
+    context: &UserContext,
+) -> Option<Arc<Process<P>>> {
+    let next = process.take_handed_over(context);
+    let here = cpu::current::<P>();
+    let root = process.address_space().root();
+    drop(process);
+    address_space::release_ended::<P>(here, root);
+    next
 }
 
 /// Asks every other online CPU to look at its scheduler and interrupts it: a thread of an ended

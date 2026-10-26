@@ -565,7 +565,7 @@ struct Request {
 }
 
 struct Prepared<P: Platform> {
-    image: Process<P>,
+    image: Arc<Process<P>>,
     context: UserContext,
     files: Option<Descriptors>,
 }
@@ -599,12 +599,15 @@ fn prepare<P: Platform>(
     thread: &LinuxThread,
     request: Request,
 ) -> Result<Prepared<P>, Errno> {
+    let mut buffer = PathBuffer::uninit();
+    let path = files::read_path(process, request.path, &mut buffer)?;
+    if path.is_empty() && request.flags & at::EMPTY_PATH == 0 {
+        return Err(Errno::ENOENT);
+    }
     if request.flags & !EXECVEAT_FLAGS != 0 {
         return Err(Errno::EINVAL);
     }
-    let mut buffer = PathBuffer::uninit();
-    let path = files::read_path(process, request.path, &mut buffer)?;
-    let node = find(thread, request.dirfd, path, request.flags)?;
+    let node = find(thread, request.dirfd, path)?;
     let attributes = node.attributes();
     let may_execute = {
         let credentials = process.credentials_and_limits().lock();
@@ -635,17 +638,14 @@ fn prepare<P: Platform>(
     let mut new = process.new_image().map_err(|_| Errno::ENOMEM)?;
     let context = load(&mut new, image, name, arguments, environment).map_err(ExecError::errno)?;
     Ok(Prepared {
-        image: new,
+        image: Arc::new(new),
         context,
         files,
     })
 }
 
-fn find(thread: &LinuxThread, dirfd: u64, path: &[u8], flags: u64) -> Result<Node, Errno> {
+fn find(thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
     if path.is_empty() {
-        if flags & at::EMPTY_PATH == 0 {
-            return Err(Errno::ENOENT);
-        }
         let file = thread.files().file(dirfd)?;
         return file.kind().node().ok_or(Errno::EACCES);
     }
@@ -684,9 +684,14 @@ fn start<P: Platform>(
     let id = process.id().get();
     let signals = process.signals().lock().take_for_exec(thread.id(), id);
     *image.signals().lock() = signals;
+    crate::console::forget_foreground(id);
     if process.threads() > 1 {
         futex::wake_space::<P>(id);
         crate::console::wake_input_waiters::<P>();
+    }
+    let robust_list = thread.robust_list();
+    if robust_list != 0 {
+        futex::release_robust_list(process, thread.id(), robust_list);
     }
     thread.start_image(id);
     if let Some(files) = files {
@@ -704,7 +709,7 @@ fn start<P: Platform>(
     thread::with_running_fp::<P, _>(|state| *state = FpState::new());
     image.add_thread();
     *context = started;
-    Arc::new(image)
+    image
 }
 
 struct Strings {
@@ -857,6 +862,17 @@ impl ExecName {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory;
+    use crate::paging::PageTables;
+    use crate::process::TEST_PROGRAM_ADDRESS;
+    use crate::regions::Region;
+    use crate::selftest::{
+        LINUX_START_ARGUMENTS, LINUX_START_DATA, LINUX_START_DATA_BYTES, LINUX_START_DATA_SIZE,
+        LINUX_START_ENVIRONMENT, linux_start_image,
+    };
+    use crate::tests::TestPlatform as P;
+    use crate::thread::host::frames_for_test;
+    use alloc::vec::Vec;
 
     #[test]
     fn arguments_and_environment_are_held_to_a_quarter_of_the_stack_with_their_pointers() {
@@ -922,17 +938,6 @@ mod tests {
             .unwrap();
         assert!(may_execute(&file(0o001), &other));
     }
-    use crate::memory;
-    use crate::paging::PageTables;
-    use crate::process::TEST_PROGRAM_ADDRESS;
-    use crate::regions::Region;
-    use crate::selftest::{
-        LINUX_START_ARGUMENTS, LINUX_START_DATA, LINUX_START_DATA_BYTES, LINUX_START_DATA_SIZE,
-        LINUX_START_ENVIRONMENT, linux_start_image,
-    };
-    use crate::tests::TestPlatform as P;
-    use crate::thread::host::frames_for_test;
-    use alloc::vec::Vec;
 
     const USER_END: u64 = <<P as Platform>::PageTableFormat as Format>::USER_END;
     const PATH: &[u8] = b"/bin/test";
