@@ -5079,7 +5079,9 @@ the license, by an explicit instruction recorded here.
   `rusage` pointer that is not writable is `EFAULT` after the child was reaped, as Linux puts
   it after release. `waitid` writes `SIGCHLD`, `CLD_EXITED` or `CLD_KILLED`, the child's id,
   real user id and status, and zeros with `WNOHANG` and nothing ended; `P_PIDFD` is `EINVAL`
-  (no pidfds).
+  (no pidfds). Without `WEXITED` it passes ended children over, so with only zombies it fails
+  with `ECHILD`. A child whose entry goes without ending (a `clone` whose thread could not
+  start) wakes its parent's waits too, which may then find no child.
 - **`SIGCHLD`.** A child's end sends its exit signal (D104's `clone` argument; `SIGCHLD` for
   `fork` and `vfork`; none for 0) to its parent with Linux's `siginfo_t` (`CLD_EXITED` or
   `CLD_KILLED`, `si_pid`, `si_uid`, `si_status`), queued for the process and delivered by the
@@ -5100,8 +5102,9 @@ the license, by an explicit instruction recorded here.
   parent's id".
 - **Groups and sessions.** A process the kernel starts leads a new session and group; a child
   is in its parent's. `setpgid` as Linux: the caller or one of its children, `EINVAL` for a
-  negative group, `ESRCH` for anything else, `EACCES` for a child that ran `execve`, `EPERM`
-  for a session leader, a child in another session or a group not in the caller's session;
+  negative group, `ESRCH` for anything else, then `EPERM` for a child in another session,
+  then `EACCES` for a child that ran `execve`, then `EPERM` for a session leader or a group not
+  in the caller's session;
   `setsid` `EPERM` for a group leader; `getpgid` and `getsid` for any process in the table,
   `ESRCH` otherwise.
 - **The console as a controlling terminal (decided by research).** A process the kernel starts
@@ -5112,8 +5115,10 @@ the license, by an explicit instruction recorded here.
   `tcgetpgrp` would succeed where Linux answers `ENOTTY`), or only by `TIOCSCTTY` (nothing
   would set it until `/init` does). The foreground group starts as the leader's. `TIOCSPGRP`
   hands it to a group of the session (`ENOTTY` if the console is not the caller's controlling
-  terminal, `EINVAL` negative, `EPERM` outside the session); `TIOCGPGRP` and `TIOCGSID` report
-  it; `TIOCSCTTY` takes the console for a session leader without one (`EPERM` if another
+  terminal, checked before the argument is read, `EINVAL` negative, `ESRCH` for a group no
+  process is in, `EPERM` for one of another session); `TIOCGPGRP` and `TIOCGSID` report it;
+  `TIOCSCTTY` takes the console for a session leader (`EPERM` for any other caller, even of
+  the console's session; nothing to do if it is already the leader's; `EPERM` if another
   session has it, unless the argument is 1 and the caller privileged). The leader's end hangs
   up the session: the foreground group gets `SIGHUP` and `SIGCONT`, and the console is no
   session's. This replaces D100's `console::Foreground` hook (the last reader), its

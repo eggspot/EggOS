@@ -6026,6 +6026,9 @@ mod tests {
             ControlFlow::Break(())
         );
         drop((child, thread));
+        let waitid = |options| call(&parent, number::WAITID, [0, 0, SCRATCH, options, 0, 0]);
+        assert_eq!(waitid(1), Errno::EINVAL.result());
+        assert_eq!(waitid(2 | 1), Errno::ECHILD.result());
         assert_eq!(wait4(child_id as i64 + 1, 1), Errno::ECHILD.result());
         assert_eq!(wait4(-1, 0x8000_0000), Errno::ECHILD.result());
         parent.write_user_memory(SCRATCH + 8, &[0xff; 144]).unwrap();
@@ -6036,11 +6039,11 @@ mod tests {
     }
 
     fn has_children(process: &Process<P>) -> bool {
-        use process_table::{ChildKind, Found, Selector};
+        use process_table::{ChildKind, Ends, Found, Selector};
         let id = process.id().get();
         process_table::TABLE
             .lock()
-            .wait(id, Selector::Any, ChildKind::All, true)
+            .wait(id, Selector::Any, ChildKind::All, Ends::Report)
             != Found::NoChild
     }
 
@@ -6053,7 +6056,6 @@ mod tests {
         register_running(&parent);
         block_signals(&parent, 1 << (signal::SIGCHLD - 1));
         let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
-        let child_id = child.id().get();
         static WAITED: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
         let waiter = crate::thread::spawn::<P, _>({
             let parent = Arc::clone(&parent);
@@ -6084,7 +6086,6 @@ mod tests {
             1 << 16
         );
         assert!(!has_children(&parent));
-        let _ = child_id;
     }
 
     #[test]

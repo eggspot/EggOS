@@ -286,8 +286,11 @@ impl<P: Platform> Drop for PidRecord<P> {
         if !self.in_table || self.exit.is_some() {
             return;
         }
-        let notice = process_table::TABLE.lock().remove_unended(self.id.get());
-        if let Some(notice) = notice {
+        let removed = process_table::TABLE.lock().remove_unended(self.id.get());
+        for notice in [removed.to_parent, removed.to_new_parent]
+            .into_iter()
+            .flatten()
+        {
             crate::linux::wait::notify::<P>(notice);
         }
     }

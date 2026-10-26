@@ -33,7 +33,6 @@ pub mod request {
     pub const TIOCGSID: u32 = 0x5429;
 }
 
-/// `prctl`'s options answered.
 mod option {
     pub const PR_SET_CHILD_SUBREAPER: u32 = 36;
     pub const PR_GET_CHILD_SUBREAPER: u32 = 37;
@@ -132,9 +131,13 @@ pub fn ioctl<P: Platform>(
         }
         request::TIOCSPGRP => {
             let mut bytes = [0; 4];
-            process
-                .read_user_memory(argument, &mut bytes)
-                .map_err(|_| Errno::EFAULT)
+            let terminal = TABLE.lock().controlling_terminal(caller);
+            terminal
+                .and_then(|_| {
+                    process
+                        .read_user_memory(argument, &mut bytes)
+                        .map_err(|_| Errno::EFAULT)
+                })
                 .and_then(|()| {
                     TABLE
                         .lock()

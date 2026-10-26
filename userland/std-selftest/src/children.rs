@@ -82,7 +82,6 @@ fn exit_child(status: i32) -> ! {
     unsafe { libc::_exit(status) }
 }
 
-/// `waitpid(pid, &status, options)`: the id it returned and the status.
 fn waitpid(pid: i32, options: i32) -> (i32, i32) {
     let mut status = -1;
     // SAFETY: `status` is an `int` that lives across the call.

@@ -10,7 +10,7 @@
 //! reported as zeros.
 
 use super::futex::{self, Key};
-use super::process_table::{self, ChildKind, Found, Notice, Selector, TABLE};
+use super::process_table::{self, ChildKind, Ends, Found, Notice, Selector, TABLE};
 use super::signals::{self, Info, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::{Errno, credentials};
@@ -34,7 +34,6 @@ pub mod option {
     pub const WCLONE: u32 = 0x8000_0000;
 }
 
-/// `waitid`'s `idtype`.
 mod id_type {
     pub const P_ALL: u32 = 0;
     pub const P_PID: u32 = 1;
@@ -57,17 +56,12 @@ const WAITID_OPTIONS: u32 = option::WNOHANG
     | option::WALL
     | option::WCLONE;
 
-/// The size of a `struct rusage`: two `struct timeval`s and fourteen `long`s.
 const RUSAGE_SIZE: usize = 144;
 
-/// The size of a `siginfo_t`.
 const SIGINFO_SIZE: usize = 128;
 
-/// The futex address of the child-wait keys, in no process's space: one per process, by id.
 const CHILD_WAIT_WORDS: u64 = 1 << 63;
 
-/// Counts children's ends, so a wait that found none running ended does not start sleeping
-/// after one ended meanwhile.
 static CHILD_ENDS: AtomicU32 = AtomicU32::new(0);
 
 fn child_wait_key(parent: u32) -> Key {
@@ -163,8 +157,7 @@ struct Request {
     selector: Selector,
     kind: ChildKind,
     no_hang: bool,
-    look_only: bool,
-    exits: bool,
+    ends: Ends,
 }
 
 fn selector_for_wait4(caller: u32, pid: i32) -> Result<Selector, Errno> {
@@ -218,8 +211,7 @@ pub fn wait4<P: Platform>(
             selector,
             kind: kind(options),
             no_hang: options & option::WNOHANG != 0,
-            look_only: false,
-            exits: true,
+            ends: Ends::Reap,
         }),
         (0, Err(error)) => Err(error),
         _ => Err(Errno::EINVAL),
@@ -274,8 +266,11 @@ pub fn waitid<P: Platform>(
                 selector,
                 kind: kind(options),
                 no_hang: options & option::WNOHANG != 0,
-                look_only: options & option::WNOWAIT != 0,
-                exits: options & option::WEXITED != 0,
+                ends: match (options & option::WEXITED, options & option::WNOWAIT) {
+                    (0, _) => Ends::Ignore,
+                    (_, 0) => Ends::Reap,
+                    _ => Ends::Report,
+                },
             };
             match wait_interruptibly(process, thread, context, &request)? {
                 Some(found) => found,
@@ -333,12 +328,11 @@ fn wait_or_sleep<P: Platform>(
     let caller = process.id().get();
     loop {
         let seen = CHILD_ENDS.load(Ordering::Acquire);
-        let look_only = request.look_only || !request.exits;
         let found = TABLE
             .lock()
-            .wait(caller, request.selector, request.kind, look_only);
+            .wait(caller, request.selector, request.kind, request.ends);
         match found {
-            Found::Ended { id, uid, exit } if request.exits => {
+            Found::Ended { id, uid, exit } => {
                 return ControlFlow::Continue(Some(Ok(Some((id, uid, exit)))));
             }
             Found::NoChild => return ControlFlow::Continue(Some(Err(Errno::ECHILD))),

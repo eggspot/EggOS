@@ -1942,10 +1942,6 @@ fn linux_programs_create_processes<P: Platform>(
     run_rust_program(memory, &STD_PROGRAM_CREATING_PROCESSES)
 }
 
-/// The std program waits for its children with `wait4` and `waitid`, as they end before and
-/// during the wait, by id, group and any, and as a signal ended them; takes in an orphaned
-/// grandchild as a subreaper; runs a `SIGCHLD` handler; lets the kernel reap the children
-/// while it ignores `SIGCHLD`; and moves processes between groups and sessions (D105).
 fn linux_programs_wait_for_their_children<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {

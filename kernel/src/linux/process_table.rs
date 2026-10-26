@@ -73,6 +73,17 @@ pub enum ChildKind {
     All,
 }
 
+/// What a wait does with a child that has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ends {
+    /// Reports and reaps it.
+    Reap,
+    /// Reports it and leaves it a zombie (`WNOWAIT`).
+    Report,
+    /// Passes it over: the wait reports none (`waitid` without `WEXITED`).
+    Ignore,
+}
+
 /// What a wait found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Found {
@@ -353,20 +364,35 @@ impl Table {
     }
 
     /// Removes process `id`, which never ended as a Linux process does (it never ran, or its
-    /// program never reached its end), handing its children over as [`Self::end`] does.
-    pub fn remove_unended(&mut self, id: u32) -> Option<Notice> {
-        let index = self.index(id)?;
+    /// program never reached its end), handing its children over as [`Self::end`] does. Its
+    /// parent is told with no signal, so a wait for it looks again (and may find no child).
+    pub fn remove_unended(&mut self, id: u32) -> Ended {
+        let mut ended = Ended::default();
+        let Some(index) = self.index(id) else {
+            return ended;
+        };
         if self.entries[index].exit.is_some() {
-            return None;
+            return ended;
         }
-        let notice = self.hand_over_children(id);
+        ended.to_new_parent = self.hand_over_children(id);
         if let Some(index) = self.index(id) {
+            let parent = self.entries[index].parent;
+            if self.index(parent).is_some() {
+                ended.to_parent = Some(Notice {
+                    parent,
+                    running: None,
+                    signal: 0,
+                    child: id,
+                    uid: 0,
+                    exit: ProcessExit::Exited(0),
+                });
+            }
             self.remove_at(index);
         }
         if self.console.session == id {
             self.release_console();
         }
-        notice
+        ended
     }
 
     fn hand_over_children(&mut self, id: u32) -> Option<Notice> {
@@ -409,15 +435,9 @@ impl Table {
     }
 
     /// The wait of process `parent` for one of its children that `selector` and `kind` name:
-    /// the first of them that has ended, removed from the table unless `look_only`
-    /// (`WNOWAIT`); otherwise whether any of them is running.
-    pub fn wait(
-        &mut self,
-        parent: u32,
-        selector: Selector,
-        kind: ChildKind,
-        look_only: bool,
-    ) -> Found {
+    /// the first of them that has ended, reaped or not as `ends` says; otherwise whether any of
+    /// them is running.
+    pub fn wait(&mut self, parent: u32, selector: Selector, kind: ChildKind, ends: Ends) -> Found {
         let matches = |entry: &Entry| {
             entry.parent == parent
                 && match selector {
@@ -441,6 +461,7 @@ impl Table {
                 continue;
             }
             match entry.exit {
+                Some(_) if ends == Ends::Ignore => {}
                 Some(exit) => {
                     ended = Some((index, entry.id, entry.uid, exit));
                     break;
@@ -450,7 +471,7 @@ impl Table {
         }
         match ended {
             Some((index, id, uid, exit)) => {
-                if !look_only {
+                if ends == Ends::Reap {
                     self.remove_at(index);
                 }
                 Found::Ended { id, uid, exit }
@@ -489,10 +510,13 @@ impl Table {
         if target != caller && (entry.parent != caller || entry.exit.is_some()) {
             return Err(Errno::ESRCH);
         }
+        if entry.session != caller_session {
+            return Err(Errno::EPERM);
+        }
         if target != caller && entry.executed {
             return Err(Errno::EACCES);
         }
-        if entry.session != caller_session || entry.session == target {
+        if entry.session == target {
             return Err(Errno::EPERM);
         }
         if group != target && !self.group_exists_in(group, caller_session) {
@@ -558,11 +582,15 @@ impl Table {
 
     /// `TIOCSPGRP` by process `caller`: makes group `group` (a `pid_t`) the console's
     /// foreground. `ENOTTY` unless the console is the caller's controlling terminal; `EINVAL`
-    /// for a negative group; `EPERM` for a group not in the caller's session.
+    /// for a negative group; `ESRCH` for a group no process is in; `EPERM` for a group of
+    /// another session.
     pub fn set_console_foreground(&mut self, caller: u32, group: i32) -> Result<(), Errno> {
         let (session, _) = self.controlling_terminal(caller)?;
         if group < 0 {
             return Err(Errno::EINVAL);
+        }
+        if !self.entries.iter().any(|entry| entry.group == group as u32) {
+            return Err(Errno::ESRCH);
         }
         if !self.group_exists_in(group as u32, session) {
             return Err(Errno::EPERM);
@@ -572,15 +600,18 @@ impl Table {
     }
 
     /// `TIOCSCTTY` by process `caller`: makes the console its session's controlling terminal,
-    /// its group the foreground. As Linux: nothing to do if it is already; `EPERM` unless the
-    /// caller leads its session, or if the console is another session's and the caller may not
-    /// `steal` it (an argument of 1 and privileges).
+    /// its group the foreground. As Linux: `EPERM` unless the caller leads its session; then
+    /// nothing to do if it is already; `EPERM` if the console is another session's and the
+    /// caller may not `steal` it (an argument of 1 and privileges).
     pub fn take_console(&mut self, caller: u32, steal: bool) -> Result<(), Errno> {
         let (session, group) = self.session_of(caller)?;
+        if session != caller {
+            return Err(Errno::EPERM);
+        }
         if self.console.session == session {
             return Ok(());
         }
-        if session != caller || (self.console.session != 0 && !steal) {
+        if self.console.session != 0 && !steal {
             return Err(Errno::EPERM);
         }
         self.console = Console {
@@ -646,7 +677,7 @@ mod tests {
     fn a_child_ends_as_a_zombie_until_its_parent_reaps_it_once() {
         let mut table = table_with(&[(10, None), (11, Some(10)), (12, Some(10))]);
         assert_eq!(
-            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, Ends::Reap),
             Found::Running
         );
         let ended = table.end(11, EXITED, 0);
@@ -656,7 +687,7 @@ mod tests {
             (10, SIGCHLD, 11)
         );
         assert_eq!(
-            table.wait(10, Selector::Process(11), ChildKind::Sigchld, true),
+            table.wait(10, Selector::Process(11), ChildKind::Sigchld, Ends::Report),
             Found::Ended {
                 id: 11,
                 uid: 0,
@@ -664,24 +695,32 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
-            Found::Ended {
-                id: 11,
-                uid: 0,
-                exit: EXITED
-            }
-        );
-        assert_eq!(
-            table.wait(10, Selector::Process(11), ChildKind::Sigchld, false),
+            table.wait(10, Selector::Process(11), ChildKind::Sigchld, Ends::Ignore),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, Ends::Ignore),
+            Found::Running
+        );
+        assert_eq!(
+            table.wait(10, Selector::Any, ChildKind::Sigchld, Ends::Reap),
+            Found::Ended {
+                id: 11,
+                uid: 0,
+                exit: EXITED
+            }
+        );
+        assert_eq!(
+            table.wait(10, Selector::Process(11), ChildKind::Sigchld, Ends::Reap),
+            Found::NoChild
+        );
+        assert_eq!(
+            table.wait(10, Selector::Any, ChildKind::Sigchld, Ends::Reap),
             Found::Running
         );
         assert_eq!(table.end(12, EXITED, 0).to_parent.unwrap().child, 12);
         assert!(matches!(
-            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, Ends::Reap),
             Found::Ended { id: 12, .. }
         ));
         assert_eq!(table.in_session(10), 1);
@@ -696,7 +735,7 @@ mod tests {
             table.end(id, ProcessExit::Exited(id), 0);
         }
         assert_eq!(
-            table.wait(20, Selector::Group(22), ChildKind::Sigchld, false),
+            table.wait(20, Selector::Group(22), ChildKind::Sigchld, Ends::Reap),
             Found::Ended {
                 id: 22,
                 uid: 0,
@@ -704,11 +743,11 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(20, Selector::Group(22), ChildKind::Sigchld, false),
+            table.wait(20, Selector::Group(22), ChildKind::Sigchld, Ends::Reap),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(20, Selector::Any, ChildKind::Clone, false),
+            table.wait(20, Selector::Any, ChildKind::Clone, Ends::Reap),
             Found::Ended {
                 id: 23,
                 uid: 0,
@@ -716,11 +755,11 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(20, Selector::Any, ChildKind::Clone, false),
+            table.wait(20, Selector::Any, ChildKind::Clone, Ends::Reap),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(20, Selector::Group(20), ChildKind::All, false),
+            table.wait(20, Selector::Group(20), ChildKind::All, Ends::Reap),
             Found::Ended {
                 id: 21,
                 uid: 0,
@@ -728,7 +767,7 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(21, Selector::Any, ChildKind::All, false),
+            table.wait(21, Selector::Any, ChildKind::All, Ends::Reap),
             Found::NoChild
         );
     }
@@ -746,14 +785,14 @@ mod tests {
         table.set_exit_signal(41, SIGCHLD);
         assert!(table.end(41, EXITED, 0).to_parent.is_some());
         assert_eq!(
-            table.wait(40, Selector::Any, ChildKind::All, false),
+            table.wait(40, Selector::Any, ChildKind::All, Ends::Reap),
             Found::NoChild
         );
         table.add(42, Some(40)).unwrap();
         table.set_exit_signal(42, 10);
         table.end(42, EXITED, 0);
         assert!(matches!(
-            table.wait(40, Selector::Any, ChildKind::All, false),
+            table.wait(40, Selector::Any, ChildKind::All, Ends::Reap),
             Found::Ended { id: 42, .. }
         ));
     }
@@ -779,7 +818,7 @@ mod tests {
             (50, 54, SIGCHLD)
         );
         assert!(matches!(
-            table.wait(50, Selector::Any, ChildKind::Sigchld, false),
+            table.wait(50, Selector::Any, ChildKind::Sigchld, Ends::Reap),
             Found::Ended { id: 54, .. }
         ));
         let mut table = table_with(&[(60, None), (61, None), (62, Some(61)), (63, Some(62))]);
@@ -795,10 +834,14 @@ mod tests {
         let mut table = table_with(&[(70, None), (71, Some(70)), (72, Some(71))]);
         table.set_child_subreaper(70, true);
         table.end(72, EXITED, 0);
-        let notice = table.remove_unended(71).unwrap();
+        let removed = table.remove_unended(71);
+        let notice = removed.to_new_parent.unwrap();
         assert_eq!((notice.parent, notice.child), (70, 72));
+        let told = removed.to_parent.unwrap();
+        assert_eq!((told.parent, told.child, told.signal), (70, 71, 0));
         assert!(table.group_and_session(71).is_none());
-        assert!(table.remove_unended(70).is_none());
+        let removed = table.remove_unended(70);
+        assert!(removed.to_parent.is_none() && removed.to_new_parent.is_none());
         assert!(table.group_and_session(72).is_none());
         assert_eq!(table.in_session(70), 0);
     }
@@ -818,6 +861,8 @@ mod tests {
         assert_eq!(table.new_session(82), Ok(82));
         assert_eq!(table.group_and_session(82), Some((82, 82)));
         assert_eq!(table.set_group(80, 82, 80), Err(Errno::EPERM));
+        table.mark_executed(82);
+        assert_eq!(table.set_group(80, 82, 80), Err(Errno::EPERM));
         assert_eq!(table.set_group(82, 0, 81), Err(Errno::EPERM));
         table.mark_executed(81);
         assert_eq!(table.set_group(80, 81, 80), Err(Errno::EACCES));
@@ -834,11 +879,13 @@ mod tests {
         assert_eq!(table.controlling_terminal(110), Err(Errno::ENOTTY));
         assert_eq!(table.set_console_foreground(110, 110), Err(Errno::ENOTTY));
         assert_eq!(table.set_console_foreground(101, 110), Err(Errno::EPERM));
+        assert_eq!(table.set_console_foreground(101, 999), Err(Errno::ESRCH));
         table.set_group(100, 101, 0).unwrap();
         table.set_console_foreground(101, 101).unwrap();
         assert_eq!(table.controlling_terminal(100), Ok((100, 101)));
         assert_eq!(table.take_console(110, false), Err(Errno::EPERM));
-        assert_eq!(table.take_console(101, true), Ok(()));
+        assert_eq!(table.take_console(101, true), Err(Errno::EPERM));
+        assert_eq!(table.take_console(100, false), Ok(()));
         let slot = Arc::new(WaitSlot::new());
         table.set_running(
             101,
