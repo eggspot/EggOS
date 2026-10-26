@@ -5216,9 +5216,13 @@ the license, by an explicit instruction recorded here.
   SBI shutdown when SRST is missing. x86_64's power-off stays ACPI S5 from the FADT (QEMU's
   port 0x604 is that same register on q35, so no QEMU-only port is written).
 - **Stopping the other CPUs (decided by research).** Linux's halt stops every CPU, and so must
-  ours: `cpu::stop_others` sets a flag and sends every other CPU the wake-up interrupt, whose
-  handler parks a CPU that sees the flag. It costs one load on the wake-up interrupt only, and
-  nothing on the timer, system-call or switch paths. `reboot` and init's end use it.
+  ours: `cpu::stop_others` sets a flag, asks every other CPU a TLB shootdown (D94) and sends
+  it the wake-up interrupt; serving a shootdown is the cold path that checks the flag and
+  parks the CPU, as it takes the interrupt or as it waits for a lock with the wait duty. The
+  first version checked the flag in the wake-up interrupt's handler: one load and branch there
+  made riscv64's shared trap path longer, and `breakpoint_round_trip` went from 126 to 128 ns
+  against `main`'s CI run; in the shootdown's cold path the trap path is as on `main` (126).
+  `reboot` and init's end use it.
 - **Init ending (decided by research).** Fatal, as on Linux: the kernel writes
   `Kernel panic - not syncing: Attempted to kill init! exitcode=0x0000XX00` (the wait status:
   the exit status in bits 8-15, or the signal), or `No working init found` with the reason when
@@ -5238,10 +5242,9 @@ the license, by an explicit instruction recorded here.
   ready system, measured as QEMU's wall-clock time to init's ready line, against `main`'s
   release kernel to the end of its self-tests (it then halts, never ready), 4 CPUs on this Mac:
   0.032 s against 0.325 s on aarch64, 0.051 s against 0.362 s on riscv64, 0.087 s against
-  0.435 s on x86_64. Benchmarks: every line within the gate; against `main`'s CI run the same
-  but riscv64 `breakpoint_round_trip` 126 to 128 ns locally (+1.6%, inside the gate's 1% +
-  0.5 ns of its 127 ns baseline) and the two riscv64 SBI timer benchmarks local QEMU's firmware
-  makes slower (not gated). No baseline line changed.
+  0.435 s on x86_64. Benchmarks: every line within the gate and within 0.3% of `main`'s CI
+  run (the two riscv64 SBI timer benchmarks aside, which local QEMU's firmware makes slower and
+  the gate skips). No baseline line changed.
 - **Not done yet (follow-ups).** Pid 1 is not protected from `SIGKILL` and default actions sent
   by others (Linux drops them; `kill` to other processes does not exist yet). `TIOCNOTTY`, so
   init could give the console up instead of the login program taking it. Init's shutdown
