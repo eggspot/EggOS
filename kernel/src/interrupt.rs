@@ -21,6 +21,7 @@ pub fn handle<P: Platform>(interrupt: Interrupt) {
     cpu::current::<P>().count(interrupt);
     if interrupt == Interrupt::Wakeup {
         cpu::serve_shootdowns::<P>();
+        cpu::park_if_stopping::<P>();
     }
 }
 

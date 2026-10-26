@@ -258,6 +258,24 @@ const SBI_EXT_SRST: usize = 0x5352_5354;
 const SBI_SRST_SHUTDOWN: usize = 0;
 const SBI_SRST_REASON_NONE: usize = 0;
 const SBI_SRST_REASON_FAILURE: usize = 1;
+const SBI_SRST_COLD_REBOOT: usize = 1;
+const SBI_LEGACY_SHUTDOWN: usize = 8;
+
+fn sbi_system_reset(kind: usize, reason: usize) {
+    // SAFETY: an SBI call per the SBI calling convention: a7 = extension, a6 = function,
+    // a0/a1 = arguments, a0/a1 = returned error/value. It does not return on success; on
+    // failure (no SRST) the caller goes on to its fallback.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inout("a0") kind => _,
+            inout("a1") reason => _,
+            in("a6") 0usize,
+            in("a7") SBI_EXT_SRST,
+            options(nostack),
+        );
+    }
+}
 
 /// The early console, UART0.
 #[inline]
@@ -306,19 +324,22 @@ impl Platform for Riscv64 {
             ExitStatus::Success => SBI_SRST_REASON_NONE,
             ExitStatus::Failure => SBI_SRST_REASON_FAILURE,
         };
-        // SAFETY: an SBI call per the SBI calling convention: a7 = extension, a6 = function,
-        // a0/a1 = arguments, a0/a1 = returned error/value. It does not return on success; on
-        // failure (no SRST) we fall through and halt.
+        sbi_system_reset(SBI_SRST_SHUTDOWN, reason);
+        // SAFETY: the legacy SBI v0.1 shutdown takes no arguments and does not return when the
+        // firmware has it; firmware without it returns an error and we halt.
         unsafe {
             core::arch::asm!(
                 "ecall",
-                inout("a0") SBI_SRST_SHUTDOWN => _,
-                inout("a1") reason => _,
-                in("a6") 0usize,
-                in("a7") SBI_EXT_SRST,
+                inout("a0") 0usize => _,
+                in("a7") SBI_LEGACY_SHUTDOWN,
                 options(nostack),
             );
         }
+        Self::halt()
+    }
+
+    fn restart() -> ! {
+        sbi_system_reset(SBI_SRST_COLD_REBOOT, SBI_SRST_REASON_NONE);
         Self::halt()
     }
 

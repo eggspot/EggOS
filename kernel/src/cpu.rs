@@ -357,6 +357,36 @@ pub fn wake<P: Platform>(cpu: &Cpu) {
     }
 }
 
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// Stops every CPU but the calling one, as the machine halts, powers off or resets (`reboot`,
+/// or init ending): each parks with interrupts masked as it takes the wake-up interrupt this
+/// sends it, which a CPU running user mode or waiting for an interrupt takes at once. Returns
+/// once the interrupts are sent, which may be before they are taken.
+#[cold]
+#[inline(never)]
+pub fn stop_others<P: Platform>() {
+    STOPPING.store(true, Ordering::Release);
+    let here = current::<P>().index();
+    for cpu in CPUS.all().iter().filter(|cpu| cpu.index() != here) {
+        wake::<P>(cpu);
+    }
+}
+
+/// Parks this CPU for good if [`stop_others`] asked it to; called on the wake-up interrupt.
+#[inline]
+pub fn park_if_stopping<P: Platform>() {
+    if STOPPING.load(Ordering::Acquire) {
+        park_for_stop::<P>()
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn park_for_stop<P: Platform>() -> ! {
+    P::halt()
+}
+
 /// Raises the wake-up interrupt on the calling CPU, which runs with interrupts masked: it is
 /// taken once they are unmasked, at the latest as soon as the CPU runs user mode, which then
 /// comes back to the kernel at once.

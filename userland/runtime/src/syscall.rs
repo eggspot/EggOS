@@ -5,7 +5,9 @@ use core::arch::asm;
 /// Linux's system-call numbers: x86_64's own table.
 #[cfg(target_arch = "x86_64")]
 pub mod number {
+    pub const READ: usize = 0;
     pub const WRITE: usize = 1;
+    pub const CLOSE: usize = 3;
     pub const FSTAT: usize = 5;
     pub const MMAP: usize = 9;
     pub const MPROTECT: usize = 10;
@@ -17,14 +19,20 @@ pub mod number {
     pub const GETPID: usize = 39;
     pub const CLONE: usize = 56;
     pub const EXECVE: usize = 59;
+    pub const WAIT4: usize = 61;
     pub const UNAME: usize = 63;
+    pub const SETSID: usize = 112;
+    pub const RT_SIGSUSPEND: usize = 130;
     pub const SIGALTSTACK: usize = 131;
     pub const ARCH_PRCTL: usize = 158;
+    pub const REBOOT: usize = 169;
     pub const GETTID: usize = 186;
     pub const FUTEX: usize = 202;
     pub const SET_TID_ADDRESS: usize = 218;
     pub const CLOCK_GETTIME: usize = 228;
+    pub const CLOCK_NANOSLEEP: usize = 230;
     pub const EXIT_GROUP: usize = 231;
+    pub const OPENAT: usize = 257;
     pub const PPOLL: usize = 271;
     pub const SET_ROBUST_LIST: usize = 273;
     pub const PRLIMIT64: usize = 302;
@@ -35,6 +43,9 @@ pub mod number {
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub mod number {
     pub const IOCTL: usize = 29;
+    pub const OPENAT: usize = 56;
+    pub const CLOSE: usize = 57;
+    pub const READ: usize = 63;
     pub const WRITE: usize = 64;
     pub const PPOLL: usize = 73;
     pub const FSTAT: usize = 80;
@@ -43,9 +54,13 @@ pub mod number {
     pub const FUTEX: usize = 98;
     pub const SET_ROBUST_LIST: usize = 99;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const CLOCK_NANOSLEEP: usize = 115;
     pub const SIGALTSTACK: usize = 132;
+    pub const RT_SIGSUSPEND: usize = 133;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGRETURN: usize = 139;
+    pub const REBOOT: usize = 142;
+    pub const SETSID: usize = 157;
     pub const UNAME: usize = 160;
     pub const GETPID: usize = 172;
     pub const GETTID: usize = 178;
@@ -55,6 +70,7 @@ pub mod number {
     pub const EXECVE: usize = 221;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
+    pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
 }
