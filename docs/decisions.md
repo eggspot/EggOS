@@ -6206,6 +6206,7 @@ the license, by an explicit instruction recorded here.
   statuses 0, 42 and 134. The workspace's release profile aborts on panic, so the panic test
   checks the abort (`Aborted`, 134), not unwinding's exit status 101.
 - **Cost.** The release image's initramfs holds the same members; the kernel grows by the new
-  call's code only, a few hundred bytes, and `release_image_bytes` takes CI's sizes (D116). No
+  call's code only: CI's `release_image_bytes` is +200 bytes on aarch64 (700,392), +360 on
+  riscv64 (798,048) and +176 on x86_64 (602,976), which the baseline now holds (D116). No
   hot-path benchmark moved beyond its gate (the call is out of line; PR #116 has the
   numbers).
