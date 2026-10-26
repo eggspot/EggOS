@@ -4741,16 +4741,17 @@ the license, by an explicit instruction recorded here.
   their errors (D24: justified by a must-have of D99; the initramfs is kept to three small
   files until the userland binaries join it).
 
-## D103 `execve` and `execveat` from a file: a new process with the caller's id — Decided by the build loop (not waiting for the other threads decided by research)
+## D103 `execve` and `execveat` from a file: a new process with the caller's id — Decided by the build loop (not waiting for the other threads, and the thread loop's cost, decided by research)
 
 - **What.** Item 5 of the v0.3.0 plan (D99), the `execve` part of issue #94's slice 2:
   `execve(path, argv, envp)` and `execveat(dirfd, path, argv, envp, flags)` start a static
   program from a file of the initramfs (D102) in the caller's place. Before this, programs
   started only from images embedded in the kernel (D51).
-- **Before the point of no return**, in Linux's order, nothing of the caller changes:
-  `execveat`'s flags (`AT_EMPTY_PATH`, `AT_SYMLINK_NOFOLLOW`, else `EINVAL`); the path, found
-  as `openat` finds it (`EFAULT`, `ENAMETOOLONG`, `ENOENT`, `ENOTDIR`, `EBADF`; `AT_EMPTY_PATH`
-  with an empty path names `dirfd`'s own file); `EACCES` for anything but a regular file and
+- **Before the point of no return**, in Linux's order, nothing of the caller changes: the path
+  read (`EFAULT`, `ENAMETOOLONG`, `ENOENT` for an empty one without `AT_EMPTY_PATH`); then
+  `execveat`'s flags (`AT_EMPTY_PATH`, `AT_SYMLINK_NOFOLLOW`, else `EINVAL`); the path found
+  as `openat` finds it (`ENOENT`, `ENOTDIR`, `EBADF`; `AT_EMPTY_PATH` with an empty path names
+  `dirfd`'s own file); `EACCES` for anything but a regular file and
   for a file whose execute bit the caller's file system ids lack (owner, group or supplementary
   group, others; root needs any one, as on Linux); the arguments and environment copied once
   into the kernel (`EFAULT`; `E2BIG` past `MAX_ARG_STRLEN`, 128 KiB, for one string, or past a
@@ -4763,32 +4764,35 @@ the license, by an explicit instruction recorded here.
   so a program changing them meanwhile changes nothing (no TOCTOU). The program is then loaded
   into a new `Process` built beside the caller's (`Process::new_image`: an empty address space
   sharing the kernel half of the caller's, `AddressSpace::new_owning_frames_beside`; the same
-  id; a copy of the credentials and resource limits), so a failure drops it and the caller
-  carries on as it was.
+  id; a copy of the credentials and resource limits, whose saved and file system user and group
+  ids the loader then sets to the effective ones, as Linux does, so a program cannot regain a
+  saved id across `execve`), so a failure drops it and the caller carries on as it was.
 - **The point of no return.** The caller's process is ended for the exec
   (`Process::end_for_exec`, under the exit record's lock: if another thread's `exit_group` or
   a fatal signal ended it first, `execve` loses and its thread ends, as on Linux). The signal
   actions move to the new process without an allocation (`Signals::take_for_exec`): each
   handler back to `SIG_DFL`, `SIG_IGN` kept, flags, masks and restorers cleared, the return
   trampoline forgotten (the memory is new), the calling thread's queued `siginfo_t`s and what
-  was left for it or for the process kept. The thread keeps its blocked and pending signals,
+  was left for it or for the process kept. The console forgets the process as its foreground
+  (the foreground holds the process, which would keep the old program's memory, and `^C` would
+  go to it); the new program becomes the foreground when it next reads the console. The
+  calling thread's robust futex list is released as at its exit (D93). The thread keeps its blocked and pending signals,
   its working directory and its descriptor table (copied first if other threads shared it),
   whose close-on-exec descriptors close; it loses its alternate stack, its
-  `clear_child_tid`, its robust list and its FP/SIMD registers (back to the initial state), and
+  `clear_child_tid`, its robust list (released above) and its FP/SIMD registers (back to the initial state), and
   its id becomes the process's (an `execve` from a thread other than the first takes the
   first's id, as on Linux). Its registers become the new program's entry (`UserContext::new`:
   every other register zero). The thread's loop then runs the new process: `execve` hands the
   old one over (`Process::hand_over`, the new process stored in the shared exit record, tagged
   with the address of the calling thread's registers so no other thread of the old process
-  takes it) and breaks; `process::run`, on the break, takes the new process
-  (`Process::take_handed_over`) and runs its program, dropping the old one and releasing it on
-  CPUs that keep it loaded (`address_space::release_ended`), so its memory goes as soon as
-  nothing else holds it. A first version gave the loop's handler `&mut Arc<Process>` to swap in
-  place: the loop then reloaded the process after every exit, +1 ns (+0.6% to +0.8%) on
-  `linux_syscall_round_trip` on all three; handing over on the break keeps the hot loop's code
-  as it was.
-- **One record of how the process ends.** `Process`'s exit record is an `Arc` shared by every
-  process an `execve` starts in its place (with the hand-over slot above, emptied at once), so a launcher that holds the first (the self-tests,
+  takes it) and breaks; when the thread's loop ends, an out-of-line step
+  (`leave_program`) takes the new process (`Process::take_handed_over`), drops the old one,
+  releases it on CPUs that keep it loaded (`address_space::release_ended`), so its memory goes
+  as soon as nothing else holds it, and the loop runs the new program; the loop itself is
+  `main`'s, with the process by value.
+- **One record per process id.** `Process`'s `PidRecord`, how the process ended and the
+  hand-over slot above (emptied at once), is an `Arc` shared by every process an `execve`
+  starts in its place, so a launcher that holds the first (the self-tests,
   the benchmarks, later `init` and `wait4`) reads how the last program ended. A thread of a
   process that `execve` ended records nothing (`Process::exit` returns whether it ended the
   process, and `end_process` does nothing more when it did not). The record costs one small
@@ -4800,8 +4804,7 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `#!` scripts are `ENOEXEC` until there is a shell to run them (issue #94;
   one level of `#!` is a small change once `/bin/sh` exists). Set-user-ID and set-group-ID
   files do not change the credentials yet (the initramfs has none; `AT_SECURE` still follows
-  the credentials, D75). Robust futex lists are dropped, not released, at `execve`. No
-  `noexec` mounts.
+  the credentials, D75). No `noexec` mounts.
 - **Decided by research: other threads are not waited for.** In a process with other threads,
   `execve` ends them as `exit_group` does (they stop at their next entry into the kernel, those
   waiting on a futex or for the console woken), but does not wait until they are gone: a thread
@@ -4814,7 +4817,10 @@ the license, by an explicit instruction recorded here.
   (v0.3.0 item 7): a per-process thread-exit completion that every ending thread signals
   (including those that end because the process ended), `execve` waiting on it before the
   swap, and a multi-threaded `execve` test that no old thread runs after the new program
-  starts.
+  starts. Related, until then: an `execve` from a thread other than the first ends the first
+  thread, so a launcher that joins the first thread (the self-tests, the benchmarks) returns
+  early and reads no exit status yet; only an `execve` from the first thread is fully covered
+  by the QEMU test (host tests cover the other).
 - **Test kernels' initramfs.** `cargo xtask` builds the initramfs per architecture for test
   kernels, with the two self-test programs in `usr/libexec/` (`0755`), so the kernel starts them
   from files; other kernels embed the plain archive as before.
@@ -4827,9 +4833,16 @@ the license, by an explicit instruction recorded here.
   `ENXIO` at or past the end (the handoff's follow-up was stale).
 - **Testing.** Host tests: `execve`'s refusals in order with the caller untouched (`ENOENT`,
   `EACCES` for a directory and a `0644` file, `ENOTDIR`, `ENOEXEC` for text and a `#!` script,
-  `EFAULT` for `argv`, `EINVAL` for `execveat`'s flags); a successful `execveat` relative to a
-  directory descriptor (a new process with the same id, the old one ended, the close-on-exec
-  descriptor closed and the other kept, `argc` on the new stack, the shared exit record);
+  `EFAULT` for `argv`, `EINVAL` for `execveat`'s flags after the path's `EFAULT` and `ENOENT`);
+  a successful `execveat` relative to a directory descriptor (a new process with the same id,
+  the old one ended, the close-on-exec descriptor closed and the other kept, `argc` on the new
+  stack, the shared exit record); saved and file system ids made the effective ones; the
+  console's foreground forgotten and the old process freed; an `execveat` with
+  `AT_EMPTY_PATH` from a thread other than the first (the process's id taken, a shared
+  descriptor table copied, an argument string read across a page boundary); `execve` losing to
+  an earlier exit and a later exit or fatal signal recording nothing; `Signals::take_for_exec`
+  (other threads' queued signals dropped and uncharged, the process's kept, thread ids
+  rewritten, flags, masks and restorers cleared);
   the argument size limit, `AT_EXECFN`'s `/dev/fd/N` names, the execute-permission classes;
   an address space made beside another; the review fixes. In QEMU on aarch64, riscv64 and
   x86_64, Rust's std program checks `execve`'s refusals through musl, then execs a copy of
@@ -4840,15 +4853,23 @@ the license, by an explicit instruction recorded here.
   ignored, and exits 0, which the kernel reads through the first process; run twice, the
   second round must free every frame (the old and new address spaces included).
 - **Cost.** New benchmark `linux_execve` (docs/benchmarks.md): 90524.68, 62526.90 and
-  36338.81 ns per `execve` plus the small program's start-up on aarch64, riscv64 and x86_64.
-  Against `main` (same machine, same QEMU, every benchmark within the gate): `linux_exec_load`
-  +0.33%, +0.14%, +0.45% (the exit record's allocation); `linux_page_fault` +0.01% to +0.10%;
-  `process_switch_round_trip` −4.5%, −5.3%, −2.2% and `fp_process_switch_round_trip` −1.4%,
-  −1.9% (the thread loop's new shape); `linux_syscall_round_trip` +1.0 ns (+0.80%) on aarch64
-  and +2.0 ns (+1.23%) on riscv64, unchanged on x86_64, still under their baseline lines (125.92
-  and 165.39), so the gate passes, but slower than `main`. Not yet bisected: an out-of-line
-  loop made it worse (aarch64 +2.4%), and the `&mut Arc` hand-over was ruled out (the
-  hand-over through the exit record fixed x86_64). The likely cause is the two new arms in
-  `out_of_line_call`'s match, which changed LLVM's layout of the system-call loop before (D91);
-  follow-up: bisect by removing the dispatch lines, and diff the bench closure's disassembly
-  against `main`.
+  36338.81 ns per `execve` plus the small program's start-up on aarch64, riscv64 and x86_64
+  (baselined). Against `main` (same machine, same QEMU, every benchmark within the gate):
+  `linux_exec_load` +0.33%, +0.14%, +0.45% (the shared record's allocation);
+  `linux_page_fault` +0.01% to +0.02%; `process_switch_round_trip` −6.1%, −5.7%, −2.7% and
+  `fp_process_switch_round_trip` −1.4%, −2.3%, −0.8%; `linux_syscall_round_trip` +1.0 ns
+  (+0.80%) on aarch64 and +2.0 ns (+1.23%) on riscv64, unchanged on x86_64. The benchmark makes
+  a call past the table (number 1000), which returns in `syscall` before `out_of_line_call`, so
+  the new dispatch arms are not the cause: the thread loop's new shape is (a program after
+  another in one thread). Tried: the handler swapping `&mut Arc<Process>` in place (+1 ns on all
+  three), a loop-carried process with the hand-over inlined after the loop (x86_64 back to
+  `main`), an out-of-line inner loop (aarch64 +2.4%), and `main`'s loop kept exactly with the
+  process by value and the hand-over and release in one cold out-of-line step (the numbers
+  above).
+- **Decided by research: the system-call loop's cost is accepted (D78).** One or two
+  instructions per round trip on aarch64 and riscv64 (+0.80%, +1.23%), still under their
+  baseline lines (125.92 and 165.39 ns, unchanged), paid for running a new program in the same
+  thread, which `execve` must do (Linux pays its own `exec` path in the return to user mode),
+  with the process switch 2.7% to 6.1% faster from the same change. One bounded attempt was
+  made as research recommended; the per-instruction diff of the loop against `main` is left
+  for a later pass on the loop.
