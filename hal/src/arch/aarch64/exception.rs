@@ -1320,7 +1320,7 @@ fn irq(pc: u64) {
             timer::end_of_interrupt(interrupt);
             crate::interrupt::deliver(Interrupt::Wakeup);
         }
-        timer::UART0_INTERRUPT => console_input(interrupt),
+        uart0 if uart0 == timer::UART0_INTERRUPT => console_input(interrupt),
         _ => {
             timer::end_of_interrupt(interrupt);
             deliver(&Exception {
