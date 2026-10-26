@@ -179,9 +179,7 @@ pub struct Process<P: Platform> {
     /// Where the kernel reaches the process's frames: the frame allocator's offset, which on
     /// the machine is the direct map's (a boot self-test checks it).
     frame_offset: usize,
-    /// How the process ended, once it has: the first [`Self::exit`] wins. Shared with the
-    /// processes that carry on its id after an `execve` ([`Self::new_image`]), so whoever
-    /// holds this one learns how the last one ended.
+    /// How the process ended, once it has: the first [`Self::exit`] wins.
     exit: Arc<SpinLock<Option<ProcessExit>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
@@ -1205,7 +1203,8 @@ impl<P: Platform> Process<P> {
         self.threads.fetch_sub(1, Ordering::AcqRel) == 1
     }
 
-    /// How the process ended, or `None` while it has not.
+    /// How the process ended, or `None` while it has not; after an `execve`, how the program
+    /// started in its place ended ([`Self::new_image`]).
     pub fn exit_status(&self) -> Option<ProcessExit> {
         *self.exit.lock()
     }

@@ -553,7 +553,6 @@ pub fn execveat<P: Platform>(
     execute(process, thread, context, request)
 }
 
-/// The flags `execveat` takes.
 const EXECVEAT_FLAGS: u64 = at::EMPTY_PATH | at::SYMLINK_NOFOLLOW;
 
 #[derive(Clone, Copy)]
@@ -565,7 +564,6 @@ struct Request {
     flags: u64,
 }
 
-/// What [`prepare`] made ready before the point of no return.
 struct Prepared<P: Platform> {
     image: Process<P>,
     context: UserContext,
@@ -638,8 +636,6 @@ fn prepare<P: Platform>(
     })
 }
 
-/// The node `dirfd` and `path` name, as `openat` finds it; an empty path names `dirfd`'s
-/// own file with `AT_EMPTY_PATH`.
 fn find(thread: &LinuxThread, dirfd: u64, path: &[u8], flags: u64) -> Result<Node, Errno> {
     if path.is_empty() {
         if flags & at::EMPTY_PATH == 0 {
@@ -652,8 +648,6 @@ fn find(thread: &LinuxThread, dirfd: u64, path: &[u8], flags: u64) -> Result<Nod
     vfs::resolve(root, start, path).map_err(files::walk_error)
 }
 
-/// Whether `credentials`' file system ids may execute a file with `attributes`: the owner's,
-/// the group's or the others' execute bit, whichever class they fall in; root needs any one.
 fn may_execute(attributes: &vfs::Attributes, credentials: &Credentials) -> bool {
     const EXECUTE: u32 = 0o1;
     let user = credentials.ids(IdKind::User).filesystem;
@@ -671,8 +665,6 @@ fn may_execute(attributes: &vfs::Attributes, credentials: &Credentials) -> bool 
     class & EXECUTE != 0
 }
 
-/// The point of no return: see the module documentation. The calling thread goes on in the
-/// new process, which takes `process`'s place; `context` becomes the new program's registers.
 fn start<P: Platform>(
     process: &mut Arc<Process<P>>,
     thread: &mut LinuxThread,
@@ -715,9 +707,6 @@ fn start<P: Platform>(
     address_space::release_ended::<P>(cpu::current::<P>(), root);
 }
 
-/// The arguments and environment copied from a program: their bytes, one after another, and
-/// where each ends, held to [`MAX_ARGUMENTS_SIZE`] with a pointer's size each, so a program
-/// cannot make the kernel copy more than the new stack could take.
 struct Strings {
     bytes: Vec<u8>,
     ends: Vec<usize>,
@@ -733,8 +722,6 @@ impl Strings {
         }
     }
 
-    /// Copies the strings the null-terminated array at `list` points to (none for a null
-    /// `list`) and returns how many.
     fn read_list<P: Platform>(&mut self, process: &Process<P>, list: u64) -> Result<usize, Errno> {
         if list == 0 {
             return Ok(0);
@@ -758,9 +745,6 @@ impl Strings {
         }
     }
 
-    /// Copies the NUL-terminated string at `address`, its NUL left out: `E2BIG` once it or all
-    /// together are too long, `EFAULT` at a byte that is not the program's memory. Chunks
-    /// never cross a page, so no byte past the NUL is read from a page that may not exist.
     fn read_string<P: Platform>(
         &mut self,
         process: &Process<P>,
@@ -794,7 +778,6 @@ impl Strings {
         self.finish_string()
     }
 
-    /// Adds `string`, as if copied from the program.
     fn push(&mut self, string: &[u8]) -> Result<(), Errno> {
         self.charge(string.len() as u64)?;
         self.bytes
@@ -819,7 +802,6 @@ impl Strings {
         }
     }
 
-    /// Each string, in the order copied.
     fn list(&self) -> Result<Vec<&[u8]>, Errno> {
         let mut list = Vec::new();
         list.try_reserve_exact(self.ends.len())
@@ -833,9 +815,6 @@ impl Strings {
     }
 }
 
-/// The name a program started by `execveat` gets as `AT_EXECFN`: the path, if absolute or
-/// relative to the working directory; else `/dev/fd/<dirfd>/<path>`, or `/dev/fd/<dirfd>` for
-/// an empty one, as Linux names it.
 struct ExecName {
     bytes: Vec<u8>,
 }
