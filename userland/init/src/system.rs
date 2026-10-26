@@ -94,8 +94,8 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 }
 
 pub fn run(_startup: &Startup) -> i32 {
-    say(&[BANNER]);
     set_signal_actions(SIG_IGN);
+    say(&[BANNER]);
     let config = read_config();
     let name = config.login.program_name();
     let mut backoff = Backoff::default();
@@ -110,36 +110,38 @@ pub fn run(_startup: &Startup) -> i32 {
         }
         say(&[b"init: starting ", name, b"\n"]);
         let started = now_ms();
-        let ended = spawn(&config.login).and_then(wait_for);
-        match ended {
+        match spawn(&config.login).and_then(wait_for) {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
-        let reboot_command = match config.login_exit {
-            LoginExit::Respawn => {
-                let delay = backoff.delay_after(now_ms().saturating_sub(started));
-                if delay > 0 {
-                    let mut digits = [0; 20];
-                    say(&[
-                        b"init: starting ",
-                        name,
-                        b" again in ",
-                        decimal(delay, &mut digits),
-                        b" s\n",
-                    ]);
-                    sleep_reaping(delay);
-                }
-                continue;
-            }
-            LoginExit::PowerOff => REBOOT_POWER_OFF,
-            LoginExit::Restart => REBOOT_RESTART,
-            LoginExit::Halt => REBOOT_HALT,
-        };
-        call(
-            number::REBOOT,
-            [REBOOT_MAGIC1, REBOOT_MAGIC2, reboot_command, 0, 0, 0],
-        );
-        say(&[b"init: reboot failed; starting the login program again\n"]);
+        if let Some(command) = reboot_command(config.login_exit) {
+            call(
+                number::REBOOT,
+                [REBOOT_MAGIC1, REBOOT_MAGIC2, command, 0, 0, 0],
+            );
+            say(&[b"init: reboot failed; starting the login program again\n"]);
+        }
+        let delay = backoff.delay_after(now_ms().saturating_sub(started));
+        if delay > 0 {
+            let mut digits = [0; 20];
+            say(&[
+                b"init: starting ",
+                name,
+                b" again in ",
+                decimal(delay, &mut digits),
+                b" s\n",
+            ]);
+            sleep_reaping(delay);
+        }
+    }
+}
+
+fn reboot_command(login_exit: LoginExit) -> Option<usize> {
+    match login_exit {
+        LoginExit::Respawn => None,
+        LoginExit::PowerOff => Some(REBOOT_POWER_OFF),
+        LoginExit::Restart => Some(REBOOT_RESTART),
+        LoginExit::Halt => Some(REBOOT_HALT),
     }
 }
 
