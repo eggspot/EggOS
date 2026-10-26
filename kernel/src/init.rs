@@ -5,7 +5,7 @@
 use crate::linux::{self, exec, process_table};
 use crate::memory::Memory;
 use crate::process::{Process, ProcessExit};
-use crate::{cpu, thread, vfs};
+use crate::{cpu, input, thread, vfs};
 use alloc::sync::Arc;
 use core::fmt::Write;
 use eggos_hal::Platform;
@@ -48,6 +48,7 @@ pub fn run<P: Platform, W: Write>(
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();
+    input::start_polling::<P>();
     let outcome = start_and_wait::<P>(memory);
     match outcome.wait_status() {
         Some(status) => writeln!(

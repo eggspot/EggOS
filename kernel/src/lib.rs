@@ -19,6 +19,7 @@ pub mod elf;
 pub mod exception;
 pub mod heap;
 pub mod init;
+pub mod input;
 pub mod interrupt;
 pub mod linux;
 pub mod memory;
@@ -84,6 +85,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 )?;
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
                 report_display(console, display::show_first_frame::<P>())?;
+                report_input(console, input::summary())?;
                 match console::enable_input::<P>() {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
@@ -150,6 +152,19 @@ fn report_display<W: Write>(
         Ok(Some(mode)) => writeln!(console, "boot: display {}x{}", mode.width, mode.height),
         Ok(None) => writeln!(console, "boot: no display"),
         Err(reason) => writeln!(console, "boot: display not shown: {reason}"),
+    }
+}
+
+fn report_input<W: Write>(console: &mut W, summary: input::Summary) -> core::fmt::Result {
+    let keyboard = if summary.keyboards > 0 {
+        " keyboard"
+    } else {
+        ""
+    };
+    let pointer = if summary.pointers > 0 { " pointer" } else { "" };
+    match (keyboard, pointer) {
+        ("", "") => writeln!(console, "boot: no input"),
+        _ => writeln!(console, "boot: input{keyboard}{pointer}"),
     }
 }
 

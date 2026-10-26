@@ -44,13 +44,32 @@ pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
 #[cold]
 #[inline(never)]
 pub fn receive_input<P: Platform>() {
+    receive_from::<P>(P::console_read);
+}
+
+/// Passes `bytes` a keyboard typed through the line discipline exactly as
+/// [`receive_input`] passes the UART's: the two share the discipline's input, so both can be
+/// typed on at once.
+#[inline(never)]
+pub fn receive_from_keyboard<P: Platform>(bytes: &[u8]) {
+    let mut rest = bytes;
+    receive_from::<P>(|chunk| {
+        let length = rest.len().min(chunk.len());
+        chunk[..length].copy_from_slice(&rest[..length]);
+        rest = &rest[length..];
+        length
+    });
+}
+
+#[inline(always)]
+fn receive_from<P: Platform>(mut read: impl FnMut(&mut [u8]) -> usize) {
     let mut chunk = [0u8; INPUT_CHUNK];
     let mut received = Received::default();
     loop {
         let mut echo = EchoBuffer::<P>::new();
         let (length, echoing) = {
             let mut discipline = LINE_DISCIPLINE.lock();
-            let length = P::console_read(&mut chunk);
+            let length = read(&mut chunk);
             received |= discipline.receive(&chunk[..length], &mut |bytes| echo.push(bytes));
             let echoing = echo.length > 0;
             if echoing {

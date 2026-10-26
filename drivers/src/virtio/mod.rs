@@ -6,6 +6,7 @@
 //! [`feature::VERSION_1`] is required.
 
 pub mod gpu;
+pub mod input;
 pub mod mmio;
 pub mod pci;
 pub mod queue;
@@ -169,6 +170,8 @@ pub trait Transport {
     fn notify(&self, queue: u16);
     /// The byte at `offset` of the device-specific configuration.
     fn read_config8(&self, offset: usize) -> u8;
+    /// Writes the byte at `offset` of the device-specific configuration.
+    fn write_config8(&self, offset: usize, value: u8);
     /// The 32-bit word at `offset` of the device-specific configuration.
     fn read_config32(&self, offset: usize) -> u32;
 }

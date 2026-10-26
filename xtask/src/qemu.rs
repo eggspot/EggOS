@@ -2,7 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
-use crate::qmp::{self, Picture, Qmp};
+use crate::qmp::{self, InputEvent, Picture, Qmp};
 use crate::{Arch, elf};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -136,16 +136,43 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"exit 7\r",
 ];
 
-const PROMPT_SESSION: [&[u8]; 8] = [
+const PROMPT_SESSION: [&[u8]; 9] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
-    b"uname -a\r",
+    UNAME_LINE,
     b"/bin/echo -n EGGOS-COREUTILS external; /bin/echo ' echo'\r",
     b"sleep 0; sleep 0.05; echo EGGOS-COREUTILS slept $?\r",
     b"/bin/false; echo EGGOS-COREUTILS false $?\r",
+    SHIFTED_KEYS_LINE,
     b"poweroff\r",
 ];
+
+const UNAME_LINE: &[u8] = b"uname -a\r";
+
+const SHIFTED_KEYS_LINE: &[u8] = b"echo EGGOS-KEYBOARD Typed_On+Virtio:OK\r";
+
+/// The session lines the boot to the prompt types on the virtio keyboard through QMP (D113)
+/// rather than on the serial console, when the machine has one.
+const KEYBOARD_LINES: [&[u8]; 2] = [UNAME_LINE, SHIFTED_KEYS_LINE];
+
+/// How long the runner waits between the keys it types through QMP, so the device's event
+/// queue (64 events, about 3 to 5 per key) never fills between two of the kernel's polls.
+const KEY_PAUSE: Duration = Duration::from_millis(10);
+
+/// The line the input self-test writes for the runner's pointer and key events. Must match
+/// `eggos_kernel::devices::selftest::INPUT_EVENTS_LINE`.
+const INPUT_EVENTS_LINE: &str = "EGGOS-INPUT: send pointer and key events";
+
+/// The tablet position and the mouse motion the runner sends. Must match the self-test's.
+const TABLET_POSITION: (i32, i32) = (8192, 24576);
+const MOUSE_MOTION: (i32, i32) = (7, -5);
+
+/// How long the runner waits between the reports it sends to different input devices, so the
+/// kernel sees them in order.
+const DEVICE_PAUSE: Duration = Duration::from_millis(100);
+
+const BOOT_INPUT_LINE: &str = "boot: input keyboard pointer";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Line {
@@ -188,6 +215,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["EGGOS-COREUTILS external echo"]),
         whole(&["EGGOS-COREUTILS slept 0"]),
         whole(&["EGGOS-COREUTILS false 1"]),
+        whole(&["EGGOS-KEYBOARD Typed_On+Virtio:OK"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -316,17 +344,18 @@ pub fn boot_test(
         "xtask: booting {} in {} ({expect:?}, display {display:?})",
         arch.name, arch.qemu
     );
-    let display_args = match display {
-        Display::Attached => arch.display_args,
-        Display::Absent => &[],
+    let (display_args, input_args) = match display {
+        Display::Attached => (arch.display_args, arch.input_args),
+        Display::Absent => (&[][..], &[][..]),
     };
     let qmp_port = match (expect, display) {
-        (Expect::BootToPrompt, Display::Attached) => Some(qmp::free_port()?),
-        _ => None,
+        (Expect::Benchmarks, _) | (_, Display::Absent) => None,
+        _ => Some(qmp::free_port()?),
     };
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
         .args(display_args)
+        .args(input_args)
         .args(COMMON_ARGS)
         .arg("-smp")
         .arg(cpus.to_string())
@@ -353,6 +382,8 @@ pub fn boot_test(
     let mut shell_typed = ShellTyping::default();
     let mut first_prompt = None;
     let mut first_frame = None;
+    let mut input_events_sent = 0;
+    let mut qmp_errors = Vec::new();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -378,8 +409,31 @@ pub fn boot_test(
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
         };
         for script in scripts {
+            if let Some(port) = qmp_port.filter(|_| KEYBOARD_LINES.contains(&script)) {
+                let text = String::from_utf8_lossy(script);
+                match Qmp::connect(port).and_then(|mut qmp| qmp.type_text(&text, KEY_PAUSE)) {
+                    Ok(()) => eprintln!(
+                        "xtask: {}: typed `{}` on the virtio keyboard",
+                        arch.name,
+                        text.trim_end()
+                    ),
+                    Err(e) => {
+                        qmp_errors.push(format!("{}: could not type through QMP: {e}", arch.name))
+                    }
+                }
+                continue;
+            }
             if let Err(e) = keyboard.write_all(script).and_then(|()| keyboard.flush()) {
                 eprintln!("xtask: {}: could not type on the console: {e}", arch.name);
+            }
+        }
+        if let Some(port) = qmp_port {
+            let asked = count_lines(&String::from_utf8_lossy(&console), INPUT_EVENTS_LINE);
+            while input_events_sent < asked {
+                input_events_sent += 1;
+                if let Err(e) = send_pointer_and_key_events(port) {
+                    qmp_errors.push(format!("{}: could not send input events: {e}", arch.name));
+                }
             }
         }
         if banner_count(&String::from_utf8_lossy(&console)) > 1 {
@@ -406,6 +460,9 @@ pub fn boot_test(
     console.extend(rest_until_qemu_closes_stdout);
     let console = String::from_utf8_lossy(&console).into_owned();
     verdict(arch.name, expect, status.success(), &console)?;
+    if let Some(error) = qmp_errors.into_iter().next() {
+        return Err(error);
+    }
     if let Some(first_frame) = first_frame {
         first_frame?;
     }
@@ -417,6 +474,57 @@ pub fn boot_test(
         );
     }
     Ok(console)
+}
+
+fn count_lines(console: &str, wanted: &str) -> usize {
+    console
+        .split_inclusive('\n')
+        .filter(|line| line.ends_with('\n') && line.trim_end() == wanted)
+        .count()
+}
+
+/// The reports the input self-test waits for, each to one device: the tablet's position, a
+/// left click, the mouse's motion, a wheel notch up, and Shift pressed and released.
+fn input_self_test_reports() -> [Vec<InputEvent>; 5] {
+    let button = |button, down| InputEvent::Button { button, down };
+    let shift = |down| InputEvent::Key {
+        qcode: "shift",
+        down,
+    };
+    [
+        vec![
+            InputEvent::Absolute {
+                axis: "x",
+                value: TABLET_POSITION.0,
+            },
+            InputEvent::Absolute {
+                axis: "y",
+                value: TABLET_POSITION.1,
+            },
+        ],
+        vec![button("left", true), button("left", false)],
+        vec![
+            InputEvent::Relative {
+                axis: "x",
+                value: MOUSE_MOTION.0,
+            },
+            InputEvent::Relative {
+                axis: "y",
+                value: MOUSE_MOTION.1,
+            },
+        ],
+        vec![button("wheel-up", true), button("wheel-up", false)],
+        vec![shift(true), shift(false)],
+    ]
+}
+
+fn send_pointer_and_key_events(port: u16) -> Result<(), String> {
+    let mut qmp = Qmp::connect(port)?;
+    for report in input_self_test_reports() {
+        qmp.send_input(&report)?;
+        std::thread::sleep(DEVICE_PAUSE);
+    }
+    Ok(())
 }
 
 fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiver<Vec<u8>> {
@@ -612,6 +720,11 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     if !clean_exit {
         return Err(format!("{arch}: QEMU exited with an error"));
     }
+    if !lines.contains(&BOOT_INPUT_LINE) {
+        return Err(format!(
+            "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
+        ));
+    }
     for (typed, expected) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
         let command = String::from_utf8_lossy(typed);
         let command = command.trim_end_matches('\r');
@@ -678,6 +791,7 @@ pub fn run_interactive(arch: &Arch, kernel: &Path, window: bool) -> Result<(), S
     let status = Command::new(arch.qemu)
         .args(arch.machine_args)
         .args(arch.display_args)
+        .args(arch.input_args)
         .args(COMMON_ARGS)
         .arg("-smp")
         .arg(TEST_CPUS.to_string())
@@ -926,7 +1040,7 @@ mod tests {
     }
 
     fn prompt_console(arch: &str) -> String {
-        let mut console = format!("EggOS 0.2.0 ({arch})\r\n{INIT_BANNER}\r\n");
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{INIT_BANNER}\r\n");
         for (typed, written) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
@@ -968,6 +1082,26 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
         let panicked = format!("{ok}Kernel panic - not syncing: Attempted to kill init!\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &panicked).is_err());
+        let no_input = ok.replace(BOOT_INPUT_LINE, "boot: no input");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_input).is_err());
+        let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
+    }
+
+    #[test]
+    fn every_keyboard_line_is_a_session_line_qmp_can_type() {
+        for line in KEYBOARD_LINES {
+            assert!(PROMPT_SESSION.contains(&line));
+            for character in String::from_utf8_lossy(line).chars() {
+                assert!(qmp::typing(character).is_ok(), "{character:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_input_line_is_counted_only_whole() {
+        let console = format!("x {INPUT_EVENTS_LINE}\n{INPUT_EVENTS_LINE}\r\n{INPUT_EVENTS_LINE}");
+        assert_eq!(count_lines(&console, INPUT_EVENTS_LINE), 1);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 pub mod display;
 pub mod dma;
+pub mod input;
 pub mod interrupt;
 pub mod io;
 pub mod pci;

@@ -1,5 +1,6 @@
 //! A minimal QEMU Machine Protocol client: what the boot tests need to look at the display
-//! (`screendump`), over a TCP socket on localhost. QMP speaks one JSON object per line; the
+//! (`screendump`) and to type and point on its input devices (`input-send-event`), over a TCP
+//! socket on localhost. QMP speaks one JSON object per line; the
 //! client only sends commands it writes itself and looks for the `return` or `error` answer,
 //! skipping the asynchronous events in between, so it needs no JSON parser.
 
@@ -73,6 +74,22 @@ impl Qmp {
         self.execute(&command)
     }
 
+    /// Sends `events` to the machine's input devices as one report (QEMU ends it with a
+    /// `SYN_REPORT`).
+    pub fn send_input(&mut self, events: &[InputEvent]) -> Result<(), String> {
+        self.execute(&input_command(events))
+    }
+
+    /// Types `text` on the machine's keyboard, a key press and release per character (with
+    /// Shift around those that need it), one report each, `pause` apart.
+    pub fn type_text(&mut self, text: &str, pause: Duration) -> Result<(), String> {
+        for character in text.chars() {
+            self.send_input(&typing(character)?)?;
+            std::thread::sleep(pause);
+        }
+        Ok(())
+    }
+
     fn execute(&mut self, command: &str) -> Result<(), String> {
         writeln!(self.writer, "{command}").map_err(|e| format!("QMP: {e}"))?;
         loop {
@@ -94,6 +111,131 @@ impl Qmp {
             Err(e) => Err(format!("QMP: {e}")),
         }
     }
+}
+
+/// One event for QEMU's `input-send-event`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEvent {
+    /// A key, by QEMU's key name (`qcode`), pressed (`down`) or released.
+    Key { qcode: &'static str, down: bool },
+    /// A pointer button (`left`, `right`, `middle`, `wheel-up`, `wheel-down`).
+    Button { button: &'static str, down: bool },
+    /// Relative motion on `axis` (`x` or `y`).
+    Relative { axis: &'static str, value: i32 },
+    /// An absolute position on `axis` (`x` or `y`), 0 to 32767.
+    Absolute { axis: &'static str, value: i32 },
+}
+
+impl InputEvent {
+    fn json(&self) -> String {
+        match *self {
+            InputEvent::Key { qcode, down } => format!(
+                "{{\"type\": \"key\", \"data\": {{\"down\": {down}, \"key\": {{\"type\": \"qcode\", \"data\": {}}}}}}}",
+                json_string(qcode)
+            ),
+            InputEvent::Button { button, down } => format!(
+                "{{\"type\": \"btn\", \"data\": {{\"down\": {down}, \"button\": {}}}}}",
+                json_string(button)
+            ),
+            InputEvent::Relative { axis, value } => format!(
+                "{{\"type\": \"rel\", \"data\": {{\"axis\": {}, \"value\": {value}}}}}",
+                json_string(axis)
+            ),
+            InputEvent::Absolute { axis, value } => format!(
+                "{{\"type\": \"abs\", \"data\": {{\"axis\": {}, \"value\": {value}}}}}",
+                json_string(axis)
+            ),
+        }
+    }
+}
+
+fn input_command(events: &[InputEvent]) -> String {
+    let events: Vec<String> = events.iter().map(InputEvent::json).collect();
+    format!(
+        "{{\"execute\": \"input-send-event\", \"arguments\": {{\"events\": [{}]}}}}",
+        events.join(", ")
+    )
+}
+
+const UNSHIFTED_KEYS: [(char, &str); 17] = [
+    ('-', "minus"),
+    ('=', "equal"),
+    ('[', "bracket_left"),
+    (']', "bracket_right"),
+    (';', "semicolon"),
+    ('\'', "apostrophe"),
+    ('`', "grave_accent"),
+    ('\\', "backslash"),
+    (',', "comma"),
+    ('.', "dot"),
+    ('/', "slash"),
+    (' ', "spc"),
+    ('\r', "ret"),
+    ('\n', "ret"),
+    ('\t', "tab"),
+    ('\x7f', "backspace"),
+    ('\x1b', "esc"),
+];
+
+const SHIFTED_KEYS: [(char, char); 21] = [
+    ('!', '1'),
+    ('@', '2'),
+    ('#', '3'),
+    ('$', '4'),
+    ('%', '5'),
+    ('^', '6'),
+    ('&', '7'),
+    ('*', '8'),
+    ('(', '9'),
+    (')', '0'),
+    ('_', '-'),
+    ('+', '='),
+    ('{', '['),
+    ('}', ']'),
+    (':', ';'),
+    ('"', '\''),
+    ('~', '`'),
+    ('|', '\\'),
+    ('<', ','),
+    ('>', '.'),
+    ('?', '/'),
+];
+
+const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
+const DIGITS: &str = "0123456789";
+
+fn unshifted_key(character: char) -> Option<&'static str> {
+    if let Some(index) = LETTERS.find(character) {
+        return Some(&LETTERS[index..index + 1]);
+    }
+    if let Some(index) = DIGITS.find(character) {
+        return Some(&DIGITS[index..index + 1]);
+    }
+    UNSHIFTED_KEYS
+        .iter()
+        .find(|(key, _)| *key == character)
+        .map(|(_, qcode)| *qcode)
+}
+
+/// The report that types `character` on a US keyboard: its key pressed and released, inside
+/// Shift for the characters that need it.
+pub fn typing(character: char) -> Result<Vec<InputEvent>, String> {
+    let unshifted = SHIFTED_KEYS
+        .iter()
+        .find(|(shifted, _)| *shifted == character)
+        .map(|(_, unshifted)| *unshifted);
+    let shift = unshifted.is_some() || character.is_ascii_uppercase();
+    let base = unshifted.unwrap_or(character.to_ascii_lowercase());
+    let qcode = unshifted_key(base).ok_or_else(|| format!("no US key types {character:?}"))?;
+    let key = |down| InputEvent::Key { qcode, down };
+    let shift_key = |down| InputEvent::Key {
+        qcode: "shift",
+        down,
+    };
+    Ok(match shift {
+        true => vec![shift_key(true), key(true), key(false), shift_key(false)],
+        false => vec![key(true), key(false)],
+    })
 }
 
 /// `text` as a JSON string literal.
@@ -201,6 +343,74 @@ mod tests {
             json_string("C:\\target\\a \"b\".ppm\n"),
             "\"C:\\\\target\\\\a \\\"b\\\".ppm\\u000a\""
         );
+    }
+
+    #[test]
+    fn input_events_are_sent_as_qemu_s_input_send_event_command() {
+        let command = input_command(&[
+            InputEvent::Key {
+                qcode: "a",
+                down: true,
+            },
+            InputEvent::Button {
+                button: "left",
+                down: false,
+            },
+            InputEvent::Relative {
+                axis: "x",
+                value: -7,
+            },
+            InputEvent::Absolute {
+                axis: "y",
+                value: 32767,
+            },
+        ]);
+        assert_eq!(
+            command,
+            "{\"execute\": \"input-send-event\", \"arguments\": {\"events\": [\
+             {\"type\": \"key\", \"data\": {\"down\": true, \"key\": {\"type\": \"qcode\", \"data\": \"a\"}}}, \
+             {\"type\": \"btn\", \"data\": {\"down\": false, \"button\": \"left\"}}, \
+             {\"type\": \"rel\", \"data\": {\"axis\": \"x\", \"value\": -7}}, \
+             {\"type\": \"abs\", \"data\": {\"axis\": \"y\", \"value\": 32767}}]}}"
+        );
+    }
+
+    #[test]
+    fn characters_are_typed_with_their_us_key_and_shift_when_they_need_it() {
+        let keys = |character| -> Vec<(&str, bool)> {
+            typing(character)
+                .unwrap()
+                .into_iter()
+                .map(|event| match event {
+                    InputEvent::Key { qcode, down } => (qcode, down),
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(keys('u'), [("u", true), ("u", false)]);
+        assert_eq!(keys('7'), [("7", true), ("7", false)]);
+        assert_eq!(keys('-'), [("minus", true), ("minus", false)]);
+        assert_eq!(keys('\r'), [("ret", true), ("ret", false)]);
+        assert_eq!(
+            keys('T'),
+            [("shift", true), ("t", true), ("t", false), ("shift", false)]
+        );
+        assert_eq!(
+            keys(':'),
+            [
+                ("shift", true),
+                ("semicolon", true),
+                ("semicolon", false),
+                ("shift", false)
+            ]
+        );
+        assert_eq!(keys('_')[1], ("minus", true));
+        assert_eq!(keys('+')[1], ("equal", true));
+        assert_eq!(keys('"')[1], ("apostrophe", true));
+        for character in (' '..='~').chain(['\r', '\t']) {
+            assert!(typing(character).is_ok(), "{character:?}");
+        }
+        assert!(typing('\u{e9}').is_err());
     }
 
     #[test]
