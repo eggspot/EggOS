@@ -681,6 +681,7 @@ pub const WINDOWS_LAYER: Interpreter = Interpreter {
 const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER];
 #[cfg(not(target_arch = "x86_64"))]
 const INTERPRETERS: &[Interpreter] = &[];
+const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
 
 /// The interpreter that starts `image` on this architecture, if any.
 pub fn interpreter_for(image: &[u8]) -> Option<Interpreter> {
@@ -695,6 +696,9 @@ fn read_interpreter<P: Platform>(
     thread: &LinuxThread,
     interpreter: Interpreter,
 ) -> Result<(Interpreter, &'static [u8]), Errno> {
+    if !ANY_INTERPRETER {
+        return Err(Errno::ENOEXEC);
+    }
     let not_installed = |_| Errno::ENOEXEC;
     let node = find(thread, at::FDCWD as u64, interpreter.path).map_err(not_installed)?;
     let attributes = node.attributes();

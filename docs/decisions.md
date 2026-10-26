@@ -6301,6 +6301,16 @@ the license, by an explicit instruction recorded here.
   A benchmark of the program start path and of the hot Win32 calls against Windows on the same
   hardware needs a way to run a Windows program inside the benchmark kernel; it comes with
   item 19.
-- **Cost.** No release image grows: the layer is in images only with a Windows program. The
-  kernel gains the interpreter hook in `execve` (out of the system-call fast path) and the
-  GS base in `arch_prctl`; x86_64's exception and interrupt entry gain one `lfence`.
+- **Cost (accepted by research, D78).** The layer is in images only with a Windows program,
+  so only the kernel grows, and only on x86_64: `release_image_bytes` +288 bytes (603,264;
+  the interpreter hook in `execve`, `ARCH_SET_GS`, the GS base load and the fence). On aarch64
+  and riscv64 the image is byte for byte the size of `main`'s: the hook folds away where the
+  table is empty (`ANY_INTERPRETER`), which also keeps `execve`'s helpers inlined there (a
+  first version that left the dead path in grew those images by 216 and 384 bytes). x86_64's
+  exception and interrupt entry gain one `lfence`, one instruction under `-icount`:
+  `breakpoint_round_trip` 59 to 60, `timer_interrupt_round_trip` 71 to 72 and
+  `linux_page_fault` 1,149.37 on `main` to 1,150.39 (its baseline line was 1,137.57, so
+  `main` itself was at the edge of the gate); those four lines are updated. Linux pays the
+  same fence on affected CPUs and keeps its `binfmt_misc` handler table in every kernel; no
+  smaller form keeps the hook generic for the later Mach-O and APK interpreters. The system-call
+  round trip is unchanged (the GS base shares the FS base's check).

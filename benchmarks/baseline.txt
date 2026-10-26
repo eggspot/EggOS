@@ -105,7 +105,7 @@ riscv64 virtqueue_round_trip_fake 353.00
 riscv64 virtqueue_submit_one 84.01
 riscv64 wait_queue_wake_empty 13.01
 x86_64 boot_to_prompt 1312499.74
-x86_64 breakpoint_round_trip 59.00
+x86_64 breakpoint_round_trip 60.00
 x86_64 clock_read 8.00
 x86_64 device_tree_walk 49162.73
 x86_64 empty_loop 4.00
@@ -129,7 +129,7 @@ x86_64 linux_file_read 371.57
 x86_64 linux_fork 141422.81
 x86_64 linux_mmap_munmap 366.09
 x86_64 linux_openat_close 1361.44
-x86_64 linux_page_fault 1137.57
+x86_64 linux_page_fault 1150.39
 x86_64 linux_syscall_round_trip 130.14
 x86_64 linux_vfork_exec 41046.17
 x86_64 preemption_point_idle 8.00
@@ -137,14 +137,14 @@ x86_64 process_switch_round_trip 450.32
 x86_64 process_syscall_round_trip 117.66
 x86_64 random_fill_16 1237.00
 x86_64 random_fill_4096 79921.61
-x86_64 release_image_bytes 602976.00
+x86_64 release_image_bytes 603264.00
 x86_64 syscall_round_trip 107.44
 x86_64 term_feed_line 5949.24
 x86_64 term_scroll_line 196729.62
 x86_64 thread_wait_wake_round_trip 206.05
 x86_64 thread_yield_round_trip 122.07
 x86_64 timer_arm 33.00
-x86_64 timer_interrupt_round_trip 71.00
+x86_64 timer_interrupt_round_trip 72.00
 x86_64 virtio_gpu_flush_fake 786.13
 x86_64 virtio_input_poll_idle 37.20
 x86_64 virtqueue_round_trip_fake 233.00
