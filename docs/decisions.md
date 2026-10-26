@@ -4347,3 +4347,75 @@ the license, by an explicit instruction recorded here.
   The Linux thread's waits pay the slot's store, a fence and a clear, against a park and a
   thread switch. The system-call round trip is untouched: the sleeps and `futex` moved from
   the calls delivered after into the ones that deliver themselves, on the out-of-line path.
+
+## D98 Device interrupt routing and console input — Decided by the build loop
+
+- **What.** The console UART's receive interrupt reaches the boot CPU on every architecture
+  brought up, and the bytes reach a queue in the kernel. This finishes M3: device interrupt
+  routing, which D26 left "until the first interrupting device needs it". It is item 1 of the
+  v0.3.0 plan (D99); item 2 (console `read` with a line discipline) reads the queue.
+- **Routing, per architecture.**
+  - aarch64: GICv2 SPI 33 (QEMU `virt`'s UART0, level-triggered), targeted at the calling CPU,
+    priority below the timer's and the wake-up's. The GIC driver routes any SPI with its
+    trigger mode (`route_shared_interrupt`).
+  - riscv64: a PLIC driver of our own (priorities, per-context enables, threshold,
+    claim/complete). UART0 is source 10 (QEMU `virt`), routed to the boot hart's
+    supervisor-mode context, found from the device tree: the PLIC's `interrupts-extended` pair
+    that names the hart's `interrupt-controller` with cause 9, never `2 × hart + 1`. The kernel
+    maps the PLIC's priority and enable pages and 32 contexts' pages (16 harts), not its whole
+    64 MiB.
+  - x86_64: an I/O APIC driver of our own. COM1's ISA line 4 goes to the global system
+    interrupt and signalling the MADT's Interrupt Source Override gives (ISA's own, active high
+    and edge, when none does), on the I/O APIC whose range holds it, as vector 0x32 to the boot
+    CPU. The MADT's I/O APIC pages are early device regions.
+  - The UARTs: PL011 FIFO on (with the UART disabled around the line-control write, as the PL011
+    manual requires) and receive and receive-timeout interrupts on; NS16550 FIFOs on with a
+    one-byte trigger, receive-data interrupt on, OUT2 raised (a PC wires the interrupt through
+    it).
+- **Ending the interrupt.** A device interrupt is ended at its controller after the kernel has
+  read the UART (`Interrupt::ConsoleInput`'s contract), so a level-triggered line is no longer
+  asserted and the controller does not raise it again for bytes already taken; an edge-triggered
+  one sees a new edge for each new byte, since the UART stays asserted while bytes wait. The
+  timer and wake-up are still ended first, as before.
+- **The kernel side.** `console::receive_input` drains the UART into a 1 KiB queue under a leaf
+  lock (interrupts are only taken at preemption windows, in idle and in user mode, D37, so no
+  handler finds it held on its own CPU); what does not fit is dropped and counted.
+  `console::read_input` takes from it. 1 KiB rather than Linux's 4 KiB terminal buffer: the
+  queue is emptied by the interrupt that fills it and read by the line discipline (D99 item 2),
+  and every byte of static memory counts against D24.
+- **Testing.** The QEMU runner waits for `EGGOS-CONSOLE: input ready`, which the kernel prints
+  once input is on, then types a script on the serial console (QEMU empties a UART's FIFO when
+  the kernel turns it on, so earlier bytes would be lost). The self-test
+  `console_input_arrives_by_interrupt` checks the script arrives whole and in order through the
+  interrupt, the only path that fills the queue, on aarch64, riscv64 and x86_64. Only kernels
+  built for the boot tests (`qemu-test`) check it: a kernel booted by `cargo xtask run` or from
+  a release image has nobody typing the script, and its boot must not wait. It waits by
+  taking interrupts without sleeping, so under `-icount sleep=off` (benchmarks) virtual time
+  does not run ahead of the host typing. The host test platform types the same script.
+- **Cost.** Measured against main on the same machine: no benchmark slower. The first version
+  added 2–9% to the AArch64 and RISC-V trap round trips: the new call made the trap handlers
+  save the return address on entry, and a switch on the interrupt id tested the wake-up SGI
+  before the timer. The fixes keep the timer's and the wake-up's paths instruction for
+  instruction as they were: the console paths are cold and out of line (`console_input`); on
+  AArch64 UART0's id is tested after the timer's, with `cold_path`; on RISC-V the PLIC is
+  reached through a tail call after the timer and wake-up checks, so the handler's prologue is
+  main's; the kernel's `receive_input` is out of line too.
+- **Not yet.** Addresses and interrupt numbers stay QEMU's, as D12's, until the driver model's
+  discovery (M5, issue #97) reads them from the device tree and ACPI; GICv3, AIA and MSI-X come
+  with it. Only the boot CPU takes console input.
+
+## D99 The v0.3.0 plan: the first interactive release on 2026-11-01 — Decided (owner, 2026-10-26)
+
+- **What.** The owner set the next release: v0.3.0, the first interactive one (pre-alpha, QEMU
+  only), on 2026-11-01. One file per architecture (aarch64, riscv64, x86_64) and one script boot
+  EggOS in under a second into a QEMU window with its own graphical desktop and terminal (and on
+  the serial console), at an `eggsh` prompt where `ls`, `cat`, `uname`, `echo`, `sleep` and
+  `poweroff` run as Linux-ABI programs of our own from an initramfs embedded in the kernel ELF.
+- **Order.** The roadmap's "v0.3.0 plan" section lists the must-haves and nice-to-haves in the
+  owner's order; until v0.3.0 ships it comes before the milestones' own order and the CTO
+  review's issues (only `P0` and `release` issues jump it). Feature freeze 2026-10-30 07:00;
+  checkpoints and cuts as the plan says.
+- **Releases held.** An owner-requested exception to "release every finished milestone"
+  (CLAUDE.md): milestones finished this week (M3 by D98, among others) are not released on their
+  own but batched into v0.3.0. The only other release before it is the `v0.3.0-rc.1`
+  pre-release on 2026-10-31, to rehearse the release steps. This ends once v0.3.0 is out.

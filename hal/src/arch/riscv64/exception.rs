@@ -1235,6 +1235,8 @@ const SCAUSE_INTERRUPT: u64 = 1 << 63;
 const SCAUSE_SUPERVISOR_TIMER: u64 = SCAUSE_INTERRUPT | 5;
 /// `scause` for the supervisor software interrupt: the wake-up interrupt (D41).
 const SCAUSE_SUPERVISOR_SOFTWARE: u64 = SCAUSE_INTERRUPT | 1;
+/// `scause` for the supervisor external interrupt: a device's, through the PLIC.
+const SCAUSE_SUPERVISOR_EXTERNAL: u64 = SCAUSE_INTERRUPT | 9;
 
 /// Called by the entry code with the saved registers.
 extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
@@ -1246,8 +1248,13 @@ extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
     unsafe { core::arch::asm!("csrr {}, stval", out(reg) stval, options(nomem, nostack)) };
 
     // Exceptions pay one test for the interrupts' checks.
-    if scause & SCAUSE_INTERRUPT != 0 && interrupt(scause) {
-        return;
+    if scause & SCAUSE_INTERRUPT != 0 {
+        if interrupt(scause) {
+            return;
+        }
+        if scause == SCAUSE_SUPERVISOR_EXTERNAL {
+            return super::console_input::interrupt(frame.sepc);
+        }
     }
     let exception = decode(scause, stval, frame.sepc);
     deliver(&exception);
@@ -1340,6 +1347,10 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         return UserExit::Syscall;
     }
     if scause & SCAUSE_INTERRUPT != 0 && interrupt(scause) {
+        return UserExit::Interrupt;
+    }
+    if scause == SCAUSE_SUPERVISOR_EXTERNAL {
+        super::console_input::interrupt(registers.pc);
         return UserExit::Interrupt;
     }
     // All `last_exception` needs.

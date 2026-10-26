@@ -128,7 +128,8 @@ fn add_input(tag: u8, bytes: &[u8], bits: u32) {
 const CLOCK_TAG: u8 = 0x80;
 
 /// Extracts the input into the base key, and moves its generation on so that every CPU
-/// derives a new key at its next draw. The clock is hashed in first, uncredited. Returns
+/// derives a new key at its next draw. The clock is hashed in first, uncredited, and each
+/// extraction is hashed into the input again, so the next one depends on it too. Returns
 /// whether the generator is seeded; if this made it so, wakes the threads waiting for that.
 pub fn reseed<P: Platform>() -> bool {
     add_input(CLOCK_TAG, &P::clock_ticks().to_le_bytes(), 0);
@@ -137,7 +138,6 @@ pub fn reseed<P: Platform>() -> bool {
     {
         let mut input = INPUT.lock();
         extracted = Secret(core::mem::take(&mut input.hash).finalize());
-        // The next extraction depends on this one too.
         input.hash.update(&extracted.0);
         credited_bits = input.credited_bits;
     }
@@ -214,7 +214,9 @@ fn draw<P: Platform>() -> Secret<DRAW_SIZE> {
     drawn
 }
 
-/// Derives `key` from the base key: out of line, once per CPU per generation.
+/// Derives `key` from the base key: out of line, once per CPU per generation. `generation` is
+/// the one read before the base key's lock was taken: if a reseed came in between, the next
+/// draw derives again.
 #[cold]
 #[inline(never)]
 fn derive_cpu_key(key: &mut CpuKey, generation: u64) {
@@ -223,8 +225,6 @@ fn derive_cpu_key(key: &mut CpuKey, generation: u64) {
     let (next, cpu_key) = block.0.split_at(KEY_SIZE);
     base.copy_from_slice(next);
     key.key.copy_from_slice(cpu_key);
-    // The generation read before the lock: if a reseed came in between, the next draw
-    // derives again.
     key.generation = generation;
 }
 
@@ -243,6 +243,8 @@ pub fn fill<P: Platform>(bytes: &mut [u8]) {
 /// seeded or not, until `sink` breaks. Up to 32 bytes come from one draw; more come from a
 /// ChaCha20 stream keyed with one draw, outside any lock, so `sink` may block or pass a
 /// preemption point. Every chunk is wiped once `sink` has it, and the stream's key at the end.
+/// The stream's 32-bit block counter cannot wrap: callers ask for at most Linux's
+/// `MAX_RW_COUNT` bytes, far fewer than 2^32 blocks.
 pub fn fill_with<P: Platform>(
     length: usize,
     mut sink: impl FnMut(&[u8]) -> ControlFlow<()>,
@@ -262,7 +264,6 @@ pub fn fill_with<P: Platform>(
         let take = left.min(BLOCK_SIZE);
         flow = sink(&block.0[..take]);
         left -= take;
-        // At most `MAX_RW_COUNT` bytes per call: far fewer than 2^32 blocks.
         counter = counter.wrapping_add(1);
     }
     flow
@@ -305,15 +306,19 @@ mod tests {
 
     #[test]
     fn long_fills_are_filled_to_the_end() {
+        const FILLS: usize = 8;
         for length in [1, 31, 32, 33, 64, 65, 200, 4096] {
-            let mut bytes = vec![0u8; length];
-            fill::<P>(&mut bytes);
-            // No 16-byte stretch of zeros, as an unfilled tail would leave.
+            let mut ever_non_zero = vec![false; length];
+            for _ in 0..FILLS {
+                let mut bytes = vec![0u8; length];
+                fill::<P>(&mut bytes);
+                for (seen, byte) in ever_non_zero.iter_mut().zip(bytes) {
+                    *seen |= byte != 0;
+                }
+            }
             assert!(
-                bytes
-                    .chunks(16)
-                    .all(|chunk| chunk.iter().any(|&byte| byte != 0)),
-                "a fill of {length} bytes"
+                ever_non_zero.iter().all(|&seen| seen),
+                "a byte stayed zero in {FILLS} fills of {length} bytes"
             );
         }
     }

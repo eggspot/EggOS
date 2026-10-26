@@ -1291,7 +1291,11 @@ pub(super) fn user_test_program() -> TestProgram {
     }
 }
 
-/// Takes the pending interrupt from the GIC and handles it.
+/// Takes the pending interrupt from the GIC and handles it. The timer's and the wake-up's are
+/// ended before the kernel sees them: the kernel may not return here soon (later, a context
+/// switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile. UART0's is ended
+/// after the kernel has read the UART, which then no longer asserts it, so the GIC does not
+/// raise it again for bytes already taken.
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
 // trap path keeps its length (D47).
 #[inline(always)]
@@ -1299,12 +1303,14 @@ fn irq(pc: u64) {
     let Some(interrupt) = timer::acknowledge() else {
         return; // Spurious: the interrupt went away before it was acknowledged.
     };
-    // End the interrupt before handing it on: the kernel may not return here soon (later, a
-    // context switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile.
     let id = interrupt.id();
     let timer_fired = id == timer::VIRTUAL_TIMER_INTERRUPT && timer::expired();
     if timer_fired {
         timer::disarm();
+    }
+    if id == timer::UART0_INTERRUPT {
+        core::hint::cold_path();
+        return console_input(interrupt);
     }
     timer::end_of_interrupt(interrupt);
     match id {
@@ -1323,6 +1329,15 @@ fn irq(pc: u64) {
             address: None,
         }),
     }
+}
+
+/// Hands UART0's interrupt to the kernel, then ends it. Out of line, so the trap paths that
+/// inline [`irq`] keep their length.
+#[cold]
+#[inline(never)]
+fn console_input(interrupt: timer::Acknowledged) {
+    crate::interrupt::deliver(Interrupt::ConsoleInput);
+    timer::end_of_interrupt(interrupt);
 }
 
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's

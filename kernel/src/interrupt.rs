@@ -6,13 +6,17 @@
 //! yet is also how its preemption points see the timer tick (D37), and shares its word with other
 //! CPUs' reschedule requests (D43), so preemption adds nothing to the interrupt path; a wake-up
 //! only has to end the CPU's wait for an interrupt, and have the CPU serve the TLB shootdowns
-//! asked of it (D94).
+//! asked of it (D94). Console input is queued for readers ([`console::read_input`]).
 
-use crate::cpu;
+use crate::{console, cpu};
 use eggos_hal::{Interrupt, Platform};
 
 /// Handles `interrupt`, which this CPU has taken; the interrupted code resumes afterwards.
 pub fn handle<P: Platform>(interrupt: Interrupt) {
+    if interrupt == Interrupt::ConsoleInput {
+        console::receive_input::<P>();
+        return;
+    }
     cpu::current::<P>().count(interrupt);
     if interrupt == Interrupt::Wakeup {
         cpu::serve_shootdowns::<P>();
@@ -26,11 +30,11 @@ pub fn timer_interrupts<P: Platform>() -> u64 {
 
 /// Held by every host unit test that raises or counts timer interrupts. The counter is
 /// global and tests run in parallel, so without it one test's interrupts satisfy (or fail)
-/// another's wait.
+/// another's wait. A test that panicked while holding it leaves the counter as usable as
+/// before, so a poisoned lock is taken anyway.
 #[cfg(test)]
 pub(crate) fn lock_timer_interrupts_for_test() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    // A test that panicked while holding the lock leaves the counter as usable as before.
     LOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -43,8 +47,7 @@ mod tests {
     #[test]
     fn interrupts_are_counted_on_the_cpu_that_took_them() {
         let _lock = lock_timer_interrupts_for_test();
-        // No scheduler test may move the counts meanwhile.
-        let _scheduler = crate::thread::host::lock_kernel_state_for_test();
+        let _no_scheduler_test_moves_the_counts = crate::thread::host::lock_kernel_state_for_test();
         let this = cpu::current::<P>();
         let (timer, wakeups) = (timer_interrupts::<P>(), this.wakeups());
         handle::<P>(Interrupt::Timer);

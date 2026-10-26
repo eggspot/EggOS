@@ -195,6 +195,7 @@ impl Cpu {
         let counter = match interrupt {
             Interrupt::Timer => &self.unseen_by_scheduler,
             Interrupt::Wakeup => &self.wakeups,
+            Interrupt::ConsoleInput => return,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }

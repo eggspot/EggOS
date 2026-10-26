@@ -57,6 +57,10 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     "paging: kernel page tables active, direct map at {:#x}",
                     P::direct_map_offset()
                 )?;
+                match console::enable_input::<P>() {
+                    Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
+                    Err(reason) => writeln!(console, "console: no input: {reason}")?,
+                }
                 let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
                 // Benchmarks only mean something on a kernel that passed its self-tests.
                 #[cfg(feature = "qemu-bench")]
@@ -204,6 +208,13 @@ pub(crate) mod tests {
     /// What the test platform's console received.
     static CONSOLE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
+    /// What the test platform's console UART holds for [`Platform::console_read`]: what the QEMU
+    /// runner types, once [`Platform::enable_console_input`] says the kernel is ready. Tests that
+    /// use it or the kernel's queue hold [`interrupt::lock_timer_interrupts_for_test`], as the
+    /// boot test does.
+    pub(crate) static CONSOLE_INPUT: std::sync::Mutex<std::collections::VecDeque<u8>> =
+        std::sync::Mutex::new(std::collections::VecDeque::new());
+
     /// What the test platform's console received since the last call, which clears it.
     pub(crate) fn console_output() -> Vec<u8> {
         core::mem::take(&mut *CONSOLE.lock().unwrap())
@@ -239,6 +250,21 @@ pub(crate) mod tests {
         const ARCH: &'static str = "testarch";
         fn console_write(bytes: &[u8]) {
             CONSOLE.lock().unwrap().extend_from_slice(bytes);
+        }
+        fn console_read(buffer: &mut [u8]) -> usize {
+            let mut input = CONSOLE_INPUT.lock().unwrap();
+            let taken = buffer.len().min(input.len());
+            for (slot, byte) in buffer.iter_mut().zip(input.drain(..taken)) {
+                *slot = byte;
+            }
+            taken
+        }
+        fn enable_console_input() -> Result<(), &'static str> {
+            CONSOLE_INPUT
+                .lock()
+                .unwrap()
+                .extend(selftest::CONSOLE_INPUT_SCRIPT);
+            Ok(())
         }
         fn exit(_status: ExitStatus) -> ! {
             unreachable!("not used in tests")
@@ -283,6 +309,9 @@ pub(crate) mod tests {
         fn interrupt_window() {
             if WAKEUP_PENDING.swap(false, Ordering::Relaxed) {
                 interrupt::handle::<Self>(Interrupt::Wakeup);
+            }
+            if !CONSOLE_INPUT.lock().unwrap().is_empty() {
+                interrupt::handle::<Self>(Interrupt::ConsoleInput);
             }
             // Time passes; the timer interrupt is taken once its deadline has.
             let now = CLOCK.fetch_add(1, Ordering::Relaxed);

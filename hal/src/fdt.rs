@@ -1,7 +1,8 @@
 //! Reading a flattened device tree (FDT, "DTB"): the description of the machine that Arm and
-//! RISC-V firmware hands the kernel. Today the kernel reads only what it needs to find its
-//! memory: the RAM (`/memory` nodes) and what the firmware reserved (the memory reservation
-//! block and `/reserved-memory`). Full device discovery comes with the driver model (M5).
+//! RISC-V firmware hands the kernel. Today the kernel reads what it needs to find its memory
+//! (the RAM in `/memory` nodes, and what the firmware reserved in the memory reservation block
+//! and `/reserved-memory`), its CPUs, the seeds in `/chosen`, and a hart's PLIC context. Full
+//! device discovery comes with the driver model (M5).
 //!
 //! The format is from the public Devicetree Specification (v0.4, chapter 5): a 40-byte
 //! big-endian header, the memory reservation block (pairs of 64-bit address and size ending in
@@ -401,6 +402,166 @@ impl<'a> Fdt<'a> {
     }
 }
 
+/// The `compatible` strings of a RISC-V PLIC.
+const PLIC_COMPATIBLES: [&[u8]; 2] = [b"riscv,plic0", b"sifive,plic-1.0.0"];
+
+/// The RISC-V interrupt cause a hart's supervisor external interrupt has, as a PLIC's
+/// `interrupts-extended` names it.
+const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
+
+/// One token of the structure block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Token<'a> {
+    BeginNode(&'a [u8]),
+    EndNode,
+    Property(&'a [u8], &'a [u8]),
+}
+
+impl<'a> Fdt<'a> {
+    /// The structure block's node and property tokens, in order, `FDT_NOP` skipped, until
+    /// `FDT_END`; an error ends them.
+    fn tokens(&self) -> impl Iterator<Item = Result<Token<'a>, Error>> + 'a {
+        let (structure, strings) = (self.structure, self.strings);
+        let mut at = 0usize;
+        let mut done = false;
+        core::iter::from_fn(move || {
+            while !done {
+                let next = (|| {
+                    let token = be32(structure, at).ok_or(Error::Truncated)?;
+                    at += 4;
+                    match token {
+                        FDT_BEGIN_NODE => {
+                            let name = cstr(structure, at).ok_or(Error::Truncated)?;
+                            at = align4(at + name.len() + 1);
+                            Ok(Some(Token::BeginNode(name)))
+                        }
+                        FDT_END_NODE => Ok(Some(Token::EndNode)),
+                        FDT_PROP => {
+                            let length = be32(structure, at).ok_or(Error::Truncated)?;
+                            let name_offset = be32(structure, at + 4).ok_or(Error::Truncated)?;
+                            let length = usize::try_from(length).map_err(|_| Error::Truncated)?;
+                            let start = at + 8;
+                            let value = start
+                                .checked_add(length)
+                                .and_then(|end| structure.get(start..end))
+                                .ok_or(Error::Truncated)?;
+                            at = align4(start + length);
+                            let name = usize::try_from(name_offset)
+                                .ok()
+                                .and_then(|offset| cstr(strings, offset))
+                                .ok_or(Error::Malformed)?;
+                            Ok(Some(Token::Property(name, value)))
+                        }
+                        FDT_NOP => Ok(None),
+                        FDT_END => {
+                            done = true;
+                            Ok(None)
+                        }
+                        _ => Err(Error::Malformed),
+                    }
+                })();
+                match next {
+                    Ok(Some(token)) => return Some(Ok(token)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        done = true;
+                        return Some(Err(error));
+                    }
+                }
+            }
+            None
+        })
+    }
+
+    /// The index of hart `hart`'s supervisor-mode context in the first RISC-V PLIC the tree
+    /// describes (`compatible` `"riscv,plic0"` or `"sifive,plic-1.0.0"`), or `None` when there is
+    /// no PLIC or it does not interrupt that hart in supervisor mode. The PLIC's
+    /// `interrupts-extended` lists one (interrupt-controller phandle, cause) pair per context, in
+    /// context order; the hart's is the pair naming the `interrupt-controller` child of the
+    /// `/cpus` node whose `reg` is `hart`, with cause 9, the supervisor external interrupt (RISC-V
+    /// PLIC binding; a hart's local interrupt controller has `#interrupt-cells` = 1).
+    pub fn plic_supervisor_context(&self, hart: u64) -> Result<Option<usize>, Error> {
+        let mut depth = 0usize;
+        let mut in_cpus = false;
+        let mut cpus_address_cells = 2u32;
+        let mut cpu_is_hart = false;
+        let mut in_hart_controller = false;
+        let mut hart_controller = None;
+        let mut node_is_plic = false;
+        let mut node_contexts = None;
+        let mut plic_contexts: Option<&[u8]> = None;
+        for token in self.tokens() {
+            let finish_node =
+                |is_plic: bool, contexts: Option<&'a [u8]>, found: &mut Option<&'a [u8]>| {
+                    if is_plic && found.is_none() {
+                        *found = contexts;
+                    }
+                };
+            match token? {
+                Token::BeginNode(name) => {
+                    finish_node(node_is_plic, node_contexts, &mut plic_contexts);
+                    (node_is_plic, node_contexts) = (false, None);
+                    match depth {
+                        1 => in_cpus = name == b"cpus",
+                        2 if in_cpus => cpu_is_hart = false,
+                        3 if in_cpus => {
+                            in_hart_controller =
+                                cpu_is_hart && name.starts_with(b"interrupt-controller");
+                        }
+                        _ => {}
+                    }
+                    depth += 1;
+                }
+                Token::EndNode => {
+                    finish_node(node_is_plic, node_contexts, &mut plic_contexts);
+                    (node_is_plic, node_contexts) = (false, None);
+                    depth = depth.checked_sub(1).ok_or(Error::Malformed)?;
+                    if depth == 3 {
+                        in_hart_controller = false;
+                    }
+                }
+                Token::Property(name, value) => {
+                    match (in_cpus, depth, name) {
+                        (true, 2, b"#address-cells") => {
+                            cpus_address_cells = be32(value, 0).unwrap_or(2);
+                        }
+                        (true, 3, b"reg") => {
+                            cpu_is_hart = usize::try_from(cpus_address_cells)
+                                .ok()
+                                .and_then(|cells| value.get(..cells.checked_mul(4)?))
+                                .and_then(cells_value)
+                                == Some(hart);
+                        }
+                        (true, 4, b"phandle") if in_hart_controller => {
+                            hart_controller = be32(value, 0);
+                        }
+                        _ => {}
+                    }
+                    match name {
+                        b"compatible" => {
+                            node_is_plic = value
+                                .split(|&byte| byte == 0)
+                                .any(|string| PLIC_COMPATIBLES.contains(&string));
+                        }
+                        b"interrupts-extended" => node_contexts = Some(value),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if depth != 0 {
+            return Err(Error::Malformed);
+        }
+        let (Some(contexts), Some(controller)) = (plic_contexts, hart_controller) else {
+            return Ok(None);
+        };
+        Ok(contexts.as_chunks::<8>().0.iter().position(|pair| {
+            be32(pair, 0) == Some(controller)
+                && be32(pair, 4) == Some(SUPERVISOR_EXTERNAL_INTERRUPT)
+        }))
+    }
+}
+
 /// The `/chosen` properties that hold seed material, and what each is.
 const SEED_PROPERTIES: [(&[u8], SeedSource); 2] = [
     (b"rng-seed", SeedSource::DeviceTreeRngSeed),
@@ -633,6 +794,80 @@ mod tests {
             .end()
             .end();
         b.build()
+    }
+
+    /// QEMU `virt`'s RISC-V shape for interrupts: harts with their local interrupt controllers,
+    /// and a PLIC whose contexts go M-mode, S-mode for each hart in turn.
+    fn with_plic(plic_first: bool, compatible: &[u8]) -> Vec<u8> {
+        let mut b = Builder::default();
+        b.begin("")
+            .cells("#address-cells", &[2])
+            .cells("#size-cells", &[2]);
+        let plic = |b: &mut Builder| {
+            b.begin("soc")
+                .begin("plic@c000000")
+                .cells("interrupts-extended", &[3, 11, 3, 9, 5, 11, 5, 9])
+                .prop("compatible", compatible)
+                .end()
+                .end();
+        };
+        if plic_first {
+            plic(&mut b);
+        }
+        b.begin("cpus")
+            .cells("#address-cells", &[1])
+            .cells("#size-cells", &[0]);
+        for (hart, phandle) in [(0u32, 3u32), (1, 5)] {
+            b.begin(&format!("cpu@{hart}"))
+                .prop("device_type", b"cpu\0")
+                .cells("reg", &[hart])
+                .begin("interrupt-controller")
+                .cells("#interrupt-cells", &[1])
+                .cells("phandle", &[phandle])
+                .end()
+                .end();
+        }
+        b.end();
+        if !plic_first {
+            plic(&mut b);
+        }
+        b.end();
+        b.build()
+    }
+
+    fn plic_context(blob: &[u8], hart: u64) -> Result<Option<usize>, Error> {
+        Fdt::new(blob)?.plic_supervisor_context(hart)
+    }
+
+    #[test]
+    fn finds_each_harts_supervisor_context_in_the_plic() {
+        let blob = with_plic(false, b"sifive,plic-1.0.0\0riscv,plic0\0");
+        assert_eq!(plic_context(&blob, 0), Ok(Some(1)));
+        assert_eq!(plic_context(&blob, 1), Ok(Some(3)));
+        assert_eq!(plic_context(&blob, 2), Ok(None));
+    }
+
+    #[test]
+    fn the_plic_may_come_before_the_cpus() {
+        let blob = with_plic(true, b"riscv,plic0\0");
+        assert_eq!(plic_context(&blob, 1), Ok(Some(3)));
+    }
+
+    #[test]
+    fn a_tree_without_a_plic_has_no_context() {
+        assert_eq!(
+            plic_context(&with_plic(false, b"riscv,aplic\0"), 0),
+            Ok(None)
+        );
+        assert_eq!(plic_context(&qemu_like(), 0), Ok(None));
+    }
+
+    #[test]
+    fn plic_lookup_rejects_malformed_structure_without_panicking() {
+        let mut blob = with_plic(false, b"riscv,plic0\0");
+        let end = blob.len() - b"#address-cells\0".len();
+        blob.truncate(end);
+        assert!(plic_context(&blob, 0).is_err());
     }
 
     #[test]

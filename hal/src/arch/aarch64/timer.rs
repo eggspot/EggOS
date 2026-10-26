@@ -5,7 +5,8 @@
 use super::DIRECT_MAP_OFFSET;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::{AtomicU64, Ordering};
-use eggos_drivers::interrupt::gicv2::{self, Acknowledged, Gicv2CpuInterface, Gicv2Distributor};
+pub(super) use eggos_drivers::interrupt::gicv2::Acknowledged;
+use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::io::Mmio;
 
 /// QEMU `virt` (`-machine gic-version=2`): GICv2 distributor and CPU interface. Device-tree
@@ -27,6 +28,11 @@ const TIMER_PRIORITY: u8 = 0x80;
 /// The software-generated interrupt that wakes a CPU ([`crate::Platform::wake_cpu`]).
 pub(super) const WAKEUP_SGI: u32 = 0;
 const WAKEUP_PRIORITY: u8 = 0x80;
+/// QEMU `virt`: UART0's interrupt, SPI 1, level-triggered. Device-tree discovery replaces it
+/// in M5.
+pub(super) const UART0_INTERRUPT: u32 = 33;
+/// Below the timer and wake-up: input can wait for them.
+const CONSOLE_INPUT_PRIORITY: u8 = 0xa0;
 
 /// The CPU interfaces a GICv2 has.
 const GIC_CPU_INTERFACES: usize = 8;
@@ -87,6 +93,17 @@ pub(super) fn init_this_cpu() {
         GIC_CPUS[target.trailing_zeros() as usize].store(affinity() + 1, Ordering::Release);
     }
     cpu_interface().enable();
+}
+
+/// Routes UART0's interrupt to the calling CPU and enables it.
+pub(super) fn route_console_input() {
+    let gicd = distributor();
+    gicd.route_shared_interrupt(
+        UART0_INTERRUPT,
+        CONSOLE_INPUT_PRIORITY,
+        gicd.this_cpu_target(),
+        Trigger::Level,
+    );
 }
 
 /// This CPU's MPIDR affinity, as the device tree's `/cpus` and the PSCI calls give it: Aff3 in

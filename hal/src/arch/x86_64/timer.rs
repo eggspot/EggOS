@@ -34,6 +34,8 @@ const LEGACY_PIC_SECONDARY_SPURIOUS: u64 = 0x2f;
 pub(super) const TIMER_VECTOR: u8 = 0x30;
 /// The wake-up interrupt's vector ([`crate::Platform::wake_cpu`]).
 pub(super) const WAKEUP_VECTOR: u8 = 0x31;
+/// COM1's receive interrupt's vector, through the I/O APIC.
+pub(super) const CONSOLE_INPUT_VECTOR: u8 = 0x32;
 /// The local APIC's spurious-interrupt vector (its low four bits must be 1s on old CPUs).
 pub(super) const APIC_SPURIOUS_VECTOR: u8 = 0xff;
 
@@ -89,6 +91,11 @@ pub(super) fn send_startup(destination: u8, page: u8) {
 pub(super) fn wake(destination: u8) {
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
     local_apic().send_fixed(destination, WAKEUP_VECTOR);
+}
+
+/// Ends the interrupt this CPU's local APIC is serving.
+pub(super) fn end_of_interrupt() {
+    local_apic().end_of_interrupt();
 }
 
 /// Handles the wake-up interrupt.

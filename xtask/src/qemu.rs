@@ -43,6 +43,15 @@ const EXCEPTION_PREFIX: &str = "kernel exception: ";
 /// Must match `eggos_kernel::selftest::WRITE_PROTECT_PROBE`.
 const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
 
+/// Must match `eggos_kernel::console::INPUT_READY_LINE`: once the kernel writes it, nothing
+/// typed on the serial console is lost.
+const INPUT_READY_LINE: &str = "EGGOS-CONSOLE: input ready";
+
+/// Must match `eggos_kernel::selftest::CONSOLE_INPUT_SCRIPT`: what the boot tests type on the
+/// serial console once it is ready, which a self-test checks arrives through the console's
+/// receive interrupt.
+const CONSOLE_INPUT_SCRIPT: &[u8] = b"EggOS reads its console\r";
+
 /// What a boot test expects the kernel to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {
@@ -126,20 +135,31 @@ pub fn boot_test(
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
         .arg(kernel)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not start {}: {e} (is QEMU installed?)", arch.qemu))?;
 
     let rx = echo_console_to_stderr(child.stdout.take().expect("stdout is piped"));
+    let mut keyboard = child.stdin.take().expect("stdin is piped");
 
     let started = Instant::now();
     let mut console = Vec::new();
+    let mut typed = false;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
         }
         console.extend(rx.try_iter().flatten());
+        if !typed && has_line(&String::from_utf8_lossy(&console), INPUT_READY_LINE) {
+            if let Err(e) = keyboard
+                .write_all(CONSOLE_INPUT_SCRIPT)
+                .and_then(|()| keyboard.flush())
+            {
+                eprintln!("xtask: {}: could not type on the console: {e}", arch.name);
+            }
+            typed = true;
+        }
         if banner_count(&String::from_utf8_lossy(&console)) > 1 {
             let _ = child.kill();
             let _ = child.wait();
@@ -181,6 +201,11 @@ fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiv
         }
     });
     rx
+}
+
+/// Whether `console` has a line that is `line`, trailing whitespace aside.
+fn has_line(console: &str, line: &str) -> bool {
+    console.lines().any(|l| l.trim_end() == line)
 }
 
 /// How many times the kernel's boot banner appears on the console.
@@ -355,6 +380,16 @@ mod tests {
     #[test]
     fn the_fatal_exception_run_fails_when_a_pass_is_expected() {
         assert!(verdict("x", Expect::Pass, true, &reported_fatal_exception()).is_err());
+    }
+
+    #[test]
+    fn input_is_typed_only_after_the_whole_ready_line() {
+        assert!(!has_line("EGGOS-CONSOLE: input rea", INPUT_READY_LINE));
+        assert!(!has_line("x EGGOS-CONSOLE: input ready", INPUT_READY_LINE));
+        assert!(has_line(
+            "boot\r\nEGGOS-CONSOLE: input ready\r\n",
+            INPUT_READY_LINE
+        ));
     }
 
     #[test]

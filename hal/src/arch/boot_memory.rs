@@ -165,6 +165,21 @@ pub(crate) unsafe fn device_tree_cpus(address: usize, cpu: &mut dyn FnMut(u64)) 
     }
 }
 
+/// The PLIC context of hart `hart` in supervisor mode the device tree at `address` gives (see
+/// [`Fdt::plic_supervisor_context`]); `None` if there is no valid tree there, or no such context.
+///
+/// # Safety
+/// As for [`device_tree`].
+#[cfg(target_arch = "riscv64")]
+pub(crate) unsafe fn device_tree_plic_supervisor_context(
+    address: usize,
+    hart: u64,
+) -> Option<usize> {
+    // SAFETY: guaranteed by the caller.
+    let (tree, _) = unsafe { device_tree(address) }?;
+    tree.plic_supervisor_context(hart).ok().flatten()
+}
+
 /// Hands the seeds in the device tree at `address` to `seed` and removes them from the tree
 /// ([`fdt::take_seeds`]); nothing if there is no valid tree there, or a malformed one.
 ///
