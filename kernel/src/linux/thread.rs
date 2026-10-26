@@ -12,9 +12,11 @@ use super::files::WorkingDirectory;
 use super::futex::{self, WaitSlot};
 use super::signals::{self, LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
+use eggos_hal::fp::FpState;
 use eggos_hal::user::UserContext;
 
 /// The futex key thread `id` of `process` sleeps on: a word in the kernel's half, which no
@@ -22,7 +24,7 @@ use eggos_hal::user::UserContext;
 fn sleep_key<P: Platform>(process: &Process<P>, id: u32) -> futex::Key {
     const FIRST_SLEEP_WORD: u64 = !3;
     futex::Key::new(
-        process.id().get(),
+        process.futex_space(),
         FIRST_SLEEP_WORD - 4 * u64::from(id),
         false,
     )
@@ -98,6 +100,7 @@ pub struct LinuxThread {
     wait_slot: Arc<WaitSlot>,
     files: Descriptors,
     working_directory: WorkingDirectory,
+    inherited_fp: Option<Box<FpState>>,
 }
 
 impl LinuxThread {
@@ -114,6 +117,7 @@ impl LinuxThread {
             wait_slot: Arc::new(WaitSlot::new()),
             files: Descriptors::with_console_streams(),
             working_directory: WorkingDirectory::at_root(),
+            inherited_fp: None,
         }
     }
 
@@ -137,20 +141,57 @@ impl LinuxThread {
             wait_slot: Arc::new(WaitSlot::new()),
             files,
             working_directory,
+            inherited_fp: None,
         }
+    }
+
+    /// The first thread of a child process this thread starts (`fork`, `vfork`, `clone`
+    /// without `CLONE_THREAD`), whose id `id` is the child's: as [`Self::new_thread`], but with
+    /// this thread's alternate signal stack too, as sigaltstack(2) describes, unless the child
+    /// shares the memory without waiting for it (`CLONE_VM` without `CLONE_VFORK`,
+    /// `keeps_alternate_stack` false), and no signals seen yet in the new process.
+    pub fn new_process_thread(
+        &self,
+        id: u32,
+        clear_child_tid: u64,
+        files: Descriptors,
+        working_directory: WorkingDirectory,
+        keeps_alternate_stack: bool,
+    ) -> Self {
+        Self {
+            signals: match keeps_alternate_stack {
+                true => self.signals.for_new_process(),
+                false => self.signals.for_new_thread(),
+            },
+            signals_seen: 0,
+            ..self.new_thread(id, clear_child_tid, files, working_directory)
+        }
+    }
+
+    /// Gives it `state` as the FP/SIMD registers it starts with when its program first uses
+    /// them, a copy of its starter's (Linux copies them at `clone`).
+    pub fn inherit_fp(&mut self, state: Option<Box<FpState>>) {
+        self.inherited_fp = state;
+    }
+
+    /// The FP/SIMD registers it inherited ([`Self::inherit_fp`]) and has not started with yet.
+    pub fn take_inherited_fp(&mut self) -> Option<Box<FpState>> {
+        self.inherited_fp.take()
     }
 
     /// Makes it the only thread of the program `execve` starts: its id becomes `id`, the
     /// process's, as when another thread than the first calls `execve`; nothing to clear and
-    /// wake at its exit, no robust futex list, no alternate signal stack, and no signals seen
-    /// yet in the new process. Its blocked and pending signals, descriptor table and working
-    /// directory stay.
+    /// wake at its exit, no robust futex list, no alternate signal stack, no signals seen
+    /// yet in the new process, and no FP/SIMD registers inherited from its starter (the new
+    /// program's first use gets a new program's). Its blocked and pending signals, descriptor
+    /// table and working directory stay.
     pub fn start_image(&mut self, id: u32) {
         self.id = id;
         self.clear_child_tid = 0;
         self.robust_list = 0;
         self.signals.alternate_stack = ThreadSignals::new().alternate_stack;
         self.signals_seen = 0;
+        self.inherited_fp = None;
     }
 
     /// Its descriptor table (D101).
@@ -279,12 +320,14 @@ pub mod flag {
 
 /// `clone`'s arguments, in the architecture's order: x86_64 has the child's id word before
 /// the thread pointer, AArch64 and RISC-V after it (Linux's `CLONE_BACKWARDS` there).
-struct Arguments {
-    flags: u64,
-    stack: u64,
-    parent_tid: u64,
-    child_tid: u64,
-    tls: u64,
+#[derive(Debug, Clone, Copy)]
+pub struct Arguments {
+    pub flags: u64,
+    pub exit_signal: u64,
+    pub stack: u64,
+    pub parent_tid: u64,
+    pub child_tid: u64,
+    pub tls: u64,
 }
 
 impl Arguments {
@@ -297,21 +340,36 @@ impl Arguments {
         };
         Self {
             flags: flags & u64::from(u32::MAX) & !flag::EXIT_SIGNAL,
+            exit_signal: flags & flag::EXIT_SIGNAL,
             stack,
             parent_tid,
             child_tid,
             tls,
         }
     }
+
+    /// The arguments of a `clone` with `flags` and `exit_signal` and every other argument 0,
+    /// as `fork` and `vfork` are.
+    pub fn with_flags(flags: u64, exit_signal: u64) -> Self {
+        Self {
+            flags,
+            exit_signal,
+            stack: 0,
+            parent_tid: 0,
+            child_tid: 0,
+            tls: 0,
+        }
+    }
 }
 
 /// `clone(flags, stack, parent_tid, child_tid, tls)` (x86_64's order; AArch64 and RISC-V swap
-/// the last two), with the caller's registers `context`: starts a thread of the caller's
+/// the last two), with the caller's registers `context`: without `CLONE_THREAD`, starts a new
+/// process ([`super::fork::clone_process`]); with it, starts a thread of the caller's
 /// process, which returns 0 from the call on `stack` (the caller's stack pointer if 0) with
-/// every other register the caller's, and returns its id. With `CLONE_SETTLS` its thread
-/// pointer is `tls`; with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` its id is written to
-/// the 32-bit words at `parent_tid` and `child_tid` before it runs, silently not if they are
-/// not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
+/// every other register the caller's, its FP/SIMD registers among them, and returns its id.
+/// With `CLONE_SETTLS` its thread pointer is `tls`; with `CLONE_PARENT_SETTID` and
+/// `CLONE_CHILD_SETTID` its id is written to the 32-bit words at `parent_tid` and `child_tid`
+/// before it runs, silently not if they are not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
 /// the word at `child_tid` and wakes a futex there. With `CLONE_FILES` it shares the caller's
 /// descriptor table, and without it starts with a copy (D101); with `CLONE_FS` it shares the
 /// working directory, and without it starts with a copy (D102). It blocks the signals the caller blocks,
@@ -322,9 +380,9 @@ impl Arguments {
 /// `CLONE_SIGHAND`, for `CLONE_SIGHAND` without `CLONE_VM`, for `CLONE_THREAD` with
 /// `CLONE_NEWUSER` or `CLONE_NEWPID`, and for `CLONE_PIDFD` with `CLONE_DETACHED` or
 /// `CLONE_THREAD`; then `EINVAL` for namespaces and `CLONE_PIDFD`, which do not exist yet (as
-/// on a Linux built without them); `ENOSYS` for a new process (no `CLONE_VM`, or `CLONE_VFORK`
-/// or `CLONE_PARENT`: `fork`, `vfork`, `posix_spawn`), until processes can be created, which
-/// callers report as unsupported rather than retry; on x86_64, `EPERM` for a thread pointer
+/// on a Linux built without them); `ENOSYS` for a flag a thread does not take (`CLONE_VFORK`,
+/// `CLONE_PARENT`, unknown flags), which callers report as unsupported rather than retry; on
+/// x86_64, `EPERM` for a thread pointer
 /// outside user space; `EAGAIN` when ids run out; `ENOMEM` without memory for the thread. The
 /// flags' upper 32 bits are ignored, as Linux's `clone` does, and so is the exit signal, which
 /// a thread does not have.
@@ -346,6 +404,9 @@ pub fn clone<P: Platform>(
         || (any(flag::PIDFD) && any(flag::DETACHED | flag::THREAD));
     if invalid || any(flag::NAMESPACES | flag::PIDFD) {
         return Err(Errno::EINVAL);
+    }
+    if !any(flag::THREAD) {
+        return super::fork::clone_process(process, thread, context, &arguments);
     }
     if !all(flag::NEW_THREAD) || flags & !(flag::NEW_THREAD | flag::THREAD_OPTIONS) != 0 {
         return Err(Errno::ENOSYS);
@@ -374,7 +435,8 @@ pub fn clone<P: Platform>(
         true => thread.working_directory().share(),
         false => thread.working_directory().copy(),
     };
-    let new = thread.new_thread(id, clear_child_tid, files, working_directory);
+    let mut new = thread.new_thread(id, clear_child_tid, files, working_directory);
+    new.inherit_fp(running_fp::<P>());
     process
         .signals()
         .lock()
@@ -393,4 +455,20 @@ pub fn clone<P: Platform>(
         Errno::ENOMEM
     })?;
     Ok(u64::from(id))
+}
+
+/// A copy of the calling thread's FP/SIMD registers as its program left them, for a thread or
+/// process it starts; `None` if it has none yet, or there is no memory for the copy (the new
+/// thread then starts with a new program's). Registers the calling thread inherited and has not
+/// used yet must be its running ones first (`clone` loads them before it gets here).
+pub fn running_fp<P: Platform>() -> Option<Box<FpState>> {
+    let layout = core::alloc::Layout::new::<FpState>();
+    // SAFETY: `FpState` is not zero-sized.
+    let state = core::ptr::NonNull::new(unsafe { alloc::alloc::alloc(layout) }.cast::<FpState>())?;
+    // SAFETY: just allocated with `FpState`'s layout, so valid for a write and aligned.
+    unsafe { state.as_ptr().write(FpState::new()) };
+    // SAFETY: allocated with the global allocator and `FpState`'s layout, and initialized.
+    let mut copy = unsafe { Box::from_raw(state.as_ptr()) };
+    crate::thread::with_running_fp::<P, _>(|running| copy.as_mut().clone_from(running))?;
+    Some(copy)
 }

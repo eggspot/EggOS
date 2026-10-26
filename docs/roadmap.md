@@ -20,7 +20,10 @@ Must-have, in order:
    `fchdir` (D102). Later slices of issue #94: tmpfs, devfs, symbolic links, the dentry cache.
 5. **done** — `execve` and `execveat` from a file: a new process with the caller's id, handlers
    reset, close-on-exec descriptors closed, other threads ended (D103).
-6. Process creation: `clone(CLONE_VM|CLONE_VFORK)` and `fork` with an eager copy.
+6. **done** — process creation: `clone` without `CLONE_THREAD`, `fork` and `vfork`, the
+   memory copied at once or shared with `CLONE_VM`, the parent sleeping until a `vfork` child
+   execs or ends, children's exit records kept for `wait4` (D104). Follow-up: copy-on-write,
+   and with it shared anonymous memory across `fork` (refused with `ENOSYS` until then).
 7. `wait4`, zombies, reparenting to pid 1, `SIGCHLD`, minimal `setpgid`/`setsid`/`TIOCSPGRP`.
 8. init as pid 1 (the release kernel starts it instead of halting) and `reboot(2)`.
 9. The `eggsh` shell: PATH, quoting, `cd`/`pwd`/`exit`/`help`, exit status.

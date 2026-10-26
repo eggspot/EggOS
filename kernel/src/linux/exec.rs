@@ -583,6 +583,7 @@ fn execute<P: Platform>(
                 return ControlFlow::Break(());
             }
             let next = start(process, thread, context, prepared);
+            super::fork::release_vfork_parent::<P>(process);
             let _ = signals::deliver(&next, thread, context);
             process.hand_over(next, context);
             ControlFlow::Break(())
@@ -686,13 +687,14 @@ fn start<P: Platform>(
     *image.signals().lock() = signals;
     crate::console::forget_foreground(id);
     if process.threads() > 1 {
-        futex::wake_space::<P>(id);
+        futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
     }
     let robust_list = thread.robust_list();
     if robust_list != 0 {
         futex::release_robust_list(process, thread.id(), robust_list);
     }
+    super::clear_child_tid_if_memory_shared::<P>(process, thread);
     thread.start_image(id);
     if let Some(files) = files {
         thread.set_files(files);

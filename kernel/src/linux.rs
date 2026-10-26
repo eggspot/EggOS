@@ -44,6 +44,7 @@ pub mod descriptors;
 pub mod exec;
 pub mod fault;
 pub mod files;
+pub mod fork;
 pub mod futex;
 pub mod identity;
 pub mod limits;
@@ -105,6 +106,8 @@ pub mod number {
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
         pub const CLONE: u64 = 56;
+        pub const FORK: u64 = 57;
+        pub const VFORK: u64 = 58;
         pub const EXECVE: u64 = 59;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
@@ -272,6 +275,10 @@ pub mod number {
             EXIT,
             EXIT_GROUP,
             CLONE,
+            #[cfg(target_arch = "x86_64")]
+            FORK,
+            #[cfg(target_arch = "x86_64")]
+            VFORK,
             BRK,
             MMAP,
             MUNMAP,
@@ -606,11 +613,26 @@ fn signal_fault<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let exception = context.last_exception();
-    if process::first_fp_use::<P>(exception.kind) {
+    if first_fp_use::<P>(thread, exception.kind) {
         return ControlFlow::Continue(());
     }
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, thread, context, &fault)
+}
+
+pub(crate) fn load_inherited_fp<P: Platform>(thread: &mut LinuxThread) {
+    if let Some(state) = thread.take_inherited_fp() {
+        let _ = crate::thread::start_fp_from::<P>(state);
+    }
+}
+
+fn first_fp_use<P: Platform>(thread: &mut LinuxThread, kind: ExceptionKind) -> bool {
+    if kind == ExceptionKind::IllegalInstruction
+        && let Some(state) = thread.take_inherited_fp()
+    {
+        return crate::thread::start_fp_from::<P>(state) == crate::thread::FpStart::Started;
+    }
+    process::first_fp_use::<P>(kind)
 }
 
 /// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
@@ -702,7 +724,18 @@ fn out_of_line_call<P: Platform>(
         number::EXECVEAT => exec::execveat(process, thread, context),
         _ => {
             let result = match number {
-                number::CLONE => thread::clone::<P>(process, thread, context),
+                number::CLONE => {
+                    load_inherited_fp::<P>(thread);
+                    thread::clone::<P>(process, thread, context)
+                }
+                #[cfg(target_arch = "x86_64")]
+                number::FORK | number::VFORK => {
+                    load_inherited_fp::<P>(thread);
+                    match number {
+                        number::FORK => fork::fork::<P>(process, thread, context),
+                        _ => fork::vfork::<P>(process, thread, context),
+                    }
+                }
                 _ => out_of_line_result(process, thread, number, context),
             };
             context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -784,7 +817,7 @@ fn out_of_line_result<P: Platform>(
             Ok(0)
         }
         number::GETPID => Ok(identity::getpid(process)),
-        number::GETPPID => Ok(identity::getppid()),
+        number::GETPPID => Ok(identity::getppid(process)),
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),
@@ -905,6 +938,7 @@ pub fn exit_thread<P: Platform>(
     }
     if process.remove_thread() {
         let status = process.first_thread_status().unwrap_or(status);
+        clear_child_tid_if_memory_shared::<P>(process, thread);
         return end_process(process, ProcessExit::Exited(u32::from(status)));
     }
     {
@@ -921,13 +955,28 @@ pub fn exit_thread<P: Platform>(
     }
     let address = thread.clear_child_tid();
     if address != 0 {
-        let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
-        if cleared.is_ok() && address.is_multiple_of(4) {
-            let key = futex::Key::new(process.id().get(), address, true);
-            futex::wake::<P>(key, u32::MAX, 1);
-        }
+        clear_child_tid::<P>(process, address);
     }
     ControlFlow::Break(())
+}
+
+fn clear_child_tid<P: Platform>(process: &Process<P>, address: u64) {
+    let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
+    if cleared.is_ok() && address.is_multiple_of(4) {
+        let key = futex::Key::new(process.futex_space(), address, true);
+        futex::wake::<P>(key, u32::MAX, 1);
+    }
+}
+
+/// For `thread`, the last of `process` to run its program, as it ends it or `execve` replaces
+/// it: clears and wakes its `clear_child_tid` ([`exit_thread`]) if another process shares the
+/// memory (`CLONE_VM`) and may wait on the word, as Linux does when it releases the memory.
+#[inline]
+pub fn clear_child_tid_if_memory_shared<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
+    let address = thread.clear_child_tid();
+    if address != 0 && process.shares_memory() {
+        clear_child_tid::<P>(process, address);
+    }
 }
 
 /// `exit(status)` ([`exit_thread`]) and `exit_group(status)`, which ends the process, every
@@ -943,6 +992,7 @@ fn exit<P: Platform>(
     if number == number::EXIT {
         exit_thread(process, thread, status)
     } else {
+        clear_child_tid_if_memory_shared::<P>(process, thread);
         end_process(process, ProcessExit::Exited(status as u32 & 0xff))
     }
 }
@@ -957,9 +1007,10 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     if !process.exit(how) {
         return ControlFlow::Break(());
     }
+    fork::release_vfork_parent::<P>(process);
     crate::console::forget_foreground(process.id().get());
     if others {
-        futex::wake_space::<P>(process.id().get());
+        futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
     }
     ControlFlow::Break(())
@@ -5735,12 +5786,13 @@ mod tests {
     }
 
     #[test]
-    fn clone_refuses_what_linux_refuses_and_new_processes_until_they_exist() {
+    fn clone_refuses_what_linux_refuses_and_what_processes_do_not_share() {
         use thread::flag::*;
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
         let clone = |flags| call(&process, number::CLONE, [flags, 0, 0, 0, 0, 0]);
+        const SIGCHLD: u64 = 17;
         for flags in [
             NEW_THREAD | PIDFD | PARENT_SETTID,
             NEW_THREAD | NEWNS | FS,
@@ -5755,30 +5807,194 @@ mod tests {
             NEW_THREAD | NEWNS,
             NEW_THREAD | NEWNET,
             VM | PIDFD,
+            SIGCHLD | NEWPID,
+            65,
+            VM | VFORK | EXIT_SIGNAL,
         ] {
             assert_eq!(clone(flags), Errno::EINVAL.result(), "{flags:#x}");
         }
-        const SIGCHLD: u64 = 17;
         for flags in [
-            SIGCHLD,
-            VM | VFORK | SIGCHLD,
-            VM | SIGHAND,
+            VM | SIGHAND | SIGCHLD,
+            PARENT | SIGCHLD,
             NEW_THREAD | PARENT,
             NEW_THREAD | VFORK,
         ] {
             assert_eq!(clone(flags), Errno::ENOSYS.result(), "{flags:#x}");
         }
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(
-            call(
-                &process,
-                number::CLONE,
-                [NEW_THREAD | SETTLS, 0, 0, 0, 1 << 63, 0]
-            ),
-            Errno::EPERM.result()
-        );
+        for flags in [NEW_THREAD | SETTLS, SETTLS | SIGCHLD] {
+            assert_eq!(
+                call(&process, number::CLONE, [flags, 0, 0, 0, 1 << 63, 0]),
+                Errno::EPERM.result()
+            );
+        }
         assert!(!process.has_ended());
+        assert!(process.children().is_empty());
         assert!(process.remove_thread(), "a refused clone counted a thread");
+    }
+
+    #[test]
+    fn a_fork_without_frames_for_the_copy_is_enomem_and_takes_none() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        process.write_user_memory(SCRATCH, b"kept").unwrap();
+        let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
+        let mut hoard = Vec::new();
+        while free() > 2 {
+            hoard.push(memory::FRAMES.lock().as_mut().unwrap().allocate().unwrap());
+        }
+        let before = free();
+        let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
+        assert_eq!(fork(), Errno::ENOMEM.result());
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(call(&process, number::FORK, [0; 6]), Errno::ENOMEM.result());
+        assert_eq!(free(), before);
+        assert!(process.children().is_empty());
+        let mut kept = [0u8; 4];
+        process.read_user_memory(SCRATCH, &mut kept).unwrap();
+        assert_eq!(&kept, b"kept");
+        let mut frames = memory::FRAMES.lock();
+        for frame in hoard {
+            // SAFETY: allocated above from this allocator and never mapped.
+            unsafe { frames.as_mut().unwrap().free(frame) };
+        }
+    }
+
+    #[test]
+    fn a_fork_of_memory_with_shared_anonymous_memory_is_enosys() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
+        let private = crate::linux::memory::map::PRIVATE | crate::linux::memory::map::ANONYMOUS;
+        let shared = crate::linux::memory::map::SHARED | crate::linux::memory::map::ANONYMOUS;
+        let mmap = |flags| call(&process, number::MMAP, [0, 4096, 3, flags, u64::MAX, 0]);
+        assert!(mmap(private) < Errno::EINVAL.result());
+        assert!(mmap(shared) < Errno::EINVAL.result());
+        assert_eq!(fork(), Errno::ENOSYS.result());
+        assert!(process.children().is_empty());
+    }
+
+    #[test]
+    fn inherited_fp_registers_become_the_running_ones_before_anything_reads_them() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use eggos_hal::fp::FpState;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::thread::start::<P>().unwrap();
+        static CHECKED: AtomicBool = AtomicBool::new(false);
+        CHECKED.store(false, Ordering::SeqCst);
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let process = Arc::new(unsafe { Process::<P>::with_test_program(&kernel) }.unwrap());
+        let context = Process::<P>::test_program_context(|program| program.illegal_instruction);
+        let user = process::spawn::<P, _>(process, context, move |process, _, _| {
+            let mut thread = LinuxThread::first(process);
+            let inherited = Box::new(FpState::new());
+            let address = core::ptr::from_ref::<FpState>(&inherited).addr();
+            thread.inherit_fp(Some(inherited));
+            assert!(thread::running_fp::<P>().is_none());
+            load_inherited_fp::<P>(&mut thread);
+            assert!(thread.take_inherited_fp().is_none());
+            let running = crate::thread::with_running_fp::<P, _>(|state| {
+                core::ptr::from_mut::<FpState>(state).addr()
+            });
+            assert_eq!(running, Some(address));
+            assert!(thread::running_fp::<P>().is_some());
+            CHECKED.store(true, Ordering::SeqCst);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        user.join::<P>();
+        assert!(CHECKED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn execve_forgets_the_fp_registers_a_thread_inherited() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let mut thread = LinuxThread::first(&process);
+        thread.inherit_fp(Some(Box::new(eggos_hal::fp::FpState::new())));
+        thread.start_image(process.id().get());
+        assert!(thread.take_inherited_fp().is_none());
+    }
+
+    fn child_thread(
+        parent: &Arc<Process<P>>,
+        memory: process::ChildMemory,
+        clear_child_tid: u64,
+    ) -> (Arc<Process<P>>, LinuxThread) {
+        let first = take_first_thread(parent);
+        let child = Arc::new(parent.new_child(memory).unwrap());
+        parent.add_child(&child, 17).unwrap();
+        child.add_thread();
+        let thread = first.new_process_thread(
+            child.id().get(),
+            clear_child_tid,
+            first.files().copy().unwrap(),
+            first.working_directory().copy(),
+            true,
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(parent.id().get(), first);
+        (child, thread)
+    }
+
+    #[test]
+    fn a_child_knows_its_parent_keeps_its_actions_and_its_exit_is_recorded_for_it() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (parent, pid) = process_with_stacks(&kernel);
+        let sigusr1 = u64::from(signal::SIGUSR1);
+        set_handler(&parent, sigusr1, 0, 0);
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        assert_eq!(call_as(&child, &mut thread, number::GETPPID, [0; 6]), pid);
+        assert_eq!(
+            call_as(&child, &mut thread, number::GETPID, [0; 6]),
+            u64::from(child.id().get())
+        );
+        assert_eq!(call(&parent, number::GETPPID, [0; 6]), 0);
+        assert_eq!(
+            child.signals().lock().action(signal::SIGUSR1),
+            parent.signals().lock().action(signal::SIGUSR1)
+        );
+        let mut context = called(number::EXIT_GROUP, [0x115, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&child, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let [state] = parent.children()[..] else {
+            panic!("not one child");
+        };
+        assert_eq!(state.exit, Some(ProcessExit::Exited(0x15)));
+        assert_eq!(state.exit_signal, 17);
+        assert!(!state.freed);
+        drop((child, thread));
+        assert!(parent.children()[0].freed);
+    }
+
+    #[test]
+    fn a_child_sharing_the_memory_clears_its_tid_word_there_as_it_ends() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (parent, _) = process_with_stacks(&kernel);
+        parent.write_user_memory(SCRATCH, &[0xff; 8]).unwrap();
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Shared, SCRATCH);
+        assert_eq!(child.futex_space(), parent.futex_space());
+        assert!(parent.shares_memory());
+        let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&child, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let mut word = [0u8; 8];
+        parent.read_user_memory(SCRATCH, &mut word).unwrap();
+        assert_eq!(word, [0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+        drop((child, thread));
+        assert!(!parent.shares_memory());
     }
 
     #[test]

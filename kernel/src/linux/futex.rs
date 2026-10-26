@@ -556,7 +556,7 @@ impl Call {
         if bitset == 0 {
             return Err(Errno::EINVAL);
         }
-        let key = |address| Key::new(process.id().get(), address, shared);
+        let key = |address| Key::new(process.futex_space(), address, shared);
         match command {
             op::WAKE | op::WAKE_BITSET => {
                 check_word(process, address, shared)?;
@@ -676,7 +676,7 @@ fn release_robust_lock<P: Platform>(
         && old & robust::WAITERS != 0
         && entry & robust::PRIORITY_INHERITANCE == 0
     {
-        wake::<P>(Key::new(process.id().get(), address, true), MATCH_ANY, 1);
+        wake::<P>(Key::new(process.futex_space(), address, true), MATCH_ANY, 1);
     }
     Ok(())
 }

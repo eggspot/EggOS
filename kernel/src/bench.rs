@@ -38,7 +38,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 31] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 33] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -99,6 +99,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 31] {
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
         ("linux_openat_close", linux_openat_close::<P>),
         ("linux_file_read", linux_file_read::<P>),
+        ("linux_fork", linux_fork::<P>),
+        ("linux_vfork_exec", linux_vfork_exec::<P>),
     ]
 }
 
@@ -487,6 +489,51 @@ fn linux_execve<P: Platform>(memory: &mut Memory<P>, n: u64) {
     );
 }
 
+fn linux_fork<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    run_process_loop(memory, b"fork-loop", n);
+}
+
+fn linux_vfork_exec<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    run_process_loop(memory, b"spawn-loop", n);
+}
+
+fn run_process_loop<P: Platform>(memory: &mut Memory<P>, mode: &[u8], n: u64) {
+    const PROGRAM: &[u8] = b"/usr/libexec/eggos-selftest";
+    let Ok(node) = crate::vfs::resolve(crate::vfs::root(), crate::vfs::root(), PROGRAM) else {
+        return;
+    };
+    let image = node.read(0, node.attributes().size as usize);
+    let mut count = [0u8; 20];
+    let mut first = count.len();
+    let mut left = n;
+    loop {
+        first -= 1;
+        count[first] = b'0' + (left % 10) as u8;
+        left /= 10;
+        if left == 0 {
+            break;
+        }
+    }
+    let arguments: [&[u8]; 3] = [PROGRAM, mode, &count[first..]];
+    // SAFETY: as in `process_syscall_round_trip`.
+    let mut process =
+        unsafe { Process::<P>::new(&memory.page_tables) }.expect("there is memory for a process");
+    let context = exec::load(&mut process, image, PROGRAM, &arguments, &[])
+        .expect("the runtime's self-test program loads");
+    let process = Arc::new(process);
+    linux::spawn::<P>(process.clone(), context)
+        .expect("there is memory for the program's thread")
+        .join::<P>();
+    while process.children().iter().any(|child| child.exit.is_none()) {
+        thread::yield_now::<P>();
+    }
+    assert_eq!(
+        process.exit_status(),
+        Some(process::ProcessExit::Exited(0)),
+        "the process loop ran to its end"
+    );
+}
+
 /// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
@@ -862,8 +909,10 @@ mod tests {
                 (linux_descriptor_lookup, _),
                 (linux_openat_close, _),
                 (linux_file_read, _),
+                (linux_fork, _),
+                (linux_vfork_exec, _),
             ],
-        ) = all.split_at(all.len() - 13)
+        ) = all.split_at(all.len() - 15)
         else {
             unreachable!()
         };
@@ -881,7 +930,9 @@ mod tests {
                 *linux_dup3_close,
                 *linux_descriptor_lookup,
                 *linux_openat_close,
-                *linux_file_read
+                *linux_file_read,
+                *linux_fork,
+                *linux_vfork_exec
             ],
             [
                 "syscall_round_trip",
@@ -896,7 +947,9 @@ mod tests {
                 "linux_dup3_close",
                 "linux_descriptor_lookup",
                 "linux_openat_close",
-                "linux_file_read"
+                "linux_file_read",
+                "linux_fork",
+                "linux_vfork_exec"
             ]
         );
         assert_eq!(

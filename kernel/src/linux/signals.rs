@@ -540,6 +540,17 @@ impl ThreadSignals {
             ..Self::new()
         }
     }
+
+    /// The state of the first thread of a child process the thread with this state starts
+    /// (`fork`, `vfork`): the same blocked signals and alternate stack, nothing pending, as
+    /// signal(7) and sigaltstack(2) describe.
+    pub const fn for_new_process(&self) -> Self {
+        Self {
+            blocked: self.blocked,
+            alternate_stack: self.alternate_stack,
+            ..Self::new()
+        }
+    }
 }
 
 impl Signals {
@@ -558,6 +569,25 @@ impl Signals {
     /// program's memory is new. Moved, not copied, so nothing is allocated.
     pub fn take_for_exec(&mut self, thread: u32, new_thread: u32) -> Self {
         self.take_for_exec_charged_to(thread, new_thread, &QUEUED_SIGNALS)
+    }
+
+    /// What a child process (`fork`, `clone` without `CLONE_THREAD`) starts with: a copy of
+    /// every action and of where the return trampoline is, which its memory has too, and
+    /// nothing queued, left for a thread or counted as a thread. `None` without memory for it.
+    pub fn copy_actions(&self) -> Option<Self> {
+        let Some([block]) = self.actions_and_queue.as_deref() else {
+            return Some(Self::new());
+        };
+        let mut copy = actions_and_queue_block()?;
+        let [new] = &mut *copy;
+        new.handlers = block.handlers;
+        new.flags = block.flags;
+        new.restorers = block.restorers;
+        new.masks = block.masks;
+        new.trampoline = block.trampoline;
+        Some(Self {
+            actions_and_queue: Some(copy),
+        })
     }
 
     fn take_for_exec_charged_to(
@@ -2237,6 +2267,7 @@ fn deliver_with<P: Platform>(
                     Some(_) => context.set_syscall_result(Errno::EINTR.result()),
                     None => {}
                 }
+                super::load_inherited_fp::<P>(thread);
                 let started = start_handler(
                     process, context, &state, saved_mask, &action, &info, described,
                 );

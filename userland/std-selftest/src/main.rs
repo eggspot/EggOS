@@ -11,12 +11,14 @@
 //! [`console::READ_THE_CONSOLE`], it reads the console ([`console::read_the_console`]). Given
 //! [`exec::EXEC`], it starts a copy of itself from the initramfs with `execve`
 //! ([`exec::exec_into_a_checking_copy`]), which [`exec::EXEC_CHECK`] makes check what it got
-//! ([`exec::check_after_exec`]).
+//! ([`exec::check_after_exec`]). Given [`processes::PROCESSES`], it starts child processes
+//! ([`processes::create_processes`]).
 
 mod console;
 mod descriptors;
 mod exec;
 mod files;
+mod processes;
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -149,6 +151,8 @@ fn main() -> ExitCode {
         Some(console::READ_THE_CONSOLE) => console::read_the_console(),
         Some(exec::EXEC) => return exec::exec_into_a_checking_copy(),
         Some(exec::EXEC_CHECK) => return exec::check_after_exec(),
+        Some(processes::PROCESSES) => return processes::create_processes(),
+        Some(processes::SPAWNED_BY_VFORK) => return processes::spawned_by_vfork(),
         _ => {}
     }
     let mut output = std::io::stdout().lock();

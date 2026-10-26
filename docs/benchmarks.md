@@ -49,6 +49,17 @@ result is an instruction count per iteration (D27), gated against `benchmarks/ba
   program's start-up up to its next `execve` (relocation, `PT_GNU_RELRO`). The first process's
   load and its exit are spread over the iterations. Only test kernels hold the program; the
   benchmark measures nothing elsewhere.
+- `linux_fork`: a process creation with an eager copy and the child's end, per call (D104):
+  the runtime's self-test program, started with `fork-loop <n>`, calls
+  `clone(CLONE_VFORK | SIGCHLD)` `n` times; each child (a copy of every page the program has
+  mapped, its regions, descriptors, credentials and signal actions, and a thread) calls
+  `exit_group` at once, and the parent goes on when it has ended. The children's exit records
+  stay with the parent until it ends (no `wait4` yet). Only test kernels hold the program.
+- `linux_vfork_exec`: `posix_spawn`'s path, per call (D104): the same program, started with
+  `spawn-loop <n>`, calls `clone(CLONE_VM | CLONE_VFORK | SIGCHLD)` `n` times; each child,
+  on the parent's memory, `execve`s the program with `exec-loop 0`, which runs its start-up
+  and exits, and the parent goes on at the child's point of no return. Includes the children's
+  start-ups and exits, the last ones waited for after the parent ends.
 
 ## Host tests of the benchmarks
 

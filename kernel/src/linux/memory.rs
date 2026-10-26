@@ -3,7 +3,8 @@
 //!
 //! Anonymous mappings only until there are files (M7): a mapping is a region whose pages are
 //! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory behaves
-//! as private while a process cannot share it with another (`fork`). Placement is top-down
+//! as private within one memory, which `CLONE_VM` children share; it marks the memory, and a
+//! `fork` that would copy it is refused with `ENOSYS` until copy-on-write (D104). Placement is top-down
 //! from below the stack's guard gap, as Linux places mappings; the break starts at the end of
 //! the program's last segment ([`super::exec`]). Writable and executable at once is refused
 //! with `EACCES`, as Linux's `PR_SET_MDWE` and SELinux's `execmem` do (decided by research,
@@ -199,6 +200,9 @@ pub fn mmap<P: Platform>(
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
+    if kind != map::PRIVATE {
+        process.mark_shared_anonymous();
+    }
     let user_end = <P::PageTableFormat as Format>::USER_END;
     let placement = if flags & (map::FIXED | map::FIXED_NOREPLACE) != 0 {
         if !address.is_multiple_of(FRAME_SIZE) {
