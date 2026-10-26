@@ -21,6 +21,7 @@ struct FakeGpu {
     status: Cell<u8>,
     answers_left: Cell<Option<usize>>,
     fails: Cell<Option<u32>>,
+    fails_only: Cell<Option<u32>>,
     device: RefCell<Option<DeviceSide>>,
     notifies: Cell<usize>,
     log: RefCell<Vec<Command>>,
@@ -95,7 +96,8 @@ impl FakeGpu {
                 fence_id: read64(request + 8),
             });
             let answer = self.answer(kind, request, request_len, response.get());
-            let answer = self.fails.get().unwrap_or(answer);
+            let failing = self.fails_only.get().is_none_or(|only| only == kind);
+            let answer = self.fails.get().filter(|_| failing).unwrap_or(answer);
             write32(response.get(), answer);
             write32(response.get() + 4, if fenced { FLAG_FENCE } else { 0 });
             device.put_used(head, response_len.min(DISPLAY_INFO_BYTES as u32));
@@ -412,6 +414,32 @@ fn a_refused_resource_hands_the_framebuffer_back() {
     assert_eq!(error, Error::CommandFailed(ERR_INVALID_PARAMETER));
     assert!(memory.is_some());
     assert_eq!(gpu.mode(), None);
+}
+
+#[test]
+fn a_framebuffer_whose_scanout_failed_is_unseen_until_a_reset_hands_it_back() {
+    let mut gpu = gpu(FakeGpu::new(Some((64, 48))));
+    let mode = gpu.display_mode();
+    gpu.transport().fails.set(Some(ERR_INVALID_PARAMETER));
+    gpu.transport()
+        .fails_only
+        .set(Some(command::RESOURCE_ATTACH_BACKING));
+    let (error, memory) = gpu
+        .attach_framebuffer(framebuffer(mode), mode, &mut polls(10))
+        .unwrap_err();
+    assert_eq!(error, Error::CommandFailed(ERR_INVALID_PARAMETER));
+    assert!(memory.is_none());
+    assert_eq!(gpu.mode(), None);
+    assert!(gpu.pixels().is_none());
+    assert_eq!(
+        gpu.flush(&[Rect::new(0, 0, 1, 1)], &mut polls(10)),
+        Err(Error::NoScanout)
+    );
+    let (error, memory) = gpu
+        .attach_framebuffer(framebuffer(mode), mode, &mut polls(10))
+        .unwrap_err();
+    assert_eq!((error, memory.is_some()), (Error::ScanoutInUse, true));
+    assert!(gpu.reset(&mut polls(10)).unwrap().framebuffer.is_some());
 }
 
 #[test]

@@ -25,9 +25,9 @@ impl Mode {
         self.width as usize * BYTES_PER_PIXEL as usize
     }
 
-    /// Bytes of the whole framebuffer.
+    /// Bytes of the whole framebuffer, `usize::MAX` when they do not fit in one.
     pub const fn bytes(self) -> usize {
-        self.stride() * self.height as usize
+        self.stride().saturating_mul(self.height as usize)
     }
 
     /// The whole screen.
@@ -205,6 +205,15 @@ mod tests {
         assert_eq!(a.union(Rect::default()), a);
         assert_eq!(Rect::default().union(b), b);
         assert!(!a.overlaps(&Rect::new(5, 5, 0, 3)));
+    }
+
+    #[test]
+    fn a_mode_s_size_saturates_instead_of_wrapping() {
+        assert_eq!(Mode::new(1280, 800).stride(), 5120);
+        assert_eq!(Mode::new(1280, 800).bytes(), 4_096_000);
+        if usize::BITS == 64 {
+            assert_eq!(Mode::new(u32::MAX, u32::MAX).bytes(), usize::MAX);
+        }
     }
 
     #[test]

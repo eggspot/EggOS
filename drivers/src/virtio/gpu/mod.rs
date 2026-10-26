@@ -79,6 +79,7 @@ pub struct Released<T, M> {
 struct Scanout<M> {
     framebuffer: M,
     mode: Mode,
+    shown: bool,
 }
 
 /// A virtio GPU device, set up and polled.
@@ -177,17 +178,21 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         self.display
     }
 
-    /// The mode of the framebuffer on the scanout, once one is attached.
+    /// The mode of the framebuffer on the scanout, once one is attached and shown.
     pub fn mode(&self) -> Option<Mode> {
-        self.scanout.as_ref().map(|scanout| scanout.mode)
+        self.shown().map(|scanout| scanout.mode)
+    }
+
+    fn shown(&self) -> Option<&Scanout<M>> {
+        self.scanout.as_ref().filter(|scanout| scanout.shown)
     }
 
     /// Makes `framebuffer` ([`Mode::bytes`] of `mode` or more) the backing of a `mode`-sized
     /// resource in [`FORMAT_B8G8R8X8_UNORM`] and shows it on scanout 0, which the device scales
     /// or crops to the display as it does. Refused with the framebuffer handed back when a
     /// scanout already exists, the mode is empty or too large, or the memory too small; once the
-    /// device was given the memory, it stays with the driver even on an error and comes back
-    /// from [`Self::reset`].
+    /// device was given the memory, it stays with the driver even on an error, unseen by
+    /// [`Self::mode`], [`Self::pixels`] and [`Self::flush`], and comes back from [`Self::reset`].
     pub fn attach_framebuffer(
         &mut self,
         framebuffer: M,
@@ -223,7 +228,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         self.put64(request + 32, framebuffer.dma_addr().get());
         self.put32(request + 40, length);
         self.put32(request + 44, 0);
-        self.scanout = Some(Scanout { framebuffer, mode });
+        self.scanout = Some(Scanout {
+            framebuffer,
+            mode,
+            shown: false,
+        });
         self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
             .map_err(|error| (error, None))?;
         let request = self.header(0, command::SET_SCANOUT);
@@ -231,13 +240,17 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         self.put32(request + 40, SCANOUT_ID);
         self.put32(request + 44, RESOURCE_ID);
         self.run(1, SET_SCANOUT_BYTES, keep_waiting)
-            .map_err(|error| (error, None))
+            .map_err(|error| (error, None))?;
+        if let Some(scanout) = self.scanout.as_mut() {
+            scanout.shown = true;
+        }
+        Ok(())
     }
 
     /// The framebuffer's pixels, row after row, each a `0x00RRGGBB`; `None` before
     /// [`Self::attach_framebuffer`]. What is drawn shows once [`Self::flush`]ed.
     pub fn pixels(&mut self) -> Option<&mut [u32]> {
-        let scanout = self.scanout.as_mut()?;
+        let scanout = self.scanout.as_mut().filter(|scanout| scanout.shown)?;
         let pixels = scanout.mode.bytes() / BYTES_PER_PIXEL as usize;
         // SAFETY: the framebuffer holds at least `mode.bytes()` bytes (checked when attached),
         // 4096-aligned so aligned for `u32`, owned by this driver while it lives; the device
