@@ -407,15 +407,13 @@ pub fn become_foreground<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxT
     if console::is_foreground(reader) {
         return;
     }
-    console::set_foreground(
-        reader,
-        Arc::new(ConsoleReader {
-            process: Arc::clone(process),
-            wait_slot: Arc::clone(thread.wait_slot()),
-        }),
-    );
+    let foreground: Arc<dyn console::Foreground> = Arc::new(ConsoleReader {
+        process: Arc::clone(process),
+        wait_slot: Arc::clone(thread.wait_slot()),
+    });
+    console::set_foreground(reader, Arc::clone(&foreground));
     if process.has_ended() {
-        console::forget_foreground(process.id().get());
+        console::forget_this_foreground(&foreground);
     }
 }
 

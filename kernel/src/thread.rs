@@ -205,7 +205,8 @@ struct FpRegisters {
 
 impl Drop for FpRegisters {
     fn drop(&mut self) {
-        // SAFETY: allocated with this layout in `start_fp`, owned only by `self`.
+        // SAFETY: allocated with this layout in `start_fp`, or as a `Box` of the same type,
+        // owned only by `self`.
         unsafe { alloc::alloc::dealloc(self.state.as_ptr().cast(), Layout::new::<FpState>()) };
     }
 }
@@ -1360,6 +1361,18 @@ pub(crate) fn start_fp<P: Platform>() -> FpStart {
     };
     // SAFETY: just allocated with `FpState`'s layout, so valid for a write and aligned.
     unsafe { state.as_ptr().write(FpState::new()) };
+    start_fp_with::<P>(state)
+}
+
+/// [`start_fp`] with `state` as the thread's registers instead of a new program's: those a
+/// thread or process inherited from the thread that started it (`clone`).
+#[cold]
+#[inline(never)]
+pub(crate) fn start_fp_from<P: Platform>(state: Box<FpState>) -> FpStart {
+    start_fp_with::<P>(NonNull::from(Box::leak(state)))
+}
+
+fn start_fp_with<P: Platform>(state: NonNull<FpState>) -> FpStart {
     let registers = FpRegisters {
         state,
         cpu: Cell::new(ptr::null()),

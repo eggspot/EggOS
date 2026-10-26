@@ -113,6 +113,15 @@ impl Regions {
             .filter(|region| region.start <= address)
     }
 
+    /// A copy of every region, for a new process's memory (`fork`); `None` without memory for
+    /// it.
+    pub fn try_copy(&self) -> Option<Self> {
+        let mut regions = Vec::new();
+        regions.try_reserve_exact(self.regions.len()).ok()?;
+        regions.extend_from_slice(&self.regions);
+        Some(Self { regions })
+    }
+
     /// Every region, in address order.
     pub fn iter(&self) -> impl Iterator<Item = &Region> {
         self.regions.iter()

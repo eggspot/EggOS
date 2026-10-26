@@ -82,10 +82,10 @@ pub fn gettid(thread: &LinuxThread) -> u64 {
     u64::from(thread.id())
 }
 
-/// `getppid()`: 0, as for a process the kernel starts itself (Linux's `init`). Parents come
-/// with `fork` and `clone`.
-pub fn getppid() -> u64 {
-    0
+/// `getppid()`: the id of the process that started the caller's (`fork`, `clone`), 0 for a
+/// process the kernel started itself (Linux's `init`). `execve` keeps it.
+pub fn getppid<P: Platform>(process: &Process<P>) -> u64 {
+    u64::from(process.parent_id())
 }
 
 /// `getcpu(cpu, node, cache)`: writes the number of the CPU the thread runs on to `cpu` and

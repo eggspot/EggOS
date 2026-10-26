@@ -135,6 +135,46 @@ impl<P: Platform> AddressSpace<P> {
         })
     }
 
+    /// Gives `copy`, an empty address space that owns its frames and is not shared yet (one
+    /// made with [`Self::new_owning_frames_beside`]), a page of its own at every user address
+    /// where this one maps or keeps a page, with the same attributes: `fill` is handed the
+    /// frame here, the new frame and the attributes (`None` for a kept page) and fills the new
+    /// frame. This address space is only read, under its lock, so its mappings stay as they are
+    /// and no CPU needs to drop anything; another CPU may write the pages meanwhile. On an error
+    /// ([`MapError::OutOfMemory`] when frames run out), `copy` keeps what it was given so far,
+    /// which dropping it frees.
+    pub fn copy_pages_into(
+        &self,
+        copy: &mut Self,
+        mut fill: impl FnMut(u64, u64, Option<Attributes>),
+    ) -> Result<(), MapError> {
+        assert!(
+            copy.owns_frames,
+            "only an address space that owns its frames takes copies of pages"
+        );
+        let source = self.tables.lock();
+        let destination = copy.tables.get_mut();
+        source.for_each_mapped_user_page(|virt, frame, attributes| {
+            let new = {
+                let mut frames = memory::FRAMES.lock();
+                let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+                frames.allocate().ok_or(MapError::OutOfMemory)?
+            };
+            fill(frame, new, attributes);
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames
+                .as_mut()
+                .expect("the frame came from the frame allocator");
+            let mapped = destination.map_user_page(virt, new, attributes, frames);
+            if mapped.is_err() {
+                // SAFETY: the frame was just allocated from this allocator and could not be
+                // mapped, so nothing refers to it.
+                unsafe { frames.free(new) };
+            }
+            mapped
+        })
+    }
+
     /// From now on, threads using this address space may run on several CPUs at once: removed
     /// or changed mappings are shot down on every other CPU that keeps it loaded before
     /// [`Self::change_pages`] returns, not left for them to drop when they next use it (see the

@@ -44,6 +44,7 @@ pub mod descriptors;
 pub mod exec;
 pub mod fault;
 pub mod files;
+pub mod fork;
 pub mod futex;
 pub mod identity;
 pub mod limits;
@@ -105,6 +106,8 @@ pub mod number {
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
         pub const CLONE: u64 = 56;
+        pub const FORK: u64 = 57;
+        pub const VFORK: u64 = 58;
         pub const EXECVE: u64 = 59;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
@@ -272,6 +275,10 @@ pub mod number {
             EXIT,
             EXIT_GROUP,
             CLONE,
+            #[cfg(target_arch = "x86_64")]
+            FORK,
+            #[cfg(target_arch = "x86_64")]
+            VFORK,
             BRK,
             MMAP,
             MUNMAP,
@@ -606,11 +613,20 @@ fn signal_fault<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let exception = context.last_exception();
-    if process::first_fp_use::<P>(exception.kind) {
+    if first_fp_use::<P>(thread, exception.kind) {
         return ControlFlow::Continue(());
     }
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, thread, context, &fault)
+}
+
+fn first_fp_use<P: Platform>(thread: &mut LinuxThread, kind: ExceptionKind) -> bool {
+    if kind == ExceptionKind::IllegalInstruction
+        && let Some(state) = thread.take_inherited_fp()
+    {
+        return crate::thread::start_fp_from::<P>(state) == crate::thread::FpStart::Started;
+    }
+    process::first_fp_use::<P>(kind)
 }
 
 /// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
@@ -703,6 +719,10 @@ fn out_of_line_call<P: Platform>(
         _ => {
             let result = match number {
                 number::CLONE => thread::clone::<P>(process, thread, context),
+                #[cfg(target_arch = "x86_64")]
+                number::FORK => fork::fork::<P>(process, thread, context),
+                #[cfg(target_arch = "x86_64")]
+                number::VFORK => fork::vfork::<P>(process, thread, context),
                 _ => out_of_line_result(process, thread, number, context),
             };
             context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -784,7 +804,7 @@ fn out_of_line_result<P: Platform>(
             Ok(0)
         }
         number::GETPID => Ok(identity::getpid(process)),
-        number::GETPPID => Ok(identity::getppid()),
+        number::GETPPID => Ok(identity::getppid(process)),
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),
@@ -905,6 +925,7 @@ pub fn exit_thread<P: Platform>(
     }
     if process.remove_thread() {
         let status = process.first_thread_status().unwrap_or(status);
+        clear_child_tid_if_memory_shared::<P>(process, thread);
         return end_process(process, ProcessExit::Exited(u32::from(status)));
     }
     {
@@ -921,13 +942,28 @@ pub fn exit_thread<P: Platform>(
     }
     let address = thread.clear_child_tid();
     if address != 0 {
-        let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
-        if cleared.is_ok() && address.is_multiple_of(4) {
-            let key = futex::Key::new(process.id().get(), address, true);
-            futex::wake::<P>(key, u32::MAX, 1);
-        }
+        clear_child_tid::<P>(process, address);
     }
     ControlFlow::Break(())
+}
+
+fn clear_child_tid<P: Platform>(process: &Process<P>, address: u64) {
+    let cleared = process.write_user_memory(address, &0u32.to_ne_bytes());
+    if cleared.is_ok() && address.is_multiple_of(4) {
+        let key = futex::Key::new(process.futex_space(), address, true);
+        futex::wake::<P>(key, u32::MAX, 1);
+    }
+}
+
+/// For `thread`, the last of `process` to run its program, as it ends it or `execve` replaces
+/// it: clears and wakes its `clear_child_tid` ([`exit_thread`]) if another process shares the
+/// memory (`CLONE_VM`) and may wait on the word, as Linux does when it releases the memory.
+#[inline]
+pub fn clear_child_tid_if_memory_shared<P: Platform>(process: &Process<P>, thread: &LinuxThread) {
+    let address = thread.clear_child_tid();
+    if address != 0 && process.shares_memory() {
+        clear_child_tid::<P>(process, address);
+    }
 }
 
 /// `exit(status)` ([`exit_thread`]) and `exit_group(status)`, which ends the process, every
@@ -943,6 +979,7 @@ fn exit<P: Platform>(
     if number == number::EXIT {
         exit_thread(process, thread, status)
     } else {
+        clear_child_tid_if_memory_shared::<P>(process, thread);
         end_process(process, ProcessExit::Exited(status as u32 & 0xff))
     }
 }
@@ -957,9 +994,10 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     if !process.exit(how) {
         return ControlFlow::Break(());
     }
+    fork::release_vfork_parent::<P>(process);
     crate::console::forget_foreground(process.id().get());
     if others {
-        futex::wake_space::<P>(process.id().get());
+        futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
     }
     ControlFlow::Break(())

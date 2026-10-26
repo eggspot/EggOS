@@ -400,6 +400,52 @@ impl<F: Format> PageTables<F> {
         })
     }
 
+    /// For a user address space's tables: hands every 4 KiB page of user space that is mapped,
+    /// or kept ([`Entry::Kept`]), to `page` in address order, as its address, its frame and its
+    /// attributes (`None` if kept), skipping a table at a time what maps nothing. An error from
+    /// `page` stops the walk.
+    pub fn for_each_mapped_user_page(
+        &self,
+        mut page: impl FnMut(u64, u64, Option<Attributes>) -> Result<(), MapError>,
+    ) -> Result<(), MapError> {
+        if !self.user_half_only {
+            return Err(MapError::NotUser);
+        }
+        self.for_each_user_page(0, F::USER_END, |virt, _, frame, attributes| {
+            page(virt, frame, attributes)
+        })
+    }
+
+    /// For a user address space's tables: maps the 4 KiB page at user address `virt` to
+    /// `frame` with `attributes`, a user mapping, or keeps `frame` there with no access if
+    /// `attributes` is `None` ([`Entry::Kept`]). Tables it lacks come from `frames`. Nothing may
+    /// be mapped or kept there yet ([`MapError::AlreadyMapped`]).
+    pub fn map_user_page(
+        &mut self,
+        virt: u64,
+        frame: u64,
+        attributes: Option<Attributes>,
+        frames: &mut FrameAllocator,
+    ) -> Result<(), MapError> {
+        if !self.user_half_only || attributes.is_some_and(|attributes| !attributes.user) {
+            return Err(MapError::NotUser);
+        }
+        self.check_user_half(virt, FRAME_SIZE)?;
+        if !(virt | frame).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        fence(Ordering::Release);
+        let entry = self.leaf_table_entry(virt, 0, true, frames)?;
+        if entry.read() != 0 {
+            return Err(MapError::AlreadyMapped);
+        }
+        entry.write(match attributes {
+            Some(attributes) => F::leaf(frame, 0, attributes),
+            None => F::kept(frame),
+        });
+        Ok(())
+    }
+
     /// Hands every 4 KiB page of `virt..virt + length` in a user address space's tables that
     /// is mapped, or kept ([`Entry::Kept`]), to `page` in address order: its address, its entry,
     /// its frame and its attributes (`None` if kept). Parts of the range that map nothing are

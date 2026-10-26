@@ -37,7 +37,8 @@ use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
-use core::num::NonZeroU64;
+use alloc::vec::Vec;
+use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
@@ -166,20 +167,7 @@ impl CredentialsAndLimits {
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
-    /// Owns the frames its user pages map ([`AddressSpace::new_owning_frames`]), so they are
-    /// freed with it.
-    space: AddressSpace<P>,
-    /// What the program may use. Held while pages are mapped, unmapped or changed in the
-    /// address space after it is shared (demand paging, the memory calls), and while the kernel
-    /// copies user memory, so a copy never meets a page being mapped or unmapped. Taken before
-    /// the address space's own lock.
-    regions: SpinLock<Regions>,
-    /// The program break, once the program has one ([`Self::set_program_break`]). Taken
-    /// before the regions' lock.
-    program_break: SpinLock<Option<ProgramBreak>>,
-    /// Where the kernel reaches the process's frames: the frame allocator's offset, which on
-    /// the machine is the direct map's (a boot self-test checks it).
-    frame_offset: usize,
+    memory: Arc<Memory<P>>,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
     record: Arc<SpinLock<PidRecord<P>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
@@ -197,15 +185,108 @@ pub struct Process<P: Platform> {
     first_thread_status: AtomicU32,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
+    parent: u32,
+    vfork_parent: AtomicU32,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
     credentials_and_limits: SpinLock<CredentialsAndLimits>,
     /// Its signal state, which its threads share ([`Self::signals`]).
     signals: SpinLock<Signals>,
 }
 
+struct Memory<P: Platform> {
+    space: AddressSpace<P>,
+    regions: SpinLock<Regions>,
+    program_break: SpinLock<Option<ProgramBreak>>,
+    frame_offset: usize,
+    futex_space: u32,
+}
+
+impl<P: Platform> Memory<P> {
+    fn new(space: AddressSpace<P>, frame_offset: usize, futex_space: u32) -> Self {
+        Self {
+            space,
+            regions: SpinLock::new(Regions::new()),
+            program_break: SpinLock::new(None),
+            frame_offset,
+            futex_space,
+        }
+    }
+
+    fn copy(&self, futex_space: u32) -> Result<Self, MapError> {
+        let mut space = self.space.new_owning_frames_beside()?;
+        let program_break = self.program_break.lock();
+        let regions = self.regions.lock();
+        let copied_regions = regions.try_copy().ok_or(MapError::OutOfMemory)?;
+        let frame_offset = self.frame_offset;
+        let at = |frame: u64| (frame as usize).wrapping_add(frame_offset) as *mut u8;
+        self.space
+            .copy_pages_into(&mut space, |frame, new, attributes| {
+                // SAFETY: both frames are reached through the frame allocator's offset: `frame`
+                // is mapped in this memory, whose regions' lock is held, so it stays the
+                // process's, and `new` was just allocated for the copy, so they are distinct and
+                // nothing else uses `new`. Another thread of the process may write `frame`
+                // meanwhile; the copy goes through raw pointers only, as kernel copies of user
+                // memory do (D94).
+                unsafe { ptr::copy_nonoverlapping(at(frame), at(new), FRAME_SIZE as usize) };
+                if attributes.is_some_and(|attributes| attributes.executable) {
+                    P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
+                }
+            })?;
+        Ok(Self {
+            space,
+            regions: SpinLock::new(copied_regions),
+            program_break: SpinLock::new(*program_break),
+            frame_offset,
+            futex_space,
+        })
+    }
+}
+
 struct PidRecord<P: Platform> {
     exit: Option<ProcessExit>,
     handed_over: Option<(usize, Arc<Process<P>>)>,
+    children: Vec<Child<P>>,
+}
+
+impl<P: Platform> PidRecord<P> {
+    fn new() -> Self {
+        Self {
+            exit: None,
+            handed_over: None,
+            children: Vec::new(),
+        }
+    }
+}
+
+struct Child<P: Platform> {
+    id: ProcessId,
+    exit_signal: u8,
+    record: Arc<SpinLock<PidRecord<P>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChildState {
+    pub(crate) exit_signal: u8,
+    pub(crate) exit: Option<ProcessExit>,
+    pub(crate) gone: bool,
+}
+
+/// What memory a child process starts with ([`Process::new_child`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildMemory {
+    /// The parent's own, shared (`CLONE_VM`).
+    Shared,
+    /// A copy of every page of the parent's, made now (`fork`).
+    Copied,
+}
+
+/// Why [`Process::new_child`] made no process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewChildError {
+    /// Every process id has been given out.
+    OutOfIds,
+    /// There was no memory for the process or its copy of the parent's.
+    OutOfMemory,
 }
 
 /// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
@@ -254,33 +335,48 @@ impl<P: Platform> Process<P> {
             .ok_or("there is no frame allocator")?
             .physical_memory_offset();
         let id = ProcessId::allocate().ok_or("out of process ids")?;
-        Ok(Self {
-            space,
-            regions: SpinLock::new(Regions::new()),
-            program_break: SpinLock::new(None),
-            frame_offset,
-            record: Arc::new(SpinLock::new(PidRecord {
-                exit: None,
-                handed_over: None,
-            })),
+        Ok(Self::with_memory(
+            Arc::new(Memory::new(space, frame_offset, id.get())),
+            Arc::new(SpinLock::new(PidRecord::new())),
+            id,
+            0,
+            CredentialsAndLimits::default(),
+            Signals::new(),
+        ))
+    }
+
+    fn with_memory(
+        memory: Arc<Memory<P>>,
+        record: Arc<SpinLock<PidRecord<P>>>,
+        id: ProcessId,
+        parent: u32,
+        credentials_and_limits: CredentialsAndLimits,
+        signals: Signals,
+    ) -> Self {
+        Self {
+            memory,
+            record,
             ended: AtomicBool::new(false),
             signals_sent: AtomicU16::new(0),
             sent_signals_waiting: AtomicBool::new(false),
             threads: AtomicU32::new(0),
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
-            credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
-            signals: SpinLock::new(Signals::new()),
-        })
+            parent,
+            vfork_parent: AtomicU32::new(0),
+            credentials_and_limits: SpinLock::new(credentials_and_limits),
+            signals: SpinLock::new(signals),
+        }
     }
 
     /// A process for the program `execve` starts in this one's place: an empty address space
-    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id and the same
-    /// record of how it ends, a copy of the credentials and resource limits, no signal actions
-    /// and no threads yet. This process is untouched, so the caller can still drop the new
-    /// one if loading the program fails.
+    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id, parent and
+    /// record of how it ends (its children's among it), a copy of the credentials and resource
+    /// limits, no signal actions and no threads yet. This process is untouched, so the caller
+    /// can still drop the new one if loading the program fails.
     pub fn new_image(&self) -> Result<Self, &'static str> {
         let space = self
+            .memory
             .space
             .new_owning_frames_beside()
             .map_err(|error| error.description())?;
@@ -289,21 +385,125 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy()
             .ok_or("no memory for the credentials and limits")?;
-        Ok(Self {
-            space,
-            regions: SpinLock::new(Regions::new()),
-            program_break: SpinLock::new(None),
-            frame_offset: self.frame_offset,
-            record: Arc::clone(&self.record),
-            ended: AtomicBool::new(false),
-            signals_sent: AtomicU16::new(0),
-            sent_signals_waiting: AtomicBool::new(false),
-            threads: AtomicU32::new(0),
-            first_thread_status: AtomicU32::new(NO_STATUS),
-            id: self.id,
-            credentials_and_limits: SpinLock::new(credentials_and_limits),
-            signals: SpinLock::new(Signals::new()),
-        })
+        Ok(Self::with_memory(
+            Arc::new(Memory::new(space, self.memory.frame_offset, self.id.get())),
+            Arc::clone(&self.record),
+            self.id,
+            self.parent,
+            credentials_and_limits,
+            Signals::new(),
+        ))
+    }
+
+    /// A child of this process (`fork`, `clone` without `CLONE_THREAD`): a new id, this
+    /// process as its parent, a record of its own, the memory `memory` says, a copy of the
+    /// credentials and resource limits and of the signal actions (nothing queued), and no
+    /// threads yet. This process is untouched, so the caller can drop the child if starting it
+    /// fails; a copy that runs out of frames frees every one it took. Pages other threads of
+    /// this process write during the copy are copied as they are at that moment.
+    pub fn new_child(&self, memory: ChildMemory) -> Result<Self, NewChildError> {
+        let id = ProcessId::allocate().ok_or(NewChildError::OutOfIds)?;
+        let memory = match memory {
+            ChildMemory::Shared => Arc::clone(&self.memory),
+            ChildMemory::Copied => Arc::new(
+                self.memory
+                    .copy(id.get())
+                    .map_err(|_| NewChildError::OutOfMemory)?,
+            ),
+        };
+        let credentials_and_limits = self
+            .credentials_and_limits
+            .lock()
+            .copy()
+            .ok_or(NewChildError::OutOfMemory)?;
+        let signals = self
+            .signals
+            .lock()
+            .copy_actions()
+            .ok_or(NewChildError::OutOfMemory)?;
+        Ok(Self::with_memory(
+            memory,
+            Arc::new(SpinLock::new(PidRecord::new())),
+            id,
+            self.id.get(),
+            credentials_and_limits,
+            signals,
+        ))
+    }
+
+    /// Records `child` as one of this process's children, whose end it learns with
+    /// `exit_signal` (0 for none) once `wait4` exists: the record of how the child ends stays
+    /// until then, however the child ends, or until this process's record goes. `Err` without
+    /// memory for it.
+    pub fn add_child(&self, child: &Self, exit_signal: u8) -> Result<(), NewChildError> {
+        let mut record = self.record.lock();
+        record
+            .children
+            .try_reserve(1)
+            .map_err(|_| NewChildError::OutOfMemory)?;
+        record.children.push(Child {
+            id: child.id,
+            exit_signal,
+            record: Arc::clone(&child.record),
+        });
+        Ok(())
+    }
+
+    /// Forgets the child [`Self::add_child`] recorded with id `id`, which did not start.
+    pub fn remove_child(&self, id: ProcessId) {
+        self.record.lock().children.retain(|child| child.id != id);
+    }
+
+    pub(crate) fn children(&self) -> Vec<ChildState> {
+        self.record
+            .lock()
+            .children
+            .iter()
+            .map(|child| ChildState {
+                exit_signal: child.exit_signal,
+                exit: child.record.lock().exit,
+                gone: Arc::strong_count(&child.record) == 1,
+            })
+            .collect()
+    }
+
+    /// The id of the process that started this one, 0 if the kernel did (`getppid`).
+    pub fn parent_id(&self) -> u32 {
+        self.parent
+    }
+
+    /// The futex space of the process's memory: its own id, or for a process sharing its
+    /// parent's memory (`CLONE_VM`), the id of the process that made that memory, so futex
+    /// words in it are one word to every process using it.
+    #[inline]
+    pub fn futex_space(&self) -> u32 {
+        self.memory.futex_space
+    }
+
+    /// Whether another process uses this process's memory (`CLONE_VM` without
+    /// `CLONE_THREAD`).
+    pub fn shares_memory(&self) -> bool {
+        Arc::strong_count(&self.memory) > 1
+    }
+
+    /// Records that the thread that started this process with `CLONE_VFORK` waits until it
+    /// execs or ends, woken through futex space `futex_space` ([`Self::take_vfork_parent`]).
+    pub fn set_vfork_parent(&self, futex_space: u32) {
+        self.vfork_parent.store(futex_space, Ordering::Release);
+    }
+
+    /// The futex space [`Self::set_vfork_parent`] recorded, once: the waiting parent is to be
+    /// woken there as the process execs or ends.
+    #[inline]
+    pub fn take_vfork_parent(&self) -> Option<u32> {
+        if self.vfork_parent.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        NonZeroU32::new(self.vfork_parent.swap(0, Ordering::AcqRel)).map(NonZeroU32::get)
+    }
+
+    fn memory_mut(&mut self) -> &mut Memory<P> {
+        Arc::get_mut(&mut self.memory).expect("a process is built before its memory is shared")
     }
 
     /// Its id, given when it was created.
@@ -391,7 +591,10 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
-        self.regions.get_mut().insert(start, end, Some(attributes))
+        self.memory_mut()
+            .regions
+            .get_mut()
+            .insert(start, end, Some(attributes))
     }
 
     /// Sets the program break's start and end to `start`, page-aligned: where the heap `brk`
@@ -400,7 +603,7 @@ impl<P: Platform> Process<P> {
     pub fn set_program_break(&mut self, start: u64) {
         debug_assert!(start.is_multiple_of(FRAME_SIZE));
         let start = NonZeroU64::new(start).expect("the program break starts above address 0");
-        *self.program_break.get_mut() = Some(ProgramBreak {
+        *self.memory_mut().program_break.get_mut() = Some(ProgramBreak {
             start,
             end: start.get(),
         });
@@ -412,7 +615,7 @@ impl<P: Platform> Process<P> {
     /// already. Pages the move gives up are unmapped and their frames freed; pages it adds
     /// are mapped, zeroed, as the program first touches them.
     pub fn move_program_break(&self, requested: u64, limit: u64) -> u64 {
-        let mut program_break = self.program_break.lock();
+        let mut program_break = self.memory.program_break.lock();
         let Some(ProgramBreak { start, end }) = *program_break else {
             return 0;
         };
@@ -427,10 +630,11 @@ impl<P: Platform> Process<P> {
             requested.next_multiple_of(FRAME_SIZE),
         );
         if new > old {
-            let added = self
-                .regions
-                .lock()
-                .insert(old, new, Some(Attributes::USER_READ_WRITE));
+            let added =
+                self.memory
+                    .regions
+                    .lock()
+                    .insert(old, new, Some(Attributes::USER_READ_WRITE));
             if added.is_err() {
                 return end;
             }
@@ -461,7 +665,7 @@ impl<P: Platform> Process<P> {
         let within = |start: u64, floor: u64, top: u64| {
             start >= floor && start.checked_add(length).is_some_and(|end| end <= top)
         };
-        let mut regions = self.regions.lock();
+        let mut regions = self.memory.regions.lock();
         let start = match placement {
             Placement::Replace(start) | Placement::Exactly(start) => {
                 if !within(start, 0, user_end) {
@@ -498,7 +702,7 @@ impl<P: Platform> Process<P> {
         let start = self
             .map_region(placement, FRAME_SIZE, Some(attributes))
             .ok()?;
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let mapped = self.map_frame(start, attributes, contents);
         drop(regions);
         if mapped.is_err() {
@@ -514,7 +718,7 @@ impl<P: Platform> Process<P> {
     /// unmaps the pages there, freeing their frames (Linux's `munmap`). Parts of the range in
     /// no region are fine.
     pub fn unmap_range(&self, start: u64, end: u64) -> Result<(), RegionError> {
-        let mut regions = self.regions.lock();
+        let mut regions = self.memory.regions.lock();
         self.unmap_locked(&mut regions, start, end)
     }
 
@@ -534,8 +738,8 @@ impl<P: Platform> Process<P> {
     #[inline(always)]
     fn free_pages(&self, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
-        let frame_offset = self.frame_offset;
-        let result = self.space.unmap_pages(start, end - start, |frame| {
+        let frame_offset = self.memory.frame_offset;
+        let result = self.memory.space.unmap_pages(start, end - start, |frame| {
             // SAFETY: the address space owns its frames (`Process::new`), so this one came from
             // the frame allocator, whose offset `frame_offset` is; its entry no longer refers to
             // it, and no CPU writes it through what it cached of the entry (`unmap_pages`), so
@@ -566,7 +770,7 @@ impl<P: Platform> Process<P> {
         if !is_page_range(start, end) {
             return Err(RegionError::Invalid);
         }
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let free_run = |(run_start, run_end)| {
             self.free_pages(run_start, run_end)
                 .map_err(|_| RegionError::Invalid)
@@ -601,7 +805,7 @@ impl<P: Platform> Process<P> {
 
     /// How much of user addresses `start..end` regions hold.
     pub fn coverage(&self, start: u64, end: u64) -> Coverage {
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let mut covered = start;
         let mut any = false;
         for region in regions.overlapping(start, end) {
@@ -632,7 +836,7 @@ impl<P: Platform> Process<P> {
         access: Access,
     ) -> Result<(), PopulateError> {
         debug_assert!(is_page_range(start, end));
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let mut covered = start;
         let mut result = Ok(());
         for region in regions.overlapping(start, end) {
@@ -649,6 +853,7 @@ impl<P: Platform> Process<P> {
             if access == Access::Write {
                 for page in (part_start..part_end).step_by(FRAME_SIZE as usize) {
                     if self
+                        .memory
                         .space
                         .translate(page)
                         .is_some_and(|(_, mapped)| access.allowed_by(mapped))
@@ -707,7 +912,7 @@ impl<P: Platform> Process<P> {
         {
             return Err(RegionError::Invalid);
         }
-        let mut regions = self.regions.lock();
+        let mut regions = self.memory.regions.lock();
         let region = regions
             .find(start)
             .copied()
@@ -746,7 +951,7 @@ impl<P: Platform> Process<P> {
             }
         };
         regions.insert(to, to + new_length, region.attributes)?;
-        if let Err(error) = self.space.move_pages(start, to, old_length) {
+        if let Err(error) = self.memory.space.move_pages(start, to, old_length) {
             regions.remove(to, to + new_length, |_| ())?;
             return Err(match error {
                 MapError::OutOfMemory => RegionError::OutOfMemory,
@@ -774,12 +979,13 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
-        let mut regions = self.regions.lock();
+        let mut regions = self.memory.regions.lock();
         let mut changed_end = start;
         let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
         if changed_end > start {
-            let frame_offset = self.frame_offset;
-            self.space
+            let frame_offset = self.memory.frame_offset;
+            self.memory
+                .space
                 .change_pages(
                     start,
                     changed_end - start,
@@ -817,7 +1023,7 @@ impl<P: Platform> Process<P> {
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
             frames.allocate().ok_or(MapError::OutOfMemory)?
         };
-        let page = (frame as usize).wrapping_add(self.frame_offset) as *mut u8;
+        let page = (frame as usize).wrapping_add(self.memory.frame_offset) as *mut u8;
         // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
         // it through its offset, the process's `frame_offset`. `contents` fit in the frame (the
         // callers' duty) and are not in it, so the two do not overlap.
@@ -834,7 +1040,7 @@ impl<P: Platform> Process<P> {
             // see the frame's old data.
             P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
         }
-        match self.space.map(virt, frame, FRAME_SIZE, attributes) {
+        match self.memory.space.map(virt, frame, FRAME_SIZE, attributes) {
             Ok(()) => Ok(frame),
             Err(error) => {
                 free_frame(frame);
@@ -857,7 +1063,7 @@ impl<P: Platform> Process<P> {
         fault: PageFault,
     ) -> Result<(), UnresolvedFault> {
         let page = address & !(FRAME_SIZE - 1);
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         self.populate(&regions, page, fault.access, fault.may_be_stale)?;
         drop(regions);
         P::drop_user_translations(page, FRAME_SIZE);
@@ -895,7 +1101,7 @@ impl<P: Platform> Process<P> {
                 Err(_) => return Err(UnresolvedFault::NotAllowed),
             }
         }
-        match self.space.translate(page) {
+        match self.memory.space.translate(page) {
             Some((frame, mapped)) if mapped_is_ready && access.allowed_by(mapped) => {
                 Ok((frame, mapped))
             }
@@ -919,7 +1125,8 @@ impl<P: Platform> Process<P> {
         page: u64,
         access: Access,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
-        self.space
+        self.memory
+            .space
             .translate(page)
             .filter(|&(_, mapped)| access.allowed_by(mapped))
             .ok_or(UnresolvedFault::OutOfMemory)
@@ -927,12 +1134,12 @@ impl<P: Platform> Process<P> {
 
     /// The region that holds user address `address`, if any.
     pub fn region(&self, address: u64) -> Option<Region> {
-        self.regions.lock().find(address).copied()
+        self.memory.regions.lock().find(address).copied()
     }
 
     /// The process's address space.
     pub fn address_space(&self) -> &AddressSpace<P> {
-        &self.space
+        &self.memory.space
     }
 
     /// Runs `active` with the process's address space active on this CPU, as
@@ -1008,7 +1215,7 @@ impl<P: Platform> Process<P> {
         if !address.is_multiple_of(4) || address >= <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let kernel = self.in_direct_map(&regions, address, write)?;
         // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
         // through the direct map (`in_direct_map`' promise), mapped with the same memory type
@@ -1031,7 +1238,7 @@ impl<P: Platform> Process<P> {
         write: bool,
     ) -> Result<*mut u8, InvalidUserAddress> {
         let page = virt & !(FRAME_SIZE - 1);
-        let (frame, attributes) = match self.space.translate(page) {
+        let (frame, attributes) = match self.memory.space.translate(page) {
             Some(mapped) => mapped,
             None => {
                 let access = if write { Access::Write } else { Access::Read };
@@ -1046,7 +1253,7 @@ impl<P: Platform> Process<P> {
             return Err(InvalidUserAddress);
         }
         let phys = frame + virt % FRAME_SIZE;
-        Ok((phys as usize).wrapping_add(self.frame_offset) as *mut u8)
+        Ok((phys as usize).wrapping_add(self.memory.frame_offset) as *mut u8)
     }
 
     /// Walks `length` bytes of user memory from `address` a page at a time and hands each
@@ -1078,7 +1285,7 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = self.regions.lock();
+        let regions = self.memory.regions.lock();
         let mut done = 0;
         while done < length {
             let virt = address + done as u64;
@@ -1258,7 +1465,7 @@ impl<P: Platform> Process<P> {
 impl<P: Platform> core::fmt::Debug for Process<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Process")
-            .field("regions", &*self.regions.lock())
+            .field("regions", &*self.memory.regions.lock())
             .finish_non_exhaustive()
     }
 }

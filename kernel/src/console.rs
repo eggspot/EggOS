@@ -238,6 +238,24 @@ pub fn forget_foreground(process: u32) {
     drop(previous);
 }
 
+/// Forgets `foreground` if it is still the console's foreground ([`set_foreground`]), and
+/// nothing else: for a reader whose process ended as it became the foreground, which must not
+/// forget a later reader of the program `execve` started with the same process id.
+pub fn forget_this_foreground(foreground: &Arc<dyn Foreground>) {
+    let previous = {
+        let mut current = FOREGROUND.lock();
+        if !current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, foreground))
+        {
+            return;
+        }
+        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
+        current.take()
+    };
+    drop(previous);
+}
+
 #[cfg(test)]
 pub(crate) fn forget_foreground_for_test() {
     let previous = {
