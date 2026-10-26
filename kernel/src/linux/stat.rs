@@ -208,7 +208,6 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
         .map_err(|_| Errno::EFAULT)
 }
 
-/// The status of what descriptor `fd` of `files` names: `EBADF` unless it is open.
 fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
     match files.file(fd)?.kind() {
         FileKind::Console => Ok(CONSOLE),

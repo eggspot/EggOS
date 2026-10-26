@@ -90,6 +90,8 @@ pub mod request {
     pub const FIONCLEX: u32 = 0x5450;
     /// Set the descriptor's close-on-exec flag.
     pub const FIOCLEX: u32 = 0x5451;
+    /// Set or clear `O_ASYNC` (an `int`): read and ignored, as `F_SETFL` ignores `O_ASYNC`.
+    pub const FIOASYNC: u32 = 0x5452;
 }
 
 /// What an open file description names. The console is the first; the file system's nodes
@@ -187,7 +189,6 @@ pub struct Descriptor {
     pub close_on_exec: bool,
 }
 
-/// The fewest slots a table grows to.
 const SMALLEST_TABLE: usize = 8;
 
 /// A process's descriptors, by number. See the module documentation.
@@ -511,8 +512,8 @@ fn duplicate_to<P: Platform>(
 /// `fcntl(fd, command, argument)`. As Linux: `EBADF` if `fd` is not open, whatever the
 /// command; then:
 /// - `F_DUPFD` and `F_DUPFD_CLOEXEC`: as `dup`, to the lowest free descriptor at least
-///   `argument`, close-on-exec with `F_DUPFD_CLOEXEC`; `EINVAL` if `argument` (an `unsigned
-///   long`) is not below the open-file limit, `EMFILE` if every descriptor from it up to the
+///   `argument`, close-on-exec with `F_DUPFD_CLOEXEC`; `EINVAL` if `argument` is not below the
+///   open-file limit (a negative one never is), `EMFILE` if every descriptor from it up to the
 ///   limit is taken;
 /// - `F_GETFD` and `F_SETFD`: the descriptor's flags, `FD_CLOEXEC` the only one (other bits
 ///   set are ignored);
@@ -520,7 +521,8 @@ fn duplicate_to<P: Platform>(
 ///   which `F_SETFL` changes `O_APPEND` and `O_NONBLOCK` and ignores the rest;
 /// - any other command: `EINVAL`.
 ///
-/// `fd` and `command` are 32-bit.
+/// `fd`, `command` and `argument` are 32-bit: the commands answered take an `int`, and C
+/// libraries pass it in a register whose upper half is undefined.
 pub fn fcntl<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,
@@ -528,18 +530,18 @@ pub fn fcntl<P: Platform>(
     command: u64,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let file = files.file(fd)?;
     let fd = fd as u32;
+    let open = |table: &DescriptorTable| table.get(fd).ok_or(Errno::EBADF).map(|_| ());
+    let argument = argument as u32;
     match command as u32 {
         command @ (command::DUPFD | command::DUPFD_CLOEXEC) => {
+            open(&files.lock())?;
             let limit = open_file_limit(process);
-            if argument >= limit {
+            if u64::from(argument) >= limit {
                 return Err(Errno::EINVAL);
             }
             let close_on_exec = command == command::DUPFD_CLOEXEC;
-            let new = files
-                .lock()
-                .duplicate(fd, argument as u32, close_on_exec, limit)?;
+            let new = files.lock().duplicate(fd, argument, close_on_exec, limit)?;
             Ok(u64::from(new))
         }
         command::GETFD => {
@@ -549,15 +551,31 @@ pub fn fcntl<P: Platform>(
         command::SETFD => {
             let mut table = files.lock();
             let descriptor = table.get_mut(fd).ok_or(Errno::EBADF)?;
-            descriptor.close_on_exec = argument as u32 & FD_CLOEXEC != 0;
+            descriptor.close_on_exec = argument & FD_CLOEXEC != 0;
             Ok(0)
         }
-        command::GETFL => Ok(u64::from(file.status_flags())),
+        command::GETFL => {
+            let flags = files
+                .lock()
+                .get(fd)
+                .ok_or(Errno::EBADF)?
+                .file
+                .status_flags();
+            Ok(u64::from(flags))
+        }
         command::SETFL => {
-            file.set_status_flags(argument as u32);
+            let table = files.lock();
+            table
+                .get(fd)
+                .ok_or(Errno::EBADF)?
+                .file
+                .set_status_flags(argument);
             Ok(0)
         }
-        _ => Err(Errno::EINVAL),
+        _ => {
+            open(&files.lock())?;
+            Err(Errno::EINVAL)
+        }
     }
 }
 
@@ -605,7 +623,8 @@ pub fn close_range(
 /// The `ioctl`s every open descriptor answers ([`request`]): whether it is one, and its result
 /// if so. `FIOCLEX` and `FIONCLEX` set and clear descriptor `fd`'s close-on-exec flag; `FIONBIO`
 /// sets `O_NONBLOCK` on `file`, what `fd` names, if the `int` at `argument` is not 0 and clears
-/// it otherwise, `EFAULT` if that is not the program's memory.
+/// it otherwise; `FIOASYNC` reads its `int` and changes nothing. `EFAULT` if the `int` is not the
+/// program's memory.
 pub fn descriptor_ioctl<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,
@@ -625,11 +644,13 @@ pub fn descriptor_ioctl<P: Platform>(
                 None => Err(Errno::EBADF),
             })
         }
-        request::FIONBIO => {
+        request @ (request::FIONBIO | request::FIOASYNC) => {
             let mut value = [0; 4];
             Some(match process.read_user_memory(argument, &mut value) {
                 Ok(()) => {
-                    file.set_nonblocking(i32::from_ne_bytes(value) != 0);
+                    if request == request::FIONBIO {
+                        file.set_nonblocking(i32::from_ne_bytes(value) != 0);
+                    }
                     Ok(0)
                 }
                 Err(_) => Err(Errno::EFAULT),

@@ -70,9 +70,6 @@ const TIMESPEC_SIZE: usize = 16;
 
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
-/// The events a descriptor that names `file` reports when `requested` are asked for:
-/// `POLLNVAL` for one that is not open (`None`); for the console's, room to write and, if the
-/// console is `readable`, data to read, when asked for.
 fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
     match file {
         None => event::NVAL,
@@ -85,7 +82,6 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
 
 const INPUT_EVENTS: u16 = event::IN | event::RDNORM;
 
-/// A `struct pollfd`'s descriptor (an `int`) and requested events.
 fn pollfd(entry: &[u8; POLLFD_SIZE]) -> (i32, u16) {
     (
         i32::from_ne_bytes(entry[..4].try_into().unwrap()),
@@ -93,8 +89,6 @@ fn pollfd(entry: &[u8; POLLFD_SIZE]) -> (i32, u16) {
     )
 }
 
-/// Fills in each entry's returned events, looking its descriptor up in `files`; a negative
-/// descriptor, which a program uses to skip an entry, reports none.
 fn fill_in_events(entries: &mut [[u8; POLLFD_SIZE]], files: &Descriptors, readable: bool) -> u64 {
     let mut ready = 0;
     for entry in entries {

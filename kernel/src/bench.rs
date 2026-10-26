@@ -38,7 +38,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 27] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 28] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -95,6 +95,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 27] {
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
+        ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
     ]
 }
 
@@ -159,8 +160,6 @@ fn breakpoint_round_trip<P: Platform>(n: u64) {
     }
 }
 
-/// Arming the one-shot timer for a deadline far ahead, so it never fires during the run. The
-/// deadline is clamped so `far + i` cannot overflow, keeping the loop body a plain add.
 fn timer_arm<P: Platform>(n: u64) {
     let far = P::clock_ticks()
         .saturating_add(P::clock_frequency().saturating_mul(3600))
@@ -170,12 +169,6 @@ fn timer_arm<P: Platform>(n: u64) {
     }
 }
 
-/// Arming the timer for a deadline already passed and sleeping until its interrupt has been
-/// handled: interrupt entry, acknowledgement, delivery to the kernel and the return (D26).
-/// This CPU's block is found once, so polling its count costs what polling a global did. The
-/// word of what the scheduler has not seen is read whole: nothing here runs the scheduler and
-/// no other CPU asks it to look (the benchmarks run on one), so it only grows by the timer
-/// interrupts.
 fn timer_interrupt_round_trip<P: Platform>(n: u64) {
     let this = cpu::current::<P>();
     for _ in 0..n {
@@ -460,14 +453,6 @@ fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
 /// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
-/// A page fault on a page the program touches for the first time (D52): the trap from user
-/// mode, the Linux layer's dispatch, the region looked up, a frame allocated, zeroed and
-/// mapped, this CPU's stale translation dropped, and the return to the program, which stores
-/// to the page and goes on to the next. The test program's `stack_growth` walks down a
-/// region of [`PAGE_FAULT_CHUNK`] pages, its stack pointer starting just below the top so its
-/// first store is to the region's last page, until it runs off the end and is killed; starting
-/// each process and its thread, the final fault and freeing it all are timed too, amortized
-/// over the chunk.
 fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
     const TOP: u64 = 0x1000_0000;
     let mut left = n;
@@ -513,10 +498,16 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
-/// `dup3` of the standard output to descriptor 3, close-on-exec, then `close` of it (D101):
-/// the open-file limit read, the descriptor table locked, the open file description's count
-/// taken and dropped, as a shell redirects a command's output. Without the trap from user
-/// mode (`linux_syscall_round_trip` has it).
+fn linux_descriptor_lookup(n: u64) {
+    let files = linux::descriptors::Descriptors::with_console_streams();
+    for _ in 0..n {
+        let file = files
+            .file(black_box(1))
+            .expect("descriptor 1 is the console");
+        black_box(file.is_writable());
+    }
+}
+
 fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::descriptors::{self, Descriptors, open_flag};
     // SAFETY: as in `process_syscall_round_trip`.
@@ -607,12 +598,6 @@ mod tests {
     use core::sync::atomic::{AtomicU64, Ordering};
     use eggos_hal::{ExitStatus, Interrupt};
 
-    /// A platform whose clock advances one tick per read and whose timer fires on the next
-    /// wait, whatever its deadline, on one CPU. In user mode, the test program's `stack_growth`
-    /// stores to each page from the stack pointer's down, each faulting the first time: the
-    /// stack pointer stands in for the walk, and the kernel resolves the fault and runs the
-    /// program again, which stores and moves on. Any other program makes the null system call,
-    /// and nothing else.
     struct CountingPlatform;
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -767,9 +752,6 @@ mod tests {
         }
     }
 
-    /// The page tables for `run` are made first: the benchmarks run here must find the frame
-    /// allocator as the other tests leave it, so the user-mode benchmarks, which take frames,
-    /// have a test of their own.
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
@@ -789,8 +771,9 @@ mod tests {
                 (linux_page_fault, _),
                 (linux_mmap_munmap, _),
                 (linux_dup3_close, _),
+                (linux_descriptor_lookup, _),
             ],
-        ) = all.split_at(all.len() - 9)
+        ) = all.split_at(all.len() - 10)
         else {
             unreachable!()
         };
@@ -804,7 +787,8 @@ mod tests {
                 *linux_exec,
                 *linux_page_fault,
                 *linux_mmap_munmap,
-                *linux_dup3_close
+                *linux_dup3_close,
+                *linux_descriptor_lookup
             ],
             [
                 "syscall_round_trip",
@@ -815,7 +799,8 @@ mod tests {
                 "linux_exec_load",
                 "linux_page_fault",
                 "linux_mmap_munmap",
-                "linux_dup3_close"
+                "linux_dup3_close",
+                "linux_descriptor_lookup"
             ]
         );
         assert_eq!(
@@ -845,12 +830,6 @@ mod tests {
         Memory { page_tables }
     }
 
-    /// Their threads pass preemption points, where this platform's timer fires, so the timer is
-    /// held. The page tables come from the same allocator as the processes' (not
-    /// `page_tables_for_test`, whose allocator may be gone once it returns). The idle thread's
-    /// stack, taken once, is not the benchmarks': it is started as the other tests start it,
-    /// since an idle thread of this platform's would take its timer with it. `linux_page_fault`
-    /// maps fewer pages than the test allocator has frames, so none runs out.
     #[test]
     fn the_user_mode_benchmarks_run_their_programs_and_free_them() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
@@ -879,6 +858,8 @@ mod tests {
         linux_page_fault::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
         linux_dup3_close::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_descriptor_lookup(5);
         assert_eq!(free(), before);
     }
 

@@ -173,25 +173,6 @@ pub fn lseek(whence: u64) -> Result<u64, Errno> {
     }
 }
 
-/// `read` or `readv` of `file`, the console, into `buffers`, with the program's registers
-/// `context`; the caller checked the descriptor and the buffers. Takes the console's input as
-/// its line discipline says. In canonical mode it waits for a line and returns it, or as much
-/// of it as the buffers hold (the rest is read next), or 0 for an end of file typed at the
-/// start of a line. Otherwise `VMIN` and `VTIME` decide (termios(3)): with both 0 it returns
-/// what is there, maybe nothing; with `VMIN` 0 it waits up to `VTIME` tenths of a second from
-/// the call for a byte; with `VTIME` 0 it waits for `VMIN` bytes (or as many as the buffers
-/// hold, if fewer); with both, for a first byte, then until `VMIN` bytes or `VTIME` passes with
-/// none arriving. With `O_NONBLOCK` it never waits: where it would, it returns what is there,
-/// or fails with `EAGAIN` if nothing is. The calling thread becomes the console's foreground
-/// ([`console::Foreground`]).
-///
-/// As Linux: 0 for buffers of no bytes; at most 0x7ffff000 bytes; the buffers filled one after
-/// another; if part of them is not the program's writable memory, the bytes before it, or
-/// `EFAULT` if there are none (what was taken for the rest is lost). A signal due before input
-/// is taken interrupts it, as Linux's `-ERESTARTSYS`: it is made again once the handler returns
-/// if the handler's action has `SA_RESTART`, and fails with `EINTR` otherwise; if no handler
-/// starts, it goes on. A signal that came with the input is delivered once the input is taken.
-/// Sets the call's result; breaks when the process ends.
 pub(super) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
@@ -252,9 +233,6 @@ fn read_or_wait<P: Platform>(
     }
 }
 
-/// Whether a read with `settings` finds what it would wait for without waiting: a line in
-/// canonical mode; otherwise a byte, or anything at all with `VMIN` and `VTIME` both 0, when
-/// it never waits.
 fn finds_input_at_once(settings: Termios) -> bool {
     if settings.is_canonical() {
         console::input_ready()
@@ -263,21 +241,12 @@ fn finds_input_at_once(settings: Termios) -> bool {
     }
 }
 
-/// Whether a read that waited as `waited` says, with `settings`, ends with what it took: it
-/// does once it consumed input (bytes, or a line's end or an end of file), and with `VMIN` 0
-/// once `VTIME` passed or when `VTIME` is 0 too. Otherwise the input it was woken for went
-/// first (another reader took it, or `^C` discarded it), and it waits again rather than return
-/// a false end of file: with `VMIN` and `VTIME` both set, for a first byte again, as the timer
-/// runs only between bytes.
 fn read_is_over(settings: Termios, waited: Waited, consumed: bool) -> bool {
     let (minimum, time) = settings.minimum_and_time();
     consumed
         || (!settings.is_canonical() && minimum == 0 && (time == 0 || waited == Waited::TimedOut))
 }
 
-/// Waits for what a non-canonical read with `settings` of up to `count` bytes waits for. With
-/// `VMIN` 0 the wait ends by `deadline`, set from `VTIME` on the read's first wait and kept for
-/// its others, so a read woken for input another reader took waits no longer than its time.
 fn wait_for_bytes<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -327,8 +296,6 @@ struct Took {
     consumed: bool,
 }
 
-/// Takes up to `count` bytes of input into `buffers`, one after another, a page-bounded chunk
-/// at a time, ending at a line's end in canonical mode or once no more input is there.
 fn take_into<P: Platform>(process: &Process<P>, buffers: &Iovecs, count: u64) -> Took {
     let mut chunk = [0u8; READ_CHUNK];
     let mut copied = 0;

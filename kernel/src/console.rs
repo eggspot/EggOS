@@ -79,10 +79,6 @@ pub fn receive_input<P: Platform>() {
 
 const INPUT_CHUNK: usize = 64;
 
-/// How many chunks of echo the receive interrupt has taken in under the line discipline's lock
-/// but not yet written to the UART. A reader that took input waits for them
-/// ([`take_input`]), so the echo of what it read reaches the console before anything it
-/// writes next.
 static ECHOES_BEING_WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 const ECHO_BUFFER: usize = 4 * INPUT_CHUNK;

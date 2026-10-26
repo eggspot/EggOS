@@ -900,11 +900,6 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     ControlFlow::Break(())
 }
 
-/// `write(fd, buffer, count)`: writes to what descriptor `fd` names, the console. Returns
-/// the bytes written; if part of the buffer is not the program's memory, the bytes before
-/// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes,
-/// after the whole range is checked against user space, as on Linux. `EBADF` if `fd` is not
-/// open for writing.
 #[inline(never)]
 fn write<P: Platform>(
     process: &Process<P>,
@@ -928,7 +923,6 @@ fn write<P: Platform>(
     }
 }
 
-/// The open file description descriptor `fd` names, `EBADF` unless it is open for writing.
 fn writable_file(files: &Descriptors, fd: u64) -> Result<Arc<descriptors::OpenFile>, Errno> {
     let file = files.file(fd)?;
     match file.is_writable() {
@@ -937,10 +931,6 @@ fn writable_file(files: &Descriptors, fd: u64) -> Result<Arc<descriptors::OpenFi
     }
 }
 
-/// `writev(fd, buffers, count)`: as [`write`], for `count` buffers one after another, each a
-/// `struct iovec` (base, length) in the program's memory at `buffers`, checked first as
-/// [`Iovecs::read`] says. At most [`MAX_RW_COUNT`] bytes in all, stopping at the first byte
-/// that is not the program's memory.
 #[inline(never)]
 fn writev<P: Platform>(
     process: &Process<P>,
@@ -970,21 +960,12 @@ fn writev<P: Platform>(
     Ok(written)
 }
 
-/// Where a read puts what it takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Buffers {
-    /// `read(fd, buffer, count)`: one buffer.
     One,
-    /// `readv(fd, buffers, count)`: `count` buffers, a `struct iovec` each.
     Vectors,
 }
 
-/// `read(fd, buffer, count)` and `readv(fd, buffers, count)`, as `buffers` says, with the
-/// program's registers `context`: reads from what descriptor `fd` names, the console
-/// ([`terminal::read`]), into the buffer, or into each buffer in turn. As Linux: `EBADF` if
-/// `fd` is not open for reading; then for `read`, `EFAULT` if the buffer does not end within
-/// user space, and for `readv`, the checks of [`Iovecs::read`]. Sets the call's result;
-/// breaks when the process ends.
 #[inline(never)]
 fn read<P: Platform>(
     process: &Arc<Process<P>>,
@@ -1015,9 +996,6 @@ fn read<P: Platform>(
     }
 }
 
-/// `ioctl(fd, request, argument)`: `EBADF` if descriptor `fd` is not open; then the requests
-/// every descriptor answers ([`descriptors::descriptor_ioctl`]), then those of what it names, the
-/// console's ([`terminal::ioctl`]). `fd` and `request` are 32-bit.
 fn ioctl<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,
@@ -1036,8 +1014,6 @@ fn ioctl<P: Platform>(
     }
 }
 
-/// `lseek(fd, offset, whence)`: `EBADF` if descriptor `fd` is not open; the console cannot
-/// seek ([`terminal::lseek`]).
 fn lseek(files: &Descriptors, fd: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
@@ -1045,8 +1021,6 @@ fn lseek(files: &Descriptors, fd: u64, whence: u64) -> Result<u64, Errno> {
     }
 }
 
-/// A program's array of `struct iovec`s (base, length), copied in once, so the program
-/// changing it meanwhile changes nothing (`readv`, `writev`).
 struct Iovecs {
     on_stack: [[u8; IOVEC_SIZE]; STACK_IOVECS],
     on_heap: alloc::vec::Vec<[u8; IOVEC_SIZE]>,
@@ -1054,7 +1028,6 @@ struct Iovecs {
 }
 
 impl Iovecs {
-    /// One buffer of `length` bytes at `base` (`read`).
     fn one(base: u64, length: u64) -> Self {
         let mut on_stack = [[0; IOVEC_SIZE]; STACK_IOVECS];
         on_stack[0][..8].copy_from_slice(&base.to_ne_bytes());
@@ -1066,13 +1039,6 @@ impl Iovecs {
         }
     }
 
-    /// The `count` entries at `buffers`, checked as Linux checks them before anything is read
-    /// or written: `EINVAL` for more than [`MAX_IOVECS`]; `EFAULT` if the array does not end
-    /// within user space; then, entry by entry, `EFAULT` for one that is not the program's
-    /// memory and `EINVAL` for a length that is negative as a `ssize_t` (see
-    /// [`unreadable_iovecs_error`]); then `EFAULT` if a buffer does not end within user space.
-    /// `ENOMEM` without memory for more than [`STACK_IOVECS`]. `count` is an `unsigned int`:
-    /// the register's upper half is ignored.
     fn read<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Result<Self, Errno> {
         let count = u64::from(count as u32);
         if count > MAX_IOVECS {
@@ -1110,7 +1076,6 @@ impl Iovecs {
         Ok(iovecs)
     }
 
-    /// The entries, each a `struct iovec` as the program laid it out ([`iovec`]).
     fn entries(&self) -> &[[u8; IOVEC_SIZE]] {
         match self.count > STACK_IOVECS {
             true => &self.on_heap,
@@ -1118,7 +1083,6 @@ impl Iovecs {
         }
     }
 
-    /// The bytes of every buffer together, at most `u64::MAX`.
     fn total(&self) -> u64 {
         self.entries()
             .iter()
@@ -1135,11 +1099,6 @@ fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
     )
 }
 
-/// [`Iovecs::read`]'s error when its array of `count` `struct iovec`s at `buffers` is not all
-/// the program's memory. As Linux reads the entries one at a time: `EFAULT` if the array does
-/// not end within user space, before any is read; otherwise `EINVAL` if an entry read before
-/// the first unreadable one has a negative length, `EFAULT` if none has (D62). Cold: a program
-/// passes a readable array.
 #[cold]
 #[inline(never)]
 fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Errno {
@@ -2429,7 +2388,7 @@ mod tests {
 
         assert_eq!(ioctl(3, request::TCGETS, writable), Errno::EBADF.result());
         assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());
-        for unknown in [0, 0x5405, 0x540f, 0x5452, request::TCGETS | 0x1_0000] {
+        for unknown in [0, 0x5405, 0x540f, 0x5453, request::TCGETS | 0x1_0000] {
             assert_eq!(
                 ioctl(1, unknown, writable),
                 Errno::ENOTTY.result(),
@@ -2777,6 +2736,14 @@ mod tests {
         assert_eq!(fcntl(10, command::GETFD, 0), 0);
         assert_eq!(fcntl(0, command::DUPFD, 1024), Errno::EINVAL.result());
         assert_eq!(fcntl(0, command::DUPFD, u64::MAX), Errno::EINVAL.result());
+        assert_eq!(
+            fcntl(0, command::DUPFD, 1 << 32 | 12),
+            12,
+            "an int argument"
+        );
+        assert_eq!(call(number::CLOSE, &[12]), 0);
+        assert_eq!(fcntl(10, command::SETFD, 1 << 32), 0);
+        assert_eq!(fcntl(10, command::GETFD, 0), 0);
         assert_eq!(fcntl(11, command::DUPFD, 1024), Errno::EBADF.result());
         assert_eq!(fcntl(0, 1031, 0), Errno::EINVAL.result());
         assert_eq!(fcntl(11, 1031, 0), Errno::EBADF.result());
@@ -2795,6 +2762,17 @@ mod tests {
         assert_eq!(fcntl(4, command::GETFD, 0), u64::from(FD_CLOEXEC));
         assert_eq!(call(number::IOCTL, &[4, 0x5450]), 0);
         assert_eq!(fcntl(4, command::GETFD, 0), 0);
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(call(number::IOCTL, &[4, 0x5452, writable]), 0);
+        assert_eq!(
+            call(number::IOCTL, &[4, 0x5452, user_end]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(number::IOCTL, &[11, 0x5452, writable]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(fcntl(4, command::GETFL, 0), u64::from(open_flag::RDWR));
         let range =
             |first, last, flags: u32| call(number::CLOSE_RANGE, &[first, last, u64::from(flags)]);
         assert_eq!(range(4, 3, 0), Errno::EINVAL.result());
