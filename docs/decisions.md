@@ -6051,7 +6051,15 @@ the license, by an explicit instruction recorded here.
   and hover colours; the pointer (the virtio-gpu cursor queue, or software drawing); the
   `cargo xtask screenshot` command; a 2x scale and the phone layout (the layout is computed
   from the screen's size, never from 1280x800). A display too small for the window (below
-  658x458) gets no graphical terminal, as one too small for a cell did before.
+  658x458) gets no graphical terminal, as one too small for a cell did before; a full-screen
+  terminal fallback for such displays is a follow-up.
+- **Follow-ups from review.** The scrollback keys and the wheel move the terminal's view only
+  while keys go to it (focused, shown, no menu), like typed bytes. The terminal's lock is held
+  while the desktop repaints damaged rects, so a console write can wait for a drag's repaint:
+  repainting outside the lock (from a snapshot of the desktop's state) is a follow-up.
+  `KEYS_TO_TERMINAL` starts `true`, so it sits in `.data`; flipping it to a flag that starts
+  `false` (keys taken by the desktop) would move it to `.bss`, worth doing only if no
+  benchmark moves.
 - **Testing.** Host tests: the window's default place at 1280x800 and 1024x768 and the grid's,
   the tokens at chosen pixels (gradient, egg, yolk, bar, edge, egg mark, the border's corner
   inset, the title bar, both controls, the content, the shadow's first ring), the whole

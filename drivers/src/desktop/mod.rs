@@ -6,7 +6,7 @@
 //! events, it records the rectangles they change in a [`Damage`], and [`Desktop::draw`]
 //! repaints any rectangle of a framebuffer from scratch. The terminal's cells are not drawn
 //! here: the window's grid ([`Desktop::text_area`]) is where [`crate::terminal::Terminal`]
-//! renders them, while [`Desktop::terminal_shown`].
+//! renders them whenever [`Desktop::terminal_shown`] says nothing covers it.
 
 mod paint;
 

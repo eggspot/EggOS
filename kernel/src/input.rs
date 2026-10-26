@@ -711,12 +711,14 @@ pub fn poll<P: Platform>() -> Option<u64> {
 }
 
 fn hand_over<P: Platform>(sink: &PollSink) {
-    for change in sink.views.into_iter().flatten() {
-        terminal::move_view::<P>(change);
-    }
-    if sink.length > 0 && terminal::keys_go_to_console() {
-        terminal::move_view::<P>(ViewMove::Live);
-        console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
+    if terminal::keys_go_to_console() {
+        for change in sink.views.into_iter().flatten() {
+            terminal::move_view::<P>(change);
+        }
+        if sink.length > 0 {
+            terminal::move_view::<P>(ViewMove::Live);
+            console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
+        }
     }
     terminal::tick::<P>(sink.queued);
 }

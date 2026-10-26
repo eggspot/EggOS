@@ -108,7 +108,9 @@ Must-have, in order:
     pointer drawn by the GPU's cursor queue and hover highlights on the bar and controls;
     users see a boot screen with the logo and progress before the desktop; users can drag a
     window partly off screen; users see the wall clock once an RTC driver sets it; users can
-    save a screenshot with `cargo xtask screenshot`.
+    save a screenshot with `cargo xtask screenshot`; users with a display smaller than
+    658x458 get a full-screen terminal; console output never waits for the desktop's repaint
+    (D115's review follow-ups).
 15. Release engineering: `cargo xtask release`, boot-to-prompt time in the benchmarks, README
     "Try EggOS" and a limitations doc.
 
