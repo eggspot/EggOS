@@ -33,9 +33,9 @@ in one flush, and never held on screen for a minimum time: on QEMU the shell pro
   gone. Each stage change flushes only the segment's rect.
 - Serial console: the same stages as plain lines, `boot: display 1280x800`, `boot: input
   keyboard pointer`, `boot: init`, after the existing kernel banner; no ANSI codes, no art
-  (the serial side may be a log file). When there is no virtio-gpu device (QEMU's
-  `-display none` keeps the device; this is the case without one) the kernel prints
-  `boot: no display` and everything else proceeds on the serial console as today.
+  (the serial side may be a log file). When there is no virtio-gpu device, the kernel prints
+  `boot: no display` and everything else proceeds on the serial console as today. (QEMU's
+  `-display none` only hides the window; the device, and everything in this design, stay.)
 - Timing targets on the Mac's QEMU (TCG, 4 CPUs): first frame ≤ 100 ms after kernel entry,
   desktop with the prompt ≤ 300 ms, hard limit 1 s. Measured by the first-frame test
   (section 9) and reported like boot-to-prompt (D108).
@@ -77,11 +77,17 @@ The 16 ANSI colours (SGR 30-37 / 90-97 and 40-47 / 100-107; bold selects 8-15 fo
 | | 0 black | 1 red | 2 green | 3 yellow | 4 blue | 5 magenta | 6 cyan | 7 white |
 |---|---|---|---|---|---|---|---|---|
 | normal | `#0B0E13` | `#E0565B` | `#5FB865` | `#E2B341` | `#4F8FE0` | `#C46BD2` | `#44B9C9` | `#C9D1DB` |
-| bright | `#5A6577` | `#F07A7E` | `#84D48A` | `#F2CC6D` | `#7FB0F0` | `#DA95E4` | `#72D3E0` | `#F2F5F9` |
+| bright | `#707C8E` | `#F07A7E` | `#84D48A` | `#F2CC6D` | `#7FB0F0` | `#DA95E4` | `#72D3E0` | `#F2F5F9` |
 
-Contrast: `term.fg` on `term.bg` is 15:1, `text` on `bar.bg` 13:1, `text.dim` on
-`title.inactive` 5.2:1, every normal ANSI colour on `term.bg` at least 4.6:1 (red 5.1:1,
-blue 4.6:1). Nothing is conveyed by colour alone (section 7).
+Contrast (WCAG ratios, computed from the values above): `term.fg` on `term.bg` 14.3:1;
+`text` on `bar.bg` 14.3:1, on `menu.bg` 12.9:1, on `bar.hover` 11.0:1, on `title.active`
+10.6:1, on `menu.hover` 10.5:1, on `bar.pressed` 8.7:1; `text.dim` on `wallpaper.top` 5.9:1,
+on `bar.bg` 5.7:1, on `menu.bg` 5.1:1, on `title.inactive` 5.0:1 (`text.dim` is never drawn
+on `bar.hover`, where it would be 4.4:1); `accent` on `term.bg` 10.4:1 and on
+`wallpaper.egg` 5.8:1. ANSI 1-15 on `term.bg`: at least 4.6:1 (bright black 4.6:1, red
+5.2:1, blue 5.8:1, magenta 5.9:1, the rest 7:1 or more). ANSI 0 is `term.bg` itself, 1:1, a
+deliberate exception: black on the default background is invisible on every terminal and
+programs rely on it. Nothing is conveyed by colour alone (section 7).
 
 ### Spacing, corners, shadow
 
@@ -166,7 +172,8 @@ recomputed on demand within a damage rect.
 - Gradient: vertical, `wallpaper.top` at row 0 to `wallpaper.bottom` at row `h - 1`, each
   channel interpolated as `c0 + ((c1 - c0) * y) / (h - 1)` in integers. A per-row table of
   `h` packed pixels is built once per resolution (3.2 KiB at 800 rows) so a wallpaper row is
-  a fill with one colour. Banding (about 27 rows per step) is accepted in 0.3.0.
+  a fill with one colour. Banding is accepted in 0.3.0: over 800 rows a step every 15 rows
+  in blue, 23 in green and 61 in red.
 - The egg shape, used here and for the logo and the bar mark. Parameters: height `H`, width
   `W = round(0.72 * H)`, equator at `ye = round(0.58 * H)` rows below the top, centre column
   `cx`. Row `y` in `0..H`: `t = (ye - y) * 256 / ye` if `y < ye`, else
@@ -180,8 +187,10 @@ recomputed on demand within a damage rect.
   radius `r = round(0.09 * screen_h)` centred at `(cx, top + round(0.62 * screen_h))`, colour
   `accent`; row `dy` of the circle spans `[cx - isqrt(r*r - dy*dy), cx + isqrt(r*r - dy*dy))`.
   At 1280x800: egg W 576, cx 1050, top 200, equator at row 664; yolk r 72 at (1050, 696). At
-  1024x768: W 553, cx 840, top 192, equator 637; yolk r 69 at (840, 668). Neither overlaps the
-  terminal window at its default place.
+  1024x768: W 553, cx 840, top 192, equator 637; yolk r 69 at (840, 668). The window at its
+  default place covers part of the egg's upper left, by design (the window is drawn above the
+  wallpaper and the egg reads as rising behind it). The yolk is fully visible at 1280x800; at
+  1024x768 the window's bottom-right corner covers 14 rows of its top-left edge.
 - Draw order within a wallpaper pixel: gradient, then egg if the column is within the egg
   row's edges, then yolk if within the circle row's edges.
 
@@ -197,7 +206,8 @@ row 27. It is a strip of items, each with a rectangular hit target of the bar's 
   it later and ignored now.
 - After it, task chips for minimised windows (section 6), 8 px apart, starting at x = 104.
 - Centre, the clock: `HH:MM` (24 h, UTC) in `text`, centred on the bar's midpoint, updated
-  once a minute (its 40x16 rect flushed). Until a real-time clock driver sets the wall clock
+  once a minute (its rect, 56x16 for 7 glyphs centred on the midpoint, is what gets flushed,
+  whichever text is shown). Until a real-time clock driver sets the wall clock
   (D73: it starts at the epoch; the RTC is a v0.3.0 nice-to-have) it shows uptime instead,
   `up m:ss` in `text.dim`, updated once a second. The rule: realtime seconds < 86400 means
   "unset". Not a button.
@@ -229,7 +239,10 @@ row 27. It is a strip of items, each with a rectangular hit target of the bar's 
   `poweroff` and `reboot` do (D106, D108: the kernel's `reboot(2)` paths through the HAL), at
   once, with no confirmation in 0.3.0 (nothing can be lost yet; a confirmation comes with a
   writable file system). This is the GUI front-end of the power capability whose CLI is
-  `poweroff`/`reboot`; the MCP tool comes with the MCP server (D22).
+  `poweroff`/`reboot`; the MCP tool comes with the MCP server (D22). The window actions
+  (focus, move, minimise, restore, maximise) and a screenshot have only their GUI front-end
+  in 0.3.0; their CLI commands and MCP tools come with the MCP server, like power's, so D22's
+  three front-ends are a known gap of this release, listed in the limitations doc (item 15).
 - Form factors (D23): the bar's layout is computed at runtime from `(screen_w, screen_h,
   scale)` by one function, never from constants scattered in drawing code. On a phone-sized
   screen (width < 600 at 1x) the system item shows only the egg mark and the chips are
@@ -261,7 +274,8 @@ work area (the screen below the bar): x 311, y 199 at 1280x800; x 183, y 183 at 
 - Size: fixed at 80x24 in 0.3.0 (no resize handles). Double-click on the title bar (two
   button-downs within 400 ms and 4 px) toggles maximised: the window fills the work area with
   square corners and no shadow, the grid becomes `(w - 2 - 16) / 8` by `(h - 28 - 2 - 16) / 16`
-  cells (158x45 at 1280x800), the remainder of the padding goes right and bottom, and the
+  cells (157x47 at 1280x800, 125x45 at 1024x768), the remainder of the padding goes right
+  and bottom, and the
   console's window size (`TIOCGWINSZ`, rows, cols, `ws_xpixel = cols*8`, `ws_ypixel =
   rows*16`) is updated at once; `SIGWINCH` to the foreground group follows when the kernel can
   signal other processes (D105 follow-up). Toggling back restores the previous grid, position
@@ -283,11 +297,13 @@ rect minus 16 px, the rest are not shown (there is one window in 0.3.0).
 
 - Text is never smaller than the 8x16 cell (the font's one size), which at 1280x800 on a
   13-inch screen is about 11 pt; at 2x it is 16x32.
-- Contrast: every text/background pair in section 2 is ≥ 4.5:1; focus is shown by three cues
+- Contrast: every text/background pair that is drawn is ≥ 4.5:1 (the computed figures are in
+  section 2), with one deliberate exception, ANSI 0 on `term.bg`; focus is shown by three cues
   at once (title bar colour, control colours, blinking cursor), hover by a background change
   and, on the controls, a glyph: nothing is colour-only.
-- Hit targets: ≥ 28x28 px for every clickable thing (bar items, controls, menu items are
-  160x32, chips are 20 px tall but sit in a 28 px bar strip that counts as the target).
+- Hit targets: at least 28 px tall for every clickable thing (the bar and title bar height);
+  widths: bar items at least 28 px, window controls 20 px, menu items 160 px; chips are 20 px
+  tall but sit in a 28 px bar strip that counts as the target.
 - Keyboard: the terminal is focused at boot, so the whole system is usable with no pointer.
   The power menu has keyboard handling once open; opening it from the keyboard (a Super
   shortcut), moving windows and switching focus with keys are follow-ups and listed as known

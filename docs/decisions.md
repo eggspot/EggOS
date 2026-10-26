@@ -5435,7 +5435,9 @@ the license, by an explicit instruction recorded here.
 - **Identity.** An egg: one procedural shape (two half-ellipses on a shared equator at
   0.58·H, width 0.72·H, per-row edges from an integer square root) used for the boot logo,
   the wallpaper's silhouette with a yolk disc, and the top bar's mark. Dark palette, warm
-  yolk accent `#F2B33D`, every colour an exact sRGB value, every pair ≥ 4.5:1.
+  yolk accent `#F2B33D`, every colour an exact sRGB value, every text/background pair that
+  is drawn ≥ 4.5:1 (computed figures in the brief), the one exception being ANSI 0 on the
+  terminal background, identical by design.
 - **Everything drawn by our code.** No image assets, no third-party font: Egg Mono 8x16 is an
   original bitmap font (95 printable ASCII glyphs as pixel art in the repo, box drawing and
   blocks authored from stated rules), licensed MIT OR Apache-2.0 like the code; 2x HiDPI is
@@ -5451,7 +5453,14 @@ the license, by an explicit instruction recorded here.
   uptime until there is an RTC, power button with Power off / Restart, the GUI front-end of
   `poweroff`/`reboot`, D22), one window with left-side controls (close disabled in 0.3.0,
   minimise), drag, focus on click, maximise by double-click; layouts computed at runtime from
-  screen size and scale, with phone and TV rules named but not built (D23).
+  screen size and scale, with phone and TV rules named but not built (D23). The window
+  actions and a screenshot have only their GUI front-end in 0.3.0; their CLI commands and
+  MCP tools come with the MCP server, like power's (a D22 gap of this release, in the
+  limitations doc).
+- **D18.** The desktop and the terminal are compiled into the kernel for 0.3.0 and cost
+  nothing without a display (no buffer, no drawing, no tick); a build-time or boot-time
+  option to leave them out, and their move to an optional component, is a recorded exception
+  to D18 until M11.
 - **Placement (decided by research).** In 0.3.0 the terminal emulator and the desktop run in
   the kernel next to the console's line discipline, in a pure `no_std` drawing crate over
   `&mut [u32]` that host tests share byte for byte with the kernel; the virtio transport,
@@ -5466,7 +5475,8 @@ the license, by an explicit instruction recorded here.
   weighed: screenshots only (host-dependent pixels, no CI verdict), hashes only (no way to
   look at it).
 - **Cost.** The display buffer (4 MB at 1280x800) is the one large allocation and exists only
-  with a display; the font is 1.5 KiB; budgets: full redraw ≤ 8 ms, echo to flush ≤ 1 ms,
+  with a display; the font is 1.5 KiB for ASCII, about 2 KiB with the box-drawing and block
+  extras; budgets: full redraw ≤ 8 ms, echo to flush ≤ 1 ms,
   first frame ≤ 100 ms, desktop ≤ 300 ms on the Mac's TCG, measured by the tests.
 - **Not in 0.3.0.** Selection and copy/paste, several windows, edge resize, the per-profile
   control side, a dock, launcher, settings, touch, anti-aliasing, a second font size.
