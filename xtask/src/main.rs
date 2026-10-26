@@ -6,6 +6,7 @@
 
 mod bench;
 mod elf;
+mod image;
 mod initramfs;
 mod png;
 mod qemu;
@@ -31,10 +32,15 @@ commands:
                          then boot it again to check that writing read-only data faults
                          and the fatal exception is reported
                          (<arch> may be `all`)
-  run   --arch <arch> [--nographic]
+  image --arch <arch> [--add <file> [--as <path>]]...
+                         build the release image with each file added to its initramfs at
+                         /bin/<file's name> or <path>, executable, and write it to
+                         target/image/eggos-<arch>.elf (<arch> may be `all`)
+  run   --arch <arch> [--nographic] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
-                         (quit: Ctrl-A then X); with --nographic, no window
+                         (quit: Ctrl-A then X); with --nographic, no window; with --add,
+                         the release image with those files, as `image` builds it
   bench --arch <arch> [--update-baseline]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -151,6 +157,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-coreutils",
     "eggos-selftest",
     "eggos-std-selftest",
+    "eggos-linux-static",
 ];
 
 struct UserProgram {
@@ -276,13 +283,22 @@ fn run(args: &[String]) -> Result<(), String> {
             };
             release::screenshot(arch)
         }
+        Some("image") => {
+            let (options, added) = image::added_files(&args[1..])?;
+            for arch in arch_option(&options)? {
+                let image = image::build(arch, &added)?;
+                println!("{}", image.display());
+            }
+            Ok(())
+        }
         Some("run") => {
-            let (options, nographic) = without_flag(&args[1..], "--nographic");
+            let (options, added) = image::added_files(&args[1..])?;
+            let (options, nographic) = without_flag(&options, "--nographic");
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
-            let kernel = build_kernel(arch, None)?;
+            let kernel = build_release_image(arch, &added)?;
             qemu::run_interactive(arch, &kernel, !nographic)
         }
         _ => Err(USAGE.into()),
@@ -371,6 +387,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Attached,
         &[],
     )?;
+    let kernel = build_linux_programs_test_kernel(arch)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::LinuxPrograms,
+        qemu::TEST_CPUS,
+        qemu::Display::Absent,
+        &[],
+    )?;
     let kernel = build_kernel(arch, None)?;
     qemu::boot_test(
         arch,
@@ -442,6 +467,30 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
 }
 
 fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    release_initramfs(arch, &[], &format!("initramfs-{}.cpio", arch.user_target))
+}
+
+/// Builds the release kernel for `arch` with `added` in its initramfs and returns its path.
+pub fn build_release_image(
+    arch: &Arch,
+    added: &[image::AddedFile],
+) -> Result<std::path::PathBuf, String> {
+    if added.is_empty() {
+        return build_kernel(arch, None);
+    }
+    let initramfs = release_initramfs(
+        arch,
+        &image::members(added),
+        &format!("initramfs-image-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
+fn release_initramfs(
+    arch: &Arch,
+    extra: &[(&str, initramfs::Content)],
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
     let init = build_init(arch)?;
     let shell = build_shell(arch)?;
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
@@ -456,7 +505,8 @@ fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
             .iter()
             .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
     );
-    initramfs::build(&members, &format!("initramfs-{}.cpio", arch.user_target))
+    members.extend_from_slice(extra);
+    initramfs::build(&members, file_name)
 }
 
 fn build_release_kernel(
@@ -541,6 +591,74 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
         &format!("initramfs-shell-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
+}
+
+const LINUX_STATIC_PACKAGE: &str = "eggos-linux-static";
+
+const LINUX_STATIC_PATHS: [(&str, &str); 2] = [
+    ("static", "bin/linux-static"),
+    ("pie", "bin/linux-static-pie"),
+];
+
+fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let mut added = Vec::new();
+    for (relocation_model, path) in LINUX_STATIC_PATHS {
+        added.push(image::AddedFile {
+            host: build_linux_static(arch, relocation_model)?,
+            path: path.to_owned(),
+        });
+    }
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-linux-programs-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
+fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, String> {
+    let relocation_model = format!("relocation-model={relocation_model}");
+    let rustflags = [
+        "-C",
+        "link-self-contained=yes",
+        "-C",
+        "target-feature=+crt-static",
+        "-C",
+        &relocation_model,
+        "-C",
+        "debuginfo=0",
+        "-C",
+        "strip=symbols",
+    ]
+    .join("\x1f");
+    let target_dir = workspace_root().join("target").join(format!(
+        "linux-static-{}",
+        relocation_model.replace('=', "-")
+    ));
+    let target_dir = target_dir.to_string_lossy();
+    let path = build_executable(
+        &[
+            "build",
+            "-p",
+            LINUX_STATIC_PACKAGE,
+            "--target",
+            arch.user_target,
+        ],
+        &[
+            ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
+            ("CARGO_TARGET_DIR", &target_dir),
+        ],
+        &format!(
+            "{LINUX_STATIC_PACKAGE} executable ({relocation_model}) for {}",
+            arch.user_target
+        ),
+    )?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn build_init(arch: &Arch) -> Result<String, String> {

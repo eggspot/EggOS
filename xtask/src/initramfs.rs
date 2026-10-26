@@ -64,26 +64,7 @@ pub fn build(extra: &[(&str, Content)], file_name: &str) -> Result<PathBuf, Stri
     let mut members = vec![Member::new(".", DIRECTORY_MODE, Vec::new())];
     collect(&source, "", &mut members)?;
     for (path, content) in extra {
-        add_directories(path, &mut members);
-        let member = match content {
-            Content::Program(file) => {
-                let data = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-                Member::new(path, PROGRAM_MODE, data)
-            }
-            Content::Text(text) => Member::new(path, FILE_MODE, text.as_bytes().to_vec()),
-            Content::HardLink(target) => {
-                let index = members
-                    .iter()
-                    .position(|member| member.name == *target && member.mode != DIRECTORY_MODE)
-                    .ok_or_else(|| format!("{path}: no file `{target}` to link to before it"))?;
-                let target = members[index].link_to.unwrap_or(index);
-                Member {
-                    link_to: Some(target),
-                    ..Member::new(path, members[target].mode, Vec::new())
-                }
-            }
-        };
-        members.push(member);
+        add(&mut members, path, *content)?;
     }
     let archive = archive(&members, modified);
     let target = std::env::var_os("CARGO_TARGET_DIR")
@@ -95,6 +76,33 @@ pub fn build(extra: &[(&str, Content)], file_name: &str) -> Result<PathBuf, Stri
         std::fs::write(&path, &archive).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(path)
+}
+
+fn add(members: &mut Vec<Member>, path: &str, content: Content) -> Result<(), String> {
+    if members.iter().any(|member| member.name == path) {
+        return Err(format!("`/{path}` is already in the image"));
+    }
+    add_directories(path, members);
+    let member = match content {
+        Content::Program(file) => {
+            let data = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+            Member::new(path, PROGRAM_MODE, data)
+        }
+        Content::Text(text) => Member::new(path, FILE_MODE, text.as_bytes().to_vec()),
+        Content::HardLink(target) => {
+            let index = members
+                .iter()
+                .position(|member| member.name == target && member.mode != DIRECTORY_MODE)
+                .ok_or_else(|| format!("{path}: no file `{target}` to link to before it"))?;
+            let target = members[index].link_to.unwrap_or(index);
+            Member {
+                link_to: Some(target),
+                ..Member::new(path, members[target].mode, Vec::new())
+            }
+        }
+    };
+    members.push(member);
+    Ok(())
 }
 
 fn add_directories(path: &str, members: &mut Vec<Member>) {
@@ -244,6 +252,19 @@ mod tests {
         add_directories("init", &mut members);
         let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
         assert_eq!(names, ["etc", "etc/eggos"]);
+    }
+
+    #[test]
+    fn a_member_already_in_the_archive_is_refused_with_its_path() {
+        let mut members = vec![Member::new("etc", DIRECTORY_MODE, Vec::new())];
+        add(&mut members, "etc/motd", Content::Text("hi")).unwrap();
+        for taken in ["etc", "etc/motd"] {
+            assert_eq!(
+                add(&mut members, taken, Content::Text("again")),
+                Err(format!("`/{taken}` is already in the image"))
+            );
+        }
+        assert_eq!(members.len(), 2);
     }
 
     fn headers(bytes: &[u8]) -> Vec<(String, u32, u32, Vec<u8>)> {
