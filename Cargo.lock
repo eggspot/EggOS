@@ -7,6 +7,13 @@ name = "eggos-drivers"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-eggsh"
+version = "0.2.0"
+dependencies = [
+ "eggos-runtime",
+]
+
+[[package]]
 name = "eggos-hal"
 version = "0.2.0"
 dependencies = [

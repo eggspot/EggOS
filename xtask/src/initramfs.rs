@@ -1,7 +1,7 @@
 //! Builds the initramfs (D102): a `newc` cpio archive of the repository's `initramfs/`
 //! directory, which the kernel embeds and mounts as its root, with the programs and files the
-//! kernel needs: `/init` for the release kernel (D106), and for test kernels the programs they
-//! start from it with `execve` (D103), in `usr/libexec/`.
+//! kernel needs: `/init` and `/bin/eggsh` for the release kernel (D106, D107), and for test
+//! kernels the programs they start from it with `execve` (D103), in `usr/libexec/`.
 //!
 //! The archive is deterministic: members in name order, each directory before what it holds,
 //! the extra members last, owned by root, directories and programs `0755` and other files

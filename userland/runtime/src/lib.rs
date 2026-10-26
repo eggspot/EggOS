@@ -9,6 +9,7 @@
 mod entry;
 #[cfg(target_env = "musl")]
 mod memory;
+pub mod process;
 pub mod relocation;
 pub mod startup;
 pub mod syscall;

@@ -77,6 +77,7 @@ const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-init",
+    "eggos-eggsh",
     "eggos-selftest",
     "eggos-std-selftest",
 ];
@@ -121,6 +122,22 @@ const INIT_RUSTFLAGS: &[&str] = &[
 ];
 
 const INIT_PATH: &str = "init";
+
+const SHELL_PATH: &str = "bin/eggsh";
+
+const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
+
+const SHELL_TEST_SCRIPT_PATH: &str = "usr/share/eggsh/test-script";
+
+const SHELL_TEST_SCRIPT: &str = "# the shell boot test's script (D107)\n\
+    echo EGGSH-TEST script $0 $1 $#\n\
+    . /usr/share/eggsh/sourced\n\
+    echo EGGSH-TEST sourced $SOURCED\n\
+    exit 5\n";
+
+const SHELL_TEST_SOURCED_PATH: &str = "usr/share/eggsh/sourced";
+
+const SHELL_TEST_SOURCED: &str = "SOURCED=yes\n";
 
 const INIT_TEST_LOGIN_PATH: &str = "usr/libexec/eggos-std-selftest";
 
@@ -239,7 +256,8 @@ fn ci() -> Result<(), String> {
 /// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
 /// Then boots the release kernel twice with a test initramfs whose init runs the std program
 /// as its login program, and powers off once it ends, or resets the machine, which ends QEMU
-/// under `-no-reboot` (D106).
+/// under `-no-reboot` (D106); and once more with init starting the shell, which the test
+/// drives on the serial console (D107).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -257,6 +275,8 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         let kernel = build_init_test_kernel(arch, login_exit)?;
         qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, args)?;
     }
+    let kernel = build_shell_test_kernel(arch)?;
+    qemu::boot_test(arch, &kernel, qemu::Expect::Shell, qemu::TEST_CPUS, &[])?;
     Ok(())
 }
 
@@ -295,13 +315,17 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init; every kernel feature is a test
+/// feature, the release kernel's, with init and the shell; every kernel feature is a test
 /// kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
         let init = build_init(arch)?;
+        let shell = build_shell(arch)?;
         let initramfs = initramfs::build(
-            &[(INIT_PATH, initramfs::Content::Program(&init))],
+            &[
+                (INIT_PATH, initramfs::Content::Program(&init)),
+                (SHELL_PATH, initramfs::Content::Program(&shell)),
+            ],
             &format!("initramfs-{}.cpio", arch.user_target),
         )?;
         return build_release_kernel(arch, &initramfs);
@@ -357,12 +381,52 @@ fn build_init_test_kernel(arch: &Arch, login_exit: &str) -> Result<std::path::Pa
     build_release_kernel(arch, &initramfs)
 }
 
+fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let init = build_init(arch)?;
+    let shell = build_shell(arch)?;
+    let programs = build_user_programs(arch)?;
+    let commands = programs
+        .iter()
+        .find(|(variable, _)| *variable == "EGGOS_USERLAND_STD_SELFTEST")
+        .map(|(_, path)| path.as_str())
+        .ok_or("the std program was not built")?;
+    let initramfs = initramfs::build(
+        &[
+            (INIT_PATH, initramfs::Content::Program(&init)),
+            (
+                "etc/eggos/init.conf",
+                initramfs::Content::Text(SHELL_TEST_CONFIG),
+            ),
+            (SHELL_PATH, initramfs::Content::Program(&shell)),
+            (INIT_TEST_LOGIN_PATH, initramfs::Content::Program(commands)),
+            (
+                SHELL_TEST_SCRIPT_PATH,
+                initramfs::Content::Text(SHELL_TEST_SCRIPT),
+            ),
+            (
+                SHELL_TEST_SOURCED_PATH,
+                initramfs::Content::Text(SHELL_TEST_SOURCED),
+            ),
+        ],
+        &format!("initramfs-shell-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
 fn build_init(arch: &Arch) -> Result<String, String> {
+    build_runtime_program(arch, "eggos-init")
+}
+
+fn build_shell(arch: &Arch) -> Result<String, String> {
+    build_runtime_program(arch, "eggos-eggsh")
+}
+
+fn build_runtime_program(arch: &Arch, package: &str) -> Result<String, String> {
     let rustflags = INIT_RUSTFLAGS.join("\x1f");
     let path = build_executable(
-        &["build", "-p", "eggos-init", "--target", arch.user_target],
+        &["build", "-p", package, "--target", arch.user_target],
         &[("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str())],
-        &format!("eggos-init executable for {}", arch.user_target),
+        &format!("{package} executable for {}", arch.user_target),
     )?;
     Ok(path.to_string_lossy().into_owned())
 }

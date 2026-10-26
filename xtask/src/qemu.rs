@@ -126,7 +126,69 @@ pub enum Expect {
     Init,
     /// As [`Expect::Init`], but init resets the machine, which ends QEMU under `-no-reboot`.
     InitRestart,
+    /// The release kernel starts init, which starts the shell; the test types one line of its
+    /// session each time a prompt appears, as a person would, so the console's echo never mixes
+    /// with what the commands write, and `^C` when the program waiting for it says so; the
+    /// shell writes each line the session expects and exits with 7, and init powers off (D107).
+    Shell,
 }
+
+const SHELL_PROMPT: &str = "eggsh:/";
+
+const SHELL_SESSION: [&[u8]; 17] = [
+    b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
+    b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
+    b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
+    b"false; echo EGGSH-TEST status $?\r",
+    b"no-such-command; echo EGGSH-TEST not found $?\r",
+    b"PATH=$PATH:/usr/libexec; GREETING=hi eggos-std-selftest shell-child show GREETING 'a b' c\r",
+    b"echo EGGSH-TEST child $?\r",
+    b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
+    b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
+    b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
+    b"echo a | b; echo EGGSH-TEST never\r",
+    b"echo EGGSH-TEST after unsupported $?\r",
+    b"eggos-std-selftest shell-child wait-for-interrupt\r",
+    b"echo EGGSH-TEST interrupted $?\r",
+    b"\x03",
+    b"echo EGGSH-TEST prompt interrupt $?\r",
+    b"exit 7\r",
+];
+
+const SHELL_INTERRUPT: (&str, &[u8]) = (
+    "EGGOS-SHELL-CHILD: waiting for an interrupt in the foreground group",
+    b"\x03",
+);
+
+#[derive(Debug, Default)]
+struct ShellTyping {
+    lines: usize,
+    interrupts: usize,
+}
+
+const SHELL_LINES: [&str; 19] = [
+    "EGGSH-TEST quoting single  quoted double / $HOME",
+    "EGGSH-TEST variables abcabcdef x y x y",
+    "EGGSH-TEST cd /usr/libexec /",
+    "EGGSH-TEST home /",
+    "EGGSH-TEST status 1",
+    "eggsh: no-such-command: command not found",
+    "EGGSH-TEST not found 127",
+    "EGGOS-SHELL-CHILD: GREETING=hi args=a b|c",
+    "EGGSH-TEST child 3",
+    "Terminated",
+    "EGGSH-TEST killed 143",
+    "EGGSH-TEST script /usr/share/eggsh/test-script one 2",
+    "EGGSH-TEST sourced yes",
+    "EGGSH-TEST script status 5",
+    "EGGSH-TEST dash-c name arg",
+    "eggsh: `|` is not supported yet",
+    "EGGSH-TEST after unsupported 2",
+    "EGGSH-TEST interrupted 130",
+    "EGGSH-TEST prompt interrupt 130",
+];
+
+const SHELL_EXIT_LINE: &str = "init: /bin/eggsh exited with status 7";
 
 const INIT_BANNER: &str = concat!("EggOS ", env!("CARGO_PKG_VERSION"));
 
@@ -233,6 +295,7 @@ pub fn boot_test(
     let started = Instant::now();
     let mut console = Vec::new();
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
+    let mut shell_typed = ShellTyping::default();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -240,6 +303,9 @@ pub fn boot_test(
         console.extend(rx.try_iter().flatten());
         let scripts = match expect {
             Expect::Init | Expect::InitRestart => Vec::new(),
+            Expect::Shell => {
+                shell_scripts_to_type(&String::from_utf8_lossy(&console), &mut shell_typed)
+            }
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
         };
         for script in scripts {
@@ -311,6 +377,25 @@ fn scripts_to_type(
     scripts
 }
 
+fn shell_scripts_to_type(console: &str, typed: &mut ShellTyping) -> Vec<&'static [u8]> {
+    let mut scripts = Vec::new();
+    let prompts = console
+        .matches(SHELL_PROMPT)
+        .count()
+        .min(SHELL_SESSION.len());
+    while typed.lines < prompts {
+        scripts.push(SHELL_SESSION[typed.lines]);
+        typed.lines += 1;
+    }
+    let (text, interrupt) = SHELL_INTERRUPT;
+    let asked = console.matches(text).count();
+    while typed.interrupts < asked {
+        scripts.push(interrupt);
+        typed.interrupts += 1;
+    }
+    scripts
+}
+
 /// How many times the kernel's boot banner appears on the console.
 fn banner_count(console: &str) -> usize {
     console
@@ -338,6 +423,7 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
     match expect {
         Expect::Init => return init_verdict(arch, clean_exit, console, POWER_DOWN_LINE),
         Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
+        Expect::Shell => return shell_verdict(arch, clean_exit, console),
         _ => {}
     }
     if expect == Expect::FatalException {
@@ -421,6 +507,29 @@ fn init_verdict(
         ));
     }
     eprintln!("xtask: {arch}: init boot test passed ({going_down})");
+    Ok(())
+}
+
+fn shell_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+    let lines = || console.lines().map(str::trim_end);
+    if let Some(panic) = lines().find(|line| line.starts_with(KERNEL_PANIC_PREFIX)) {
+        return Err(format!("{arch}: init ended: {panic}"));
+    }
+    if !clean_exit {
+        return Err(format!("{arch}: QEMU exited with an error"));
+    }
+    let shown = |wanted: &str| lines().any(|line| line.ends_with(wanted));
+    if let Some(missing) = SHELL_LINES.iter().find(|line| !shown(line)) {
+        return Err(format!(
+            "{arch}: the shell session did not write `{missing}`"
+        ));
+    }
+    if !shown(SHELL_EXIT_LINE) || !lines().any(|line| line == POWER_DOWN_LINE) {
+        return Err(format!(
+            "{arch}: no `{SHELL_EXIT_LINE}` and `{POWER_DOWN_LINE}` after the shell session"
+        ));
+    }
+    eprintln!("xtask: {arch}: shell boot test passed");
     Ok(())
 }
 
@@ -613,6 +722,63 @@ mod tests {
         let restarted = ok.replace(POWER_DOWN_LINE, RESTART_LINE);
         assert!(verdict("x", Expect::InitRestart, true, &restarted).is_ok());
         assert!(verdict("x", Expect::Init, true, &restarted).is_err());
+    }
+
+    fn shell_console() -> String {
+        format!(
+            "EggOS 0.2.0 (x86_64)\r\n{INIT_BANNER}\r\neggsh:/# {}\r\n{SHELL_EXIT_LINE}\r\n\
+             {POWER_DOWN_LINE}\r\n",
+            SHELL_LINES.join("\r\neggsh:/# ")
+        )
+    }
+
+    #[test]
+    fn a_shell_boot_needs_every_session_line_the_shell_s_exit_and_the_power_down() {
+        let ok = shell_console();
+        assert!(verdict("x", Expect::Shell, true, &ok).is_ok());
+        assert!(verdict("x", Expect::Shell, false, &ok).is_err());
+        for missing in SHELL_LINES
+            .iter()
+            .chain([&SHELL_EXIT_LINE, &POWER_DOWN_LINE])
+        {
+            let without = ok.replace(missing, "");
+            assert!(
+                verdict("x", Expect::Shell, true, &without).is_err(),
+                "{missing}"
+            );
+        }
+        let garbled = ok.replace("EGGSH-TEST child 3", "EGGSH-TEST child 3x");
+        assert!(verdict("x", Expect::Shell, true, &garbled).is_err());
+        let panicked = format!("{ok}Kernel panic - not syncing: Attempted to kill init!\r\n");
+        assert!(verdict("x", Expect::Shell, true, &panicked).is_err());
+    }
+
+    #[test]
+    fn the_shell_session_types_a_line_at_each_prompt_and_c_for_the_waiting_program() {
+        let mut typed = ShellTyping::default();
+        assert!(shell_scripts_to_type("init: starting /bin/eggsh\r\n", &mut typed).is_empty());
+        let started = "init: starting /bin/eggsh\r\neggsh:/# ";
+        assert_eq!(
+            shell_scripts_to_type(started, &mut typed),
+            [SHELL_SESSION[0]]
+        );
+        assert!(shell_scripts_to_type(started, &mut typed).is_empty());
+        let error = format!("{started}x\r\neggsh: x: command not found\r\neggsh:/usr# ");
+        assert_eq!(
+            shell_scripts_to_type(&error, &mut typed),
+            [SHELL_SESSION[1]]
+        );
+        let waiting = format!("{error}{}\r\n", SHELL_INTERRUPT.0);
+        assert_eq!(
+            shell_scripts_to_type(&waiting, &mut typed),
+            [SHELL_INTERRUPT.1]
+        );
+        let many = SHELL_PROMPT.repeat(SHELL_SESSION.len() + 5);
+        assert_eq!(
+            shell_scripts_to_type(&many, &mut typed).len(),
+            SHELL_SESSION.len() - 2
+        );
+        assert_eq!(typed.lines, SHELL_SESSION.len());
     }
 
     #[test]
