@@ -332,15 +332,16 @@ pub(crate) fn terminal_draws_on_the_display<P: Platform>(
     if terminal::is_active() {
         return Err("the terminal was shown before its self-test");
     }
-    let area = terminal::start::<P>().ok_or("no terminal could be made for the display")?;
+    let area = terminal::start::<P>(terminal::Session::SelfTest)
+        .ok_or("no terminal could be made for the display")?;
     let flushes = display::flushes();
     console::write::<P>(terminal::TEST_SCREEN.as_bytes());
     let shown = terminal::show::<P>();
     let hash = display::draw(|framebuffer| display::pixel_hash(framebuffer.pixels()));
     terminal::stop();
     let first_frame = display::show_first_frame::<P>();
-    if (area.columns, area.rows) != (158, 49) {
-        return Err("the terminal's grid at 1280x800 is not 158x49");
+    if (area.columns, area.rows) != (80, 24) {
+        return Err("the terminal window's grid at 1280x800 is not 80x24");
     }
     if shown.is_err() || display::flushes() <= flushes {
         return Err("the terminal's lines were not flushed to the display");
