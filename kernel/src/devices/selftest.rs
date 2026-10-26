@@ -1,7 +1,9 @@
 use super::dma::DmaRegion;
 use super::{Binding, DeviceNode, Identity};
+use crate::display::{self, Mode, Rect};
 use crate::memory::{FRAMES, Memory};
 use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::virtio::device_type;
 use eggos_hal::paging::{Format, MemoryType};
 use eggos_hal::{PhysicalRange, Platform};
 
@@ -20,20 +22,16 @@ fn compatible(node: &DeviceNode, wanted: &[u8]) -> bool {
     }
 }
 
-fn entropy_devices(found: &[DeviceNode]) -> usize {
+fn virtio_devices(found: &[DeviceNode], wanted: u32) -> usize {
     found
         .iter()
         .filter(|node| {
-            matches!(
-                node.identity,
-                Identity::Virtio {
-                    device_type: eggos_drivers::virtio::device_type::ENTROPY,
-                    ..
-                }
-            )
+            matches!(node.identity, Identity::Virtio { device_type, .. } if device_type == wanted)
         })
         .count()
 }
+
+const VIRTIO_DEVICES: usize = 2;
 
 fn virtio_mmio_slots(found: &[DeviceNode], expected: usize) -> Result<(), &'static str> {
     let slots: alloc::vec::Vec<_> = found
@@ -59,8 +57,8 @@ fn virtio_mmio_slots(found: &[DeviceNode], expected: usize) -> Result<(), &'stat
         .iter()
         .filter(|node| node.binding == Binding::Bound("virtio-mmio"))
         .count();
-    if cfg!(feature = "virtio") && bound != 1 {
-        return Err("the virtio-mmio driver did not bind exactly the slot with a device");
+    if cfg!(feature = "virtio") && bound != VIRTIO_DEVICES {
+        return Err("the virtio-mmio driver did not bind exactly the slots with a device");
     }
     Ok(())
 }
@@ -109,6 +107,12 @@ fn q35_functions(found: &[DeviceNode]) -> Result<(), &'static str> {
     if cfg!(feature = "virtio") && rng.binding != Binding::Bound("virtio-pci") {
         return Err("the virtio-pci driver did not bind the virtio-rng-pci function");
     }
+    let gpu = functions().find(|(f, _)| (f.vendor_id, f.device_id) == (0x1af4, 0x1050));
+    if cfg!(feature = "virtio")
+        && gpu.is_none_or(|(_, gpu)| gpu.binding != Binding::Bound("virtio-pci"))
+    {
+        return Err("the virtio-pci driver did not bind a virtio-gpu-pci function");
+    }
     Ok(())
 }
 
@@ -141,8 +145,11 @@ pub(crate) fn devices_are_discovered<P: Platform>(
         return Ok(());
     };
     machine?;
-    if cfg!(feature = "virtio") && entropy_devices(&found) != 1 {
+    if cfg!(feature = "virtio") && virtio_devices(&found, device_type::ENTROPY) != 1 {
         return Err("no virtio entropy device behind the transports");
+    }
+    if cfg!(feature = "virtio") && virtio_devices(&found, device_type::GPU) != 1 {
+        return Err("no virtio GPU behind the transports");
     }
     Ok(())
 }
@@ -161,6 +168,54 @@ pub(crate) fn virtio_rng_returns_bytes<P: Platform>() -> Result<(), &'static str
     }
     if first == [0; 32] || first == second {
         return Err("the virtio entropy device returned zeros or the same bytes twice");
+    }
+    Ok(())
+}
+
+const TEST_PATTERN: [(Rect, u32); 3] = [
+    (Rect::new(0, 0, 64, 32), 0x00f2_b33d),
+    (Rect::new(1200, 760, 100, 100), 0x00e6_eaf0),
+    (Rect::new(600, 0, 1, 800), 0x00e5_534b),
+];
+
+/// The display: on the QEMU machines, which xtask gives a virtio GPU asking for 1280x800, the
+/// boot's first frame was drawn and shown, and a test pattern drawn over it shows and goes
+/// again, leaving the first frame.
+pub(crate) fn display_shows_the_first_frame<P: Platform>(
+    _memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    let Some(mode) = display::mode() else {
+        return match cfg!(all(target_os = "none", feature = "virtio-gpu")) {
+            true => Err("there is no display (no virtio GPU found?)"),
+            false => Ok(()),
+        };
+    };
+    if mode != Mode::new(1280, 800) {
+        return Err("the display's mode is not the 1280x800 xtask asks QEMU for");
+    }
+    let first_frame = || display::draw(|framebuffer| display::pixel_hash(framebuffer.pixels()));
+    if display::flushes() == 0 || first_frame() != Some(display::FIRST_FRAME_HASH_1280X800) {
+        return Err("the first frame was not drawn and shown");
+    }
+    let flushes = display::flushes();
+    for colour in [None, Some(display::FIRST_FRAME_COLOUR)] {
+        display::draw(|framebuffer| {
+            for (rect, pattern) in TEST_PATTERN {
+                framebuffer.fill(rect, colour.unwrap_or(pattern));
+            }
+        });
+        if display::flush::<P>() != Ok(TEST_PATTERN.len()) {
+            return Err("the display did not show a test pattern's three rectangles");
+        }
+        let pattern = display::draw(|framebuffer| framebuffer.pixels()[1279 + 799 * 1280]);
+        if colour.is_none() && pattern != Some(0x00e6_eaf0) {
+            return Err("the test pattern was not drawn clipped to the screen");
+        }
+    }
+    if display::flushes() != flushes + 2
+        || first_frame() != Some(display::FIRST_FRAME_HASH_1280X800)
+    {
+        return Err("the first frame did not come back after the test pattern");
     }
     Ok(())
 }

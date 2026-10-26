@@ -64,7 +64,7 @@ fn virtio_rng_returns_bytes<P: Platform>(_memory: &mut Memory<P>) -> Result<(), 
 }
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 51] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 52] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -97,6 +97,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 51] {
         (
             "dma_regions_are_zeroed_and_freed_after_reset",
             crate::devices::selftest::dma_regions_are_zeroed_and_freed_after_reset::<P>,
+        ),
+        (
+            "display_shows_the_first_frame",
+            crate::devices::selftest::display_shows_the_first_frame::<P>,
         ),
         (
             "address_spaces_keep_user_pages_apart",

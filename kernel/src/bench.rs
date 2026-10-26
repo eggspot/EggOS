@@ -20,9 +20,13 @@ use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
+use eggos_drivers::display::{Mode, Rect};
 use eggos_drivers::dma::DmaAddr;
+use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::virtio::gpu::{self as virtio_gpu, VirtioGpu};
 use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
 use eggos_drivers::virtio::rng as virtio_rng;
+use eggos_drivers::virtio::{self, Transport};
 use eggos_hal::fdt::Fdt;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
@@ -42,7 +46,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 36] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 37] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -88,6 +92,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 36] {
         ("virtqueue_round_trip_fake", |_, n| {
             virtqueue_round_trip_fake(n)
         }),
+        ("virtio_gpu_flush_fake", |_, n| virtio_gpu_flush_fake(n)),
         ("device_tree_walk", |_, n| device_tree_walk(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
@@ -251,6 +256,148 @@ fn virtqueue_round_trip_fake(n: u64) {
             *byte = unsafe { buffer.wrapping_add(offset).read_volatile() };
         }
         black_box(&mut bytes);
+    }
+}
+
+static GPU_CONTROL: QueueMemory<{ virtio_gpu::MEMORY_BYTES }> =
+    QueueMemory(core::cell::UnsafeCell::new([0; virtio_gpu::MEMORY_BYTES]));
+const GPU_MODE: Mode = Mode::new(64, 64);
+static GPU_FRAMEBUFFER: QueueMemory<{ GPU_MODE.bytes() }> =
+    QueueMemory(core::cell::UnsafeCell::new([0; GPU_MODE.bytes()]));
+const GPU_DAMAGE: Rect = Rect::new(8, 8, 16, 16);
+
+struct StaticDma {
+    memory: *mut u8,
+    len: usize,
+}
+
+impl StaticDma {
+    fn of<const BYTES: usize>(memory: &'static QueueMemory<BYTES>) -> Self {
+        Self {
+            memory: memory.0.get().cast(),
+            len: BYTES,
+        }
+    }
+}
+
+impl core::fmt::Debug for StaticDma {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("StaticDma")
+    }
+}
+
+// SAFETY: made only from a page-aligned static of `len` bytes that one benchmark at a time uses
+// on the one CPU the benchmarks run on; the fake device reaches it at the CPU's addresses,
+// coherently.
+unsafe impl DmaMemory for StaticDma {
+    fn as_mut_ptr(&self) -> *mut u8 {
+        self.memory
+    }
+    fn dma_addr(&self) -> DmaAddr {
+        DmaAddr::new(self.memory as u64)
+    }
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// A virtio GPU that takes no time: answers every command at once, a display info with
+/// [`GPU_MODE`] and success to everything else, and copies nothing.
+#[derive(Debug, Default)]
+struct FakeGpu {
+    status: core::cell::Cell<u8>,
+    device: core::cell::RefCell<Option<queue::DeviceSide>>,
+}
+
+const GPU_GET_DISPLAY_INFO: u32 = 0x0100;
+const GPU_OK_NODATA: u32 = 0x1100;
+const GPU_OK_DISPLAY_INFO: u32 = 0x1101;
+
+impl FakeGpu {
+    fn put32(address: u64, value: u32) {
+        // SAFETY: a response buffer the driver posted, inside one of the statics.
+        unsafe { (address as *mut u32).write_volatile(value.to_le()) }
+    }
+}
+
+impl Transport for FakeGpu {
+    fn device_type(&self) -> u32 {
+        virtio::device_type::GPU
+    }
+    fn status(&self) -> u8 {
+        self.status.get()
+    }
+    fn set_status(&self, status: u8) {
+        self.status.set(status);
+    }
+    fn device_features(&self) -> u64 {
+        virtio::feature::VERSION_1
+    }
+    fn set_driver_features(&self, _: u64) {}
+    fn max_queue_size(&self, queue: u16) -> u16 {
+        if queue == 0 {
+            virtio_gpu::QUEUE_SIZE
+        } else {
+            0
+        }
+    }
+    fn set_up_queue(
+        &self,
+        _: u16,
+        size: u16,
+        addresses: &virtio::QueueAddresses,
+    ) -> Result<(), virtio::Error> {
+        let memory = addresses.descriptors.get() as *mut u8;
+        // SAFETY: the queue the driver set up at the start of `GPU_CONTROL`, which outlives
+        // this device.
+        *self.device.borrow_mut() = Some(unsafe { queue::DeviceSide::new(memory, size) });
+        Ok(())
+    }
+    fn notify(&self, _: u16) {
+        let mut device = self.device.borrow_mut();
+        let Some(device) = device.as_mut() else {
+            return;
+        };
+        while let Some(head) = device.next_available() {
+            let (request, _, _, next) = device.descriptor(head);
+            let (response, len, _, _) = device.descriptor(next);
+            // SAFETY: the request the driver posted, inside `GPU_CONTROL`.
+            let command = unsafe { (request.get() as *const u32).read_volatile() };
+            if u32::from_le(command) == GPU_GET_DISPLAY_INFO {
+                Self::put32(response.get(), GPU_OK_DISPLAY_INFO);
+                Self::put32(response.get() + 32, GPU_MODE.width);
+                Self::put32(response.get() + 36, GPU_MODE.height);
+                Self::put32(response.get() + 40, 1);
+            } else {
+                Self::put32(response.get(), GPU_OK_NODATA);
+            }
+            device.put_used(head, len);
+        }
+    }
+    fn read_config8(&self, _: usize) -> u8 {
+        0
+    }
+    fn read_config32(&self, _: usize) -> u32 {
+        1
+    }
+}
+
+/// The virtio GPU driver's flush of one damaged rectangle (its transfer, then its flush, each
+/// fenced and waited for) with a device that takes no time: the driver's own cost per flush.
+fn virtio_gpu_flush_fake(n: u64) {
+    let control = StaticDma::of(&GPU_CONTROL);
+    let Ok(mut gpu) = VirtioGpu::new(FakeGpu::default(), control, &mut || true) else {
+        return;
+    };
+    let framebuffer = StaticDma::of(&GPU_FRAMEBUFFER);
+    if gpu
+        .attach_framebuffer(framebuffer, GPU_MODE, &mut || true)
+        .is_err()
+    {
+        return;
+    }
+    for _ in 0..n {
+        black_box(gpu.flush(black_box(&[GPU_DAMAGE]), &mut || true).ok());
     }
 }
 

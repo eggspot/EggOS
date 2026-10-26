@@ -260,6 +260,132 @@ fn give_back_transport(identity: &Identity, transport: AnyTransport) {
     }
 }
 
+#[cfg(any(test, feature = "virtio-gpu"))]
+pub use gpu::GPU_DRIVER;
+
+#[cfg(any(test, feature = "virtio-gpu"))]
+mod gpu {
+    use super::*;
+    use crate::display::{Mode, Rect, Scanout};
+    use eggos_drivers::virtio::gpu::{FALLBACK_MODE, MEMORY_BYTES, Released, VirtioGpu};
+
+    type Gpu = VirtioGpu<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio GPU (virtio 1.2, 5.7), 2D: one framebuffer on scanout 0, installed as
+    /// the kernel's display ([`crate::display`]).
+    pub static GPU_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-gpu",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::GPU)],
+        probe: probe_gpu,
+    };
+
+    struct GpuScanout {
+        gpu: Gpu,
+        mode: Mode,
+    }
+
+    impl Scanout for GpuScanout {
+        fn mode(&self) -> Mode {
+            self.mode
+        }
+
+        fn pixels(&mut self) -> &mut [u32] {
+            self.gpu.pixels().unwrap_or_default()
+        }
+
+        fn flush(
+            &mut self,
+            rects: &[Rect],
+            deadline: &mut Deadline,
+        ) -> Result<usize, &'static str> {
+            self.gpu
+                .flush(rects, &mut || deadline.keep_waiting())
+                .map_err(virtio::Error::description)
+        }
+    }
+
+    fn probe_gpu(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        if crate::display::mode().is_some() {
+            return Err(ProbeError::Refused("a display is already in use"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let control = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let mut gpu = match VirtioGpu::new(transport, control, &mut || deadline.keep_waiting()) {
+            Ok(gpu) => gpu,
+            Err((error, transport, control)) => {
+                if let Some(control) = control {
+                    // SAFETY: `VirtioGpu::new` hands the memory back only when the device never
+                    // had it or was reset after.
+                    unsafe { control.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        let shown = attach_framebuffer(&mut gpu, &mut deadline);
+        let refused = match shown {
+            Ok(mode) => match crate::display::install(GpuScanout { gpu, mode }) {
+                Ok(()) => return Ok(()),
+                Err(scanout) => (scanout.gpu, "a display is already in use"),
+            },
+            Err(reason) => (gpu, reason),
+        };
+        release(refused.0, &node.identity, &mut deadline);
+        Err(ProbeError::Refused(refused.1))
+    }
+
+    fn attach_framebuffer(gpu: &mut Gpu, deadline: &mut Deadline) -> Result<Mode, &'static str> {
+        let display = gpu.display_mode();
+        let (framebuffer, mode) = [display, FALLBACK_MODE]
+            .into_iter()
+            .find_map(|mode| Some((DmaRegion::allocate(mode.bytes()).ok()?, mode)))
+            .ok_or("no memory for the framebuffer")?;
+        gpu.attach_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting())
+            .map(|()| mode)
+            .map_err(|(error, framebuffer)| {
+                if let Some(framebuffer) = framebuffer {
+                    // SAFETY: handed back by `attach_framebuffer`, which does so only when the
+                    // device was never given it.
+                    unsafe { framebuffer.free() };
+                }
+                error.description()
+            })
+    }
+
+    fn release(gpu: Gpu, identity: &Identity, deadline: &mut Deadline) {
+        match gpu.reset(&mut || deadline.keep_waiting()) {
+            Ok(Released {
+                transport,
+                control,
+                framebuffer,
+                reset,
+            }) => {
+                control.free_after_reset(&reset);
+                if let Some(framebuffer) = framebuffer {
+                    framebuffer.free_after_reset(&reset);
+                }
+                give_back_transport(identity, transport);
+            }
+            Err((_, transport)) => give_back_transport(identity, transport),
+        }
+    }
+}
+
 #[cfg(any(test, feature = "virtio-rng"))]
 pub use entropy::{RNG_DRIVER, read_random};
 
