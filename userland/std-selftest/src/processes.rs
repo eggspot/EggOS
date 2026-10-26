@@ -3,7 +3,8 @@
 //! child from musl's `fork`; descriptors copied, and shared with `CLONE_FILES`; and a child of
 //! `vfork` running on the parent's memory until it execs this program's file, which checks
 //! its parent and that it starts with a new program's floating-point state, not the rounding
-//! mode its parent set before the `vfork`. Each child ends with its own status, which the kernel checks.
+//! mode its parent set before the `vfork`; and a child that forks before its first FP/SIMD
+//! instruction, whose own child must still see the rounding mode their ancestor set. Each child ends with its own status, which the kernel checks.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::process::ExitCode;
@@ -19,6 +20,7 @@ pub mod child_status {
     pub const DESCRIPTORS_COPIED: u8 = 24;
     pub const DESCRIPTORS_SHARED: u8 = 25;
     pub const SPAWNED_BY_VFORK: u8 = 26;
+    pub const ROUNDING_KEPT_TWO_GENERATIONS: u8 = 27;
     pub const WRONG: u8 = 1;
 }
 
@@ -52,6 +54,7 @@ const FE_TOWARDZERO: i32 = 1;
 
 static IN_A_STATIC: AtomicU64 = AtomicU64::new(BEFORE);
 static VFORK_CHILD_EXECS: AtomicU64 = AtomicU64::new(0);
+static GRANDCHILD_ROUNDING: AtomicU64 = AtomicU64::new(0);
 
 mod libc {
     use std::ffi::{c_char, c_void};
@@ -251,9 +254,39 @@ fn vfork_child_runs_on_the_memory_until_it_execs() -> bool {
         && VFORK_CHILD_EXECS.load(Ordering::SeqCst) == 1
 }
 
+fn grandchild_keeps_the_rounding_mode() -> ! {
+    GRANDCHILD_ROUNDING.store(rounding() as u64, Ordering::SeqCst);
+    exit_child(0)
+}
+
+fn child_forks_before_its_first_fp_use() -> ! {
+    GRANDCHILD_ROUNDING.store(u64::MAX, Ordering::SeqCst);
+    // SAFETY: the grandchild runs on this memory until it ends, as vfork(2) allows: it only
+    // reads its rounding mode, writes a static and ends with `_exit`.
+    let grandchild = unsafe { libc::vfork() };
+    if grandchild == 0 {
+        grandchild_keeps_the_rounding_mode();
+    }
+    let kept = GRANDCHILD_ROUNDING.load(Ordering::SeqCst) == FE_TOWARDZERO as u64;
+    exit_child(match grandchild > 0 && kept {
+        true => child_status::ROUNDING_KEPT_TWO_GENERATIONS,
+        false => child_status::WRONG,
+    })
+}
+
+fn the_rounding_mode_reaches_a_grandchild() -> bool {
+    let changed = set_rounding(FE_TOWARDZERO);
+    let child = clone_and_wait(0);
+    if child == 0 {
+        child_forks_before_its_first_fp_use();
+    }
+    let restored = set_rounding(FE_TONEAREST);
+    changed && restored && child > 0
+}
+
 type Check = (&'static str, fn() -> bool);
 
-const CHECKS: [Check; 4] = [
+const CHECKS: [Check; 5] = [
     (
         "a child changes its copy of the stack, heap and statics, not the parent's",
         memory_is_copied,
@@ -266,6 +299,10 @@ const CHECKS: [Check; 4] = [
     (
         "a vfork child runs on the parent's memory and the parent resumes once it execs",
         vfork_child_runs_on_the_memory_until_it_execs,
+    ),
+    (
+        "a child that forks before it uses FP/SIMD hands its rounding mode to its own child",
+        the_rounding_mode_reaches_a_grandchild,
     ),
 ];
 

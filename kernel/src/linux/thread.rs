@@ -459,7 +459,8 @@ pub fn clone<P: Platform>(
 
 /// A copy of the calling thread's FP/SIMD registers as its program left them, for a thread or
 /// process it starts; `None` if it has none yet, or there is no memory for the copy (the new
-/// thread then starts with a new program's).
+/// thread then starts with a new program's). Registers the calling thread inherited and has not
+/// used yet must be its running ones first (`clone` loads them before it gets here).
 pub fn running_fp<P: Platform>() -> Option<Box<FpState>> {
     let layout = core::alloc::Layout::new::<FpState>();
     // SAFETY: `FpState` is not zero-sized.

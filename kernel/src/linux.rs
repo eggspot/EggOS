@@ -620,6 +620,12 @@ fn signal_fault<P: Platform>(
     signals::deliver_fault(process, thread, context, &fault)
 }
 
+pub(crate) fn load_inherited_fp<P: Platform>(thread: &mut LinuxThread) {
+    if let Some(state) = thread.take_inherited_fp() {
+        let _ = crate::thread::start_fp_from::<P>(state);
+    }
+}
+
 fn first_fp_use<P: Platform>(thread: &mut LinuxThread, kind: ExceptionKind) -> bool {
     if kind == ExceptionKind::IllegalInstruction
         && let Some(state) = thread.take_inherited_fp()
@@ -718,11 +724,18 @@ fn out_of_line_call<P: Platform>(
         number::EXECVEAT => exec::execveat(process, thread, context),
         _ => {
             let result = match number {
-                number::CLONE => thread::clone::<P>(process, thread, context),
+                number::CLONE => {
+                    load_inherited_fp::<P>(thread);
+                    thread::clone::<P>(process, thread, context)
+                }
                 #[cfg(target_arch = "x86_64")]
-                number::FORK => fork::fork::<P>(process, thread, context),
-                #[cfg(target_arch = "x86_64")]
-                number::VFORK => fork::vfork::<P>(process, thread, context),
+                number::FORK | number::VFORK => {
+                    load_inherited_fp::<P>(thread);
+                    match number {
+                        number::FORK => fork::fork::<P>(process, thread, context),
+                        _ => fork::vfork::<P>(process, thread, context),
+                    }
+                }
                 _ => out_of_line_result(process, thread, number, context),
             };
             context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -5861,6 +5874,39 @@ mod tests {
         assert!(mmap(shared) < Errno::EINVAL.result());
         assert_eq!(fork(), Errno::ENOSYS.result());
         assert!(process.children().is_empty());
+    }
+
+    #[test]
+    fn inherited_fp_registers_become_the_running_ones_before_anything_reads_them() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use eggos_hal::fp::FpState;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::thread::start::<P>().unwrap();
+        static CHECKED: AtomicBool = AtomicBool::new(false);
+        CHECKED.store(false, Ordering::SeqCst);
+        // SAFETY: test tables, never active; the test platform's switch only records roots.
+        let process = Arc::new(unsafe { Process::<P>::with_test_program(&kernel) }.unwrap());
+        let context = Process::<P>::test_program_context(|program| program.illegal_instruction);
+        let user = process::spawn::<P, _>(process, context, move |process, _, _| {
+            let mut thread = LinuxThread::first(process);
+            let inherited = Box::new(FpState::new());
+            let address = core::ptr::from_ref::<FpState>(&inherited).addr();
+            thread.inherit_fp(Some(inherited));
+            assert!(thread::running_fp::<P>().is_none());
+            load_inherited_fp::<P>(&mut thread);
+            assert!(thread.take_inherited_fp().is_none());
+            let running = crate::thread::with_running_fp::<P, _>(|state| {
+                core::ptr::from_mut::<FpState>(state).addr()
+            });
+            assert_eq!(running, Some(address));
+            assert!(thread::running_fp::<P>().is_some());
+            CHECKED.store(true, Ordering::SeqCst);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        user.join::<P>();
+        assert!(CHECKED.load(Ordering::SeqCst));
     }
 
     #[test]

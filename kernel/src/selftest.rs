@@ -1885,7 +1885,7 @@ static STD_PROGRAM_CREATING_PROCESSES: RustProgram = RustProgram {
         1,
         "a process-creation check of the std Rust program failed: it named it on the console",
     )],
-    children_statuses: &[21, 22, 24, 25, 26],
+    children_statuses: &[21, 22, 24, 25, 26, 27],
     ..STD_PROGRAM
 };
 

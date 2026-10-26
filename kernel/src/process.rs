@@ -224,6 +224,9 @@ impl<P: Platform> Memory<P> {
     }
 
     fn copy(&self, futex_space: u32) -> Result<Self, CopyError> {
+        if self.shared_anonymous.load(Ordering::Relaxed) {
+            return Err(CopyError::SharedAnonymous);
+        }
         let mut space = self
             .space
             .new_owning_frames_beside()

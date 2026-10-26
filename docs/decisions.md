@@ -4968,7 +4968,12 @@ the license, by an explicit instruction recorded here.
 - **FP/SIMD registers at `execve`.** Registers a thread inherited and has not used yet are
   forgotten as `execve` starts the new program (`LinuxThread::start_image`), which starts with a
   new program's, as Linux resets them at `exec`: a `vfork` child that execs before any FP use no
-  longer hands its parent's rounding mode and other control state to the new program.
+  longer hands its parent's rounding mode and other control state to the new program. Before
+  anything reads the running registers (`clone`, `fork` and `vfork` copying them for a child,
+  a signal's frame saving them), registers a thread inherited and has not used yet become its
+  running ones (`linux::load_inherited_fp`, on those cold paths only), so a child that forks or
+  takes a signal before its first FP/SIMD instruction hands on, and saves, its inherited
+  state rather than a new program's.
 - **Review fixes (D103).** The console's foreground is forgotten by the reader that became it
   only if it still is that one (`console::forget_this_foreground`, a pointer compare), not by
   process id: an old program's thread that became the foreground just as `execve` ended it no
@@ -4983,7 +4988,8 @@ the license, by an explicit instruction recorded here.
   sharing the memory cleared by its `exit_group`; futex spaces apart for a creator's `execve`
   image and a `CLONE_VM` child; a marked memory never copied (`ENOSYS` through `clone` after
   `mmap(MAP_SHARED)`), shared and copied again after `execve`; `execve` forgetting inherited
-  FP/SIMD registers; a record of 100,000 generations dropped without recursion. In QEMU on aarch64, riscv64 and x86_64,
+  FP/SIMD registers, and inherited registers becoming the running ones that a child's copy
+  reads; a record of 100,000 generations dropped without recursion. In QEMU on aarch64, riscv64 and x86_64,
   the std program, run twice with every frame of the second run freed: a child of
   `clone(CLONE_VFORK | SIGCHLD)` changes its copy of a stack word, a heap word and a static
   and checks its parent's id, while the parent keeps its own; musl's `fork`; descriptors
@@ -4992,7 +4998,9 @@ the license, by an explicit instruction recorded here.
   AArch64 and RISC-V, `vfork` on x86_64), whose child yields, writes a static the parent
   reads, and execs the program's file, which checks its parent's id and that its rounding mode
   is the default although the parent set round-toward-zero before the `vfork` (the check fails
-  without the `execve` fix above). The kernel checks each
+  without the `execve` fix above); a child of `clone(CLONE_VFORK | SIGCHLD)` forks again with
+  `vfork` before its own first FP/SIMD use, and the grandchild must read the rounding mode the
+  std program set (it reads the default without the load above). The kernel checks each
   child's status and exit signal in the parent's list.
 - **Cost.** Two new benchmarks (docs/benchmarks.md): `linux_fork`, a `clone(CLONE_VFORK |
   SIGCHLD)` of the runtime's small self-test program with an eager copy and the child's

@@ -2267,6 +2267,7 @@ fn deliver_with<P: Platform>(
                     Some(_) => context.set_syscall_result(Errno::EINTR.result()),
                     None => {}
                 }
+                super::load_inherited_fp::<P>(thread);
                 let started = start_handler(
                     process, context, &state, saved_mask, &action, &info, described,
                 );
