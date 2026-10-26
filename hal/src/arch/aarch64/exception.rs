@@ -1304,29 +1304,33 @@ fn irq(pc: u64) {
         return; // Spurious: the interrupt went away before it was acknowledged.
     };
     let id = interrupt.id();
-    if id == timer::UART0_INTERRUPT {
-        return console_input(interrupt);
-    }
-    let timer_fired = id == timer::VIRTUAL_TIMER_INTERRUPT && timer::expired();
-    if timer_fired {
-        timer::disarm();
-    }
-    timer::end_of_interrupt(interrupt);
     match id {
         // A stale interrupt for a deadline since moved later is dropped: never early.
         timer::VIRTUAL_TIMER_INTERRUPT => {
+            let timer_fired = timer::expired();
+            if timer_fired {
+                timer::disarm();
+            }
+            timer::end_of_interrupt(interrupt);
             if timer_fired {
                 crate::interrupt::deliver(Interrupt::Timer);
             }
         }
-        timer::WAKEUP_SGI => crate::interrupt::deliver(Interrupt::Wakeup),
-        _ => deliver(&Exception {
-            kind: ExceptionKind::Interrupt,
-            name: "unexpected IRQ",
-            code: id.into(),
-            pc,
-            address: None,
-        }),
+        timer::WAKEUP_SGI => {
+            timer::end_of_interrupt(interrupt);
+            crate::interrupt::deliver(Interrupt::Wakeup);
+        }
+        timer::UART0_INTERRUPT => console_input(interrupt),
+        _ => {
+            timer::end_of_interrupt(interrupt);
+            deliver(&Exception {
+                kind: ExceptionKind::Interrupt,
+                name: "unexpected IRQ",
+                code: id.into(),
+                pc,
+                address: None,
+            });
+        }
     }
 }
 
