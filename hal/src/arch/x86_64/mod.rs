@@ -523,17 +523,19 @@ impl Platform for X86_64 {
     }
 
     fn restart() -> ! {
-        // SAFETY: port 0xCF9 is the chipset's reset control register on PC chipsets (QEMU's
-        // q35 among them), and writing the full-reset value resets the machine; the 8042's
-        // command port takes the pulse-reset-line command where there is no such register.
-        // The machine is going down: nothing else drives these ports.
-        unsafe {
-            port::out8(RESET_CONTROL_PORT, RESET_CONTROL_SYSTEM_RESET);
-            port::out8(RESET_CONTROL_PORT, RESET_CONTROL_FULL_RESET);
-            port::out8(
+        for (register, value) in [
+            (RESET_CONTROL_PORT, RESET_CONTROL_SYSTEM_RESET),
+            (RESET_CONTROL_PORT, RESET_CONTROL_FULL_RESET),
+            (
                 KEYBOARD_CONTROLLER_COMMAND_PORT,
                 KEYBOARD_CONTROLLER_PULSE_RESET,
-            );
+            ),
+        ] {
+            // SAFETY: port 0xCF9 is the chipset's reset control register on PC chipsets (QEMU's
+            // q35 among them), and writing the full-reset value resets the machine; the 8042's
+            // command port takes the pulse-reset-line command where there is no such register.
+            // The machine is going down: nothing else drives these ports.
+            unsafe { port::out8(register, value) };
         }
         Self::halt()
     }
