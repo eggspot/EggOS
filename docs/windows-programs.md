@@ -35,16 +35,12 @@ SDK, no C runtime):
 
 ```
 rustup target add x86_64-pc-windows-msvc
-cargo build --release --target x86_64-pc-windows-msvc
+RUSTFLAGS="-C linker=rust-lld -C link-arg=/NODEFAULTLIB -C link-arg=/SUBSYSTEM:CONSOLE -C link-arg=/ENTRY:mainCRTStartup" \
+    cargo build --release --target x86_64-pc-windows-msvc
 ```
 
-with, in `.cargo/config.toml` (EggOS's own has it):
-
-```
-[target.x86_64-pc-windows-msvc]
-linker = "rust-lld"
-rustflags = ["-C", "link-arg=/NODEFAULTLIB", "-C", "link-arg=/SUBSYSTEM:CONSOLE", "-C", "link-arg=/ENTRY:mainCRTStartup"]
-```
+(`cargo xtask` passes the same flags when it builds EggOS's test programs; they are not in
+`.cargo/config.toml`, where they would also apply to programs built for a Windows host.)
 
 The program is `#![no_std]` and `#![no_main]`, defines `mainCRTStartup`, and declares its
 imports with `#[link(name = "kernel32", kind = "raw-dylib")]` (and `ntdll` for `memcpy`,

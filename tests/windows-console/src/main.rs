@@ -8,10 +8,10 @@
 //! frame (`__chkstk`), `LoadLibrary` and `GetProcAddress`, and standard error through
 //! `WriteConsoleW`, then returns 0. `exit <code>` ends with `ExitProcess(code)` instead.
 
-#![cfg_attr(windows, no_std, no_main)]
+#![cfg_attr(all(windows, not(test)), no_std, no_main)]
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 mod program;
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn main() {}

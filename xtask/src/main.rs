@@ -580,7 +580,21 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
     build_release_kernel(arch, &initramfs)
 }
 
+const WINDOWS_PROGRAM_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "link-arg=/NODEFAULTLIB",
+    "-C",
+    "link-arg=/SUBSYSTEM:CONSOLE",
+    "-C",
+    "link-arg=/ENTRY:mainCRTStartup",
+];
+
 fn build_windows_program(program: &str) -> Result<String, String> {
+    let rustflags = WINDOWS_PROGRAM_RUSTFLAGS.join("\x1f");
+    let target_dir = target_directory().join("windows-console");
+    let target_dir = target_dir.to_string_lossy();
     let path = build_executable(
         &[
             "build",
@@ -591,7 +605,10 @@ fn build_windows_program(program: &str) -> Result<String, String> {
             "--target",
             WINDOWS_TARGET,
         ],
-        &[],
+        &[
+            ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
+            ("CARGO_TARGET_DIR", &target_dir),
+        ],
         &format!("{program} executable for {WINDOWS_TARGET}"),
     )?;
     Ok(path.to_string_lossy().into_owned())

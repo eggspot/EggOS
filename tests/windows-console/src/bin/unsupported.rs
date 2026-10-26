@@ -2,9 +2,9 @@
 //! (`CreateProcessW`), so the layer must refuse it with a clear message and a non-zero status
 //! before any of its code runs (D118).
 
-#![cfg_attr(windows, no_std, no_main)]
+#![cfg_attr(all(windows, not(test)), no_std, no_main)]
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 mod program {
     use core::ffi::c_void;
 
@@ -52,5 +52,5 @@ mod program {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 fn main() {}
