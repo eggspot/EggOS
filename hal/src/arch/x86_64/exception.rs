@@ -4,9 +4,9 @@
 //! The IDT has a gate for each of the 32 architecture-defined exception vectors and for each
 //! interrupt vector in use (the legacy PICs' 0x20-0x2f, the APIC timer's 0x30, the wake-up
 //! interrupt's 0x31, the console input's 0x32 and the APIC's spurious vector 0xff, see
-//! [`super::timer`]). Each points at a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where the
-//! CPU pushes none), so every exception and interrupt reaches `exception_common` with the same
-//! frame. From the kernel, that saves the registers a call may change (the handler keeps the
+//! [`super::timer`]). Each points at a 16-byte stub that pushes the vector number (and a 0
+//! error code for the vectors where the CPU pushes none), so every exception and interrupt
+//! reaches `exception_common` with the same frame. From the kernel, that saves the registers a call may change (the handler keeps the
 //! others itself), calls [`x86_64_exception`] with the frame, and restores them and `iretq`s if
 //! it returns. From ring 3 (D47), the CPU has switched to this CPU's `TSS.RSP0`, which points
 //! into the running program's `UserContext`: the entry saves every register there, switches
