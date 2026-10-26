@@ -104,6 +104,7 @@ pub mod number {
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
         pub const CLONE: u64 = 56;
+        pub const EXECVE: u64 = 59;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
@@ -160,6 +161,7 @@ pub mod number {
         pub const GETCPU: u64 = 309;
         pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
+        pub const EXECVEAT: u64 = 322;
         pub const STATX: u64 = 332;
         pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
@@ -236,6 +238,7 @@ pub mod number {
         pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
         pub const CLONE: u64 = 220;
+        pub const EXECVE: u64 = 221;
         pub const MUNMAP: u64 = 215;
         pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
@@ -244,6 +247,7 @@ pub mod number {
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
+        pub const EXECVEAT: u64 = 281;
         pub const STATX: u64 = 291;
         pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
@@ -515,7 +519,7 @@ pub(crate) fn spawn_thread<P: Platform>(
     let mut thread = Box::new(thread);
     process.add_thread();
     let counted = Arc::clone(&process);
-    let handler = move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
+    let handler = move |process: &mut Arc<Process<P>>, context: &mut UserContext, exit| {
         handle(process, &mut thread, context, exit)
     };
     process::spawn::<P, _>(process, context, handler).inspect_err(|_| {
@@ -534,7 +538,7 @@ pub(crate) fn spawn_thread<P: Platform>(
 /// preemption point.
 #[inline(always)]
 pub fn handle<P: Platform>(
-    process: &Arc<Process<P>>,
+    process: &mut Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
     exit: UserExit,
@@ -615,7 +619,7 @@ fn signal_fault<P: Platform>(
 /// D91).
 #[inline(always)]
 fn syscall<P: Platform>(
-    process: &Arc<Process<P>>,
+    process: &mut Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
@@ -668,7 +672,7 @@ fn memory_call<P: Platform>(
 /// after it as `ppoll` does.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
-    process: &Arc<Process<P>>,
+    process: &mut Arc<Process<P>>,
     thread: &mut LinuxThread,
     number: u64,
     context: &mut UserContext,
@@ -693,6 +697,8 @@ fn out_of_line_call<P: Platform>(
         number::NANOSLEEP => time::nanosleep(process, thread, context),
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
+        number::EXECVE => exec::execve(process, thread, context),
+        number::EXECVEAT => exec::execveat(process, thread, context),
         _ => {
             let result = match number {
                 number::CLONE => thread::clone::<P>(process, thread, context),
@@ -1274,7 +1280,7 @@ mod tests {
         exit: UserExit,
     ) -> ControlFlow<()> {
         let mut thread = take_first_thread(process);
-        let flow = handle(process, &mut thread, context, exit);
+        let flow = handle(&mut Arc::clone(process), &mut thread, context, exit);
         FIRST_THREADS
             .lock()
             .unwrap()
@@ -5389,7 +5395,12 @@ mod tests {
     ) -> u64 {
         let mut context = called(number, arguments);
         assert_eq!(
-            handle(process, thread, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(process),
+                thread,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Continue(())
         );
         context.syscall_result()
@@ -5490,7 +5501,12 @@ mod tests {
 
         let mut context = called(number::EXIT, [3, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert!(!process.has_ended());
@@ -5501,7 +5517,12 @@ mod tests {
 
         let mut context = called(number::EXIT, [0x107, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert!(process.has_ended());
@@ -5517,13 +5538,23 @@ mod tests {
         let mut second = second_thread(&process, &first, 0);
         let mut context = called(number::EXIT, [5, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(process.exit_status(), None);
         let mut context = called(number::EXIT, [9, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(process.exit_status(), Some(ProcessExit::Exited(5)));
@@ -5538,7 +5569,12 @@ mod tests {
         let mut second = second_thread(&process, &first, SCRATCH);
         let mut context = called(number::EXIT_GROUP, [0x2a, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert!(process.has_ended());
@@ -5546,7 +5582,12 @@ mod tests {
         let mut context = called(number::GETPID, [0; 6]);
         let mut first = first;
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(()),
             "a thread of an ended process went back to its program after a call out of line"
         );
@@ -5662,7 +5703,12 @@ mod tests {
 
         let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert!(!process.has_ended());
@@ -5693,7 +5739,12 @@ mod tests {
         looping.set_robust_list(head);
         let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut looping, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut looping,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(read_u32(&process, entry + 8), OWNER_DIED);
@@ -5707,7 +5758,12 @@ mod tests {
         faulting.set_robust_list(head);
         let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut faulting, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut faulting,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(read_u32(&process, entry + 8), OWNER_DIED);
@@ -5727,7 +5783,12 @@ mod tests {
         let mut second = second_thread(&process, &first, SCRATCH);
         let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         let an_hour = SCRATCH + 0x100;
@@ -5736,14 +5797,24 @@ mod tests {
         process.write_user_memory(an_hour, &timespec).unwrap();
         let mut context = called(number::CLOCK_NANOSLEEP, [1, 0, an_hour, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         let mask = SCRATCH + 0x200;
         process.write_user_memory(mask, &[0; 8]).unwrap();
         let mut context = called(number::RT_SIGSUSPEND, [mask, 8, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
     }
@@ -5834,7 +5905,12 @@ mod tests {
         assert_eq!(process.exit_status(), None);
         let mut context = called(number::GETPID, [0; 6]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Interrupt),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Interrupt
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(second.signals_seen(), process.signals_sent());
@@ -5854,7 +5930,12 @@ mod tests {
         let tid = u64::from(second.id());
         let mut context = called(number::TKILL, [tid, 9, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -5872,7 +5953,12 @@ mod tests {
         let mut second = second_thread(&process, &first, 0);
         let mut context = called(number::EXIT, [3, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut first, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut first,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         let sent = process.signals_sent();
@@ -5993,7 +6079,12 @@ mod tests {
 
         let mut context = called(number::EXIT, [0, 0, 0, 0, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -6059,7 +6150,12 @@ mod tests {
         assert_eq!(second.signal_state().pending, 0);
         let mut context = called(number::GETPID, [0; 6]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Interrupt),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Interrupt
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(
@@ -6131,7 +6227,12 @@ mod tests {
             .unwrap();
         let mut context = called(number::RT_SIGPROCMASK, [1, unblock, 0, 8, 0, 0]);
         assert_eq!(
-            handle(&process, &mut second, &mut context, UserExit::Syscall),
+            handle(
+                &mut Arc::clone(&process),
+                &mut second,
+                &mut context,
+                UserExit::Syscall
+            ),
             ControlFlow::Break(())
         );
         assert_eq!(

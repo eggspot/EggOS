@@ -152,6 +152,16 @@ pub struct CredentialsAndLimits {
     pub limits: ResourceLimits,
 }
 
+impl CredentialsAndLimits {
+    /// A copy, `None` without memory for it.
+    pub fn copy(&self) -> Option<Self> {
+        Some(Self {
+            credentials: self.credentials.copy()?,
+            limits: self.limits.copy()?,
+        })
+    }
+}
+
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
@@ -169,8 +179,10 @@ pub struct Process<P: Platform> {
     /// Where the kernel reaches the process's frames: the frame allocator's offset, which on
     /// the machine is the direct map's (a boot self-test checks it).
     frame_offset: usize,
-    /// How the process ended, once it has: the first [`Self::exit`] wins.
-    exit: SpinLock<Option<ProcessExit>>,
+    /// How the process ended, once it has: the first [`Self::exit`] wins. Shared with the
+    /// processes that carry on its id after an `execve` ([`Self::new_image`]), so whoever
+    /// holds this one learns how the last one ended.
+    exit: Arc<SpinLock<Option<ProcessExit>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
     /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
@@ -243,7 +255,7 @@ impl<P: Platform> Process<P> {
             regions: SpinLock::new(Regions::new()),
             program_break: SpinLock::new(None),
             frame_offset,
-            exit: SpinLock::new(None),
+            exit: Arc::new(SpinLock::new(None)),
             ended: AtomicBool::new(false),
             signals_sent: AtomicU16::new(0),
             sent_signals_waiting: AtomicBool::new(false),
@@ -251,6 +263,38 @@ impl<P: Platform> Process<P> {
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
             credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
+            signals: SpinLock::new(Signals::new()),
+        })
+    }
+
+    /// A process for the program `execve` starts in this one's place: an empty address space
+    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id and the same
+    /// record of how it ends, a copy of the credentials and resource limits, no signal actions
+    /// and no threads yet. This process is untouched, so the caller can still drop the new
+    /// one if loading the program fails.
+    pub fn new_image(&self) -> Result<Self, &'static str> {
+        let space = self
+            .space
+            .new_owning_frames_beside()
+            .map_err(|error| error.description())?;
+        let credentials_and_limits = self
+            .credentials_and_limits
+            .lock()
+            .copy()
+            .ok_or("no memory for the credentials and limits")?;
+        Ok(Self {
+            space,
+            regions: SpinLock::new(Regions::new()),
+            program_break: SpinLock::new(None),
+            frame_offset: self.frame_offset,
+            exit: Arc::clone(&self.exit),
+            ended: AtomicBool::new(false),
+            signals_sent: AtomicU16::new(0),
+            sent_signals_waiting: AtomicBool::new(false),
+            threads: AtomicU32::new(0),
+            first_thread_status: AtomicU32::new(NO_STATUS),
+            id: self.id,
+            credentials_and_limits: SpinLock::new(credentials_and_limits),
             signals: SpinLock::new(Signals::new()),
         })
     }
@@ -1052,6 +1096,16 @@ impl<P: Platform> Process<P> {
         }
     }
 
+    /// Ends the process's program for an `execve` in it, which goes on in a process of its own
+    /// ([`Self::new_image`]) with the same record of how it ends, so nothing is recorded:
+    /// its threads stop as [`Self::exit`] stops them.
+    pub fn end_for_exec(&self) {
+        self.ended.store(true, Ordering::Relaxed);
+        if self.threads() > 1 {
+            interrupt_other_cpus::<P>();
+        }
+    }
+
     /// Whether the process has ended ([`Self::exit`]): its threads stop instead of running its
     /// program again.
     pub fn has_ended(&self) -> bool {
@@ -1207,7 +1261,9 @@ fn free_frame(frame: u64) {
 /// [`ControlFlow::Break`]: then the thread ends. On a system call the handler sets the result
 /// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on;
 /// on an exception it decides the program's fate. It runs with interrupts masked, as the
-/// kernel does, and may block. Placed as [`thread::spawn`] places threads.
+/// kernel does, and may block. It may also put another process in the place of the one it is
+/// given (`execve`), whose program the thread runs from then on. Placed as [`thread::spawn`]
+/// places threads.
 pub fn spawn<P, H>(
     process: Arc<Process<P>>,
     context: UserContext,
@@ -1215,16 +1271,16 @@ pub fn spawn<P, H>(
 ) -> Result<JoinHandle, SpawnError>
 where
     P: Platform,
-    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
+    H: FnMut(&mut Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()> + Send + 'static,
 {
     thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler))
 }
 
 /// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
 /// (started by a thread as another ended it) never runs the program.
-fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
+fn run<P: Platform, H>(mut process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
 where
-    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
+    H: FnMut(&mut Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
     let mut ended = process.has_ended();
     while !ended {
@@ -1241,7 +1297,7 @@ where
         // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
         let exit = unsafe { P::run_user(&mut context) };
-        ended = handler(&process, &mut context, exit).is_break();
+        ended = handler(&mut process, &mut context, exit).is_break();
     }
     let here = cpu::current::<P>();
     let root = process.address_space().root();

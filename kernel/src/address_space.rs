@@ -114,6 +114,27 @@ impl<P: Platform> AddressSpace<P> {
         Ok(space)
     }
 
+    /// An empty address space that owns its frames, as [`Self::new_owning_frames`], sharing
+    /// this one's kernel half, which is the kernel's: what `execve` builds the new program in.
+    pub fn new_owning_frames_beside(&self) -> Result<Self, MapError> {
+        let tables = {
+            let source = self.tables.lock();
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
+            PageTables::new_sharing_kernel_half(&source, frames)?
+        };
+        let mut roots = [0; MAX_ROOTS];
+        roots[..tables.roots().len()].copy_from_slice(tables.roots());
+        Ok(Self {
+            tables: LeafSpinLock::new_leaf(tables),
+            roots,
+            kernel_roots: self.kernel_roots,
+            owns_frames: true,
+            spread: AtomicBool::new(false),
+            platform: PhantomData,
+        })
+    }
+
     /// From now on, threads using this address space may run on several CPUs at once: removed
     /// or changed mappings are shot down on every other CPU that keeps it loaded before
     /// [`Self::change_pages`] returns, not left for them to drop when they next use it (see the
@@ -645,6 +666,30 @@ mod tests {
         assert_eq!(space.translate(KERNEL_VIRT), kernel.translate(KERNEL_VIRT));
         assert_eq!(space.translate(USER_VIRT), None);
         assert_eq!(space.translate(0), None);
+    }
+
+    #[test]
+    fn an_address_space_made_beside_another_shares_the_kernel_half_and_maps_nothing_below() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let first = new_space(&kernel).unwrap();
+        first
+            .map(
+                USER_VIRT,
+                0x20_0000,
+                FRAME_SIZE,
+                Attributes::USER_READ_WRITE,
+            )
+            .unwrap();
+        let free = free_frames();
+        let beside = first.new_owning_frames_beside().unwrap();
+        assert!(beside.owns_frames);
+        assert_ne!(beside.roots(), first.roots());
+        assert_eq!(beside.kernel_roots, first.kernel_roots);
+        assert_eq!(beside.translate(KERNEL_VIRT), kernel.translate(KERNEL_VIRT));
+        assert_eq!(beside.translate(USER_VIRT), None);
+        drop(beside);
+        assert_eq!(free_frames(), free);
     }
 
     #[test]

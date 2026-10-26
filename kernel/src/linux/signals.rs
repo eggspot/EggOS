@@ -550,6 +550,50 @@ impl Signals {
         }
     }
 
+    /// What the program `execve` starts takes from this state, which keeps nothing: each
+    /// action back to `SIG_DFL` but `SIG_IGN`s, which stay, with no flags, mask or restorer;
+    /// the [`Info`] queued with thread `thread`'s pending signals and what was left for it or
+    /// for the process, all now for thread `new_thread` (the process's id, which an `execve`
+    /// from another thread takes); no other thread and no return trampoline, since the
+    /// program's memory is new. Moved, not copied, so nothing is allocated.
+    pub fn take_for_exec(&mut self, thread: u32, new_thread: u32) -> Self {
+        let Some(mut boxed) = self.actions_and_queue.take() else {
+            return Self::new();
+        };
+        let [block] = &mut *boxed;
+        for handler in &mut block.handlers {
+            if *handler != IGNORE {
+                *handler = DEFAULT;
+            }
+        }
+        block.flags = [0; COUNT];
+        block.restorers = [0; COUNT];
+        block.masks = [0; COUNT];
+        let before = block.queue.len() + signals_among(&block.sent_to_threads);
+        block.queue.retain(|queued| queued.thread == thread);
+        for queued in &mut block.queue {
+            queued.thread = new_thread;
+        }
+        block
+            .sent_to_threads
+            .retain(|left| left.thread == thread || left.thread == ANY_THREAD);
+        uncharge(
+            &QUEUED_SIGNALS,
+            before - block.queue.len() - signals_among(&block.sent_to_threads),
+        );
+        for left in &mut block.sent_to_threads {
+            if left.thread == thread {
+                left.thread = new_thread;
+            }
+        }
+        block.threads.clear();
+        block.first_thread_wait_slot = None;
+        block.trampoline = 0;
+        Self {
+            actions_and_queue: Some(boxed),
+        }
+    }
+
     /// The state of the thread whose id is `id` and whose own state is `thread`, joined with
     /// this, its process's, for as long as the caller holds both.
     pub fn with_thread<'a>(

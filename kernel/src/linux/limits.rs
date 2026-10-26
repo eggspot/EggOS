@@ -158,6 +158,14 @@ impl ResourceLimits {
         Self(None)
     }
 
+    /// A copy (`execve` keeps a process's limits), `None` without memory for it.
+    pub fn copy(&self) -> Option<Self> {
+        match &self.0 {
+            None => Some(Self(None)),
+            Some(own) => copy_of(own).ok().map(|copy| Self(Some(copy))),
+        }
+    }
+
     fn all(&self) -> &[Limit; resource::COUNT] {
         self.0.as_deref().unwrap_or(&DEFAULTS)
     }
@@ -193,11 +201,15 @@ impl ResourceLimits {
 
 /// A copy of [`DEFAULTS`] on the heap, or [`ChangeError::OutOfMemory`].
 fn own_copy() -> Result<Box<[Limit; resource::COUNT]>, ChangeError> {
+    copy_of(&DEFAULTS)
+}
+
+fn copy_of(all: &[Limit; resource::COUNT]) -> Result<Box<[Limit; resource::COUNT]>, ChangeError> {
     let mut limits = Vec::new();
     limits
         .try_reserve_exact(resource::COUNT)
         .map_err(|_| ChangeError::OutOfMemory)?;
-    limits.extend_from_slice(&DEFAULTS);
+    limits.extend_from_slice(all);
     // Exactly `COUNT` limits, in a buffer of exactly that capacity: no reallocation.
     Ok(limits.into_boxed_slice().try_into().unwrap())
 }

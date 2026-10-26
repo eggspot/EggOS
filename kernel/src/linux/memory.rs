@@ -547,7 +547,7 @@ mod tests {
         context.simulate_syscall(number, arguments, 0x40_0004);
         assert_eq!(
             handle(
-                process,
+                &mut Arc::clone(process),
                 &mut LinuxThread::first(process),
                 &mut context,
                 UserExit::Syscall
