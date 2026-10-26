@@ -3,10 +3,7 @@
 //! with arguments and an environment of its own, a close-on-exec descriptor and a plain one,
 //! a caught signal and an ignored one; the copy checks what it was given and what it kept.
 
-use std::ffi::{CStr, CString, c_char};
-use std::fs::File;
-use std::io::Read;
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::process::ExitCode;
 
 pub const EXEC: &str = "exec";
@@ -30,6 +27,8 @@ const ENOTDIR: i32 = 20;
 const EBADF: i32 = 9;
 const F_GETFD: i32 = 1;
 const F_SETFD: i32 = 2;
+const O_RDONLY: i32 = 0;
+const O_CLOEXEC: i32 = 0o2_000_000;
 const SIGUSR1: i32 = 10;
 const SIGUSR2: i32 = 12;
 const SIG_DFL: usize = 0;
@@ -56,6 +55,8 @@ mod libc {
         pub fn sigaction(signal: i32, new: *const SigAction, old: *mut SigAction) -> i32;
         pub fn fcntl(fd: i32, command: i32, ...) -> i32;
         pub fn getpid() -> i32;
+        pub fn open(path: *const c_char, flags: i32, ...) -> i32;
+        pub fn read(fd: i32, buffer: *mut std::ffi::c_void, count: usize) -> isize;
     }
 }
 
@@ -124,17 +125,15 @@ pub fn exec_into_a_checking_copy() -> ExitCode {
         println!("EGGOS-USER: exec: refusals {refusals:?}");
         return ExitCode::from(exec_status::REFUSED_WRONGLY);
     }
-    let Ok(closed_on_exec) = File::open("/etc/hostname") else {
-        return ExitCode::from(exec_status::REFUSED_WRONGLY);
-    };
-    let Ok(kept) = File::open("/etc/hostname") else {
-        return ExitCode::from(exec_status::REFUSED_WRONGLY);
-    };
-    let closed_on_exec = closed_on_exec.into_raw_fd();
-    let kept = kept.into_raw_fd();
+    // SAFETY: the path is a string; `open` keeps no pointer to it.
+    let closed_on_exec = unsafe { libc::open(c"/etc/hostname".as_ptr(), O_RDONLY | O_CLOEXEC) };
+    // SAFETY: as above.
+    let kept = unsafe { libc::open(c"/etc/hostname".as_ptr(), O_RDONLY | O_CLOEXEC) };
     // SAFETY: `F_SETFD` takes an `int` and touches no memory.
     let cleared = unsafe { libc::fcntl(kept, F_SETFD, 0) };
-    if cleared != 0
+    if closed_on_exec < 0
+        || kept < 0
+        || cleared != 0
         || !set_action(SIGUSR1, on_signal as extern "C" fn(i32) as usize)
         || !set_action(SIGUSR2, SIG_IGN)
     {
@@ -166,10 +165,15 @@ pub fn check_after_exec() -> ExitCode {
     };
     let (kept, closed_on_exec, pid) = (number(2), number(3), number(4));
     let environment: Vec<(String, String)> = std::env::vars().collect();
-    let mut kept_contents = Vec::new();
-    // SAFETY: the descriptor was handed over open by the program before `execve`, and only
-    // this `File` owns it from here on.
-    let read = unsafe { File::from_raw_fd(kept) }.read_to_end(&mut kept_contents);
+    let mut kept_contents = [0u8; 64];
+    // SAFETY: `kept_contents` is writable for its whole length.
+    let read = unsafe {
+        libc::read(
+            kept,
+            kept_contents.as_mut_ptr().cast::<c_void>(),
+            kept_contents.len(),
+        )
+    };
     let checks = [
         (
             "the arguments are those passed",
@@ -184,7 +188,7 @@ pub fn check_after_exec() -> ExitCode {
         ("the process id is kept", getpid() == pid),
         (
             "a plain descriptor stays open",
-            read.is_ok() && kept_contents == HOSTNAME,
+            usize::try_from(read).is_ok_and(|read| kept_contents.get(..read) == Some(HOSTNAME)),
         ),
         (
             "a close-on-exec descriptor is closed",
