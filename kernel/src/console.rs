@@ -39,37 +39,38 @@ pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
 /// echoing each chunk as the discipline says once its lock is released (but for an echo too
 /// long to hold, such as a long line killed), then sends the signals typed to the foreground
 /// process group and wakes the threads waiting for input; called for
-/// [`eggos_hal::Interrupt::ConsoleInput`]. Out of line, so the timer's and the wake-up's way
-/// through the interrupt handler keep their length.
+/// [`eggos_hal::Interrupt::ConsoleInput`]. The work is out of line, so the timer's and the
+/// wake-up's way through the interrupt handler keep their length.
+#[inline(always)]
+pub fn receive_input<P: Platform>() {
+    receive::<P>(None);
+}
+
+/// Passes `bytes` a keyboard typed through the line discipline exactly as [`receive_input`]
+/// passes the UART's, with the same code: the two share the discipline's input, so both can be
+/// typed on at once.
+pub fn receive_from_keyboard<P: Platform>(bytes: &[u8]) {
+    receive::<P>(Some(bytes));
+}
+
 #[cold]
 #[inline(never)]
-pub fn receive_input<P: Platform>() {
-    receive_from::<P>(P::console_read);
-}
-
-/// Passes `bytes` a keyboard typed through the line discipline exactly as
-/// [`receive_input`] passes the UART's: the two share the discipline's input, so both can be
-/// typed on at once.
-#[inline(never)]
-pub fn receive_from_keyboard<P: Platform>(bytes: &[u8]) {
-    let mut rest = bytes;
-    receive_from::<P>(|chunk| {
-        let length = rest.len().min(chunk.len());
-        chunk[..length].copy_from_slice(&rest[..length]);
-        rest = &rest[length..];
-        length
-    });
-}
-
-#[inline(always)]
-fn receive_from<P: Platform>(mut read: impl FnMut(&mut [u8]) -> usize) {
+fn receive<P: Platform>(mut typed: Option<&[u8]>) {
     let mut chunk = [0u8; INPUT_CHUNK];
     let mut received = Received::default();
     loop {
         let mut echo = EchoBuffer::<P>::new();
         let (length, echoing) = {
             let mut discipline = LINE_DISCIPLINE.lock();
-            let length = read(&mut chunk);
+            let length = match typed.as_mut() {
+                None => P::console_read(&mut chunk),
+                Some(rest) => {
+                    let length = rest.len().min(INPUT_CHUNK);
+                    chunk[..length].copy_from_slice(&rest[..length]);
+                    *rest = &rest[length..];
+                    length
+                }
+            };
             received |= discipline.receive(&chunk[..length], &mut |bytes| echo.push(bytes));
             let echoing = echo.length > 0;
             if echoing {

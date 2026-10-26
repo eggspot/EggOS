@@ -222,12 +222,12 @@ fn expected_input_events(width: u32, height: u32) -> [InputEvent; 7] {
 pub(crate) fn input_devices_deliver_events<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
+    if !cfg!(all(target_os = "none", feature = "virtio-input")) {
+        return Ok(());
+    }
     let summary = input::summary();
     if summary == input::Summary::default() {
-        return match cfg!(all(target_os = "none", feature = "virtio-input")) {
-            true => Err("there are no input devices (no virtio keyboard, tablet and mouse?)"),
-            false => Ok(()),
-        };
+        return Err("there are no input devices (no virtio keyboard, tablet and mouse?)");
     }
     if summary.keyboards != 1 || summary.pointers != 2 {
         return Err("the input devices are not one keyboard and two pointers");

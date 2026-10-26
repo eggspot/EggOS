@@ -215,28 +215,23 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
 }
 
 /// What the device behind `transport` reports, from its configuration.
+#[inline(never)]
 pub fn read_capabilities<T: Transport + ?Sized>(transport: &T) -> Capabilities {
-    let keys = select(transport, config::EVENT_BITS, event_type::KEY as u8);
-    let keyboard = (key::ESC..=key::F12).any(|code| has_bit(transport, keys, code));
-    let buttons = has_bit(transport, keys, button::LEFT);
-    let relatives = select(transport, config::EVENT_BITS, event_type::REL as u8);
-    let relative =
-        has_bit(transport, relatives, relative::X) && has_bit(transport, relatives, relative::Y);
-    let wheel = has_bit(transport, relatives, relative::WHEEL);
-    let absolutes = select(transport, config::EVENT_BITS, event_type::ABS as u8);
-    let absolute = (has_bit(transport, absolutes, absolute::X)
-        && has_bit(transport, absolutes, absolute::Y))
-    .then(|| {
-        (
-            axis_range(transport, absolute::X),
-            axis_range(transport, absolute::Y),
-        )
-    });
+    let keys = bitmap(transport, config::EVENT_BITS, event_type::KEY as u8);
+    let relatives = bitmap(transport, config::EVENT_BITS, event_type::REL as u8);
+    let absolutes = bitmap(transport, config::EVENT_BITS, event_type::ABS as u8);
+    let absolute =
+        (has_bit(&absolutes, absolute::X) && has_bit(&absolutes, absolute::Y)).then(|| {
+            (
+                axis_range(transport, absolute::X),
+                axis_range(transport, absolute::Y),
+            )
+        });
     Capabilities {
-        keyboard,
-        buttons,
-        relative,
-        wheel,
+        keyboard: (key::ESC..=key::F12).any(|code| has_bit(&keys, code)),
+        buttons: has_bit(&keys, button::LEFT),
+        relative: has_bit(&relatives, relative::X) && has_bit(&relatives, relative::Y),
+        wheel: has_bit(&relatives, relative::WHEEL),
         absolute,
     }
 }
@@ -247,9 +242,22 @@ fn select<T: Transport + ?Sized>(transport: &T, select: u8, subselect: u8) -> us
     usize::from(transport.read_config8(config::SIZE_OFFSET)).min(config::DATA_BYTES)
 }
 
-fn has_bit<T: Transport + ?Sized>(transport: &T, size: usize, bit: u16) -> bool {
-    let byte = usize::from(bit / 8);
-    byte < size && transport.read_config8(config::DATA_OFFSET + byte) & (1 << (bit % 8)) != 0
+fn bitmap<T: Transport + ?Sized>(
+    transport: &T,
+    which: u8,
+    event_type: u8,
+) -> [u8; config::DATA_BYTES] {
+    let size = select(transport, which, event_type);
+    let mut bits = [0; config::DATA_BYTES];
+    for (index, byte) in bits[..size].iter_mut().enumerate() {
+        *byte = transport.read_config8(config::DATA_OFFSET + index);
+    }
+    bits
+}
+
+fn has_bit(bits: &[u8; config::DATA_BYTES], bit: u16) -> bool {
+    bits.get(usize::from(bit / 8))
+        .is_some_and(|byte| byte & (1 << (bit % 8)) != 0)
 }
 
 fn axis_range<T: Transport + ?Sized>(transport: &T, axis: u16) -> AxisRange {

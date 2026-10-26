@@ -143,7 +143,9 @@ queue is shared by the UART and the keyboard; both can be typed on at once.
 ## Pointer
 
 Events from `virtio-tablet` (`EV_ABS`, `ABS_X`/`ABS_Y` in 0..32767, scaled to the screen
-size: `x = v * (w - 1) / 32767`) or `virtio-mouse` (`EV_REL`, deltas accumulated into a
+size rounded to the nearest pixel, `x = min((v * w + 16383) / 32767, w - 1)`, so a position
+QEMU's window scaled down from pixel `x` by truncating, `v = x * 32767 / w`, comes back to `x`;
+D113) or `virtio-mouse` (`EV_REL`, deltas accumulated into a
 clamped screen position), buttons `BTN_LEFT` 0x110, `BTN_RIGHT` 0x111, `BTN_MIDDLE` 0x112,
 `REL_WHEEL` (+1 up). Over the text area: wheel scrolls the view; buttons do nothing in 0.3.0
 (selection is a follow-up). Elsewhere the desktop brief's section 4 to 6 apply.

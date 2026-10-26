@@ -1,13 +1,13 @@
 # Drivers and the driver model
 
 How EggOS finds devices and binds drivers to them (M5, D110), how the virtio core works (M8,
-D111), the display (D112), and how to add a driver.
+D111), the display (D112), input (D113), and how to add a driver.
 
 ## The pieces
 
 | Where | What |
 |---|---|
-| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU) |
+| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
 | `hal/src/fdt/nodes.rs` | `Fdt::nodes`: every device-tree node with what a bus needs, allocating nothing |
 | `hal/src/lib.rs` | What the firmware gives: `Platform::device_tree`, `acpi_table`, `device_apertures`, the device-tree DMA default, and `make_kernel_mappings_visible` |
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
@@ -16,6 +16,7 @@ D111), the display (D112), and how to add a driver.
 | `kernel/src/devices/dma.rs` | DMA regions |
 | `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng and virtio-gpu on top |
 | `kernel/src/display.rs` | The display: the framebuffer a display driver installs, damage, flushes, the first frame |
+| `kernel/src/input.rs` | Input: the devices drivers install, polling, keys to the console's line discipline, the input event queue |
 
 ## Discovery
 
@@ -65,9 +66,10 @@ pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
   empty virtio-mmio slot) and leaves it unbound, which is no failure.
   `Err(ProbeError::Refused(reason))` records the refusal, which the boot log shows.
 - **Registration.** `devices::BUILTIN` lists the drivers the kernel's cargo features build in
-  (`virtio`, `virtio-gpu`, `virtio-rng`): a driver not enabled is not linked and costs nothing
-  (D18). The release kernel enables `virtio-gpu` by default (D112), which brings the virtio
-  core; `--no-default-features` leaves every driver out. Test and benchmark kernels
+  (`virtio`, `virtio-gpu`, `virtio-input`, `virtio-rng`): a driver not enabled is not linked
+  and costs nothing (D18). The release kernel enables `virtio-gpu` (D112) and `virtio-input`
+  (D113) by default, which bring the virtio core; `--no-default-features` leaves every driver
+  out. Test and benchmark kernels
   (`qemu-test`) enable them all.
 
 ## What a probe function gets
@@ -105,6 +107,9 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   plus freed descriptors). Polled for now: interrupts are issue #97's slice 3.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
   region; `devices::virtio::read_random` fills a buffer, polling until a deadline.
+- **Polled queues.** Every polled driver sets the available ring's `VIRTQ_AVAIL_F_NO_INTERRUPT`
+  (`SplitQueue::disable_used_notifications`, D113), so the device raises no interrupt nobody
+  takes (on virtio-mmio its line would otherwise stay asserted until slice 3 enables it).
 - **Doorbells.** The kernel's transports run `eggos_hal::memory::doorbell_barrier` before every
   notification (`dmb oshst` on AArch64, `fence w, o` on RISC-V, a compiler fence on x86), so a
   device sees the ring's writes before the doorbell (D112).
@@ -115,6 +120,42 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   `SET_SCANOUT`; then the driver is the kernel's display. Every command is fenced, and a flush
   sends each damaged rectangle's `TRANSFER_TO_HOST_2D`, waits for their answers, then sends
   their `RESOURCE_FLUSH`: the spec promises neither order nor completion of unfenced commands.
+
+- **virtio-input** (D113). One event queue of up to 64 entries and 64 event buffers of 8 bytes
+  (type, code, value, little-endian) in one 4 KiB region, every buffer always posted: `poll`
+  takes the events the device wrote, oldest first, up to a budget, posts their buffers again and
+  notifies once. What the device reports comes from its configuration (`select` 0x11 with an
+  event type for the codes it sends, 0x12 with an axis for its range): keyboard keys, buttons,
+  relative X and Y, the wheel, absolute X and Y with their ranges. A device that is neither a
+  keyboard nor a pointer is refused. The status queue (LEDs) is not set up.
+
+## Input
+
+`kernel/src/input.rs` (D113) is what keyboards and pointers feed:
+
+- A driver implements `input::InputDevice` (its `Capabilities`, a `poll` with a budget) and
+  calls `input::install` (at most `MAX_DEVICES`, 4).
+- `input::poll::<P>()` polls every device in rounds of at most 16 events, so a round's key bytes
+  (8 at most per key) fit 128 bytes, which go to the console's line discipline between rounds
+  (`console::receive_from_keyboard`, the UART's path), and sends the held key's repeat when it
+  is due. It returns when to poll next. The release kernel's poller thread
+  (`input::start_polling`, started by init's boot only with an input device) sleeps until then:
+  8 ms while a key or button is held or for 1 s after the last event, 32 ms otherwise, never
+  later than the next repeat. An idle device costs one load of its used ring's index.
+- Keys: the US keymap (`eggos_drivers::input::keymap`, the terminal design's table): characters
+  with Shift, Caps Lock (letters only), Ctrl (control characters) and Alt (an `ESC` before
+  them), Enter, Backspace (`DEL`; Ctrl, `BS`), Tab and Shift+Tab, Esc, the cursor, editing and
+  function keys in xterm's form with its modifier parameter. A press of a key already held (a
+  host's autorepeat) and value 2 are ignored; the last key pressed that sends bytes repeats
+  after 400 ms, then every 40 ms, until released or another key is pressed.
+- Pointers: at the end of each report (`SYN_REPORT`), the motion (a tablet's position scaled
+  to the display, rounded so QEMU's truncated scaling comes back to its pixel; a mouse's motion
+  added and clamped to it), then the buttons (left, right, middle), then the wheel. Without a
+  display there is no position, only buttons and the wheel.
+- The input event queue (`input::next_event`, `dropped_events`): `Key` (code, pressed,
+  modifiers), `PointerMove` (x, y), `Button`, `Wheel`, each packed into one word in a lock-free
+  ring of 256, one producer (the poller) and any consumers; a full queue drops new events and
+  counts them. It is made with the first input device and costs nothing without one.
 
 ## The display
 
@@ -148,8 +189,9 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 
 ## Not yet
 
-Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X), the virtio
-GPU's cursor queue, display events (a mode change), modes whose buffer is larger than one DMA
+Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X; then input
+needs no poller), keyboard layouts other than US and the keyboard's LEDs, the virtio GPU's
+cursor queue, display events (a mode change), modes whose buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and

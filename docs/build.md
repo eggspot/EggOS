@@ -111,7 +111,21 @@ holds what used to be written in them.
   checks it is the release kernel's first frame: 1280x800, pixel hash
   `eggos_kernel::display::FIRST_FRAME_HASH_1280X800`. `cargo xtask run` shows the display in a
   window and the serial console on the terminal (`-serial mon:stdio`, so Ctrl-A then X still
-  quits); `--nographic` keeps both on the terminal for a machine without a screen.
+  quits); `--nographic`, anywhere among the options, keeps both on the terminal for a machine
+  without a screen.
+- **Input** (D113). Every run with the display also gets a virtio keyboard, tablet and mouse:
+  `-device virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on
+  the `virt` machines, the `-pci` devices with `disable-legacy=on` on q35; the kernel prints
+  `boot: input keyboard pointer`, which the boot-to-prompt test requires. Every boot with them
+  but the benchmarks opens QMP: the self-test kernels write `EGGOS-INPUT: send pointer and key
+  events` (`eggos_kernel::devices::selftest::INPUT_EVENTS_LINE`) and the runner answers with
+  `input-send-event` reports 100 ms apart (the tablet at `TABLET_POSITION`, a left click, the
+  mouse moved by `MOUSE_MOTION`, a wheel notch up, Shift pressed and released; the constants
+  must match the self-test's), and the boot-to-prompt test types `uname -a` and `echo
+  EGGOS-KEYBOARD Typed_On+Virtio:OK` on the virtio keyboard instead of the serial console, a
+  report per key 10 ms apart, so the device's 64-event queue never fills between the kernel's
+  polls. In `cargo xtask run`, QEMU's window types on the virtio keyboard and points with the
+  tablet.
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 
