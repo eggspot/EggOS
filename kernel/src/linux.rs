@@ -42,6 +42,7 @@ pub mod credentials;
 pub mod descriptors;
 pub mod exec;
 pub mod fault;
+pub mod files;
 pub mod futex;
 pub mod identity;
 pub mod limits;
@@ -76,6 +77,7 @@ pub mod number {
     mod table {
         pub const READ: u64 = 0;
         pub const WRITE: u64 = 1;
+        pub const OPEN: u64 = 2;
         pub const CLOSE: u64 = 3;
         pub const FSTAT: u64 = 5;
         pub const POLL: u64 = 7;
@@ -88,6 +90,7 @@ pub mod number {
         pub const RT_SIGPROCMASK: u64 = 14;
         pub const RT_SIGRETURN: u64 = 15;
         pub const IOCTL: u64 = 16;
+        pub const PREAD64: u64 = 17;
         pub const READV: u64 = 19;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
@@ -147,6 +150,11 @@ pub mod number {
         pub const GET_ROBUST_LIST: u64 = 274;
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
+        pub const GETCWD: u64 = 79;
+        pub const CHDIR: u64 = 80;
+        pub const FCHDIR: u64 = 81;
+        pub const GETDENTS64: u64 = 217;
+        pub const OPENAT: u64 = 257;
         pub const GETCPU: u64 = 309;
         pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
@@ -157,16 +165,22 @@ pub mod number {
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
+        pub const GETCWD: u64 = 17;
         pub const DUP: u64 = 23;
         pub const DUP3: u64 = 24;
         pub const FCNTL: u64 = 25;
         pub const IOCTL: u64 = 29;
+        pub const CHDIR: u64 = 49;
+        pub const FCHDIR: u64 = 50;
+        pub const OPENAT: u64 = 56;
         pub const CLOSE: u64 = 57;
+        pub const GETDENTS64: u64 = 61;
         pub const LSEEK: u64 = 62;
         pub const READ: u64 = 63;
         pub const WRITE: u64 = 64;
         pub const READV: u64 = 65;
         pub const WRITEV: u64 = 66;
+        pub const PREAD64: u64 = 67;
         pub const PPOLL: u64 = 73;
         pub const NEWFSTATAT: u64 = 79;
         pub const FSTAT: u64 = 80;
@@ -291,6 +305,14 @@ pub mod number {
             PPOLL,
             IOCTL,
             LSEEK,
+            #[cfg(target_arch = "x86_64")]
+            OPEN,
+            OPENAT,
+            PREAD64,
+            GETDENTS64,
+            GETCWD,
+            CHDIR,
+            FCHDIR,
             FSTAT,
             NEWFSTATAT,
             STATX,
@@ -367,9 +389,18 @@ impl Errno {
     pub const EEXIST: Self = Self(17);
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
-    /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
-    /// `statx`).
+    /// No such device or address: an offset at or past the end of a file (`lseek`'s
+    /// `SEEK_DATA` and `SEEK_HOLE`).
+    pub const ENXIO: Self = Self(6);
+    /// Not a directory: a path component, or a descriptor a relative path starts from, that
+    /// is not one.
     pub const ENOTDIR: Self = Self(20);
+    /// Is a directory: a directory opened for writing or read as a file.
+    pub const EISDIR: Self = Self(21);
+    /// The result does not fit: a buffer too small for the working directory (`getcwd`).
+    pub const ERANGE: Self = Self(34);
+    /// A read-only file system: a file opened for writing or created on one.
+    pub const EROFS: Self = Self(30);
     /// An invalid argument: here, a bad flag, the same descriptor twice (`dup3`), an unknown
     /// command or a too high lowest descriptor (`fcntl`), or a bad range (`close_range`), a
     /// segment outside user space (`execve`), an unaligned
@@ -386,7 +417,7 @@ impl Errno {
     pub const ENOTTY: Self = Self(25);
     /// Not seekable: here, the console (`lseek`).
     pub const ESPIPE: Self = Self(29);
-    /// A path longer than `PATH_MAX` (`newfstatat`, `statx`).
+    /// A path longer than `PATH_MAX`, or a component longer than `NAME_MAX`.
     pub const ENAMETOOLONG: Self = Self(36);
     /// No such system call.
     pub const ENOSYS: Self = Self(38);
@@ -780,12 +811,26 @@ fn out_of_line_result<P: Platform>(
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
         number::IOCTL => ioctl::<P>(process, thread.files(), first, second, third),
-        number::LSEEK => lseek(thread.files(), first, third),
+        number::LSEEK => lseek(thread.files(), first, second, third),
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
-        number::NEWFSTATAT => {
-            stat::newfstatat(process, thread.files(), first, second, third, fourth)
+        number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
+        number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
+        number::OPENAT => files::openat(process, thread, first, second, third),
+        #[cfg(target_arch = "x86_64")]
+        number::OPEN => files::openat(process, thread, stat::at::FDCWD as u64, first, second),
+        number::PREAD64 => files::pread64(
+            process,
+            &*thread.files().file(first)?,
+            second,
+            third,
+            fourth,
+        ),
+        number::GETDENTS64 => {
+            files::getdents64(process, &*thread.files().file(first)?, second, third)
         }
-        number::STATX => stat::statx(process, thread.files(), first, second, third, fourth, fifth),
+        number::GETCWD => files::getcwd(process, thread, first, second),
+        number::CHDIR => files::chdir(process, thread, first),
+        number::FCHDIR => files::fchdir(thread, first),
         number::GETUID => Ok(credentials::get_real(process, User)),
         number::GETGID => Ok(credentials::get_real(process, Group)),
         number::GETEUID => Ok(credentials::get_effective(process, User)),
@@ -915,6 +960,7 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
+        _ => return Err(Errno::EBADF),
     };
     if written == 0 && count > 0 {
         Err(Errno::EFAULT)
@@ -947,6 +993,7 @@ fn writev<P: Platform>(
         let length = length.min(MAX_RW_COUNT - written);
         let done = match file.kind() {
             FileKind::Console => write_to_console(process, base, length),
+            _ => return Err(Errno::EBADF),
         };
         written += done;
         if done < length {
@@ -975,7 +1022,7 @@ fn read<P: Platform>(
 ) -> ControlFlow<()> {
     let [fd, address, count, ..] = context.syscall_arguments();
     let prepared = thread.files().file(fd).and_then(|file| {
-        if !file.is_readable() {
+        if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
             return Err(Errno::EBADF);
         }
         let iovecs = match buffers {
@@ -988,6 +1035,17 @@ fn read<P: Platform>(
     match prepared {
         Ok((file, iovecs)) => match file.kind() {
             FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+            kind => {
+                let result = match kind {
+                    FileKind::Regular(node) => {
+                        let buffers = iovecs.entries().iter().map(iovec);
+                        files::read_regular(process, &file, *node, buffers)
+                    }
+                    _ => Err(Errno::EISDIR),
+                };
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
         },
         Err(error) => {
             context.set_syscall_result(error.result());
@@ -1011,13 +1069,15 @@ fn ioctl<P: Platform>(
     }
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
+        _ => Err(Errno::ENOTTY),
     }
 }
 
-fn lseek(files: &Descriptors, fd: u64, whence: u64) -> Result<u64, Errno> {
+fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
         FileKind::Console => terminal::lseek(whence),
+        _ => files::lseek_node(&file, offset, whence),
     }
 }
 
@@ -4909,7 +4969,6 @@ mod tests {
             (1, EMPTY, 0, Errno::ENOENT),
             (3, EMPTY, empty, Errno::EBADF),
             (3, 0, empty, Errno::EBADF),
-            (fdcwd, EMPTY, empty, Errno::ENOENT),
             (fdcwd, RELATIVE, 0, Errno::ENOENT),
             (3, ABSOLUTE, 0, Errno::ENOENT),
             (1, ABSOLUTE, empty, Errno::ENOENT),
@@ -4948,6 +5007,12 @@ mod tests {
             statx(1, EMPTY, empty | 0x4000, 0x1_7fff_ffff, STATX_BUFFER),
             0
         );
+        assert_eq!(
+            fstatat(fdcwd, EMPTY, UNMAPPED, empty),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(fstatat(fdcwd, EMPTY, STAT_BUFFER, empty), 0);
+        assert_eq!(statx(fdcwd, 0, empty, 0x7ff, STATX_BUFFER), 0);
     }
 
     #[test]
@@ -4972,7 +5037,7 @@ mod tests {
             .write_user_memory(HANDLER_STACK_TOP - 2, b"xy")
             .unwrap();
         assert_eq!(fstatat(HANDLER_STACK_TOP - 2), Errno::EFAULT.result());
-        let longest = alloc::vec![b'a'; 4095];
+        let longest: alloc::vec::Vec<u8> = b"a/".iter().copied().cycle().take(4095).collect();
         process.write_user_memory(lowest + 1, &longest).unwrap();
         process.write_user_memory(lowest + 4096, &[0]).unwrap();
         assert_eq!(fstatat(lowest + 1), Errno::ENOENT.result());
@@ -5029,7 +5094,12 @@ mod tests {
     ) -> LinuxThread {
         process.add_thread();
         let id = process::allocate_thread_id().unwrap();
-        let second = first.new_thread(id, clear_child_tid, first.files().share());
+        let second = first.new_thread(
+            id,
+            clear_child_tid,
+            first.files().share(),
+            first.working_directory().share(),
+        );
         process
             .signals()
             .lock()

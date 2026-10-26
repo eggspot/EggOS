@@ -1,27 +1,26 @@
-//! File status (M6, D74): `fstat`, `newfstatat` (`fstatat` in the generic table) and `statx`
-//! on descriptors, which so far name the console (D61, D101). glibc's stdio asks `fstat`
-//! whether a stream is a character device before it line-buffers a terminal, and Rust's std
-//! asks `statx` first for a file's metadata, falling back to `fstatat`.
+//! File status (M6, D74, D102): `fstat`, `newfstatat` (`fstatat` in the generic table) and
+//! `statx` on descriptors and paths. glibc's stdio asks `fstat` whether a stream is a
+//! character device before it line-buffers a terminal, and Rust's std asks `statx` first for
+//! a file's metadata, falling back to `fstatat`.
 //!
 //! The console answers as Linux's `/dev/console` does for `init`: a character device, major 5
 //! minor 1, owned by root with mode `0600`, empty, with the page size as its block size, on a
 //! device file system ([`CONSOLE`]). Its times are the Unix epoch, when the wall clock starts
-//! (D73). Paths wait for the file system (M7): a call that names a file, rather than a
-//! descriptor with `AT_EMPTY_PATH`, finds none.
+//! (D73). A file system's node answers with its own attributes ([`node_status`]).
 //!
-//! `newfstatat` and `statx` look up what `dirfd` and `path` name as Linux does. Their
-//! synchronisation flags change nothing: there is no remote file system to ask. The path is
-//! copied first: `EFAULT` if a byte up to its end is not the program's memory, `ENAMETOOLONG`
-//! if it has no end within `PATH_MAX` (4096) bytes. A null path with `AT_EMPTY_PATH` is not
-//! read, as Linux has accepted since 6.11. Then an empty path is `ENOENT` without
-//! `AT_EMPTY_PATH`, and with it names `dirfd` itself: `EBADF` for a descriptor that is not
-//! open, `ENOENT` for the working directory (`AT_FDCWD`), which does not exist yet. Any other
-//! path finds no file: `ENOENT`, or `ENOTDIR` relative to the console, which is not a
-//! directory, or `EBADF` relative to a descriptor that is not open.
+//! `newfstatat` and `statx` look up what `dirfd` and `path` name as `openat` does
+//! ([`super::files`]). Their synchronisation flags change nothing: there is no remote file
+//! system to ask, and with no symbolic links yet `AT_SYMLINK_NOFOLLOW` changes nothing either.
+//! A null path with `AT_EMPTY_PATH` is not read, as Linux has accepted since 6.11. An empty
+//! path is `ENOENT` without `AT_EMPTY_PATH`, and with it names `dirfd` itself: `EBADF` for a
+//! descriptor that is not open, the working directory for `AT_FDCWD`.
 
 use super::Errno;
 use super::descriptors::{Descriptors, FileKind};
+use super::files;
+use super::thread::LinuxThread;
 use crate::process::Process;
+use crate::vfs::{self, Node, NodeKind, PATH_MAX};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
@@ -70,6 +69,9 @@ pub struct Status {
     pub block_size: u32,
     /// How many 512-byte blocks it takes (`st_blocks`).
     pub blocks: u64,
+    /// When its contents last changed, in seconds since the Unix epoch (`st_mtime`), also
+    /// reported as its last access and status change.
+    pub modified: u64,
 }
 
 /// A device number: its major and minor parts.
@@ -96,6 +98,36 @@ impl Device {
 /// A character device's file type bits (`S_IFCHR`).
 pub const S_IFCHR: u32 = 0o020000;
 
+/// A directory's file type bits (`S_IFDIR`).
+pub const S_IFDIR: u32 = 0o040000;
+
+/// A regular file's file type bits (`S_IFREG`).
+pub const S_IFREG: u32 = 0o100000;
+
+/// The status of `node`: its attributes, on its file system's device, in blocks of the page
+/// size as a memory file system reports them.
+pub fn node_status(node: Node) -> Status {
+    let attributes = node.attributes();
+    let (major, minor) = node.file_system().device();
+    let file_type = match attributes.kind {
+        NodeKind::Directory => S_IFDIR,
+        NodeKind::Regular => S_IFREG,
+    };
+    Status {
+        device: Device { major, minor },
+        inode: attributes.file_id,
+        mode: file_type | attributes.permissions,
+        links: attributes.links,
+        owner: attributes.owner,
+        group: attributes.group,
+        represented_device: Device { major: 0, minor: 0 },
+        size: attributes.size,
+        block_size: FRAME_SIZE as u32,
+        blocks: attributes.size.div_ceil(FRAME_SIZE) * (FRAME_SIZE / 512),
+        modified: attributes.modified,
+    }
+}
+
 /// The device of the file system that holds the device files (`/dev`): Linux's devtmpfs
 /// usually gets the anonymous device 0:5.
 pub const DEVICE_FILES: Device = Device { major: 0, minor: 5 };
@@ -116,6 +148,7 @@ pub const CONSOLE: Status = Status {
     size: 0,
     block_size: FRAME_SIZE as u32,
     blocks: 0,
+    modified: 0,
 };
 
 /// The size of the architecture's `struct stat`: x86_64's own, or the generic one AArch64 and
@@ -140,7 +173,12 @@ fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
     bytes[offset..offset + value.len()].copy_from_slice(value);
 }
 
-/// `status` as the architecture's `struct stat`, every time the epoch.
+/// Where `struct stat`'s and `struct statx`'s access, status-change and modification seconds
+/// are.
+const STAT_TIMES: [usize; 3] = [72, 104, 88];
+const STATX_TIMES: [usize; 3] = [64, 96, 112];
+
+/// `status` as the architecture's `struct stat`, every time its modification time.
 pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     let mut bytes = [0; STAT_SIZE];
     put(&mut bytes, 0, &status.device.encoded().to_ne_bytes());
@@ -171,10 +209,14 @@ pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
         put(&mut bytes, 56, &status.block_size.to_ne_bytes());
     }
     put(&mut bytes, 64, &status.blocks.to_ne_bytes());
+    for offset in STAT_TIMES {
+        put(&mut bytes, offset, &status.modified.to_ne_bytes());
+    }
     bytes
 }
 
-/// `status` as a `struct statx` reporting [`statx_mask::BASIC_STATS`], every time the epoch.
+/// `status` as a `struct statx` reporting [`statx_mask::BASIC_STATS`], every time its
+/// modification time.
 pub fn statx_bytes(status: &Status) -> [u8; STATX_SIZE] {
     let mut bytes = [0; STATX_SIZE];
     put(&mut bytes, 0, &statx_mask::BASIC_STATS.to_ne_bytes());
@@ -198,6 +240,9 @@ pub fn statx_bytes(status: &Status) -> [u8; STATX_SIZE] {
     );
     put(&mut bytes, 136, &status.device.major.to_ne_bytes());
     put(&mut bytes, 140, &status.device.minor.to_ne_bytes());
+    for offset in STATX_TIMES {
+        put(&mut bytes, offset, &status.modified.to_ne_bytes());
+    }
     bytes
 }
 
@@ -211,6 +256,9 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
 fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
     match files.file(fd)?.kind() {
         FileKind::Console => Ok(CONSOLE),
+        FileKind::Regular(node) | FileKind::Directory(node) | FileKind::Path(node) => {
+            Ok(node_status(*node))
+        }
     }
 }
 
@@ -227,70 +275,35 @@ pub fn fstat<P: Platform>(
     write(process, statbuf, &stat_bytes(&status))
 }
 
-/// What a path names, as far as a lookup can tell before there are files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Path {
-    Empty,
-    Absolute,
-    Relative,
-}
-
-/// The longest path, its terminating zero included (`PATH_MAX`).
-const PATH_MAX: u64 = 4096;
-
-/// How much of a path is copied at a time.
-const PATH_CHUNK: usize = 64;
-
-/// Reads the zero-terminated path at `address`, as Linux copies one before it looks anything
-/// up: `EFAULT` if a byte up to its end is not the program's memory, `ENAMETOOLONG` if it has
-/// no end within [`PATH_MAX`] bytes. Chunks never cross a page, so no byte past the end is
-/// read from a page that may not exist.
-fn read_path<P: Platform>(process: &Process<P>, address: u64) -> Result<Path, Errno> {
-    let mut chunk = [0u8; PATH_CHUNK];
-    let mut first = None;
-    let mut offset = 0;
-    while offset < PATH_MAX {
-        let at = address.checked_add(offset).ok_or(Errno::EFAULT)?;
-        let length = (PATH_MAX - offset)
-            .min(PATH_CHUNK as u64)
-            .min(FRAME_SIZE - at % FRAME_SIZE) as usize;
-        let bytes = &mut chunk[..length];
-        process
-            .read_user_memory(at, bytes)
-            .map_err(|_| Errno::EFAULT)?;
-        let first_byte = *first.get_or_insert(bytes[0]);
-        if bytes.contains(&0) {
-            return Ok(match first_byte {
-                0 => Path::Empty,
-                b'/' => Path::Absolute,
-                _ => Path::Relative,
-            });
-        }
-        offset += length as u64;
-    }
-    Err(Errno::ENAMETOOLONG)
-}
-
 /// The status `dirfd` and `path` name with `flags`: the module documentation's lookup.
 fn lookup<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
+    thread: &LinuxThread,
     dirfd: u64,
     path: u64,
     flags: u64,
 ) -> Result<Status, Errno> {
     let empty_path = flags & at::EMPTY_PATH != 0;
-    let path = match path {
-        0 if empty_path => Path::Empty,
-        _ => read_path(process, path)?,
-    };
-    let working_directory = dirfd as u32 as i32 == at::FDCWD;
-    match path {
-        Path::Empty if !empty_path => Err(Errno::ENOENT),
-        Path::Absolute => Err(Errno::ENOENT),
-        _ if working_directory => Err(Errno::ENOENT),
-        Path::Empty => descriptor_status(files, dirfd),
-        Path::Relative => descriptor_status(files, dirfd).and(Err(Errno::ENOTDIR)),
+    if path == 0 && empty_path {
+        return named_descriptor_status(thread, dirfd);
+    }
+    let mut buffer = [0; PATH_MAX];
+    let path = files::read_path(process, path, &mut buffer)?;
+    if path.is_empty() {
+        return match empty_path {
+            true => named_descriptor_status(thread, dirfd),
+            false => Err(Errno::ENOENT),
+        };
+    }
+    let (root, start) = files::starting_points(thread, dirfd, path)?;
+    let node = vfs::resolve(root, start, path).map_err(files::walk_error)?;
+    Ok(node_status(node))
+}
+
+fn named_descriptor_status(thread: &LinuxThread, dirfd: u64) -> Result<Status, Errno> {
+    match dirfd as u32 as i32 == at::FDCWD {
+        true => Ok(node_status(thread.working_directory().get())),
+        false => descriptor_status(thread.files(), dirfd),
     }
 }
 
@@ -302,7 +315,7 @@ fn lookup<P: Platform>(
 /// `flags` is an `int`.
 pub fn newfstatat<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
+    thread: &LinuxThread,
     dirfd: u64,
     path: u64,
     statbuf: u64,
@@ -313,7 +326,7 @@ pub fn newfstatat<P: Platform>(
     if flags & !known != 0 {
         return Err(Errno::EINVAL);
     }
-    let status = lookup(process, files, dirfd, path, flags)?;
+    let status = lookup(process, thread, dirfd, path, flags)?;
     write(process, statbuf, &stat_bytes(&status))
 }
 
@@ -326,7 +339,7 @@ pub fn newfstatat<P: Platform>(
 /// and no flags, and takes only `EFAULT` to mean it exists.
 pub fn statx<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
+    thread: &LinuxThread,
     dirfd: u64,
     path: u64,
     flags: u64,
@@ -341,7 +354,7 @@ pub fn statx<P: Platform>(
     {
         return Err(Errno::EINVAL);
     }
-    let status = lookup(process, files, dirfd, path, flags)?;
+    let status = lookup(process, thread, dirfd, path, flags)?;
     write(process, statxbuf, &statx_bytes(&status))
 }
 
