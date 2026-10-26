@@ -2215,7 +2215,7 @@ mod tests {
         use terminal::request;
         let _input = crate::interrupt::lock_timer_interrupts_for_test();
         let _frames = frames_for_test();
-        crate::console::flush_input();
+        crate::console::set_settings::<P>(Termios::SERIAL_CONSOLE, true);
         let termios = Termios::SERIAL_CONSOLE.to_bytes();
         let kernel = kernel_tables();
         let process = process_with_iovecs(&kernel, b"\x18\x00\x50\x00\x00\x00\x00\x00", &[]);

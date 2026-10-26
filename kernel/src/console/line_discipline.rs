@@ -122,6 +122,16 @@ pub struct Termios {
 }
 
 impl Termios {
+    /// Every flag off and every control character disabled.
+    pub const OFF: Self = Self {
+        input: 0,
+        output: 0,
+        control: 0,
+        local: 0,
+        line: 0,
+        control_characters: [0; CONTROL_CHARACTERS],
+    };
+
     /// A Linux serial console's settings after boot (`stty -a`), at 115200 baud: canonical
     /// mode with echo and signals, carriage return read as newline.
     pub const SERIAL_CONSOLE: Self = Self {
@@ -265,9 +275,11 @@ impl Default for LineDiscipline {
 }
 
 impl LineDiscipline {
+    /// With every setting off (non-canonical, no echo, `VMIN` and `VTIME` 0) until
+    /// [`Self::set_settings`], and all zero, so a static one costs no image space.
     pub const fn new() -> Self {
         Self {
-            settings: Termios::SERIAL_CONSOLE,
+            settings: Termios::OFF,
             bytes: [0; CAPACITY],
             line_ends: [0; WORDS],
             markers: [0; WORDS],

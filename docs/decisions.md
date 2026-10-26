@@ -4457,8 +4457,10 @@ the license, by an explicit instruction recorded here.
   256-byte bitmaps (where lines end, and end-of-file markers that are never read): 2.5 KiB of
   static memory in place of D98's 1 KiB queue. Linux has 4096 bytes, macOS's `MAX_CANON` is
   1024, POSIX's minimum 255; a serial console's lines are short, and every byte counts against
-  D24. A line keeps room for the byte that ends it; bytes that find no room are dropped and
-  counted.
+  D24. The static discipline starts all zero (every setting off) and gets a serial console's
+  settings when the kernel enables input at boot, so it lives in `.bss` and adds nothing to
+  the kernel image (with the settings in its initial value it was 2.6 KiB of `.data`). A line
+  keeps room for the byte that ends it; bytes that find no room are dropped and counted.
 - **`read`** (`linux::terminal::read`): `EBADF`, then `EFAULT` for a buffer that does not end
   in user space, then 0 for a count of 0; at most `MAX_RW_COUNT` bytes, copied a page-bounded
   chunk at a time (a chunk that cannot be written is lost, and the call returns what it copied,

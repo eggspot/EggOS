@@ -305,9 +305,10 @@ fn take_into<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> Resu
             .min(READ_CHUNK as u64)
             .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
         let taken = console::take_input(&mut chunk[..wanted]);
-        if process
-            .write_user_memory(address, &chunk[..taken.length])
-            .is_err()
+        if taken.length > 0
+            && process
+                .write_user_memory(address, &chunk[..taken.length])
+                .is_err()
         {
             return match copied {
                 0 => Err(Errno::EFAULT),

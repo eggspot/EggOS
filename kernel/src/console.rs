@@ -25,9 +25,13 @@ pub const INPUT_KEY: futex::Key = futex::Key::new(0, 0, false);
 static LINE_DISCIPLINE: LeafSpinLock<LineDiscipline> =
     LeafSpinLock::new_leaf(LineDiscipline::new());
 
-/// Has the console's received bytes interrupt the boot CPU and reach the line discipline.
-/// Called once, on the boot CPU, once the kernel's page tables are active.
+/// Gives the console a Linux serial console's settings ([`Termios::SERIAL_CONSOLE`]) and has
+/// its received bytes interrupt the boot CPU and reach the line discipline. Called once, on
+/// the boot CPU, once the kernel's page tables are active.
 pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
+    LINE_DISCIPLINE
+        .lock()
+        .set_settings(Termios::SERIAL_CONSOLE, true);
     P::enable_console_input()
 }
 
@@ -363,7 +367,9 @@ mod tests {
         fn take() -> Self {
             let interrupts = crate::interrupt::lock_timer_interrupts_for_test();
             let kernel = crate::thread::host::lock_kernel_state_for_test();
-            flush_input();
+            LINE_DISCIPLINE
+                .lock()
+                .set_settings(Termios::SERIAL_CONSOLE, true);
             crate::tests::console_output();
             Self {
                 _interrupts: interrupts,
