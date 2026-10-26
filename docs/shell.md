@@ -26,6 +26,8 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
 - `NAME=value` alone sets a shell variable (exported if it already was); `export NAME[=value]`
   exports it, `unset NAME` removes it. `NAME=value command` gives `command` the variable in
   its environment only (builtins ignore such prefixes).
+- A line longer than 4 KiB is refused: in a file it ends the file with status 2; at the prompt
+  the shell skips it up to its end, an open quote included.
 - A command is a builtin, or a program: a name with a `/` is run as it is, any other is looked
   for in each directory of `PATH` (`/bin:/usr/bin:/sbin` if unset).
 - `$?` is the program's exit status, 128 plus the signal that ended it (the shell writes the

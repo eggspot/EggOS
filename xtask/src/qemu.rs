@@ -126,47 +126,47 @@ pub enum Expect {
     Init,
     /// As [`Expect::Init`], but init resets the machine, which ends QEMU under `-no-reboot`.
     InitRestart,
-    /// The release kernel starts init, which starts the shell; the test types
-    /// [`SHELL_SCRIPTS`] as the session asks, the shell writes [`SHELL_LINES`] and exits with
-    /// 7, and init powers off (D107).
+    /// The release kernel starts init, which starts the shell; the test types one line of its
+    /// session each time a prompt appears, as a person would, so the console's echo never mixes
+    /// with what the commands write, and `^C` when the program waiting for it says so; the
+    /// shell writes each line the session expects and exits with 7, and init powers off (D107).
     Shell,
 }
 
-/// What the shell boot test types, each time its text (the first) appears on the console:
-/// commands that use the builtins, quoting, variables, programs that exit, are not found or end
-/// by a signal, a script and `-c`, an operator not supported yet, then `^C` for a program
-/// waiting in the foreground, `^C` at the prompt, and `exit 7`. The `^C`s are typed alone:
-/// the line discipline discards what was typed before them.
-const SHELL_SCRIPTS: [(&str, &[u8]); 4] = [
-    (
-        "init: starting /bin/eggsh",
-        b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r\
-        X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r\
-        cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r\
-        false; echo EGGSH-TEST status $?\r\
-        no-such-command; echo EGGSH-TEST not found $?\r\
-        PATH=$PATH:/usr/libexec; GREETING=hi eggos-std-selftest shell-child show GREETING 'a b' c\r\
-        echo EGGSH-TEST child $?\r\
-        eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r\
-        eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r\
-        eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r\
-        echo a | b; echo EGGSH-TEST never\r\
-        echo EGGSH-TEST after unsupported $?\r\
-        eggos-std-selftest shell-child wait-for-interrupt\r",
-    ),
-    (
-        "EGGOS-SHELL-CHILD: waiting for an interrupt in the foreground group",
-        b"\x03S=$?; echo; echo EGGSH-TEST interrupted $S\r",
-    ),
-    ("EGGSH-TEST interrupted 130", b"\x03"),
-    (
-        "^C\r\neggsh:/# ",
-        b"echo EGGSH-TEST prompt interrupt $?\rexit 7\r",
-    ),
+const SHELL_PROMPT: &str = "eggsh:/";
+
+const SHELL_SESSION: [&[u8]; 17] = [
+    b"echo EGGSH-TEST quoting 'single  quoted' \"double $HOME\" \\$HOME\r",
+    b"X=abc; Y=\"x y\"; echo EGGSH-TEST variables $X${X}def \"$Y\" $Y\r",
+    b"cd /usr/libexec; echo EGGSH-TEST cd $PWD $OLDPWD; cd; echo EGGSH-TEST home $PWD\r",
+    b"false; echo EGGSH-TEST status $?\r",
+    b"no-such-command; echo EGGSH-TEST not found $?\r",
+    b"PATH=$PATH:/usr/libexec; GREETING=hi eggos-std-selftest shell-child show GREETING 'a b' c\r",
+    b"echo EGGSH-TEST child $?\r",
+    b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
+    b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
+    b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
+    b"echo a | b; echo EGGSH-TEST never\r",
+    b"echo EGGSH-TEST after unsupported $?\r",
+    b"eggos-std-selftest shell-child wait-for-interrupt\r",
+    b"echo EGGSH-TEST interrupted $?\r",
+    b"\x03",
+    b"echo EGGSH-TEST prompt interrupt $?\r",
+    b"exit 7\r",
 ];
 
-/// What the shell boot test's session writes, each somewhere on a line of its own.
-const SHELL_LINES: [&str; 18] = [
+const SHELL_INTERRUPT: (&str, &[u8]) = (
+    "EGGOS-SHELL-CHILD: waiting for an interrupt in the foreground group",
+    b"\x03",
+);
+
+#[derive(Debug, Default)]
+struct ShellTyping {
+    lines: usize,
+    interrupts: usize,
+}
+
+const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST quoting single  quoted double / $HOME",
     "EGGSH-TEST variables abcabcdef x y x y",
     "EGGSH-TEST cd /usr/libexec /",
@@ -184,6 +184,7 @@ const SHELL_LINES: [&str; 18] = [
     "EGGSH-TEST dash-c name arg",
     "eggsh: `|` is not supported yet",
     "EGGSH-TEST after unsupported 2",
+    "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
 ];
 
@@ -294,7 +295,7 @@ pub fn boot_test(
     let started = Instant::now();
     let mut console = Vec::new();
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
-    let mut shell_typed = [0; SHELL_SCRIPTS.len()];
+    let mut shell_typed = ShellTyping::default();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -376,19 +377,21 @@ fn scripts_to_type(
     scripts
 }
 
-/// The scripts of [`SHELL_SCRIPTS`] to type now: each as many more times as its text appears
-/// anywhere in `console`, beyond the times `typed` counts, which it then counts.
-fn shell_scripts_to_type(
-    console: &str,
-    typed: &mut [usize; SHELL_SCRIPTS.len()],
-) -> Vec<&'static [u8]> {
+fn shell_scripts_to_type(console: &str, typed: &mut ShellTyping) -> Vec<&'static [u8]> {
     let mut scripts = Vec::new();
-    for ((text, script), typed) in SHELL_SCRIPTS.iter().zip(typed) {
-        let asked = console.matches(text).count();
-        while *typed < asked {
-            scripts.push(*script);
-            *typed += 1;
-        }
+    let prompts = console
+        .matches(SHELL_PROMPT)
+        .count()
+        .min(SHELL_SESSION.len());
+    while typed.lines < prompts {
+        scripts.push(SHELL_SESSION[typed.lines]);
+        typed.lines += 1;
+    }
+    let (text, interrupt) = SHELL_INTERRUPT;
+    let asked = console.matches(text).count();
+    while typed.interrupts < asked {
+        scripts.push(interrupt);
+        typed.interrupts += 1;
     }
     scripts
 }
@@ -751,21 +754,31 @@ mod tests {
     }
 
     #[test]
-    fn each_shell_script_is_typed_once_each_time_its_text_appears() {
-        let mut typed = [0; SHELL_SCRIPTS.len()];
-        assert!(shell_scripts_to_type("init: starting /bin/egg", &mut typed).is_empty());
-        let started = "EggOS\r\ninit: starting /bin/eggsh\r\neggsh:/# ";
+    fn the_shell_session_types_a_line_at_each_prompt_and_c_for_the_waiting_program() {
+        let mut typed = ShellTyping::default();
+        assert!(shell_scripts_to_type("init: starting /bin/eggsh\r\n", &mut typed).is_empty());
+        let started = "init: starting /bin/eggsh\r\neggsh:/# ";
         assert_eq!(
             shell_scripts_to_type(started, &mut typed),
-            [SHELL_SCRIPTS[0].1]
+            [SHELL_SESSION[0]]
         );
         assert!(shell_scripts_to_type(started, &mut typed).is_empty());
-        let prompt = format!("{started}x^C\r\neggsh:/# ");
+        let error = format!("{started}x\r\neggsh: x: command not found\r\neggsh:/usr# ");
         assert_eq!(
-            shell_scripts_to_type(&prompt, &mut typed),
-            [SHELL_SCRIPTS[3].1]
+            shell_scripts_to_type(&error, &mut typed),
+            [SHELL_SESSION[1]]
         );
-        assert_eq!(typed, [1, 0, 0, 1]);
+        let waiting = format!("{error}{}\r\n", SHELL_INTERRUPT.0);
+        assert_eq!(
+            shell_scripts_to_type(&waiting, &mut typed),
+            [SHELL_INTERRUPT.1]
+        );
+        let many = SHELL_PROMPT.repeat(SHELL_SESSION.len() + 5);
+        assert_eq!(
+            shell_scripts_to_type(&many, &mut typed).len(),
+            SHELL_SESSION.len() - 2
+        );
+        assert_eq!(typed.lines, SHELL_SESSION.len());
     }
 
     #[test]

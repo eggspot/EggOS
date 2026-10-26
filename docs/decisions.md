@@ -5287,8 +5287,10 @@ the license, by an explicit instruction recorded here.
   own (`setpgid(0, 0)`), takes the terminal (`TIOCSPGRP`), resets the signals the shell
   changed and unblocks its mask, then runs `execve`; an `execve` error is written to the
   shared request and the child exits with 127 or 126, and the shell reports it. The shell
-  also calls `setpgid` and `TIOCSPGRP` for the child (whichever runs first wins; both are
-  idempotent), waits with `wait4`, retrying on `EINTR`, and takes the terminal back. Options
+  does not repeat `setpgid` and `TIOCSPGRP` for the child: with `CLONE_VFORK` it runs again
+  only once the child's `execve` passed its point of no return, after both calls, and a second
+  `TIOCSPGRP` could undo a hand-over the new program already made to a group of its own. It
+  waits with `wait4`, retrying on `EINTR`, and takes the terminal back. Options
   weighed: `fork` as init does (an eager copy of the shell's memory per command, D104), and
   `vfork` on the same stack (undefined behaviour). The runtime's other assembly (the entry and
   the system-call instruction) set the precedent: none of this can be written in Rust.
@@ -5304,7 +5306,12 @@ the license, by an explicit instruction recorded here.
 - **Memory (decided by research).** Fixed buffers, no allocator: a line of 4 KiB, 8 KiB of
   words (256 at most), 8 KiB of variables (128 at most), all on the stack or in `.bss`, so
   none is in the file. Past a limit the shell says `line too long`, `command too long` or
-  `too many variables` and goes on.
+  `too many variables`. A line too long ends a file being read (`eggsh file`, `.`) with status
+  2, as a syntax error does; at the prompt the rest of the line is skipped, up to a newline
+  outside quotes, comments and escapes (`syntax::line_end`), so what an open quote holds never
+  runs as commands (a refused line is skipped the same way). `cd` copies the old `PWD`
+  through a buffer as large as the variables, and when `OLDPWD` does not fit it is unset and
+  `PWD` still updated.
 - **Prefix assignments (decided by research).** `NAME=value program` puts the variable in that
   program's environment only, before the exported ones it replaces; builtins ignore such a
   prefix (POSIX makes them temporary for regular builtins and lasting for special ones), a
@@ -5316,14 +5323,16 @@ the license, by an explicit instruction recorded here.
   handling above, its own group (`setpgid(0, 0)` unless it leads one already, as under init)
   holding the terminal, and a group per program. A script or `-c` leaves signals and groups as
   they are, and a syntax error ends it with status 2, as POSIX says for a non-interactive shell.
-- **Tests.** 46 host tests: the lexer (quoting, escapes, expansion and splitting, tilde,
+- **Tests.** 51 host tests: the lexer (quoting, escapes, expansion and splitting, tilde,
   assignments, comments, separators, the refused operators, incomplete and unterminated text,
   limits), the variables, `PATH` search with a fake file system, wait statuses and `exit`'s
   argument, and the shell against a fake system (builtins, `$?`, environments, 127 and 126,
   signals, `cd`, `exit`, `export`/`unset`/`set`, `type`, syntax errors in scripts and at the
   prompt, prompts and `PS1`, `^C` at the prompt, continuation lines, long lines, `.` and its
-  nesting limit, files read in pieces). `cargo xtask qemu` boots a fifth kernel per
-  architecture: init starts the shell, and the runner types a session on the serial console
+  nesting limit, files read in pieces, a working directory longer than a path, lines too long
+  in files and at the prompt, skipping to the end of an open quote). `cargo xtask qemu` boots
+  a fifth kernel per architecture: init starts the shell, and the runner types a session on
+  the serial console, a line at each prompt, as a person would
   (quoting, variables, `cd`, `$?`, a command not found, a program given arguments and an
   environment prefix that exits with 3, one ended by `SIGTERM`, `eggsh file` running a script
   that sources another, `eggsh -c`, a refused `|`, `^C` to a program waiting in the foreground
@@ -5338,5 +5347,8 @@ the license, by an explicit instruction recorded here.
   run from the prompt) once userland timing exists; a smaller binary (`opt-level = "s"` for
   the shell, measured against its speed); prefix assignments for builtins; `$@`, `$*`,
   wildcards, parameter operators, control flow and functions, `$(...)`; pipes, redirections
-  and lists (item 16); stopping and resuming jobs (needs D105's stop signals); line editing
-  and history; `PATH` lookups cached.
+  and lists (item 16); stopping and resuming jobs (needs D105's stop signals; `wait4` without
+  `WUNTRACED` until then); line editing and history; `PATH` lookups cached. From the review:
+  a `^C` that comes after `ppoll` reported input and before the `read` stays pending and gives
+  the next prompt a fresh one; a file that `execve` refuses with `ENOEXEC` is 126 (POSIX
+  shells run it as a script); `~` is not expanded after `=` in an assignment, nor `~user`.
