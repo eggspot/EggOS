@@ -9,7 +9,9 @@ emulator never adds bytes to the output stream; its only replies (DSR) go into t
 ## Text area
 
 - Grid: 80x24 cells of 8x16 (section 5 of the desktop brief; a maximised window changes the
-  grid). Origin at the content's top-left plus the 8 px padding. `TIOCGWINSZ` reports
+  grid). Origin at the content's top-left plus the 8 px padding. Before the desktop (item 14) the
+  terminal's content is the whole screen, laid out as the maximised window's content: grid
+  `(w - 16) / 8` by `(h - 16) / 16`, 158x49 at 1280x800 and 126x47 at 1024x768 (D114). `TIOCGWINSZ` reports
   `ws_row 24, ws_col 80, ws_xpixel 640, ws_ypixel 384` and follows the grid.
 - Cell: 4 bytes, `glyph: u8` (ids from the font table), `fg: u8` and `bg: u8` (0-15 ANSI, 16
   = default), `flags: u8` (bit 0 bold, bit 1 underline, bit 2 inverse, bit 3 wide-continuation
@@ -21,7 +23,8 @@ emulator never adds bytes to the output stream; its only replies (DSR) go into t
   has none. `CSI 3 J` clears it. Viewing: Shift+PageUp / Shift+PageDown move the view by 23
   lines, Shift+Home / Shift+End to the oldest / the live screen, the wheel by 3 lines per
   notch; any key that produces bytes jumps back to the live screen. While scrolled back the
-  cursor is not drawn and a 1-cell `▲` in `accent` sits in the top-right cell of the grid.
+  cursor is not drawn and a 1-cell `▲` in `accent` sits in the top-right cell of the grid (glyph
+  0x9F, after the font's listed extras, D114).
 - Cursor: a block in `term.cursor` covering the cell, the cell's glyph drawn in `term.bg` on
   it; blinks 500 ms on / 500 ms off, restarted "on" by every byte in or out; hidden by
   `CSI ? 25 l`, steady with `CSI ? 12 l`. The cursor is drawn only when the window has focus;

@@ -7,16 +7,17 @@ D111), the display (D112), input (D113), and how to add a driver.
 
 | Where | What |
 |---|---|
-| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
+| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `font` (Egg Mono 8x16, glyph ids, `draw_glyph`), `terminal` (the terminal emulator: cells, scrollback, the ANSI subset, rendering of damaged cells), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
 | `hal/src/fdt/nodes.rs` | `Fdt::nodes`: every device-tree node with what a bus needs, allocating nothing |
 | `hal/src/lib.rs` | What the firmware gives: `Platform::device_tree`, `acpi_table`, `device_apertures`, the device-tree DMA default, and `make_kernel_mappings_visible` |
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
 | `kernel/src/devices/fdt_bus.rs`, `pci_bus.rs` | Discovery: the device-tree platform bus, PCI Express through the MCFG |
 | `kernel/src/devices/window.rs` | Device windows: device registers mapped into the kernel |
 | `kernel/src/devices/dma.rs` | DMA regions |
-| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng and virtio-gpu on top |
+| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng, virtio-gpu and virtio-input on top |
 | `kernel/src/display.rs` | The display: the framebuffer a display driver installs, damage, flushes, the first frame |
 | `kernel/src/input.rs` | Input: the devices drivers install, polling, keys to the console's line discipline, the input event queue |
+| `kernel/src/terminal.rs` | The graphical terminal: the console's session mirrored on the display, the drawing thread |
 
 ## Discovery
 
@@ -155,8 +156,14 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   display there is no position, only buttons and the wheel.
 - The input event queue (`input::next_event`, `dropped_events`): `Key` (code, pressed,
   modifiers), `PointerMove` (x, y), `Button`, `Wheel`, each packed into one word in a lock-free
-  ring of 256, one producer (the poller) and any consumers; a full queue drops new events and
-  counts them. It is made with the first input device and costs nothing without one.
+  ring of 256, one producer (the poller) and any consumers; a full queue drops its oldest event
+  and counts it. Events are kept only once a reader called `input::subscribe` (the desktop, item
+  14; the input self-test), so no keystroke waits in memory for a reader that does not exist
+  (D114). It is made with the first input device and costs nothing without one.
+- The graphical terminal (D114): the arrow keys follow its application cursor mode (`CSI ? 1
+  h`), Shift with Page Up, Page Down, Home and End and the wheel (3 lines a notch) move its
+  scrollback view and send nothing, and any key that sends bytes brings the view back to the
+  live screen. A key repeat waits for a poll whose buffer has room for its whole sequence.
 
 ## The display
 
@@ -171,6 +178,28 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 - At boot the kernel draws the first frame (the whole screen in `wallpaper.top`, `#0E1726`)
   and prints `boot: display 1280x800`, or `boot: no display` without one.
 - A display driver implements `display::Scanout` and calls `display::install`.
+
+## The graphical terminal
+
+`kernel/src/terminal.rs` (D114) shows the console's session on the display, with the engine of
+`eggos_drivers::terminal` (the design: docs/ux/terminal-v0.3.md):
+
+- `terminal::start::<P>()` makes a terminal over the whole display (an 8 px padding, the grid
+  `(w - 16) / 8` by `(h - 16) / 16` cells: 158x49 at 1280x800, 126x47 at 1024x768), fills the
+  screen with `term.bg` and shows it; `TIOCGWINSZ` then reports the grid. The release kernel
+  starts it in init's boot, before `/init`, and prints `boot: terminal 158x49`; from the next
+  line on the serial console and the terminal receive the same bytes. Without a display
+  nothing is made.
+- `console::write::<P>(bytes)` is the session's output: what programs write and the input's
+  echo. With the terminal shown it writes to the UART and feeds the terminal under the
+  terminal's lock, so both see the same bytes in the same order, with the UART's `\n` to
+  `\r\n` (the engine's `set_onlcr`); otherwise it is the UART's write after one load. The
+  kernel's own messages (`PlatformConsole`, panics) stay on the serial console.
+- Feeding only updates cells. The drawing thread (`terminal::start_drawing`) renders the cells
+  that changed into the framebuffer under the display's lock, then the terminal's, and flushes
+  the damage after letting the terminal's lock go, at most once every 16 ms and at once after an
+  idle frame; a scroll moves pixels and draws only the new line. Replies programs asked for
+  (`CSI 6 n`, `CSI c`) go to the console's input from that thread.
 
 ## Adding a driver
 

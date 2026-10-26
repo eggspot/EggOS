@@ -109,9 +109,15 @@ holds what used to be written in them.
   none`, which hides the window but keeps the device. The two init boots run without it, to
   check that a kernel without a display behaves as before (`boot: no display`). The
   boot-to-prompt test also opens QEMU's machine protocol (QMP) on a free local TCP port and, at
-  the first prompt, saves the display with `screendump` (`target/screendump-<arch>.ppm`) and
-  checks it is the release kernel's first frame: 1280x800, pixel hash
-  `eggos_kernel::display::FIRST_FRAME_HASH_1280X800`. `cargo xtask run` shows the display in a
+  the first prompt and again after the line typed on the virtio keyboard, saves the display with
+  `screendump` (`target/screendump-<arch>.ppm`) and checks it is the graphical terminal (D114)
+  exactly as the host renders it: the console's bytes after `boot: terminal 158x49` fed to the
+  same terminal engine (`eggos_drivers::terminal`), compared pixel for pixel, retried for up to
+  5 s while the kernel's drawing thread catches up; on a mismatch the expected picture is
+  saved next to it (`target/screendump-<arch>-expected.ppm`). The self-test kernels check the
+  release kernel's first frame (pixel hash `eggos_kernel::display::FIRST_FRAME_HASH_1280X800`)
+  and a terminal screen with SGR colours (`eggos_kernel::terminal::TEST_SCREEN_HASH_1280X800`).
+  `cargo xtask run` shows the display in a
   window and the serial console on the terminal (`-serial mon:stdio`, so Ctrl-A then X still
   quits); `--nographic`, anywhere among the options, keeps both on the terminal for a machine
   without a screen.
@@ -126,8 +132,8 @@ holds what used to be written in them.
   must match the self-test's), and the boot-to-prompt test types `uname -a` and `echo
   EGGOS-KEYBOARD Typed_On+Virtio:OK` on the virtio keyboard instead of the serial console, a
   report per key 10 ms apart and at most 8 keys ahead of their echo, so the device's 64-event
-  queue never fills between the kernel's polls, however slow the machine. In `cargo xtask run`, QEMU's window types on the virtio keyboard and points with the
-  tablet.
+  queue never fills between the kernel's polls, however slow the machine. In `cargo xtask
+  run`, QEMU's window types on the virtio keyboard and points with the tablet.
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 
