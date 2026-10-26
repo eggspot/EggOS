@@ -524,7 +524,8 @@ fn run_process_loop<P: Platform>(memory: &mut Memory<P>, mode: &[u8], n: u64) {
     linux::spawn::<P>(process.clone(), context)
         .expect("there is memory for the program's thread")
         .join::<P>();
-    while process.children().iter().any(|child| child.exit.is_none()) {
+    let session = process.id().get();
+    while linux::process_table::TABLE.lock().in_session(session) > 0 {
         thread::yield_now::<P>();
     }
     assert_eq!(

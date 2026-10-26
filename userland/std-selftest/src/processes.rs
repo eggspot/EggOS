@@ -4,7 +4,8 @@
 //! `vfork` running on the parent's memory until it execs this program's file, which checks
 //! its parent and that it starts with a new program's floating-point state, not the rounding
 //! mode its parent set before the `vfork`; and a child that forks before its first FP/SIMD
-//! instruction, whose own child must still see the rounding mode their ancestor set. Each child ends with its own status, which the kernel checks.
+//! instruction, whose own child must still see the rounding mode their ancestor set. Each child
+//! ends with its own status, which the program checks as it reaps it with `waitpid`.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::process::ExitCode;
@@ -64,6 +65,7 @@ mod libc {
         pub fn vfork() -> i32;
         pub fn getpid() -> i32;
         pub fn getppid() -> i32;
+        pub fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
         pub fn sched_yield() -> i32;
         pub fn _exit(status: i32) -> !;
         pub fn execve(
@@ -89,6 +91,13 @@ fn getpid() -> i32 {
 fn getppid() -> i32 {
     // SAFETY: `getppid` touches no memory.
     unsafe { libc::getppid() }
+}
+
+fn reaped_with(child: i64, status: u8) -> bool {
+    let mut raw = -1;
+    // SAFETY: `raw` is an `int` that lives across the call.
+    let waited = unsafe { libc::waitpid(child as i32, &mut raw, 0) };
+    i64::from(waited) == child && raw & 0x7f == 0 && (raw >> 8) & 0xff == i32::from(status)
 }
 
 fn exit_child(status: u8) -> ! {
@@ -166,7 +175,10 @@ fn memory_is_copied() -> bool {
     let kept = read_word(on_the_stack) == BEFORE && read_word(on_the_heap) == BEFORE;
     // SAFETY: from `Box::into_raw` above, freed once, here, in the parent.
     drop(unsafe { Box::from_raw(on_the_heap) });
-    child > 0 && kept && IN_A_STATIC.load(Ordering::SeqCst) == BEFORE
+    child > 0
+        && kept
+        && IN_A_STATIC.load(Ordering::SeqCst) == BEFORE
+        && reaped_with(child, child_status::MEMORY_COPIED)
 }
 
 fn fork_through_musl() -> bool {
@@ -179,7 +191,7 @@ fn fork_through_musl() -> bool {
             false => child_status::WRONG,
         });
     }
-    child > 0 && child != parent
+    child > 0 && child != parent && reaped_with(child.into(), child_status::FORKED)
 }
 
 fn descriptors_are_copied_or_shared() -> bool {
@@ -203,7 +215,14 @@ fn descriptors_are_copied_or_shared() -> bool {
     }
     let closed_by_child =
         !is_open(shared) && std::io::Error::last_os_error().raw_os_error() == Some(EBADF);
-    copied >= 0 && copy > 0 && kept_open && shared >= 0 && sharer > 0 && closed_by_child
+    copied >= 0
+        && copy > 0
+        && kept_open
+        && shared >= 0
+        && sharer > 0
+        && closed_by_child
+        && reaped_with(copy, child_status::DESCRIPTORS_COPIED)
+        && reaped_with(sharer, child_status::DESCRIPTORS_SHARED)
 }
 
 #[inline(never)]
@@ -252,6 +271,7 @@ fn vfork_child_runs_on_the_memory_until_it_execs() -> bool {
         && rounding_restored
         && child > 0
         && VFORK_CHILD_EXECS.load(Ordering::SeqCst) == 1
+        && reaped_with(child.into(), child_status::SPAWNED_BY_VFORK)
 }
 
 fn grandchild_keeps_the_rounding_mode() -> ! {
@@ -281,7 +301,10 @@ fn the_rounding_mode_reaches_a_grandchild() -> bool {
         child_forks_before_its_first_fp_use();
     }
     let restored = set_rounding(FE_TONEAREST);
-    changed && restored && child > 0
+    changed
+        && restored
+        && child > 0
+        && reaped_with(child, child_status::ROUNDING_KEPT_TWO_GENERATIONS)
 }
 
 type Check = (&'static str, fn() -> bool);

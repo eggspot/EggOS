@@ -9,8 +9,7 @@
 //! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
 //! descriptor is closed (`POLLNVAL`). A call that finds nothing ready waits until its timeout,
 //! or for good without one, unless `ppoll`'s signal mask lets a pending signal interrupt it
-//! first (D71); one that asks for the console's input is woken when it becomes readable, and
-//! its thread becomes the console's foreground ([`terminal::become_foreground`]).
+//! first (D71); one that asks for the console's input is woken when it becomes readable.
 
 use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::terminal::{self, Waited};
@@ -382,9 +381,6 @@ fn poll_fds<P: Platform>(
                 .file(fd as u64)
                 .is_ok_and(|file| *file.kind() == FileKind::Console)
     });
-    if watches_input {
-        terminal::become_foreground(process, thread);
-    }
     let readable = watches_input && console::input_ready();
     let mut ready = fill_in_events(entries, thread.files(), readable);
     let mut interrupted = ready == 0 && signals::is_due(thread);

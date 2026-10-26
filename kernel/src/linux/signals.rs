@@ -382,6 +382,10 @@ pub mod code {
     pub const QUEUE: i32 = -1;
     /// With `tkill` or `tgkill` (`SI_TKILL`).
     pub const TKILL: i32 = -6;
+    /// `SIGCHLD`'s: the child exited (`CLD_EXITED`).
+    pub const CLD_EXITED: i32 = 1;
+    /// `SIGCHLD`'s: a signal ended the child (`CLD_KILLED`).
+    pub const CLD_KILLED: i32 = 2;
 }
 
 /// A pending signal's `siginfo_t`, as the kernel keeps it ([`KEPT_INFO_SIZE`]).
@@ -394,6 +398,19 @@ impl Info {
         let mut info = Self::without_sender(signal, code);
         info.0[16..20].copy_from_slice(&pid.to_ne_bytes());
         info.0[20..24].copy_from_slice(&uid.to_ne_bytes());
+        info
+    }
+
+    /// Signal `signal` telling a parent of its child `pid`'s end (`SIGCHLD` unless `clone` named
+    /// another), the child's real user id being `uid`: `CLD_EXITED` with its status, or
+    /// `CLD_KILLED` with the signal that ended it.
+    pub fn child_ended(signal: u32, pid: u32, uid: u32, exit: ProcessExit) -> Self {
+        let (code, status) = match exit {
+            ProcessExit::Exited(status) => (code::CLD_EXITED, status & 0xff),
+            ProcessExit::Killed { signal } => (code::CLD_KILLED, signal),
+        };
+        let mut info = Self::sent(signal, code, pid, uid);
+        info.0[24..28].copy_from_slice(&status.to_ne_bytes());
         info
     }
 
@@ -1411,6 +1428,13 @@ pub fn rt_sigaction<P: Platform>(
                 })?,
         };
         let ignored = new.is_some() && signals.ignores(signal);
+        if new.is_some() && signal == super::signal::SIGCHLD {
+            let action = signals.action(signal).unwrap_or_default();
+            let no_zombies = action.handler == IGNORE || action.flags & flag::NOCLDWAIT != 0;
+            super::process_table::TABLE
+                .lock()
+                .set_no_zombie_children(process.id().get(), no_zombies);
+        }
         let first = process.id().get();
         let first = (process.first_thread_status().is_none()).then_some(first);
         let asked = ignored && signals.discard_from_other_threads(first, bit(signal));
@@ -1688,28 +1712,33 @@ fn send_to_process<P: Platform>(
     Ok(0)
 }
 
-/// Sends `signal`, typed on the console, to `process`, its foreground's (D100), for the first
-/// of its threads that takes it in without blocking it, with Linux's `siginfo_t` for a signal
-/// from the kernel (`SI_KERNEL`): the wait of `reader`, the thread that made it the
-/// foreground, is ended, and those of the threads the process's signal state records, so a
-/// waiting thread looks; a running one is interrupted. Nothing for a process that has ended,
-/// nor without memory to record the signal. Called from the console's interrupt.
-pub fn send_from_terminal<P: Platform>(process: &Process<P>, reader: &WaitSlot, signal: u32) {
+/// Sends the signal `info` describes to `process` from outside it (a child's end, the
+/// console's signal characters, D105), for the first of its threads that takes it in without
+/// blocking it: the wait of its first thread, `first_thread`, is ended, and those of the
+/// threads the process's signal state records, so a waiting thread looks; a running one is
+/// interrupted, unless the process ignores the signal: then it is taken in at the threads'
+/// next look (a thread that blocks it still finds it pending, as on Linux). Nothing for a
+/// process that has ended, nor without memory to record the signal.
+pub fn send_from_outside<P: Platform>(process: &Process<P>, first_thread: &WaitSlot, info: Info) {
     if process.has_ended() {
         return;
     }
-    {
+    let ignored = {
         let mut signals = process.signals().lock();
-        if signals
-            .send_to_process(Info::from_kernel(signal), u64::MAX)
-            .is_err()
-        {
+        if signals.send_to_process(info, u64::MAX).is_err() {
             return;
         }
-        process.set_sent_signals_waiting(true);
+        let ignored = signals.ignores(info.signal());
+        if !ignored {
+            process.set_sent_signals_waiting(true);
+        }
+        ignored
+    };
+    match ignored {
+        true => process.record_ignored_signal_sent(),
+        false => process.record_signal_sent(),
     }
-    process.record_signal_sent();
-    super::futex::interrupt::<P>(reader);
+    super::futex::interrupt::<P>(first_thread);
     let signals = process.signals().lock();
     for slot in signals.wait_slots_but(NO_THREAD, process.id().get()) {
         super::futex::interrupt::<P>(slot);

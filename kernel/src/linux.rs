@@ -34,7 +34,9 @@
 //! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
 //! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75), and signals
 //! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
-//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103). Every
+//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103), and
+//! children waited for with `wait4` and `waitid` ([`wait`], D105) and process groups,
+//! sessions and the console's foreground group ([`job_control`], D105). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -47,9 +49,11 @@ pub mod files;
 pub mod fork;
 pub mod futex;
 pub mod identity;
+pub mod job_control;
 pub mod limits;
 pub mod memory;
 pub mod poll;
+pub mod process_table;
 pub mod random;
 pub mod signal_frame;
 pub mod signals;
@@ -59,6 +63,7 @@ pub mod thread;
 pub mod thread_pointer;
 pub mod time;
 pub mod trampoline;
+pub mod wait;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
@@ -110,6 +115,7 @@ pub mod number {
         pub const VFORK: u64 = 58;
         pub const EXECVE: u64 = 59;
         pub const EXIT: u64 = 60;
+        pub const WAIT4: u64 = 61;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
         pub const FCNTL: u64 = 72;
@@ -121,7 +127,10 @@ pub mod number {
         pub const SETGID: u64 = 106;
         pub const GETEUID: u64 = 107;
         pub const GETEGID: u64 = 108;
+        pub const SETPGID: u64 = 109;
         pub const GETPPID: u64 = 110;
+        pub const GETPGRP: u64 = 111;
+        pub const SETSID: u64 = 112;
         pub const SETREUID: u64 = 113;
         pub const SETREGID: u64 = 114;
         pub const GETGROUPS: u64 = 115;
@@ -130,13 +139,16 @@ pub mod number {
         pub const GETRESUID: u64 = 118;
         pub const SETRESGID: u64 = 119;
         pub const GETRESGID: u64 = 120;
+        pub const GETPGID: u64 = 121;
         pub const SETFSUID: u64 = 122;
         pub const SETFSGID: u64 = 123;
+        pub const GETSID: u64 = 124;
         pub const RT_SIGPENDING: u64 = 127;
         pub const RT_SIGTIMEDWAIT: u64 = 128;
         pub const RT_SIGQUEUEINFO: u64 = 129;
         pub const RT_SIGSUSPEND: u64 = 130;
         pub const SIGALTSTACK: u64 = 131;
+        pub const PRCTL: u64 = 157;
         pub const ARCH_PRCTL: u64 = 158;
         pub const SETRLIMIT: u64 = 160;
         pub const SETTIMEOFDAY: u64 = 164;
@@ -151,6 +163,7 @@ pub mod number {
         pub const CLOCK_NANOSLEEP: u64 = 230;
         pub const EXIT_GROUP: u64 = 231;
         pub const TGKILL: u64 = 234;
+        pub const WAITID: u64 = 247;
         pub const NEWFSTATAT: u64 = 262;
         pub const PPOLL: u64 = 271;
         pub const SET_ROBUST_LIST: u64 = 273;
@@ -194,6 +207,7 @@ pub mod number {
         pub const FSTAT: u64 = 80;
         pub const EXIT: u64 = 93;
         pub const EXIT_GROUP: u64 = 94;
+        pub const WAITID: u64 = 95;
         pub const SET_TID_ADDRESS: u64 = 96;
         pub const FUTEX: u64 = 98;
         pub const SET_ROBUST_LIST: u64 = 99;
@@ -227,9 +241,14 @@ pub mod number {
         pub const SETFSGID: u64 = 152;
         pub const GETGROUPS: u64 = 158;
         pub const SETGROUPS: u64 = 159;
+        pub const SETPGID: u64 = 154;
+        pub const GETPGID: u64 = 155;
+        pub const GETSID: u64 = 156;
+        pub const SETSID: u64 = 157;
         pub const UNAME: u64 = 160;
         pub const GETRLIMIT: u64 = 163;
         pub const SETRLIMIT: u64 = 164;
+        pub const PRCTL: u64 = 167;
         pub const GETCPU: u64 = 168;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
@@ -249,6 +268,7 @@ pub mod number {
         pub const MPROTECT: u64 = 226;
         pub const MADVISE: u64 = 233;
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
+        pub const WAIT4: u64 = 260;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
         pub const EXECVEAT: u64 = 281;
@@ -279,6 +299,15 @@ pub mod number {
             FORK,
             #[cfg(target_arch = "x86_64")]
             VFORK,
+            WAIT4,
+            WAITID,
+            SETPGID,
+            GETPGID,
+            #[cfg(target_arch = "x86_64")]
+            GETPGRP,
+            SETSID,
+            GETSID,
+            PRCTL,
             BRK,
             MMAP,
             MUNMAP,
@@ -385,6 +414,8 @@ impl Errno {
     pub const ESRCH: Self = Self(3);
     /// Interrupted: a signal's handler started during the wait (`rt_sigsuspend`, `pause`).
     pub const EINTR: Self = Self(4);
+    /// No child the caller may wait for (`wait4`, `waitid`).
+    pub const ECHILD: Self = Self(10);
     /// The arguments and environment are too long (`execve`).
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
@@ -511,6 +542,7 @@ pub fn spawn<P: Platform>(
     context: UserContext,
 ) -> Result<JoinHandle, SpawnError> {
     let thread = LinuxThread::first(&process);
+    job_control::start_session_leader(&process, &thread);
     spawn_thread(process, thread, context)
 }
 
@@ -721,6 +753,8 @@ fn out_of_line_call<P: Platform>(
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
         number::EXECVE => exec::execve(process, thread, context),
+        number::WAIT4 => wait::wait4(process, thread, context),
+        number::WAITID => wait::waitid(process, thread, context),
         number::EXECVEAT => exec::execveat(process, thread, context),
         _ => {
             let result = match number {
@@ -818,6 +852,13 @@ fn out_of_line_result<P: Platform>(
         }
         number::GETPID => Ok(identity::getpid(process)),
         number::GETPPID => Ok(identity::getppid(process)),
+        number::SETPGID => job_control::setpgid(process, first, second),
+        number::GETPGID => job_control::getpgid(process, first),
+        #[cfg(target_arch = "x86_64")]
+        number::GETPGRP => job_control::getpgid(process, 0),
+        number::SETSID => job_control::setsid(process),
+        number::GETSID => job_control::getsid(process, first),
+        number::PRCTL => job_control::prctl(process, first, second),
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),
         number::SET_TID_ADDRESS => Ok(identity::set_tid_address(thread, first)),
@@ -997,9 +1038,9 @@ fn exit<P: Platform>(
     }
 }
 
-/// Ends the process as `how` says ([`Process::exit`]); the console forgets it as its
-/// foreground; its other threads waiting on a futex or for console input, if it has any, stop
-/// waiting, so they end too. Breaks: the calling thread ends.
+/// Ends the process as `how` says ([`Process::exit`]); its parent learns of it (D105,
+/// [`wait::process_ended`]); its other threads waiting on a futex or for console input, if it
+/// has any, stop waiting, so they end too. Breaks: the calling thread ends.
 #[cold]
 #[inline(never)]
 pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
@@ -1008,10 +1049,11 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
         return ControlFlow::Break(());
     }
     fork::release_vfork_parent::<P>(process);
-    crate::console::forget_foreground(process.id().get());
+    wait::process_ended::<P>(process, how);
     if others {
         futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
+        wait::wake_child_waiters::<P>(process.id().get());
     }
     ControlFlow::Break(())
 }
@@ -1303,12 +1345,6 @@ mod tests {
 
     struct FramesForTest {
         _frames: crate::thread::host::FramesForTest,
-    }
-
-    impl Drop for FramesForTest {
-        fn drop(&mut self) {
-            crate::console::forget_foreground_for_test();
-        }
     }
 
     fn frames_for_test() -> FramesForTest {
@@ -3007,16 +3043,36 @@ mod tests {
         assert_eq!(process.exit_status(), None);
     }
 
+    fn register_running(process: &Arc<Process<P>>) {
+        let thread = take_first_thread(process);
+        wait::record_running(process, &thread, |_, _| {});
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(process.id().get(), thread);
+    }
+
     #[test]
-    fn an_interrupt_typed_signals_the_process_that_read_the_console() {
+    fn an_interrupt_typed_signals_the_console_s_foreground_group_and_its_leader_s_end_frees_it() {
         let console = ConsoleForTest::take();
         let kernel = kernel_tables();
         let process = process_with_iovecs(&kernel, b"", &[]);
+        let id = process.id().get();
         let writable = DATA + 4096;
+        register_running(&process);
+        process_table::TABLE.lock().take_console(id, true).unwrap();
+        assert_eq!(
+            call(&process, number::IOCTL, [0, 0x540f, writable, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read_bytes(&process, writable, 4), id.to_ne_bytes());
+        assert_eq!(
+            call(&process, number::IOCTL, [0, 0x5429, writable, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read_bytes(&process, writable, 4), id.to_ne_bytes());
         console.types(b"first\r");
         assert_eq!(call(&process, number::READ, [0, writable, 64, 0, 0, 0]), 6);
-        let reader = crate::console::reader_id(process.id().get(), process.id().get());
-        assert!(crate::console::is_foreground(reader));
         console.types(b"gone\x03");
         assert_eq!(console_output(), b"first\ngone^C");
         let mut context = called(number::READ, [0, writable, 64, 0, 0, 0]);
@@ -3030,20 +3086,10 @@ mod tests {
                 signal: signal::SIGINT
             })
         );
-        assert!(!crate::console::is_foreground(reader));
-    }
-
-    #[test]
-    fn a_process_that_ended_never_stays_the_console_s_foreground() {
-        let _console = ConsoleForTest::take();
-        let kernel = kernel_tables();
-        let process = process_with_iovecs(&kernel, b"", &[]);
-        let thread = take_first_thread(&process);
-        process.exit(ProcessExit::Exited(0));
-        terminal::become_foreground(&process, &thread);
-        let reader = crate::console::reader_id(process.id().get(), thread.id());
-        assert!(!crate::console::is_foreground(reader));
-        assert_eq!(Arc::strong_count(&process), 1);
+        assert_eq!(
+            process_table::TABLE.lock().controlling_terminal(id),
+            Err(Errno::ENOTTY)
+        );
     }
 
     #[test]
@@ -3072,8 +3118,6 @@ mod tests {
         assert_eq!(ppoll(), (1, 0, OUT));
         console.types(b"\r");
         assert_eq!(ppoll(), (2, IN | RDNORM, OUT | IN));
-        let reader = crate::console::reader_id(process.id().get(), process.id().get());
-        assert!(crate::console::is_foreground(reader));
         assert_eq!(process.exit_status(), None);
     }
 
@@ -5400,21 +5444,26 @@ mod tests {
     }
 
     #[test]
-    fn execve_forgets_the_console_s_foreground_so_the_old_program_is_freed() {
+    fn execve_keeps_the_process_s_place_in_the_table_and_frees_the_old_program() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let process = process_for_status(&kernel);
+        let id = process.id().get();
         let mut thread = take_first_thread(&process);
-        terminal::become_foreground(&process, &thread);
-        let reader = crate::console::reader_id(process.id().get(), thread.id());
-        assert!(crate::console::is_foreground(reader));
+        wait::record_running(&process, &thread, |_, _| {});
+        process_table::TABLE.lock().set_child_subreaper(id, true);
         let path = at_path(&process, b"/usr/libexec/program");
         let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
-        assert!(!crate::console::is_foreground(reader));
         assert_eq!(Arc::strong_count(&process), 1);
-        terminal::become_foreground(&current, &thread);
-        assert!(crate::console::is_foreground(reader));
-        crate::console::forget_foreground(current.id().get());
+        let table = process_table::TABLE.lock();
+        assert_eq!(table.group_and_session(id), Some((id, id)));
+        assert!(table.is_child_subreaper(id));
+        assert_eq!(
+            table.members(id)[0].process.upgrade().map(|image| image
+                .downcast::<Process<P>>()
+                .is_ok_and(|image| Arc::ptr_eq(&image, &current))),
+            Some(true)
+        );
     }
 
     #[test]
@@ -5829,7 +5878,7 @@ mod tests {
             );
         }
         assert!(!process.has_ended());
-        assert!(process.children().is_empty());
+        assert!(!has_children(&process));
         assert!(process.remove_thread(), "a refused clone counted a thread");
     }
 
@@ -5850,7 +5899,7 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         assert_eq!(call(&process, number::FORK, [0; 6]), Errno::ENOMEM.result());
         assert_eq!(free(), before);
-        assert!(process.children().is_empty());
+        assert!(!has_children(&process));
         let mut kept = [0u8; 4];
         process.read_user_memory(SCRATCH, &mut kept).unwrap();
         assert_eq!(&kept, b"kept");
@@ -5873,7 +5922,7 @@ mod tests {
         assert!(mmap(private) < Errno::EINVAL.result());
         assert!(mmap(shared) < Errno::EINVAL.result());
         assert_eq!(fork(), Errno::ENOSYS.result());
-        assert!(process.children().is_empty());
+        assert!(!has_children(&process));
     }
 
     #[test]
@@ -5927,7 +5976,9 @@ mod tests {
     ) -> (Arc<Process<P>>, LinuxThread) {
         let first = take_first_thread(parent);
         let child = Arc::new(parent.new_child(memory).unwrap());
-        parent.add_child(&child, 17).unwrap();
+        process_table::TABLE
+            .lock()
+            .set_exit_signal(child.id().get(), 17);
         child.add_thread();
         let thread = first.new_process_thread(
             child.id().get(),
@@ -5961,19 +6012,233 @@ mod tests {
             child.signals().lock().action(signal::SIGUSR1),
             parent.signals().lock().action(signal::SIGUSR1)
         );
+        let wait4 = |pid: i64, options| {
+            let arguments = [pid as u64, SCRATCH, options, SCRATCH + 8, 0, 0];
+            call(&parent, number::WAIT4, arguments)
+        };
+        let child_id = u64::from(child.id().get());
+        assert_eq!(wait4(-1, 1), 0);
+        assert_eq!(wait4(-1, 0x100), Errno::EINVAL.result());
+        assert_eq!(wait4(i64::from(i32::MIN), 1), Errno::ESRCH.result());
         let mut context = called(number::EXIT_GROUP, [0x115, 0, 0, 0, 0, 0]);
         assert_eq!(
             handle(&child, &mut thread, &mut context, UserExit::Syscall),
             ControlFlow::Break(())
         );
-        let [state] = parent.children()[..] else {
-            panic!("not one child");
-        };
-        assert_eq!(state.exit, Some(ProcessExit::Exited(0x15)));
-        assert_eq!(state.exit_signal, 17);
-        assert!(!state.freed);
         drop((child, thread));
-        assert!(parent.children()[0].freed);
+        let waitid = |options| call(&parent, number::WAITID, [0, 0, SCRATCH, options, 0, 0]);
+        assert_eq!(waitid(1), Errno::EINVAL.result());
+        assert_eq!(waitid(2 | 1), Errno::ECHILD.result());
+        assert_eq!(wait4(child_id as i64 + 1, 1), Errno::ECHILD.result());
+        assert_eq!(wait4(-1, 0x8000_0000), Errno::ECHILD.result());
+        parent.write_user_memory(SCRATCH + 8, &[0xff; 144]).unwrap();
+        assert_eq!(wait4(0, 0), child_id);
+        assert_eq!(read_bytes(&parent, SCRATCH, 4), 0x1500u32.to_ne_bytes());
+        assert_eq!(read_bytes(&parent, SCRATCH + 8, 144), [0; 144]);
+        assert_eq!(wait4(-1, 1), Errno::ECHILD.result());
+    }
+
+    fn has_children(process: &Process<P>) -> bool {
+        use process_table::{ChildKind, Ends, Found, Selector};
+        let id = process.id().get();
+        process_table::TABLE
+            .lock()
+            .wait(id, Selector::Any, ChildKind::All, Ends::Report)
+            != Found::NoChild
+    }
+
+    #[test]
+    fn a_blocking_wait_wakes_as_a_child_ends_and_its_parent_takes_sigchld() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::thread::start::<P>().unwrap();
+        let (parent, _) = process_with_stacks(&kernel);
+        register_running(&parent);
+        block_signals(&parent, 1 << (signal::SIGCHLD - 1));
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        static WAITED: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+        let waiter = crate::thread::spawn::<P, _>({
+            let parent = Arc::clone(&parent);
+            move || {
+                let infop = SCRATCH + 0x100;
+                let arguments = [0, 0, infop, 4, 0, 0];
+                let result = call(&parent, number::WAITID, arguments);
+                assert_eq!(read_bytes(&parent, infop, 4), 17u32.to_ne_bytes());
+                assert_eq!(read_bytes(&parent, infop + 8, 4), 1u32.to_ne_bytes());
+                assert_eq!(read_bytes(&parent, infop + 24, 4), 9u32.to_ne_bytes());
+                *WAITED.lock().unwrap() = Some(result);
+            }
+        })
+        .unwrap();
+        for _ in 0..4 {
+            crate::thread::yield_now::<P>();
+        }
+        assert_eq!(*WAITED.lock().unwrap(), None);
+        let mut context = called(number::EXIT_GROUP, [9, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&child, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        waiter.join::<P>();
+        assert_eq!(*WAITED.lock().unwrap(), Some(0));
+        assert_eq!(
+            blocked_pending(&parent, &mut take_first_thread(&parent)) & (1 << 16),
+            1 << 16
+        );
+        assert!(!has_children(&parent));
+    }
+
+    #[test]
+    fn a_wait_for_a_running_child_ends_as_another_thread_ends_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::thread::start::<P>().unwrap();
+        let (parent, _) = process_with_stacks(&kernel);
+        register_running(&parent);
+        let (_child, _thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        parent.add_thread();
+        static WAIT_ENDED: std::sync::Mutex<Option<ControlFlow<()>>> = std::sync::Mutex::new(None);
+        let waiter = crate::thread::spawn::<P, _>({
+            let parent = Arc::clone(&parent);
+            move || {
+                let mut context = called(number::WAIT4, [u64::MAX, 0, 0, 0, 0, 0]);
+                let flow = handle_first(&parent, &mut context, UserExit::Syscall);
+                *WAIT_ENDED.lock().unwrap() = Some(flow);
+            }
+        })
+        .unwrap();
+        for _ in 0..4 {
+            crate::thread::yield_now::<P>();
+        }
+        assert_eq!(*WAIT_ENDED.lock().unwrap(), None);
+        let _ = end_process::<P, ()>(&parent, ProcessExit::Exited(0));
+        waiter.join::<P>();
+        assert_eq!(*WAIT_ENDED.lock().unwrap(), Some(ControlFlow::Break(())));
+    }
+
+    #[test]
+    fn children_of_a_parent_ignoring_sigchld_are_reaped_as_they_end() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (parent, _) = process_with_stacks(&kernel);
+        register_running(&parent);
+        ignore(&parent, u64::from(signal::SIGCHLD));
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        assert!(has_children(&parent));
+        let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
+        let _ = handle(&child, &mut thread, &mut context, UserExit::Syscall);
+        assert!(!has_children(&parent));
+        let wait4 = [u64::MAX, 0, 0, 0, 0, 0];
+        assert_eq!(call(&parent, number::WAIT4, wait4), Errno::ECHILD.result());
+    }
+
+    #[test]
+    fn an_orphan_goes_to_the_subreaper_and_groups_and_sessions_follow_the_calls() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (reaper, reaper_id) = process_with_stacks(&kernel);
+        register_running(&reaper);
+        assert_eq!(call(&reaper, number::PRCTL, [36, 1, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&reaper, number::PRCTL, [37, SCRATCH, 0, 0, 0, 0]), 0);
+        assert_eq!(read_bytes(&reaper, SCRATCH, 4), 1u32.to_ne_bytes());
+        assert_eq!(
+            call(&reaper, number::PRCTL, [15, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        let (middle, mut middle_thread) = child_thread(&reaper, process::ChildMemory::Copied, 0);
+        let middle_id = u64::from(middle.id().get());
+        let mut first = middle_thread;
+        let orphan = Arc::new(middle.new_child(process::ChildMemory::Copied).unwrap());
+        process_table::TABLE
+            .lock()
+            .set_exit_signal(orphan.id().get(), 17);
+        let orphan_id = u64::from(orphan.id().get());
+        let mut orphan_thread = first.new_process_thread(
+            orphan.id().get(),
+            0,
+            first.files().copy().unwrap(),
+            first.working_directory().copy(),
+            true,
+        );
+        orphan.add_thread();
+        let call_in = |process: &Arc<Process<P>>, thread: &mut LinuxThread, number, arguments| {
+            call_as(process, thread, number, arguments)
+        };
+        assert_eq!(
+            call_in(&orphan, &mut orphan_thread, number::GETPPID, [0; 6]),
+            middle_id
+        );
+        assert_eq!(
+            call_in(
+                &middle,
+                &mut first,
+                number::SETPGID,
+                [orphan_id, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call_in(&orphan, &mut orphan_thread, number::GETPGID, [0; 6]),
+            orphan_id
+        );
+        assert_eq!(
+            call_in(
+                &middle,
+                &mut first,
+                number::GETPGID,
+                [orphan_id, 0, 0, 0, 0, 0]
+            ),
+            orphan_id
+        );
+        assert_eq!(
+            call_in(&orphan, &mut orphan_thread, number::SETSID, [0; 6]),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call_in(&middle, &mut first, number::SETSID, [0; 6]),
+            middle_id
+        );
+        assert_eq!(
+            call_in(&middle, &mut first, number::GETSID, [0; 6]),
+            middle_id
+        );
+        assert_eq!(
+            call_in(&orphan, &mut orphan_thread, number::GETSID, [0; 6]),
+            reaper_id
+        );
+        assert_eq!(
+            call_in(
+                &middle,
+                &mut first,
+                number::SETPGID,
+                [orphan_id, middle_id, 0, 0, 0, 0]
+            ),
+            Errno::EPERM.result()
+        );
+        assert_eq!(
+            call_in(
+                &middle,
+                &mut first,
+                number::IOCTL,
+                [0, 0x540f, SCRATCH, 0, 0, 0]
+            ),
+            Errno::ENOTTY.result()
+        );
+        let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
+        let _ = handle(&middle, &mut first, &mut context, UserExit::Syscall);
+        assert_eq!(
+            call_in(&orphan, &mut orphan_thread, number::GETPPID, [0; 6]),
+            reaper_id
+        );
+        middle_thread = first;
+        drop((middle, middle_thread));
+        let mut context = called(number::EXIT_GROUP, [4, 0, 0, 0, 0, 0]);
+        let _ = handle(&orphan, &mut orphan_thread, &mut context, UserExit::Syscall);
+        let wait4 = |pid: u64| call(&reaper, number::WAIT4, [pid, SCRATCH, 0, 0, 0, 0]);
+        assert_eq!(wait4(orphan_id), orphan_id);
+        assert_eq!(read_bytes(&reaper, SCRATCH, 4), 0x400u32.to_ne_bytes());
+        assert_eq!(wait4(middle_id), middle_id);
+        assert_eq!(wait4(u64::MAX), Errno::ECHILD.result());
     }
 
     #[test]

@@ -12,8 +12,10 @@
 //! [`exec::EXEC`], it starts a copy of itself from the initramfs with `execve`
 //! ([`exec::exec_into_a_checking_copy`]), which [`exec::EXEC_CHECK`] makes check what it got
 //! ([`exec::check_after_exec`]). Given [`processes::PROCESSES`], it starts child processes
-//! ([`processes::create_processes`]).
+//! ([`processes::create_processes`]). Given [`children::CHILDREN`], it waits for its children
+//! and moves processes between groups and sessions ([`children::wait_for_children`]).
 
+mod children;
 mod console;
 mod descriptors;
 mod exec;
@@ -153,6 +155,7 @@ fn main() -> ExitCode {
         Some(exec::EXEC_CHECK) => return exec::check_after_exec(),
         Some(processes::PROCESSES) => return processes::create_processes(),
         Some(processes::SPAWNED_BY_VFORK) => return processes::spawned_by_vfork(),
+        Some(children::CHILDREN) => return children::wait_for_children(),
         _ => {}
     }
     let mut output = std::io::stdout().lock();
