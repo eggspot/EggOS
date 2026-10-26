@@ -6002,3 +6002,80 @@ the license, by an explicit instruction recorded here.
   selection, the kernel's messages (a panic) on the screen, rendering from a snapshot so a
   writer never waits for a render, a sleeping display lock, the terminal capability's CLI and
   MCP front-ends (M10).
+
+## D115 The minimal desktop: wallpaper, top bar, power menu and the terminal's window — Decided by the build loop (the window's clamp and the clock's format decided by research; the cuts decided from the brief's item 9 order, D109)
+- **What.** v0.3.0 item 14 (docs/ux/desktop-v0.3.md sections 3 to 6): the console's graphical
+  terminal (D114) now sits in the desktop's 80x24 terminal window instead of filling the
+  screen. `eggos_drivers::desktop::Desktop` holds the desktop's state and paints any rectangle
+  of it from scratch, with no device and no allocation after it is made (the wallpaper's
+  per-row gradient and egg tables, 9.6 KiB at 1280x800): the gradient wallpaper with the egg and
+  the yolk, the window's shadow (the brief's `half`/`quarter`/`eighth` shifts on four rings),
+  the window's rounded border, title bar, disabled close control, minimise control and centred
+  title, the top bar with the egg mark, `EggOS`, the clock and the power button, the minimised
+  window's chip, and the power menu (`Power off`, `Restart`, by pointer or Up/Down/Enter, Esc
+  closes). The kernel's drawing thread (`kernel/src/terminal.rs`) takes the input events the
+  layer queued (D113: `input::subscribe` in an interactive session), hands them to the desktop,
+  repaints the rectangles they damaged, invalidates the terminal when one of them reaches its
+  grid, renders the terminal into the window's grid while nothing covers it, and flushes. The
+  power menu's actions go through `take_machine_down`, the path `reboot(2)` takes for
+  `poweroff` and `reboot`: the GUI front-end of the power capability whose CLI already exists
+  (D22's MCP tool comes with the MCP server).
+- **Placement and names.** The desktop's logic and drawing are in `eggos-drivers`
+  (`drivers/src/desktop`, beside `terminal` and `font`), so host tests, the kernel and xtask's
+  expected picture share every byte of drawing code, as D114 did for the terminal. They run in
+  the kernel's drawing thread in 0.3.0 (D109); a userland compositor is M11's.
+- **Focus and keys.** The window is focused at boot. A button-down in the window focuses it, on
+  its title bar (outside the controls) starts a drag, on the wallpaper unfocuses it. The keys
+  typed on input devices reach the console only while the window is focused, shown and no menu
+  is open (`terminal::keys_go_to_console`, one relaxed load on the poller's path); the serial
+  console is never gated. The grid and `TIOCGWINSZ` are now 80x24, the serial console's size,
+  which closes D114's "158x49 against the serial side's 80x24" follow-up.
+- **Window clamp (decided by research).** The brief keeps 48 px of the title bar on screen;
+  the terminal engine renders straight into the framebuffer and refuses a grid that is not
+  wholly on it (its scroll moves pixels unclipped), and a backing buffer for the window would
+  cost 960 KiB (against D24). In 0.3.0 the dragged window stays wholly on screen and below
+  the bar; clipped terminal rendering, which maximising needs too, is a follow-up.
+- **Clock (decided by research).** No RTC yet (D73), so the clock shows the uptime in
+  `text.dim`, as the brief says, from the platform's clock ticks: `up m:ss`, `up h:mm:ss` from
+  an hour, `up 10h 05m` from ten hours, `up 4d 03h` from a hundred hours, `up 100d` from a
+  hundred days, as `uptime`, htop and Task Manager grow by unit. Its rectangle holds ten
+  glyphs (80x16, centred) rather than the brief's seven, so every form fits. The input poller,
+  which runs every 8 to 32 ms, asks for a frame when the second changes or when it queued
+  events (`terminal::tick`); a machine with a display and no input device keeps the clock
+  where it was drawn. A self-test session (`terminal::Session::SelfTest`) takes no input and
+  keeps the clock at `up 0:00`, so its picture is the same on every boot (the brief's
+  `eggos.ui=test`, without a boot parameter).
+- **Cut from item 14, in the brief's order (left for follow-ups).** The boot screen's logo,
+  name and progress and its `fb: boot` hash (the first frame stays the plain `wallpaper.top`
+  of D112, replaced by the desktop once init starts); double-click to maximise; hover glyphs
+  and hover colours; the pointer (the virtio-gpu cursor queue, or software drawing); the
+  `cargo xtask screenshot` command; a 2x scale and the phone layout (the layout is computed
+  from the screen's size, never from 1280x800). A display too small for the window (below
+  658x458) gets no graphical terminal, as one too small for a cell did before.
+- **Testing.** Host tests: the window's default place at 1280x800 and 1024x768 and the grid's,
+  the tokens at chosen pixels (gradient, egg, yolk, bar, edge, egg mark, the border's corner
+  inset, the title bar, both controls, the content, the shadow's first ring), the whole
+  desktop's FNV-1a hash, painting in 80 rectangles equal to painting the whole screen, drag and
+  its clamp, focus, minimise and restore through the chip, the disabled close control, the power
+  menu by pointer and keys, the clock's forms and its damage, the egg's square roots. QEMU, all
+  three: the self-test `terminal_draws_on_the_display` checks the desktop with the SGR screen in
+  its window against the host's hash; the boot-to-prompt test requires `boot: terminal 80x24`,
+  compares QEMU's `screendump` pixel for pixel with the host's desktop and terminal render of the
+  serial bytes (any clock from `up 0:00` to `up 1:59`) at the first prompt and after the line
+  typed on the virtio keyboard, then, through QMP's tablet and button events, minimises the
+  window (the chip shows, the window's place shows the wallpaper), restores it from the chip
+  and drags it 100 px right and down by its title bar, checking the whole frame each time.
+- **Cost.** Measured on this Mac (QEMU 10.2, release builds) against `main`'s sizes recorded in
+  D114. The release kernel's loaded size (text + data + bss) grows by 16.2 KiB on aarch64
+  (571504 to 588120 bytes), 13.4 KiB on riscv64 (512192 to 525932) and 17.4 KiB on x86_64
+  (598460 to 616228): the desktop's drawing and state and the kernel's event glue; no new
+  static data beyond two atomics. Memory at run time, only with a display: the terminal is
+  80x24 instead of 158x49, so each of its two screens is 7,680 bytes instead of 30,968 and
+  the scrollback 81,920 bytes (a 128 KiB block) instead of 161,792 (256 KiB), and the desktop
+  adds its 9.6 KiB of row tables.
+  Boot to prompt (QEMU's start to the first prompt, xtask's 20 ms console poll): aarch64 54 ms,
+  riscv64 90 and 90, x86_64 144 then 117, against D114's 59-60, 77-145 (82 median) and
+  113-129 (117): within the measurement's noise; the boot path paints the whole desktop once
+  where it filled the screen once. Benchmarks (`cargo xtask bench --arch all`): no gated
+  benchmark moved beyond its gate, none of them runs the desktop, and no baseline line changed.
+  A full-desktop redraw benchmark (`gfx_desktop_full`) is a follow-up.
