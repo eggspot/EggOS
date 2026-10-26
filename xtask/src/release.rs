@@ -186,7 +186,7 @@ for argument in "$@"; do
     *) echo "$usage" >&2; exit 2 ;;
   esac
 done
-dir=$(cd "$(dirname "$0")" && pwd)
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 file="eggos-$version-$arch.elf"
 image="$dir/$file"
 if [ ! -f "$image" ]; then
@@ -213,6 +213,8 @@ if [ -f "$dir/{SUMS_FILE}" ]; then
     echo "run-eggos.sh: $file does not match its checksum in {SUMS_FILE}: download it again" >&2
     exit 1
   fi
+else
+  echo "run-eggos.sh: no {SUMS_FILE} next to this script: the checksum was not verified" >&2
 fi
 qemu="qemu-system-$arch"
 if ! command -v "$qemu" >/dev/null 2>&1; then
@@ -265,29 +267,32 @@ if (-not $Arch) {{
 }}
 $File = "eggos-$Version-$Arch.elf"
 $Image = Join-Path $PSScriptRoot $File
-if (-not (Test-Path $Image)) {{
+if (-not (Test-Path -LiteralPath $Image)) {{
     Write-Error "run-eggos.ps1: $File not found: download it next to this script"
     exit 1
 }}
 $Sums = Join-Path $PSScriptRoot '{SUMS_FILE}'
-if (Test-Path $Sums) {{
-    $line = Get-Content $Sums | Where-Object {{ $_.EndsWith("  $File") }} | Select-Object -First 1
+if (Test-Path -LiteralPath $Sums) {{
+    $line = Get-Content -LiteralPath $Sums | Where-Object {{ $_.EndsWith("  $File") }} | Select-Object -First 1
     if (-not $line) {{
         Write-Error "run-eggos.ps1: $File is not listed in {SUMS_FILE}"
         exit 1
     }}
     $expected = $line.Substring(0, 64)
-    $actual = (Get-FileHash -Algorithm SHA256 -Path $Image).Hash.ToLowerInvariant()
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Image).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {{
         Write-Error "run-eggos.ps1: $File does not match its checksum in {SUMS_FILE}: download it again"
         exit 1
     }}
     Write-Host "run-eggos.ps1: ${{File}}: checksum OK"
+}} else {{
+    Write-Warning "run-eggos.ps1: no {SUMS_FILE} next to this script: the checksum was not verified"
 }}
 $Qemu = "qemu-system-$Arch"
 if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
-    $installed = Join-Path $env:ProgramFiles "qemu\$Qemu.exe"
-    if ($env:ProgramFiles -and (Test-Path $installed)) {{
+    $installed = $null
+    if ($env:ProgramFiles) {{ $installed = Join-Path $env:ProgramFiles "qemu\$Qemu.exe" }}
+    if ($installed -and (Test-Path -LiteralPath $installed)) {{
         $Qemu = $installed
     }} else {{
         Write-Error "run-eggos.ps1: $Qemu not found: install QEMU (https://www.qemu.org/download/) and add it to PATH"

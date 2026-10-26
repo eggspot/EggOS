@@ -21,7 +21,10 @@ holds what used to be written in them.
   `// SAFETY:` comment (repo rule). `clippy::multiple_unsafe_ops_per_block` is denied, so each
   `// SAFETY:` comment justifies exactly one operation.
 - **Release profile** (`lto = true`, `codegen-units = 1`): what we measure and ship
-  (`CLAUDE.md`, "The target: the fastest OS"). Both profiles use `panic = "abort"`.
+  (`CLAUDE.md`, "The target: the fastest OS"). Both profiles use `panic = "abort"`. Release
+  builds keep their symbols (for `llvm-objdump` and `llvm-nm`) but no debug information
+  (`strip = "debuginfo"`): DWARF was 2.5 MB of each 3-4 MB image and carried the builder's
+  checkout path, which made `release_image_bytes` depend on where the repository lives (D116).
 
 ## Cargo configuration (`.cargo/config.toml`)
 - **`cargo xtask`** is an alias that runs the `xtask` package: host-side developer commands
@@ -147,7 +150,7 @@ holds what used to be written in them.
   `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
   (`-Serial`); a host test checks they match. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
-  `Get-FileHash` (refusing a mismatch, warning when no tool is found), and looks for
+  `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
   kind of shell and PowerShell file in the repository, generated, never committed, and hold no
   comments. **`cargo xtask screenshot --arch <arch>`** boots the release image headless with

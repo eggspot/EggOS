@@ -17,7 +17,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 
 ## What the system can do
 - **No disk and no network.** The only file system is the read-only initramfs inside the
-  image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd` and `/etc/hostname`.
+  image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
+  `/usr/share/eggos/about`.
   Nothing can be written, and nothing you do survives a reboot (D102).
 - **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
   desktop's clock shows the uptime (D73, D115).

@@ -14,13 +14,14 @@ AI-native operating system written from scratch in Rust, with its own kernel (no
 EggOS is open source and open for funding. If you want to help build it, [sponsor EggOS on GitHub Sponsors](https://github.com/sponsors/eggspot).
 
 ## Try EggOS
-EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop.
+EggOS is pre-alpha: it boots in QEMU only, to a shell on a minimal desktop. These steps apply
+from v0.3.0, the first release with the desktop, `SHA256SUMS` and the run scripts.
 
 ![The EggOS desktop: the top bar, the wallpaper and the shell in a terminal window](docs/images/desktop.png)
 
 1. Install [QEMU](https://www.qemu.org/download/) (macOS: `brew install qemu`; Debian or Ubuntu:
    `sudo apt install qemu-system`; Windows: the QEMU installer, with its folder on `PATH`).
-2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest), download into one
+2. From the [latest release](https://github.com/eggspot/EggOS/releases/latest) (v0.3.0 or later), download into one
    folder the image for your machine (`eggos-<version>-aarch64.elf`, `-riscv64.elf` or
    `-x86_64.elf`), `SHA256SUMS`, and `run-eggos.sh` (macOS, Linux) or `run-eggos.ps1` (Windows).
 3. Run the script. It picks your machine's architecture, checks the image against `SHA256SUMS`

@@ -6104,7 +6104,7 @@ the license, by an explicit instruction recorded here.
 - **Checksums.** Our own SHA-256 (FIPS 180-4; tested on the FIPS examples, a million `a`s and
   the padding's block boundaries). The scripts verify the image's line with `sha256sum`,
   `shasum -a 256` or `Get-FileHash` before booting, refuse a mismatch or a missing line, and
-  warn when no tool exists.
+  warn when no tool exists or no `SHA256SUMS` lies next to the script.
 - **Boot to prompt in the benchmarks (decided by research).** The boot-to-prompt test's
   wall-clock time (QEMU's start to the first prompt) varies by tens of percent between runs
   and hosts, so it cannot carry a 1% gate (D27). `cargo xtask bench` instead boots a release
@@ -6126,8 +6126,12 @@ the license, by an explicit instruction recorded here.
 - **Image size in the benchmarks (decided by research).** `release_image_bytes`, the shipped
   ELF's size, is gated exactly: CLAUDE.md note 8 says the base may only shrink, so any growth
   fails until the PR updates the line and justifies it, as D78 does for time.
-  CI's aarch64 and riscv64 images are 8 bytes smaller than this Mac's (x86_64's are equal);
-  the baseline keeps the Mac's sizes, so both hosts pass and CI's gate is 8 bytes loose.
+  The images first carried 2.5 MB of DWARF each (`debug = 1` in the release profile), whose
+  compile directory, the builder's checkout path, made CI's aarch64 and riscv64 images 8
+  bytes smaller than this Mac's, so an exact gate would fail on any other path. Nothing in the
+  kernel, the tests or xtask reads DWARF (the benchmark investigations use symbols, with
+  `llvm-objdump` and `llvm-nm`), so the release profile now has `strip = "debuginfo"`: symbols
+  stay, no host path remains in the images, and the download shrinks about 5x (note 9).
 - **Screenshot.** `cargo xtask screenshot --arch <arch>` boots the release image headless,
   types `uname -a` and `ls /bin`, checks the display against the host's render (as the
   boot-to-prompt test does), and saves QMP's `screendump` as `docs/images/desktop.png` with our
@@ -6137,15 +6141,21 @@ the license, by an explicit instruction recorded here.
   Huffman tables were needed (stored blocks would have been 3 MiB). A host test inflates the
   output with a fixed-Huffman decoder.
 - **CI.** No new step: `cargo xtask release` boots every architecture again, more than the
-  minute the item allowed; the scripts' content is covered by host tests, and `cargo xtask
-  bench` already builds and boots the release kernel's paths.
-- **Measured** on this Mac (QEMU 10.2, release builds). Images: aarch64 3,290,704 bytes,
-  riscv64 4,219,064, x86_64 3,138,864 (the new `release_image_bytes` lines). Boot to prompt
+  minute the item allowed; the scripts' content is covered by host tests. The new benchmark
+  lines cost CI time (public repository, so build time is what counts): the Benchmarks step went
+  from 1m58s to 3m30s and the check job from 6m20s to 8m37s (Clippy on the kernel targets
+  +12 s for the new feature). Nearly all of the step's growth is one LTO build per architecture
+  of the `qemu-boot-clock` kernel; its boot is about a second. Accepted: the only way to skip
+  that build is a clock in the shipped image switched on at boot, which needs a kernel
+  command line the kernel does not parse yet (a follow-up); a clock the user's image carries
+  always would print on every user's console.
+- **Measured** on this Mac (QEMU 10.2, release builds). Images without debug information:
+  aarch64 700,192 bytes, riscv64 797,688, x86_64 602,336 (the new `release_image_bytes`
+  lines; 3,290,704, 4,219,064 and 3,138,864 with it). Boot to prompt
   under `-icount`: aarch64 1,011,024 ns, riscv64 839,900, x86_64 1,643,938 here, CI's
   1,007,440, 831,400 and 1,312,500 in the `boot_to_prompt` lines; wall clock with the
   display, from `cargo xtask release`: 85, 90 and 133 ms. The release kernel's code is unchanged (the clock exists only with the feature), so
   no existing benchmark moved beyond its gate and no other baseline line changed. The
   committed screenshot is 27,482 bytes.
-- **Follow-ups.** Strip symbols from the shipped image (it carries the kernel's symbol table);
-  run the PowerShell script in the Windows CI job; generate the what's-new section from the
-  merged PRs.
+- **Follow-ups.** Run the PowerShell script in the Windows CI job; generate the what's-new
+  section from the merged PRs.
