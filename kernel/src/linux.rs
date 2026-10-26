@@ -953,7 +953,9 @@ fn exit<P: Platform>(
 #[inline(never)]
 pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
     let others = process.threads() > 1;
-    process.exit(how);
+    if !process.exit(how) {
+        return ControlFlow::Break(());
+    }
     crate::console::forget_foreground(process.id().get());
     if others {
         futex::wake_space::<P>(process.id().get());

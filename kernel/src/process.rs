@@ -1082,26 +1082,43 @@ impl<P: Platform> Process<P> {
     }
 
     /// Records how the process ended, unless it already has: the first to end it wins (say,
-    /// two threads calling `exit_group`). Its other threads stop running its program: each
-    /// other CPU is asked to look at its scheduler, which a thread of the process does before
-    /// it runs the program again (see [`spawn`]), and a CPU running one in user mode is
-    /// interrupted.
-    pub fn exit(&self, how: ProcessExit) {
-        self.exit.lock().get_or_insert(how);
-        self.ended.store(true, Ordering::Relaxed);
-        if self.threads() > 1 {
+    /// two threads calling `exit_group`), and an `execve` that ended it ([`Self::end_for_exec`])
+    /// leaves the record to the program it started. Its other threads stop running its program:
+    /// each other CPU is asked to look at its scheduler, which a thread of the process does
+    /// before it runs the program again (see [`spawn`]), and a CPU running one in user mode is
+    /// interrupted. Returns whether this call ended it.
+    pub fn exit(&self, how: ProcessExit) -> bool {
+        let ended = {
+            let mut exit = self.exit.lock();
+            let ended = !self.ended.load(Ordering::Relaxed);
+            if ended {
+                exit.get_or_insert(how);
+                self.ended.store(true, Ordering::Relaxed);
+            }
+            ended
+        };
+        if ended && self.threads() > 1 {
             interrupt_other_cpus::<P>();
         }
+        ended
     }
 
     /// Ends the process's program for an `execve` in it, which goes on in a process of its own
     /// ([`Self::new_image`]) with the same record of how it ends, so nothing is recorded:
-    /// its threads stop as [`Self::exit`] stops them.
-    pub fn end_for_exec(&self) {
-        self.ended.store(true, Ordering::Relaxed);
+    /// its threads stop as [`Self::exit`] stops them. Returns `false`, changing nothing, if the
+    /// process has ended already (another thread's `exit_group` or a fatal signal came first).
+    pub fn end_for_exec(&self) -> bool {
+        {
+            let _exit = self.exit.lock();
+            if self.ended.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.ended.store(true, Ordering::Relaxed);
+        }
         if self.threads() > 1 {
             interrupt_other_cpus::<P>();
         }
+        true
     }
 
     /// Whether the process has ended ([`Self::exit`]): its threads stop instead of running its

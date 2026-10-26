@@ -579,6 +579,9 @@ fn execute<P: Platform>(
 ) -> ControlFlow<()> {
     match prepare(process, thread, request) {
         Ok(prepared) => {
+            if !process.end_for_exec() {
+                return ControlFlow::Break(());
+            }
             start(process, thread, context, prepared);
             signals::deliver(process, thread, context)
         }
@@ -679,9 +682,7 @@ fn start<P: Platform>(
     let id = process.id().get();
     let signals = process.signals().lock().take_for_exec(thread.id(), id);
     *image.signals().lock() = signals;
-    let others = process.threads() > 1;
-    process.end_for_exec();
-    if others {
+    if process.threads() > 1 {
         futex::wake_space::<P>(id);
         crate::console::wake_input_waiters::<P>();
     }
