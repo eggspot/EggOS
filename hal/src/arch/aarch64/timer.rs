@@ -5,9 +5,8 @@
 use super::DIRECT_MAP_OFFSET;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::{AtomicU64, Ordering};
-use eggos_drivers::interrupt::gicv2::{
-    self, Acknowledged, Gicv2CpuInterface, Gicv2Distributor, Trigger,
-};
+pub(super) use eggos_drivers::interrupt::gicv2::Acknowledged;
+use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::io::Mmio;
 
 /// QEMU `virt` (`-machine gic-version=2`): GICv2 distributor and CPU interface. Device-tree

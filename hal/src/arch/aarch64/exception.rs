@@ -1304,12 +1304,12 @@ fn irq(pc: u64) {
         return; // Spurious: the interrupt went away before it was acknowledged.
     };
     let id = interrupt.id();
+    if id == timer::UART0_INTERRUPT {
+        return console_input(interrupt);
+    }
     let timer_fired = id == timer::VIRTUAL_TIMER_INTERRUPT && timer::expired();
     if timer_fired {
         timer::disarm();
-    }
-    if id == timer::UART0_INTERRUPT {
-        crate::interrupt::deliver(Interrupt::ConsoleInput);
     }
     timer::end_of_interrupt(interrupt);
     match id {
@@ -1320,7 +1320,6 @@ fn irq(pc: u64) {
             }
         }
         timer::WAKEUP_SGI => crate::interrupt::deliver(Interrupt::Wakeup),
-        timer::UART0_INTERRUPT => {}
         _ => deliver(&Exception {
             kind: ExceptionKind::Interrupt,
             name: "unexpected IRQ",
@@ -1329,6 +1328,15 @@ fn irq(pc: u64) {
             address: None,
         }),
     }
+}
+
+/// Hands UART0's interrupt to the kernel, then ends it. Out of line, so the trap paths that
+/// inline [`irq`] keep their length.
+#[cold]
+#[inline(never)]
+fn console_input(interrupt: timer::Acknowledged) {
+    crate::interrupt::deliver(Interrupt::ConsoleInput);
+    timer::end_of_interrupt(interrupt);
 }
 
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's

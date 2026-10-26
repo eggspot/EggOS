@@ -82,6 +82,10 @@ pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
 }
 
 /// Queues every byte the console's UART holds; called for [`eggos_hal::Interrupt::ConsoleInput`].
+/// Out of line, so the timer's and the wake-up's way through the interrupt handler keep their
+/// length.
+#[cold]
+#[inline(never)]
 pub fn receive_input<P: Platform>() {
     let mut chunk = [0u8; 64];
     let mut input = INPUT.lock();

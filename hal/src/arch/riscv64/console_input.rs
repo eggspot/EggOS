@@ -71,7 +71,10 @@ pub(super) fn enable(hart: u64, context: Option<usize>) -> Result<(), &'static s
 }
 
 /// Claims the pending external interrupt and handles it; returns the source when it was not
-/// UART0's, to be reported. The claim is completed after the kernel has read the UART.
+/// UART0's, to be reported. The claim is completed after the kernel has read the UART. Out of
+/// line, so the trap paths keep their length.
+#[cold]
+#[inline(never)]
 pub(super) fn interrupt() -> Option<u32> {
     let context = CONTEXT.load(Ordering::Relaxed);
     if context == NONE {
