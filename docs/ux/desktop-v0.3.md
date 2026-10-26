@@ -274,7 +274,7 @@ work area (the screen below the bar): x 311, y 199 at 1280x800; x 183, y 183 at 
 - Size: fixed at 80x24 in 0.3.0 (no resize handles). Double-click on the title bar (two
   button-downs within 400 ms and 4 px) toggles maximised: the window fills the work area with
   square corners and no shadow, the grid becomes `(w - 2 - 16) / 8` by `(h - 28 - 2 - 16) / 16`
-  cells (157x47 at 1280x800, 125x45 at 1024x768), the remainder of the padding goes right
+  cells, where w and h are the work area below the top bar (1280x772 and 1024x740), so 157x45 at 1280x800 and 125x43 at 1024x768, the remainder of the padding goes right
   and bottom, and the
   console's window size (`TIOCGWINSZ`, rows, cols, `ws_xpixel = cols*8`, `ws_ypixel =
   rows*16`) is updated at once; `SIGWINCH` to the foreground group follows when the kernel can
