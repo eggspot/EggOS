@@ -37,6 +37,13 @@ pub mod number {
     pub const SET_ROBUST_LIST: usize = 273;
     pub const PRLIMIT64: usize = 302;
     pub const GETRANDOM: usize = 318;
+    pub const RT_SIGPROCMASK: usize = 14;
+    pub const GETCWD: usize = 79;
+    pub const CHDIR: usize = 80;
+    pub const GETEUID: usize = 107;
+    pub const SETPGID: usize = 109;
+    pub const GETPGID: usize = 121;
+    pub const NEWFSTATAT: usize = 262;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -73,6 +80,13 @@ pub mod number {
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const GETRANDOM: usize = 278;
+    pub const GETCWD: usize = 17;
+    pub const CHDIR: usize = 49;
+    pub const NEWFSTATAT: usize = 79;
+    pub const RT_SIGPROCMASK: usize = 135;
+    pub const SETPGID: usize = 154;
+    pub const GETPGID: usize = 155;
+    pub const GETEUID: usize = 175;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno
