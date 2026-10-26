@@ -38,7 +38,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 26] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 28] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -94,6 +94,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 26] {
         ("linux_exec_load", linux_exec_load::<P>),
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
+        ("linux_dup3_close", linux_dup3_close::<P>),
+        ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
     ]
 }
 
@@ -158,9 +160,7 @@ fn breakpoint_round_trip<P: Platform>(n: u64) {
     }
 }
 
-/// Arming the one-shot timer for a deadline far ahead, so it never fires during the run.
 fn timer_arm<P: Platform>(n: u64) {
-    // Clamped so `far + i` cannot overflow, keeping the loop body a plain add.
     let far = P::clock_ticks()
         .saturating_add(P::clock_frequency().saturating_mul(3600))
         .min(u64::MAX - n);
@@ -169,13 +169,7 @@ fn timer_arm<P: Platform>(n: u64) {
     }
 }
 
-/// Arming the timer for a deadline already passed and sleeping until its interrupt has been
-/// handled: interrupt entry, acknowledgement, delivery to the kernel and the return (D26).
 fn timer_interrupt_round_trip<P: Platform>(n: u64) {
-    // This CPU's block, found once, so polling its count costs what polling a global did. The
-    // word of what the scheduler has not seen, read whole: nothing here runs the scheduler and
-    // no other CPU asks it to look (the benchmarks run on one), so it only grows by the timer
-    // interrupts.
     let this = cpu::current::<P>();
     for _ in 0..n {
         let before = this.unseen_by_scheduler();
@@ -459,13 +453,6 @@ fn linux_exec_load<P: Platform>(memory: &mut Memory<P>, n: u64) {
 /// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
-/// A page fault on a page the program touches for the first time (D52): the trap from user
-/// mode, the Linux layer's dispatch, the region looked up, a frame allocated, zeroed and
-/// mapped, this CPU's stale translation dropped, and the return to the program, which stores
-/// to the page and goes on to the next. The test program's `stack_growth` walks down a
-/// region of [`PAGE_FAULT_CHUNK`] pages until it runs off the end and is killed; starting
-/// each process and its thread, the final fault and freeing it all are timed too, amortized
-/// over the chunk.
 fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
     const TOP: u64 = 0x1000_0000;
     let mut left = n;
@@ -479,7 +466,6 @@ fn linux_page_fault<P: Platform>(memory: &mut Memory<P>, n: u64) {
             .add_region(TOP - pages * FRAME_SIZE, TOP, Attributes::USER_READ_WRITE)
             .expect("the region is in user space");
         let start = Process::<P>::test_program_context(|program| program.stack_growth).pc();
-        // Its stack pointer just below the top: the first store is to the region's last page.
         let context = UserContext::new(start, TOP - 16);
         let Ok(thread) = linux::spawn::<P>(Arc::new(program), context) else {
             return;
@@ -510,6 +496,30 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
                 .expect("the pages were just mapped");
         }
     });
+}
+
+fn linux_descriptor_lookup(n: u64) {
+    let files = linux::descriptors::Descriptors::with_console_streams();
+    for _ in 0..n {
+        let file = files
+            .file(black_box(1))
+            .expect("descriptor 1 is the console");
+        black_box(file.is_writable());
+    }
+}
+
+fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{self, Descriptors, open_flag};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    let flags = u64::from(open_flag::CLOEXEC);
+    for _ in 0..n {
+        let fd = descriptors::dup3(&program, &files, 1, black_box(3), flags)
+            .expect("descriptor 1 is open and 3 below the limit");
+        descriptors::close(&files, black_box(fd)).expect("descriptor 3 was just opened");
+    }
 }
 
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
@@ -588,8 +598,6 @@ mod tests {
     use core::sync::atomic::{AtomicU64, Ordering};
     use eggos_hal::{ExitStatus, Interrupt};
 
-    /// A platform whose clock advances one tick per read and whose timer fires on the next
-    /// wait, whatever its deadline.
     struct CountingPlatform;
 
     static CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -653,9 +661,6 @@ mod tests {
         ) -> eggos_hal::user::UserExit {
             let pc = context.pc();
             if pc == crate::process::TEST_PROGRAM_ADDRESS + 2 {
-                // `stack_growth`: a store to each page from the stack pointer's down, each
-                // faulting the first time. The stack pointer stands in for the walk: the kernel
-                // resolves the fault and runs the program again, which stores and moves on.
                 let page = context.stack() & !(FRAME_SIZE - 1);
                 *context = eggos_hal::user::UserContext::new(pc, page - FRAME_SIZE);
                 return context.simulate_exception(eggos_hal::Exception {
@@ -666,7 +671,6 @@ mod tests {
                     address: Some(page),
                 });
             }
-            // The test program's null system calls, and nothing else.
             let null = eggos_hal::user::TestProgram::SYSCALL_NULL;
             context.simulate_syscall(null, [0; 6], pc);
             UserExit::Syscall
@@ -741,7 +745,6 @@ mod tests {
             unsafe { crate::tests::TestPlatform::set_cpu_local(block) }
         }
         fn cpu_local() -> usize {
-            // The test machine's one CPU.
             crate::tests::TestPlatform::cpu_local()
         }
         fn wake_cpu(_cpu: u64) {
@@ -752,9 +755,6 @@ mod tests {
     #[test]
     fn prints_one_parsable_line_per_benchmark() {
         let _lock = interrupt::lock_timer_interrupts_for_test();
-        // Page tables for `run`, made first: the benchmarks run here must find the frame
-        // allocator as the other tests leave it, so the user-mode benchmarks, which take
-        // frames, have a test of their own.
         let mut memory = page_tables_for_test();
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
@@ -770,8 +770,10 @@ mod tests {
                 (linux_exec, _),
                 (linux_page_fault, _),
                 (linux_mmap_munmap, _),
+                (linux_dup3_close, _),
+                (linux_descriptor_lookup, _),
             ],
-        ) = all.split_at(all.len() - 8)
+        ) = all.split_at(all.len() - 10)
         else {
             unreachable!()
         };
@@ -784,7 +786,9 @@ mod tests {
                 *linux_syscall,
                 *linux_exec,
                 *linux_page_fault,
-                *linux_mmap_munmap
+                *linux_mmap_munmap,
+                *linux_dup3_close,
+                *linux_descriptor_lookup
             ],
             [
                 "syscall_round_trip",
@@ -794,7 +798,9 @@ mod tests {
                 "linux_syscall_round_trip",
                 "linux_exec_load",
                 "linux_page_fault",
-                "linux_mmap_munmap"
+                "linux_mmap_munmap",
+                "linux_dup3_close",
+                "linux_descriptor_lookup"
             ]
         );
         assert_eq!(
@@ -808,11 +814,10 @@ mod tests {
             assert!(line.starts_with(&prefix), "{line}");
             assert!(line.ends_with(" frequency=1000000000"), "{line}");
         }
-        // The clock is read once per iteration here, plus the measurement's own end read.
         let clock_line = lines[1];
         assert!(
             clock_line.contains(&format!("ticks={} ", ITERATIONS + 1)),
-            "{clock_line}"
+            "the clock is read once per iteration and once to end: {clock_line}"
         );
     }
 
@@ -827,19 +832,14 @@ mod tests {
 
     #[test]
     fn the_user_mode_benchmarks_run_their_programs_and_free_them() {
-        // Their threads pass preemption points, where this platform's timer fires.
         let _lock = interrupt::lock_timer_interrupts_for_test();
         let _frames = thread::host::frames_for_test();
-        // Page tables from the same allocator as the processes' (not `page_tables_for_test`,
-        // whose allocator may be gone once it returns).
         let mut memory = {
             let mut frames = FRAMES.lock();
             let mut page_tables = crate::paging::PageTables::new(frames.as_mut().unwrap()).unwrap();
             page_tables.mark_active();
             Memory { page_tables }
         };
-        // The idle thread's stack, taken once, is not the benchmarks'. Started as the other
-        // tests start it: an idle thread of this platform's would take its timer with it.
         thread::start::<crate::tests::TestPlatform>().unwrap();
         let free = || FRAMES.lock().as_ref().unwrap().free_frames();
         let before = free();
@@ -855,8 +855,11 @@ mod tests {
         assert_eq!(free(), before);
         linux_exec_load::<CountingPlatform>(&mut memory, 5);
         assert_eq!(free(), before);
-        // Fewer pages than the test allocator has frames: each is mapped, none runs out.
         linux_page_fault::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_dup3_close::<CountingPlatform>(&mut memory, 5);
+        assert_eq!(free(), before);
+        linux_descriptor_lookup(5);
         assert_eq!(free(), before);
     }
 

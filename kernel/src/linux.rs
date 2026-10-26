@@ -11,15 +11,17 @@
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
 //!
-//! So far: `write` and `writev` to the standard descriptors (the console, D61), and `read`
-//! from them through the console's line discipline ([`terminal`], D100), `exit`
+//! So far: each process's descriptor table, which starts with the console on descriptors 0 to
+//! 2, with `close`, `dup`, `dup2`, `dup3`, `fcntl` and `close_range` ([`descriptors`], D101);
+//! `write` and `writev` to the console (D61), and `read` and `readv` from it through its line
+//! discipline ([`terminal`], D100), `exit`
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
 //! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
 //! and, on x86_64, `arch_prctl` for the thread pointer ([`thread_pointer`], D57), and the
 //! resource limits' `getrlimit`, `setrlimit` and `prlimit64` ([`limits`], D59), and the signal
 //! state's `rt_sigaction`, `rt_sigprocmask` and `sigaltstack` ([`signals`], D60), and, on the
-//! console's descriptors 0 to 2, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
+//! console's descriptors, `poll` and `ppoll` ([`poll`]) and the terminal's `ioctl`s
 //! ([`terminal`], D61), and signals sent to the caller with `kill`, `tkill` and `tgkill`,
 //! `rt_sigpending`, and delivery by their default actions ([`signals`], D63), and signal
 //! handlers on Linux's frames with `rt_sigreturn` ([`signal_frame`], [`trampoline`], D64), and
@@ -37,6 +39,7 @@
 //! startup needs, then the file system's (M7).
 
 pub mod credentials;
+pub mod descriptors;
 pub mod exec;
 pub mod fault;
 pub mod futex;
@@ -59,6 +62,7 @@ use crate::thread::{JoinHandle, SpawnError};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
+use descriptors::{Descriptors, FileKind};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Format;
 use eggos_hal::user::{UserContext, UserExit};
@@ -72,6 +76,7 @@ pub mod number {
     mod table {
         pub const READ: u64 = 0;
         pub const WRITE: u64 = 1;
+        pub const CLOSE: u64 = 3;
         pub const FSTAT: u64 = 5;
         pub const POLL: u64 = 7;
         pub const LSEEK: u64 = 8;
@@ -83,10 +88,13 @@ pub mod number {
         pub const RT_SIGPROCMASK: u64 = 14;
         pub const RT_SIGRETURN: u64 = 15;
         pub const IOCTL: u64 = 16;
+        pub const READV: u64 = 19;
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const MREMAP: u64 = 25;
         pub const MADVISE: u64 = 28;
+        pub const DUP: u64 = 32;
+        pub const DUP2: u64 = 33;
         pub const PAUSE: u64 = 34;
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
@@ -94,6 +102,7 @@ pub mod number {
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
+        pub const FCNTL: u64 = 72;
         pub const GETTIMEOFDAY: u64 = 96;
         pub const GETRLIMIT: u64 = 97;
         pub const GETUID: u64 = 102;
@@ -139,17 +148,24 @@ pub mod number {
         pub const RT_TGSIGQUEUEINFO: u64 = 297;
         pub const PRLIMIT64: u64 = 302;
         pub const GETCPU: u64 = 309;
+        pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
         pub const STATX: u64 = 332;
+        pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
-        pub const LAST: u64 = STATX;
+        pub const LAST: u64 = CLOSE_RANGE;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
+        pub const DUP: u64 = 23;
+        pub const DUP3: u64 = 24;
+        pub const FCNTL: u64 = 25;
         pub const IOCTL: u64 = 29;
+        pub const CLOSE: u64 = 57;
         pub const LSEEK: u64 = 62;
         pub const READ: u64 = 63;
         pub const WRITE: u64 = 64;
+        pub const READV: u64 = 65;
         pub const WRITEV: u64 = 66;
         pub const PPOLL: u64 = 73;
         pub const NEWFSTATAT: u64 = 79;
@@ -213,8 +229,9 @@ pub mod number {
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
         pub const STATX: u64 = 291;
+        pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
-        pub const LAST: u64 = STATX;
+        pub const LAST: u64 = CLOSE_RANGE;
     }
     pub use table::*;
 
@@ -222,7 +239,15 @@ pub mod number {
         let all = [
             READ,
             WRITE,
+            READV,
             WRITEV,
+            CLOSE,
+            DUP,
+            #[cfg(target_arch = "x86_64")]
+            DUP2,
+            DUP3,
+            FCNTL,
+            CLOSE_RANGE,
             EXIT,
             EXIT_GROUP,
             CLONE,
@@ -324,12 +349,13 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
     pub const ENOEXEC: Self = Self(8);
-    /// Bad file descriptor: here, one that is not open; so far only the standard descriptors
-    /// are.
+    /// Bad file descriptor: one that is not open, or not open for what the call does (D101),
+    /// or a target above the open-file limit (`dup2`, `dup3`).
     pub const EBADF: Self = Self(9);
     /// Try again: here, the random number generator is not seeded yet (`getrandom` with
     /// `GRND_NONBLOCK`), a real-time signal finds the signal queue full (`rt_sigqueueinfo`,
-    /// `tgkill`), or no signal came before the timeout (`rt_sigtimedwait`).
+    /// `tgkill`), no signal came before the timeout (`rt_sigtimedwait`), or a read with
+    /// `O_NONBLOCK` finds no input (`read`, `readv`).
     pub const EAGAIN: Self = Self(11);
     /// Out of memory.
     pub const ENOMEM: Self = Self(12);
@@ -344,13 +370,18 @@ impl Errno {
     /// Not a directory: here, a descriptor a relative path starts from (`newfstatat`,
     /// `statx`).
     pub const ENOTDIR: Self = Self(20);
-    /// An invalid argument: here, a segment outside user space (`execve`), an unaligned
+    /// An invalid argument: here, a bad flag, the same descriptor twice (`dup3`), an unknown
+    /// command or a too high lowest descriptor (`fcntl`), or a bad range (`close_range`), a
+    /// segment outside user space (`execve`), an unaligned
     /// address or an empty range (the memory calls), a bad signal number, set size or flag
     /// (the signal calls), a bad timeout or too many descriptors (`ppoll`, `poll`), or a
     /// clock the time calls do not answer for or a bad time (the time calls), or a bad flag
     /// or mask (`newfstatat`, `statx`) or `whence` (`lseek`), or an id of -1 (`setuid`,
     /// `setgid`), a list too small or too long (`getgroups`, `setgroups`).
     pub const EINVAL: Self = Self(22);
+    /// Too many open files: every descriptor below the open-file limit is taken (`dup`,
+    /// `fcntl`'s `F_DUPFD`).
+    pub const EMFILE: Self = Self(24);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
     /// Not seekable: here, the console (`lseek`).
@@ -558,7 +589,7 @@ fn syscall<P: Platform>(
         return ControlFlow::Continue(());
     }
     let result = match number {
-        number::WRITE => write::<P>(process, first, second, third),
+        number::WRITE => write::<P>(process, thread.files(), first, second, third),
         number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
         number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
             memory_call::<P>(process, number, context.syscall_arguments())
@@ -609,7 +640,8 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGSUSPEND => signals::rt_sigsuspend(process, thread, context),
         #[cfg(target_arch = "x86_64")]
         number::PAUSE => signals::pause(process, thread, context),
-        number::READ => terminal::read::<P>(process, thread, context),
+        number::READ => read::<P>(process, thread, context, Buffers::One),
+        number::READV => read::<P>(process, thread, context, Buffers::Vectors),
         number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
@@ -693,7 +725,20 @@ fn out_of_line_result<P: Platform>(
     use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
-        number::WRITEV => writev::<P>(process, first, second, third),
+        number::WRITEV => writev::<P>(process, thread.files(), first, second, third),
+        number::CLOSE => descriptors::close(thread.files(), first),
+        number::DUP => descriptors::dup(process, thread.files(), first),
+        #[cfg(target_arch = "x86_64")]
+        number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
+        number::DUP3 => descriptors::dup3(process, thread.files(), first, second, third),
+        number::FCNTL => descriptors::fcntl(process, thread.files(), first, second, third),
+        number::CLOSE_RANGE => {
+            let own = descriptors::close_range(thread.files(), first, second, third)?;
+            if let Some(own) = own {
+                thread.set_files(own);
+            }
+            Ok(0)
+        }
         number::GETPID => Ok(identity::getpid(process)),
         number::GETPPID => Ok(identity::getppid()),
         number::GETTID => Ok(identity::gettid(thread)),
@@ -734,11 +779,13 @@ fn out_of_line_result<P: Platform>(
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
-        number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
-        number::LSEEK => terminal::lseek(first, third),
-        number::FSTAT => stat::fstat(process, first, second),
-        number::NEWFSTATAT => stat::newfstatat(process, first, second, third, fourth),
-        number::STATX => stat::statx(process, first, second, third, fourth, fifth),
+        number::IOCTL => ioctl::<P>(process, thread.files(), first, second, third),
+        number::LSEEK => lseek(thread.files(), first, third),
+        number::FSTAT => stat::fstat(process, thread.files(), first, second),
+        number::NEWFSTATAT => {
+            stat::newfstatat(process, thread.files(), first, second, third, fourth)
+        }
+        number::STATX => stat::statx(process, thread.files(), first, second, third, fourth, fifth),
         number::GETUID => Ok(credentials::get_real(process, User)),
         number::GETGID => Ok(credentials::get_real(process, Group)),
         number::GETEUID => Ok(credentials::get_effective(process, User)),
@@ -853,25 +900,22 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     ControlFlow::Break(())
 }
 
-/// `write(fd, buffer, count)`: the standard descriptors go to the console. Returns
-/// the bytes written; if part of the buffer is not the program's memory, the bytes before
-/// that part, or `EFAULT` if there are none, as Linux does. At most [`MAX_RW_COUNT`] bytes,
-/// after the whole range is checked against user space, as on Linux.
 #[inline(never)]
 fn write<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     fd: u64,
     buffer: u64,
     count: u64,
 ) -> Result<u64, Errno> {
-    if !is_console(fd) {
-        return Err(Errno::EBADF);
-    }
+    let file = writable_file(files, fd)?;
     if !ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
     let count = count.min(MAX_RW_COUNT);
-    let written = write_to_console(process, buffer, count);
+    let written = match file.kind() {
+        FileKind::Console => write_to_console(process, buffer, count),
+    };
     if written == 0 && count > 0 {
         Err(Errno::EFAULT)
     } else {
@@ -879,60 +923,31 @@ fn write<P: Platform>(
     }
 }
 
-/// `writev(fd, buffers, count)`: as [`write`], for `count` buffers one after another, each a
-/// `struct iovec` (base, length) in the program's memory at `buffers`. As Linux, all before
-/// anything is written: `EINVAL` for more than [`MAX_IOVECS`] buffers; `EFAULT` if the array
-/// does not end within user space; then, entry by entry, `EFAULT` for one that is not the
-/// program's memory and `EINVAL` for a length that is
-/// negative as a `ssize_t` (see [`unreadable_iovecs_error`]); then `EFAULT` if a buffer does
-/// not end within user space; then at most [`MAX_RW_COUNT`] bytes in all, stopping at the
-/// first byte that is not the program's memory. The array is copied once, so the program
-/// changing it meanwhile changes nothing. `count` is an `unsigned int`, as `fd` is: the
-/// register's upper half is ignored.
+fn writable_file(files: &Descriptors, fd: u64) -> Result<Arc<descriptors::OpenFile>, Errno> {
+    let file = files.file(fd)?;
+    match file.is_writable() {
+        true => Ok(file),
+        false => Err(Errno::EBADF),
+    }
+}
+
 #[inline(never)]
 fn writev<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     fd: u64,
     buffers: u64,
     count: u64,
 ) -> Result<u64, Errno> {
-    if !is_console(fd) {
-        return Err(Errno::EBADF);
-    }
-    let count = u64::from(count as u32);
-    if count > MAX_IOVECS {
-        return Err(Errno::EINVAL);
-    }
-    let bytes = count as usize * IOVEC_SIZE;
-    let mut on_stack = [0u8; STACK_IOVECS * IOVEC_SIZE];
-    let mut on_heap = alloc::vec::Vec::new();
-    let array = if bytes <= on_stack.len() {
-        &mut on_stack[..bytes]
-    } else {
-        on_heap
-            .try_reserve_exact(bytes)
-            .map_err(|_| Errno::ENOMEM)?;
-        on_heap.resize(bytes, 0);
-        &mut on_heap[..]
-    };
-    if process.read_user_memory(buffers, array).is_err() {
-        return Err(unreadable_iovecs_error(process, buffers, count));
-    }
-    let (entries, _) = array.as_chunks::<IOVEC_SIZE>();
-    if entries.iter().any(|entry| iovec(entry).1 > i64::MAX as u64) {
-        return Err(Errno::EINVAL);
-    }
-    if !entries.iter().all(|entry| {
-        let (base, length) = iovec(entry);
-        ends_in_user_space::<P>(base, length)
-    }) {
-        return Err(Errno::EFAULT);
-    }
+    let file = writable_file(files, fd)?;
+    let iovecs = Iovecs::read(process, buffers, count)?;
     let mut written = 0;
-    for entry in entries {
+    for entry in iovecs.entries() {
         let (base, length) = iovec(entry);
         let length = length.min(MAX_RW_COUNT - written);
-        let done = write_to_console(process, base, length);
+        let done = match file.kind() {
+            FileKind::Console => write_to_console(process, base, length),
+        };
         written += done;
         if done < length {
             return if written > 0 {
@@ -945,6 +960,136 @@ fn writev<P: Platform>(
     Ok(written)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Buffers {
+    One,
+    Vectors,
+}
+
+#[inline(never)]
+fn read<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    buffers: Buffers,
+) -> ControlFlow<()> {
+    let [fd, address, count, ..] = context.syscall_arguments();
+    let prepared = thread.files().file(fd).and_then(|file| {
+        if !file.is_readable() {
+            return Err(Errno::EBADF);
+        }
+        let iovecs = match buffers {
+            Buffers::One if !ends_in_user_space::<P>(address, count) => Err(Errno::EFAULT),
+            Buffers::One => Ok(Iovecs::one(address, count)),
+            Buffers::Vectors => Iovecs::read(process, address, count),
+        }?;
+        Ok((file, iovecs))
+    });
+    match prepared {
+        Ok((file, iovecs)) => match file.kind() {
+            FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+        },
+        Err(error) => {
+            context.set_syscall_result(error.result());
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+fn ioctl<P: Platform>(
+    process: &Process<P>,
+    files: &Descriptors,
+    fd: u64,
+    request: u64,
+    argument: u64,
+) -> Result<u64, Errno> {
+    let file = files.file(fd)?;
+    if let Some(result) =
+        descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
+    {
+        return result;
+    }
+    match file.kind() {
+        FileKind::Console => terminal::ioctl(process, request, argument),
+    }
+}
+
+fn lseek(files: &Descriptors, fd: u64, whence: u64) -> Result<u64, Errno> {
+    let file = files.file(fd)?;
+    match file.kind() {
+        FileKind::Console => terminal::lseek(whence),
+    }
+}
+
+struct Iovecs {
+    on_stack: [[u8; IOVEC_SIZE]; STACK_IOVECS],
+    on_heap: alloc::vec::Vec<[u8; IOVEC_SIZE]>,
+    count: usize,
+}
+
+impl Iovecs {
+    fn one(base: u64, length: u64) -> Self {
+        let mut on_stack = [[0; IOVEC_SIZE]; STACK_IOVECS];
+        on_stack[0][..8].copy_from_slice(&base.to_ne_bytes());
+        on_stack[0][8..].copy_from_slice(&length.to_ne_bytes());
+        Self {
+            on_stack,
+            on_heap: alloc::vec::Vec::new(),
+            count: 1,
+        }
+    }
+
+    fn read<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Result<Self, Errno> {
+        let count = u64::from(count as u32);
+        if count > MAX_IOVECS {
+            return Err(Errno::EINVAL);
+        }
+        let mut iovecs = Self {
+            on_stack: [[0; IOVEC_SIZE]; STACK_IOVECS],
+            on_heap: alloc::vec::Vec::new(),
+            count: count as usize,
+        };
+        if iovecs.count > STACK_IOVECS {
+            iovecs
+                .on_heap
+                .try_reserve_exact(iovecs.count)
+                .map_err(|_| Errno::ENOMEM)?;
+            iovecs.on_heap.resize(iovecs.count, [0; IOVEC_SIZE]);
+        }
+        let array = match iovecs.count > STACK_IOVECS {
+            true => iovecs.on_heap.as_flattened_mut(),
+            false => iovecs.on_stack[..iovecs.count].as_flattened_mut(),
+        };
+        if process.read_user_memory(buffers, array).is_err() {
+            return Err(unreadable_iovecs_error(process, buffers, count));
+        }
+        let entries = iovecs.entries();
+        if entries.iter().any(|entry| iovec(entry).1 > i64::MAX as u64) {
+            return Err(Errno::EINVAL);
+        }
+        if !entries.iter().all(|entry| {
+            let (base, length) = iovec(entry);
+            ends_in_user_space::<P>(base, length)
+        }) {
+            return Err(Errno::EFAULT);
+        }
+        Ok(iovecs)
+    }
+
+    fn entries(&self) -> &[[u8; IOVEC_SIZE]] {
+        match self.count > STACK_IOVECS {
+            true => &self.on_heap,
+            false => &self.on_stack[..self.count],
+        }
+    }
+
+    fn total(&self) -> u64 {
+        self.entries()
+            .iter()
+            .fold(0, |total: u64, entry| total.saturating_add(iovec(entry).1))
+    }
+}
+
 /// A `struct iovec`'s base and length.
 fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
     let (base, length) = entry.split_at(8);
@@ -954,11 +1099,6 @@ fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
     )
 }
 
-/// [`writev`]'s error when its array of `count` `struct iovec`s at `buffers` is not all the
-/// program's memory. As Linux reads the entries one at a time: `EFAULT` if the array does not
-/// end within user space, before any is read; otherwise `EINVAL` if an entry read before the
-/// first unreadable one has a negative length, `EFAULT` if none has (D62). Cold: a program
-/// passes a readable array.
 #[cold]
 #[inline(never)]
 fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, count: u64) -> Errno {
@@ -976,13 +1116,6 @@ fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, coun
         }
     }
     Errno::EFAULT
-}
-
-/// Whether `fd` is one of the standard descriptors, 0 to 2, the only ones so far: the
-/// console, open for reading and writing, as Linux starts `init` with `/dev/console` on all
-/// three (D61). `fd` is an `unsigned int`: Linux ignores the register's upper half.
-fn is_console(fd: u64) -> bool {
-    fd as u32 <= 2
 }
 
 /// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space. For
@@ -2255,14 +2388,7 @@ mod tests {
 
         assert_eq!(ioctl(3, request::TCGETS, writable), Errno::EBADF.result());
         assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());
-        for unknown in [
-            0,
-            0x5405,
-            0x540f,
-            0x5421,
-            0x5451,
-            request::TCGETS | 0x1_0000,
-        ] {
+        for unknown in [0, 0x5405, 0x540f, 0x5453, request::TCGETS | 0x1_0000] {
             assert_eq!(
                 ioctl(1, unknown, writable),
                 Errno::ENOTTY.result(),
@@ -2446,6 +2572,249 @@ mod tests {
         crate::console::set_settings::<P>(raw, false);
         assert_eq!(read(8), 0, "VTIME passes with nothing typed");
         assert!(console_output().is_empty());
+    }
+
+    #[test]
+    fn a_read_with_vmin_and_vtime_returns_vmin_bytes_or_what_came_before_the_gap_timer() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let read = |count| call(&process, number::READ, [0, writable, count, 0, 0, 0]);
+        let mut raw = Termios::SERIAL_CONSOLE;
+        raw.local &= !(local::ICANON | local::ECHO);
+        raw.control_characters[index::VMIN] = 2;
+        raw.control_characters[index::VTIME] = 1;
+        crate::console::set_settings::<P>(raw, false);
+        console.types(b"abc");
+        assert_eq!(read(8), 3);
+        assert_eq!(read_bytes(&process, writable, 3), b"abc");
+        console.types(b"d");
+        assert_eq!(read(8), 1, "the gap timer passes after one byte");
+        assert_eq!(read_bytes(&process, writable, 1), b"d");
+        console.types(b"ef");
+        assert_eq!(read(1), 1, "no more than the count");
+        assert_eq!(read(8), 1);
+    }
+
+    #[test]
+    fn a_nonblocking_console_read_fails_with_eagain_until_input_is_there() {
+        use descriptors::{command, open_flag};
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let read = |fd, count| call(&process, number::READ, [fd, writable, count, 0, 0, 0]);
+        let fcntl = |fd, command: u32, argument: u32| {
+            call(
+                &process,
+                number::FCNTL,
+                [fd, u64::from(command), u64::from(argument), 0, 0, 0],
+            )
+        };
+        assert_eq!(fcntl(2, command::SETFL, open_flag::NONBLOCK), 0);
+        assert_eq!(
+            read(0, 64),
+            Errno::EAGAIN.result(),
+            "0 to 2 share one description"
+        );
+        console.types(b"half a line");
+        assert_eq!(read(0, 64), Errno::EAGAIN.result());
+        console.types(b"\r");
+        assert_eq!(read(1, 64), 12);
+        assert_eq!(read_bytes(&process, writable, 12), b"half a line\n");
+        let mut raw = Termios::SERIAL_CONSOLE;
+        raw.local &= !(local::ICANON | local::ECHO);
+        raw.control_characters[index::VMIN] = 4;
+        crate::console::set_settings::<P>(raw, false);
+        assert_eq!(read(0, 64), Errno::EAGAIN.result());
+        console.types(b"xy");
+        assert_eq!(read(0, 64), 2, "fewer than VMIN bytes, without waiting");
+        raw.control_characters[index::VMIN] = 0;
+        crate::console::set_settings::<P>(raw, false);
+        assert_eq!(read(0, 64), 0, "VMIN and VTIME 0 never wait, so read 0");
+        assert_eq!(fcntl(0, command::SETFL, 0), 0);
+        assert_eq!(fcntl(1, command::GETFL, 0), u64::from(open_flag::RDWR));
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(
+            call(&process, number::IOCTL, [0, 0x5421, user_end, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        process
+            .write_user_memory(writable, &1i32.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::IOCTL, [1, 0x5421, writable, 0, 0, 0]),
+            0
+        );
+        assert_eq!(read(0, 64), 0);
+        assert_eq!(
+            fcntl(2, command::GETFL, 0),
+            u64::from(open_flag::RDWR | open_flag::NONBLOCK)
+        );
+        process
+            .write_user_memory(writable, &0i32.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            call(&process, number::IOCTL, [1, 0x5421, writable, 0, 0, 0]),
+            0
+        );
+        assert_eq!(fcntl(2, command::GETFL, 0), u64::from(open_flag::RDWR));
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn readv_fills_each_buffer_in_turn_with_one_line() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let page = DATA + 4096;
+        let iovecs = |buffers: &[(u64, u64)]| {
+            let mut array = alloc::vec::Vec::new();
+            for &(base, length) in buffers {
+                array.extend_from_slice(&base.to_ne_bytes());
+                array.extend_from_slice(&length.to_ne_bytes());
+            }
+            process.write_user_memory(page, &array).unwrap();
+        };
+        let readv = |fd, count| call(&process, number::READV, [fd, page, count, 0, 0, 0]);
+        console.types(b"hello world\rnext\r");
+        iovecs(&[(page + 256, 3), (page + 512, 0), (page + 768, 64)]);
+        assert_eq!(readv(0, 3), 12);
+        assert_eq!(read_bytes(&process, page + 256, 3), b"hel");
+        assert_eq!(read_bytes(&process, page + 768, 9), b"lo world\n");
+        iovecs(&[(page + 256, 2), (page + 768, 2)]);
+        assert_eq!(readv(1, 2), 4);
+        assert_eq!(read_bytes(&process, page + 256, 2), b"ne");
+        assert_eq!(read_bytes(&process, page + 768, 2), b"xt");
+        assert_eq!(readv(1, 2), 1);
+        assert_eq!(read_bytes(&process, page + 256, 1), b"\n");
+        assert_eq!(readv(0, 0), 0);
+        assert_eq!(readv(3, 2), Errno::EBADF.result());
+        assert_eq!(readv(0, 1025), Errno::EINVAL.result());
+        iovecs(&[(DATA, 8)]);
+        console.types(b"lost\r");
+        assert_eq!(readv(0, 1), Errno::EFAULT.result());
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn descriptors_are_duplicated_flagged_and_closed_through_the_calls() {
+        use descriptors::{FD_CLOEXEC, close_range_flag, command, open_flag};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let call = |number, arguments: &[u64]| {
+            let mut all = [0; 6];
+            all[..arguments.len()].copy_from_slice(arguments);
+            call(&process, number, all)
+        };
+        let fcntl = |fd, command: u32, argument: u64| {
+            call(number::FCNTL, &[fd, u64::from(command), argument])
+        };
+        let cloexec = u64::from(open_flag::CLOEXEC);
+        assert_eq!(call(number::CLOSE, &[1]), 0);
+        assert_eq!(call(number::CLOSE, &[1]), Errno::EBADF.result());
+        assert_eq!(call(number::WRITE, &[1, DATA, 1]), Errno::EBADF.result());
+        assert_eq!(call(number::DUP, &[2]), 1);
+        assert_eq!(call(number::DUP, &[7]), Errno::EBADF.result());
+        assert_eq!(call(number::DUP3, &[0, 5, cloexec]), 5);
+        assert_eq!(fcntl(5, command::GETFD, 0), u64::from(FD_CLOEXEC));
+        assert_eq!(fcntl(0, command::GETFD, 0), 0);
+        assert_eq!(call(number::DUP3, &[0, 0, 0]), Errno::EINVAL.result());
+        assert_eq!(call(number::DUP3, &[0, 6, 1]), Errno::EINVAL.result());
+        assert_eq!(call(number::DUP3, &[9, 6, 0]), Errno::EBADF.result());
+        assert_eq!(call(number::DUP3, &[0, 1024, 0]), Errno::EBADF.result());
+        assert_eq!(call(number::DUP3, &[1, 5, 0]), 5);
+        assert_eq!(fcntl(5, command::GETFD, 0), 0);
+        assert_eq!(call(number::DUP, &[0]), 3);
+        assert_eq!(fcntl(0, command::DUPFD, 3), 4);
+        assert_eq!(fcntl(0, command::DUPFD_CLOEXEC, 10), 10);
+        assert_eq!(fcntl(10, command::GETFD, 0), u64::from(FD_CLOEXEC));
+        assert_eq!(fcntl(10, command::SETFD, 0xfe), 0);
+        assert_eq!(fcntl(10, command::GETFD, 0), 0);
+        assert_eq!(fcntl(0, command::DUPFD, 1024), Errno::EINVAL.result());
+        assert_eq!(fcntl(0, command::DUPFD, u64::MAX), Errno::EINVAL.result());
+        assert_eq!(
+            fcntl(0, command::DUPFD, 1 << 32 | 12),
+            12,
+            "an int argument"
+        );
+        assert_eq!(call(number::CLOSE, &[12]), 0);
+        assert_eq!(fcntl(10, command::SETFD, 1 << 32), 0);
+        assert_eq!(fcntl(10, command::GETFD, 0), 0);
+        assert_eq!(fcntl(11, command::DUPFD, 1024), Errno::EBADF.result());
+        assert_eq!(fcntl(0, 1031, 0), Errno::EINVAL.result());
+        assert_eq!(fcntl(11, 1031, 0), Errno::EBADF.result());
+        assert_eq!(fcntl(3, command::GETFL, 0), u64::from(open_flag::RDWR));
+        let settable = open_flag::APPEND | open_flag::NONBLOCK;
+        assert_eq!(
+            fcntl(3, command::SETFL, u64::from(settable | open_flag::WRONLY)),
+            0
+        );
+        assert_eq!(
+            fcntl(0, command::GETFL, 0),
+            u64::from(open_flag::RDWR | settable)
+        );
+        assert_eq!(fcntl(4, command::SETFL, 0), 0);
+        assert_eq!(call(number::IOCTL, &[4, 0x5451]), 0);
+        assert_eq!(fcntl(4, command::GETFD, 0), u64::from(FD_CLOEXEC));
+        assert_eq!(call(number::IOCTL, &[4, 0x5450]), 0);
+        assert_eq!(fcntl(4, command::GETFD, 0), 0);
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(call(number::IOCTL, &[4, 0x5452, writable]), 0);
+        assert_eq!(
+            call(number::IOCTL, &[4, 0x5452, user_end]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(number::IOCTL, &[11, 0x5452, writable]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(fcntl(4, command::GETFL, 0), u64::from(open_flag::RDWR));
+        let range =
+            |first, last, flags: u32| call(number::CLOSE_RANGE, &[first, last, u64::from(flags)]);
+        assert_eq!(range(4, 3, 0), Errno::EINVAL.result());
+        assert_eq!(range(0, 9, 1), Errno::EINVAL.result());
+        assert_eq!(range(4, 10, close_range_flag::CLOEXEC), 0);
+        assert_eq!(fcntl(4, command::GETFD, 0), u64::from(FD_CLOEXEC));
+        assert_eq!(fcntl(10, command::GETFD, 0), u64::from(FD_CLOEXEC));
+        assert_eq!(fcntl(3, command::GETFD, 0), 0);
+        assert_eq!(range(4, u64::from(u32::MAX), close_range_flag::UNSHARE), 0);
+        assert_eq!(fcntl(4, command::GETFD, 0), Errno::EBADF.result());
+        assert_eq!(fcntl(10, command::GETFD, 0), Errno::EBADF.result());
+        assert_eq!(call(number::DUP, &[0]), 4);
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(call(number::DUP2, &[4, 4]), 4);
+            assert_eq!(call(number::DUP2, &[8, 8]), Errno::EBADF.result());
+            assert_eq!(call(number::DUP3, &[0, 8, cloexec]), 8);
+            assert_eq!(call(number::DUP2, &[0, 8]), 8);
+            assert_eq!(fcntl(8, command::GETFD, 0), 0);
+            assert_eq!(call(number::DUP2, &[0, 1024]), Errno::EBADF.result());
+        }
+        assert_eq!(call(number::CLOSE, &[0]), 0);
+        assert_eq!(call(number::READ, &[0, writable, 8]), Errno::EBADF.result());
+        assert_eq!(call(number::FSTAT, &[0, writable]), Errno::EBADF.result());
+        assert_eq!(call(number::LSEEK, &[0, 0, 0]), Errno::EBADF.result());
+        assert_eq!(
+            call(number::IOCTL, &[0, 0x5401, writable]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(call(number::FSTAT, &[3, writable]), 0);
+        assert_eq!(call(number::LSEEK, &[3, 0, 0]), Errno::ESPIPE.result());
+        assert_eq!(call(number::IOCTL, &[3, 0x5401, writable]), 0);
+        process
+            .write_user_memory(writable, &[3u64.to_ne_bytes(), 4u64.to_ne_bytes()].concat())
+            .unwrap();
+        assert_eq!(call(number::SETRLIMIT, &[7, writable]), 0);
+        assert_eq!(call(number::DUP, &[3]), 0);
+        assert_eq!(call(number::DUP, &[3]), Errno::EMFILE.result());
+        assert_eq!(fcntl(3, command::DUPFD, 3), Errno::EINVAL.result());
+        assert_eq!(call(number::DUP3, &[0, 3, 0]), Errno::EBADF.result());
+        assert_eq!(call(number::DUP3, &[3, 1, 0]), 1);
+        assert_eq!(process.exit_status(), None);
     }
 
     #[test]
@@ -4660,7 +5029,7 @@ mod tests {
     ) -> LinuxThread {
         process.add_thread();
         let id = process::allocate_thread_id().unwrap();
-        let second = first.new_thread(id, clear_child_tid);
+        let second = first.new_thread(id, clear_child_tid, first.files().share());
         process
             .signals()
             .lock()

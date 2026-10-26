@@ -1,7 +1,7 @@
 //! The kernel's boot self-tests run this program, built with Rust's standard library and
 //! linked with musl, as a Linux program: it uses what a typical Rust program uses from its
 //! first line (arguments, the environment, a `HashMap` with random keys, the heap, the
-//! clocks, sleeping, formatting floats, threads, standard output), writes
+//! clocks, sleeping, formatting floats, threads, standard output, its descriptors), writes
 //! `EGGOS-USER: a std program built from Rust source ran its checks` if every check passed,
 //! and exits with 0; otherwise it names each check that failed and exits with 1. Given
 //! [`EXIT_FROM_A_THREAD`] as its only argument, it instead ends from a thread while its other
@@ -10,6 +10,7 @@
 //! [`console::READ_THE_CONSOLE`], it reads the console ([`console::read_the_console`]).
 
 mod console;
+mod descriptors;
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -99,7 +100,7 @@ const LONG_SLEEP: Timespec = Timespec {
 const SEND_INTERVAL: Duration = Duration::from_millis(10);
 const MOST_SENDS: u32 = 500;
 
-const CHECKS: [Check; 13] = [
+const CHECKS: [Check; 14] = [
     ("the arguments are the program's", arguments),
     ("the environment holds TERM", environment),
     ("a HashMap with random keys counts words", hash_map),
@@ -124,6 +125,10 @@ const CHECKS: [Check; 13] = [
     (
         "a signal ends a sleep with EINTR and the time left, and a futex wait runs its handler",
         signals_interrupt_waits,
+    ),
+    (
+        "descriptors are duplicated, flagged, closed and shared by threads as on Linux",
+        descriptors::descriptors_behave_as_on_linux,
     ),
 ];
 

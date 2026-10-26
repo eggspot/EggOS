@@ -19,9 +19,11 @@ aarch64 futex_wait_wake_round_trip 455.05
 aarch64 futex_wake_empty 20.00
 aarch64 heap_allocate_free_small 50.00
 aarch64 linux_clock_monotonic_read 12.00
+aarch64 linux_descriptor_lookup 36.03
+aarch64 linux_dup3_close 184.52
 aarch64 linux_exec_load 36511.47
 aarch64 linux_mmap_munmap 335.52
-aarch64 linux_page_fault 1374.39
+aarch64 linux_page_fault 1388.94
 aarch64 linux_syscall_round_trip 125.92
 aarch64 preemption_point_idle 8.00
 aarch64 process_switch_round_trip 487.27
@@ -45,6 +47,8 @@ riscv64 futex_wait_wake_round_trip 554.06
 riscv64 futex_wake_empty 27.00
 riscv64 heap_allocate_free_small 57.00
 riscv64 linux_clock_monotonic_read 15.00
+riscv64 linux_descriptor_lookup 28.03
+riscv64 linux_dup3_close 201.11
 riscv64 linux_exec_load 31638.49
 riscv64 linux_mmap_munmap 362.11
 riscv64 linux_page_fault 1415.13
@@ -71,6 +75,8 @@ x86_64 futex_wait_wake_round_trip 473.03
 x86_64 futex_wake_empty 25.00
 x86_64 heap_allocate_free_small 48.00
 x86_64 linux_clock_monotonic_read 19.00
+x86_64 linux_descriptor_lookup 27.02
+x86_64 linux_dup3_close 189.09
 x86_64 linux_exec_load 28334.01
 x86_64 linux_mmap_munmap 366.09
 x86_64 linux_page_fault 1137.57

@@ -1,5 +1,5 @@
 //! File status (M6, D74): `fstat`, `newfstatat` (`fstatat` in the generic table) and `statx`
-//! on the standard descriptors, which are the console (D61). glibc's stdio asks `fstat`
+//! on descriptors, which so far name the console (D61, D101). glibc's stdio asks `fstat`
 //! whether a stream is a character device before it line-buffers a terminal, and Rust's std
 //! asks `statx` first for a file's metadata, falling back to `fstatat`.
 //!
@@ -19,7 +19,8 @@
 //! path finds no file: `ENOENT`, or `ENOTDIR` relative to the console, which is not a
 //! directory, or `EBADF` relative to a descriptor that is not open.
 
-use super::{Errno, is_console};
+use super::Errno;
+use super::descriptors::{Descriptors, FileKind};
 use crate::process::Process;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
@@ -207,20 +208,22 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
         .map_err(|_| Errno::EFAULT)
 }
 
-/// The status of descriptor `fd`: `EBADF` unless it is open.
-fn descriptor_status(fd: u64) -> Result<Status, Errno> {
-    if is_console(fd) {
-        Ok(CONSOLE)
-    } else {
-        Err(Errno::EBADF)
+fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
+    match files.file(fd)?.kind() {
+        FileKind::Console => Ok(CONSOLE),
     }
 }
 
 /// `fstat(fd, statbuf)`: writes descriptor `fd`'s `struct stat` to `statbuf`. As Linux:
 /// `EBADF` for a descriptor that is not open, then `EFAULT` if `statbuf` is not the program's
 /// writable memory.
-pub fn fstat<P: Platform>(process: &Process<P>, fd: u64, statbuf: u64) -> Result<u64, Errno> {
-    let status = descriptor_status(fd)?;
+pub fn fstat<P: Platform>(
+    process: &Process<P>,
+    files: &Descriptors,
+    fd: u64,
+    statbuf: u64,
+) -> Result<u64, Errno> {
+    let status = descriptor_status(files, fd)?;
     write(process, statbuf, &stat_bytes(&status))
 }
 
@@ -271,6 +274,7 @@ fn read_path<P: Platform>(process: &Process<P>, address: u64) -> Result<Path, Er
 /// The status `dirfd` and `path` name with `flags`: the module documentation's lookup.
 fn lookup<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     dirfd: u64,
     path: u64,
     flags: u64,
@@ -285,8 +289,8 @@ fn lookup<P: Platform>(
         Path::Empty if !empty_path => Err(Errno::ENOENT),
         Path::Absolute => Err(Errno::ENOENT),
         _ if working_directory => Err(Errno::ENOENT),
-        Path::Empty => descriptor_status(dirfd),
-        Path::Relative => descriptor_status(dirfd).and(Err(Errno::ENOTDIR)),
+        Path::Empty => descriptor_status(files, dirfd),
+        Path::Relative => descriptor_status(files, dirfd).and(Err(Errno::ENOTDIR)),
     }
 }
 
@@ -298,6 +302,7 @@ fn lookup<P: Platform>(
 /// `flags` is an `int`.
 pub fn newfstatat<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     dirfd: u64,
     path: u64,
     statbuf: u64,
@@ -308,7 +313,7 @@ pub fn newfstatat<P: Platform>(
     if flags & !known != 0 {
         return Err(Errno::EINVAL);
     }
-    let status = lookup(process, dirfd, path, flags)?;
+    let status = lookup(process, files, dirfd, path, flags)?;
     write(process, statbuf, &stat_bytes(&status))
 }
 
@@ -321,6 +326,7 @@ pub fn newfstatat<P: Platform>(
 /// and no flags, and takes only `EFAULT` to mean it exists.
 pub fn statx<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     dirfd: u64,
     path: u64,
     flags: u64,
@@ -335,7 +341,7 @@ pub fn statx<P: Platform>(
     {
         return Err(Errno::EINVAL);
     }
-    let status = lookup(process, dirfd, path, flags)?;
+    let status = lookup(process, files, dirfd, path, flags)?;
     write(process, statxbuf, &statx_bytes(&status))
 }
 

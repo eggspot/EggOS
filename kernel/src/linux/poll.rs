@@ -3,7 +3,7 @@
 //! fails for any reason but a few; C programs and event loops poll before reading or writing,
 //! and `poll` with no descriptors is a common way to sleep.
 //!
-//! The only descriptors so far are the console's, 0 to 2 (`is_console`): always
+//! Descriptors so far name the console (D101): always
 //! writable, as the console takes every byte at once, and readable when a read would take
 //! input without waiting for more (D100, superseding D61's "never readable"): a whole line in
 //! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
@@ -12,9 +12,10 @@
 //! first (D71); one that asks for the console's input is woken when it becomes readable, and
 //! its thread becomes the console's foreground ([`terminal::become_foreground`]).
 
+use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::terminal::{self, Waited};
 use super::thread::{self, LinuxThread};
-use super::{Errno, ends_in_user_space, is_console, limits, signals};
+use super::{Errno, ends_in_user_space, limits, signals};
 use crate::console;
 use crate::process::Process;
 use alloc::sync::Arc;
@@ -69,29 +70,36 @@ const TIMESPEC_SIZE: usize = 16;
 
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
-/// The events descriptor `fd` (an `int`) reports when `requested` are asked for: none for a
-/// negative one, which the program uses to skip an entry; `POLLNVAL` for one that is not open;
-/// for the console's, room to write and, if it is `readable`, data to read, when asked for.
-fn events(fd: i32, requested: u16, readable: bool) -> u16 {
-    if fd < 0 {
-        0
-    } else if !is_console(fd as u64) {
-        event::NVAL
-    } else if readable {
-        requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
-    } else {
-        requested & (event::OUT | event::WRNORM)
+fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
+    match file {
+        None => event::NVAL,
+        Some(FileKind::Console) if readable => {
+            requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
+        }
+        Some(FileKind::Console) => requested & (event::OUT | event::WRNORM),
     }
 }
 
 const INPUT_EVENTS: u16 = event::IN | event::RDNORM;
 
-fn fill_in_events(entries: &mut [[u8; POLLFD_SIZE]], readable: bool) -> u64 {
+fn pollfd(entry: &[u8; POLLFD_SIZE]) -> (i32, u16) {
+    (
+        i32::from_ne_bytes(entry[..4].try_into().unwrap()),
+        u16::from_ne_bytes(entry[4..6].try_into().unwrap()),
+    )
+}
+
+fn fill_in_events(entries: &mut [[u8; POLLFD_SIZE]], files: &Descriptors, readable: bool) -> u64 {
     let mut ready = 0;
     for entry in entries {
-        let fd = i32::from_ne_bytes(entry[..4].try_into().unwrap());
-        let requested = u16::from_ne_bytes(entry[4..6].try_into().unwrap());
-        let returned = events(fd, requested, readable);
+        let (fd, requested) = pollfd(entry);
+        let returned = match fd {
+            0.. => {
+                let file = files.file(fd as u64).ok();
+                events(file.as_deref().map(OpenFile::kind), requested, readable)
+            }
+            _ => 0,
+        };
         entry[6..].copy_from_slice(&returned.to_ne_bytes());
         ready += u64::from(returned != 0);
     }
@@ -362,14 +370,19 @@ fn poll_fds<P: Platform>(
         .map_err(|_| Errno::EFAULT)?;
     let entries = array.as_chunks_mut::<POLLFD_SIZE>().0;
     let watches_input = entries.iter().any(|entry| {
-        let fd = i32::from_ne_bytes(entry[..4].try_into().unwrap());
-        let requested = u16::from_ne_bytes(entry[4..6].try_into().unwrap());
-        fd >= 0 && is_console(fd as u64) && requested & INPUT_EVENTS != 0
+        let (fd, requested) = pollfd(entry);
+        fd >= 0
+            && requested & INPUT_EVENTS != 0
+            && thread
+                .files()
+                .file(fd as u64)
+                .is_ok_and(|file| *file.kind() == FileKind::Console)
     });
     if watches_input {
         terminal::become_foreground(process, thread);
     }
-    let mut ready = fill_in_events(entries, watches_input && console::input_ready());
+    let readable = watches_input && console::input_ready();
+    let mut ready = fill_in_events(entries, thread.files(), readable);
     let mut interrupted = ready == 0 && signals::is_due(thread);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
         (interrupted, ready) = match watches_input {
@@ -410,7 +423,7 @@ fn wait_for_input<P: Platform>(
             ControlFlow::Break(()) | ControlFlow::Continue(Waited::TimedOut) => return (false, 0),
             ControlFlow::Continue(Waited::Signalled) => return (true, 0),
             ControlFlow::Continue(Waited::Ready) => {
-                let ready = fill_in_events(entries, true);
+                let ready = fill_in_events(entries, thread.files(), true);
                 if ready > 0 {
                     return (false, ready);
                 }
@@ -424,33 +437,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn negative_descriptors_are_skipped() {
-        assert_eq!(events(-1, u16::MAX, true), 0);
-        assert_eq!(events(i32::MIN, u16::MAX, false), 0);
+    fn negative_descriptors_are_skipped_and_closed_ones_report_pollnval() {
+        let files = Descriptors::with_console_streams();
+        assert!(files.lock().remove(1).is_some());
+        let mut entries = [-1, 1, 3, i32::MIN, 0].map(|fd| {
+            let mut entry = [0; POLLFD_SIZE];
+            entry[..4].copy_from_slice(&fd.to_ne_bytes());
+            entry[4..6].copy_from_slice(&event::OUT.to_ne_bytes());
+            entry
+        });
+        assert_eq!(fill_in_events(&mut entries, &files, false), 3);
+        let returned = entries.map(|entry| u16::from_ne_bytes([entry[6], entry[7]]));
+        assert_eq!(returned, [0, event::NVAL, event::NVAL, 0, event::OUT]);
     }
 
     #[test]
     fn closed_descriptors_report_pollnval_whatever_was_asked() {
-        assert_eq!(events(3, 0, true), event::NVAL);
-        assert_eq!(events(i32::MAX, event::IN, true), event::NVAL);
+        assert_eq!(events(None, 0, true), event::NVAL);
+        assert_eq!(events(None, event::IN, true), event::NVAL);
     }
 
     #[test]
     fn the_console_has_room_to_write_when_asked_and_data_to_read_only_when_readable() {
         let all = u16::MAX;
-        for fd in 0..=2 {
-            assert_eq!(events(fd, 0, true), 0);
-            assert_eq!(events(fd, event::IN | event::RDNORM | event::PRI, false), 0);
-            assert_eq!(
-                events(fd, event::IN | event::RDNORM | event::PRI, true),
-                event::IN | event::RDNORM
-            );
-            assert_eq!(events(fd, event::OUT, true), event::OUT);
-            assert_eq!(events(fd, all, false), event::OUT | event::WRNORM);
-            assert_eq!(
-                events(fd, all, true),
-                event::OUT | event::WRNORM | event::IN | event::RDNORM
-            );
-        }
+        let console = Some(&FileKind::Console);
+        assert_eq!(events(console, 0, true), 0);
+        assert_eq!(
+            events(console, event::IN | event::RDNORM | event::PRI, false),
+            0
+        );
+        assert_eq!(
+            events(console, event::IN | event::RDNORM | event::PRI, true),
+            event::IN | event::RDNORM
+        );
+        assert_eq!(events(console, event::OUT, true), event::OUT);
+        assert_eq!(events(console, all, false), event::OUT | event::WRNORM);
+        assert_eq!(
+            events(console, all, true),
+            event::OUT | event::WRNORM | event::IN | event::RDNORM
+        );
     }
 }

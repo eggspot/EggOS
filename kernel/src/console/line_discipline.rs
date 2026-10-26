@@ -449,10 +449,7 @@ impl LineDiscipline {
             byte &= 0x7f;
         }
         if core::mem::take(&mut self.literal_next) {
-            if settings.has(local::ECHO) {
-                self.echo_character(byte, echo);
-            }
-            return self.append(byte, canonical);
+            return self.append(byte, canonical, settings.has(local::ECHO), echo);
         }
         if byte == b'\r' {
             if settings.input & input::IGNCR != 0 {
@@ -482,10 +479,7 @@ impl LineDiscipline {
             }
         }
         if !canonical {
-            if settings.has(local::ECHO) {
-                self.echo_character(byte, echo);
-            }
-            return self.append(byte, false);
+            return self.append(byte, false, settings.has(local::ECHO), echo);
         }
         let extended = settings.has(local::IEXTEN);
         if settings.is(byte, index::VERASE) || byte == BACKSPACE {
@@ -500,27 +494,32 @@ impl LineDiscipline {
                 echo(b"^\x08");
             }
         } else if settings.is(byte, index::VEOF) {
-            return self.end_line(None);
+            return self.end_line(None, false, echo);
         } else if byte == b'\n' || settings.is(byte, index::VEOL) || settings.is(byte, index::VEOL2)
         {
-            if settings.has(local::ECHO) || (byte == b'\n' && settings.has(local::ECHONL)) {
-                self.echo_character(byte, echo);
-            }
-            return self.end_line(Some(byte));
+            let echoed =
+                settings.has(local::ECHO) || (byte == b'\n' && settings.has(local::ECHONL));
+            return self.end_line(Some(byte), echoed, echo);
         } else {
-            if settings.has(local::ECHO) {
-                self.echo_character(byte, echo);
-            }
-            return self.append(byte, true);
+            return self.append(byte, true, settings.has(local::ECHO), echo);
         }
         Received::default()
     }
 
-    fn append(&mut self, byte: u8, canonical: bool) -> Received {
+    fn append(
+        &mut self,
+        byte: u8,
+        canonical: bool,
+        echoed: bool,
+        echo: &mut impl FnMut(&[u8]),
+    ) -> Received {
         let reserve = usize::from(canonical);
         if self.end.wrapping_sub(self.read) + reserve >= CAPACITY {
             self.dropped += 1;
             return Received::default();
+        }
+        if echoed {
+            self.echo_character(byte, echo);
         }
         self.push(byte, false, false);
         if canonical {
@@ -533,10 +532,18 @@ impl LineDiscipline {
         }
     }
 
-    fn end_line(&mut self, terminator: Option<u8>) -> Received {
+    fn end_line(
+        &mut self,
+        terminator: Option<u8>,
+        echoed: bool,
+        echo: &mut impl FnMut(&[u8]),
+    ) -> Received {
         if self.end.wrapping_sub(self.read) >= CAPACITY {
             self.dropped += 1;
             return Received::default();
+        }
+        if let (true, Some(byte)) = (echoed, terminator) {
+            self.echo_character(byte, echo);
         }
         match terminator {
             Some(byte) => self.push(byte, true, false),
@@ -1083,12 +1090,14 @@ mod tests {
     }
 
     #[test]
-    fn a_full_line_drops_what_does_not_fit_but_still_ends() {
+    fn a_full_line_drops_and_never_echoes_what_does_not_fit_but_still_ends() {
         let mut console = Console::new();
         let long = alloc::vec![b'x'; CAPACITY + 10];
         console.types(&long);
         assert_eq!(console.discipline.dropped(), 11);
+        assert_eq!(console.echo(), alloc::vec![b'x'; CAPACITY - 1]);
         console.types(b"\n");
+        assert_eq!(console.echo(), b"\n");
         let mut buffer = alloc::vec![0; CAPACITY + 10];
         let taken = console.discipline.take(&mut buffer);
         assert_eq!(taken.length, CAPACITY);

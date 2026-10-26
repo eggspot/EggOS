@@ -4530,3 +4530,108 @@ the license, by an explicit instruction recorded here.
   columns from where the line began, not from the column the output left (after a prompt), which
   needs the output's column tracked; a long echo written under the lock; virtio-console input
   (M8).
+
+## D101 A descriptor table per process: `close`, `dup`, `dup2`, `dup3`, `fcntl`, `close_range`; `readv` and `O_NONBLOCK` on the console — Decided by the build loop (where the table lives and the accepted cost decided by research)
+
+- **What.** Item 3 of the v0.3.0 plan (D99): each process has a descriptor table, and the
+  console is an ordinary open file description in it. This supersedes D61's "descriptors 0 to 2
+  are the console" and finishes D100's `readv` and `O_NONBLOCK` follow-ups.
+- **The model** (`linux::descriptors`, POSIX's file descriptors and open file descriptions,
+  as close(2), dup(2), fcntl(2) and close_range(2) describe them). A descriptor names a
+  reference-counted open file description (`OpenFile`): what was opened (`FileKind`), its access
+  mode, its status flags and its offset, which every descriptor duplicated from it shares; the
+  close-on-exec flag is the descriptor's own. `FileKind` is an enum with the console as its
+  first kind: the VFS (item 4, issue #94) adds its nodes as more kinds, and `read`, `write`,
+  `ioctl`, `lseek`, `fstat` and `poll` already go through one match on the kind. A process
+  starts with descriptors 0, 1 and 2 on one description of the console, opened for reading and
+  writing, as Linux starts `init` with `/dev/console` opened once and duplicated, so
+  `O_NONBLOCK` set through one holds for all three, as on Linux.
+- **Where the table lives** (decided by research). Each thread holds an `Arc` of the table
+  (`Descriptors`, in its `LinuxThread`), as Linux's tasks point to a files table, rather than a
+  field in `Process`: `Process` is exactly at the heap's 256-byte class (D59), a thread is the
+  caller of every call that uses the table, and the table is dropped with the last thread that
+  holds it, while `Process` can outlive its threads. `clone` with `CLONE_FILES` shares it; without
+  it the new thread gets a copy (Linux allows `CLONE_THREAD` without `CLONE_FILES`), and `fork`
+  (item 6) will copy it the same way. `execve` (item 5) closes the descriptors marked
+  close-on-exec (`remove_first_closed_on_exec`). Nothing reaches the table except through a
+  thread, so `/proc/<pid>/fd` will need the process's threads.
+- **The table** is a vector of slots, one per number, behind a leaf lock: its holder takes no
+  lock but the heap's and never waits for another CPU. It is never held while user memory is
+  copied or a thread waits, and no open file description is dropped under it (closed ones are
+  handed back to be dropped after it is released), so a later description whose last close
+  takes other locks can join it. A lookup takes the lock, counts one more reference and releases
+  it: no allocation. A new descriptor takes the lowest free number, from a hint below which every
+  slot is taken, below the process's `RLIMIT_NOFILE` soft limit (D59); the table grows by
+  doubling (8 slots at least, never past the limit) and shrinks when its highest descriptors
+  close. A table of the largest allowed limit (524,288 slots of 16 bytes) needs 8 MiB, past the
+  heap's 4 MiB blocks (D31), so `dup2` that high fails with `ENOMEM`; Linux allocates it.
+- **The calls**, with Linux's errors in Linux's order: `close` (`EBADF`); `dup` (`EBADF`,
+  `EMFILE`); `dup2` on x86_64 only (AArch64 and RISC-V have no such call; their C libraries'
+  `dup2` calls `dup3`), returning the descriptor when both are the same and it is open; `dup3`
+  (`EINVAL` for a flag other than `O_CLOEXEC` and for the same descriptor twice, then `EBADF`
+  for a target not below the limit, then for a source not open); `fcntl` (`EBADF` first whatever
+  the command; its argument an `int`, the register's upper half ignored, as C libraries leave it
+  undefined; `F_DUPFD` and `F_DUPFD_CLOEXEC`, `EINVAL` for a lowest descriptor not below the
+  limit (a negative one never is) and `EMFILE`; `F_GETFD` and `F_SETFD` with `FD_CLOEXEC`; `F_GETFL`; `F_SETFL` changing
+  `O_APPEND` and `O_NONBLOCK`; `EINVAL` for every other command); `close_range` (`EINVAL` for an
+  unknown flag or a reversed range, `CLOSE_RANGE_UNSHARE` giving the caller its own copy first,
+  `CLOSE_RANGE_CLOEXEC` marking instead of closing, descriptors not open skipped); and the
+  `ioctl`s every descriptor answers before the console's, `FIOCLEX`, `FIONCLEX`, `FIONBIO` and
+  `FIOASYNC` (its `int` read, `EFAULT` if it cannot be, and ignored, as `F_SETFL` ignores
+  `O_ASYNC`).
+  `read`, `readv`, `write`, `writev`, `ioctl`, `lseek`, `fstat`, `newfstatat`, `statx`, `poll`
+  and `ppoll` look descriptors up in the table: `EBADF` for one not open, and for `read`/`readv`
+  or `write`/`writev` on one not open for that.
+- **`readv` on the console** takes one read's worth of input (a line in canonical mode) into its
+  buffers one after another, checked as `writev`'s are (D62); musl's stdio reads with two
+  buffers, the caller's and the stream's own, so `fgets` on standard input works.
+- **`O_NONBLOCK` reads.** Where a read would wait, it returns what is there or fails with
+  `EAGAIN` if nothing is: no whole line in canonical mode, no byte otherwise. POSIX lets a
+  non-canonical read return 0 or `EAGAIN` there (termios(3)); `VMIN` and `VTIME` both 0 never
+  wait, so that read returns 0 with or without `O_NONBLOCK`. `poll` is unchanged.
+- **Kept out for now** (each ignored or `EINVAL` until something acts on it): `F_SETFL`'s
+  `O_ASYNC`, `O_DIRECT` and `O_NOATIME`, and `FIOASYNC`'s; record locks (`F_GETLK`,
+  `F_SETLK`, `F_OFD_*`), `F_SETOWN` and the other commands; `O_LARGEFILE` in `F_GETFL`, which
+  `openat` will set.
+- **Follow-ups** (from the independent review): a borrowed lookup with no reference counted
+  while the table is not shared, as Linux's `fdget` does; whether a reader spinning in
+  `take_input` for an echo should serve TLB shootdowns meanwhile (it holds no lock, and the
+  echo's writer runs to its end with interrupts masked); `O_LARGEFILE`; the older `///` docs on
+  private items in the large files this change touched (`linux.rs`, `terminal.rs`, `poll.rs`,
+  `bench.rs`), removed file by file in cleanup PRs.
+- **Review fixes to D100** (in the same change): a byte the line discipline drops for lack of
+  room is no longer echoed; a reader that took input waits until the receive interrupt has
+  written its echo (a count of echoes being written, one atomic load on the read path), so the
+  echo comes before the reader's output when the interrupt runs on another CPU; becoming the
+  foreground and a process's end are ordered by SeqCst fences, so the console never keeps an
+  ended process; a non-canonical read with `VMIN` 0 keeps its `VTIME` deadline when woken for
+  input another reader took; one with `VMIN` and `VTIME` set whose bytes another reader took
+  waits for a first byte again instead of returning 0.
+- **Testing.** Host unit tests of the table (lowest-free allocation, the hint, the limit and
+  `EMFILE`, shared descriptions and per-descriptor close-on-exec, duplication over an open
+  descriptor, shrinking, `close_range` with its flags, copies, the register's upper half) and of
+  the calls through the Linux layer (every call's errors, a closed standard input, `RLIMIT_NOFILE`
+  lowered, `FIONBIO`, `O_NONBLOCK` reads in both modes, `readv` across buffers, a read with
+  `VMIN` and `VTIME`). In QEMU on aarch64, riscv64 and x86_64, the std program duplicates,
+  flags and closes descriptors through musl (`dup`, `dup2`, `dup3`, `fcntl`, `close`,
+  `close_range`), reads `EBADF` from a closed standard input and restores it, and sees a
+  descriptor closed by another thread; given `read-the-console`, it reads a line with
+  `O_NONBLOCK` (`EAGAIN` before and after it), then a line with musl's `fgets` and one with
+  Rust's `read_line`.
+- **Cost.** Every call on a descriptor (`read`, `write`, `writev`, `ioctl`, `lseek`, `fstat`,
+  `poll`, ...) now finds it in the table: the table's lock taken and released and the open file
+  description's count taken and dropped, where it compared the number with 2 before. Two new
+  benchmarks gate it (docs/benchmarks.md): `linux_descriptor_lookup`, that lookup alone, and
+  `linux_dup3_close` (`dup3` to descriptor 3, then `close`, without the trap): 36.03, 28.03
+  and 27.02 ns, and 184.52, 201.11 and 189.09 ns, on aarch64, riscv64 and x86_64. The system-call dispatch and the calls that take
+  no descriptor are unchanged. Every other benchmark is as on `main` but for the one-time table
+  of each process: about 245 instructions per process (three allocations and their frees),
+  +0.03% on `linux_page_fault` (one process per 512 pages) and +0.02% on
+  `linux_syscall_round_trip` (one per run). aarch64's `linux_page_fault` baseline line was already 1.02%
+  below what `main` measures, so only it crossed the gate; research judged the cost the minimal
+  price of a feature every process needs, as Linux pays for its files table at `clone` (a lazy
+  table would put a branch on every lookup instead), and the line moved to 1388.94 (D78). Kernel
+  image (release, `.text` / `.rodata` / `.data` / `.bss` against `main`): aarch64 +12.0 KiB /
+  +0.7 / 0 / +16 bytes, riscv64 +9.7 KiB / +1.7 / 0 / 0, x86_64 +9.5 KiB / +1.1 / 0 / +16
+  bytes: the table, seven calls, `readv` and the D100 review fixes (D24: growth justified by a
+  must-have of D99).

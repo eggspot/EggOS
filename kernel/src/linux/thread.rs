@@ -1,11 +1,13 @@
 //! Linux threads (D91): each thread's own state, its id, the address its exit clears and wakes
-//! (`set_tid_address`, `clone`'s `CLONE_CHILD_CLEARTID`) and its signal state, which it keeps
-//! in its loop and its system calls reach through the [`LinuxThread`] they are given; and
+//! (`set_tid_address`, `clone`'s `CLONE_CHILD_CLEARTID`), its signal state and its descriptor
+//! table, shared with the threads started with `CLONE_FILES` (D101), which it keeps in its
+//! loop and its system calls reach through the [`LinuxThread`] they are given; and
 //! [`clone`], which starts a thread of the caller's process; and [`sleep_until`], where a
 //! Linux thread waits for time or for a signal until its process ends, ended early by
 //! [`futex::interrupt`] for a signal sent to it.
 
 use super::Errno;
+use super::descriptors::Descriptors;
 use super::futex::{self, WaitSlot};
 use super::signals::{self, LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
@@ -93,10 +95,13 @@ pub struct LinuxThread {
     signals: ThreadSignals,
     signals_seen: u16,
     wait_slot: Arc<WaitSlot>,
+    files: Descriptors,
 }
 
 impl LinuxThread {
-    /// The first thread of `process`, which has the process's id, as on Linux.
+    /// The first thread of `process`, which has the process's id, as on Linux, with a
+    /// descriptor table of its own holding the console's standard streams
+    /// ([`Descriptors::with_console_streams`]).
     pub fn first<P: Platform>(process: &Process<P>) -> Self {
         Self {
             id: process.id().get(),
@@ -105,13 +110,14 @@ impl LinuxThread {
             signals: ThreadSignals::new(),
             signals_seen: process.signals_sent(),
             wait_slot: Arc::new(WaitSlot::new()),
+            files: Descriptors::with_console_streams(),
         }
     }
 
     /// A thread with id `id` that this thread starts (`clone`), clearing and waking
-    /// `clear_child_tid` when it exits, unless that is 0, and with its signal state
-    /// ([`ThreadSignals::for_new_thread`]).
-    pub fn new_thread(&self, id: u32, clear_child_tid: u64) -> Self {
+    /// `clear_child_tid` when it exits, unless that is 0, with its signal state
+    /// ([`ThreadSignals::for_new_thread`]) and the descriptor table `files`.
+    pub fn new_thread(&self, id: u32, clear_child_tid: u64, files: Descriptors) -> Self {
         Self {
             id,
             clear_child_tid,
@@ -119,7 +125,18 @@ impl LinuxThread {
             signals: self.signals.for_new_thread(),
             signals_seen: self.signals_seen,
             wait_slot: Arc::new(WaitSlot::new()),
+            files,
         }
+    }
+
+    /// Its descriptor table (D101).
+    pub fn files(&self) -> &Descriptors {
+        &self.files
+    }
+
+    /// Gives it `files` as its descriptor table (`close_range` with `CLOSE_RANGE_UNSHARE`).
+    pub fn set_files(&mut self, files: Descriptors) {
+        self.files = files;
     }
 
     /// Its id (Linux's `tid`).
@@ -214,10 +231,10 @@ pub mod flag {
     /// thread group.
     pub const NEW_THREAD: u64 = VM | SIGHAND | THREAD;
 
-    /// What a new thread may also ask for: sharing what threads here always share (the file
-    /// system context, the descriptors, System V semaphore undo), its thread pointer and the
-    /// id words, and what changes nothing without a tracer or I/O scheduler (`CLONE_DETACHED`
-    /// is ignored, as on Linux).
+    /// What a new thread may also ask for: sharing the descriptor table (without it, the thread
+    /// gets a copy), sharing what threads here always share (the file system context, System V
+    /// semaphore undo), its thread pointer and the id words, and what changes nothing without
+    /// a tracer or I/O scheduler (`CLONE_DETACHED` is ignored, as on Linux).
     pub const THREAD_OPTIONS: u64 = FS
         | FILES
         | SYSVSEM
@@ -266,7 +283,8 @@ impl Arguments {
 /// pointer is `tls`; with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` its id is written to
 /// the 32-bit words at `parent_tid` and `child_tid` before it runs, silently not if they are
 /// not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
-/// the word at `child_tid` and wakes a futex there. It blocks the signals the caller blocks,
+/// the word at `child_tid` and wakes a futex there. With `CLONE_FILES` it shares the caller's
+/// descriptor table, and without it starts with a copy (D101). It blocks the signals the caller blocks,
 /// has none pending and no alternate stack, as on Linux.
 ///
 /// As Linux, in this order: `EINVAL` for `CLONE_PIDFD` with `CLONE_PARENT_SETTID`, for
@@ -318,7 +336,11 @@ pub fn clone<P: Platform>(
     } else {
         0
     };
-    let new = thread.new_thread(id, clear_child_tid);
+    let files = match any(flag::FILES) {
+        true => thread.files().share(),
+        false => thread.files().copy()?,
+    };
+    let new = thread.new_thread(id, clear_child_tid, files);
     process
         .signals()
         .lock()
