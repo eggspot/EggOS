@@ -44,6 +44,15 @@ shell in a terminal window you can move, focus and minimise with the mouse. Type
 [core utilities](docs/coreutils.md)). Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 
+### Run your own Linux programs
+Static Linux programs run unmodified. From a checkout, add yours to the image and boot it, then
+type its name at the prompt ([docs/linux-programs.md](docs/linux-programs.md)):
+
+```
+cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello
+cargo xtask image --arch all --add path/to/hello       # writes target/image/eggos-<arch>.elf
+```
+
 ## Layout
 | Path | What |
 |------|------|
@@ -51,6 +60,7 @@ window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
 | `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
+| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 

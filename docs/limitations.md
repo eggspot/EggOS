@@ -23,9 +23,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
   desktop's clock shows the uptime (D73, D115).
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
-  Linux system-call layer, but the image ships only our own programs and there is no way to
-  add others to a running system yet. No dynamic linking, no `/proc`, `/dev` or `/tmp`, no
-  pipes, no copy-on-write `fork` (memory is copied at once, D104).
+  Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
+  can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
+  dynamic linking, no `/proc`, `/dev` or `/tmp`, no pipes (so a program cannot start another
+  through `std::process::Command`, `posix_spawn`, `system` or `popen`), no `mmap` of files, no
+  copy-on-write `fork` (memory is copied at once, D104).
 - **Foreign apps are not in yet.** Windows, macOS, Android and iOS apps (D17) and their
   console programs do not run in this release.
 - **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends

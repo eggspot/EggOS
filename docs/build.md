@@ -72,7 +72,17 @@ holds what used to be written in them.
   resets the machine, which ends QEMU under `-no-reboot` (D106); init starting the shell, which
   the runner drives on the serial console (D107); and last the release kernel itself, booted to
   the shell's prompt, where the runner runs the core utilities, reports the time from QEMU's
-  start to the first prompt, and powers off with `poweroff` (D108). A boot that has not powered
+  start to the first prompt, and powers off with `poweroff` (D108). Before that last boot, the
+  Linux programs test boots the release image with `tests/linux-static` added as
+  `/bin/linux-static` (built with `-C relocation-model=static`) and `/bin/linux-static-pie`
+  (the target's default: a static PIE on x86_64), each with `-C link-self-contained=yes -C
+  target-feature=+crt-static` in a target directory of its own, and types commands at the
+  prompt that run them by name; each command's `LINUX-STATIC` lines, the panic's message,
+  `Aborted` and the exit statuses must appear in order before the next prompt (D117).
+- **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]`
+  files in its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image or
+  with an empty, `.` or `..` part is refused) and writes `target/image/eggos-<arch>.elf`;
+  `cargo xtask run` takes the same options ([Linux programs](linux-programs.md), D117). A boot that has not powered
   off within 30 seconds (90 for the benchmarks) has hung.
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
