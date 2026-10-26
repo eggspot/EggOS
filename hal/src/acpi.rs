@@ -57,15 +57,14 @@ pub enum RootTable {
 }
 
 /// Validates an RSDP and returns where its root table is. `rsdp` holds at least the bytes
-/// the RSDP's revision says it has (20 for revision 0, 36 otherwise).
+/// the RSDP's revision says it has (20 for revision 0, 36 otherwise). A bad extended length or
+/// checksum only rules out the XSDT: the ACPI 1.0 part is already valid, so the RSDT is used.
 pub fn parse_rsdp(rsdp: &[u8]) -> Option<RootTable> {
     if rsdp.get(..8)? != RSDP_SIGNATURE || !checksum_ok(rsdp.get(..RSDP_V1_LENGTH)?) {
         return None;
     }
     let revision = rsdp[15];
     if revision >= 2 {
-        // A bad extended length or checksum only rules out the XSDT; the ACPI 1.0 part is
-        // already valid, so fall back to the RSDT.
         let extended_ok = read_u32(rsdp, 20)
             .and_then(|length| rsdp.get(..usize::try_from(length).ok()?))
             .is_some_and(|extended| extended.len() >= RSDP_V2_LENGTH && checksum_ok(extended));
@@ -245,13 +244,14 @@ const AML_BYTE_PREFIX: u8 = 0x0a;
 
 /// Finds `Name(_S5, Package() { SLP_TYPa, SLP_TYPb, ... })` in DSDT AML and returns its
 /// sleep types. This reads the one static object it needs without running an AML
-/// interpreter, which firmware that defines `\_S5` as a plain package allows.
+/// interpreter, which firmware that defines `\_S5` as a plain package allows. `Name` is
+/// `NameOp NameString`, and the name may carry a root prefix `\`; a mention of `_S5_` that is
+/// not a definition is skipped.
 pub fn find_s5_sleep_type(aml: &[u8]) -> Option<S5SleepType> {
     aml.windows(4)
         .enumerate()
         .filter(|(_, name)| *name == b"_S5_")
         .find_map(|(at, _)| {
-            // `Name` is `NameOp NameString`; the name may carry a root prefix `\`.
             let named = match at.checked_sub(1).map(|i| aml[i]) {
                 Some(AML_NAME_OP) => true,
                 Some(b'\\') => at >= 2 && aml[at - 2] == AML_NAME_OP,
@@ -264,12 +264,16 @@ pub fn find_s5_sleep_type(aml: &[u8]) -> Option<S5SleepType> {
         })
 }
 
+/// How many more bytes a PkgLength's lead byte says follow it: its bits 7-6 (ACPI 6.5, 20.2.4).
+const fn package_length_extra_bytes(lead: u8) -> usize {
+    (lead >> 6) as usize
+}
+
 fn parse_s5_package(aml: &[u8]) -> Option<S5SleepType> {
     if *aml.first()? != AML_PACKAGE_OP {
         return None;
     }
-    // PkgLength: bits 7-6 of the lead byte give how many more bytes follow (20.2.4).
-    let package_length_bytes = 1 + usize::from(aml.get(1)? >> 6);
+    let package_length_bytes = 1 + package_length_extra_bytes(*aml.get(1)?);
     let element_count_at = 1 + package_length_bytes;
     if *aml.get(element_count_at)? < 2 {
         return None;
@@ -365,12 +369,13 @@ mod tests {
     fn madt_lists_enabled_local_apics_and_skips_other_structures() {
         let io_apic = [1u8, 12, 0, 0, 0, 0, 0xc0, 0xfe, 0, 0, 0, 0];
         let x2apic = [9u8, 16, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let (disabled, online_capable_only) = (0, 2);
         let body = [
             local_apic(0, 1),
             local_apic(1, 1),
             io_apic.to_vec(),
-            local_apic(2, 0), // disabled
-            local_apic(3, 2), // online capable only
+            local_apic(2, disabled),
+            local_apic(3, online_capable_only),
             x2apic.to_vec(),
             local_apic(6, 3),
         ]
@@ -456,8 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn madt_stops_at_a_malformed_structure() {
-        // A zero length would loop forever; a length past the end is truncated.
+    fn madt_stops_at_a_zero_length_or_one_past_the_end_or_too_short_structure() {
         let zero = [local_apic(4, 1), vec![0, 0, 9, 9], local_apic(5, 1)].concat();
         assert_eq!(madt_ids(&zero), [4]);
         let long = [local_apic(4, 1), vec![0, 40, 7, 7, 1, 0, 0, 0]].concat();
@@ -558,8 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn s5_package_with_byte_and_zero_elements() {
-        // Name (_S5, Package (0x04) { 0x05, Zero, Zero, Zero })
+    fn s5_package_with_byte_and_zero_elements_as_in_name_s5_package_4_of_5_and_zeros() {
         let aml = [
             0xff,
             AML_NAME_OP,
@@ -600,8 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn s5_reference_that_is_not_a_name_definition_is_skipped() {
-        // A method body mentioning _S5_ (no NameOp before it), then the real definition.
+    fn s5_mentioned_in_a_method_body_without_name_op_is_skipped_for_the_real_definition() {
         let aml = [
             0x70,
             b'_',
@@ -624,9 +626,8 @@ mod tests {
     }
 
     #[test]
-    fn pm1_control_value_sets_sleep_type_and_preserves_other_bits() {
+    fn pm1_control_value_sets_sleep_type_keeps_sci_en_and_replaces_a_stale_sleep_type() {
         assert_eq!(pm1_control_sleep(0, 5), (5 << 10) | (1 << 13));
-        // SCI_EN stays set; a stale SLP_TYP is replaced, not ORed.
         assert_eq!(pm1_control_sleep(0b111 << 10 | 1, 0), (1 << 13) | 1);
         assert_eq!(pm1_control_sleep(0, 0xff), (0b111 << 10) | (1 << 13));
     }
