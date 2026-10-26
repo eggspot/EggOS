@@ -5251,3 +5251,92 @@ the license, by an explicit instruction recorded here.
   signals and `SIGHUP` to look for the login program again. `RESTART2`'s string, a reset
   through the FADT's reset register on x86_64, and the release kernel's idle memory measured
   per release.
+
+## D107 `eggsh`, the shell — Decided by the build loop (the prompt, signal reports, how programs start, `^C` at the prompt, memory, prefix assignments, `^D` and when job control is on decided by research)
+
+- **What.** Item 9 of the v0.3.0 plan (D99): `userland/eggsh`, our own shell on our own runtime
+  (no allocator, no C library), at `/bin/eggsh` in the release kernel's initramfs, which init
+  starts by default (D106). The language and the builtins are in docs/shell.md.
+- **Structure.** `syntax.rs` reads one simple command at a time into a buffer of NUL-ended
+  words (assignments first), expanding as it goes; `variables.rs` keeps each variable as
+  `NAME=value` and a NUL, sorted by name, so a program's environment is pointers into it;
+  `path.rs` finds a program on `PATH` through a `Files` trait; `shell.rs` runs lines and
+  builtins through a `System` trait; `status.rs` turns wait statuses into `$?`. All of it is
+  pure logic with host tests against fakes; `system.rs` is the system calls. A line's syntax
+  is checked whole before any of its commands runs (as other shells parse a line first), with
+  nothing expanded, then each command is expanded just before it runs, so `X=1; echo $X`
+  sees the new value.
+- **Room for item 16.** The operators other shells have (`|`, `||`, `&&`, `&`, `<`, `<<`, `>`,
+  `>>`, `(`, `)`, `` ` ``, `$(`) are tokens the lexer refuses with
+  `eggsh: `|` is not supported yet`, never words, so a line that works now means the same once
+  they exist. Pipelines and lists will group the simple commands the lexer already ends at an
+  operator; redirections attach to the command being read.
+- **Prompt (decided by research).** `eggsh:<PWD># ` for root, `$ ` otherwise, plain text, only
+  when interactive; `PS1` and `PS2` (default `> `) replace them literally. Options weighed:
+  `user@host:dir$` (there is no host name facility or other user yet), a fixed `$ `.
+- **Signal reports (decided by research).** As bash: the signal's description (`Terminated`,
+  `Killed`, `Segmentation fault`, ...) on standard error, nothing for `SIGPIPE`, and only a
+  newline for `SIGINT`, since the terminal already shows `^C`; `$?` is 128 plus the signal.
+  Options weighed: a description for every signal, `Interrupt` included.
+- **Starting programs (decided by research).** posix_spawn style: `clone(CLONE_VM |
+  CLONE_VFORK | SIGCHLD)` with the child on a 16 KiB stack of its own (`.bss`), through
+  `eggos_runtime::process::clone_onto_stack`, a few lines of inline assembly per architecture
+  that call the child's function on the new stack (Rust has no `returns_twice`, so a `vfork`
+  on the shell's own stack would be undefined behaviour; this is what musl does). Nothing is
+  copied: the shell sleeps until the child's `execve` (D104). The child joins a group of its
+  own (`setpgid(0, 0)`), takes the terminal (`TIOCSPGRP`), resets the signals the shell
+  changed and unblocks its mask, then runs `execve`; an `execve` error is written to the
+  shared request and the child exits with 127 or 126, and the shell reports it. The shell
+  also calls `setpgid` and `TIOCSPGRP` for the child (whichever runs first wins; both are
+  idempotent), waits with `wait4`, retrying on `EINTR`, and takes the terminal back. Options
+  weighed: `fork` as init does (an eager copy of the shell's memory per command, D104), and
+  `vfork` on the same stack (undefined behaviour). The runtime's other assembly (the entry and
+  the system-call instruction) set the precedent: none of this can be written in Rust.
+- **`^C` at the prompt (decided by research).** The shell catches `SIGINT` with an empty
+  handler, keeps it blocked, and waits for input with `ppoll` and an empty mask, so a `^C`
+  that comes at any moment interrupts the wait (no window between a check and the `read`);
+  it then writes a newline and a fresh prompt and sets `$?` to 130. On x86_64 the handler
+  needs `SA_RESTORER`: `eggos_runtime::process::restore_after_signal` calls `rt_sigreturn`
+  (AArch64 and RISC-V return through the kernel's trampoline, D64). `SIGQUIT`, `SIGTSTP`,
+  `SIGTTIN` and `SIGTTOU` are ignored while interactive. Options weighed: ignoring `SIGINT`
+  (the `read` would not be interrupted, so no fresh prompt), a handler without the mask (a
+  `^C` just before the `read` would be lost).
+- **Memory (decided by research).** Fixed buffers, no allocator: a line of 4 KiB, 8 KiB of
+  words (256 at most), 8 KiB of variables (128 at most), all on the stack or in `.bss`, so
+  none is in the file. Past a limit the shell says `line too long`, `command too long` or
+  `too many variables` and goes on.
+- **Prefix assignments (decided by research).** `NAME=value program` puts the variable in that
+  program's environment only, before the exported ones it replaces; builtins ignore such a
+  prefix (POSIX makes them temporary for regular builtins and lasting for special ones), a
+  documented difference: `VAR=x cd` has no use.
+- **`^D` (decided by research).** At an empty prompt the shell writes `exit` and ends with the
+  last `$?`, as bash does.
+- **Interactive and job control (decided by research).** Interactive when there is no file and
+  no `-c` and descriptors 0 and 2 are terminals (`TCGETS`); only then the prompt, the signal
+  handling above, its own group (`setpgid(0, 0)` unless it leads one already, as under init)
+  holding the terminal, and a group per program. A script or `-c` leaves signals and groups as
+  they are, and a syntax error ends it with status 2, as POSIX says for a non-interactive shell.
+- **Tests.** 46 host tests: the lexer (quoting, escapes, expansion and splitting, tilde,
+  assignments, comments, separators, the refused operators, incomplete and unterminated text,
+  limits), the variables, `PATH` search with a fake file system, wait statuses and `exit`'s
+  argument, and the shell against a fake system (builtins, `$?`, environments, 127 and 126,
+  signals, `cd`, `exit`, `export`/`unset`/`set`, `type`, syntax errors in scripts and at the
+  prompt, prompts and `PS1`, `^C` at the prompt, continuation lines, long lines, `.` and its
+  nesting limit, files read in pieces). `cargo xtask qemu` boots a fifth kernel per
+  architecture: init starts the shell, and the runner types a session on the serial console
+  (quoting, variables, `cd`, `$?`, a command not found, a program given arguments and an
+  environment prefix that exits with 3, one ended by `SIGTERM`, `eggsh file` running a script
+  that sources another, `eggsh -c`, a refused `|`, `^C` to a program waiting in the foreground
+  group, which checks it leads it, `^C` at the prompt, `exit 7`); init reports the 7 and powers
+  off. The commands are modes of the std test program (`shell-child`).
+- **Cost.** eggsh is 46568 bytes on aarch64, 47344 on riscv64 and 51600 on x86_64 (stripped,
+  release). The release kernel's loaded size grows by what the initramfs grows by and nothing
+  else (no kernel code changed): 384497 to 431233 bytes on aarch64, 333672 to 381272 on
+  riscv64 and 398173 to 449981 on x86_64. This is the shell the release needs (D99), not
+  growth of the base's own code. Benchmarks are not affected: no kernel code changed.
+- **Not done yet (follow-ups).** A benchmark of the spawn path (`eggsh -c true`, and a command
+  run from the prompt) once userland timing exists; a smaller binary (`opt-level = "s"` for
+  the shell, measured against its speed); prefix assignments for builtins; `$@`, `$*`,
+  wildcards, parameter operators, control flow and functions, `$(...)`; pipes, redirections
+  and lists (item 16); stopping and resuming jobs (needs D105's stop signals); line editing
+  and history; `PATH` lookups cached.

@@ -315,7 +315,7 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init; every kernel feature is a test
+/// feature, the release kernel's, with init and the shell; every kernel feature is a test
 /// kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {

@@ -38,7 +38,16 @@ Must-have, in order:
    test per architecture boots the release kernel into a test init that powers off, and
    another that resets (D106). Follow-ups: init's shutdown signals once `kill` reaches other
    processes, a protected init (`SIGKILL` and default actions not delivered to pid 1).
-9. The `eggsh` shell: PATH, quoting, `cd`/`pwd`/`exit`/`help`, exit status.
+9. **done** — the `eggsh` shell (`userland/eggsh`, at `/bin/eggsh` in the release kernel's
+   initramfs, which init starts): a prompt, quoting, `$` expansion, assignments and an
+   environment prefix, `;` and comments, `PATH` search, the builtins `cd`, `pwd`, `exit`,
+   `help`, `export`, `unset`, `set`, `echo`, `type`, `true`, `false`, `:` and `.`, `eggsh file`
+   and `eggsh -c`, POSIX exit statuses (127, 126, 128 plus the signal); each program in a
+   process group of its own that has the console, so `^C` reaches only it, and `^C` at the
+   prompt a fresh prompt; pipes, redirections, `&&`, `||`, `&` refused as not supported yet
+   (item 16); a QEMU test per architecture drives a session on the serial console (D107,
+   docs/shell.md). Follow-ups: globbing, `$(...)`, functions and control flow, line editing
+   and history.
 10. Core utilities as one multi-call binary, and a boot-to-prompt QEMU test on all three
     architectures in CI.
 11. UI design (Claude Fable, D16) for the boot screen, the terminal and a minimal desktop in
