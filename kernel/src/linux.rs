@@ -1079,6 +1079,9 @@ fn ioctl<P: Platform>(
     argument: u64,
 ) -> Result<u64, Errno> {
     let file = files.file(fd)?;
+    if file.is_location_only() {
+        return Err(Errno::EBADF);
+    }
     if let Some(result) =
         descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
     {
@@ -5164,6 +5167,111 @@ mod tests {
         }
     }
 
+    const ARGUMENT_LIST: u64 = SCRATCH + 0x100;
+    const ARGUMENT_STRINGS: u64 = SCRATCH + 0x200;
+
+    fn argument_list(process: &Arc<Process<P>>, strings: &[&[u8]]) -> u64 {
+        let mut at = ARGUMENT_STRINGS;
+        for (index, string) in strings.iter().enumerate() {
+            let mut bytes = string.to_vec();
+            bytes.push(0);
+            process.write_user_memory(at, &bytes).unwrap();
+            process
+                .write_user_memory(ARGUMENT_LIST + 8 * index as u64, &at.to_ne_bytes())
+                .unwrap();
+            at += bytes.len() as u64;
+        }
+        process
+            .write_user_memory(ARGUMENT_LIST + 8 * strings.len() as u64, &[0; 8])
+            .unwrap();
+        ARGUMENT_LIST
+    }
+
+    #[test]
+    fn execve_refuses_in_linux_s_order_and_leaves_the_caller_as_it_was() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let execve = |path: &[u8], arguments: u64| {
+            let path = at_path(&process, path);
+            call(&process, number::EXECVE, [path, arguments, 0, 0, 0, 0])
+        };
+        for (path, error) in [
+            (&b""[..], Errno::ENOENT),
+            (b"/missing", Errno::ENOENT),
+            (b"/etc", Errno::EACCES),
+            (b"/etc/hostname", Errno::EACCES),
+            (b"/etc/hostname/program", Errno::ENOTDIR),
+            (b"/usr/libexec/script", Errno::ENOEXEC),
+            (b"/usr/libexec/text", Errno::ENOEXEC),
+        ] {
+            assert_eq!(execve(path, 0), error.result(), "{path:?}");
+        }
+        assert_eq!(
+            execve(b"/usr/libexec/program", UNMAPPED),
+            Errno::EFAULT.result()
+        );
+        let arguments = argument_list(&process, &[b"program"]);
+        assert_eq!(
+            call(
+                &process,
+                number::EXECVEAT,
+                [
+                    FDCWD,
+                    at_path(&process, b"/usr/libexec/program"),
+                    arguments,
+                    0,
+                    1,
+                    0
+                ]
+            ),
+            Errno::EINVAL.result()
+        );
+        assert!(!process.has_ended());
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn execve_starts_the_program_in_a_new_process_with_the_caller_s_id() {
+        use descriptors::open_flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let closed_on_exec = open_at(&process, FDCWD, b"/etc/hostname", CLOEXEC);
+        let kept = open_at(&process, FDCWD, b"/etc/motd", RDONLY);
+        let directory = open_at(&process, FDCWD, b"/usr/libexec", DIRECTORY);
+        let arguments = argument_list(&process, &[b"program", b"argument"]);
+        let path = at_path(&process, b"program");
+        let mut thread = take_first_thread(&process);
+        let mut current = Arc::clone(&process);
+        let mut context = called(number::EXECVEAT, [directory, path, arguments, 0, 0, 0]);
+        assert_eq!(
+            handle(&mut current, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert!(!Arc::ptr_eq(&current, &process));
+        assert_eq!(current.id(), process.id());
+        assert_eq!(thread.id(), process.id().get());
+        assert!(process.has_ended() && !current.has_ended());
+        assert_eq!(current.threads(), 1);
+        assert_eq!(
+            thread.files().file(closed_on_exec).err(),
+            Some(Errno::EBADF)
+        );
+        assert!(thread.files().file(kept).is_ok());
+        let mut argc = [0u8; 8];
+        current
+            .read_user_memory(context.stack(), &mut argc)
+            .unwrap();
+        assert_eq!(u64::from_ne_bytes(argc), 2);
+        current.exit(ProcessExit::Exited(7));
+        assert_eq!(process.exit_status(), Some(ProcessExit::Exited(7)));
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
+    }
+
     #[test]
     fn opening_fails_as_on_a_read_only_linux_mount() {
         use descriptors::open_flag::*;
@@ -5189,6 +5297,11 @@ mod tests {
             (b"/etc", CREAT | DIRECTORY, Errno::EINVAL),
             (b"/etc", TMPFILE, Errno::EINVAL),
             (b"/etc", TMPFILE | RDWR, Errno::EROFS),
+            (b"/etc", (TMPFILE & !DIRECTORY) | RDWR, Errno::EINVAL),
+            (b"/etc", RDONLY | TRUNC, Errno::EISDIR),
+            (b"/missing/.", CREAT, Errno::ENOENT),
+            (b"/missing/x/", CREAT, Errno::ENOENT),
+            (b"/etc/hostname/", CREAT, Errno::ENOTDIR),
         ] {
             assert_eq!(open(path, flags), error.result(), "{path:?} {flags:#o}");
         }
@@ -5205,6 +5318,35 @@ mod tests {
         assert_eq!(read_into(&process, 4, 10), Err(Errno::EISDIR.result()));
         let only_path = open(b"/etc/motd", PATH | WRONLY | TRUNC);
         assert_eq!(only_path, 5);
+        const FIOCLEX: u64 = 0x5451;
+        const F_GETFL: u64 = 3;
+        const F_SETFL: u64 = 4;
+        const F_GETLK: u64 = 5;
+        for (number, arguments, result) in [
+            (
+                number::IOCTL,
+                [only_path, FIOCLEX, 0],
+                Errno::EBADF.result(),
+            ),
+            (
+                number::FCNTL,
+                [only_path, F_SETFL, 0],
+                Errno::EBADF.result(),
+            ),
+            (
+                number::FCNTL,
+                [only_path, F_GETLK, 0],
+                Errno::EBADF.result(),
+            ),
+            (number::FCNTL, [only_path, F_GETFL, 0], u64::from(PATH)),
+        ] {
+            let [first, second, third] = arguments;
+            assert_eq!(
+                call(&process, number, [first, second, third, 0, 0, 0]),
+                result,
+                "{number} {second}"
+            );
+        }
         assert_eq!(
             read_into(&process, only_path, 10),
             Err(Errno::EBADF.result())

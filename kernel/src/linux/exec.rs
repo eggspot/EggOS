@@ -857,6 +857,71 @@ impl ExecName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arguments_and_environment_are_held_to_a_quarter_of_the_stack_with_their_pointers() {
+        let mut strings = Strings::new();
+        let string = [b'a'; 1000];
+        let each = string.len() as u64 + 1 + 8;
+        for _ in 0..MAX_ARGUMENTS_SIZE / each {
+            strings.push(&string).unwrap();
+        }
+        assert_eq!(strings.push(&string), Err(Errno::E2BIG));
+        let mut strings = Strings::new();
+        strings.push(b"first").unwrap();
+        strings.push(b"").unwrap();
+        strings.push(b"third").unwrap();
+        assert_eq!(strings.list().unwrap(), [&b"first"[..], b"", b"third"]);
+    }
+
+    #[test]
+    fn a_program_started_relative_to_a_descriptor_is_named_through_dev_fd() {
+        let mut name = ExecName::new();
+        assert_eq!(name.of(7, b"/bin/sh").unwrap(), b"/bin/sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(at::FDCWD as u64, b"sh").unwrap(), b"sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(12, b"sh").unwrap(), b"/dev/fd/12/sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(0, b"").unwrap(), b"/dev/fd/0");
+    }
+
+    #[test]
+    fn execute_permission_follows_the_file_system_ids_class_and_root_needs_one_bit() {
+        let file = |permissions| vfs::Attributes {
+            kind: NodeKind::Regular,
+            permissions,
+            file_id: 1,
+            links: 1,
+            owner: 1000,
+            group: 100,
+            size: 0,
+            modified: 0,
+        };
+        let root = Credentials::new();
+        assert!(may_execute(&file(0o001), &root));
+        assert!(!may_execute(&file(0o644), &root));
+        let mut user = Credentials::new();
+        user.set_ids(IdKind::User, credentials::Ids::all(1000))
+            .unwrap();
+        user.set_ids(IdKind::Group, credentials::Ids::all(5))
+            .unwrap();
+        assert!(may_execute(&file(0o700), &user));
+        assert!(!may_execute(&file(0o077), &user));
+        let mut other = Credentials::new();
+        other
+            .set_ids(IdKind::User, credentials::Ids::all(2000))
+            .unwrap();
+        other
+            .set_ids(IdKind::Group, credentials::Ids::all(100))
+            .unwrap();
+        assert!(may_execute(&file(0o010), &other));
+        assert!(!may_execute(&file(0o701), &other));
+        other
+            .set_ids(IdKind::Group, credentials::Ids::all(5))
+            .unwrap();
+        assert!(may_execute(&file(0o001), &other));
+    }
     use crate::memory;
     use crate::paging::PageTables;
     use crate::process::TEST_PROGRAM_ADDRESS;

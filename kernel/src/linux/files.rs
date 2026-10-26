@@ -181,7 +181,10 @@ pub fn openat<P: Platform>(
         if flags & open_flag::CREAT != 0 && flags & open_flag::DIRECTORY != 0 {
             return Err(Errno::EINVAL);
         }
-        if flags & open_flag::TMPFILE == open_flag::TMPFILE && !writes {
+        let tmpfile = open_flag::TMPFILE & !open_flag::DIRECTORY;
+        if flags & tmpfile != 0
+            && (flags & (open_flag::TMPFILE | open_flag::CREAT) != open_flag::TMPFILE || !writes)
+        {
             return Err(Errno::EINVAL);
         }
     }
@@ -213,7 +216,7 @@ pub fn openat<P: Platform>(
         if flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
             return Err(Errno::EEXIST);
         }
-        if directory && (flags & open_flag::CREAT != 0 || writes) {
+        if directory && (flags & (open_flag::CREAT | open_flag::TRUNC) != 0 || writes) {
             return Err(Errno::EISDIR);
         }
         if flags & open_flag::DIRECTORY != 0 && !directory {
@@ -228,7 +231,7 @@ pub fn openat<P: Platform>(
         }
     };
     let status = match only_path {
-        true => open_flag::RDONLY,
+        true => open_flag::PATH,
         false => flags,
     };
     let file = Arc::new(OpenFile::new(kind, status));
@@ -240,11 +243,16 @@ pub fn openat<P: Platform>(
 
 #[cold]
 fn creation_error(root: Node, start: Node, path: &[u8]) -> Errno {
-    let Some((directory, name)) = vfs::split_last(path) else {
-        return Errno::EISDIR;
+    let end = path
+        .iter()
+        .rposition(|&byte| byte != b'/')
+        .map_or(0, |at| at + 1);
+    let Some((directory, name)) = vfs::split_last(&path[..end]) else {
+        return Errno::ENOENT;
     };
     match vfs::resolve(root, start, directory) {
         Ok(_) if name.len() > NAME_MAX => Errno::ENAMETOOLONG,
+        Ok(directory) if directory.is_directory() && end < path.len() => Errno::EISDIR,
         Ok(directory) if directory.is_directory() => Errno::EROFS,
         Ok(_) => Errno::ENOTDIR,
         Err(error) => walk_error(error),
