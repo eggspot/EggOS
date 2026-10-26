@@ -19,6 +19,7 @@ EggOS is open source and open for funding. If you want to help build it, [sponso
 | `kernel/` | architecture-independent kernel core and the kernel binary |
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
+| `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 

@@ -40,6 +40,10 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
 `$HOME`, `cd -` back to `$OLDPWD`; keeps `PWD` and `OLDPWD`), `echo` (`-n`: no newline),
 `exit [n]`, `export`, `help`, `pwd`, `set` (lists the variables), `type`, `unset`.
 
+Other commands are programs found through `PATH` (`/bin` under init), such as the core
+utilities `ls`, `cat`, `uname`, `sleep` and `poweroff` (docs/coreutils.md); `/bin/echo`,
+`/bin/true` and `/bin/false` run the programs instead of the builtins.
+
 ## Job control
 
 Interactive, the shell runs each program in a process group of its own and hands it the

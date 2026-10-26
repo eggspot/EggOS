@@ -9,6 +9,7 @@ use crate::syntax::{
     line_end, next_command,
 };
 use crate::variables::{MAX_VARIABLES, VARIABLES_CAPACITY, Variables};
+pub use eggos_runtime::errno::Errno;
 
 /// The most bytes of a line the shell holds before its end: longer lines are refused.
 pub const LINE_CAPACITY: usize = 4096;
@@ -35,34 +36,6 @@ $NAME, ${NAME}, $?, $$, $#, $0-$9 expand; ~ is $HOME; NAME=value sets a variable
 NAME=value command sets it for that command only.\n\
 Builtins: . (source) : cd echo exit export false help pwd set true type unset\n\
 Not supported yet: | && || & < > >> ( ) `...` $(...) and wildcards.\n";
-
-/// A system call's error number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Errno(pub u16);
-
-impl Errno {
-    /// `ENOENT`.
-    pub const NOT_FOUND: Self = Self(2);
-
-    /// What the error means, as `strerror` says it.
-    pub fn message(self) -> &'static [u8] {
-        match self.0 {
-            1 => b"Operation not permitted",
-            2 => b"No such file or directory",
-            7 => b"Argument list too long",
-            8 => b"Exec format error",
-            11 => b"Resource temporarily unavailable",
-            12 => b"Cannot allocate memory",
-            13 => b"Permission denied",
-            20 => b"Not a directory",
-            21 => b"Is a directory",
-            36 => b"File name too long",
-            38 => b"Function not implemented",
-            40 => b"Too many levels of symbolic links",
-            _ => b"Unknown error",
-        }
-    }
-}
 
 /// What a read from a descriptor gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,7 +476,7 @@ impl<'a, S: System> Shell<'a, S> {
         if fits {
             target[..length].copy_from_slice(directory);
         } else {
-            self.error(&[b"cd: ", Errno(36).message()]);
+            self.error(&[b"cd: ", Errno::ENAMETOOLONG.message()]);
             return 1;
         }
         if let Err(errno) = self.system.change_directory(&target[..length + 1]) {
@@ -716,19 +689,19 @@ impl<'a, S: System> Shell<'a, S> {
                 return NOT_FOUND;
             }
             Lookup::Missing => {
-                self.error(&[name, b": ", Errno::NOT_FOUND.message()]);
+                self.error(&[name, b": ", Errno::ENOENT.message()]);
                 return NOT_FOUND;
             }
             Lookup::TooLong => {
-                self.error(&[name, b": ", Errno(36).message()]);
+                self.error(&[name, b": ", Errno::ENAMETOOLONG.message()]);
                 return NOT_FOUND;
             }
             Lookup::Directory => {
-                self.error(&[name, b": ", Errno(21).message()]);
+                self.error(&[name, b": ", Errno::EISDIR.message()]);
                 return NOT_EXECUTABLE;
             }
             Lookup::NotExecutable => {
-                self.error(&[name, b": ", Errno(13).message()]);
+                self.error(&[name, b": ", Errno::EACCES.message()]);
                 return NOT_EXECUTABLE;
             }
         };
@@ -769,7 +742,7 @@ impl<'a, S: System> Shell<'a, S> {
             }
             Err(errno) => {
                 self.error(&[name, b": ", errno.message()]);
-                if errno == Errno::NOT_FOUND {
+                if errno == Errno::ENOENT {
                     NOT_FOUND
                 } else {
                     NOT_EXECUTABLE

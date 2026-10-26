@@ -1,5 +1,5 @@
 use crate::backoff::Backoff;
-use crate::config::{Command, Config, LoginExit, MAX_WORDS};
+use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use core::ptr;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -194,8 +194,18 @@ fn read_config() -> Config {
         }
         length += read as usize;
     }
+    let mut more = [0u8; 1];
+    let cut_short = length == text.len()
+        && call(
+            number::READ,
+            [descriptor, more.as_mut_ptr() as usize, 1, 0, 0, 0],
+        ) > 0;
     call(number::CLOSE, [descriptor, 0, 0, 0, 0, 0]);
-    Config::parse(&text[..length])
+    if !cut_short {
+        return Config::parse(&text[..length]);
+    }
+    say(&[b"init: /etc/eggos/init.conf is too long; only its first whole lines are read\n"]);
+    Config::parse(config::whole_lines(&text[..length]))
 }
 
 fn now_ms() -> u64 {

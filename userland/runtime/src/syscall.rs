@@ -44,6 +44,8 @@ pub mod number {
     pub const SETPGID: usize = 109;
     pub const GETPGID: usize = 121;
     pub const NEWFSTATAT: usize = 262;
+    pub const GETDENTS64: usize = 217;
+    pub const STATX: usize = 332;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -87,6 +89,8 @@ pub mod number {
     pub const SETPGID: usize = 154;
     pub const GETPGID: usize = 155;
     pub const GETEUID: usize = 175;
+    pub const GETDENTS64: usize = 61;
+    pub const STATX: usize = 291;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

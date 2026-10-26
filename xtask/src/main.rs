@@ -1,7 +1,8 @@
 //! Developer commands for EggOS, run with `cargo xtask <command>`.
 //!
 //! Written in Rust (no shell scripts) so the same commands work on macOS, Windows and Linux,
-//! locally and in CI.
+//! locally and in CI. What each command does and the flags our Linux programs are built with:
+//! docs/build.md, "Developer commands".
 
 mod bench;
 mod elf;
@@ -70,29 +71,23 @@ pub const ARCHES: &[Arch] = &[
     },
 ];
 
-/// Crates compiled for kernel targets.
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 
-/// Crates compiled for the architectures' Linux targets: our own Linux programs.
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-init",
     "eggos-eggsh",
+    "eggos-coreutils",
     "eggos-selftest",
     "eggos-std-selftest",
 ];
 
-/// A Linux program built from our own Rust source that the `qemu-test` kernels run.
 struct UserProgram {
     package: &'static str,
-    /// The environment variable that names the program's path to the kernel build.
     variable: &'static str,
-    /// The flags that replace `.cargo/config.toml`'s and any `RUSTFLAGS` for the target.
     rustflags: &'static [&'static str],
 }
 
-/// The programs the `qemu-test` kernels run: one on our own runtime (D85), one on Rust's
-/// standard library and musl (D86).
 const USER_PROGRAMS: [UserProgram; 2] = [
     UserProgram {
         package: "eggos-selftest",
@@ -106,7 +101,6 @@ const USER_PROGRAMS: [UserProgram; 2] = [
     },
 ];
 
-/// A program on our own runtime links no C library or start files, as a static PIE (D85).
 const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] =
     &["-C", "link-self-contained=no", "-C", "relocation-model=pie"];
 
@@ -124,6 +118,12 @@ const INIT_RUSTFLAGS: &[&str] = &[
 const INIT_PATH: &str = "init";
 
 const SHELL_PATH: &str = "bin/eggsh";
+
+const COREUTILS_PATH: &str = "bin/coreutils";
+
+const COREUTILS: [&str; 10] = [
+    "cat", "echo", "false", "halt", "ls", "poweroff", "reboot", "sleep", "true", "uname",
+];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
 
@@ -143,9 +143,6 @@ const INIT_TEST_LOGIN_PATH: &str = "usr/libexec/eggos-std-selftest";
 
 const INIT_TEST_LOGIN: &str = "login=/usr/libexec/eggos-std-selftest init-login\n";
 
-/// A program on Rust's standard library links the toolchain's own musl and start files,
-/// statically, as a static PIE where the target has one, with no debug information or
-/// symbols (D84, D86).
 const STD_PROGRAM_RUSTFLAGS: &[&str] = &[
     "-C",
     "link-self-contained=yes",
@@ -212,7 +209,6 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Parses `--arch <name|all>`.
 fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
     let [flag, name] = args else {
         return Err(USAGE.into());
@@ -230,7 +226,6 @@ fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
         .ok_or_else(|| format!("unknown architecture `{name}`\n\n{USAGE}"))
 }
 
-/// Runs the same checks as CI, in the same order (cheapest first).
 fn ci() -> Result<(), String> {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&[
@@ -250,14 +245,6 @@ fn ci() -> Result<(), String> {
     bench::run(&ARCHES.iter().collect::<Vec<_>>(), false)
 }
 
-/// Boots `arch`'s kernel twice: once to pass its self-tests, once to check that the
-/// exception vectors report a fatal exception (a write to read-only data after the
-/// self-tests, which must fault: D29).
-/// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
-/// Then boots the release kernel twice with a test initramfs whose init runs the std program
-/// as its login program, and powers off once it ends, or resets the machine, which ends QEMU
-/// under `-no-reboot` (D106); and once more with init starting the shell, which the test
-/// drives on the serial console (D107).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -277,13 +264,17 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let kernel = build_shell_test_kernel(arch)?;
     qemu::boot_test(arch, &kernel, qemu::Expect::Shell, qemu::TEST_CPUS, &[])?;
+    let kernel = build_kernel(arch, None)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::BootToPrompt,
+        qemu::TEST_CPUS,
+        &[],
+    )?;
     Ok(())
 }
 
-/// Lints the user crates as compiled for each Linux target and the kernel crates as compiled
-/// for each bare-metal target, where the architecture modules (invisible to a host build) are
-/// compiled: without features and with each test feature, since they change code paths, with
-/// the user programs the test kernels embed built first.
 fn clippy_targets() -> Result<(), String> {
     for arch in ARCHES {
         let mut args = vec!["clippy", "--target", arch.user_target];
@@ -315,19 +306,26 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init and the shell; every kernel feature is a test
-/// kernel's, which runs the programs [`build_user_programs`] builds first.
+/// feature, the release kernel's, with init, the shell and the core utilities; every kernel
+/// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
         let init = build_init(arch)?;
         let shell = build_shell(arch)?;
-        let initramfs = initramfs::build(
-            &[
-                (INIT_PATH, initramfs::Content::Program(&init)),
-                (SHELL_PATH, initramfs::Content::Program(&shell)),
-            ],
-            &format!("initramfs-{}.cpio", arch.user_target),
-        )?;
+        let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
+        let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
+        let mut members = vec![
+            (INIT_PATH, initramfs::Content::Program(&init)),
+            (SHELL_PATH, initramfs::Content::Program(&shell)),
+            (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+        ];
+        members.extend(
+            links
+                .iter()
+                .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
+        );
+        let initramfs =
+            initramfs::build(&members, &format!("initramfs-{}.cpio", arch.user_target))?;
         return build_release_kernel(arch, &initramfs);
     };
     let args = [
@@ -484,9 +482,6 @@ fn program_variables<'a>(programs: &'a [(&'static str, String)]) -> Vec<(&'stati
         .collect()
 }
 
-/// Runs `cargo <args> --release` with `env` and returns the path cargo reports for the last
-/// executable it built, wherever `CARGO_TARGET_DIR` or `build.target-dir` put it, `what`
-/// naming it in errors.
 fn build_executable(
     args: &[&str],
     env: &[(&str, &str)],
@@ -521,8 +516,6 @@ fn build_executable(
         .ok_or_else(|| format!("cargo reported no {what}"))
 }
 
-/// Returns the string value of `"field":"..."` in one line of cargo's JSON output, unescaped.
-/// Enough JSON for cargo's messages (paths may contain `\\` and `\"` escapes on Windows).
 fn json_string_field(line: &str, field: &str) -> Option<String> {
     let start = line.find(&format!("\"{field}\":\""))? + field.len() + 4;
     let mut value = String::new();
@@ -537,7 +530,7 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
                     let hex: String = chars.by_ref().take(4).collect();
                     value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
                 }
-                other => value.push(other), // `\\`, `\"`, `\/`
+                other => value.push(other),
             },
             c => value.push(c),
         }
@@ -560,7 +553,6 @@ fn docs() -> Result<(), String> {
     )
 }
 
-/// Runs `cargo <args>` in the workspace root with the toolchain that is running this xtask.
 fn cargo(args: &[&str]) -> Result<(), String> {
     cargo_with_env(args, &[])
 }

@@ -48,8 +48,14 @@ Must-have, in order:
    (item 16); a QEMU test per architecture drives a session on the serial console (D107,
    docs/shell.md). Follow-ups: globbing, `$(...)`, functions and control flow, line editing
    and history.
-10. Core utilities as one multi-call binary, and a boot-to-prompt QEMU test on all three
-    architectures in CI.
+10. **done** — the core utilities as one multi-call program (`userland/coreutils`, at
+    `/bin/coreutils` with `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`,
+    `true` and `uname` as hard links to it, which the initramfs now supports: one copy of the
+    data), and a boot-to-prompt QEMU test on all three architectures in CI: the release kernel
+    boots to the shell's prompt, the test runs each utility and powers off with `poweroff`, and
+    reports the time to the first prompt (D108, docs/coreutils.md). Follow-ups: `ls` in
+    columns on a terminal and with user names, more utilities (`mkdir`, `rm`, `cp` once there
+    is a writable file system), `poweroff` through init.
 11. UI design (Claude Fable, D16) for the boot screen, the terminal and a minimal desktop in
     `docs/ux/`, then a virtio-gpu 2D driver on all three.
 12. virtio-input keyboard and mouse feeding the line discipline and an input event queue.

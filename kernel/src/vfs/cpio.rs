@@ -162,19 +162,31 @@ pub mod tests {
     /// A member for [`archive`]: its path, mode, modification time and data.
     pub type Entry<'a> = (&'a str, u32, u32, &'a [u8]);
 
+    /// A member for [`archive_with_inodes`]: an [`Entry`], its inode number and its link count.
+    pub type LinkedEntry<'a> = (Entry<'a>, u32, u32);
+
     /// A `newc` archive of `entries`, with its trailer, as `cargo xtask` writes one.
     pub fn archive(entries: &[Entry<'_>]) -> Vec<u8> {
+        let linked: Vec<LinkedEntry<'_>> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (*entry, index as u32 + 1, 1))
+            .collect();
+        archive_with_inodes(&linked)
+    }
+
+    /// A `newc` archive of `entries`, each with the inode number and link count it names.
+    pub fn archive_with_inodes(entries: &[LinkedEntry<'_>]) -> Vec<u8> {
         let mut bytes = Vec::new();
-        let trailer = ("TRAILER!!!", 0, 0, &[][..]);
-        for (index, (name, mode, modified, data)) in
-            entries.iter().copied().chain([trailer]).enumerate()
+        let trailer = (("TRAILER!!!", 0, 0, &[][..]), 0, 1);
+        for ((name, mode, modified, data), inode, links) in entries.iter().copied().chain([trailer])
         {
             let fields = [
-                index as u32 + 1,
+                inode,
                 mode,
                 0,
                 0,
-                1,
+                links,
                 modified,
                 data.len() as u32,
                 0,
