@@ -94,7 +94,7 @@ pub fn reboot<P: Platform>(
     let privileged = credentials::get_effective(process, Kind::User) == 0;
     match decode(privileged, magic as u32, magic2 as u32, cmd as u32)? {
         Action::None => Ok(0),
-        action => go_down::<P>(action),
+        action => take_machine_down::<P>(action),
     }
 }
 
@@ -102,7 +102,7 @@ pub fn reboot<P: Platform>(
 /// `action` says.
 #[cold]
 #[inline(never)]
-pub fn go_down<P: Platform>(action: Action) -> ! {
+pub fn take_machine_down<P: Platform>(action: Action) -> ! {
     crate::cpu::stop_others::<P>();
     if let Some(line) = action.announcement() {
         let _ = writeln!(crate::console::PlatformConsole::<P>::new(), "{line}");
