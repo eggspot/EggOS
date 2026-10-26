@@ -152,10 +152,12 @@ pub fn boot_test(
         }
         console.extend(rx.try_iter().flatten());
         if !typed && has_line(&String::from_utf8_lossy(&console), INPUT_READY_LINE) {
-            keyboard
+            if let Err(e) = keyboard
                 .write_all(CONSOLE_INPUT_SCRIPT)
                 .and_then(|()| keyboard.flush())
-                .map_err(|e| format!("{}: could not type on the console: {e}", arch.name))?;
+            {
+                eprintln!("xtask: {}: could not type on the console: {e}", arch.name);
+            }
             typed = true;
         }
         if banner_count(&String::from_utf8_lossy(&console)) > 1 {

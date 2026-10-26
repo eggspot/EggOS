@@ -52,9 +52,9 @@ fn plic(context: usize) -> Plic<Mmio> {
     Plic::new(sources, context_regs, context)
 }
 
-/// Routes UART0's source to the supervisor-mode context of `hart`, the calling hart, and lets
-/// the hart take supervisor external interrupts.
-pub(super) fn enable(hart: u64, context: Option<usize>) -> Result<(), &'static str> {
+/// Routes UART0's source to `context`, the calling hart's supervisor-mode context, and lets the
+/// hart take supervisor external interrupts.
+pub(super) fn enable(context: Option<usize>) -> Result<(), &'static str> {
     let context = context.ok_or("the device tree names no PLIC context for the boot hart")?;
     if context >= MAPPED_CONTEXTS {
         return Err("the boot hart's PLIC context is beyond the ones the kernel maps");
@@ -63,7 +63,6 @@ pub(super) fn enable(hart: u64, context: Option<usize>) -> Result<(), &'static s
     plic.set_threshold(EVERY_PRIORITY_ABOVE_ZERO);
     plic.enable(UART0_SOURCE, UART0_PRIORITY);
     CONTEXT.store(context, Ordering::Relaxed);
-    debug_assert_eq!(hart, super::BOOT_HART.load(Ordering::Relaxed));
     // SAFETY: setting `sie.SEIE` only lets this hart take the external interrupts its PLIC
     // context now routes to it, which `interrupt` handles.
     unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_SEIE, options(nomem, nostack)) };

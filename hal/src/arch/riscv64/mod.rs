@@ -294,7 +294,7 @@ impl Platform for Riscv64 {
         // SAFETY: as in `memory_map`.
         let context =
             unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
-        console_input::enable(hart, context)?;
+        console_input::enable(context)?;
         uart0().enable_receive_interrupt();
         Ok(())
     }
