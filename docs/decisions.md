@@ -4419,3 +4419,95 @@ the license, by an explicit instruction recorded here.
   (CLAUDE.md): milestones finished this week (M3 by D98, among others) are not released on their
   own but batched into v0.3.0. The only other release before it is the `v0.3.0-rc.1`
   pre-release on 2026-10-31, to rehearse the release steps. This ends once v0.3.0 is out.
+
+## D100 The console's line discipline: `read`, its settings, `POLLIN` and `^C` — Decided by the build loop
+
+- **What.** Item 2 of the v0.3.0 plan (D99): the console's input (D98) goes through a line
+  discipline, and programs read it with `read` on descriptors 0 to 2, change its settings with
+  the terminal `ioctl`s and wait for it with `poll` and `ppoll`. This supersedes D61's "`read`
+  stays `ENOSYS`", its "never readable" and its fixed `TCGETS` answer with `TCSETS*` `ENOTTY`,
+  and D98's raw input queue.
+- **The discipline** (`console::line_discipline`, POSIX's general terminal interface as
+  termios(3) describes it, Linux's flag values) is pure logic in the kernel's core, one for the
+  console, fed from the receive interrupt and echoing through the UART there. Canonical mode:
+  input is edited a line at a time and a read returns at most one line (the rest of a long one
+  next); delete (`VERASE`) and backspace (`^H`) erase a character (a whole UTF-8 one with
+  `IUTF8`), rubbed out with backspace-space-backspace with `ECHOE`; `^U` (`VKILL`) kills the
+  line, rubbed out with `ECHOKE`; with `IEXTEN`, `^W` erases a word and `^V` takes the next
+  byte as it is; newline, `VEOL` and `VEOL2` end a line and are read with it; `^D` (`VEOF`)
+  pushes the line without a newline, or, at the start of a line, reads as an end of file
+  (`read` returns 0). `ICRNL`, `INLCR`, `IGNCR` and `ISTRIP` map input first. With `ISIG`,
+  `^C` and `^\` discard the input (but with `NOFLSH`), echo as `^C` and a newline, and raise
+  `SIGINT` and `SIGQUIT`. Control characters echo as `^X` with `ECHOCTL`; `ECHONL` echoes a
+  newline without `ECHO`. Non-canonical mode makes each byte readable as it arrives, and `VMIN`
+  and `VTIME` decide how a read waits, as termios(3) says (both 0: what is there; `VMIN` 0: up
+  to `VTIME` tenths for a byte; `VTIME` 0: `VMIN` bytes, or `count` if fewer; both: a first
+  byte, then until `VMIN` or a `VTIME` with nothing new). Switching to non-canonical mode makes
+  the line being edited readable; switching back makes what is unread one line.
+- **Backspace erases too.** Linux reads `^H` as a character when `VERASE` is delete; the plan
+  asks for both, as terminals send either for the backspace key. BSD has the same with its
+  second erase character (`VERASE2`, `^H` by default); termios on Linux has no slot for one, so
+  `^H` is a fixed second erase in canonical mode.
+- **Not acted on yet, kept and reported:** `VSUSP` (`^Z` would send `SIGTSTP`, whose default
+  stops the thread for good until job control can continue it, D97), `VREPRINT`, `VDISCARD`,
+  `IXON` flow control (`VSTART`, `VSTOP`), and the output flags: the UART driver writes newline
+  as carriage return and newline whatever `OPOST` and `ONLCR` say. The control flags are kept
+  as set; the line's speed and format do not change (`TCGETS2` reports 115200 baud).
+- **One buffer of 2048 bytes** holds the unread input and the line being edited, with two
+  256-byte bitmaps (where lines end, and end-of-file markers that are never read): 2.5 KiB of
+  static memory in place of D98's 1 KiB queue. Linux has 4096 bytes, macOS's `MAX_CANON` is
+  1024, POSIX's minimum 255; a serial console's lines are short, and every byte counts against
+  D24. A line keeps room for the byte that ends it; bytes that find no room are dropped and
+  counted.
+- **`read`** (`linux::terminal::read`): `EBADF`, then `EFAULT` for a buffer that does not end
+  in user space, then 0 for a count of 0; at most `MAX_RW_COUNT` bytes, copied a page-bounded
+  chunk at a time (a chunk that cannot be written is lost, and the call returns what it copied,
+  or `EFAULT`). It waits on one futex key in no process's address space (`console::INPUT_KEY`),
+  whose waiters the interrupt wakes after it drops the discipline's leaf lock whenever input
+  becomes readable, a signal character is typed or the settings change; a process's end wakes
+  them too when it has other threads. A signal due before input is taken interrupts it as
+  Linux's `-ERESTARTSYS` (restarted after an `SA_RESTART` handler, `EINTR` otherwise, D97); one
+  that came with the input is delivered once it is taken, as Linux returns the data first.
+- **`poll` and `ppoll`** report `POLLIN` (and `POLLRDNORM`) on the console when a read would
+  take input without waiting for more: a whole line (or an end of file) in canonical mode,
+  otherwise `VMIN` bytes, at least one, or one when `VTIME` is set. A call asking for the
+  console's input waits on the same key, so input wakes it; the others sleep as before. x86_64's
+  `poll` moved to the calls that deliver signals themselves.
+- **The `ioctl`s:** `TCGETS`, `TCGETS2`; `TCSETS`, `TCSETSW` (output is written at once, so it
+  does not wait), `TCSETSF` (discards the unread input first) and their `termios2` forms;
+  `TCFLSH` (`TCIFLUSH`, `TCIOFLUSH` discard the input; `TCOFLUSH` has nothing to discard; any
+  other argument `EINVAL`); `FIONREAD`, the bytes of whole lines in canonical mode; the window
+  size as before.
+- **Where `^C` goes** until process groups and `TIOCSPGRP` (D99, item 7): the console's
+  foreground is the thread that last read it or polled it for input (`console::Foreground`).
+  The interrupt sends its process the signal with Linux's kernel `siginfo_t` (`SI_KERNEL`),
+  queued for the process (the signal state's block made on demand, so a process with one thread
+  that never changed an action can take it), and ends the wait of that thread, whose slot the
+  process's signal state does not record when it is the only thread (D97), and of the others it
+  records. The console holds the foreground's process (an `Arc`) until the process ends
+  (`linux::end_process` forgets it), so the interrupt never drops the last reference to a
+  process. A reader that already is the foreground pays one atomic load; a process that ends
+  without being it, one load and a compare.
+- **Testing.** Host unit tests of the discipline (each behaviour above by name); kernel host
+  tests of `read` (lines, end of file, partial reads, `EBADF`, `EFAULT`), non-canonical reads
+  with `VMIN` and `VTIME`, a read interrupted with and without `SA_RESTART` and one that finds
+  input with a signal, `^C` ending the process that read the console, `ppoll` reporting
+  `POLLIN`, and the `ioctl`s. In QEMU on aarch64, riscv64 and x86_64: the runner types a
+  script each time the kernel or a test program writes that script's line (`EGGOS-CONSOLE:
+  type ...`), and checks the console shows the lines' echo, rubbed out as edited; the std test
+  program, given `read-the-console`, checks the settings (`tcgetattr`), polls for a line, reads
+  the edited lines and an end of file, is interrupted by `^C` in `ppoll` (`EINTR`, its handler
+  run) and in a `read` restarted after its `SA_RESTART` handler, then reads raw bytes with `VMIN`
+  1, returns 0 at once with `VMIN` 0 and after a tenth of a second with `VTIME` 1, and restores
+  the settings with `tcsetattr(TCSAFLUSH)`. The kernel's own input self-test now reads its
+  script as one line. A script is typed only once its line has ended (a partial line that
+  matched a shorter request typed an extra `^C` once). The benchmark kernels skip the
+  program's test, and their verdict needs neither its line nor the echo: under `-icount
+  sleep=off` QEMU does not wake an idle RISC-V hart for serial input (observed: the same
+  kernel wakes without `-icount` and with `sleep=on`), so the benchmark boot hung once the
+  program waited.
+- **Not yet.** `readv` (musl's stdio reads with it, so C programs reading standard input wait
+  for it); `O_NONBLOCK` reads (no `fcntl` yet); the actions listed above; tab erase counts
+  columns from where the line began, not from the real column after a prompt; the echo is
+  written under the discipline's lock, which waits as long as the UART takes on real hardware;
+  virtio-console input (M8).
