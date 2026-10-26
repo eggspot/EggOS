@@ -396,6 +396,8 @@ pub fn wait_for_input<P: Platform>(
         if deadline != u64::MAX && P::clock_ticks() >= deadline {
             return ControlFlow::Continue(Waited::TimedOut);
         }
+        #[cfg(feature = "qemu-boot-clock")]
+        crate::boot_clock::report_first_wait::<P>();
         let unless_signalled_or_ended = unless_signalled_or_ended(process, thread);
         let waited = futex::wait_interruptibly::<P>(
             console::INPUT_KEY,

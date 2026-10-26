@@ -6,6 +6,12 @@
 //! result is an instruction count per iteration: deterministic, independent of how fast or
 //! busy the host is, and therefore comparable with a committed number. A result above its
 //! baseline by more than the tolerance is a regression and fails the run.
+//!
+//! Two more results per architecture come from the release kernel (D116): `boot_to_prompt`,
+//! the guest time from the kernel's entry to the shell waiting at its first prompt, read by a
+//! kernel built with `qemu-boot-clock` and booted serial-only under the same `-icount`; and
+//! `release_image_bytes`, the size of the image `cargo xtask release` ships, which may not grow
+//! at all without a baseline update (CLAUDE.md, note 8).
 
 use crate::{Arch, qemu};
 use std::collections::BTreeMap;
@@ -29,6 +35,11 @@ const BENCH_CPUS: u32 = 1;
 /// absolute allowance so results of a few instructions are not failed by one instruction.
 const TOLERANCE_RELATIVE: f64 = 0.01;
 const TOLERANCE_ABSOLUTE_NS: f64 = 0.5;
+
+/// Results named with this suffix are sizes in bytes, gated exactly: any growth fails.
+const BYTES_SUFFIX: &str = "_bytes";
+
+const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
 
 /// Header of the baseline file, rewritten by `--update-baseline`.
 const BASELINE_HEADER: &str = "\
@@ -96,6 +107,9 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
         if let Some(version) = firmware_version(arch.name, &console) {
             measured.firmware.insert(arch.name.to_owned(), version);
         }
+        for (name, value) in release_kernel_results(arch)? {
+            measured.results.insert((arch.name.to_owned(), name), value);
+        }
     }
 
     let path = baseline_path();
@@ -128,6 +142,25 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
             report.failures.join("\n  ")
         ))
     }
+}
+
+fn release_kernel_results(arch: &Arch) -> Result<Vec<(String, f64)>, String> {
+    let image = crate::build_kernel(arch, None)?;
+    let bytes = std::fs::metadata(&image)
+        .map_err(|e| format!("{}: {e}", image.display()))?
+        .len();
+    let kernel = crate::build_boot_clock_kernel(arch)?;
+    let console = qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::BootClock,
+        BENCH_CPUS,
+        qemu::Display::Absent,
+        ICOUNT_ARGS,
+    )?;
+    let mut results = parse_console(&console)?;
+    results.push((RELEASE_IMAGE_BYTES.to_owned(), bytes as f64));
+    Ok(results)
 }
 
 /// The baseline with the results of the architectures in `ran` replaced by `measured`'s,
@@ -313,24 +346,33 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
         } else {
             0.0
         };
-        let limit = before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS;
+        let exact = name.ends_with(BYTES_SUFFIX);
+        let unit = if exact { "bytes" } else { "ns" };
+        let limit = match exact {
+            true => before,
+            false => before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS,
+        };
+        let faster_than = match exact {
+            true => before,
+            false => before * (1.0 - TOLERANCE_RELATIVE) - TOLERANCE_ABSOLUTE_NS,
+        };
         let other_firmware = is_firmware_dependent(arch, name)
             && measured.firmware.get(arch) != baseline.firmware.get(arch);
         let note = if other_firmware {
             "  not gated: firmware differs from the baseline's"
         } else if now > limit {
             report.failures.push(format!(
-                "{arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%)"
+                "{arch} {name}: {now:.2} {unit}, baseline {before:.2} {unit} ({change:+.1}%)"
             ));
             "  REGRESSION"
-        } else if now < before * (1.0 - TOLERANCE_RELATIVE) - TOLERANCE_ABSOLUTE_NS {
+        } else if now < faster_than {
             "  faster: consider --update-baseline"
         } else {
             ""
         };
         let _ = writeln!(
             report.text,
-            "  {arch} {name}: {now:.2} ns, baseline {before:.2} ns ({change:+.1}%){note}"
+            "  {arch} {name}: {now:.2} {unit}, baseline {before:.2} {unit} ({change:+.1}%){note}"
         );
     }
     for (arch, name) in baseline.results.keys() {
@@ -424,6 +466,27 @@ mod tests {
         let slower = compare(&baseline, &results(&[("a", "x", 101.6)]), &["a"]);
         assert_eq!(slower.failures.len(), 1);
         assert!(slower.text.contains("REGRESSION"));
+    }
+
+    #[test]
+    fn a_size_may_not_grow_by_one_byte() {
+        let baseline = results(&[("a", "release_image_bytes", 1000.0)]);
+        let same = compare(&baseline, &baseline, &["a"]);
+        assert!(same.failures.is_empty());
+        let grown = compare(
+            &baseline,
+            &results(&[("a", "release_image_bytes", 1001.0)]),
+            &["a"],
+        );
+        assert_eq!(grown.failures.len(), 1);
+        assert!(grown.failures[0].contains("1001.00 bytes"));
+        let shrunk = compare(
+            &baseline,
+            &results(&[("a", "release_image_bytes", 999.0)]),
+            &["a"],
+        );
+        assert!(shrunk.failures.is_empty());
+        assert!(shrunk.text.contains("faster"));
     }
 
     #[test]

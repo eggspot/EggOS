@@ -117,7 +117,13 @@ pub enum Expect {
     /// the lines the session expects, the last `poweroff` (D108). The time from QEMU's start to
     /// the first prompt is reported.
     BootToPrompt,
+    /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
+    /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
+    /// since nothing types at that prompt (D116).
+    BootClock,
 }
+
+const BOOT_CLOCK_LINE: &str = "EGGOS-BENCH: boot_to_prompt ";
 
 const SHELL_PROMPT: &str = "eggsh:/";
 
@@ -376,6 +382,41 @@ pub fn boot_test(
     display: Display,
     extra_args: &[&str],
 ) -> Result<String, String> {
+    boot(arch, kernel, expect, cpus, display, extra_args).map(|booted| booted.console)
+}
+
+/// What a boot test saw: the console's output and, for a boot to the prompt, the time from
+/// QEMU's start to the first prompt.
+#[derive(Debug)]
+pub struct Booted {
+    pub console: String,
+    pub first_prompt: Option<Duration>,
+}
+
+/// Runs the boot-to-prompt test ([`Expect::BootToPrompt`]) on `kernel` with its display, as a
+/// user boots it, and returns the time from QEMU's start to the first prompt.
+pub fn boot_to_prompt_time(arch: &Arch, kernel: &Path) -> Result<Duration, String> {
+    let booted = boot(
+        arch,
+        kernel,
+        Expect::BootToPrompt,
+        TEST_CPUS,
+        Display::Attached,
+        &[],
+    )?;
+    booted
+        .first_prompt
+        .ok_or_else(|| format!("{}: no prompt was seen", arch.name))
+}
+
+fn boot(
+    arch: &Arch,
+    kernel: &Path,
+    expect: Expect,
+    cpus: u32,
+    display: Display,
+    extra_args: &[&str],
+) -> Result<Booted, String> {
     eprintln!(
         "xtask: booting {} in {} ({expect:?}, display {display:?})",
         arch.name, arch.qemu
@@ -385,7 +426,7 @@ pub fn boot_test(
         Display::Absent => (&[][..], &[][..]),
     };
     let qmp_port = match (expect, display) {
-        (Expect::Benchmarks, _) | (_, Display::Absent) => None,
+        (Expect::Benchmarks | Expect::BootClock, _) | (_, Display::Absent) => None,
         _ => Some(qmp::free_port()?),
     };
     let mut child = Command::new(arch.qemu)
@@ -409,7 +450,7 @@ pub fn boot_test(
     let mut keyboard = child.stdin.take().expect("stdin is piped");
 
     let timeout = match expect {
-        Expect::Benchmarks => BENCHMARK_BOOT_TIMEOUT,
+        Expect::Benchmarks | Expect::BootClock => BENCHMARK_BOOT_TIMEOUT,
         _ => BOOT_TIMEOUT,
     };
     let started = Instant::now();
@@ -426,8 +467,12 @@ pub fn boot_test(
             break status;
         }
         console.extend(rx.try_iter().flatten());
+        if expect == Expect::BootClock && boot_clock_line(&String::from_utf8_lossy(&console)) {
+            let _ = child.kill();
+            break child.wait().map_err(|e| e.to_string())?;
+        }
         let scripts = match expect {
-            Expect::Init | Expect::InitRestart => Vec::new(),
+            Expect::Init | Expect::InitRestart | Expect::BootClock => Vec::new(),
             Expect::Shell => shell_scripts_to_type(
                 &String::from_utf8_lossy(&console),
                 &SHELL_SESSION,
@@ -535,7 +580,16 @@ pub fn boot_test(
             first_prompt.as_millis()
         );
     }
-    Ok(console)
+    Ok(Booted {
+        console,
+        first_prompt,
+    })
+}
+
+fn boot_clock_line(console: &str) -> bool {
+    console
+        .split_inclusive('\n')
+        .any(|line| line.ends_with('\n') && line.starts_with(BOOT_CLOCK_LINE))
 }
 
 fn count_lines(console: &str, wanted: &str) -> usize {
@@ -660,6 +714,7 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
         Expect::Shell => return shell_verdict(arch, clean_exit, console),
         Expect::BootToPrompt => return prompt_verdict(arch, clean_exit, console),
+        Expect::BootClock => return boot_clock_verdict(arch, console),
         _ => {}
     }
     if expect == Expect::FatalException {
@@ -814,6 +869,23 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
         }
     }
     eprintln!("xtask: {arch}: boot-to-prompt test passed");
+    Ok(())
+}
+
+fn boot_clock_verdict(arch: &str, console: &str) -> Result<(), String> {
+    if let Some(panic) = console
+        .lines()
+        .find(|line| line.starts_with(KERNEL_PANIC_PREFIX))
+    {
+        return Err(format!("{arch}: init ended: {panic}"));
+    }
+    if !boot_clock_line(console) {
+        return Err(format!(
+            "{arch}: the kernel wrote no `{}` line",
+            BOOT_CLOCK_LINE.trim_end()
+        ));
+    }
+    eprintln!("xtask: {arch}: boot clock read");
     Ok(())
 }
 
@@ -1057,19 +1129,8 @@ fn check_desktop_frame(
 /// Boots `kernel` with the console on this terminal, until the user quits QEMU; its display in
 /// a window when `window` says so.
 pub fn run_interactive(arch: &Arch, kernel: &Path, window: bool) -> Result<(), String> {
-    let console: &[&str] = match window {
-        true => &["-serial", "mon:stdio"],
-        false => &["-nographic"],
-    };
     let status = Command::new(arch.qemu)
-        .args(arch.machine_args)
-        .args(arch.display_args)
-        .args(arch.input_args)
-        .args(COMMON_ARGS)
-        .arg("-smp")
-        .arg(TEST_CPUS.to_string())
-        .arg("-no-reboot")
-        .args(console)
+        .args(interactive_args(arch, window))
         .arg("-kernel")
         .arg(kernel)
         .status()
@@ -1081,9 +1142,143 @@ pub fn run_interactive(arch: &Arch, kernel: &Path, window: bool) -> Result<(), S
     }
 }
 
+/// QEMU's arguments, but the kernel's, for an interactive boot of `arch`: its display in a
+/// window when `window` says so, with the console on the terminal either way. `cargo xtask
+/// run` and the release's run scripts both use them (D116).
+pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
+    let console: &[&str] = match window {
+        true => &["-serial", "mon:stdio"],
+        false => &["-nographic"],
+    };
+    let cpus = TEST_CPUS.to_string();
+    arch.machine_args
+        .iter()
+        .chain(arch.display_args)
+        .chain(arch.input_args)
+        .chain(COMMON_ARGS)
+        .copied()
+        .chain(["-smp", cpus.as_str(), "-no-reboot"])
+        .chain(console.iter().copied())
+        .map(str::to_owned)
+        .collect()
+}
+
+const SCREENSHOT_SESSION: [&[u8]; 2] = [b"uname -a\r", b"ls /bin\r"];
+
+/// Boots `kernel` headless with its display, types [`SCREENSHOT_SESSION`] at the shell's
+/// prompts, and once the display shows the desktop with the last prompt (checked against the
+/// host's render, as the boot-to-prompt test does) returns the picture from QMP's
+/// `screendump`.
+pub fn screenshot(arch: &Arch, kernel: &Path) -> Result<Picture, String> {
+    let port = qmp::free_port()?;
+    let mut child = Command::new(arch.qemu)
+        .args(arch.machine_args)
+        .args(arch.display_args)
+        .args(arch.input_args)
+        .args(COMMON_ARGS)
+        .arg("-smp")
+        .arg(TEST_CPUS.to_string())
+        .args(qmp::qemu_args(port))
+        .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
+        .arg("-kernel")
+        .arg(kernel)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start {}: {e} (is QEMU installed?)", arch.qemu))?;
+    let rx = echo_console_to_stderr(child.stdout.take().expect("stdout is piped"));
+    let mut keyboard = child.stdin.take().expect("stdin is piped");
+    let picture = screenshot_session(arch, port, &rx, &mut keyboard);
+    let _ = child.kill();
+    let _ = child.wait();
+    picture
+}
+
+fn screenshot_session(
+    arch: &Arch,
+    port: u16,
+    rx: &mpsc::Receiver<Vec<u8>>,
+    keyboard: &mut std::process::ChildStdin,
+) -> Result<Picture, String> {
+    let started = Instant::now();
+    let mut console = Vec::new();
+    let mut typed = 0;
+    loop {
+        console.extend(rx.try_iter().flatten());
+        let prompts = String::from_utf8_lossy(&console)
+            .matches(SHELL_PROMPT)
+            .count();
+        if prompts > SCREENSHOT_SESSION.len() {
+            break;
+        }
+        if prompts > typed {
+            keyboard
+                .write_all(SCREENSHOT_SESSION[typed])
+                .and_then(|()| keyboard.flush())
+                .map_err(|e| format!("{}: could not type on the console: {e}", arch.name))?;
+            typed += 1;
+        }
+        if started.elapsed() > BOOT_TIMEOUT {
+            return Err(format!(
+                "{}: no prompt after the screenshot's session within {}s",
+                arch.name,
+                BOOT_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut qmp = Qmp::connect(port)?;
+    let (width, height) = screen_size(&mut qmp, arch)?;
+    let desktop = Desktop::new(width, height)
+        .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    check_desktop_frame(
+        arch,
+        &mut qmp,
+        &mut console,
+        rx,
+        "the screenshot's last prompt",
+        &desktop,
+    )?;
+    let path = screendump_path(arch, "-screenshot")?;
+    qmp.screendump(&path)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_args_are_the_machine_s_display_input_and_console() {
+        let arch = &crate::ARCHES[0];
+        let window = interactive_args(arch, true);
+        let joined = window.join(" ");
+        for part in arch
+            .machine_args
+            .iter()
+            .chain(arch.display_args)
+            .chain(arch.input_args)
+        {
+            assert!(window.iter().any(|arg| arg == part), "{part}");
+        }
+        assert!(
+            joined.ends_with("-smp 4 -no-reboot -serial mon:stdio"),
+            "{joined}"
+        );
+        let serial = interactive_args(arch, false).join(" ");
+        assert!(serial.ends_with("-smp 4 -no-reboot -nographic"), "{serial}");
+    }
+
+    #[test]
+    fn the_boot_clock_line_counts_only_whole() {
+        let line = "EGGOS-BENCH: boot_to_prompt iterations=1 ticks=5 frequency=1000000000";
+        assert!(!boot_clock_line(&format!("eggsh:/# \r\n{line}")));
+        assert!(boot_clock_line(&format!("eggsh:/# \r\n{line}\r\n")));
+        assert!(!boot_clock_line(&format!("x {line}\r\n")));
+        assert!(verdict("x", Expect::BootClock, false, &format!("\r\n{line}\r\n")).is_ok());
+        assert!(verdict("x", Expect::BootClock, false, "eggsh:/# ").is_err());
+    }
 
     fn all_user_lines() -> Vec<String> {
         USER_LINES

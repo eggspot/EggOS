@@ -7,8 +7,11 @@
 mod bench;
 mod elf;
 mod initramfs;
+mod png;
 mod qemu;
 mod qmp;
+mod release;
+mod sha256;
 
 use std::process::{Command, ExitCode};
 
@@ -36,6 +39,12 @@ commands:
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
                          --update-baseline, record the results there instead
+  release                build and boot the release image of every architecture, then write
+                         eggos-<version>-<arch>.elf, SHA256SUMS, run-eggos.sh, run-eggos.ps1
+                         and RELEASE-NOTES.md to target/release-dist/
+  screenshot --arch <arch>
+                         boot the release image headless and save its desktop to
+                         docs/images/desktop.png
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -259,6 +268,14 @@ fn run(args: &[String]) -> Result<(), String> {
             };
             bench::run(&arch_option(options)?, update)
         }
+        Some("release") if args.len() == 1 => release::run(),
+        Some("screenshot") => {
+            let arches = arch_option(&args[1..])?;
+            let [arch] = arches.as_slice() else {
+                return Err("`screenshot` boots one architecture; pass a single --arch".into());
+            };
+            release::screenshot(arch)
+        }
         Some("run") => {
             let (options, nographic) = without_flag(&args[1..], "--nographic");
             let arches = arch_option(&options)?;
@@ -382,6 +399,7 @@ fn clippy_targets() -> Result<(), String> {
             &["--features", "eggos-kernel/qemu-test"],
             &["--features", "eggos-kernel/qemu-test-fatal-exception"],
             &["--features", "eggos-kernel/qemu-bench"],
+            &["--features", "eggos-kernel/qemu-boot-clock"],
         ] {
             let mut args = vec!["clippy", "--target", arch.target];
             for krate in KERNEL_CRATES {
@@ -401,22 +419,7 @@ fn clippy_targets() -> Result<(), String> {
 /// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
-        let init = build_init(arch)?;
-        let shell = build_shell(arch)?;
-        let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
-        let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
-        let mut members = vec![
-            (INIT_PATH, initramfs::Content::Program(&init)),
-            (SHELL_PATH, initramfs::Content::Program(&shell)),
-            (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
-        ];
-        members.extend(
-            links
-                .iter()
-                .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
-        );
-        let initramfs =
-            initramfs::build(&members, &format!("initramfs-{}.cpio", arch.user_target))?;
+        let initramfs = build_release_initramfs(arch)?;
         return build_release_kernel(arch, &initramfs);
     };
     let args = [
@@ -438,6 +441,24 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
     )
 }
 
+fn build_release_initramfs(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let init = build_init(arch)?;
+    let shell = build_shell(arch)?;
+    let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
+    let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
+    let mut members = vec![
+        (INIT_PATH, initramfs::Content::Program(&init)),
+        (SHELL_PATH, initramfs::Content::Program(&shell)),
+        (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+    ];
+    members.extend(
+        links
+            .iter()
+            .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
+    );
+    initramfs::build(&members, &format!("initramfs-{}.cpio", arch.user_target))
+}
+
 fn build_release_kernel(
     arch: &Arch,
     initramfs: &std::path::Path,
@@ -447,6 +468,26 @@ fn build_release_kernel(
         &["build", "-p", "eggos-kernel", "--target", arch.target],
         &[("EGGOS_INITRAMFS", &initramfs)],
         &format!("kernel executable for {}", arch.target),
+    )
+}
+
+/// Builds the release kernel for `arch` with the `qemu-boot-clock` feature, which writes the
+/// `boot_to_prompt` benchmark line at the shell's first prompt (D116).
+pub fn build_boot_clock_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let initramfs = build_release_initramfs(arch)?;
+    let initramfs = initramfs.to_string_lossy();
+    build_executable(
+        &[
+            "build",
+            "-p",
+            "eggos-kernel",
+            "--target",
+            arch.target,
+            "--features",
+            "qemu-boot-clock",
+        ],
+        &[("EGGOS_INITRAMFS", &initramfs)],
+        &format!("boot-clock kernel executable for {}", arch.target),
     )
 }
 
