@@ -78,6 +78,7 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
             &kernel,
             qemu::Expect::Benchmarks,
             BENCH_CPUS,
+            qemu::Display::Attached,
             ICOUNT_ARGS,
         )?;
         let results = parse_console(&console)?;

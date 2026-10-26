@@ -8,6 +8,7 @@ mod bench;
 mod elf;
 mod initramfs;
 mod qemu;
+mod qmp;
 
 use std::process::{Command, ExitCode};
 
@@ -27,7 +28,10 @@ commands:
                          then boot it again to check that writing read-only data faults
                          and the fatal exception is reported
                          (<arch> may be `all`)
-  run   --arch <arch>    boot the kernel in QEMU interactively (quit: Ctrl-A then X)
+  run   --arch <arch> [--nographic]
+                         boot the kernel in QEMU interactively, its display in a window
+                         and its console on this terminal (quit: Ctrl-A then X); with
+                         --nographic, no window
   bench --arch <arch> [--update-baseline]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -44,6 +48,9 @@ pub struct Arch {
     pub user_target: &'static str,
     pub qemu: &'static str,
     pub machine_args: &'static [&'static str],
+    /// The display device every boot but the no-display ones adds: a virtio GPU asking for
+    /// 1280x800 (D112).
+    pub display_args: &'static [&'static str],
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -63,6 +70,7 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-rng-device",
         ],
+        display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
     },
     Arch {
         name: "riscv64",
@@ -79,6 +87,7 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-rng-device",
         ],
+        display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
     },
     Arch {
         name: "x86_64",
@@ -92,6 +101,12 @@ pub const ARCHES: &[Arch] = &[
             "qemu64,+rdrand,+rdseed",
             "-device",
             "virtio-rng-pci,disable-legacy=on",
+        ],
+        display_args: &[
+            "-vga",
+            "none",
+            "-device",
+            "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800",
         ],
     },
 ];
@@ -223,12 +238,16 @@ fn run(args: &[String]) -> Result<(), String> {
             bench::run(&arch_option(options)?, update)
         }
         Some("run") => {
-            let arches = arch()?;
+            let (options, window) = match &args[1..] {
+                [options @ .., last] if last == "--nographic" => (options, false),
+                options => (options, true),
+            };
+            let arches = arch_option(options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
             let kernel = build_kernel(arch, None)?;
-            qemu::run_interactive(arch, &kernel)
+            qemu::run_interactive(arch, &kernel, window)
         }
         _ => Err(USAGE.into()),
     }
@@ -278,23 +297,45 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         let kernel = build_kernel(arch, Some(feature))?;
         let poison = qemu::bss_poison_args(&kernel)?;
         let poison: Vec<&str> = poison.iter().map(String::as_str).collect();
-        qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, &poison)?;
+        qemu::boot_test(
+            arch,
+            &kernel,
+            expect,
+            qemu::TEST_CPUS,
+            qemu::Display::Attached,
+            &poison,
+        )?;
     }
     for (login_exit, expect, args) in [
         ("poweroff", qemu::Expect::Init, &[][..]),
         ("restart", qemu::Expect::InitRestart, &["-no-reboot"][..]),
     ] {
         let kernel = build_init_test_kernel(arch, login_exit)?;
-        qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, args)?;
+        qemu::boot_test(
+            arch,
+            &kernel,
+            expect,
+            qemu::TEST_CPUS,
+            qemu::Display::Absent,
+            args,
+        )?;
     }
     let kernel = build_shell_test_kernel(arch)?;
-    qemu::boot_test(arch, &kernel, qemu::Expect::Shell, qemu::TEST_CPUS, &[])?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::Shell,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
+        &[],
+    )?;
     let kernel = build_kernel(arch, None)?;
     qemu::boot_test(
         arch,
         &kernel,
         qemu::Expect::BootToPrompt,
         qemu::TEST_CPUS,
+        qemu::Display::Attached,
         &[],
     )?;
     Ok(())
