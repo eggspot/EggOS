@@ -456,9 +456,16 @@ pub fn clone<P: Platform>(
 }
 
 /// A copy of the calling thread's FP/SIMD registers as its program left them, for a thread or
-/// process it starts; `None` if it has none yet.
+/// process it starts; `None` if it has none yet, or there is no memory for the copy (the new
+/// thread then starts with a new program's).
 pub fn running_fp<P: Platform>() -> Option<Box<FpState>> {
-    let mut copy = Box::new(FpState::new());
-    crate::thread::with_running_fp::<P, _>(|state| copy.as_mut().clone_from(state))?;
+    let layout = core::alloc::Layout::new::<FpState>();
+    // SAFETY: `FpState` is not zero-sized.
+    let state = core::ptr::NonNull::new(unsafe { alloc::alloc::alloc(layout) }.cast::<FpState>())?;
+    // SAFETY: just allocated with `FpState`'s layout, so valid for a write and aligned.
+    unsafe { state.as_ptr().write(FpState::new()) };
+    // SAFETY: allocated with the global allocator and `FpState`'s layout, and initialized.
+    let mut copy = unsafe { Box::from_raw(state.as_ptr()) };
+    crate::thread::with_running_fp::<P, _>(|running| copy.as_mut().clone_from(running))?;
     Some(copy)
 }

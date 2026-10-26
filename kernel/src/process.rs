@@ -1,7 +1,10 @@
 //! Processes and their threads in user mode (M4, D47, D48).
 //!
-//! A [`Process`] owns a user address space, the frames its pages map and its [`Regions`]: what
-//! its program may use. It is built with `&mut` ([`Process::map_new_page`],
+//! A [`Process`] owns its memory: a user address space, the frames its pages map and its
+//! [`Regions`], what its program may use, behind an `Arc` that a child started with `CLONE_VM`
+//! shares, as Linux's tasks share an `mm`; a child started without it gets a copy of every page
+//! ([`Process::new_child`], D104). The memory's locks are taken in this order: the program
+//! break's, the regions', the address space's, the frame allocator's. It is built with `&mut` ([`Process::map_new_page`],
 //! [`Process::add_region`]), then shared as an `Arc` by the threads that run its program
 //! ([`spawn`]). From then on the first touch of a page in a region maps a zeroed frame there
 //! ([`Process::resolve_page_fault`], demand paging, D52), and the memory calls (D53) add,

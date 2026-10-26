@@ -4966,3 +4966,29 @@ the license, by an explicit instruction recorded here.
   AArch64 and RISC-V, `vfork` on x86_64), whose child yields, writes a static the parent
   reads, and execs the program's file, which checks its parent's id. The kernel checks each
   child's status and exit signal in the parent's list.
+- **Cost.** Two new benchmarks (docs/benchmarks.md): `linux_fork`, a `clone(CLONE_VFORK |
+  SIGCHLD)` of the runtime's small self-test program with an eager copy and the child's
+  `exit_group`, 123987.57, 112889.24 and 139639.27 ns, and `linux_vfork_exec`, a
+  `clone(CLONE_VM | CLONE_VFORK | SIGCHLD)` whose child execs the program, which starts and
+  exits, 99294.99, 68044.85 and 38701.62 ns, on aarch64, riscv64 and x86_64 (baselined).
+  Reaching the memory through the `Arc` first cost +0.6% to +0.8% on the system-call round
+  trips and up to +4.4% on the memory calls; each memory method now binds the pointer once
+  (private helpers take `&Memory`), and the process keeps its address space's root, so the
+  system-call loop's check reads one word as before: `linux_syscall_round_trip` and
+  `process_syscall_round_trip` are as on `main`. Against `main` on the same machine
+  afterwards: riscv64 `linux_mmap_munmap` +3.0%, `linux_file_read` +1.8%, `linux_page_fault`
+  +0.95%, `linux_openat_close` +0.6%; x86_64 `linux_mmap_munmap` +0.8%, `linux_file_read`
+  +0.5%; `process_switch_round_trip` +0.3% to +0.45% and `linux_exec_load` +0.3% (the `Memory`
+  block, one more allocation per process) on all three; everything else within 0.25%.
+  `linux_execve` rose +6.2%, +3.2% and +0.5%, but `main`'s kernel with this change's test
+  program (which grew about 4.8 KiB by its two loop modes, and is the program that benchmark
+  execs) measures +6.0%, +2.9% and +0.0% already: the kernel's own share is +0.17%, +0.27%
+  and +0.52%.
+- **Decided by research: the memory's pointer is accepted (D78).** The remaining costs are the
+  one dependent load of the shared memory per call, which Linux pays as the task's `mm`
+  pointer; the sharing is what `vfork` and `posix_spawn` need (glibc's writes its error into
+  the shared memory), and the bounded attempt above already brought the system-call round
+  trips back to `main`. The `linux_execve` rise is the benchmark's larger program. Baseline
+  lines changed only where the gate flagged them (`linux_execve` on aarch64 and riscv64,
+  riscv64 `linux_file_read`, `linux_mmap_munmap` and `linux_page_fault`) and for the two new
+  benchmarks.
