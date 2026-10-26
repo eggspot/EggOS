@@ -268,7 +268,7 @@ fn passes_probe_buses_before_devices_and_the_children_buses_add() {
         bindings,
         [
             Binding::Bound("test-bus"),
-            Binding::Failed("test-refusing", "a legacy device"),
+            Binding::Refused("test-refusing", "a legacy device"),
             Binding::Unbound,
             Binding::Unbound,
             Binding::Bound("test-device"),
@@ -305,7 +305,7 @@ fn a_device_prints_its_identity_registers_and_driver() {
         "dev@0 (virtio,mmio) 0xa000000..0xa000200: virtio-mmio"
     );
     let mut pci = DeviceNode::new(pci_device(0x1af4, 0x1044, 0xff, 0));
-    pci.binding = Binding::Failed("virtio-pci", "no capabilities");
+    pci.binding = Binding::Refused("virtio-pci", "no capabilities");
     assert_eq!(
         format!("{pci}"),
         "pci 00:03.0 1af4:1044 class ff00: virtio-pci refused: no capabilities"

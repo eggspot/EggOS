@@ -5505,11 +5505,10 @@ the license, by an explicit instruction recorded here.
   `#interrupt-cells` (`interrupts` through the inherited `interrupt-parent`, or
   `interrupts-extended`), and its DMA coherence (`dma-coherent`, `dma-noncoherent`, else the
   architecture's convention, Linux's: coherent on RISC-V, not on Arm). `Fdt::nodes` walks the
-  tree allocating nothing; property names are dispatched by length. On x86_64, the `MCFG`'s
-  segment 0 ECAM window is mapped and every function on its buses enumerated, bridges
-  followed only to higher buses inside the range (so a broken topology cannot loop), memory
-  BARs sized with decoding off and status bits never written as ones, firmware's addresses
-  kept. QEMU 10.2: 47 devices on aarch64 `virt`, 22 on riscv64 `virt`, 8 on q35.
+  tree allocating nothing. On x86_64, the `MCFG`'s segment 0 ECAM window is mapped and every
+  function on its buses enumerated, bridges followed only to higher buses inside the range (so
+  a broken topology cannot loop), memory BARs sized with decoding off and status bits never
+  written as ones, firmware's addresses kept. QEMU 10.2: 47 devices on aarch64 `virt`, 22 on riscv64 `virt`, 8 on q35.
 - **The table.** A `Vec` on the heap as large as what was found, boxed behind a null pointer
   so its static costs nothing in the image (decided by research: a fixed 96-entry table, which
   issue #97's brief suggested, cost 23 KiB of `.bss` on every machine and is far too small for

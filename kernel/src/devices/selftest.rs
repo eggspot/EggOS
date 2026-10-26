@@ -51,7 +51,7 @@ fn virtio_mmio_slots(found: &[DeviceNode], expected: usize) -> Result<(), &'stat
     }
     if slots
         .iter()
-        .any(|node| matches!(node.binding, Binding::Failed(..)))
+        .any(|node| matches!(node.binding, Binding::Refused(..)))
     {
         return Err("a virtio-mmio slot was refused (a legacy device?)");
     }

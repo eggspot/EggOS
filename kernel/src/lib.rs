@@ -120,7 +120,7 @@ fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::f
     writeln!(
         console,
         "devices: {} found, {} bound, {} refused",
-        report.devices, report.bound, report.failed
+        report.devices, report.bound, report.refused
     )?;
     if report.dropped > 0 {
         writeln!(
@@ -132,7 +132,7 @@ fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::f
     let mut result = Ok(());
     devices::for_each(&mut |_, device| {
         let shown =
-            device.parent.is_some() || matches!(device.binding, devices::Binding::Failed(..));
+            device.parent.is_some() || matches!(device.binding, devices::Binding::Refused(..));
         if shown && result.is_ok() {
             result = writeln!(console, "  {device}");
         }

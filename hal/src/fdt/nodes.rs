@@ -150,7 +150,7 @@ impl<F: Fn(u32) -> Option<u32>> Iterator for InterruptSpecifiers<'_, F> {
                 }
                 Some((end, cells, count))
             });
-        let Some((end, cells, count)) = specifier else {
+        let Some((end, cells, count)) = specifier.filter(|&(end, _, _)| end > 0) else {
             self.raw = &[];
             return None;
         };
@@ -570,6 +570,9 @@ mod tests {
         };
         assert_eq!(short.interrupt_specifiers(|_| Some(2)).count(), 1);
         assert_eq!(device.interrupt_specifiers(|_| Some(9)).count(), 0);
+        assert_eq!(device.interrupt_specifiers(|_| Some(0)).count(), 0);
+        let off = nodes.iter().find(|node| node.name == b"off@3000").unwrap();
+        assert_eq!(off.interrupt_specifiers(|_| Some(0)).count(), 5);
     }
 
     #[test]

@@ -217,7 +217,7 @@ pub enum Binding {
     Unbound,
     Bound(&'static str),
     /// The driver named refused it, for the reason given.
-    Failed(&'static str, &'static str),
+    Refused(&'static str, &'static str),
 }
 
 /// A device: what it is and the resources the firmware gave it.
@@ -349,7 +349,7 @@ static DEVICES: LeafSpinLock<Option<Box<DeviceTable>>> = LeafSpinLock::new_leaf(
 pub struct Report {
     pub devices: usize,
     pub bound: usize,
-    pub failed: usize,
+    pub refused: usize,
     pub dropped: usize,
     /// Why the firmware's description could not be read, if it could not.
     pub discovery_error: Option<&'static str>,
@@ -415,7 +415,7 @@ fn summarize(table: &DeviceTable, mut report: Report) -> Report {
     for (_, node) in table.iter() {
         match node.binding {
             Binding::Bound(_) => report.bound += 1,
-            Binding::Failed(..) => report.failed += 1,
+            Binding::Refused(..) => report.refused += 1,
             Binding::Unbound => {}
         }
     }
@@ -442,7 +442,7 @@ pub fn probe_all(probe: &mut dyn Probe, drivers: &[&'static DriverDescriptor]) {
             let binding = match (driver.probe)(probe, id) {
                 Ok(()) => Binding::Bound(driver.name),
                 Err(ProbeError::Absent) => Binding::Unbound,
-                Err(ProbeError::Refused(reason)) => Binding::Failed(driver.name, reason),
+                Err(ProbeError::Refused(reason)) => Binding::Refused(driver.name, reason),
             };
             if let Some(node) = probe.table().get_mut(id) {
                 node.binding = binding;
@@ -491,7 +491,7 @@ impl core::fmt::Display for DeviceNode {
         match self.binding {
             Binding::Unbound => Ok(()),
             Binding::Bound(driver) => write!(f, ": {driver}"),
-            Binding::Failed(driver, reason) => {
+            Binding::Refused(driver, reason) => {
                 write!(f, ": {driver} refused: {reason}")
             }
         }
