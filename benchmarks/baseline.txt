@@ -19,6 +19,8 @@ aarch64 frame_free_allocate 19.15
 aarch64 futex_wait_wake_round_trip 455.05
 aarch64 futex_wake_empty 20.00
 aarch64 heap_allocate_free_small 50.00
+aarch64 input_event_queue_push_pop 68.00
+aarch64 input_key_to_bytes 313.01
 aarch64 linux_clock_monotonic_read 12.00
 aarch64 linux_descriptor_lookup 36.03
 aarch64 linux_dup3_close 184.52
@@ -42,6 +44,7 @@ aarch64 thread_yield_round_trip 131.08
 aarch64 timer_arm 6.00
 aarch64 timer_interrupt_round_trip 96.00
 aarch64 virtio_gpu_flush_fake 788.14
+aarch64 virtio_input_poll_idle 25.25
 aarch64 virtqueue_round_trip_fake 375.00
 aarch64 virtqueue_submit_one 47.00
 aarch64 wait_queue_wake_empty 15.00
@@ -56,6 +59,8 @@ riscv64 frame_free_allocate 20.17
 riscv64 futex_wait_wake_round_trip 554.06
 riscv64 futex_wake_empty 27.00
 riscv64 heap_allocate_free_small 57.00
+riscv64 input_event_queue_push_pop 69.01
+riscv64 input_key_to_bytes 385.01
 riscv64 linux_clock_monotonic_read 15.00
 riscv64 linux_descriptor_lookup 28.03
 riscv64 linux_dup3_close 201.11
@@ -79,6 +84,7 @@ riscv64 thread_yield_round_trip 162.10
 riscv64 timer_arm 266.01
 riscv64 timer_interrupt_round_trip 640.00
 riscv64 virtio_gpu_flush_fake 865.17
+riscv64 virtio_input_poll_idle 28.28
 riscv64 virtqueue_round_trip_fake 353.00
 riscv64 virtqueue_submit_one 84.01
 riscv64 wait_queue_wake_empty 13.01
@@ -93,6 +99,8 @@ x86_64 frame_free_allocate 19.06
 x86_64 futex_wait_wake_round_trip 473.03
 x86_64 futex_wake_empty 25.00
 x86_64 heap_allocate_free_small 48.00
+x86_64 input_event_queue_push_pop 66.00
+x86_64 input_key_to_bytes 334.00
 x86_64 linux_clock_monotonic_read 19.00
 x86_64 linux_descriptor_lookup 27.02
 x86_64 linux_dup3_close 189.09
@@ -116,6 +124,7 @@ x86_64 thread_yield_round_trip 122.07
 x86_64 timer_arm 33.00
 x86_64 timer_interrupt_round_trip 71.00
 x86_64 virtio_gpu_flush_fake 786.13
+x86_64 virtio_input_poll_idle 37.20
 x86_64 virtqueue_round_trip_fake 233.00
 x86_64 virtqueue_submit_one 55.00
 x86_64 wait_queue_wake_empty 14.00

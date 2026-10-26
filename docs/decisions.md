@@ -5844,17 +5844,25 @@ the license, by an explicit instruction recorded here.
   tablet at (8192, 24576), a left click, the mouse moved by (7, -5), a wheel notch and Shift
   pressed and released, 100 ms apart; the queue must hold them in that order (the move to
   (320, 600), then to (327, 595) at 1280x800) and the console no bytes.
-- **Cost.** See the PR for the measured figures; in short: the release kernel grows by about
-  20 KiB of code on aarch64, 17 KiB on riscv64 and 24 KiB on x86_64 (the driver, the keymap,
-  the input layer, its poller and the probe; `.data` unchanged, `.bss` 32 bytes). Memory at
-  run time only with input devices: a 4 KiB DMA region per device, the event queue (2 KiB,
-  in a 4 KiB block), the poller's 16 KiB stack and about half a KiB of state. No existing
-  benchmark moved against `main` but riscv64 `frame_contiguous_allocate_free`, 200 to 203,
-  its baseline line, from the frame allocator's state after three more DMA regions at probe
-  (the frame allocator's code is unchanged; D112 saw the same number move the other way). New
-  gated benchmarks: `virtio_input_poll_idle` (a poll that finds nothing), `input_key_to_bytes`
-  (a key's press and release, with their reports' ends, through the keymap and the input
-  layer) and `input_event_queue_push_pop`.
+- **Cost.** Measured against `main` on the same machine (this Mac, QEMU 10.2, release
+  builds). The release kernel's loaded size grows by 20.7 KiB on aarch64 (517656 to 538848
+  bytes), 17.4 KiB on riscv64 (466122 to 483964) and 24.7 KiB on x86_64 (538852 to 564148):
+  the driver and its probe, the keymap, the input layer and its poller; `.data` is unchanged
+  (HEAP and FRAMES still adjacent, D110's lesson) and `.bss` grows by 32 bytes (the input
+  state's and the queue's null pointers, the cached display size). Memory at run time, only
+  with input devices: a 4 KiB DMA region per device, the event queue (2 KiB, in a 4 KiB
+  block), the poller's 16 KiB stack and about half a KiB of state. Boot to prompt, median of
+  three alternating runs (the runner polls every 20 ms): 60 against `main`'s 60 ms on aarch64,
+  88 against 84 on riscv64 (three more devices probed through virtio-mmio's configuration),
+  114 against 117 on x86_64. No existing benchmark moved against `main` but riscv64
+  `frame_contiguous_allocate_free`, 200 to 203, its baseline line: the frame allocator's
+  state after three more DMA regions at probe, its machine code identical (disassembly
+  compared; D112 saw the same number move the other way). New gated benchmarks, in
+  instructions: `virtio_input_poll_idle` (a poll that finds nothing) 25, 28 and 37 on
+  aarch64, riscv64 and x86_64; `input_key_to_bytes` (a key's press and release with the ends
+  of their reports, through the keymap and the input layer) 313, 385 and 334;
+  `input_event_queue_push_pop` 68, 69 and 66. Skipping a keyboard report's empty pointer work
+  took `input_key_to_bytes` from 352, 440 and 391.
 - **Not yet.** Device interrupts (issue #97, slice 3: then the poller goes); keyboard layouts
   other than US and the layout setting; the keyboard's LEDs (status queue); application cursor
   keys and the scrollback keys (item 13); touch screens and multitouch; more than four input
