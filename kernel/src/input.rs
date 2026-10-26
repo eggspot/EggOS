@@ -2,7 +2,9 @@
 //! interrupt (issue #97). A keyboard's keys become bytes through the US keymap
 //! ([`eggos_drivers::input::keymap`]) and enter the console's line discipline as the UART's do
 //! ([`console::receive_from_keyboard`]); every key, pointer motion, button and wheel notch also
-//! goes into the input event queue ([`next_event`]) the desktop reads.
+//! goes into the input event queue ([`next_event`]) once a reader subscribed ([`subscribe`]),
+//! and the scrollback keys and the wheel move the graphical terminal's view
+//! ([`crate::terminal`]).
 //!
 //! Polling costs nothing without an input device. With one, the release kernel's poller thread
 //! ([`start_polling`]) polls every [`ACTIVE_POLL_MS`] while a key or button is held and for

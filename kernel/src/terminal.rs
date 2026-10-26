@@ -14,7 +14,7 @@ use crate::display;
 use crate::sync::LeafSpinLock;
 use crate::thread::{self, SpawnError, WaitQueue};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use eggos_drivers::display::Damage;
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::terminal::{REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea};
@@ -35,7 +35,14 @@ static SCREEN: LeafSpinLock<Option<Box<Screen>>> = LeafSpinLock::new_leaf(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static RENDER_PENDING: AtomicBool = AtomicBool::new(false);
 static APPLICATION_CURSOR_KEYS: AtomicBool = AtomicBool::new(false);
-static DRAWER: WaitQueue = WaitQueue::new();
+static DRAWER: AtomicPtr<WaitQueue> = AtomicPtr::new(core::ptr::null_mut());
+
+fn drawer() -> Option<&'static WaitQueue> {
+    let drawer = DRAWER.load(Ordering::Acquire);
+    // SAFETY: `DRAWER` is null or a leaked `Box` that `start` stored once, with release ordering
+    // after making it, and that nothing frees.
+    unsafe { drawer.as_ref() }
+}
 
 /// Whether the terminal is shown, so the console's output goes to it too.
 #[inline(always)]
@@ -43,15 +50,20 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Makes the terminal over the whole display, blank, shows it, and from then on mirrors the
-/// console's output on it; returns its grid. `None`, and nothing made, without a display, when
-/// not one cell fits, or without memory for it.
+/// Makes the terminal over the whole display, blank, and from then on mirrors the console's
+/// output on it; returns its grid. The display shows it at the next [`show`], the drawing
+/// thread's. `None`, and nothing made, without a display, when not one cell fits, or without
+/// memory for it.
 pub fn start<P: Platform>() -> Option<TextArea> {
     let mode = display::mode()?;
     let area = TextArea::full_screen(mode.width, mode.height)?;
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
+    terminal.assume_drawn_blank();
     let screen = Box::new(Screen { terminal, area });
+    if drawer().is_none() {
+        DRAWER.store(Box::into_raw(Box::new(WaitQueue::new())), Ordering::Release);
+    }
     display::draw(|framebuffer| framebuffer.fill(mode.rect(), TERM_BACKGROUND))?;
     *SCREEN.lock() = Some(screen);
     crate::linux::terminal::set_window_size(
@@ -61,7 +73,7 @@ pub fn start<P: Platform>() -> Option<TextArea> {
         GLYPH_HEIGHT as u16,
     );
     ACTIVE.store(true, Ordering::Release);
-    let _ = show::<P>();
+    request_render::<P>();
     Some(area)
 }
 
@@ -108,8 +120,10 @@ pub fn move_view<P: Platform>(change: ViewMove) {
 }
 
 fn request_render<P: Platform>() {
-    if !RENDER_PENDING.swap(true, Ordering::AcqRel) {
-        DRAWER.wake_one::<P>();
+    if !RENDER_PENDING.swap(true, Ordering::AcqRel)
+        && let Some(drawer) = drawer()
+    {
+        drawer.wake_one::<P>();
     }
 }
 
@@ -146,14 +160,14 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
 
 /// Starts the thread that draws the terminal if there is one; `Ok(false)` when there is none.
 pub fn start_drawing<P: Platform>() -> Result<bool, SpawnError> {
-    if !is_active() {
+    let Some(drawer) = drawer().filter(|_| is_active()) else {
         return Ok(false);
-    }
-    thread::spawn::<P, _>(|| {
+    };
+    thread::spawn::<P, _>(move || {
         let interval = mul_div_ceil(FRAME_INTERVAL_MS, P::clock_frequency(), 1000);
         let mut next_frame = 0;
         loop {
-            DRAWER.wait_until::<P>(|| RENDER_PENDING.load(Ordering::Acquire));
+            drawer.wait_until::<P>(|| RENDER_PENDING.load(Ordering::Acquire));
             if P::clock_ticks() < next_frame {
                 thread::sleep_until::<P>(next_frame);
             }

@@ -387,6 +387,14 @@ impl Terminal {
         self.shift.is_some() || self.dirty.iter().any(|span| !span.is_clean())
     }
 
+    /// Records that the grid's pixels already show it blank in [`TERM_BACKGROUND`] (the screen
+    /// was just filled), so the next render draws only what changed since and the cursor.
+    pub fn assume_drawn_blank(&mut self) {
+        self.dirty.fill(Span::CLEAN);
+        self.shift = None;
+        self.drawn_cursor = None;
+    }
+
     /// Marks every cell as changed, so the next render draws the whole grid.
     pub fn invalidate(&mut self) {
         self.dirty.fill(Span {

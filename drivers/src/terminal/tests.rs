@@ -559,6 +559,22 @@ fn a_render_draws_only_the_damaged_cells_and_reports_them() {
 }
 
 #[test]
+fn a_grid_assumed_drawn_blank_draws_only_the_cursor_and_what_changed() {
+    let mut terminal = terminal(10, 4);
+    terminal.assume_drawn_blank();
+    let (width, height) = (10 * 8 + 16, 4 * 16 + 16);
+    let mut pixels = vec![TERM_BACKGROUND; width * height];
+    let mut damage = Damage::new();
+    terminal.feed(b"\x1b[2;3Hab");
+    terminal.render(&mut pixels, width, 8, 8, &mut damage);
+    assert_eq!(damage.rects(), &[Rect::new(8 + 16, 8 + 16, 24, 16)]);
+    let mut fresh = fed(10, 4, b"\x1b[2;3Hab");
+    let mut expected = vec![TERM_BACKGROUND; width * height];
+    fresh.render(&mut expected, width, 8, 8, &mut Damage::new());
+    assert!(pixels == expected);
+}
+
+#[test]
 fn a_grid_that_does_not_fit_draws_nothing() {
     let mut terminal = terminal(10, 4);
     let mut pixels = vec![1u32; 50 * 50];
