@@ -338,8 +338,12 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
 /// [`console::read_input`] through the console's receive interrupt, the only path that queues
 /// them, whole and in order. Waits up to 2 s of clock time, taking interrupts without sleeping,
 /// so a clock that runs ahead while the CPU sleeps (QEMU's `-icount sleep=off`) still leaves the
-/// host time to type.
+/// host time to type. Only kernels built for the boot tests (`qemu-test`) and host tests check
+/// it: elsewhere nobody types the script, and the boot must not wait for it.
 fn console_input_arrives_by_interrupt<P: Platform>() -> Result<(), &'static str> {
+    if !cfg!(any(test, feature = "qemu-test")) {
+        return Ok(());
+    }
     let give_up = P::clock_ticks() + 2 * P::clock_frequency();
     let mut received = [0u8; CONSOLE_INPUT_SCRIPT.len() + 1];
     let mut length = 0;

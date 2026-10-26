@@ -4,9 +4,9 @@
 //! source when needed (a fired one-shot timer), signals the end of the interrupt, and then
 //! passes an [`Interrupt`] to the kernel's `kernel_interrupt` function; a device's interrupt
 //! ([`Interrupt::ConsoleInput`]) is ended after the kernel has quieted the device instead. When
-//! that returns, the interrupted code resumes. Spurious interrupts are dropped in the HAL; an interrupt from a
-//! source the kernel has not asked for is reported as an [`crate::Exception`] of kind
-//! [`crate::ExceptionKind::Interrupt`].
+//! that returns, the interrupted code resumes. Spurious interrupts are dropped in the HAL; an
+//! interrupt from a source the kernel has not asked for is reported as an
+//! [`crate::Exception`] of kind [`crate::ExceptionKind::Interrupt`].
 
 /// An interrupt delivered to the kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

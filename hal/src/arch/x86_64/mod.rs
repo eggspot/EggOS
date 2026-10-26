@@ -479,8 +479,9 @@ const ACPI_ENABLE_POLLS: u32 = 1_000_000;
 #[inline]
 fn com1() -> Ns16550<PortIo> {
     // SAFETY: COM1's ports are the PC's first serial port by platform convention; only the early
-    // console's transmit and receive paths use them, and neither relies on the other's register
-    // state.
+    // console's transmit and receive paths use them. Turning receive interrupts on changes
+    // registers transmit relies on, which is sound because the boot CPU does it once, before
+    // any other CPU starts.
     let regs = unsafe { PortIo::new(COM1_PORT, Ns16550::<PortIo>::register_block_size(0)) };
     Ns16550::new(regs, 0)
 }

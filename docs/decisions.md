@@ -4387,7 +4387,9 @@ the license, by an explicit instruction recorded here.
   once input is on, then types a script on the serial console (QEMU empties a UART's FIFO when
   the kernel turns it on, so earlier bytes would be lost). The self-test
   `console_input_arrives_by_interrupt` checks the script arrives whole and in order through the
-  interrupt, the only path that fills the queue, on aarch64, riscv64 and x86_64. It waits by
+  interrupt, the only path that fills the queue, on aarch64, riscv64 and x86_64. Only kernels
+  built for the boot tests (`qemu-test`) check it: a kernel booted by `cargo xtask run` or from
+  a release image has nobody typing the script, and its boot must not wait. It waits by
   taking interrupts without sleeping, so under `-icount sleep=off` (benchmarks) virtual time
   does not run ahead of the host typing. The host test platform types the same script.
 - **Cost.** Measured against main on the same machine: no benchmark slower. The first version

@@ -264,7 +264,9 @@ const SBI_SRST_REASON_FAILURE: usize = 1;
 fn uart0() -> Ns16550<Mmio> {
     // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page table
     // and the kernel's own tables map at the direct map offset; only the early console's
-    // transmit and receive paths use it, and neither relies on the other's register state.
+    // transmit and receive paths use it. Turning receive interrupts on changes registers
+    // transmit relies on, which is sound because the boot CPU does it once, before any other
+    // CPU starts.
     let regs = unsafe {
         Mmio::new(
             DIRECT_MAP_OFFSET + UART0_BASE,

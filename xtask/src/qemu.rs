@@ -203,12 +203,12 @@ fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiv
     rx
 }
 
-/// How many times the kernel's boot banner appears on the console.
 /// Whether `console` has a line that is `line`, trailing whitespace aside.
 fn has_line(console: &str, line: &str) -> bool {
     console.lines().any(|l| l.trim_end() == line)
 }
 
+/// How many times the kernel's boot banner appears on the console.
 fn banner_count(console: &str) -> usize {
     console
         .lines()
