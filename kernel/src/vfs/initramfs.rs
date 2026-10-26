@@ -62,7 +62,7 @@ struct Entry {
     group: u32,
     modified: u32,
     links: u32,
-    archive_inode: u32,
+    pending_link_inode: u32,
     file_id: u32,
 }
 
@@ -99,7 +99,7 @@ impl Initramfs {
             group: 0,
             modified: 0,
             links: 2,
-            archive_inode: 0,
+            pending_link_inode: 0,
             file_id: ROOT + 1,
         }
     }
@@ -162,7 +162,7 @@ impl Initramfs {
                     DIRECTORY => 2,
                     _ => 1,
                 },
-                archive_inode: match kind {
+                pending_link_inode: match kind {
                     REGULAR if member.links > 1 => member.inode,
                     _ => 0,
                 },
@@ -171,7 +171,7 @@ impl Initramfs {
         }
         let mut file_system = Self { archive, entries };
         file_system.index()?;
-        file_system.join_hard_links()?;
+        file_system.join_hard_links();
         Ok(file_system)
     }
 
@@ -227,39 +227,44 @@ impl Initramfs {
         Ok(())
     }
 
-    fn join_hard_links(&mut self) -> Result<(), Error> {
-        for (node, entry) in self.entries.iter_mut().enumerate() {
-            entry.file_id = node as u32 + 1;
+    fn join_hard_links(&mut self) {
+        let count = self.entries.len();
+        for node in 0..count {
+            self.entries[node].file_id = node as u32 + 1;
         }
-        let mut linked = Vec::new();
-        for (node, entry) in self.entries.iter().enumerate() {
-            if entry.archive_inode != 0 {
-                linked.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-                linked.push((entry.archive_inode, node as u32));
+        for first in 0..count {
+            let inode = self.entries[first].pending_link_inode;
+            if inode == 0 {
+                continue;
             }
-        }
-        linked.sort_unstable();
-        for group in linked.chunk_by(|a, b| a.0 == b.0) {
-            let holder = group
+            let names = self.entries[first..]
                 .iter()
-                .map(|&(_, node)| self.entries[node as usize])
+                .filter(|entry| entry.pending_link_inode == inode);
+            let holder = names
+                .clone()
                 .filter(|entry| entry.size > 0)
                 .max_by_key(|entry| entry.data_start)
-                .unwrap_or(self.entries[group[0].1 as usize]);
-            let file_id = group[0].1 + 1;
-            for &(_, node) in group {
-                let entry = &mut self.entries[node as usize];
-                entry.data_start = holder.data_start;
-                entry.size = holder.size;
-                entry.mode = holder.mode;
-                entry.owner = holder.owner;
-                entry.group = holder.group;
-                entry.modified = holder.modified;
-                entry.links = group.len() as u32;
-                entry.file_id = file_id;
+                .copied()
+                .unwrap_or(self.entries[first]);
+            let links = names.count() as u32;
+            for entry in &mut self.entries[first..] {
+                if entry.pending_link_inode != inode {
+                    continue;
+                }
+                *entry = Entry {
+                    data_start: holder.data_start,
+                    size: holder.size,
+                    mode: holder.mode,
+                    owner: holder.owner,
+                    group: holder.group,
+                    modified: holder.modified,
+                    links,
+                    pending_link_inode: 0,
+                    file_id: first as u32 + 1,
+                    ..*entry
+                };
             }
         }
-        Ok(())
     }
 
     fn find(&self, path: &[u8]) -> Option<u32> {
