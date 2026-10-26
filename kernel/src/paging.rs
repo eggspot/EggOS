@@ -116,8 +116,9 @@ impl<F: Format> PageTables<F> {
     /// Tables for a user address space (M4): a low half of their own, empty, and the kernel
     /// half of `kernel`, shared. On AArch64 that is `kernel`'s high-half root itself; with one
     /// root, the new root's kernel-half entries are copies of `kernel`'s root's, which point to
-    /// the same tables. Sound only because the kernel's tables never change once active (see
-    /// [`Self::map`]): a kernel-half entry added later would be missing here. The new tables
+    /// the same tables. Sound only because the kernel's root entries never change once active
+    /// (see [`Self::map`]; [`Self::map_device_window`] only fills tables below a root entry made
+    /// in advance): a root entry added later would be missing here. The new tables
     /// map and unmap only user mappings ([`Attributes::user`]) in the low half
     /// ([`MapError::NotUser`] otherwise), so the kernel half stays the kernel's. Free the low
     /// half with [`Self::free_user_half`]. `kernel` must be kernel tables marked active

@@ -674,7 +674,9 @@ impl Platform for X86_64 {
         };
         for region in mcfg::regions(mcfg) {
             aperture(PhysicalRange::from_start_length(
-                region.base + (u64::from(region.start_bus) << 20),
+                region
+                    .base
+                    .saturating_add(u64::from(region.start_bus) << 20),
                 ecam_length(region.start_bus, region.end_bus),
             ));
         }

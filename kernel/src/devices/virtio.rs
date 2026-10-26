@@ -104,6 +104,11 @@ fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         .regions()
         .next()
         .ok_or(ProbeError::Refused("the slot has no registers"))?;
+    if region.len() < MMIO_REGISTERS_LENGTH {
+        return Err(ProbeError::Refused(
+            "the virtio-mmio slot is shorter than its registers",
+        ));
+    }
     let base = probe.map_window(region)?;
     let size = (region.len() as usize).min(virtio::mmio::REGISTER_BLOCK_SIZE);
     // SAFETY: `map_window` mapped the slot's registers as device memory, for good, and only
@@ -144,11 +149,7 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         };
         slot.get_or_insert(capability);
     }
-    let (Some(common), Some(notify)) = (common, notify) else {
-        return Err(ProbeError::Refused(
-            virtio::Error::BadCapabilities.description(),
-        ));
-    };
+    let (common, notify) = usable_capabilities(common, notify)?;
     let mut windows = [None; super::MAX_REGIONS];
     let mut regs = |capability: VirtioPciCapability| -> Result<Mmio, ProbeError> {
         let bar = usize::from(capability.bar);
@@ -184,6 +185,27 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         pci::enable_memory_and_bus_master(config, function.address);
     }
     add_device(probe, id, &node, AnyTransport::Pci(transport))
+}
+
+const MMIO_REGISTERS_LENGTH: u64 = 0x100;
+const COMMON_CONFIGURATION_LENGTH: u32 = 0x38;
+const NOTIFICATION_LENGTH: u32 = 2;
+
+fn usable_capabilities(
+    common: Option<VirtioPciCapability>,
+    notify: Option<VirtioPciCapability>,
+) -> Result<(VirtioPciCapability, VirtioPciCapability), ProbeError> {
+    match (common, notify) {
+        (Some(common), Some(notify))
+            if common.length >= COMMON_CONFIGURATION_LENGTH
+                && notify.length >= NOTIFICATION_LENGTH =>
+        {
+            Ok((common, notify))
+        }
+        _ => Err(ProbeError::Refused(
+            virtio::Error::BadCapabilities.description(),
+        )),
+    }
 }
 
 fn add_device(
@@ -313,5 +335,70 @@ mod entropy {
 
     pub(crate) fn put_rng(rng: Rng) {
         *RNG.lock() = Some(Box::new(rng));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::{DeviceTable, Probe};
+    use eggos_drivers::pci::ConfigSpace;
+    use eggos_hal::PhysicalRange;
+
+    struct NoMapping(DeviceTable);
+
+    impl Probe for NoMapping {
+        fn table(&mut self) -> &mut DeviceTable {
+            &mut self.0
+        }
+        fn map_window(&mut self, _: PhysicalRange) -> Result<usize, ProbeError> {
+            panic!("a refused device is never mapped")
+        }
+        fn pci_config(&self) -> Option<&dyn ConfigSpace> {
+            None
+        }
+        fn deadline(&self, _: u64) -> crate::devices::Deadline {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_virtio_mmio_slot_shorter_than_its_registers_is_refused_unmapped() {
+        let mut node = DeviceNode::new(Identity::DeviceTree {
+            name: b"virtio_mmio@a000000",
+            compatible: b"virtio,mmio\0",
+        });
+        node.regions[0] = PhysicalRange::from_start_length(0xa00_0000, 0x10);
+        let mut probe = NoMapping(DeviceTable::new());
+        let id = probe.0.add(node).unwrap();
+        assert!(matches!(
+            probe_mmio(&mut probe, id),
+            Err(ProbeError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn virtio_pci_capabilities_too_short_for_their_registers_are_refused() {
+        let capability = |cfg_type, length| VirtioPciCapability {
+            cfg_type,
+            bar: 4,
+            offset: 0,
+            length,
+            notify_off_multiplier: 4,
+        };
+        let common = capability(virtio_pci::COMMON, 0x38);
+        let notify = capability(virtio_pci::NOTIFY, 2);
+        assert!(usable_capabilities(Some(common), Some(notify)).is_ok());
+        for (common, notify) in [
+            (Some(capability(virtio_pci::COMMON, 0x37)), Some(notify)),
+            (Some(common), Some(capability(virtio_pci::NOTIFY, 1))),
+            (None, Some(notify)),
+            (Some(common), None),
+        ] {
+            assert!(matches!(
+                usable_capabilities(common, notify),
+                Err(ProbeError::Refused(_))
+            ));
+        }
     }
 }

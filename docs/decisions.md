@@ -5506,9 +5506,10 @@ the license, by an explicit instruction recorded here.
   `interrupts-extended`), and its DMA coherence (`dma-coherent`, `dma-noncoherent`, else the
   architecture's convention, Linux's: coherent on RISC-V, not on Arm). `Fdt::nodes` walks the
   tree allocating nothing. On x86_64, the `MCFG`'s segment 0 ECAM window is mapped and every
-  function on its buses enumerated, bridges followed only to higher buses inside the range (so
-  a broken topology cannot loop), memory BARs sized with decoding off and status bits never
-  written as ones, firmware's addresses kept. QEMU 10.2: 47 devices on aarch64 `virt`, 22 on riscv64 `virt`, 8 on q35.
+  function on its buses enumerated, bridges followed only to higher buses inside the range, each bus
+  scanned once (so a broken topology can neither loop nor list a function twice), memory BARs sized
+  with decoding off and status bits never written as ones, firmware's addresses kept. QEMU 10.2: 47
+  devices on aarch64 `virt`, 22 on riscv64 `virt`, 8 on q35.
 - **The table.** A `Vec` on the heap as large as what was found, boxed behind a null pointer
   so its static costs nothing in the image (decided by research: a fixed 96-entry table, which
   issue #97's brief suggested, cost 23 KiB of `.bss` on every machine and is far too small for
@@ -5629,5 +5630,8 @@ the license, by an explicit instruction recorded here.
   descriptors, more than one queue per device, the kernel's generator reseeded from
   virtio-rng, virtio-gpu (item 11, part 2), virtio-input (item 12), virtio-blk (M7),
   virtio-console and virtio-net, an IOMMU (virtio-iommu first), cache maintenance for
-  non-coherent DMA, and Arm's `dmb osh` before the doorbell for devices outside the inner
-  shareable domain (real hardware, M13).
+  non-coherent DMA, the doorbell's ordering for real devices (Arm's `dmb osh`, RISC-V's
+  `fence w,o` rather than the full fence's `fence rw,rw`, for devices outside the CPUs'
+  coherence domain; real hardware, M13), and a used ring checked against the chains in flight,
+  so a faulty device cannot hand back a descriptor twice and corrupt the free list (found in
+  review).

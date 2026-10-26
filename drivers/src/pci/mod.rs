@@ -176,8 +176,9 @@ pub fn read_function<C: ConfigSpace + ?Sized>(config: &C, address: Address) -> O
 /// Calls `found` with every function on buses `start_bus..=end_bus` reachable from
 /// `start_bus`, depth first in scan order: devices 0 to 31, functions 1 to 7 only on a device
 /// whose function 0 says it has more, and behind a PCI-to-PCI bridge its secondary bus, right
-/// after the bridge itself. A secondary bus must be above the bridge's own bus and in the range,
-/// so a broken topology never loops: the work is bounded by the range.
+/// after the bridge itself. A secondary bus must be above the bridge's own bus, in the range and
+/// not scanned yet, so a broken topology never loops or lists a function twice: each bus is
+/// scanned at most once.
 pub fn enumerate<C: ConfigSpace + ?Sized>(
     config: &C,
     start_bus: u8,
@@ -189,6 +190,14 @@ pub fn enumerate<C: ConfigSpace + ?Sized>(
     }
     let mut stack = [(0u8, 0u8, 0u8); 256];
     stack[0] = (start_bus, 0, 0);
+    let mut scanned = [0u64; 4];
+    let mut first_scan = |bus: u8| {
+        let (word, bit) = (usize::from(bus / 64), bus % 64);
+        let first = scanned[word] & 1 << bit == 0;
+        scanned[word] |= 1 << bit;
+        first
+    };
+    first_scan(start_bus);
     let mut depth = 1;
     while depth > 0 {
         let (bus, device, function) = stack[depth - 1];
@@ -214,7 +223,11 @@ pub fn enumerate<C: ConfigSpace + ?Sized>(
         found(present);
         if present.header_type == HEADER_TYPE_BRIDGE {
             let secondary = config.read8(address, SECONDARY_BUS);
-            if secondary > bus && secondary <= end_bus && depth < stack.len() {
+            if secondary > bus
+                && secondary <= end_bus
+                && depth < stack.len()
+                && first_scan(secondary)
+            {
                 stack[depth] = (secondary, 0, 0);
                 depth += 1;
             }
@@ -330,6 +343,18 @@ mod tests {
                 at(2, 5, 0),
                 at(0, 2, 0)
             ]
+        );
+    }
+
+    #[test]
+    fn a_bus_two_bridges_point_at_is_scanned_once() {
+        let config = FakeConfig::default();
+        bridge(&config, at(0, 1, 0), 1);
+        bridge(&config, at(0, 2, 0), 1);
+        plain(&config, at(1, 0, 0));
+        assert_eq!(
+            found(&config, 0, 255),
+            [at(0, 1, 0), at(1, 0, 0), at(0, 2, 0)]
         );
     }
 

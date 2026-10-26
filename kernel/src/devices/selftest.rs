@@ -198,7 +198,10 @@ pub(crate) fn dma_regions_are_zeroed_and_freed_after_reset<P: Platform>(
 fn reset_and_reinitialize_the_entropy_device<P: Platform>(before: u64) -> Result<(), &'static str> {
     use eggos_drivers::virtio::rng::{MEMORY_BYTES, VirtioRng};
     let Some(rng) = super::virtio::take_rng() else {
-        return Ok(());
+        return match cfg!(target_os = "none") {
+            true => Err("there is no virtio entropy device to reset"),
+            false => Ok(()),
+        };
     };
     let mut deadline = super::Deadline::after::<P>(1000);
     let (transport, memory, reset) = rng

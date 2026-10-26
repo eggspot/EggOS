@@ -10,10 +10,12 @@ pub(super) fn discover<P: Platform>(
     let Some(region) = mcfg::regions(mcfg).find(|region| region.segment == 0) else {
         return Err("the MCFG lists no PCI segment 0");
     };
-    let window = PhysicalRange::from_start_length(
-        region.base + (u64::from(region.start_bus) << 20),
-        ecam_length(region.start_bus, region.end_bus),
-    );
+    let start = region
+        .base
+        .checked_add(u64::from(region.start_bus) << 20)
+        .ok_or("the MCFG's ECAM window wraps around")?;
+    let window =
+        PhysicalRange::from_start_length(start, ecam_length(region.start_bus, region.end_bus));
     let base = probe
         .map_window(window)
         .map_err(|_| "the PCI configuration space could not be mapped")?;
