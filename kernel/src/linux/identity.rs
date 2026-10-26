@@ -1,6 +1,6 @@
-//! Who a program is and where it runs (M6, D55): `getpid`, `getppid`, `gettid` and `uname`,
-//! and the thread bookkeeping C libraries and Rust's std do at startup, `set_tid_address`,
-//! `set_robust_list` and `get_robust_list`.
+//! Who a program is and where it runs (M6, D55): `getpid`, `getppid`, `gettid`, `uname`,
+//! `getcpu` and `sched_getaffinity` (D117), and the thread bookkeeping C libraries and Rust's
+//! std do at startup, `set_tid_address`, `set_robust_list` and `get_robust_list`.
 //!
 //! A process's first thread has the process's id, as on Linux, and the threads `clone` starts
 //! ids of their own (D91). The two bookkeeping calls register user memory the kernel touches
@@ -103,6 +103,57 @@ pub fn getcpu<P: Platform>(process: &Process<P>, cpu: u64, node: u64) -> Result<
         }
     }
     Ok(0)
+}
+
+/// `sched_getaffinity(pid, size, mask)`: writes the CPUs the thread may run on, every online
+/// CPU since none can be excluded yet, to `mask`, a bit per CPU in 64-bit words, and returns
+/// the bytes written: the kernel's mask, a bit for each of the machine's CPUs rounded up to a
+/// word, as Linux's raw call does (C libraries count the bits; Rust's
+/// `std::thread::available_parallelism` sizes thread pools by them). `pid` 0, the caller's
+/// thread or its process name the caller; another id is `ESRCH`, as for
+/// [`get_robust_list`]. `EINVAL` if `size` is smaller than the kernel's mask or not a whole
+/// number of words; `EFAULT` if `mask` is not the program's writable memory.
+pub fn sched_getaffinity<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+    size: u64,
+    mask: u64,
+) -> Result<u64, Errno> {
+    let cpus = cpu::CPUS.all();
+    let words = cpus.len().max(1).div_ceil(AFFINITY_WORD_BITS);
+    let bytes = (words * AFFINITY_WORD_BYTES) as u64;
+    if size < bytes || !size.is_multiple_of(AFFINITY_WORD_BYTES as u64) {
+        return Err(Errno::EINVAL);
+    }
+    let pid = pid as u32;
+    if pid != 0 && pid != thread.id() && pid != process.id().get() {
+        return Err(Errno::ESRCH);
+    }
+    for word in 0..words {
+        let address = mask
+            .checked_add((word * AFFINITY_WORD_BYTES) as u64)
+            .ok_or(Errno::EFAULT)?;
+        process
+            .write_user_memory(address, &online_cpus(cpus, word).to_ne_bytes())
+            .map_err(|_| Errno::EFAULT)?;
+    }
+    Ok(bytes)
+}
+
+const AFFINITY_WORD_BITS: usize = u64::BITS as usize;
+const AFFINITY_WORD_BYTES: usize = size_of::<u64>();
+
+fn online_cpus(cpus: &[&cpu::Cpu], word: usize) -> u64 {
+    if cpus.is_empty() {
+        return u64::from(word == 0);
+    }
+    cpus.iter()
+        .skip(word * AFFINITY_WORD_BITS)
+        .take(AFFINITY_WORD_BITS)
+        .enumerate()
+        .filter(|(_, cpu)| cpu.is_online())
+        .fold(0, |bits, (index, _)| bits | 1 << index)
 }
 
 /// `set_tid_address(address)`: the thread's exit clears the word at `address` and wakes a

@@ -6164,3 +6164,51 @@ the license, by an explicit instruction recorded here.
   committed screenshot is 27,482 bytes.
 - **Follow-ups.** Find why CI's and this Mac's builds differ by a few bytes; run the PowerShell script in the Windows CI job; generate the what's-new
   section from the merged PRs.
+
+## D117 Unmodified static Linux programs from `eggsh`: `cargo xtask image --add`, `sched_getaffinity` and the Linux programs boot test — Decided by the build loop
+- **What.** v0.3.0 item 16: a static Linux program a user built with the standard toolchains
+  runs unmodified from the `eggsh` prompt by its name. `cargo xtask image --arch <arch>
+  --add <file> [--as <path>]` builds the release image with the files in its initramfs and
+  writes `target/image/eggos-<arch>.elf`; `cargo xtask run` takes the same options. Guide:
+  docs/linux-programs.md.
+- **Where added files go.** `/bin/<file's name>` unless `--as` names a path, so a program is on
+  the shell's `PATH` with no other step. Every added file is `0755`: the option is for
+  programs, and a data file is harmless as executable on a read-only, root-only system. A path
+  already in the image (`/init`, the shell, a core utility, a directory) is refused instead of
+  replaced, so `--add` cannot break the boot; the check is in the initramfs builder and covers
+  every image xtask builds, as is a path under a file already there. Paths with empty, `.` or
+  `..` parts, names over 255 bytes and paths of 4096 bytes or more, which the kernel's
+  initramfs refuses (emptying the root), are refused too.
+- **Gaps found.** With D84-D105 in place, the program's start-up and every call it makes but
+  one already worked on all three architectures, static executable and static PIE: `execve`
+  from the shell, the auxiliary vector, TLS, threads, `getrandom`, the clocks, `getdents64`,
+  the descriptors, `exit_group` statuses and `SIGABRT`'s default action from a panic under
+  `panic = "abort"`. The one gap: no `sched_getaffinity`, so musl's
+  `sysconf(_SC_NPROCESSORS_ONLN)` fell back to one CPU and Rust's
+  `std::thread::available_parallelism`, which programs size thread pools by, said 1 on a
+  4-CPU machine. The call now writes every online CPU (nothing can restrict a thread yet) and
+  returns the kernel mask's size, a bit per CPU rounded up to a 64-bit word, as Linux's raw
+  call does per its manual page: `EINVAL` for a smaller or not word-sized buffer, `ESRCH` for
+  another thread's id (as `get_robust_list`, D91), `EFAULT` for memory the program cannot
+  write. It is in the out-of-line call table only; the dispatch's inlined path is unchanged.
+- **Remaining gaps** (roadmap item 16's next capabilities). `std::process::Command`,
+  `posix_spawn`, `system` and `popen` need `pipe2` (the error pipe or the output pipe) and
+  wait for pipes; static glibc programs are expected to start the same way but no glibc
+  toolchain is in CI; Rust's aarch64 and riscv64 musl targets link a static executable even
+  with `relocation-model=pie` (D86), so the static PIE path is booted from `eggsh` on x86_64
+  only (the loader's PIE path stays covered by its host tests on every architecture).
+- **The test.** `tests/linux-static` is an ordinary std-only Rust program (no EggOS code),
+  built by xtask for each architecture's `*-unknown-linux-musl` target with
+  `-C link-self-contained=yes -C target-feature=+crt-static`, once with
+  `-C relocation-model=static` and once with `relocation-model=pie`, each in a target
+  directory of its own so both stay cached. The Linux programs boot test adds them as
+  `/bin/linux-static` and `/bin/linux-static-pie` through the same `--add` code, boots the
+  release image with init's `login-exit=poweroff`, serial only, and types one line at each
+  prompt; each command's lines must appear in order before the next prompt, with the exit
+  statuses 0, 42 and 134. The workspace's release profile aborts on panic, so the panic test
+  checks the abort (`Aborted`, 134), not unwinding's exit status 101.
+- **Cost.** The release image's initramfs holds the same members; the kernel grows by the new
+  call's code only: CI's `release_image_bytes` is +200 bytes on aarch64 (700,392), +360 on
+  riscv64 (798,048) and +176 on x86_64 (602,976), which the baseline now holds (D116). No
+  hot-path benchmark moved beyond its gate (the call is out of line; PR #116 has the
+  numbers).

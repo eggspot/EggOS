@@ -31,10 +31,7 @@ fn image_name(arch: &Arch) -> String {
 }
 
 fn output_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| crate::workspace_root().join("target"))
-        .join("release-dist")
+    crate::target_directory().join("release-dist")
 }
 
 /// Builds and boots the release image of every architecture, then writes the images,

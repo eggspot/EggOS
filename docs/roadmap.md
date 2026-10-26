@@ -124,6 +124,20 @@ Must-have, in order:
     information (`strip = "debuginfo"`), about 5x smaller. Next, as user capabilities: users on
     Windows get a run script tested on
     Windows in CI; users see the release's what's-new written from the merged PRs.
+16. **done** — users can now run unmodified static Linux programs from `eggsh` (D117,
+    docs/linux-programs.md): `cargo xtask image --arch <arch> --add <file> [--as <path>]` builds
+    the release image with the files in its initramfs (`/bin/<name>` by default) and writes
+    `target/image/eggos-<arch>.elf`, and `cargo xtask run` takes the same options;
+    `sched_getaffinity` reports the online CPUs, so `std::thread::available_parallelism` no longer
+    says 1. A QEMU test per architecture adds an ordinary std-only Rust program, built by the
+    standard musl toolchain as a static executable and with `relocation-model=pie` (a static PIE on
+    x86_64), and runs it at the prompt, by name and by path: arguments, environment, standard
+    output and error, a file, a directory listing, the clocks, a `HashMap`, threads, the CPU count,
+    exit statuses and an aborting panic. Next, as user capabilities: users' programs can start
+    other programs (`std::process::Command`, `posix_spawn`, `system`, `popen`) once pipes exist;
+    users can run static glibc programs, tested in CI; users can choose a program's CPUs
+    (`sched_setaffinity`); users can add programs to a running system once there is a writable file
+    system; static PIEs built for aarch64 and riscv64 are tested too.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line

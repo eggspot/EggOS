@@ -117,6 +117,13 @@ pub enum Expect {
     /// the lines the session expects, the last `poweroff` (D108). The time from QEMU's start to
     /// the first prompt is reported.
     BootToPrompt,
+    /// The release kernel with two builds of an ordinary static Linux program added to its
+    /// initramfs as `cargo xtask image --add` adds them, a static executable and one built with
+    /// `relocation-model=pie` (a static PIE on x86_64), boots to the shell's prompt; the test
+    /// types a line at each prompt that runs one of them, by name or by its path, and each
+    /// command must write its lines in order before the next prompt; the shell exits with 7 and
+    /// init powers off (D117).
+    LinuxPrograms,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -146,6 +153,46 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"echo EGGSH-TEST prompt interrupt $?\r",
     b"exit 7\r",
 ];
+
+const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
+    b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
+    b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
+    b"linux-static exit 42; echo LINUX-STATIC status $?\r",
+    b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
+    b"exit 7\r",
+];
+
+fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
+    let checks = |name: &'static str| {
+        vec![
+            Line::Whole(format!("LINUX-STATIC {name} args a|b c")),
+            Line::Whole("LINUX-STATIC env GREETING=hi".into()),
+            Line::Whole("LINUX-STATIC file eggos".into()),
+            Line::Whole("LINUX-STATIC dir about".into()),
+            Line::Whole("LINUX-STATIC time monotonic realtime".into()),
+            Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
+            Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
+            Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
+            Line::Whole("LINUX-STATIC stderr".into()),
+            Line::Whole("LINUX-STATIC status 0".into()),
+        ]
+    };
+    [
+        checks("linux-static"),
+        checks("linux-static-pie"),
+        vec![Line::Whole("LINUX-STATIC status 42".into())],
+        vec![
+            Line::Around("thread 'main' ", ":"),
+            Line::Whole("LINUX-STATIC panicked as asked".into()),
+            Line::Whole("Aborted".into()),
+            Line::Whole("LINUX-STATIC status 134".into()),
+        ],
+        vec![
+            Line::Whole(SHELL_EXIT_LINE.into()),
+            Line::Whole(POWER_DOWN_LINE.into()),
+        ],
+    ]
+}
 
 const PROMPT_SESSION: [&[u8]; 9] = [
     b"ls /\r",
@@ -478,6 +525,11 @@ fn boot(
                 &SHELL_SESSION,
                 &mut shell_typed,
             ),
+            Expect::LinuxPrograms => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &LINUX_PROGRAM_SESSION,
+                &mut shell_typed,
+            ),
             Expect::BootToPrompt => {
                 let prompts = String::from_utf8_lossy(&console)
                     .matches(SHELL_PROMPT)
@@ -714,6 +766,7 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
         Expect::Shell => return shell_verdict(arch, clean_exit, console),
         Expect::BootToPrompt => return prompt_verdict(arch, clean_exit, console),
+        Expect::LinuxPrograms => return linux_programs_verdict(arch, clean_exit, console),
         Expect::BootClock => return boot_clock_verdict(arch, console),
         _ => {}
     }
@@ -822,6 +875,49 @@ fn shell_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Stri
     }
     eprintln!("xtask: {arch}: shell boot test passed");
     Ok(())
+}
+
+fn linux_programs_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+    let lines: Vec<&str> = console.lines().map(str::trim_end).collect();
+    if let Some(panic) = lines
+        .iter()
+        .find(|line| line.starts_with(KERNEL_PANIC_PREFIX))
+    {
+        return Err(format!("{arch}: init ended: {panic}"));
+    }
+    if !clean_exit {
+        return Err(format!("{arch}: QEMU exited with an error"));
+    }
+    for (typed, expected) in LINUX_PROGRAM_SESSION.iter().zip(linux_program_output()) {
+        let command = String::from_utf8_lossy(typed);
+        let command = command.trim_end_matches('\r');
+        let Some(echoed) = lines
+            .iter()
+            .position(|line| line.starts_with(SHELL_PROMPT) && line.ends_with(command))
+        else {
+            return Err(format!("{arch}: `{command}` was not typed at a prompt"));
+        };
+        let output = lines[echoed + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with(SHELL_PROMPT));
+        if let Some(missing) = missing_in_order(output, &expected) {
+            return Err(format!(
+                "{arch}: `{command}` did not write {missing:?} in order before the next prompt"
+            ));
+        }
+    }
+    eprintln!("xtask: {arch}: Linux programs boot test passed");
+    Ok(())
+}
+
+fn missing_in_order<'a>(
+    mut output: impl Iterator<Item = &'a &'a str>,
+    expected: &[Line],
+) -> Option<Line> {
+    expected
+        .iter()
+        .find(|wanted| !output.any(|line| wanted.matches(line)))
+        .cloned()
 }
 
 fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
@@ -1061,9 +1157,7 @@ fn screen_size(qmp: &mut Qmp, arch: &Arch) -> Result<(u32, u32), String> {
 }
 
 fn screendump_path(arch: &Arch, suffix: &str) -> Result<std::path::PathBuf, String> {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| crate::workspace_root().join("target"));
+    let target = crate::target_directory();
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
     Ok(target.join(format!("screendump-{}{suffix}.ppm", arch.name)))
 }
@@ -1356,6 +1450,46 @@ mod tests {
         assert!(scripts_to_type(&partial, &mut typed).is_empty());
         let whole = format!("{partial} and a line\r\n");
         assert_eq!(scripts_to_type(&whole, &mut typed), [CONSOLE_SCRIPTS[3].1]);
+    }
+
+    fn linux_programs_console() -> String {
+        let mut console = String::from("EggOS 0.2.0 (riscv64)\r\n");
+        for (typed, output) in LINUX_PROGRAM_SESSION.iter().zip(linux_program_output()) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                let line = match line {
+                    Line::Whole(whole) => whole,
+                    Line::Around(start, end) => format!("{start}(9) panicked at main.rs:1:1{end}"),
+                };
+                console.push_str(&format!("{line}\r\n"));
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_linux_programs_session_passes_only_with_each_command_s_lines_in_order() {
+        let ok = linux_programs_console();
+        assert!(verdict("riscv64", Expect::LinuxPrograms, true, &ok).is_ok());
+        assert!(verdict("riscv64", Expect::LinuxPrograms, false, &ok).is_err());
+        for missing in ["LINUX-STATIC status 42", "Aborted", "LINUX-STATIC stderr"] {
+            let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
+            assert!(
+                verdict("riscv64", Expect::LinuxPrograms, true, &without).is_err(),
+                "{missing}"
+            );
+        }
+        let swapped = ok.replacen(
+            "LINUX-STATIC file eggos\r\nLINUX-STATIC dir about",
+            "LINUX-STATIC dir about\r\nLINUX-STATIC file eggos",
+            1,
+        );
+        assert!(verdict("riscv64", Expect::LinuxPrograms, true, &swapped).is_err());
+        let untyped = ok.replacen("linux-static exit 42", "linux-static exit 41", 1);
+        assert!(verdict("riscv64", Expect::LinuxPrograms, true, &untyped).is_err());
+        let panicked = format!("{ok}{KERNEL_PANIC_PREFIX} - not syncing\r\n");
+        assert!(verdict("riscv64", Expect::LinuxPrograms, true, &panicked).is_err());
     }
 
     #[test]

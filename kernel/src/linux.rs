@@ -179,6 +179,7 @@ pub mod number {
         pub const GETDENTS64: u64 = 217;
         pub const OPENAT: u64 = 257;
         pub const GETCPU: u64 = 309;
+        pub const SCHED_GETAFFINITY: u64 = 204;
         pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
         pub const EXECVEAT: u64 = 322;
@@ -254,6 +255,7 @@ pub mod number {
         pub const SETRLIMIT: u64 = 164;
         pub const PRCTL: u64 = 167;
         pub const GETCPU: u64 = 168;
+        pub const SCHED_GETAFFINITY: u64 = 123;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
         pub const GETPID: u64 = 172;
@@ -328,6 +330,7 @@ pub mod number {
             GET_ROBUST_LIST,
             SCHED_YIELD,
             GETCPU,
+            SCHED_GETAFFINITY,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
             GETRANDOM,
@@ -872,6 +875,9 @@ fn out_of_line_result<P: Platform>(
         number::GET_ROBUST_LIST => identity::get_robust_list(process, thread, first, second, third),
         number::GETRANDOM => random::getrandom::<P>(process, first, second, third),
         number::GETCPU => identity::getcpu(process, first, second),
+        number::SCHED_GETAFFINITY => {
+            identity::sched_getaffinity(process, thread, first, second, third)
+        }
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
         number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
@@ -6441,6 +6447,53 @@ mod tests {
         assert_eq!(getcpu(0, node_word), 0);
         assert_eq!(getcpu(8, 0), Errno::EFAULT.result());
         assert_eq!(getcpu(cpu_word, 8), Errno::EFAULT.result());
+    }
+
+    #[test]
+    fn sched_getaffinity_writes_the_online_cpus_and_returns_the_mask_s_size() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let cpus = crate::cpu::CPUS.all();
+        let words = cpus.len().max(1).div_ceil(64);
+        let size = (words * 8) as u64;
+        let expected: u64 = if cpus.is_empty() {
+            1
+        } else {
+            cpus.iter()
+                .take(64)
+                .enumerate()
+                .filter(|(_, cpu)| cpu.is_online())
+                .fold(0, |bits, (index, _)| bits | 1 << index)
+        };
+        process.write_user_memory(SCRATCH, &[0xff; 24]).unwrap();
+        let affinity = |pid, size, mask| {
+            call(
+                &process,
+                number::SCHED_GETAFFINITY,
+                [pid, size, mask, 0, 0, 0],
+            )
+        };
+        let pid = u64::from(process.id().get());
+        for asked in [0, pid] {
+            assert_eq!(affinity(asked, size + 8, SCRATCH), size);
+            let mut word = [0u8; 8];
+            process.read_user_memory(SCRATCH, &mut word).unwrap();
+            assert_eq!(u64::from_ne_bytes(word), expected);
+            assert_ne!(expected & 1, 0);
+        }
+        let mut beyond = [0u8; 8];
+        process
+            .read_user_memory(SCRATCH + size, &mut beyond)
+            .unwrap();
+        assert_eq!(beyond, [0xff; 8]);
+        assert_eq!(affinity(0, size - 8, SCRATCH), Errno::EINVAL.result());
+        assert_eq!(affinity(0, size + 4, SCRATCH), Errno::EINVAL.result());
+        assert_eq!(
+            affinity(u64::from(u32::MAX), size, SCRATCH),
+            Errno::ESRCH.result()
+        );
+        assert_eq!(affinity(0, size, 8), Errno::EFAULT.result());
     }
 
     #[test]
