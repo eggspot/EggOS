@@ -45,6 +45,58 @@ holds what used to be written in them.
 - **`qemu-bench`**: after the self-tests pass, run the boot-time benchmarks and print their
   results, which `cargo xtask bench` reads (it boots with `-icount shift=0`).
 
+## Developer commands (`xtask/`)
+- **`cargo xtask ci`** runs CI's checks in CI's order, cheapest first. **`clippy-targets`**
+  lints the user crates as compiled for each architecture's Linux target and the kernel crates
+  for each bare-metal target (where the architecture modules a host build cannot see are
+  compiled), without features and with each test feature, since they change code paths; the
+  user programs the test kernels embed are built first.
+- **Our Linux programs' flags.** A program on our own runtime (init, the shell, the core
+  utilities, the runtime's self-test program) links no C library or start files, as a static
+  PIE (D85); the ones the release initramfs holds also drop debug information and symbols. A
+  program on Rust's standard library (the std test program) links the toolchain's own musl and
+  start files statically, as a static PIE where the target has one, without debug information
+  or symbols (D84, D86). The kernel build finds each test program through an environment
+  variable naming its path.
+- **`cargo xtask qemu`** boots, for each architecture: the self-test kernel, which must pass
+  every self-test with the std program reading the console as the runner types (D100); the
+  fatal-exception kernel, which must report a write to read-only data after its self-tests
+  (D29), both with the `.bss` probe poisoned so the `.bss` self-test can fail; the release
+  kernel with a test init whose login program, the std program, ends and init powers off, then
+  resets the machine, which ends QEMU under `-no-reboot` (D106); init starting the shell, which
+  the runner drives on the serial console (D107); and last the release kernel itself, booted to
+  the shell's prompt, where the runner runs the core utilities, reports the time from QEMU's
+  start to the first prompt, and powers off with `poweroff` (D108). A boot that has not powered
+  off within 30 seconds (90 for the benchmarks) has hung.
+- **What the runner matches.** The lines it looks for are the ones the kernel and the test
+  programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
+  `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
+  `eggos_kernel::console`), the user-mode lines `EGGOS-USER: ...` (`eggos_hal::user`,
+  `eggos_kernel::selftest`, `userland/selftest`, `userland/std-selftest`), the std program's
+  `EGGOS-CONSOLE: type ...` requests and what is typed for each (`console::request` in
+  `userland/std-selftest`), `kernel exception: ` and the write-protect probe's line
+  (`eggos_kernel::exception`, `eggos_kernel::selftest`), the boot banner `EggOS <version>
+  (<arch>)`, and init's, the shell's and the utilities' lines in the D106 to D108 sessions.
+  What it types answers a request each time the request appears as a whole line: after
+  `EGGOS-CONSOLE: input ready`, `eggos_kernel::selftest::CONSOLE_INPUT_SCRIPT`, which a
+  self-test checks arrives through the receive interrupt; then the std program's requests, among
+  them lines edited with backspace, delete, `^W`, `^U` and `^D`, whose echo (each erased
+  character rubbed out with backspace, space, backspace) the runner checks. The shell sessions
+  type a line at each prompt instead, as a person would, so the echo never mixes with what a
+  command writes.
+- **QEMU's arguments.** Every boot has 128 MiB and 4 CPUs, so the secondary CPUs start (D40;
+  `eggos_kernel::selftest::QEMU_CPUS` must match), and never `-no-reboot` unless a test wants a
+  reset to end QEMU: with it an x86 triple fault (in the power-off path, say) ends QEMU with
+  status 0, which looks like a clean power-off; without it the machine resets and prints the
+  banner again, which fails the test. The `.bss` probe (`eggos_selftest_bss_probe`) is filled
+  with `0xa5` bytes by one QEMU `loader` device per 8-byte word, which QEMU applies at reset
+  after placing the image and before any firmware runs (observed on QEMU 10 on all three
+  architectures, not a documented guarantee: a QEMU upgrade that changes it shows up as `.bss`
+  failing). QEMU hands over zeroed memory, so without this the `.bss` self-test would pass even
+  if the entry point never cleared `.bss`.
+- **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
+  just enough JSON for them (string escapes such as Windows paths' `\\`).
+
 ## CI (`.github/workflows/ci.yml`, D8, D36)
 - **One cheap Linux job (`check`)**, its steps ordered cheapest first so a typo fails in
   seconds: format, clippy (host, then the kernel targets), docs, host tests, QEMU boot tests and

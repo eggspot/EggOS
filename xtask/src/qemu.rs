@@ -1,4 +1,6 @@
-//! Booting kernel images in QEMU.
+//! Booting kernel images in QEMU. What the boot tests run, the console lines they match (which
+//! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
+//! does: docs/build.md, "Developer commands".
 
 use crate::{Arch, elf};
 use std::io::{Read, Write};
@@ -7,34 +9,22 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Must match `eggos_kernel::selftest::{PASS_MARKER, FAIL_MARKER}`.
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 
-/// Must match `eggos_hal::user::TestProgram::LINUX_HELLO`, without its newline: the line the
-/// self-tests' Linux program writes from user mode, through the `write` system call (M6).
 const USER_HELLO: &str = "EGGOS-USER: hello from user mode";
 
-/// Must match `eggos_kernel::selftest::LINUX_START_LINE`, without its newline: the line the
-/// self-tests' program started from an ELF image writes from its arguments and environment.
 const ELF_START_LINE: &str =
     "EGGOS-USER: started from an ELF image with arguments and an environment";
 
-/// Must match `PASSED_LINE` in `userland/selftest`, without its newline: the line our own
-/// program built from Rust source writes when every start-up check passed (D85).
 const RUST_PROGRAM_LINE: &str =
     "EGGOS-USER: a program built from Rust source passed its startup checks";
 
-/// Must match `PASSED_LINE` in `userland/std-selftest`: the line our own program built with
-/// Rust's standard library writes when every check passed (D86).
 const STD_PROGRAM_LINE: &str = "EGGOS-USER: a std program built from Rust source ran its checks";
 
-/// Must match `console::PASSED_LINE` in `userland/std-selftest`: the line the std program
-/// writes when it read the console as Linux's line discipline would have it (D100).
 const CONSOLE_PROGRAM_LINE: &str =
     "EGGOS-USER: a std program read the console through its line discipline";
 
-/// The lines the Linux test programs write, which a passing boot must show whole.
 const USER_LINES: [&str; 4] = [
     USER_HELLO,
     ELF_START_LINE,
@@ -42,24 +32,14 @@ const USER_LINES: [&str; 4] = [
     STD_PROGRAM_LINE,
 ];
 
-/// Must match the start of `eggos_kernel::exception::report`'s line.
 const EXCEPTION_PREFIX: &str = "kernel exception: ";
 
-/// Must match `eggos_kernel::selftest::WRITE_PROTECT_PROBE`.
 const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
 
-/// Must match `eggos_kernel::console::INPUT_READY_LINE`: once the kernel writes it, nothing
-/// typed on the serial console is lost.
 const INPUT_READY_LINE: &str = "EGGOS-CONSOLE: input ready";
 
-/// Must match `eggos_kernel::selftest::CONSOLE_INPUT_SCRIPT`: what the boot tests type on the
-/// serial console once it is ready, which a self-test checks arrives through the console's
-/// receive interrupt.
 const CONSOLE_INPUT_SCRIPT: &[u8] = b"EggOS reads its console\r";
 
-/// What the boot tests type on the serial console, each time its line (the first) appears: the
-/// kernel's [`INPUT_READY_LINE`], then the std program's requests, which must match
-/// `console::request` in `userland/std-selftest` (the program checks what it reads, D100).
 const CONSOLE_SCRIPTS: [(&str, &[u8]); 8] = [
     (INPUT_READY_LINE, CONSOLE_INPUT_SCRIPT),
     ("EGGOS-CONSOLE: type lines", LINES_SCRIPT),
@@ -83,14 +63,9 @@ const CONSOLE_SCRIPTS: [(&str, &[u8]); 8] = [
     ),
 ];
 
-/// Lines edited with backspace, delete, word erase (`^W`) and kill (`^U`), an end of file
-/// (`^D`) after bytes and one at the start of a line, then a last line.
 const LINES_SCRIPT: &[u8] = b"hello\rab\x08c\rwrongx\x7f\x7f\x7f\x7f\x7f\x7fright\r\
     two words \x17\x17one\rdiscard me\x15kept\rpartial\x04\x04last\r";
 
-/// How the line discipline echoes [`LINES_SCRIPT`] on the console: each erased character
-/// rubbed out with backspace, space, backspace, newlines written as carriage return and
-/// newline.
 const LINES_ECHO: &str = concat!(
     "hello\r\n",
     "ab\x08 \x08c\r\n",
@@ -266,30 +241,20 @@ const RESTART_LINE: &str = "reboot: Restarting system";
 
 const KERNEL_PANIC_PREFIX: &str = "Kernel panic";
 
-/// A boot test that has not powered off by then has hung.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const BENCHMARK_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Start of the kernel's boot banner (`EggOS <version> (<arch>)`, see `eggos_kernel::boot`).
-/// Seeing it twice means the machine reset and booted again.
 const BANNER_PREFIX: &str = "EggOS ";
 
-/// Arguments every boot gets. Never `-no-reboot`: with it, an x86 triple fault (in the
-/// power-off path, say) ends QEMU with exit code 0, which looks like a clean power-off; without
-/// it the machine resets and prints the banner again, which fails the test.
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
 
 /// CPUs in the boot tests and interactive runs, so every boot starts the secondary CPUs
 /// (D40). Must match `eggos_kernel::selftest::QEMU_CPUS`.
 pub const TEST_CPUS: u32 = 4;
 
-/// Symbol name of the kernel's `.bss` self-test probe (`BSS_PROBE` in
-/// `eggos_kernel::selftest`).
 const BSS_PROBE_SYMBOL: &str = "eggos_selftest_bss_probe";
 
-/// What the boot tests fill the `.bss` probe with before the kernel starts. The same byte
-/// everywhere, so it reads the same in either byte order.
 const BSS_POISON: u64 = 0xa5a5_a5a5_a5a5_a5a5;
 
 /// QEMU arguments that fill the kernel's `.bss` probe with [`BSS_POISON`] before the first
@@ -418,8 +383,6 @@ pub fn boot_test(
     Ok(console)
 }
 
-/// Copies QEMU's console to our stderr as it arrives, so a hang is still visible, and sends
-/// each piece to the returned receiver, until QEMU closes its stdout.
 fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -434,9 +397,6 @@ fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiv
     rx
 }
 
-/// The scripts of [`CONSOLE_SCRIPTS`] to type now: each as many more times as its line
-/// appears whole in `console`, ended by a newline (trailing whitespace aside), beyond the times
-/// `typed` counts, which it then counts.
 fn scripts_to_type(
     console: &str,
     typed: &mut [usize; CONSOLE_SCRIPTS.len()],
@@ -475,7 +435,6 @@ fn shell_scripts_to_type(
     scripts
 }
 
-/// How many times the kernel's boot banner appears on the console.
 fn banner_count(console: &str) -> usize {
     console
         .lines()
@@ -483,13 +442,6 @@ fn banner_count(console: &str) -> usize {
         .count()
 }
 
-/// [`Expect::Pass`]: a clean exit, the pass marker, no fail marker, the lines the Linux test
-/// programs write, and the line discipline's echo of [`LINES_SCRIPT`]. [`Expect::Benchmarks`]:
-/// the same but the console program's line and the echo.
-/// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), the address
-/// of the read-only data the kernel writes, then a report of an exception at that address
-/// followed by the fail marker.
-/// Either way, a second boot banner (a reset) fails.
 fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Result<(), String> {
     let lines = || console.lines().map(str::trim_end);
     let passed = lines().any(|l| l == PASS_MARKER);

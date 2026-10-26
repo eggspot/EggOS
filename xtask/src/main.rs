@@ -1,7 +1,8 @@
 //! Developer commands for EggOS, run with `cargo xtask <command>`.
 //!
 //! Written in Rust (no shell scripts) so the same commands work on macOS, Windows and Linux,
-//! locally and in CI.
+//! locally and in CI. What each command does and the flags our Linux programs are built with:
+//! docs/build.md, "Developer commands".
 
 mod bench;
 mod elf;
@@ -70,10 +71,8 @@ pub const ARCHES: &[Arch] = &[
     },
 ];
 
-/// Crates compiled for kernel targets.
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 
-/// Crates compiled for the architectures' Linux targets: our own Linux programs.
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-init",
@@ -83,17 +82,12 @@ const USER_CRATES: &[&str] = &[
     "eggos-std-selftest",
 ];
 
-/// A Linux program built from our own Rust source that the `qemu-test` kernels run.
 struct UserProgram {
     package: &'static str,
-    /// The environment variable that names the program's path to the kernel build.
     variable: &'static str,
-    /// The flags that replace `.cargo/config.toml`'s and any `RUSTFLAGS` for the target.
     rustflags: &'static [&'static str],
 }
 
-/// The programs the `qemu-test` kernels run: one on our own runtime (D85), one on Rust's
-/// standard library and musl (D86).
 const USER_PROGRAMS: [UserProgram; 2] = [
     UserProgram {
         package: "eggos-selftest",
@@ -107,7 +101,6 @@ const USER_PROGRAMS: [UserProgram; 2] = [
     },
 ];
 
-/// A program on our own runtime links no C library or start files, as a static PIE (D85).
 const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] =
     &["-C", "link-self-contained=no", "-C", "relocation-model=pie"];
 
@@ -150,9 +143,6 @@ const INIT_TEST_LOGIN_PATH: &str = "usr/libexec/eggos-std-selftest";
 
 const INIT_TEST_LOGIN: &str = "login=/usr/libexec/eggos-std-selftest init-login\n";
 
-/// A program on Rust's standard library links the toolchain's own musl and start files,
-/// statically, as a static PIE where the target has one, with no debug information or
-/// symbols (D84, D86).
 const STD_PROGRAM_RUSTFLAGS: &[&str] = &[
     "-C",
     "link-self-contained=yes",
@@ -219,7 +209,6 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// Parses `--arch <name|all>`.
 fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
     let [flag, name] = args else {
         return Err(USAGE.into());
@@ -237,7 +226,6 @@ fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
         .ok_or_else(|| format!("unknown architecture `{name}`\n\n{USAGE}"))
 }
 
-/// Runs the same checks as CI, in the same order (cheapest first).
 fn ci() -> Result<(), String> {
     cargo(&["fmt", "--all", "--check"])?;
     cargo(&[
@@ -257,16 +245,6 @@ fn ci() -> Result<(), String> {
     bench::run(&ARCHES.iter().collect::<Vec<_>>(), false)
 }
 
-/// Boots `arch`'s kernel twice: once to pass its self-tests, once to check that the
-/// exception vectors report a fatal exception (a write to read-only data after the
-/// self-tests, which must fault: D29).
-/// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
-/// Then boots the release kernel twice with a test initramfs whose init runs the std program
-/// as its login program, and powers off once it ends, or resets the machine, which ends QEMU
-/// under `-no-reboot` (D106); once more with init starting the shell, which the test
-/// drives on the serial console (D107); and last the release kernel itself, booted to the
-/// shell's prompt, where the test runs the core utilities and powers off with `poweroff`
-/// (D108).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -297,10 +275,6 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     Ok(())
 }
 
-/// Lints the user crates as compiled for each Linux target and the kernel crates as compiled
-/// for each bare-metal target, where the architecture modules (invisible to a host build) are
-/// compiled: without features and with each test feature, since they change code paths, with
-/// the user programs the test kernels embed built first.
 fn clippy_targets() -> Result<(), String> {
     for arch in ARCHES {
         let mut args = vec!["clippy", "--target", arch.user_target];
@@ -508,9 +482,6 @@ fn program_variables<'a>(programs: &'a [(&'static str, String)]) -> Vec<(&'stati
         .collect()
 }
 
-/// Runs `cargo <args> --release` with `env` and returns the path cargo reports for the last
-/// executable it built, wherever `CARGO_TARGET_DIR` or `build.target-dir` put it, `what`
-/// naming it in errors.
 fn build_executable(
     args: &[&str],
     env: &[(&str, &str)],
@@ -545,8 +516,6 @@ fn build_executable(
         .ok_or_else(|| format!("cargo reported no {what}"))
 }
 
-/// Returns the string value of `"field":"..."` in one line of cargo's JSON output, unescaped.
-/// Enough JSON for cargo's messages (paths may contain `\\` and `\"` escapes on Windows).
 fn json_string_field(line: &str, field: &str) -> Option<String> {
     let start = line.find(&format!("\"{field}\":\""))? + field.len() + 4;
     let mut value = String::new();
@@ -584,7 +553,6 @@ fn docs() -> Result<(), String> {
     )
 }
 
-/// Runs `cargo <args>` in the workspace root with the toolchain that is running this xtask.
 fn cargo(args: &[&str]) -> Result<(), String> {
     cargo_with_env(args, &[])
 }
