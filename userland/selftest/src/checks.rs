@@ -78,8 +78,15 @@ static CHECKS: [Check; 20] = [
 
 /// Runs every check in order and returns the exit status: 0 if all passed.
 pub fn run(startup: &Startup) -> i32 {
-    if startup.arguments().nth(1) == Some(EXEC_LOOP) {
+    let mode = startup.arguments().nth(1);
+    if mode == Some(EXEC_LOOP) {
         return exec_loop(startup);
+    }
+    if mode == Some(FORK_LOOP) {
+        return fork_loop(startup);
+    }
+    if mode == Some(SPAWN_LOOP) {
+        return spawn_loop(startup);
     }
     let mut failed = false;
     for (name, check) in &CHECKS {
@@ -143,6 +150,75 @@ fn exec_loop(startup: &Startup) -> i32 {
         ],
     );
     exec_loop_status::EXECVE_RETURNED
+}
+
+pub const FORK_LOOP: &CStr = c"fork-loop";
+
+pub const SPAWN_LOOP: &CStr = c"spawn-loop";
+
+pub mod process_loop_status {
+    pub const BAD_COUNT: i32 = 2;
+    pub const CLONE_FAILED: i32 = 4;
+}
+
+const CLONE_VM: usize = 0x100;
+const CLONE_VFORK: usize = 0x4000;
+const SIGCHLD: usize = 17;
+
+fn fork_loop(startup: &Startup) -> i32 {
+    let Some(count) = startup.arguments().nth(2).and_then(decimal) else {
+        return process_loop_status::BAD_COUNT;
+    };
+    for _ in 0..count {
+        let child = call(number::CLONE, [CLONE_VFORK | SIGCHLD, 0, 0, 0, 0, 0]);
+        if child == 0 {
+            syscall::exit(0);
+        }
+        if child < 0 {
+            return process_loop_status::CLONE_FAILED;
+        }
+    }
+    0
+}
+
+#[inline(never)]
+fn exec_or_exit(arguments: &[usize; 4]) -> ! {
+    let environment = [0usize];
+    call(
+        number::EXECVE,
+        [
+            PROGRAM.as_ptr() as usize,
+            arguments.as_ptr() as usize,
+            environment.as_ptr() as usize,
+            0,
+            0,
+            0,
+        ],
+    );
+    syscall::exit(exec_loop_status::EXECVE_RETURNED)
+}
+
+fn spawn_loop(startup: &Startup) -> i32 {
+    let Some(count) = startup.arguments().nth(2).and_then(decimal) else {
+        return process_loop_status::BAD_COUNT;
+    };
+    let arguments = [
+        PROGRAM.as_ptr() as usize,
+        EXEC_LOOP.as_ptr() as usize,
+        c"0".as_ptr() as usize,
+        0,
+    ];
+    for _ in 0..count {
+        let flags = CLONE_VM | CLONE_VFORK | SIGCHLD;
+        let child = call(number::CLONE, [flags, 0, 0, 0, 0, 0]);
+        if child == 0 {
+            exec_or_exit(&arguments);
+        }
+        if child < 0 {
+            return process_loop_status::CLONE_FAILED;
+        }
+    }
+    0
 }
 
 fn decimal(text: &CStr) -> Option<u64> {
