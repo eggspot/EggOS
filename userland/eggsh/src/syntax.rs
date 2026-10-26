@@ -562,6 +562,57 @@ impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
     }
 }
 
+/// Where a scan for the end of a line stands: what the bytes so far left open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Quoting {
+    /// Inside a word, nothing open.
+    #[default]
+    Plain,
+    /// Between words: a `#` here starts a comment.
+    WordStart,
+    /// Inside `'...'`.
+    Single,
+    /// Inside `"..."`.
+    Double,
+    /// After a `\`, inside `"..."` if `double`.
+    Escaped {
+        /// Whether the `\` is inside `"..."`.
+        double: bool,
+    },
+    /// Inside a comment.
+    Comment,
+}
+
+/// Scans `bytes` from where `quoting` stands for the end of a line: a newline outside quotes
+/// and not escaped. Returns the length up to it, newline included, and leaves `quoting` at
+/// [`Quoting::WordStart`]; or `None` and leaves `quoting` where the bytes end. For skipping a
+/// line the shell refuses without running what an open quote holds.
+pub fn line_end(quoting: &mut Quoting, bytes: &[u8]) -> Option<usize> {
+    for (index, &byte) in bytes.iter().enumerate() {
+        *quoting = match (*quoting, byte) {
+            (Quoting::Single, b'\'') => Quoting::Plain,
+            (Quoting::Single, _) => Quoting::Single,
+            (Quoting::Double, b'"') => Quoting::Plain,
+            (Quoting::Double, b'\\') => Quoting::Escaped { double: true },
+            (Quoting::Double, _) => Quoting::Double,
+            (Quoting::Escaped { double: true }, _) => Quoting::Double,
+            (Quoting::Escaped { double: false }, _) => Quoting::Plain,
+            (Quoting::Comment, b'\n') | (_, b'\n') => {
+                *quoting = Quoting::WordStart;
+                return Some(index + 1);
+            }
+            (Quoting::Comment, _) => Quoting::Comment,
+            (Quoting::WordStart, b'#') => Quoting::Comment,
+            (_, b'\'') => Quoting::Single,
+            (_, b'"') => Quoting::Double,
+            (_, b'\\') => Quoting::Escaped { double: false },
+            (_, b' ' | b'\t' | b';') => Quoting::WordStart,
+            _ => Quoting::Plain,
+        };
+    }
+    None
+}
+
 /// `value` in decimal, written at the end of `buffer`.
 pub fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
     let mut start = buffer.len();
@@ -809,6 +860,27 @@ b""#
             check_line(b"echo ok; echo | x\n", false),
             Err(SyntaxError::NotSupported("|"))
         );
+    }
+
+    #[test]
+    fn a_line_ends_only_at_a_newline_outside_quotes_comments_and_escapes() {
+        let mut quoting = Quoting::WordStart;
+        assert_eq!(line_end(&mut quoting, b"echo a\nnext"), Some(7));
+        assert_eq!(quoting, Quoting::WordStart);
+        let text = b"echo 'a\nb' \"c\nd\" e\\\nf # it's \"\nls\n";
+        let mut quoting = Quoting::WordStart;
+        let first = line_end(&mut quoting, text).unwrap();
+        assert_eq!(&text[..first], b"echo 'a\nb' \"c\nd\" e\\\nf # it's \"\n");
+        assert_eq!(line_end(&mut quoting, &text[first..]), Some(3));
+        let mut quoting = Quoting::WordStart;
+        assert_eq!(line_end(&mut quoting, b"echo 'start\nyyy"), None);
+        assert_eq!(quoting, Quoting::Single);
+        assert_eq!(line_end(&mut quoting, b"y\nls\n'\necho after\n"), Some(7));
+        let mut quoting = Quoting::WordStart;
+        assert_eq!(line_end(&mut quoting, b"a#b'\nc\n"), None);
+        assert_eq!(quoting, Quoting::Single);
+        let mut quoting = Quoting::WordStart;
+        assert_eq!(line_end(&mut quoting, b"x \"\\\"\n\"\n"), Some(8));
     }
 
     #[test]

@@ -5,9 +5,10 @@
 use crate::path::{self, DEFAULT_PATH, Files, Lookup, PATH_CAPACITY};
 use crate::status::{self, Ended, NOT_EXECUTABLE, NOT_FOUND, USAGE};
 use crate::syntax::{
-    MAX_WORDS, Parameters, SyntaxError, Terminator, Value, Words, check_line, is_name, next_command,
+    MAX_WORDS, Parameters, Quoting, SyntaxError, Terminator, Value, Words, check_line, is_name,
+    line_end, next_command,
 };
-use crate::variables::{MAX_VARIABLES, Variables};
+use crate::variables::{MAX_VARIABLES, VARIABLES_CAPACITY, Variables};
 
 /// The most bytes of a line the shell holds before its end: longer lines are refused.
 pub const LINE_CAPACITY: usize = 4096;
@@ -273,7 +274,7 @@ impl<'a, S: System> Shell<'a, S> {
         let mut buffer = [0; LINE_CAPACITY];
         let mut words = Words::default();
         let mut length = 0;
-        let mut discarding = false;
+        let mut discarding = None;
         while self.exit.is_none() {
             if prompt {
                 self.prompt(length > 0);
@@ -282,14 +283,14 @@ impl<'a, S: System> Shell<'a, S> {
                 Read::Bytes(count) => count,
                 Read::Interrupted if prompt => {
                     length = 0;
-                    discarding = false;
+                    discarding = None;
                     self.system.write(STANDARD_ERROR, b"\n");
                     self.status = INTERRUPTED;
                     continue;
                 }
                 Read::Interrupted => continue,
                 Read::End => {
-                    if length > 0 && !discarding {
+                    if length > 0 && discarding.is_none() {
                         self.run_buffer(&buffer[..length], true, &mut words);
                     }
                     if prompt && self.exit.is_none() {
@@ -301,11 +302,11 @@ impl<'a, S: System> Shell<'a, S> {
             let mut from = 0;
             let start = length;
             length += count;
-            if discarding {
-                match buffer[start..length].iter().position(|&byte| byte == b'\n') {
-                    Some(newline) => {
-                        from = start + newline + 1;
-                        discarding = false;
+            if let Some(quoting) = &mut discarding {
+                match line_end(quoting, &buffer[start..length]) {
+                    Some(end) => {
+                        from = start + end;
+                        discarding = None;
                     }
                     None => {
                         length = 0;
@@ -317,19 +318,34 @@ impl<'a, S: System> Shell<'a, S> {
             let used = from + used;
             buffer.copy_within(used..length, 0);
             length -= used;
-            if discard {
-                discarding = true;
+            if discard.is_some() {
+                discarding = discard;
                 length = 0;
             } else if length == LINE_CAPACITY {
                 self.error(&[b"line too long"]);
                 self.status = USAGE;
-                discarding = true;
+                if !prompt {
+                    if !self.interactive {
+                        self.exit = Some(USAGE);
+                    }
+                    return;
+                }
+                let mut quoting = Quoting::WordStart;
+                discarding = match line_end(&mut quoting, &buffer[..length]) {
+                    Some(_) => Some(Quoting::WordStart),
+                    None => Some(quoting),
+                };
                 length = 0;
             }
         }
     }
 
-    fn run_buffer(&mut self, text: &[u8], final_input: bool, words: &mut Words) -> (usize, bool) {
+    fn run_buffer(
+        &mut self,
+        text: &[u8],
+        final_input: bool,
+        words: &mut Words,
+    ) -> (usize, Option<Quoting>) {
         let mut at = 0;
         while at < text.len() && self.exit.is_none() {
             match check_line(&text[at..], final_input) {
@@ -340,14 +356,16 @@ impl<'a, S: System> Shell<'a, S> {
                 Err(SyntaxError::Incomplete) => break,
                 Err(error) => {
                     self.syntax_error(error);
-                    match text[at..].iter().position(|&byte| byte == b'\n') {
-                        Some(newline) => at += newline + 1,
-                        None => return (text.len(), !final_input),
+                    let mut quoting = Quoting::WordStart;
+                    match line_end(&mut quoting, &text[at..]) {
+                        Some(end) => at += end,
+                        None if final_input => return (text.len(), None),
+                        None => return (text.len(), Some(quoting)),
                     }
                 }
             }
         }
-        (at, false)
+        (at, None)
     }
 
     fn run_line(&mut self, line: &[u8], words: &mut Words) {
@@ -496,16 +514,22 @@ impl<'a, S: System> Shell<'a, S> {
         let Some(current) = self.system.working_directory(&mut current) else {
             return 0;
         };
-        let full = if let Some(old) = self.variables.get(b"PWD") {
-            let old_length = old.len();
-            target[..old_length].copy_from_slice(old);
-            self.variables
-                .set(b"OLDPWD", &target[..old_length], false)
-                .is_err()
-        } else {
-            false
+        let mut previous = [0; VARIABLES_CAPACITY];
+        let kept_previous = match self.variables.get(b"PWD") {
+            Some(old) => {
+                let old_length = old.len();
+                previous[..old_length].copy_from_slice(old);
+                self.variables
+                    .set(b"OLDPWD", &previous[..old_length], false)
+                    .is_ok()
+            }
+            None => true,
         };
-        if full || self.variables.set(b"PWD", current, false).is_err() {
+        if !kept_previous {
+            self.variables.unset(b"OLDPWD");
+        }
+        let kept_current = self.variables.set(b"PWD", current, false).is_ok();
+        if !kept_previous || !kept_current {
             self.error(&[b"cd: too many variables"]);
             return 1;
         }

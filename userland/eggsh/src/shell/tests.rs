@@ -469,3 +469,60 @@ fn help_lists_the_builtins() {
     let shell = run("help");
     assert!(output(&shell).contains("Builtins: . (source) : cd echo exit"));
 }
+
+#[test]
+fn cd_from_a_working_directory_longer_than_a_path_keeps_the_shell_alive() {
+    let x = "x".repeat(1000);
+    let shell = run(&format!(
+        "A={x}; PWD=$A$A$A$A$A; cd /; echo $? \"[$OLDPWD]\" $PWD"
+    ));
+    assert_eq!(output(&shell), "1 [] /\n");
+    assert_eq!(errors(&shell), "eggsh: cd: too many variables\n");
+    let mut imported = Shell::new(system(), 1, &ARGUMENTS, 3, false, true);
+    imported.import(format!("PWD=/{}", "p".repeat(PATH_CAPACITY + 10)).as_bytes());
+    imported.run_text(b"cd /bin; echo $? $PWD \"[$OLDPWD]\"");
+    assert_eq!(output(&imported), "1 /bin []\n");
+}
+
+fn long_quoted_line() -> String {
+    format!("echo 'start\n{}\nls\n'\necho after\n", "y".repeat(5000))
+}
+
+#[test]
+fn a_line_too_long_in_a_file_ends_it_without_running_what_its_quote_holds() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .contents
+        .insert("/long".to_owned(), long_quoted_line().into_bytes());
+    shell.run_text(b". /long\necho not reached");
+    assert!(shell.system.ran.is_empty());
+    assert_eq!(output(&shell), "");
+    assert_eq!(errors(&shell), "eggsh: line too long\n");
+    assert_eq!(shell.exit_status(), USAGE);
+    let mut interactive = shell_with_input(true, &[". /long\n", "echo $?\n"]);
+    interactive
+        .system
+        .contents
+        .insert("/long".to_owned(), long_quoted_line().into_bytes());
+    interactive.run_descriptor(0, true);
+    assert!(interactive.system.ran.is_empty());
+    assert_eq!(output(&interactive), "2\n");
+}
+
+#[test]
+fn a_line_too_long_at_the_prompt_is_skipped_up_to_the_end_of_its_quote() {
+    let mut shell = shell_with_input(true, &[&long_quoted_line()]);
+    shell.run_descriptor(0, true);
+    assert!(shell.system.ran.is_empty());
+    assert_eq!(output(&shell), "after\n");
+    assert!(errors(&shell).contains("eggsh: line too long\n"));
+}
+
+#[test]
+fn a_refused_line_is_skipped_up_to_the_end_of_its_quote() {
+    let mut shell = shell_with_input(true, &["echo | 'a\n", "ls\n", "'\n", "echo after\n"]);
+    shell.run_descriptor(0, true);
+    assert!(shell.system.ran.is_empty());
+    assert_eq!(output(&shell), "after\n");
+}

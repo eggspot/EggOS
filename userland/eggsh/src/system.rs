@@ -367,13 +367,6 @@ impl System for Linux {
         if child < 0 {
             return Err(Errno(child.unsigned_abs() as u16));
         }
-        if job_control {
-            call(
-                number::SETPGID,
-                [child as usize, child as usize, 0, 0, 0, 0],
-            );
-            set_foreground(child as i32);
-        }
         let status = wait_for(child);
         if job_control {
             set_foreground(self.group);
