@@ -1,19 +1,24 @@
 //! Builds the initramfs (D102): a `newc` cpio archive of the repository's `initramfs/`
-//! directory, which the kernel embeds and mounts as its root.
+//! directory, which the kernel embeds and mounts as its root, and for test kernels the
+//! programs they start from it with `execve` (D103), in `usr/libexec/`.
 //!
 //! The archive is deterministic: members in name order, each directory before what it holds,
-//! owned by root, directories `0755` and files `0644`, every modification time
-//! `SOURCE_DATE_EPOCH` (0 if unset). Only directories and regular files are taken.
+//! the programs last, owned by root, directories and programs `0755` and other files `0644`,
+//! every modification time `SOURCE_DATE_EPOCH` (0 if unset). Only directories and regular
+//! files are taken.
 
 use std::path::{Path, PathBuf};
 
 const DIRECTORY_MODE: u32 = 0o040755;
 const FILE_MODE: u32 = 0o100644;
+const PROGRAM_MODE: u32 = 0o100755;
+const PROGRAM_DIRECTORY: &str = "usr/libexec";
 const TRAILER: &str = "TRAILER!!!";
 
-/// Writes the archive of `initramfs/` to the target directory, unless an identical one is
-/// there (so the kernel is not rebuilt for nothing), and returns its path.
-pub fn build() -> Result<PathBuf, String> {
+/// Writes the archive of `initramfs/` and `programs` (each a name in `usr/libexec/` and the
+/// path of the program to put there) to `file_name` in the target directory, unless an
+/// identical one is there (so the kernel is not rebuilt for nothing), and returns its path.
+pub fn build(programs: &[(&str, &str)], file_name: &str) -> Result<PathBuf, String> {
     let root = crate::workspace_root();
     let source = root.join("initramfs");
     let modified = match std::env::var("SOURCE_DATE_EPOCH") {
@@ -24,12 +29,19 @@ pub fn build() -> Result<PathBuf, String> {
     };
     let mut members = vec![(".".to_owned(), DIRECTORY_MODE, Vec::new())];
     collect(&source, "", &mut members)?;
+    if !programs.is_empty() {
+        members.push((PROGRAM_DIRECTORY.to_owned(), DIRECTORY_MODE, Vec::new()));
+    }
+    for (name, path) in programs {
+        let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        members.push((format!("{PROGRAM_DIRECTORY}/{name}"), PROGRAM_MODE, data));
+    }
     let archive = archive(&members, modified);
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("target"));
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-    let path = target.join("initramfs.cpio");
+    let path = target.join(file_name);
     if std::fs::read(&path).ok().as_deref() != Some(archive.as_slice()) {
         std::fs::write(&path, &archive).map_err(|e| format!("{}: {e}", path.display()))?;
     }

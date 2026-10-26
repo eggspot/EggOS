@@ -155,7 +155,9 @@ impl OpenFile {
     pub fn new(kind: FileKind, flags: u32) -> Self {
         Self {
             kind,
-            status: AtomicU32::new(flags & (open_flag::ACCMODE | open_flag::STATUS)),
+            status: AtomicU32::new(
+                flags & (open_flag::ACCMODE | open_flag::STATUS | open_flag::PATH),
+            ),
             offset: AtomicU64::new(0),
         }
     }
@@ -165,7 +167,13 @@ impl OpenFile {
         &self.kind
     }
 
-    /// Its access mode and status flags, as `F_GETFL` reports them.
+    /// Whether it was opened with `O_PATH`: a location only, which `ioctl` and most `fcntl`
+    /// commands refuse with `EBADF`.
+    pub fn is_location_only(&self) -> bool {
+        matches!(self.kind, FileKind::Path(_))
+    }
+
+    /// Its access mode and status flags, as `F_GETFL` reports them (`O_PATH` for a location).
     pub fn status_flags(&self) -> u32 {
         self.status.load(Ordering::Relaxed)
     }
@@ -633,16 +641,19 @@ pub fn fcntl<P: Platform>(
         }
         command::SETFL => {
             let table = files.lock();
-            table
-                .get(fd)
-                .ok_or(Errno::EBADF)?
-                .file
-                .set_status_flags(argument);
+            let file = &table.get(fd).ok_or(Errno::EBADF)?.file;
+            if file.is_location_only() {
+                return Err(Errno::EBADF);
+            }
+            file.set_status_flags(argument);
             Ok(0)
         }
         _ => {
-            open(&files.lock())?;
-            Err(Errno::EINVAL)
+            let table = files.lock();
+            match table.get(fd).ok_or(Errno::EBADF)?.file.is_location_only() {
+                true => Err(Errno::EBADF),
+                false => Err(Errno::EINVAL),
+            }
         }
     }
 }

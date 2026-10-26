@@ -11,19 +11,34 @@
 //! libraries take a non-zero `rdx` / `x0` / `a0` as a function to run at exit).
 //!
 //! Static programs only: one that names an interpreter (a dynamic loader) is refused with
-//! `ENOENT`, as Linux refuses one whose interpreter is missing, until there is a file system
-//! to load it from (M7). Position-independent ones (static PIE, the default of Rust's musl
-//! targets) are loaded at [`pie_base`], where the program relocates itself.
+//! `ENOENT`, as Linux refuses one whose interpreter is missing, until dynamic linking (issue
+//! #94's slice 6). Position-independent ones (static PIE, the default of Rust's musl targets)
+//! are loaded at [`pie_base`], where the program relocates itself.
+//!
+//! [`execve`] and [`execveat`] start a program from a file (D103): they find it, check that it
+//! is a regular file the caller may execute, copy the arguments and environment, and load it
+//! into a new process with the caller's id ([`Process::new_image`]), all before the point of
+//! no return, so a failure leaves the caller as it was. Then the caller's other threads end,
+//! the signal actions go back to their defaults (ignored ones stay ignored), the alternate
+//! stack goes, the close-on-exec descriptors close, and the calling thread carries on in the
+//! new process as its only thread, with the process's id.
 
-use super::Errno;
-use super::credentials;
-use super::signals;
+use super::credentials::{self, Credentials, Kind as IdKind};
+use super::descriptors::Descriptors;
+use super::files::{self, PathBuffer};
+use super::stat::at;
+use super::thread::LinuxThread;
+use super::{Errno, futex, signals};
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
-use crate::random;
+use crate::vfs::{self, Node, NodeKind};
+use crate::{random, thread};
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 use eggos_hal::Platform;
+use eggos_hal::fp::FpState;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format};
 use eggos_hal::user::UserContext;
@@ -492,6 +507,358 @@ impl InitialStack {
     }
 }
 
+/// `execve(path, argv, envp)`: [`execveat`] from the working directory with no flags.
+pub fn execve<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [path, arguments, environment, ..] = context.syscall_arguments();
+    let request = Request {
+        dirfd: at::FDCWD as u64,
+        path,
+        arguments,
+        environment,
+        flags: 0,
+    };
+    execute(process, thread, context, request)
+}
+
+/// `execveat(dirfd, path, argv, envp, flags)`: starts the program in the file `dirfd` and
+/// `path` name, as `openat` finds it, in the calling process's place (see the module
+/// documentation), with the arguments and environment the null-terminated pointer arrays
+/// `argv` and `envp` list (a null array is an empty one; with no arguments the program gets
+/// one empty argument, as Linux gives it). `AT_EMPTY_PATH` with an empty path starts the file
+/// `dirfd` is open on. Errors, in Linux's order: `EINVAL` for another flag than
+/// `AT_EMPTY_PATH` and `AT_SYMLINK_NOFOLLOW`; the path's (`EFAULT`, `ENAMETOOLONG`, `ENOENT`,
+/// `ENOTDIR`, `EBADF`); `EACCES` for anything but a regular file and for a file without the
+/// execute permission the caller's file system ids need (root needs one execute bit);
+/// `EFAULT` and `E2BIG` for the arguments and environment; `ENOEXEC` for a file that is not
+/// an ELF program for this machine, a `#!` script among them until scripts are supported;
+/// `ENOENT` for one that names an interpreter; `ENOMEM`. On success it does not return: the
+/// new program starts.
+pub fn execveat<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    let [dirfd, path, arguments, environment, flags, _] = context.syscall_arguments();
+    let request = Request {
+        dirfd,
+        path,
+        arguments,
+        environment,
+        flags,
+    };
+    execute(process, thread, context, request)
+}
+
+const EXECVEAT_FLAGS: u64 = at::EMPTY_PATH | at::SYMLINK_NOFOLLOW;
+
+#[derive(Clone, Copy)]
+struct Request {
+    dirfd: u64,
+    path: u64,
+    arguments: u64,
+    environment: u64,
+    flags: u64,
+}
+
+struct Prepared<P: Platform> {
+    image: Arc<Process<P>>,
+    context: UserContext,
+    files: Option<Descriptors>,
+}
+
+#[inline(never)]
+fn execute<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    request: Request,
+) -> ControlFlow<()> {
+    match prepare(process, thread, request) {
+        Ok(prepared) => {
+            if !process.end_for_exec() {
+                return ControlFlow::Break(());
+            }
+            let next = start(process, thread, context, prepared);
+            let _ = signals::deliver(&next, thread, context);
+            process.hand_over(next, context);
+            ControlFlow::Break(())
+        }
+        Err(errno) => {
+            context.set_syscall_result(errno.result());
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+fn prepare<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    request: Request,
+) -> Result<Prepared<P>, Errno> {
+    let mut buffer = PathBuffer::uninit();
+    let path = files::read_path(process, request.path, &mut buffer)?;
+    if path.is_empty() && request.flags & at::EMPTY_PATH == 0 {
+        return Err(Errno::ENOENT);
+    }
+    if request.flags & !EXECVEAT_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let node = find(thread, request.dirfd, path)?;
+    let attributes = node.attributes();
+    let may_execute = {
+        let credentials = process.credentials_and_limits().lock();
+        may_execute(&attributes, &credentials.credentials)
+    };
+    if attributes.kind != NodeKind::Regular || !may_execute {
+        return Err(Errno::EACCES);
+    }
+    let image = node.read(0, attributes.size as usize);
+    let mut strings = Strings::new();
+    let argument_count = strings.read_list(process, request.arguments)?;
+    if argument_count == 0 {
+        strings.push(&[])?;
+    }
+    let argument_count = argument_count.max(1);
+    strings.read_list(process, request.environment)?;
+    if image.starts_with(b"#!") {
+        return Err(Errno::ENOEXEC);
+    }
+    let mut name = ExecName::new();
+    let name = name.of(request.dirfd, path)?;
+    let list = strings.list()?;
+    let (arguments, environment) = list.split_at(argument_count);
+    let files = match thread.files().is_shared() {
+        true => Some(thread.files().copy()?),
+        false => None,
+    };
+    let mut new = process.new_image().map_err(|_| Errno::ENOMEM)?;
+    let context = load(&mut new, image, name, arguments, environment).map_err(ExecError::errno)?;
+    Ok(Prepared {
+        image: Arc::new(new),
+        context,
+        files,
+    })
+}
+
+fn find(thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
+    if path.is_empty() {
+        let file = thread.files().file(dirfd)?;
+        return file.kind().node().ok_or(Errno::EACCES);
+    }
+    let (root, start) = files::starting_points(thread, dirfd, path)?;
+    vfs::resolve(root, start, path).map_err(files::walk_error)
+}
+
+fn may_execute(attributes: &vfs::Attributes, credentials: &Credentials) -> bool {
+    const EXECUTE: u32 = 0o1;
+    let user = credentials.ids(IdKind::User).filesystem;
+    let group = credentials.ids(IdKind::Group).filesystem;
+    let bits = attributes.permissions;
+    let class = if user == 0 {
+        bits | bits >> 3 | bits >> 6
+    } else if user == attributes.owner {
+        bits >> 6
+    } else if group == attributes.group || credentials.groups().contains(&attributes.group) {
+        bits >> 3
+    } else {
+        bits
+    };
+    class & EXECUTE != 0
+}
+
+fn start<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    prepared: Prepared<P>,
+) -> Arc<Process<P>> {
+    let Prepared {
+        image,
+        context: started,
+        files,
+    } = prepared;
+    let id = process.id().get();
+    let signals = process.signals().lock().take_for_exec(thread.id(), id);
+    *image.signals().lock() = signals;
+    crate::console::forget_foreground(id);
+    if process.threads() > 1 {
+        futex::wake_space::<P>(id);
+        crate::console::wake_input_waiters::<P>();
+    }
+    let robust_list = thread.robust_list();
+    if robust_list != 0 {
+        futex::release_robust_list(process, thread.id(), robust_list);
+    }
+    thread.start_image(id);
+    if let Some(files) = files {
+        thread.set_files(files);
+    }
+    let mut from = 0;
+    loop {
+        let closed = thread.files().lock().remove_first_closed_on_exec(from);
+        let Some((fd, descriptor)) = closed else {
+            break;
+        };
+        drop(descriptor);
+        from = fd + 1;
+    }
+    thread::with_running_fp::<P, _>(|state| *state = FpState::new());
+    image.add_thread();
+    *context = started;
+    image
+}
+
+struct Strings {
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
+    size: u64,
+}
+
+impl Strings {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            ends: Vec::new(),
+            size: 0,
+        }
+    }
+
+    fn read_list<P: Platform>(&mut self, process: &Process<P>, list: u64) -> Result<usize, Errno> {
+        if list == 0 {
+            return Ok(0);
+        }
+        let mut count = 0;
+        loop {
+            let at = (count as u64)
+                .checked_mul(8)
+                .and_then(|offset| list.checked_add(offset))
+                .ok_or(Errno::EFAULT)?;
+            let mut pointer = [0; 8];
+            process
+                .read_user_memory(at, &mut pointer)
+                .map_err(|_| Errno::EFAULT)?;
+            let pointer = u64::from_ne_bytes(pointer);
+            if pointer == 0 {
+                return Ok(count);
+            }
+            self.read_string(process, pointer)?;
+            count += 1;
+        }
+    }
+
+    fn read_string<P: Platform>(
+        &mut self,
+        process: &Process<P>,
+        address: u64,
+    ) -> Result<(), Errno> {
+        const CHUNK: usize = 64;
+        let start = self.bytes.len();
+        let mut chunk = [0u8; CHUNK];
+        let mut at = address;
+        loop {
+            let length = CHUNK.min((FRAME_SIZE - at % FRAME_SIZE) as usize);
+            let chunk = &mut chunk[..length];
+            process
+                .read_user_memory(at, chunk)
+                .map_err(|_| Errno::EFAULT)?;
+            let end = chunk.iter().position(|&byte| byte == 0);
+            let taken = &chunk[..end.unwrap_or(length)];
+            if self.bytes.len() - start + taken.len() >= MAX_STRING_SIZE {
+                return Err(Errno::E2BIG);
+            }
+            self.charge(taken.len() as u64)?;
+            self.bytes
+                .try_reserve(taken.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            self.bytes.extend_from_slice(taken);
+            if end.is_some() {
+                break;
+            }
+            at = at.checked_add(length as u64).ok_or(Errno::EFAULT)?;
+        }
+        self.finish_string()
+    }
+
+    fn push(&mut self, string: &[u8]) -> Result<(), Errno> {
+        self.charge(string.len() as u64)?;
+        self.bytes
+            .try_reserve(string.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        self.bytes.extend_from_slice(string);
+        self.finish_string()
+    }
+
+    fn finish_string(&mut self) -> Result<(), Errno> {
+        self.charge(1 + 8)?;
+        self.ends.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        self.ends.push(self.bytes.len());
+        Ok(())
+    }
+
+    fn charge(&mut self, bytes: u64) -> Result<(), Errno> {
+        self.size += bytes;
+        match self.size > MAX_ARGUMENTS_SIZE {
+            true => Err(Errno::E2BIG),
+            false => Ok(()),
+        }
+    }
+
+    fn list(&self) -> Result<Vec<&[u8]>, Errno> {
+        let mut list = Vec::new();
+        list.try_reserve_exact(self.ends.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        let mut start = 0;
+        for &end in &self.ends {
+            list.push(&self.bytes[start..end]);
+            start = end;
+        }
+        Ok(list)
+    }
+}
+
+struct ExecName {
+    bytes: Vec<u8>,
+}
+
+impl ExecName {
+    fn new() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
+    fn of<'a>(&'a mut self, dirfd: u64, path: &'a [u8]) -> Result<&'a [u8], Errno> {
+        if path.first() == Some(&b'/') || dirfd as u32 as i32 == at::FDCWD {
+            return Ok(path);
+        }
+        let mut digits = [0u8; 10];
+        let mut fd = dirfd as u32;
+        let mut first = digits.len();
+        loop {
+            first -= 1;
+            digits[first] = b'0' + (fd % 10) as u8;
+            fd /= 10;
+            if fd == 0 {
+                break;
+            }
+        }
+        let parts: [&[u8]; 4] = match path.is_empty() {
+            true => [b"/dev/fd/", &digits[first..], b"", b""],
+            false => [b"/dev/fd/", &digits[first..], b"/", path],
+        };
+        let length = parts.iter().map(|part| part.len()).sum();
+        self.bytes
+            .try_reserve_exact(length)
+            .map_err(|_| Errno::ENOMEM)?;
+        for part in parts {
+            self.bytes.extend_from_slice(part);
+        }
+        Ok(&self.bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +873,71 @@ mod tests {
     use crate::tests::TestPlatform as P;
     use crate::thread::host::frames_for_test;
     use alloc::vec::Vec;
+
+    #[test]
+    fn arguments_and_environment_are_held_to_a_quarter_of_the_stack_with_their_pointers() {
+        let mut strings = Strings::new();
+        let string = [b'a'; 1000];
+        let each = string.len() as u64 + 1 + 8;
+        for _ in 0..MAX_ARGUMENTS_SIZE / each {
+            strings.push(&string).unwrap();
+        }
+        assert_eq!(strings.push(&string), Err(Errno::E2BIG));
+        let mut strings = Strings::new();
+        strings.push(b"first").unwrap();
+        strings.push(b"").unwrap();
+        strings.push(b"third").unwrap();
+        assert_eq!(strings.list().unwrap(), [&b"first"[..], b"", b"third"]);
+    }
+
+    #[test]
+    fn a_program_started_relative_to_a_descriptor_is_named_through_dev_fd() {
+        let mut name = ExecName::new();
+        assert_eq!(name.of(7, b"/bin/sh").unwrap(), b"/bin/sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(at::FDCWD as u64, b"sh").unwrap(), b"sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(12, b"sh").unwrap(), b"/dev/fd/12/sh");
+        let mut name = ExecName::new();
+        assert_eq!(name.of(0, b"").unwrap(), b"/dev/fd/0");
+    }
+
+    #[test]
+    fn execute_permission_follows_the_file_system_ids_class_and_root_needs_one_bit() {
+        let file = |permissions| vfs::Attributes {
+            kind: NodeKind::Regular,
+            permissions,
+            file_id: 1,
+            links: 1,
+            owner: 1000,
+            group: 100,
+            size: 0,
+            modified: 0,
+        };
+        let root = Credentials::new();
+        assert!(may_execute(&file(0o001), &root));
+        assert!(!may_execute(&file(0o644), &root));
+        let mut user = Credentials::new();
+        user.set_ids(IdKind::User, credentials::Ids::all(1000))
+            .unwrap();
+        user.set_ids(IdKind::Group, credentials::Ids::all(5))
+            .unwrap();
+        assert!(may_execute(&file(0o700), &user));
+        assert!(!may_execute(&file(0o077), &user));
+        let mut other = Credentials::new();
+        other
+            .set_ids(IdKind::User, credentials::Ids::all(2000))
+            .unwrap();
+        other
+            .set_ids(IdKind::Group, credentials::Ids::all(100))
+            .unwrap();
+        assert!(may_execute(&file(0o010), &other));
+        assert!(!may_execute(&file(0o701), &other));
+        other
+            .set_ids(IdKind::Group, credentials::Ids::all(5))
+            .unwrap();
+        assert!(may_execute(&file(0o001), &other));
+    }
 
     const USER_END: u64 = <<P as Platform>::PageTableFormat as Format>::USER_END;
     const PATH: &[u8] = b"/bin/test";

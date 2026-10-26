@@ -39,6 +39,7 @@ use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::ops::ControlFlow;
+use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
@@ -152,6 +153,16 @@ pub struct CredentialsAndLimits {
     pub limits: ResourceLimits,
 }
 
+impl CredentialsAndLimits {
+    /// A copy, `None` without memory for it.
+    pub fn copy(&self) -> Option<Self> {
+        Some(Self {
+            credentials: self.credentials.copy()?,
+            limits: self.limits.copy()?,
+        })
+    }
+}
+
 /// A user address space, the frames its pages map and its regions. See the module
 /// documentation.
 pub struct Process<P: Platform> {
@@ -170,7 +181,7 @@ pub struct Process<P: Platform> {
     /// the machine is the direct map's (a boot self-test checks it).
     frame_offset: usize,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
-    exit: SpinLock<Option<ProcessExit>>,
+    record: Arc<SpinLock<PidRecord<P>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
     ended: AtomicBool,
     /// How many times one of its threads sent another a signal ([`Self::record_signal_sent`]),
@@ -190,6 +201,11 @@ pub struct Process<P: Platform> {
     credentials_and_limits: SpinLock<CredentialsAndLimits>,
     /// Its signal state, which its threads share ([`Self::signals`]).
     signals: SpinLock<Signals>,
+}
+
+struct PidRecord<P: Platform> {
+    exit: Option<ProcessExit>,
+    handed_over: Option<(usize, Arc<Process<P>>)>,
 }
 
 /// A process's id: from 1 up, never reused, and at most `i32::MAX`, as a Linux `pid_t` is
@@ -243,7 +259,10 @@ impl<P: Platform> Process<P> {
             regions: SpinLock::new(Regions::new()),
             program_break: SpinLock::new(None),
             frame_offset,
-            exit: SpinLock::new(None),
+            record: Arc::new(SpinLock::new(PidRecord {
+                exit: None,
+                handed_over: None,
+            })),
             ended: AtomicBool::new(false),
             signals_sent: AtomicU16::new(0),
             sent_signals_waiting: AtomicBool::new(false),
@@ -251,6 +270,38 @@ impl<P: Platform> Process<P> {
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
             credentials_and_limits: SpinLock::new(CredentialsAndLimits::default()),
+            signals: SpinLock::new(Signals::new()),
+        })
+    }
+
+    /// A process for the program `execve` starts in this one's place: an empty address space
+    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id and the same
+    /// record of how it ends, a copy of the credentials and resource limits, no signal actions
+    /// and no threads yet. This process is untouched, so the caller can still drop the new
+    /// one if loading the program fails.
+    pub fn new_image(&self) -> Result<Self, &'static str> {
+        let space = self
+            .space
+            .new_owning_frames_beside()
+            .map_err(|error| error.description())?;
+        let credentials_and_limits = self
+            .credentials_and_limits
+            .lock()
+            .copy()
+            .ok_or("no memory for the credentials and limits")?;
+        Ok(Self {
+            space,
+            regions: SpinLock::new(Regions::new()),
+            program_break: SpinLock::new(None),
+            frame_offset: self.frame_offset,
+            record: Arc::clone(&self.record),
+            ended: AtomicBool::new(false),
+            signals_sent: AtomicU16::new(0),
+            sent_signals_waiting: AtomicBool::new(false),
+            threads: AtomicU32::new(0),
+            first_thread_status: AtomicU32::new(NO_STATUS),
+            id: self.id,
+            credentials_and_limits: SpinLock::new(credentials_and_limits),
             signals: SpinLock::new(Signals::new()),
         })
     }
@@ -1040,15 +1091,61 @@ impl<P: Platform> Process<P> {
     }
 
     /// Records how the process ended, unless it already has: the first to end it wins (say,
-    /// two threads calling `exit_group`). Its other threads stop running its program: each
-    /// other CPU is asked to look at its scheduler, which a thread of the process does before
-    /// it runs the program again (see [`spawn`]), and a CPU running one in user mode is
-    /// interrupted.
-    pub fn exit(&self, how: ProcessExit) {
-        self.exit.lock().get_or_insert(how);
-        self.ended.store(true, Ordering::Relaxed);
+    /// two threads calling `exit_group`), and an `execve` that ended it ([`Self::end_for_exec`])
+    /// leaves the record to the program it started. Its other threads stop running its program:
+    /// each other CPU is asked to look at its scheduler, which a thread of the process does
+    /// before it runs the program again (see [`spawn`]), and a CPU running one in user mode is
+    /// interrupted. Returns whether this call ended it.
+    pub fn exit(&self, how: ProcessExit) -> bool {
+        let ended = {
+            let mut record = self.record.lock();
+            let ended = !self.ended.load(Ordering::Relaxed);
+            if ended {
+                record.exit.get_or_insert(how);
+                self.ended.store(true, Ordering::Relaxed);
+            }
+            ended
+        };
+        if ended && self.threads() > 1 {
+            interrupt_other_cpus::<P>();
+        }
+        ended
+    }
+
+    /// Ends the process's program for an `execve` in it, which goes on in a process of its own
+    /// ([`Self::new_image`]) with the same record of how it ends, so nothing is recorded:
+    /// its threads stop as [`Self::exit`] stops them. Returns `false`, changing nothing, if the
+    /// process has ended already (another thread's `exit_group` or a fatal signal came first).
+    pub fn end_for_exec(&self) -> bool {
+        {
+            let _exit = self.record.lock();
+            if self.ended.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.ended.store(true, Ordering::Relaxed);
+        }
         if self.threads() > 1 {
             interrupt_other_cpus::<P>();
+        }
+        true
+    }
+
+    /// Hands the process over to `next`, the process an `execve` in it started, for the thread
+    /// whose registers are `context`: that thread's loop runs `next`'s program once its
+    /// handler breaks ([`spawn`]); the process's other threads end.
+    pub fn hand_over(&self, next: Arc<Self>, context: &UserContext) {
+        self.record.lock().handed_over = Some((ptr::from_ref(context).addr(), next));
+    }
+
+    /// Takes the process [`Self::hand_over`] handed this one over to, if it was for the thread
+    /// whose registers are `context`.
+    pub fn take_handed_over(&self, context: &UserContext) -> Option<Arc<Self>> {
+        let mut record = self.record.lock();
+        match &record.handed_over {
+            Some((thread, _)) if *thread == ptr::from_ref(context).addr() => {
+                record.handed_over.take().map(|(_, next)| next)
+            }
+            _ => None,
         }
     }
 
@@ -1151,9 +1248,10 @@ impl<P: Platform> Process<P> {
         self.threads.fetch_sub(1, Ordering::AcqRel) == 1
     }
 
-    /// How the process ended, or `None` while it has not.
+    /// How the process ended, or `None` while it has not; after an `execve`, how the program
+    /// started in its place ended ([`Self::new_image`]).
     pub fn exit_status(&self) -> Option<ProcessExit> {
-        *self.exit.lock()
+        self.record.lock().exit
     }
 }
 
@@ -1207,7 +1305,9 @@ fn free_frame(frame: u64) {
 /// [`ControlFlow::Break`]: then the thread ends. On a system call the handler sets the result
 /// ([`UserContext::set_syscall_result`]); on an interrupt, already handled, it usually goes on;
 /// on an exception it decides the program's fate. It runs with interrupts masked, as the
-/// kernel does, and may block. Placed as [`thread::spawn`] places threads.
+/// kernel does, and may block. When it breaks after an `execve` handed the process over to
+/// another ([`Process::hand_over`]), the thread runs that one's program from then on. Placed
+/// as [`thread::spawn`] places threads.
 pub fn spawn<P, H>(
     process: Arc<Process<P>>,
     context: UserContext,
@@ -1226,6 +1326,21 @@ fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut h
 where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
 {
+    let mut next = Some(process);
+    while let Some(process) = next {
+        next = run_program(process, &mut context, &mut handler);
+    }
+}
+
+#[inline(always)]
+fn run_program<P: Platform, H>(
+    process: Arc<Process<P>>,
+    context: &mut UserContext,
+    handler: &mut H,
+) -> Option<Arc<Process<P>>>
+where
+    H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
+{
     let mut ended = process.has_ended();
     while !ended {
         // First, as it may switch threads: nothing may between loading and running.
@@ -1240,15 +1355,24 @@ where
         // change marks this CPU stale or, for a process with threads on several CPUs, shoots
         // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
-        let exit = unsafe { P::run_user(&mut context) };
-        ended = handler(&process, &mut context, exit).is_break();
+        let exit = unsafe { P::run_user(context) };
+        ended = handler(&process, context, exit).is_break();
     }
+    leave_program(process, context)
+}
+
+#[cold]
+#[inline(never)]
+fn leave_program<P: Platform>(
+    process: Arc<Process<P>>,
+    context: &UserContext,
+) -> Option<Arc<Process<P>>> {
+    let next = process.take_handed_over(context);
     let here = cpu::current::<P>();
     let root = process.address_space().root();
     drop(process);
-    // If only CPUs still hold the process (this was its last thread), they let it go: this one
-    // now, the others, woken, when they idle.
     address_space::release_ended::<P>(here, root);
+    next
 }
 
 /// Asks every other online CPU to look at its scheduler and interrupts it: a thread of an ended

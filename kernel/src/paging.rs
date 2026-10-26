@@ -112,13 +112,14 @@ impl<F: Format> PageTables<F> {
     /// map and unmap only user mappings ([`Attributes::user`]) in the low half
     /// ([`MapError::NotUser`] otherwise), so the kernel half stays the kernel's. Free the low
     /// half with [`Self::free_user_half`]. `kernel` must be kernel tables marked active
-    /// ([`Self::mark_active`]), so frozen; anything else stops the kernel.
+    /// ([`Self::mark_active`]), so frozen, or a user address space's tables made from them,
+    /// whose kernel half is theirs; anything else stops the kernel.
     pub fn new_sharing_kernel_half(
         kernel: &Self,
         frames: &mut FrameAllocator,
     ) -> Result<Self, MapError> {
         assert!(
-            kernel.active && !kernel.user_half_only,
+            kernel.active || kernel.user_half_only,
             "an address space shares only the kernel's active tables"
         );
         let user_root = F::root(0).expect("address 0 is valid on every format");

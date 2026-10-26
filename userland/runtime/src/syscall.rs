@@ -15,6 +15,7 @@ pub mod number {
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
     pub const GETPID: usize = 39;
+    pub const EXECVE: usize = 59;
     pub const UNAME: usize = 63;
     pub const SIGALTSTACK: usize = 131;
     pub const ARCH_PRCTL: usize = 158;
@@ -49,6 +50,7 @@ pub mod number {
     pub const GETTID: usize = 178;
     pub const BRK: usize = 214;
     pub const MUNMAP: usize = 215;
+    pub const EXECVE: usize = 221;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const PRLIMIT64: usize = 261;

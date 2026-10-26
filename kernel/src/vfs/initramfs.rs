@@ -370,12 +370,17 @@ pub mod tests {
     pub fn host_archive() -> &'static [u8] {
         static ARCHIVE: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
         ARCHIVE.get_or_init(|| {
+            let program = crate::selftest::linux_start_image::<crate::tests::TestPlatform>();
             let bytes = archive(&[
                 (".", 0o040755, 1_000, b""),
                 ("etc", 0o040755, 1_000, b""),
                 ("etc/hostname", 0o100644, 1_700_000_000, b"eggos\n"),
                 ("etc/motd", 0o100644, 1_700_000_000, b"Welcome to EggOS.\n"),
                 ("usr", 0o040755, 1_000, b""),
+                ("usr/libexec", 0o040755, 1_000, b""),
+                ("usr/libexec/program", 0o100755, 1_000, &program),
+                ("usr/libexec/script", 0o100755, 1_000, b"#!/bin/sh\n"),
+                ("usr/libexec/text", 0o100755, 1_000, b"not a program\n"),
                 ("usr/share", 0o040755, 1_000, b""),
                 ("usr/share/eggos", 0o040755, 1_000, b""),
                 ("usr/share/eggos/about", 0o100644, 1_000, b"EggOS\n"),
@@ -491,6 +496,6 @@ pub mod tests {
     #[test]
     fn the_host_archive_mounts() {
         let file_system = Initramfs::parse(host_archive()).unwrap();
-        assert_eq!(file_system.node_count(), 8);
+        assert_eq!(file_system.node_count(), 12);
     }
 }

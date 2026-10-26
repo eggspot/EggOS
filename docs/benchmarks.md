@@ -41,6 +41,14 @@ result is an instruction count per iteration (D27), gated against `benchmarks/ba
 - `linux_file_read`: `pread64` of `/etc/motd`'s 18 bytes from offset 0 into the program's
   memory (D102): the descriptor looked up and its kind matched, the bytes copied straight from
   the archive in the kernel image, no allocation. Without the trap from user mode.
+- `linux_execve`: `execve` of a small static program from the initramfs, per call (D103): the
+  runtime's self-test program (`/usr/libexec/eggos-selftest`, a static PIE), started with
+  `exec-loop <n>`, runs its start-up and execs itself with one less until 0, so each iteration
+  is one `execve` from user mode (the path and arguments copied, the file found, a new process
+  with the program loaded, the old one freed, the close-on-exec descriptors closed) and the
+  program's start-up up to its next `execve` (relocation, `PT_GNU_RELRO`). The first process's
+  load and its exit are spread over the iterations. Only test kernels hold the program; the
+  benchmark measures nothing elsewhere.
 
 ## Host tests of the benchmarks
 

@@ -202,6 +202,24 @@ impl Credentials {
         Self(None)
     }
 
+    /// A copy (`execve` keeps a process's credentials), `None` without memory for it.
+    pub fn copy(&self) -> Option<Self> {
+        let Some([record]) = self.0.as_deref() else {
+            return Some(Self(None));
+        };
+        let mut groups = Vec::new();
+        groups.try_reserve_exact(record.groups.len()).ok()?;
+        groups.extend_from_slice(&record.groups);
+        let mut block = Vec::new();
+        block.try_reserve_exact(1).ok()?;
+        block.push(Record {
+            user: record.user,
+            group: record.group,
+            groups,
+        });
+        Some(Self(Some(block.into_boxed_slice().try_into().unwrap())))
+    }
+
     fn record(&self) -> &Record {
         self.0.as_deref().map_or(&ROOT, |[record]| record)
     }

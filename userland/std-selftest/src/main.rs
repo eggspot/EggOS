@@ -8,10 +8,14 @@
 //! [`EXIT_FROM_A_THREAD`] as its only argument, it instead ends from a thread while its other
 //! threads wait ([`exit_from_a_thread`]). Given [`UNMAP_UNDER_A_WRITING_THREAD`], it unmaps a
 //! page another thread is writing on another CPU ([`unmap_under_a_writing_thread`]). Given
-//! [`console::READ_THE_CONSOLE`], it reads the console ([`console::read_the_console`]).
+//! [`console::READ_THE_CONSOLE`], it reads the console ([`console::read_the_console`]). Given
+//! [`exec::EXEC`], it starts a copy of itself from the initramfs with `execve`
+//! ([`exec::exec_into_a_checking_copy`]), which [`exec::EXEC_CHECK`] makes check what it got
+//! ([`exec::check_after_exec`]).
 
 mod console;
 mod descriptors;
+mod exec;
 mod files;
 
 use std::collections::HashMap;
@@ -143,6 +147,8 @@ fn main() -> ExitCode {
         Some(EXIT_FROM_A_THREAD) => exit_from_a_thread(),
         Some(UNMAP_UNDER_A_WRITING_THREAD) => unmap_under_a_writing_thread(),
         Some(console::READ_THE_CONSOLE) => console::read_the_console(),
+        Some(exec::EXEC) => return exec::exec_into_a_checking_copy(),
+        Some(exec::EXEC_CHECK) => return exec::check_after_exec(),
         _ => {}
     }
     let mut output = std::io::stdout().lock();

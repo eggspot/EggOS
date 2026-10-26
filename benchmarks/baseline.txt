@@ -22,6 +22,7 @@ aarch64 linux_clock_monotonic_read 12.00
 aarch64 linux_descriptor_lookup 36.03
 aarch64 linux_dup3_close 184.52
 aarch64 linux_exec_load 36511.47
+aarch64 linux_execve 90524.68
 aarch64 linux_file_read 339.06
 aarch64 linux_mmap_munmap 335.52
 aarch64 linux_openat_close 1374.93
@@ -52,6 +53,7 @@ riscv64 linux_clock_monotonic_read 15.00
 riscv64 linux_descriptor_lookup 28.03
 riscv64 linux_dup3_close 201.11
 riscv64 linux_exec_load 31638.49
+riscv64 linux_execve 62526.90
 riscv64 linux_file_read 386.63
 riscv64 linux_mmap_munmap 362.11
 riscv64 linux_openat_close 1473.50
@@ -82,6 +84,7 @@ x86_64 linux_clock_monotonic_read 19.00
 x86_64 linux_descriptor_lookup 27.02
 x86_64 linux_dup3_close 189.09
 x86_64 linux_exec_load 28334.01
+x86_64 linux_execve 36338.81
 x86_64 linux_file_read 371.57
 x86_64 linux_mmap_munmap 366.09
 x86_64 linux_openat_close 1361.44

@@ -241,7 +241,7 @@ fn clippy_targets() -> Result<(), String> {
         args.extend(["--", "-D", "warnings"]);
         cargo(&args)?;
         let mut programs = build_user_programs(arch)?;
-        programs.push(initramfs_variable()?);
+        programs.push(initramfs_variable(arch, &programs)?);
         let env = program_variables(&programs);
         for features in [
             &[][..],
@@ -272,7 +272,7 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
         args.extend(["--features", feature]);
         programs = build_user_programs(arch)?;
     }
-    programs.push(initramfs_variable()?);
+    programs.push(initramfs_variable(arch, &programs)?);
     let env = program_variables(&programs);
     build_executable(
         &args,
@@ -298,8 +298,29 @@ pub fn build_user_programs(arch: &Arch) -> Result<Vec<(&'static str, String)>, S
         .collect()
 }
 
-fn initramfs_variable() -> Result<(&'static str, String), String> {
-    let path = initramfs::build()?;
+const INITRAMFS_PROGRAMS: [(&str, &str); 2] = [
+    ("EGGOS_USERLAND_SELFTEST", "eggos-selftest"),
+    ("EGGOS_USERLAND_STD_SELFTEST", "eggos-std-selftest"),
+];
+
+fn initramfs_variable(
+    arch: &Arch,
+    programs: &[(&'static str, String)],
+) -> Result<(&'static str, String), String> {
+    let members: Vec<(&str, &str)> = programs
+        .iter()
+        .filter_map(|(variable, path)| {
+            INITRAMFS_PROGRAMS
+                .iter()
+                .find(|(program, _)| program == variable)
+                .map(|(_, name)| (*name, path.as_str()))
+        })
+        .collect();
+    let file_name = match members.is_empty() {
+        true => "initramfs.cpio".to_owned(),
+        false => format!("initramfs-{}.cpio", arch.user_target),
+    };
+    let path = initramfs::build(&members, &file_name)?;
     Ok(("EGGOS_INITRAMFS", path.to_string_lossy().into_owned()))
 }
 

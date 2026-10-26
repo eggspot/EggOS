@@ -1,3 +1,4 @@
+use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use eggos_runtime::startup::{Startup, auxv};
 use eggos_runtime::syscall::{self, number};
@@ -77,6 +78,9 @@ static CHECKS: [Check; 20] = [
 
 /// Runs every check in order and returns the exit status: 0 if all passed.
 pub fn run(startup: &Startup) -> i32 {
+    if startup.arguments().nth(1) == Some(EXEC_LOOP) {
+        return exec_loop(startup);
+    }
     let mut failed = false;
     for (name, check) in &CHECKS {
         if !check(startup) {
@@ -91,6 +95,65 @@ pub fn run(startup: &Startup) -> i32 {
     }
     syscall::write_all(1, PASSED_LINE);
     0
+}
+
+pub const EXEC_LOOP: &CStr = c"exec-loop";
+
+const PROGRAM: &CStr = c"/usr/libexec/eggos-selftest";
+
+pub mod exec_loop_status {
+    pub const BAD_COUNT: i32 = 2;
+    pub const EXECVE_RETURNED: i32 = 3;
+}
+
+fn exec_loop(startup: &Startup) -> i32 {
+    let Some(count) = startup.arguments().nth(2).and_then(decimal) else {
+        return exec_loop_status::BAD_COUNT;
+    };
+    if count == 0 {
+        return 0;
+    }
+    let mut digits = [0u8; 21];
+    let mut first = digits.len() - 1;
+    let mut left = count - 1;
+    loop {
+        first -= 1;
+        digits[first] = b'0' + (left % 10) as u8;
+        left /= 10;
+        if left == 0 {
+            break;
+        }
+    }
+    let arguments = [
+        PROGRAM.as_ptr() as usize,
+        EXEC_LOOP.as_ptr() as usize,
+        digits[first..].as_ptr() as usize,
+        0,
+    ];
+    let environment = [0usize];
+    call(
+        number::EXECVE,
+        [
+            PROGRAM.as_ptr() as usize,
+            arguments.as_ptr() as usize,
+            environment.as_ptr() as usize,
+            0,
+            0,
+            0,
+        ],
+    );
+    exec_loop_status::EXECVE_RETURNED
+}
+
+fn decimal(text: &CStr) -> Option<u64> {
+    let bytes = text.to_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes.iter().try_fold(0u64, |value, &byte| {
+        let digit = byte.checked_sub(b'0').filter(|&digit| digit < 10)?;
+        value.checked_mul(10)?.checked_add(u64::from(digit))
+    })
 }
 
 fn call(number: usize, arguments: [usize; 6]) -> isize {

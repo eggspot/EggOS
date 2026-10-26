@@ -34,7 +34,8 @@
 //! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
 //! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75), and signals
 //! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
-//! D95). Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
+//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103). Every
+//! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
@@ -104,6 +105,7 @@ pub mod number {
         pub const NANOSLEEP: u64 = 35;
         pub const GETPID: u64 = 39;
         pub const CLONE: u64 = 56;
+        pub const EXECVE: u64 = 59;
         pub const EXIT: u64 = 60;
         pub const KILL: u64 = 62;
         pub const UNAME: u64 = 63;
@@ -160,6 +162,7 @@ pub mod number {
         pub const GETCPU: u64 = 309;
         pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
+        pub const EXECVEAT: u64 = 322;
         pub const STATX: u64 = 332;
         pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
@@ -236,6 +239,7 @@ pub mod number {
         pub const GETTID: u64 = 178;
         pub const BRK: u64 = 214;
         pub const CLONE: u64 = 220;
+        pub const EXECVE: u64 = 221;
         pub const MUNMAP: u64 = 215;
         pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
@@ -244,6 +248,7 @@ pub mod number {
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const PRLIMIT64: u64 = 261;
         pub const GETRANDOM: u64 = 278;
+        pub const EXECVEAT: u64 = 281;
         pub const STATX: u64 = 291;
         pub const CLOSE_RANGE: u64 = 436;
         /// The highest number above.
@@ -693,6 +698,8 @@ fn out_of_line_call<P: Platform>(
         number::NANOSLEEP => time::nanosleep(process, thread, context),
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
+        number::EXECVE => exec::execve(process, thread, context),
+        number::EXECVEAT => exec::execveat(process, thread, context),
         _ => {
             let result = match number {
                 number::CLONE => thread::clone::<P>(process, thread, context),
@@ -947,7 +954,9 @@ fn exit<P: Platform>(
 #[inline(never)]
 pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
     let others = process.threads() > 1;
-    process.exit(how);
+    if !process.exit(how) {
+        return ControlFlow::Break(());
+    }
     crate::console::forget_foreground(process.id().get());
     if others {
         futex::wake_space::<P>(process.id().get());
@@ -1073,6 +1082,9 @@ fn ioctl<P: Platform>(
     argument: u64,
 ) -> Result<u64, Errno> {
     let file = files.file(fd)?;
+    if file.is_location_only() {
+        return Err(Errno::EBADF);
+    }
     if let Some(result) =
         descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
     {
@@ -5158,6 +5170,278 @@ mod tests {
         }
     }
 
+    const ARGUMENT_LIST: u64 = SCRATCH + 0x100;
+    const ARGUMENT_STRINGS: u64 = SCRATCH + 0x200;
+
+    fn argument_list(process: &Arc<Process<P>>, strings: &[&[u8]]) -> u64 {
+        let mut at = ARGUMENT_STRINGS;
+        for (index, string) in strings.iter().enumerate() {
+            let mut bytes = string.to_vec();
+            bytes.push(0);
+            process.write_user_memory(at, &bytes).unwrap();
+            process
+                .write_user_memory(ARGUMENT_LIST + 8 * index as u64, &at.to_ne_bytes())
+                .unwrap();
+            at += bytes.len() as u64;
+        }
+        process
+            .write_user_memory(ARGUMENT_LIST + 8 * strings.len() as u64, &[0; 8])
+            .unwrap();
+        ARGUMENT_LIST
+    }
+
+    #[test]
+    fn execve_refuses_in_linux_s_order_and_leaves_the_caller_as_it_was() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let execve = |path: &[u8], arguments: u64| {
+            let path = at_path(&process, path);
+            call(&process, number::EXECVE, [path, arguments, 0, 0, 0, 0])
+        };
+        for (path, error) in [
+            (&b""[..], Errno::ENOENT),
+            (b"/missing", Errno::ENOENT),
+            (b"/etc", Errno::EACCES),
+            (b"/etc/hostname", Errno::EACCES),
+            (b"/etc/hostname/program", Errno::ENOTDIR),
+            (b"/usr/libexec/script", Errno::ENOEXEC),
+            (b"/usr/libexec/text", Errno::ENOEXEC),
+        ] {
+            assert_eq!(execve(path, 0), error.result(), "{path:?}");
+        }
+        assert_eq!(
+            execve(b"/usr/libexec/program", UNMAPPED),
+            Errno::EFAULT.result()
+        );
+        let arguments = argument_list(&process, &[b"program"]);
+        assert_eq!(
+            call(
+                &process,
+                number::EXECVEAT,
+                [
+                    FDCWD,
+                    at_path(&process, b"/usr/libexec/program"),
+                    arguments,
+                    0,
+                    1,
+                    0
+                ]
+            ),
+            Errno::EINVAL.result()
+        );
+        let empty = at_path(&process, b"");
+        assert_eq!(
+            call(&process, number::EXECVEAT, [FDCWD, empty, 0, 0, 1, 0]),
+            Errno::ENOENT.result()
+        );
+        assert_eq!(
+            call(&process, number::EXECVEAT, [FDCWD, UNMAPPED, 0, 0, 1, 0]),
+            Errno::EFAULT.result()
+        );
+        assert!(!process.has_ended());
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn execve_starts_the_program_in_a_new_process_with_the_caller_s_id() {
+        use descriptors::open_flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let closed_on_exec = open_at(&process, FDCWD, b"/etc/hostname", CLOEXEC);
+        let kept = open_at(&process, FDCWD, b"/etc/motd", RDONLY);
+        let directory = open_at(&process, FDCWD, b"/usr/libexec", DIRECTORY);
+        let arguments = argument_list(&process, &[b"program", b"argument"]);
+        let path = at_path(&process, b"program");
+        let mut thread = take_first_thread(&process);
+        let mut context = called(number::EXECVEAT, [directory, path, arguments, 0, 0, 0]);
+        assert_eq!(
+            handle(&process, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let other = UserContext::new(0, 0);
+        assert!(process.take_handed_over(&other).is_none());
+        let current = process.take_handed_over(&context).unwrap();
+        assert!(process.take_handed_over(&context).is_none());
+        assert_eq!(current.id(), process.id());
+        assert_eq!(thread.id(), process.id().get());
+        assert!(process.has_ended() && !current.has_ended());
+        assert_eq!(current.threads(), 1);
+        assert_eq!(
+            thread.files().file(closed_on_exec).err(),
+            Some(Errno::EBADF)
+        );
+        assert!(thread.files().file(kept).is_ok());
+        let mut argc = [0u8; 8];
+        current
+            .read_user_memory(context.stack(), &mut argc)
+            .unwrap();
+        assert_eq!(u64::from_ne_bytes(argc), 2);
+        current.exit(ProcessExit::Exited(7));
+        assert_eq!(process.exit_status(), Some(ProcessExit::Exited(7)));
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
+    }
+
+    fn exec_in(
+        process: &Arc<Process<P>>,
+        thread: &mut LinuxThread,
+        number: u64,
+        arguments: [u64; 6],
+    ) -> (UserContext, Arc<Process<P>>) {
+        let mut context = called(number, arguments);
+        assert_eq!(
+            handle(process, thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(()),
+            "{:#x}",
+            context.syscall_result()
+        );
+        let current = process.take_handed_over(&context).unwrap();
+        (context, current)
+    }
+
+    #[test]
+    fn execve_makes_the_saved_and_file_system_ids_the_effective_ones() {
+        use credentials::{Ids, Kind};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let set = |kind, ids| {
+            let mut locked = process.credentials_and_limits().lock();
+            locked.credentials.set_ids(kind, ids).unwrap();
+        };
+        let user = Ids {
+            real: 1000,
+            effective: 1000,
+            saved: 0,
+            filesystem: 1000,
+        };
+        set(Kind::User, user);
+        set(
+            Kind::Group,
+            Ids {
+                saved: 0,
+                ..Ids::all(100)
+            },
+        );
+        let path = at_path(&process, b"/usr/libexec/program");
+        let mut thread = take_first_thread(&process);
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let locked = current.credentials_and_limits().lock();
+        assert_eq!(locked.credentials.ids(Kind::User), Ids::all(1000));
+        assert_eq!(locked.credentials.ids(Kind::Group), Ids::all(100));
+        drop(locked);
+        assert_eq!(
+            process
+                .credentials_and_limits()
+                .lock()
+                .credentials
+                .ids(Kind::User),
+            user
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), thread);
+    }
+
+    #[test]
+    fn execve_forgets_the_console_s_foreground_so_the_old_program_is_freed() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let mut thread = take_first_thread(&process);
+        terminal::become_foreground(&process, &thread);
+        let reader = crate::console::reader_id(process.id().get(), thread.id());
+        assert!(crate::console::is_foreground(reader));
+        let path = at_path(&process, b"/usr/libexec/program");
+        let (_, current) = exec_in(&process, &mut thread, number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        assert!(!crate::console::is_foreground(reader));
+        assert_eq!(Arc::strong_count(&process), 1);
+        terminal::become_foreground(&current, &thread);
+        assert!(crate::console::is_foreground(reader));
+        crate::console::forget_foreground(current.id().get());
+    }
+
+    #[test]
+    fn execve_from_another_thread_gives_it_the_process_s_id_and_a_table_of_its_own() {
+        use descriptors::open_flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let program = open_at(&process, FDCWD, b"/usr/libexec/program", PATH);
+        let first = take_first_thread(&process);
+        let mut second = first.new_thread(
+            process.id().get() + 1_000_000,
+            0,
+            first.files().share(),
+            first.working_directory().share(),
+        );
+        process.add_thread();
+        assert!(second.files().is_shared());
+        const CROSSING: u64 = SCRATCH + FRAME_SIZE - 3;
+        process.write_user_memory(CROSSING, b"crossing\0").unwrap();
+        process
+            .write_user_memory(ARGUMENT_LIST, &CROSSING.to_ne_bytes())
+            .unwrap();
+        process
+            .write_user_memory(ARGUMENT_LIST + 8, &[0; 8])
+            .unwrap();
+        let empty = at_path(&process, b"");
+        let (context, current) = exec_in(
+            &process,
+            &mut second,
+            number::EXECVEAT,
+            [program, empty, ARGUMENT_LIST, 0, stat::at::EMPTY_PATH, 0],
+        );
+        assert_eq!(second.id(), process.id().get());
+        assert!(!second.files().is_shared());
+        assert!(first.files().file(program).is_ok());
+        let mut pointer = [0u8; 8];
+        current
+            .read_user_memory(context.stack() + 8, &mut pointer)
+            .unwrap();
+        let mut argument = [0u8; 9];
+        current
+            .read_user_memory(u64::from_ne_bytes(pointer), &mut argument)
+            .unwrap();
+        assert_eq!(&argument, b"crossing\0");
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(current.id().get(), second);
+    }
+
+    #[test]
+    fn execve_loses_to_an_exit_that_came_first_and_no_later_exit_records_anything() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let exited = process_for_status(&kernel);
+        assert!(exited.exit(ProcessExit::Exited(3)));
+        assert!(!exited.end_for_exec());
+        assert_eq!(exited.exit_status(), Some(ProcessExit::Exited(3)));
+        let path = at_path(&exited, b"/usr/libexec/program");
+        let mut context = called(number::EXECVE, [path, 0, 0, 0, 0, 0]);
+        let mut thread = take_first_thread(&exited);
+        assert_eq!(
+            handle(&exited, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert!(exited.take_handed_over(&context).is_none());
+        let replaced = process_for_status(&kernel);
+        assert!(replaced.end_for_exec());
+        assert!(!replaced.end_for_exec());
+        assert!(!replaced.exit(ProcessExit::Exited(4)));
+        assert_eq!(
+            end_process::<P, ()>(&replaced, ProcessExit::Killed { signal: 9 }),
+            ControlFlow::Break(())
+        );
+        assert_eq!(replaced.exit_status(), None);
+    }
+
     #[test]
     fn opening_fails_as_on_a_read_only_linux_mount() {
         use descriptors::open_flag::*;
@@ -5183,6 +5467,11 @@ mod tests {
             (b"/etc", CREAT | DIRECTORY, Errno::EINVAL),
             (b"/etc", TMPFILE, Errno::EINVAL),
             (b"/etc", TMPFILE | RDWR, Errno::EROFS),
+            (b"/etc", (TMPFILE & !DIRECTORY) | RDWR, Errno::EINVAL),
+            (b"/etc", RDONLY | TRUNC, Errno::EISDIR),
+            (b"/missing/.", CREAT, Errno::ENOENT),
+            (b"/missing/x/", CREAT, Errno::ENOENT),
+            (b"/etc/hostname/", CREAT, Errno::ENOTDIR),
         ] {
             assert_eq!(open(path, flags), error.result(), "{path:?} {flags:#o}");
         }
@@ -5199,6 +5488,35 @@ mod tests {
         assert_eq!(read_into(&process, 4, 10), Err(Errno::EISDIR.result()));
         let only_path = open(b"/etc/motd", PATH | WRONLY | TRUNC);
         assert_eq!(only_path, 5);
+        const FIOCLEX: u64 = 0x5451;
+        const F_GETFL: u64 = 3;
+        const F_SETFL: u64 = 4;
+        const F_GETLK: u64 = 5;
+        for (number, arguments, result) in [
+            (
+                number::IOCTL,
+                [only_path, FIOCLEX, 0],
+                Errno::EBADF.result(),
+            ),
+            (
+                number::FCNTL,
+                [only_path, F_SETFL, 0],
+                Errno::EBADF.result(),
+            ),
+            (
+                number::FCNTL,
+                [only_path, F_GETLK, 0],
+                Errno::EBADF.result(),
+            ),
+            (number::FCNTL, [only_path, F_GETFL, 0], u64::from(PATH)),
+        ] {
+            let [first, second, third] = arguments;
+            assert_eq!(
+                call(&process, number, [first, second, third, 0, 0, 0]),
+                result,
+                "{number} {second}"
+            );
+        }
         assert_eq!(
             read_into(&process, only_path, 10),
             Err(Errno::EBADF.result())

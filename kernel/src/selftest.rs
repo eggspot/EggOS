@@ -57,7 +57,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 45] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 46] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -192,6 +192,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 45] {
         (
             "linux_programs_end_from_a_thread_while_others_wait",
             linux_programs_end_from_a_thread_while_others_wait::<P>,
+        ),
+        (
+            "linux_programs_start_programs_from_files",
+            linux_programs_start_programs_from_files::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1820,6 +1824,25 @@ static STD_PROGRAM_READING_THE_CONSOLE: RustProgram = RustProgram {
     ..STD_PROGRAM
 };
 
+static STD_PROGRAM_STARTING_A_COPY_FROM_A_FILE: RustProgram = RustProgram {
+    arguments_after_path: &[b"exec"],
+    failure_statuses: &[
+        (
+            2,
+            "execve refused or accepted a call wrongly before the point of no return",
+        ),
+        (
+            3,
+            "execve returned instead of starting the std Rust program from its file",
+        ),
+        (
+            4,
+            "the std Rust program started by execve found something wrong: it named it on the console",
+        ),
+    ],
+    ..STD_PROGRAM
+};
+
 static STD_PROGRAM_UNMAPPING_UNDER_A_WRITING_THREAD: RustProgram = RustProgram {
     arguments_after_path: &[b"unmap-under-a-writing-thread"],
     failure_statuses: &[
@@ -1862,6 +1885,12 @@ fn linux_programs_end_from_a_thread_while_others_wait<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM_EXITING_FROM_A_THREAD)
+}
+
+fn linux_programs_start_programs_from_files<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM_STARTING_A_COPY_FROM_A_FILE)
 }
 
 /// The std program's checks again, with every CPU running (D94): its threads spread over
