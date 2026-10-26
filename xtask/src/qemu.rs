@@ -124,6 +124,8 @@ pub enum Expect {
     /// The release kernel starts init, which writes its banner, runs the std program as its
     /// login program (each of whose checks writes its line) and powers off once it ends (D106).
     Init,
+    /// As [`Expect::Init`], but init resets the machine, which ends QEMU under `-no-reboot`.
+    InitRestart,
 }
 
 const INIT_BANNER: &str = concat!("EggOS ", env!("CARGO_PKG_VERSION"));
@@ -136,6 +138,8 @@ const INIT_LOGIN_LINES: [&str; 4] = [
 ];
 
 const POWER_DOWN_LINE: &str = "reboot: Power down";
+
+const RESTART_LINE: &str = "reboot: Restarting system";
 
 const KERNEL_PANIC_PREFIX: &str = "Kernel panic";
 
@@ -235,7 +239,7 @@ pub fn boot_test(
         }
         console.extend(rx.try_iter().flatten());
         let scripts = match expect {
-            Expect::Init => Vec::new(),
+            Expect::Init | Expect::InitRestart => Vec::new(),
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
         };
         for script in scripts {
@@ -331,8 +335,10 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
             "{arch}: the machine reset and booted again (crash or triple fault?)"
         ));
     }
-    if expect == Expect::Init {
-        return init_verdict(arch, clean_exit, console);
+    match expect {
+        Expect::Init => return init_verdict(arch, clean_exit, console, POWER_DOWN_LINE),
+        Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
+        _ => {}
     }
     if expect == Expect::FatalException {
         let target = lines().find_map(|l| l.strip_prefix(WRITE_PROTECT_PROBE));
@@ -385,7 +391,12 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
     }
 }
 
-fn init_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+fn init_verdict(
+    arch: &str,
+    clean_exit: bool,
+    console: &str,
+    going_down: &str,
+) -> Result<(), String> {
     let lines = || console.lines().map(str::trim_end);
     let has = |wanted: &str| lines().any(|line| line == wanted);
     if let Some(panic) = lines().find(|line| line.starts_with(KERNEL_PANIC_PREFIX)) {
@@ -404,10 +415,12 @@ fn init_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Strin
             "{arch}: the login program did not write `{missing}`"
         ));
     }
-    if !has(POWER_DOWN_LINE) {
-        return Err(format!("{arch}: init did not power the machine off"));
+    if !has(going_down) {
+        return Err(format!(
+            "{arch}: init did not take the machine down: no `{going_down}`"
+        ));
     }
-    eprintln!("xtask: {arch}: init boot test passed");
+    eprintln!("xtask: {arch}: init boot test passed ({going_down})");
     Ok(())
 }
 
@@ -596,6 +609,10 @@ mod tests {
         assert!(verdict("x", Expect::Init, true, &panicked).is_err());
         let reset = format!("{ok}EggOS 0.2.0 (x86_64)\r\n");
         assert!(verdict("x", Expect::Init, true, &reset).is_err());
+        assert!(verdict("x", Expect::InitRestart, true, &ok).is_err());
+        let restarted = ok.replace(POWER_DOWN_LINE, RESTART_LINE);
+        assert!(verdict("x", Expect::InitRestart, true, &restarted).is_ok());
+        assert!(verdict("x", Expect::Init, true, &restarted).is_err());
     }
 
     #[test]

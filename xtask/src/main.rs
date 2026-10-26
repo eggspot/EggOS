@@ -124,8 +124,7 @@ const INIT_PATH: &str = "init";
 
 const INIT_TEST_LOGIN_PATH: &str = "usr/libexec/eggos-std-selftest";
 
-const INIT_TEST_CONFIG: &str =
-    "login=/usr/libexec/eggos-std-selftest init-login\nlogin-exit=poweroff\n";
+const INIT_TEST_LOGIN: &str = "login=/usr/libexec/eggos-std-selftest init-login\n";
 
 /// A program on Rust's standard library links the toolchain's own musl and start files,
 /// statically, as a static PIE where the target has one, with no debug information or
@@ -238,8 +237,9 @@ fn ci() -> Result<(), String> {
 /// exception vectors report a fatal exception (a write to read-only data after the
 /// self-tests, which must fault: D29).
 /// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
-/// Then boots the release kernel with a test initramfs whose init runs the std program as its
-/// login program and powers off once it ends (D106).
+/// Then boots the release kernel twice with a test initramfs whose init runs the std program
+/// as its login program, and powers off once it ends, or resets the machine, which ends QEMU
+/// under `-no-reboot` (D106).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -250,8 +250,13 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         let poison: Vec<&str> = poison.iter().map(String::as_str).collect();
         qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, &poison)?;
     }
-    let kernel = build_init_test_kernel(arch)?;
-    qemu::boot_test(arch, &kernel, qemu::Expect::Init, qemu::TEST_CPUS, &[])?;
+    for (login_exit, expect, args) in [
+        ("poweroff", qemu::Expect::Init, &[][..]),
+        ("restart", qemu::Expect::InitRestart, &["-no-reboot"][..]),
+    ] {
+        let kernel = build_init_test_kernel(arch, login_exit)?;
+        qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, args)?;
+    }
     Ok(())
 }
 
@@ -332,7 +337,7 @@ fn build_release_kernel(
     )
 }
 
-fn build_init_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+fn build_init_test_kernel(arch: &Arch, login_exit: &str) -> Result<std::path::PathBuf, String> {
     let init = build_init(arch)?;
     let programs = build_user_programs(arch)?;
     let login = programs
@@ -340,16 +345,14 @@ fn build_init_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
         .find(|(variable, _)| *variable == "EGGOS_USERLAND_STD_SELFTEST")
         .map(|(_, path)| path.as_str())
         .ok_or("the std program was not built")?;
+    let config = format!("{INIT_TEST_LOGIN}login-exit={login_exit}\n");
     let initramfs = initramfs::build(
         &[
             (INIT_PATH, initramfs::Content::Program(&init)),
-            (
-                "etc/eggos/init.conf",
-                initramfs::Content::Text(INIT_TEST_CONFIG),
-            ),
+            ("etc/eggos/init.conf", initramfs::Content::Text(&config)),
             (INIT_TEST_LOGIN_PATH, initramfs::Content::Program(login)),
         ],
-        &format!("initramfs-init-test-{}.cpio", arch.user_target),
+        &format!("initramfs-init-{login_exit}-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
 }
