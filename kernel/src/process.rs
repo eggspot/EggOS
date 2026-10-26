@@ -168,6 +168,7 @@ impl CredentialsAndLimits {
 /// documentation.
 pub struct Process<P: Platform> {
     memory: Arc<Memory<P>>,
+    root: u64,
     /// How the process ended, once it has: the first [`Self::exit`] wins.
     record: Arc<SpinLock<PidRecord<P>>>,
     /// Set once [`Self::exit`] has run: its threads run no more of its program.
@@ -354,6 +355,7 @@ impl<P: Platform> Process<P> {
         signals: Signals,
     ) -> Self {
         Self {
+            root: memory.space.root(),
             memory,
             record,
             ended: AtomicBool::new(false),
@@ -568,10 +570,11 @@ impl<P: Platform> Process<P> {
         attributes: Attributes,
         contents: &[u8],
     ) -> Result<(), &'static str> {
+        let memory = &*self.memory;
         if contents.len() > FRAME_SIZE as usize {
             return Err("a page's contents are larger than a page");
         }
-        self.map_frame(virt, attributes, contents)
+        Self::map_frame(memory, virt, attributes, contents)
             .map(|_| ())
             .map_err(|error| match error {
                 MapError::OutOfMemory => "no frame for a user page",
@@ -615,7 +618,8 @@ impl<P: Platform> Process<P> {
     /// already. Pages the move gives up are unmapped and their frames freed; pages it adds
     /// are mapped, zeroed, as the program first touches them.
     pub fn move_program_break(&self, requested: u64, limit: u64) -> u64 {
-        let mut program_break = self.memory.program_break.lock();
+        let memory = &*self.memory;
+        let mut program_break = memory.program_break.lock();
         let Some(ProgramBreak { start, end }) = *program_break else {
             return 0;
         };
@@ -630,11 +634,10 @@ impl<P: Platform> Process<P> {
             requested.next_multiple_of(FRAME_SIZE),
         );
         if new > old {
-            let added =
-                self.memory
-                    .regions
-                    .lock()
-                    .insert(old, new, Some(Attributes::USER_READ_WRITE));
+            let added = memory
+                .regions
+                .lock()
+                .insert(old, new, Some(Attributes::USER_READ_WRITE));
             if added.is_err() {
                 return end;
             }
@@ -658,6 +661,7 @@ impl<P: Platform> Process<P> {
         length: u64,
         attributes: Option<Attributes>,
     ) -> Result<u64, RegionError> {
+        let memory = &*self.memory;
         let user_end = <P::PageTableFormat as Format>::USER_END;
         if length == 0 || !length.is_multiple_of(FRAME_SIZE) {
             return Err(RegionError::Invalid);
@@ -665,14 +669,14 @@ impl<P: Platform> Process<P> {
         let within = |start: u64, floor: u64, top: u64| {
             start >= floor && start.checked_add(length).is_some_and(|end| end <= top)
         };
-        let mut regions = self.memory.regions.lock();
+        let mut regions = memory.regions.lock();
         let start = match placement {
             Placement::Replace(start) | Placement::Exactly(start) => {
                 if !within(start, 0, user_end) {
                     return Err(RegionError::Invalid);
                 }
                 if let Placement::Replace(_) = placement {
-                    self.unmap_locked(&mut regions, start, start + length)?;
+                    Self::unmap_locked(memory, &mut regions, start, start + length)?;
                 }
                 start
             }
@@ -696,14 +700,15 @@ impl<P: Platform> Process<P> {
         attributes: Attributes,
         contents: &[u8],
     ) -> Option<u64> {
+        let memory = &*self.memory;
         if contents.len() > FRAME_SIZE as usize {
             return None;
         }
         let start = self
             .map_region(placement, FRAME_SIZE, Some(attributes))
             .ok()?;
-        let regions = self.memory.regions.lock();
-        let mapped = self.map_frame(start, attributes, contents);
+        let regions = memory.regions.lock();
+        let mapped = Self::map_frame(memory, start, attributes, contents);
         drop(regions);
         if mapped.is_err() {
             // The region alone: nothing is mapped in it.
@@ -718,28 +723,33 @@ impl<P: Platform> Process<P> {
     /// unmaps the pages there, freeing their frames (Linux's `munmap`). Parts of the range in
     /// no region are fine.
     pub fn unmap_range(&self, start: u64, end: u64) -> Result<(), RegionError> {
-        let mut regions = self.memory.regions.lock();
-        self.unmap_locked(&mut regions, start, end)
+        let memory = &*self.memory;
+        let mut regions = memory.regions.lock();
+        Self::unmap_locked(memory, &mut regions, start, end)
     }
 
     /// [`Self::unmap_range`], with the regions' lock held (`regions`).
-    fn unmap_locked(&self, regions: &mut Regions, start: u64, end: u64) -> Result<(), RegionError> {
+    fn unmap_locked(
+        memory: &Memory<P>,
+        regions: &mut Regions,
+        start: u64,
+        end: u64,
+    ) -> Result<(), RegionError> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
-        self.free_pages(start, end)
-            .map_err(|_| RegionError::Invalid)
+        Self::free_pages(memory, start, end).map_err(|_| RegionError::Invalid)
     }
 
     /// Unmaps every page of user addresses `start..end`, page-aligned, freeing the frames, as
     /// [`Self::unmap_range`] does with the regions there: with the regions' lock held. Every
     /// page, not only those in regions: the HAL's test program has none.
     #[inline(always)]
-    fn free_pages(&self, start: u64, end: u64) -> Result<(), MapError> {
+    fn free_pages(memory: &Memory<P>, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
-        let frame_offset = self.memory.frame_offset;
-        let result = self.memory.space.unmap_pages(start, end - start, |frame| {
+        let frame_offset = memory.frame_offset;
+        let result = memory.space.unmap_pages(start, end - start, |frame| {
             // SAFETY: the address space owns its frames (`Process::new`), so this one came from
             // the frame allocator, whose offset `frame_offset` is; its entry no longer refers to
             // it, and no CPU writes it through what it cached of the entry (`unmap_pages`), so
@@ -767,13 +777,13 @@ impl<P: Platform> Process<P> {
     /// the range is in no region, the rest is discarded all the same and the error is
     /// [`RegionError::NotCovered`].
     pub fn discard_pages(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        let memory = &*self.memory;
         if !is_page_range(start, end) {
             return Err(RegionError::Invalid);
         }
-        let regions = self.memory.regions.lock();
+        let regions = memory.regions.lock();
         let free_run = |(run_start, run_end)| {
-            self.free_pages(run_start, run_end)
-                .map_err(|_| RegionError::Invalid)
+            Self::free_pages(memory, run_start, run_end).map_err(|_| RegionError::Invalid)
         };
         let mut whole = true;
         let mut run = None;
@@ -805,7 +815,8 @@ impl<P: Platform> Process<P> {
 
     /// How much of user addresses `start..end` regions hold.
     pub fn coverage(&self, start: u64, end: u64) -> Coverage {
-        let regions = self.memory.regions.lock();
+        let memory = &*self.memory;
+        let regions = memory.regions.lock();
         let mut covered = start;
         let mut any = false;
         for region in regions.overlapping(start, end) {
@@ -835,8 +846,9 @@ impl<P: Platform> Process<P> {
         end: u64,
         access: Access,
     ) -> Result<(), PopulateError> {
+        let memory = &*self.memory;
         debug_assert!(is_page_range(start, end));
-        let regions = self.memory.regions.lock();
+        let regions = memory.regions.lock();
         let mut covered = start;
         let mut result = Ok(());
         for region in regions.overlapping(start, end) {
@@ -860,11 +872,12 @@ impl<P: Platform> Process<P> {
                     {
                         continue;
                     }
-                    self.populate(&regions, page, access, true)
-                        .map_err(|error| match error {
+                    Self::populate(memory, &regions, page, access, true).map_err(|error| {
+                        match error {
                             UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
                             UnresolvedFault::OutOfMemory => PopulateError::OutOfMemory,
-                        })?;
+                        }
+                    })?;
                 }
             }
             covered = part_end;
@@ -894,6 +907,7 @@ impl<P: Platform> Process<P> {
         remap: Remap,
         keep_source: bool,
     ) -> Result<u64, RegionError> {
+        let memory = &*self.memory;
         let user_end = <P::PageTableFormat as Format>::USER_END;
         let old_end = start
             .checked_add(old_length)
@@ -912,7 +926,7 @@ impl<P: Platform> Process<P> {
         {
             return Err(RegionError::Invalid);
         }
-        let mut regions = self.memory.regions.lock();
+        let mut regions = memory.regions.lock();
         let region = regions
             .find(start)
             .copied()
@@ -946,12 +960,12 @@ impl<P: Platform> Process<P> {
                 free_range(&regions, hint, floor, top.min(user_end), new_length)?
             }
             Remap::Replace(to) => {
-                self.unmap_locked(&mut regions, to, to + new_length)?;
+                Self::unmap_locked(memory, &mut regions, to, to + new_length)?;
                 to
             }
         };
         regions.insert(to, to + new_length, region.attributes)?;
-        if let Err(error) = self.memory.space.move_pages(start, to, old_length) {
+        if let Err(error) = memory.space.move_pages(start, to, old_length) {
             regions.remove(to, to + new_length, |_| ())?;
             return Err(match error {
                 MapError::OutOfMemory => RegionError::OutOfMemory,
@@ -976,15 +990,16 @@ impl<P: Platform> Process<P> {
         end: u64,
         attributes: Option<Attributes>,
     ) -> Result<(), RegionError> {
+        let memory = &*self.memory;
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
         }
-        let mut regions = self.memory.regions.lock();
+        let mut regions = memory.regions.lock();
         let mut changed_end = start;
         let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
         if changed_end > start {
-            let frame_offset = self.memory.frame_offset;
-            self.memory
+            let frame_offset = memory.frame_offset;
+            memory
                 .space
                 .change_pages(
                     start,
@@ -1013,7 +1028,7 @@ impl<P: Platform> Process<P> {
     /// lock (or `&mut`), so nothing else maps the page meanwhile. Returns the frame; if the
     /// page is mapped already, or kept ([`MapError::AlreadyMapped`]), the frame goes back.
     fn map_frame(
-        &self,
+        memory: &Memory<P>,
         virt: u64,
         attributes: Attributes,
         contents: &[u8],
@@ -1023,7 +1038,7 @@ impl<P: Platform> Process<P> {
             let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
             frames.allocate().ok_or(MapError::OutOfMemory)?
         };
-        let page = (frame as usize).wrapping_add(self.memory.frame_offset) as *mut u8;
+        let page = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
         // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
         // it through its offset, the process's `frame_offset`. `contents` fit in the frame (the
         // callers' duty) and are not in it, so the two do not overlap.
@@ -1040,7 +1055,7 @@ impl<P: Platform> Process<P> {
             // see the frame's old data.
             P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
         }
-        match self.memory.space.map(virt, frame, FRAME_SIZE, attributes) {
+        match memory.space.map(virt, frame, FRAME_SIZE, attributes) {
             Ok(()) => Ok(frame),
             Err(error) => {
                 free_frame(frame);
@@ -1062,9 +1077,10 @@ impl<P: Platform> Process<P> {
         address: u64,
         fault: PageFault,
     ) -> Result<(), UnresolvedFault> {
+        let memory = &*self.memory;
         let page = address & !(FRAME_SIZE - 1);
-        let regions = self.memory.regions.lock();
-        self.populate(&regions, page, fault.access, fault.may_be_stale)?;
+        let regions = memory.regions.lock();
+        Self::populate(memory, &regions, page, fault.access, fault.may_be_stale)?;
         drop(regions);
         P::drop_user_translations(page, FRAME_SIZE);
         Ok(())
@@ -1082,7 +1098,7 @@ impl<P: Platform> Process<P> {
     /// looked up all the same, so a stale fault on a mapped page resumes the program even
     /// when memory is out.
     fn populate(
-        &self,
+        memory: &Memory<P>,
         regions: &Regions,
         page: u64,
         access: Access,
@@ -1094,19 +1110,21 @@ impl<P: Platform> Process<P> {
             .filter(|&attributes| access.allowed_by(attributes))
             .ok_or(UnresolvedFault::NotAllowed)?;
         if mapped_is_ready {
-            match self.map_frame(page, attributes, &[]) {
+            match Self::map_frame(memory, page, attributes, &[]) {
                 Ok(frame) => return Ok((frame, attributes)),
                 Err(MapError::AlreadyMapped) => {}
-                Err(MapError::OutOfMemory) => return self.mapped_or_out_of_memory(page, access),
+                Err(MapError::OutOfMemory) => {
+                    return Self::mapped_or_out_of_memory(memory, page, access);
+                }
                 Err(_) => return Err(UnresolvedFault::NotAllowed),
             }
         }
-        match self.memory.space.translate(page) {
+        match memory.space.translate(page) {
             Some((frame, mapped)) if mapped_is_ready && access.allowed_by(mapped) => {
                 Ok((frame, mapped))
             }
             Some(_) => Err(UnresolvedFault::NotAllowed),
-            None => match self.map_frame(page, attributes, &[]) {
+            None => match Self::map_frame(memory, page, attributes, &[]) {
                 Ok(frame) => Ok((frame, attributes)),
                 Err(MapError::OutOfMemory) => Err(UnresolvedFault::OutOfMemory),
                 Err(_) => Err(UnresolvedFault::NotAllowed),
@@ -1121,11 +1139,11 @@ impl<P: Platform> Process<P> {
     #[cold]
     #[inline(never)]
     fn mapped_or_out_of_memory(
-        &self,
+        memory: &Memory<P>,
         page: u64,
         access: Access,
     ) -> Result<(u64, Attributes), UnresolvedFault> {
-        self.memory
+        memory
             .space
             .translate(page)
             .filter(|&(_, mapped)| access.allowed_by(mapped))
@@ -1134,12 +1152,14 @@ impl<P: Platform> Process<P> {
 
     /// The region that holds user address `address`, if any.
     pub fn region(&self, address: u64) -> Option<Region> {
-        self.memory.regions.lock().find(address).copied()
+        let memory = &*self.memory;
+        memory.regions.lock().find(address).copied()
     }
 
     /// The process's address space.
     pub fn address_space(&self) -> &AddressSpace<P> {
-        &self.memory.space
+        let memory = &*self.memory;
+        &memory.space
     }
 
     /// Runs `active` with the process's address space active on this CPU, as
@@ -1154,10 +1174,14 @@ impl<P: Platform> Process<P> {
     /// interrupts masked, as the kernel runs.
     #[inline]
     pub fn load_here(self: &Arc<Self>) {
-        // SAFETY: the process owns its address space, and while it is shared (the `Arc`) its
-        // mappings are removed or changed only through `AddressSpace::change_pages` (the
-        // memory calls): `&mut` access needs the process unshared.
-        unsafe { self.address_space().load_lazily(self) };
+        let here = cpu::current::<P>();
+        if here.active_address_space() != self.root {
+            // SAFETY: as `AddressSpace::load_lazily` requires: the process owns its address
+            // space, whose first root `root` is, and while it is shared (the `Arc`) its mappings
+            // are removed or changed only through `AddressSpace::change_pages` (the memory
+            // calls): `&mut` access needs the process unshared.
+            unsafe { self.memory.space.switch_lazily(here, Arc::clone(self) as _) };
+        }
     }
 
     /// Runs `access` with the kernel allowed to read and write the process's pages, at their
@@ -1180,26 +1204,42 @@ impl<P: Platform> Process<P> {
         address: u64,
         buffer: &mut [u8],
     ) -> Result<(), InvalidUserAddress> {
+        let memory = &*self.memory;
         let destination = buffer.as_mut_ptr();
-        self.copy_user_pages(address, buffer.len(), false, |kernel, done, length| {
-            // SAFETY: `kernel` reaches `length` bytes of one of the process's frames through
-            // the direct map (`copy_user_pages`' promise), and `done + length` is within
-            // `buffer`, a kernel buffer, which no frame of the process is.
-            unsafe {
-                core::ptr::copy_nonoverlapping(kernel, destination.wrapping_add(done), length)
-            };
-        })
+        Self::copy_user_pages(
+            memory,
+            address,
+            buffer.len(),
+            false,
+            |kernel, done, length| {
+                // SAFETY: `kernel` reaches `length` bytes of one of the process's frames through
+                // the direct map (`copy_user_pages`' promise), and `done + length` is within
+                // `buffer`, a kernel buffer, which no frame of the process is.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kernel, destination.wrapping_add(done), length)
+                };
+            },
+        )
     }
 
     /// Copies `bytes` into the process's memory at user address `address`, as a system call
     /// fills a buffer the program passed. As [`Self::read_user_memory`], and every page must
     /// also be writable by the program.
     pub fn write_user_memory(&self, address: u64, bytes: &[u8]) -> Result<(), InvalidUserAddress> {
+        let memory = &*self.memory;
         let source = bytes.as_ptr();
-        self.copy_user_pages(address, bytes.len(), true, |kernel, done, length| {
-            // SAFETY: as in `read_user_memory`, the other way round.
-            unsafe { core::ptr::copy_nonoverlapping(source.wrapping_add(done), kernel, length) };
-        })
+        Self::copy_user_pages(
+            memory,
+            address,
+            bytes.len(),
+            true,
+            |kernel, done, length| {
+                // SAFETY: as in `read_user_memory`, the other way round.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(source.wrapping_add(done), kernel, length)
+                };
+            },
+        )
     }
 
     /// Runs `access` on the process's 32-bit word at user address `address`, which must be
@@ -1212,11 +1252,12 @@ impl<P: Platform> Process<P> {
         write: bool,
         access: impl FnOnce(&AtomicU32) -> R,
     ) -> Result<R, InvalidUserAddress> {
+        let memory = &*self.memory;
         if !address.is_multiple_of(4) || address >= <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = self.memory.regions.lock();
-        let kernel = self.in_direct_map(&regions, address, write)?;
+        let regions = memory.regions.lock();
+        let kernel = Self::in_direct_map(memory, &regions, address, write)?;
         // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
         // through the direct map (`in_direct_map`' promise), mapped with the same memory type
         // as the program's mapping; the regions' lock, held until `access` returns, keeps the
@@ -1232,17 +1273,17 @@ impl<P: Platform> Process<P> {
     /// as the program's own access would (D52). See `copy_user_pages`.
     #[inline]
     fn in_direct_map(
-        &self,
+        memory: &Memory<P>,
         regions: &Regions,
         virt: u64,
         write: bool,
     ) -> Result<*mut u8, InvalidUserAddress> {
         let page = virt & !(FRAME_SIZE - 1);
-        let (frame, attributes) = match self.memory.space.translate(page) {
+        let (frame, attributes) = match memory.space.translate(page) {
             Some(mapped) => mapped,
             None => {
                 let access = if write { Access::Write } else { Access::Read };
-                self.populate(regions, page, access, true)
+                Self::populate(memory, regions, page, access, true)
                     .map_err(|_| InvalidUserAddress)?
             }
         };
@@ -1253,7 +1294,7 @@ impl<P: Platform> Process<P> {
             return Err(InvalidUserAddress);
         }
         let phys = frame + virt % FRAME_SIZE;
-        Ok((phys as usize).wrapping_add(self.memory.frame_offset) as *mut u8)
+        Ok((phys as usize).wrapping_add(memory.frame_offset) as *mut u8)
     }
 
     /// Walks `length` bytes of user memory from `address` a page at a time and hands each
@@ -1270,7 +1311,7 @@ impl<P: Platform> Process<P> {
     /// reaches user memory only through raw pointers (decided by research, D94). Words other
     /// threads use as atomics go through [`Self::with_user_word`].
     fn copy_user_pages(
-        &self,
+        memory: &Memory<P>,
         address: u64,
         length: usize,
         write: bool,
@@ -1285,11 +1326,11 @@ impl<P: Platform> Process<P> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(InvalidUserAddress);
         }
-        let regions = self.memory.regions.lock();
+        let regions = memory.regions.lock();
         let mut done = 0;
         while done < length {
             let virt = address + done as u64;
-            let kernel = self.in_direct_map(&regions, virt, write)?;
+            let kernel = Self::in_direct_map(memory, &regions, virt, write)?;
             let in_page = (FRAME_SIZE - virt % FRAME_SIZE).min((length - done) as u64) as usize;
             copy(kernel, done, in_page);
             done += in_page;

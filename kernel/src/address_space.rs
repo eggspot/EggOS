@@ -416,7 +416,11 @@ impl<P: Platform> AddressSpace<P> {
     /// As [`Self::load_lazily`].
     #[cold]
     #[inline(never)]
-    unsafe fn switch_lazily(&self, here: &'static Cpu, owner: Arc<dyn Any + Send + Sync>) {
+    pub(crate) unsafe fn switch_lazily(
+        &self,
+        here: &'static Cpu,
+        owner: Arc<dyn Any + Send + Sync>,
+    ) {
         // Held throughout (only this CPU takes it), so the slot is known empty when it is
         // filled below and nothing is dropped there.
         let mut slot = here.lazily_loaded.lock();
