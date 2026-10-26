@@ -540,8 +540,6 @@ impl WindowsLayer {
     }
 }
 
-/// The Windows layer, an optional component (D18, D118), when `added` holds a Windows program
-/// (a file that starts with `MZ`) and `arch` runs them: installed with the first one.
 fn windows_layer_for(
     arch: &Arch,
     added: &[image::AddedFile],

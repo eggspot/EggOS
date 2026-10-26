@@ -633,7 +633,7 @@ fn prepare<P: Platform>(
     let list = strings.list()?;
     let (arguments, environment) = list.split_at(argument_count);
     let interpreter = match interpreter_for(image) {
-        Some(interpreter) => Some(read_interpreter(thread, interpreter)?),
+        Some(interpreter) => Some(read_interpreter(process, thread, interpreter)?),
         None => None,
     };
     let mut interpreted = Vec::new();
@@ -690,14 +690,19 @@ pub fn interpreter_for(image: &[u8]) -> Option<Interpreter> {
         .copied()
 }
 
-fn read_interpreter(
+fn read_interpreter<P: Platform>(
+    process: &Process<P>,
     thread: &LinuxThread,
     interpreter: Interpreter,
 ) -> Result<(Interpreter, &'static [u8]), Errno> {
     let not_installed = |_| Errno::ENOEXEC;
     let node = find(thread, at::FDCWD as u64, interpreter.path).map_err(not_installed)?;
     let attributes = node.attributes();
-    if attributes.kind != NodeKind::Regular {
+    let may_execute = {
+        let credentials = process.credentials_and_limits().lock();
+        may_execute(&attributes, &credentials.credentials)
+    };
+    if attributes.kind != NodeKind::Regular || !may_execute {
         return Err(Errno::ENOEXEC);
     }
     Ok((interpreter, node.read(0, attributes.size as usize)))

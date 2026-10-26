@@ -677,8 +677,6 @@ pub(crate) mod x86_64 {
         /// After a page fault, the faulting address (`CR2`), kept by the way out of `run_user`
         /// for [`super::UserContext::last_exception`] (with `vector` and `error_code`).
         pub(crate) fault_address: u64,
-        /// The GS base the program runs with (`arch_prctl(ARCH_SET_GS)`, D118): Windows
-        /// programs find their thread environment block through it. Loaded with `fs_base`.
         pub(crate) gs_base: u64,
     }
 

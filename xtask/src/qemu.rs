@@ -1546,6 +1546,43 @@ mod tests {
         assert_eq!(scripts_to_type(&whole, &mut typed), [CONSOLE_SCRIPTS[3].1]);
     }
 
+    fn windows_programs_console(arch: &str) -> String {
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n");
+        for (typed, output) in WINDOWS_PROGRAM_SESSION
+            .iter()
+            .zip(windows_program_output(arch))
+        {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                let line = match line {
+                    Line::Whole(whole) => whole,
+                    Line::Around(start, end) => format!("{start}/bin/{end}"),
+                };
+                console.push_str(&format!("{line}\r\n"));
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_windows_programs_session_expects_the_checks_on_x86_64_and_enoexec_elsewhere() {
+        for arch in ["x86_64", "aarch64", "riscv64"] {
+            let ok = windows_programs_console(arch);
+            assert!(
+                verdict(arch, Expect::WindowsPrograms, true, &ok).is_ok(),
+                "{arch}"
+            );
+            let without = ok.replace("WINDOWS-CONSOLE status 126\r\n", "");
+            assert!(verdict(arch, Expect::WindowsPrograms, true, &without).is_err());
+        }
+        let x86 = windows_programs_console("x86_64");
+        let refused = x86.replace("WINDOWS-CONSOLE heap ok", "WINDOWS-CONSOLE heap failed");
+        assert!(verdict("x86_64", Expect::WindowsPrograms, true, &refused).is_err());
+        let elsewhere = windows_programs_console("aarch64");
+        assert!(verdict("x86_64", Expect::WindowsPrograms, true, &elsewhere).is_err());
+    }
+
     fn linux_programs_console() -> String {
         let mut console = String::from("EggOS 0.2.0 (riscv64)\r\n");
         for (typed, output) in LINUX_PROGRAM_SESSION.iter().zip(linux_program_output()) {

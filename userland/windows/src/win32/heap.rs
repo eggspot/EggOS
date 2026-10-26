@@ -44,11 +44,6 @@ pub fn process_heap() -> usize {
     &raw const HEAP as usize
 }
 
-/// Nothing to set up: chunks are mapped on first use.
-pub fn initialize() -> usize {
-    process_heap()
-}
-
 fn class_of(size: usize) -> Option<usize> {
     let block = size
         .checked_add(HEADER_SIZE)?

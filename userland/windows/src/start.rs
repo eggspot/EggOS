@@ -137,7 +137,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     })
     .map_err(Failure::Unresolved)?;
     let tls = image::thread_local_storage(&pe, image, base as u64).map_err(Failure::Invalid)?;
-    let heap = win32::initialize_heap();
+    let heap = win32::process_heap();
     win32::set_process(startup, base as u64).ok_or(Failure::Memory)?;
     let stack = stack_top();
     let teb = thread_environment::create(thread_environment::Blocks {

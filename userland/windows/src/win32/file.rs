@@ -23,7 +23,6 @@ const FILE_TYPE_DISK: u32 = 1;
 const FILE_TYPE_CHAR: u32 = 2;
 const FILE_TYPE_PIPE: u32 = 3;
 const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
-const PATH_CAPACITY: usize = 4096;
 const MAX_FD: usize = 1 << 20;
 
 /// The descriptor a file handle names.
@@ -141,31 +140,6 @@ fn open_flags(access: u32, disposition: u32) -> Option<usize> {
     Some(mode | creation)
 }
 
-/// Writes the Windows path `chars` as a NUL-terminated EggOS path into `out`; its length with
-/// the NUL, or `None` if it does not fit.
-fn eggos_path(chars: impl Iterator<Item = char>, out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
-    let mut length = 0;
-    for c in chars {
-        let c = if c == '\\' { '/' } else { c };
-        if length + c.len_utf8() >= out.len() {
-            return None;
-        }
-        c.encode_utf8(&mut out[length..]);
-        length += c.len_utf8();
-    }
-    let mut path = &out[..length];
-    if path.starts_with(b"//?/") {
-        path = &path[4..];
-    }
-    if path.len() >= 2 && path[0].is_ascii_alphabetic() && path[1] == b':' {
-        path = &path[2..];
-    }
-    let skipped = length - path.len();
-    out.copy_within(skipped..length, 0);
-    out[length - skipped] = 0;
-    Some(length - skipped + 1)
-}
-
 fn create_file(path: &[u8], access: u32, disposition: u32) -> usize {
     let Some(flags) = open_flags(access, disposition) else {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
@@ -194,8 +168,8 @@ unsafe extern "win64" fn create_file_w(
 ) -> usize {
     // SAFETY: `CreateFileW`'s contract: a NUL-terminated UTF-16 name.
     let name = unsafe { wide_string(name) };
-    let mut path = [0u8; PATH_CAPACITY];
-    match eggos_path(text::utf16_chars(name), &mut path) {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    match text::eggos_path(text::utf16_chars(name), &mut path) {
         Some(length) => create_file(&path[..length], access, disposition),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }
@@ -212,8 +186,8 @@ unsafe extern "win64" fn create_file_a(
 ) -> usize {
     // SAFETY: `CreateFileA`'s contract: a NUL-terminated name.
     let name = unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
-    let mut path = [0u8; PATH_CAPACITY];
-    match eggos_path(text::utf8_chars(name), &mut path) {
+    let mut path = [0u8; text::PATH_CAPACITY];
+    match text::eggos_path(text::utf8_chars(name), &mut path) {
         Some(length) => create_file(&path[..length], access, disposition),
         None => fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE),
     }

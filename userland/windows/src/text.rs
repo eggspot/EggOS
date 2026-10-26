@@ -77,6 +77,37 @@ pub fn write_utf8(units: &[u16], out: &mut [u8]) -> (usize, usize) {
     (written, consumed)
 }
 
+pub const PATH_CAPACITY: usize = 4096;
+
+/// Writes the Windows path `chars` as a NUL-terminated EggOS path into `out` (`\\` is `/`,
+/// and a drive letter or the `\\?\\` prefix goes); its length with the NUL, or `None` if it
+/// does not fit.
+pub fn eggos_path(
+    chars: impl Iterator<Item = char>,
+    out: &mut [u8; PATH_CAPACITY],
+) -> Option<usize> {
+    let mut length = 0;
+    for c in chars {
+        let c = if c == '\\' { '/' } else { c };
+        if length + c.len_utf8() >= out.len() {
+            return None;
+        }
+        c.encode_utf8(&mut out[length..]);
+        length += c.len_utf8();
+    }
+    let mut path = &out[..length];
+    if path.starts_with(b"//?/") {
+        path = &path[4..];
+    }
+    if path.len() >= 2 && path[0].is_ascii_alphabetic() && path[1] == b':' {
+        path = &path[2..];
+    }
+    let skipped = length - path.len();
+    out.copy_within(skipped..length, 0);
+    out[length - skipped] = 0;
+    Some(length - skipped + 1)
+}
+
 /// Whether two ASCII names are equal, ignoring case, as Windows compares DLL and environment
 /// variable names.
 pub fn equal_ignoring_ascii_case(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> bool {
@@ -115,6 +146,24 @@ mod tests {
         let mut bytes = [0u8; 5];
         let wide: Vec<u16> = "ab\u{1f95a}".encode_utf16().collect();
         assert_eq!(write_utf8(&wide, &mut bytes), (2, 2));
+    }
+
+    fn path(windows: &str) -> Option<String> {
+        let mut out = [0u8; PATH_CAPACITY];
+        let length = eggos_path(windows.chars(), &mut out)?;
+        assert_eq!(out[length - 1], 0);
+        Some(String::from_utf8(out[..length - 1].to_vec()).unwrap())
+    }
+
+    #[test]
+    fn windows_paths_become_eggos_paths() {
+        assert_eq!(path(r"C:\etc\hostname").as_deref(), Some("/etc/hostname"));
+        assert_eq!(path(r"\\?\D:\x\y.txt").as_deref(), Some("/x/y.txt"));
+        assert_eq!(path("data.txt").as_deref(), Some("data.txt"));
+        assert_eq!(path(r"dir\é.txt").as_deref(), Some("dir/é.txt"));
+        assert_eq!(path("C:").as_deref(), Some(""));
+        assert!(path(&"a".repeat(PATH_CAPACITY)).is_none());
+        assert!(path(&"a".repeat(PATH_CAPACITY - 1)).is_some());
     }
 
     #[test]
