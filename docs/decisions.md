@@ -5352,3 +5352,73 @@ the license, by an explicit instruction recorded here.
   a `^C` that comes after `ppoll` reported input and before the `read` stays pending and gives
   the next prompt a fresh one; a file that `execve` refuses with `ENOEXEC` is 126 (POSIX
   shells run it as a script); `~` is not expanded after `=` in an assignment, nor `~user`.
+
+## D108 The core utilities as one multi-call program, hard links in the initramfs, and a boot-to-prompt test — Decided by the build loop
+
+- **What.** Item 10 of the v0.3.0 plan (D99): `userland/coreutils`, one program on our own
+  runtime (no C library, no allocator), at `/bin/coreutils` in the release kernel's initramfs
+  with `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`, `true` and `uname`
+  as hard links to it in `/bin`. What each does is in docs/coreutils.md.
+- **One program, many names.** It runs the utility named by the last component of `argv[0]`;
+  as `coreutils` it takes the utility from its first argument, and `coreutils --list` lists
+  them, as BusyBox and toybox do. An unknown name is status 127. The names are listed twice,
+  in `Utility::ALL` and in xtask's `COREUTILS`, which must match (a cross-target build cannot
+  ask the program). Options are parsed as GNU's `getopt` does (options anywhere, `--` ends
+  them), messages are worded as GNU's, and exit statuses are GNU's (`ls`: 1 for a minor
+  problem, 2 for an operand it cannot reach or a bad option).
+- **Structure.** As the shell (D107): every utility is pure logic over a `System` trait (write,
+  read, open, close, `getdents64`, `statx`, `uname`, `clock_nanosleep`, `reboot`) with host
+  tests against a fake; `linux.rs` makes the system calls. Standard output is buffered (4 KiB)
+  and flushed before anything goes to standard error, so the two keep their order on one
+  terminal; a failed write is reported once as `write error` with status 1. File status comes
+  from `statx`, whose layout is the same on every architecture, rather than `newfstatat`'s
+  `struct stat`, which differs on x86_64. `eggsh`'s `Errno` moved into `eggos-runtime`
+  (`errno.rs`, with more of `strerror`'s messages) so both programs share it.
+- **Hard links in the initramfs.** One file with eleven names: the cpio writer gives every name
+  of a file the same inode number and link count and writes the data once, with the last name,
+  as Linux's `gen_init_cpio` (and GNU `cpio`) do; the kernel's initramfs joins regular files
+  that share an inode number and say they have more than one link, so every name reads that
+  data and reports the same file id, attributes and link count (`ls -l /bin/ls` shows 11). The
+  join is a scan per group at mount, with no sort or allocation: a version that sorted the
+  links cost about 9 KiB of kernel code, this one 0.8 to 1.3 KiB. Options weighed: a copy per
+  name (about 45 KiB more per name, some 450 KiB per architecture), symbolic links (the VFS has
+  none yet, D102), a shell builtin per utility (the programs must exist for other programs to
+  start, `PATH` and `execve`).
+- **`uname -o` is `EggOS`.** The kernel names itself `Linux` for compatibility (D55's
+  `uname`), but `-o` is the operating system, which userland names: GNU writes `GNU/Linux`,
+  toybox `Toybox`. `-p` and `-i` are `unknown` and left out of `-a`, as GNU does.
+- **`ls`.** One name per line (no columns yet: no terminal width), owners and groups as numbers
+  (no user database), times as `YYYY-MM-DD HH:MM` in UTC (GNU's `long-iso`; no time zones),
+  a directory at a time in fixed buffers (1024 entries, 32 KiB of names, on the stack, beyond
+  which it lists what it holds and says the listing was cut short, status 1).
+- **`poweroff`, `reboot`, `halt`** call `reboot(2)` at once, as `poweroff -f` does elsewhere:
+  there is nothing to stop first and no writable file system to sync. They will go through init
+  once init has its shutdown signals (D106's follow-up).
+- **The boot-to-prompt test.** `cargo xtask qemu` (and so CI's one Linux job) boots, last for
+  each architecture, the release kernel itself, the same image `cargo xtask build` makes: init
+  starts the shell, and at each prompt the runner types a line that runs a utility (`ls /`,
+  `ls -l /bin/ls` and a missing path with its status, `cat` of two files, `uname -a`,
+  `/bin/echo -n`, `sleep 0` and `sleep 0.05`, `/bin/false`), checks the lines it writes right
+  after its echo, and ends with `poweroff`: QEMU must exit cleanly after `reboot: Power down`
+  within the boot timeout. It reports the time from QEMU's start to the first prompt: 60 ms on
+  aarch64, 60 ms on riscv64 and 120 ms on x86_64 on an Apple-silicon Mac (QEMU's TCG, 4 CPUs).
+  That time is wall-clock, not an instruction count, so it is printed rather than gated against
+  `benchmarks/baseline.txt` (the `-icount` benchmarks, D27); putting boot-to-prompt into the
+  benchmarks is item 15's.
+- **Tests.** 37 host tests for the utilities (`ls`'s sorting, hidden names, operands, long
+  format, totals, modes, dates, errors and the cut-short listing; `cat` of files, standard
+  input and errors; `echo -n`; `uname`'s fields, order and options; `sleep`'s intervals,
+  units, sums and errors; `poweroff` and its refusals; the dispatch by name), the kernel's join
+  of hard links, the cpio writer's hard links, the runner's verdict for the session, and the
+  runtime's errors.
+- **Cost.** `coreutils` is 42408 bytes on aarch64, 46320 on riscv64 and 47488 on x86_64
+  (stripped, release); `eggsh` is a little smaller than before (47048 to 46952, 47888 to 46256,
+  52352 to 51808). The release initramfs grows from 62368 to 106012 bytes on aarch64, 61696
+  to 107716 on riscv64 and 68512 to 116788 on x86_64, and the release kernel's loaded size
+  from 431681 to 476137, 381784 to 428624 and 450749 to 500349: the utilities the release
+  needs (D99) plus 812, 820 and 1324 bytes of kernel code for hard links. Benchmarks: no
+  result changed (the initramfs's lookups and reads run the same instructions).
+- **Not done yet (follow-ups).** `ls` in columns on a terminal, with user and group names and
+  time zones; more utilities as the system grows (`mkdir`, `rm`, `cp`, `mv` with a writable
+  file system, `ps` and `kill` with `/proc` and signals to other processes, `date` with an RTC);
+  `poweroff` through init; a benchmark of boot to prompt (item 15); `-e` for `echo`.
