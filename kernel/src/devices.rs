@@ -25,6 +25,7 @@ pub mod window;
 
 use crate::memory::Memory;
 use crate::sync::LeafSpinLock;
+use core::mem::MaybeUninit;
 use eggos_drivers::pci::{self, ConfigSpace};
 use eggos_hal::fdt::InterruptSpecifier;
 use eggos_hal::{PhysicalRange, Platform};
@@ -239,10 +240,11 @@ impl DeviceNode {
     }
 }
 
-/// Every device discovered, in discovery order, children after their parents.
+/// Every device discovered, in discovery order, children after their parents. Its storage is
+/// all zeros until used, so the kernel's table costs no bytes of the image (`.bss`).
 #[derive(Debug)]
 pub struct DeviceTable {
-    nodes: [Option<DeviceNode>; MAX_DEVICES],
+    nodes: [MaybeUninit<DeviceNode>; MAX_DEVICES],
     len: usize,
     dropped: usize,
 }
@@ -250,7 +252,7 @@ pub struct DeviceTable {
 impl DeviceTable {
     pub const fn new() -> Self {
         Self {
-            nodes: [None; MAX_DEVICES],
+            nodes: [const { MaybeUninit::uninit() }; MAX_DEVICES],
             len: 0,
             dropped: 0,
         }
@@ -262,17 +264,21 @@ impl DeviceTable {
             self.dropped += 1;
             return None;
         };
-        *slot = Some(node);
+        slot.write(node);
         self.len += 1;
         Some(DeviceId(self.len as u16 - 1))
     }
 
     pub fn get(&self, id: DeviceId) -> Option<&DeviceNode> {
-        self.nodes.get(id.index())?.as_ref()
+        let slot = self.nodes[..self.len].get(id.index())?;
+        // SAFETY: every slot below `len` was written by `add`.
+        Some(unsafe { slot.assume_init_ref() })
     }
 
     pub fn get_mut(&mut self, id: DeviceId) -> Option<&mut DeviceNode> {
-        self.nodes.get_mut(id.index())?.as_mut()
+        let slot = self.nodes[..self.len].get_mut(id.index())?;
+        // SAFETY: every slot below `len` was written by `add`.
+        Some(unsafe { slot.assume_init_mut() })
     }
 
     /// How many devices it holds.
@@ -294,7 +300,10 @@ impl DeviceTable {
         self.nodes[..self.len]
             .iter()
             .enumerate()
-            .filter_map(|(index, node)| Some((DeviceId(index as u16), node.as_ref()?)))
+            .map(|(index, slot)| {
+                // SAFETY: every slot below `len` was written by `add`.
+                (DeviceId(index as u16), unsafe { slot.assume_init_ref() })
+            })
     }
 }
 

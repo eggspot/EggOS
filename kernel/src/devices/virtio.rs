@@ -8,6 +8,7 @@ use super::{
     ProbeError, ProbePass,
 };
 use crate::sync::LeafSpinLock;
+use alloc::boxed::Box;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::virtio::mmio::MmioTransport;
@@ -71,7 +72,7 @@ impl Transport for AnyTransport {
     }
 }
 
-static TRANSPORTS: LeafSpinLock<[Option<AnyTransport>; MAX_TRANSPORTS]> =
+static TRANSPORTS: LeafSpinLock<[Option<Box<AnyTransport>>; MAX_TRANSPORTS]> =
     LeafSpinLock::new_leaf([const { None }; MAX_TRANSPORTS]);
 
 /// virtio-mmio, version 2 (D110): a device-tree `virtio,mmio` slot.
@@ -181,7 +182,7 @@ fn add_device(
             .iter()
             .position(Option::is_none)
             .ok_or(ProbeError("no room for another virtio transport"))?;
-        transports[free] = Some(transport);
+        transports[free] = Some(Box::new(transport));
         free as u8
     };
     let mut child = DeviceNode::new(Identity::Virtio {
@@ -202,7 +203,11 @@ fn take_transport(identity: &Identity) -> Option<AnyTransport> {
     let Identity::Virtio { transport, .. } = *identity else {
         return None;
     };
-    TRANSPORTS.lock().get_mut(usize::from(transport))?.take()
+    TRANSPORTS
+        .lock()
+        .get_mut(usize::from(transport))?
+        .take()
+        .map(|boxed| *boxed)
 }
 
 fn give_back_transport(identity: &Identity, transport: AnyTransport) {
@@ -211,7 +216,7 @@ fn give_back_transport(identity: &Identity, transport: AnyTransport) {
     } = *identity
         && let Some(slot) = TRANSPORTS.lock().get_mut(usize::from(handle))
     {
-        *slot = Some(transport);
+        *slot = Some(Box::new(transport));
     }
 }
 
@@ -228,7 +233,7 @@ mod entropy {
 
     pub(crate) type Rng = VirtioRng<AnyTransport, DmaRegion>;
 
-    static RNG: LeafSpinLock<Option<Rng>> = LeafSpinLock::new_leaf(None);
+    static RNG: LeafSpinLock<Option<Box<Rng>>> = LeafSpinLock::new_leaf(None);
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
 
@@ -256,7 +261,7 @@ mod entropy {
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
         match VirtioRng::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(rng) => {
-                *RNG.lock() = Some(rng);
+                *RNG.lock() = Some(Box::new(rng));
                 Ok(())
             }
             Err((error, transport, memory)) => {
@@ -282,10 +287,10 @@ mod entropy {
     }
 
     pub(crate) fn take_rng() -> Option<Rng> {
-        RNG.lock().take()
+        RNG.lock().take().map(|boxed| *boxed)
     }
 
     pub(crate) fn put_rng(rng: Rng) {
-        *RNG.lock() = Some(rng);
+        *RNG.lock() = Some(Box::new(rng));
     }
 }
