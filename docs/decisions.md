@@ -6116,9 +6116,18 @@ the license, by an explicit instruction recorded here.
   their polled virtio completions arrive at host-dependent times under `-icount` (D112). The
   shipped image is built without the feature, so the two differ by the clock's two calls. The
   wall-clock time with the display stays printed by the test and goes into the release notes.
+- **Gated per QEMU version (decided by research).** The count is deterministic on one host but
+  depends on QEMU's version, which builds each machine's devices and tables: CI's Ubuntu 24.04
+  QEMU (8.2.2) gives aarch64 1,007,440 ns, riscv64 831,400 and x86_64 1,312,500 where QEMU
+  10.2.2 on this Mac gives 1,011,024, 839,900 and 1,643,938 (-0.4%, -1.0%, -20.2%). As with
+  the RISC-V firmware lines, the baseline records CI's numbers with an `<arch> qemu <version>`
+  line, and `boot_to_prompt` is gated only on that QEMU version; another host reports it "not
+  gated". Keeping the Mac's numbers would have left CI's x86_64 gate 20% loose.
 - **Image size in the benchmarks (decided by research).** `release_image_bytes`, the shipped
   ELF's size, is gated exactly: CLAUDE.md note 8 says the base may only shrink, so any growth
   fails until the PR updates the line and justifies it, as D78 does for time.
+  CI's aarch64 and riscv64 images are 8 bytes smaller than this Mac's (x86_64's are equal);
+  the baseline keeps the Mac's sizes, so both hosts pass and CI's gate is 8 bytes loose.
 - **Screenshot.** `cargo xtask screenshot --arch <arch>` boots the release image headless,
   types `uname -a` and `ls /bin`, checks the display against the host's render (as the
   boot-to-prompt test does), and saves QMP's `screendump` as `docs/images/desktop.png` with our
@@ -6132,9 +6141,9 @@ the license, by an explicit instruction recorded here.
   bench` already builds and boots the release kernel's paths.
 - **Measured** on this Mac (QEMU 10.2, release builds). Images: aarch64 3,290,704 bytes,
   riscv64 4,219,064, x86_64 3,138,864 (the new `release_image_bytes` lines). Boot to prompt
-  under `-icount` (the new `boot_to_prompt` lines): aarch64 1,011,024 ns, riscv64 839,900,
-  x86_64 1,643,938; wall clock with the display, from `cargo xtask release`: 85, 90 and
-  133 ms. The release kernel's code is unchanged (the clock exists only with the feature), so
+  under `-icount`: aarch64 1,011,024 ns, riscv64 839,900, x86_64 1,643,938 here, CI's
+  1,007,440, 831,400 and 1,312,500 in the `boot_to_prompt` lines; wall clock with the
+  display, from `cargo xtask release`: 85, 90 and 133 ms. The release kernel's code is unchanged (the clock exists only with the feature), so
   no existing benchmark moved beyond its gate and no other baseline line changed. The
   committed screenshot is 27,482 bytes.
 - **Follow-ups.** Strip symbols from the shipped image (it carries the kernel's symbol table);

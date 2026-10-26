@@ -5,10 +5,14 @@
 # 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
 # slower, and say why in the PR (CLAUDE.md, "Never merge a performance regression").
 # `<arch> firmware <version>` names the firmware the results were recorded with: benchmarks
-# that run inside it are gated only on the same firmware. Record the baseline with CI's QEMU
-# (Ubuntu 24.04 packages).
+# that run inside it are gated only on the same firmware, and `<arch> qemu <version>` names
+# the QEMU that QEMU-dependent results (boot_to_prompt) were recorded with, likewise. Record
+# the baseline with CI's QEMU (Ubuntu 24.04 packages).
 riscv64 firmware OpenSBI-v1.3
-aarch64 boot_to_prompt 1011024.00
+aarch64 qemu 8.2.2
+riscv64 qemu 8.2.2
+x86_64 qemu 8.2.2
+aarch64 boot_to_prompt 1007440.00
 aarch64 breakpoint_round_trip 92.00
 aarch64 clock_read 5.00
 aarch64 device_tree_walk 75529.00
@@ -54,7 +58,7 @@ aarch64 virtio_input_poll_idle 25.25
 aarch64 virtqueue_round_trip_fake 375.00
 aarch64 virtqueue_submit_one 47.00
 aarch64 wait_queue_wake_empty 15.00
-riscv64 boot_to_prompt 839900.00
+riscv64 boot_to_prompt 831400.00
 riscv64 breakpoint_round_trip 127.00
 riscv64 clock_read 4.00
 riscv64 device_tree_walk 86792.01
@@ -100,7 +104,7 @@ riscv64 virtio_input_poll_idle 28.28
 riscv64 virtqueue_round_trip_fake 353.00
 riscv64 virtqueue_submit_one 84.01
 riscv64 wait_queue_wake_empty 13.01
-x86_64 boot_to_prompt 1643937.90
+x86_64 boot_to_prompt 1312499.74
 x86_64 breakpoint_round_trip 59.00
 x86_64 clock_read 8.00
 x86_64 device_tree_walk 49162.73

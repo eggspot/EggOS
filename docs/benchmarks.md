@@ -112,6 +112,9 @@ Two results per architecture come from the release kernel rather than the benchm
   sleep=off` an idle CPU jumps to its next timer, so the time is instructions plus the timer
   deadlines the boot waits for. The wall-clock time with the display, the number a user
   feels, is printed by the boot-to-prompt test and recorded in the release notes, ungated.
+  The count depends on QEMU's version (x86_64 is 20% apart between Ubuntu 24.04's QEMU 8.2.2
+  and QEMU 10.2.2), so it is gated only on the version of the baseline's `<arch> qemu` line,
+  CI's.
 - `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
   exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
   note 8).
