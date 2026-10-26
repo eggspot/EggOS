@@ -13,6 +13,7 @@ pub mod address_space;
 pub mod bench;
 pub mod console;
 pub mod cpu;
+pub mod devices;
 pub mod elf;
 pub mod exception;
 pub mod heap;
@@ -80,6 +81,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     "paging: kernel page tables active, direct map at {:#x}",
                     P::direct_map_offset()
                 )?;
+                report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
                 match console::enable_input::<P>() {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
@@ -109,6 +111,33 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
     }
+}
+
+fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::fmt::Result {
+    if let Some(error) = report.discovery_error {
+        writeln!(console, "devices: discovery stopped: {error}")?;
+    }
+    writeln!(
+        console,
+        "devices: {} found, {} bound, {} refused",
+        report.devices, report.bound, report.failed
+    )?;
+    if report.dropped > 0 {
+        writeln!(
+            console,
+            "devices: {} more not recorded: the table is full",
+            report.dropped
+        )?;
+    }
+    let mut result = Ok(());
+    devices::for_each(&mut |_, device| {
+        let shown =
+            device.parent.is_some() || matches!(device.binding, devices::Binding::Failed(..));
+        if shown && result.is_ok() {
+            result = writeln!(console, "  {device}");
+        }
+    });
+    result
 }
 
 fn report_root<W: Write>(console: &mut W, report: vfs::MountReport) -> core::fmt::Result {
