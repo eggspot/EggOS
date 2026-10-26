@@ -15,12 +15,18 @@
 //! - the device registers the HAL uses before the driver model exists (M5), as device memory in
 //!   the direct map's window: physical address + [`Platform::direct_map_offset`] (D33).
 //!
+//! - the device window ([`device_window`]): one root-level entry's worth of addresses below the
+//!   kernel image's, whose table is made with the tables, where drivers map device registers
+//!   once the tables are active ([`PageTables::map_device_window`], D110).
+//!
 //! Nothing is mapped in the low half, which belongs to user space: each user address space has
 //! a low half of its own and shares this kernel half ([`PageTables::new_sharing_kernel_half`],
 //! [`crate::address_space`], D45).
 //!
-//! Tables are only built or changed while they are not active: changing live tables needs TLB
-//! maintenance, which comes with the first user that does it.
+//! The kernel's tables are only built or changed while they are not active, but for the device
+//! window, where entries are only ever added below a root entry made in advance: every user
+//! address space's copy of the kernel's root entries stays right, and no CPU has a translation
+//! to drop.
 
 use crate::memory::{self, FrameAllocator, Memory};
 use core::marker::PhantomData;
@@ -54,6 +60,8 @@ pub enum MapError {
     PartOfLargePage,
     /// A user address space maps only user mappings, and only in the low half.
     NotUser,
+    /// The range is not inside the device window, or the tables are not the kernel's.
+    OutsideDeviceWindow,
 }
 
 impl MapError {
@@ -68,6 +76,7 @@ impl MapError {
             MapError::NotMapped => "a page to unmap is not mapped",
             MapError::PartOfLargePage => "the range to unmap splits a large page",
             MapError::NotUser => "a user address space maps only user pages in the low half",
+            MapError::OutsideDeviceWindow => "the range is outside the kernel's device window",
         }
     }
 }
@@ -508,6 +517,57 @@ impl<F: Format> PageTables<F> {
         Err(MapError::NotMapped)
     }
 
+    /// Maps the device registers at physical `phys..phys + length` at `virt..virt + length` in
+    /// `window`, the kernel's device window ([`device_window`]), as device memory, with the
+    /// largest leaves that fit below the root level, while the tables may be active (D110).
+    /// Only entries that were empty are written, below the window's root entry, which
+    /// [`kernel_page_tables`] made, so the root entries user address spaces copied stay right.
+    /// Everything must be 4 KiB-aligned and nothing in the range mapped yet. The caller makes the
+    /// new entries visible to this CPU's walks
+    /// ([`eggos_hal::Platform::make_kernel_mappings_visible`]); other CPUs must not have reached
+    /// the range before. On an error, part of the range may have been mapped.
+    #[inline(never)]
+    pub fn map_device_window(
+        &mut self,
+        window: &core::ops::Range<u64>,
+        mut virt: u64,
+        mut phys: u64,
+        length: u64,
+        frames: &mut FrameAllocator,
+    ) -> Result<(), MapError> {
+        if self.user_half_only {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        if !(virt | phys | length).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        let end = virt.checked_add(length).ok_or(MapError::InvalidAddress)?;
+        if virt < window.start || end > window.end {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        phys.checked_add(length).ok_or(MapError::InvalidAddress)?;
+        let largest = F::MAX_LEAF_LEVEL.min(F::LEVELS - 2);
+        while virt != end {
+            let remaining = end - virt;
+            let level = (0..=largest)
+                .rev()
+                .find(|&level| {
+                    let size = paging::leaf_size(level);
+                    (virt | phys).is_multiple_of(size) && remaining >= size
+                })
+                .unwrap_or(0);
+            fence(Ordering::Release);
+            let entry = self.leaf_table_entry(virt, level, false, frames)?;
+            if entry.read() != 0 {
+                return Err(MapError::AlreadyMapped);
+            }
+            entry.write(F::leaf(phys, level, Attributes::DEVICE));
+            virt += paging::leaf_size(level);
+            phys += paging::leaf_size(level);
+        }
+        Ok(())
+    }
+
     /// The physical address `virt` translates to and the mapping's attributes, or `None`.
     pub fn translate(&self, virt: u64) -> Option<(u64, Attributes)> {
         let mut table = self.roots[F::root(virt)?];
@@ -658,6 +718,17 @@ fn kernel_half_root_entries<F: Format>() -> core::ops::Range<usize> {
     first..paging::ENTRIES
 }
 
+/// The kernel's device window for platform `P` (D110): the addresses one root-level entry maps,
+/// the entry just below the one that maps the kernel image (512 GiB on AArch64 and x86_64, 1 GiB
+/// on RISC-V Sv39). The direct map must end below it.
+pub fn device_window<P: Platform>() -> core::ops::Range<u64> {
+    let image = P::kernel_image();
+    let size = paging::leaf_size(<P::PageTableFormat as Format>::LEVELS - 1);
+    let image_entry = image.virtual_address(image.start) & !(size - 1);
+    let start = image_entry.wrapping_sub(size);
+    start..image_entry
+}
+
 /// A zeroed table frame from `frames`.
 fn new_table(frames: &mut FrameAllocator) -> Result<u64, MapError> {
     let table = frames.allocate().ok_or(MapError::OutOfMemory)?;
@@ -681,9 +752,16 @@ pub fn kernel_page_tables<P: Platform>(
         tables.map(virt, range.start, range.len(), attributes, frames)?;
     }
     let offset = P::direct_map_offset() as u64;
-    if !direct_map_fits_below(physical_memory, offset, &image) {
+    let window = device_window::<P>();
+    if !direct_map_fits_below(physical_memory, offset, window.start) {
         return Err(MapError::InvalidAddress);
     }
+    tables.leaf_table_entry(
+        window.start,
+        <P::PageTableFormat as Format>::LEVELS - 2,
+        false,
+        frames,
+    )?;
     let normal_memory = without_early_devices::<P>(physical_memory)?;
     map_direct_map(&mut tables, &normal_memory, offset, &image, frames)?;
     // Page by page: two register blocks may share a page. A page mapped already is compared
@@ -750,15 +828,12 @@ fn overlaps_early_devices<P: Platform>(memory: &MemoryMap) -> bool {
     overlaps
 }
 
-/// Whether the direct map of `ram` at `offset` ends at or below the kernel image's virtual
-/// address: on RISC-V Sv39 both share the 256 GiB high half (D33).
-fn direct_map_fits_below(ram: &MemoryMap, offset: u64, image: &KernelImage) -> bool {
-    let image_virt = image.virtual_address(image.start);
+fn direct_map_fits_below(ram: &MemoryMap, offset: u64, limit: u64) -> bool {
     ram.ranges().iter().all(|range| {
         range
             .end
             .checked_add(offset)
-            .is_some_and(|end| end <= image_virt)
+            .is_some_and(|end| end <= limit)
     })
 }
 
@@ -1012,32 +1087,112 @@ mod tests {
     }
 
     #[test]
-    fn the_direct_map_must_end_below_the_kernel_image() {
-        // Sv39: the direct map from 0xffff_ffc0_0000_0000, the image at 0xffff_ffff_8020_0000.
-        let image = KernelImage {
-            virtual_offset: 0xffff_ffff_0000_0000,
-            start: 0x8020_0000,
-            text_start: 0x8020_0000,
-            rodata_start: 0x8020_1000,
-            data_start: 0x8020_2000,
-            stack_guard_start: 0x8020_3000,
-            stack_start: 0x8020_4000,
-            end: 0x8020_5000,
-        };
+    fn the_direct_map_must_end_below_the_device_window() {
         let offset = 0xffff_ffc0_0000_0000;
+        let window_start = 0xffff_ffff_4000_0000;
         let gb = 1 << 30;
         let ram = |end| {
             let mut map = MemoryMap::new();
             map.add_ram(PhysicalRange { start: 2 * gb, end });
             map
         };
-        assert!(direct_map_fits_below(&ram(4 * gb), offset, &image));
-        // The image's first byte is the direct map's 254 GiB + 2 MiB.
-        let limit = 254 * gb + (2 << 20);
-        assert!(direct_map_fits_below(&ram(limit), offset, &image));
-        assert!(!direct_map_fits_below(&ram(limit + K), offset, &image));
-        // An end that wraps around the address space never fits.
-        assert!(!direct_map_fits_below(&ram(300 * gb), offset, &image));
+        assert!(direct_map_fits_below(&ram(4 * gb), offset, window_start));
+        let limit = 253 * gb;
+        assert!(direct_map_fits_below(&ram(limit), offset, window_start));
+        assert!(!direct_map_fits_below(
+            &ram(limit + K),
+            offset,
+            window_start
+        ));
+        assert!(!direct_map_fits_below(&ram(300 * gb), offset, window_start));
+    }
+
+    #[test]
+    fn the_device_window_is_the_root_entry_below_the_kernel_images() {
+        let window = device_window::<crate::tests::TestPlatform>();
+        assert_eq!(window, 0xffff_ff00_0000_0000..0xffff_ff80_0000_0000);
+    }
+
+    #[test]
+    fn device_windows_map_device_memory_into_active_kernel_tables_with_large_leaves() {
+        let mut frames = frames(64);
+        let mut tables = PageTables::<X86_64>::new(&mut frames).unwrap();
+        let window = 0xffff_ff00_0000_0000..0xffff_ff80_0000_0000;
+        tables
+            .leaf_table_entry(window.start, X86_64::LEVELS - 2, false, &mut frames)
+            .unwrap();
+        tables.mark_active();
+        let root_entry = tables.entry(tables.roots[0], window.start, 3).read();
+        let used_before = frames.free_frames();
+        tables
+            .map_device_window(&window, window.start, 0xb000_0000, 4 << 20, &mut frames)
+            .unwrap();
+        tables
+            .map_device_window(
+                &window,
+                window.start + (4 << 20),
+                0xfebd_1000,
+                0x3000,
+                &mut frames,
+            )
+            .unwrap();
+        assert_eq!(used_before - frames.free_frames(), 2);
+        assert_eq!(
+            tables.entry(tables.roots[0], window.start, 3).read(),
+            root_entry
+        );
+        let device = |virt| {
+            tables
+                .translate(virt)
+                .map(|(phys, a)| (phys, a.memory_type))
+        };
+        assert_eq!(
+            device(window.start + 0x30_0010),
+            Some((0xb030_0010, MemoryType::Device))
+        );
+        assert_eq!(
+            device(window.start + (4 << 20) + 0x2004),
+            Some((0xfebd_3004, MemoryType::Device))
+        );
+        assert_eq!(device(window.start + (4 << 20) + 0x3000), None);
+        let (_, level) = tables.leaf_entry(window.start).unwrap();
+        assert_eq!(level, 1);
+    }
+
+    #[test]
+    fn device_windows_refuse_ranges_outside_the_window_or_mapped_twice() {
+        let mut frames = frames(64);
+        let mut tables = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
+        let window = 0xffff_ffff_4000_0000..0xffff_ffff_8000_0000;
+        let map = |tables: &mut PageTables<Riscv64Sv39>, virt, frames: &mut FrameAllocator| {
+            tables.map_device_window(&window, virt, 0x1000_1000, 0x1000, frames)
+        };
+        assert_eq!(
+            map(&mut tables, window.start - K, &mut frames),
+            Err(MapError::OutsideDeviceWindow)
+        );
+        assert_eq!(
+            map(&mut tables, window.end, &mut frames),
+            Err(MapError::OutsideDeviceWindow)
+        );
+        assert_eq!(
+            map(&mut tables, window.start + 1, &mut frames),
+            Err(MapError::Unaligned)
+        );
+        assert_eq!(map(&mut tables, window.start, &mut frames), Ok(()));
+        assert_eq!(
+            map(&mut tables, window.start, &mut frames),
+            Err(MapError::AlreadyMapped)
+        );
+        let gb =
+            tables.map_device_window(&window, window.start + (1 << 21), 0, 1 << 30, &mut frames);
+        assert_eq!(gb, Err(MapError::OutsideDeviceWindow));
+        let mut user = PageTables::<Riscv64Sv39>::new(&mut frames).unwrap();
+        user.user_half_only = true;
+        assert_eq!(
+            map(&mut user, window.start, &mut frames),
+            Err(MapError::OutsideDeviceWindow)
+        );
     }
 
     #[test]
