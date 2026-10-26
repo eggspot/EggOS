@@ -361,7 +361,7 @@ static STOPPING: AtomicBool = AtomicBool::new(false);
 
 /// Stops every CPU but the calling one, as the machine halts, powers off or resets (`reboot`,
 /// or init ending): each is asked a shootdown and sent the wake-up interrupt, and parks with
-/// interrupts masked where it serves it ([`serve_shootdowns`]): as it takes the interrupt,
+/// interrupts masked where it serves it: as it takes the interrupt,
 /// which a CPU running user mode or waiting for an interrupt does at once, or as it waits for a
 /// lock that has the wait duty. So the wake-up interrupt's path is unchanged. Returns once the
 /// interrupts are sent, which may be before they are taken.
