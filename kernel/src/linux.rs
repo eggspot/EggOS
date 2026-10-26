@@ -6489,7 +6489,10 @@ mod tests {
         assert_eq!(beyond, [0xff; 8]);
         assert_eq!(affinity(0, size - 8, SCRATCH), Errno::EINVAL.result());
         assert_eq!(affinity(0, size + 4, SCRATCH), Errno::EINVAL.result());
-        assert_eq!(affinity(pid + 1000, size, SCRATCH), Errno::ESRCH.result());
+        assert_eq!(
+            affinity(u64::from(u32::MAX), size, SCRATCH),
+            Errno::ESRCH.result()
+        );
         assert_eq!(affinity(0, size, 8), Errno::EFAULT.result());
     }
 

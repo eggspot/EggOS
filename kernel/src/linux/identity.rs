@@ -1,6 +1,6 @@
 //! Who a program is and where it runs (M6, D55): `getpid`, `getppid`, `gettid`, `uname`,
-//! `getcpu` and `sched_getaffinity` (D117), and the thread bookkeeping C libraries and Rust's std do at startup, `set_tid_address`,
-//! `set_robust_list` and `get_robust_list`.
+//! `getcpu` and `sched_getaffinity` (D117), and the thread bookkeeping C libraries and Rust's
+//! std do at startup, `set_tid_address`, `set_robust_list` and `get_robust_list`.
 //!
 //! A process's first thread has the process's id, as on Linux, and the threads `clone` starts
 //! ids of their own (D91). The two bookkeeping calls register user memory the kernel touches

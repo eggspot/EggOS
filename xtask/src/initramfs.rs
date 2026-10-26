@@ -17,6 +17,8 @@ const DIRECTORY_MODE: u32 = 0o040755;
 const FILE_MODE: u32 = 0o100644;
 const PROGRAM_MODE: u32 = 0o100755;
 const TRAILER: &str = "TRAILER!!!";
+const NAME_MAX: usize = 255;
+const PATH_MAX: usize = 4096;
 
 /// What an extra member of the archive holds.
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +82,22 @@ pub fn build(extra: &[(&str, Content)], file_name: &str) -> Result<PathBuf, Stri
 fn add(members: &mut Vec<Member>, path: &str, content: Content) -> Result<(), String> {
     if members.iter().any(|member| member.name == path) {
         return Err(format!("`/{path}` is already in the image"));
+    }
+    if path.len() >= PATH_MAX || path.split('/').any(|name| name.len() > NAME_MAX) {
+        return Err(format!(
+            "`/{path}` is longer than the kernel takes: names up to {NAME_MAX} bytes, paths \
+             under {PATH_MAX}"
+        ));
+    }
+    let mut ancestors = path.match_indices('/').map(|(end, _)| &path[..end]);
+    if let Some(file) = ancestors.find(|ancestor| {
+        members
+            .iter()
+            .any(|member| member.name == *ancestor && member.mode != DIRECTORY_MODE)
+    }) {
+        return Err(format!(
+            "`/{file}` is a file, so `/{path}` cannot go under it"
+        ));
     }
     add_directories(path, members);
     let member = match content {
@@ -264,6 +282,24 @@ mod tests {
             );
         }
         assert_eq!(members.len(), 2);
+        assert_eq!(
+            add(&mut members, "etc/motd/x", Content::Text("under a file")),
+            Err("`/etc/motd` is a file, so `/etc/motd/x` cannot go under it".into())
+        );
+        add(&mut members, "bin/tool", Content::Text("tool")).unwrap();
+        assert!(add(&mut members, "bin/tool/deeper/x", Content::Text("x")).is_err());
+        let long_name = format!("etc/{}", "n".repeat(NAME_MAX + 1));
+        let long_path = format!("etc/{}", "d/".repeat(PATH_MAX / 2));
+        for long in [long_name, long_path] {
+            assert!(add(&mut members, &long, Content::Text("long")).is_err());
+        }
+        add(
+            &mut members,
+            &format!("etc/{}", "n".repeat(NAME_MAX)),
+            Content::Text("ok"),
+        )
+        .unwrap();
+        assert_eq!(members.len(), 5);
     }
 
     fn headers(bytes: &[u8]) -> Vec<(String, u32, u32, Vec<u8>)> {

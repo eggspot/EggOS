@@ -3,8 +3,9 @@
 //! test adds to the image with `cargo xtask image --add` and runs from `eggsh` (D117). It
 //! uses what typical console programs use and writes one `LINUX-STATIC` line for each:
 //! its arguments, the environment, a file, a directory listing, the clocks, a `HashMap`
-//! with random keys, threads, the CPUs it may use and standard error, then exits with 0. `exit <status>` exits
-//! with that status instead, and `panic` panics, which aborts the program.
+//! with random keys, threads, the CPUs it may use and standard error, then exits with 0.
+//! `exit <status>` exits with that status instead, and `panic` panics, which aborts the
+//! program.
 
 use std::collections::HashMap;
 use std::process::ExitCode;

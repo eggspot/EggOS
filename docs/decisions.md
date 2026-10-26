@@ -6176,7 +6176,9 @@ the license, by an explicit instruction recorded here.
   programs, and a data file is harmless as executable on a read-only, root-only system. A path
   already in the image (`/init`, the shell, a core utility, a directory) is refused instead of
   replaced, so `--add` cannot break the boot; the check is in the initramfs builder and covers
-  every image xtask builds. Paths with empty, `.` or `..` parts are refused.
+  every image xtask builds, as is a path under a file already there. Paths with empty, `.` or
+  `..` parts, names over 255 bytes and paths of 4096 bytes or more, which the kernel's
+  initramfs refuses (emptying the root), are refused too.
 - **Gaps found.** With D84-D105 in place, the program's start-up and every call it makes but
   one already worked on all three architectures, static executable and static PIE: `execve`
   from the shell, the auxiliary vector, TLS, threads, `getrandom`, the clocks, `getdents64`,
