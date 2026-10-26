@@ -162,12 +162,11 @@ pub fn lookup<P: Platform>(
 /// `O_TMPFILE` is `EROFS` in a directory, `ENOTDIR` elsewhere; `EEXIST` for `O_CREAT` with
 /// `O_EXCL`; `EISDIR` for a directory with `O_CREAT` or write access; `ENOTDIR` for anything
 /// else with `O_DIRECTORY`; `EROFS` for a regular file opened for writing or with `O_TRUNC`;
-/// `EMFILE` when every descriptor below
-/// the open-file limit is taken. `O_PATH` opens a location only, ignoring the other flags
-/// but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`. With no symbolic links yet, `O_NOFOLLOW`
-/// changes nothing; `O_NONBLOCK` and `O_APPEND` are kept as status flags, and the other
-/// flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are ignored. `mode` matters only to a
-/// file created, which none is.
+/// `EMFILE` when every descriptor below the open-file limit is taken. `O_PATH` opens a
+/// location only, ignoring the other flags but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`.
+/// With no symbolic links yet, `O_NOFOLLOW` changes nothing; `O_NONBLOCK` and `O_APPEND` are
+/// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
+/// ignored. `mode` matters only to a file created, which none is.
 pub fn openat<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,

@@ -4635,3 +4635,105 @@ the license, by an explicit instruction recorded here.
   +0.7 / 0 / +16 bytes, riscv64 +9.7 KiB / +1.7 / 0 / 0, x86_64 +9.5 KiB / +1.1 / 0 / +16
   bytes: the table, seven calls, `readv` and the D100 review fixes (D24: growth justified by a
   must-have of D99).
+
+## D102 VFS core and a read-only initramfs: `openat`, `read`, `pread64`, `lseek`, `getdents64`, `fstat` on files, `getcwd`, `chdir` — Decided by the build loop
+
+- **What.** Item 4 of the v0.3.0 plan (D99), the first slice of issue #94's design brief: a
+  virtual file system core in the kernel, a read-only initramfs embedded in the kernel image
+  and mounted as `/` at boot, and the calls that open, read, seek, list and stat its files and
+  change the working directory. tmpfs, devfs, symbolic links, the dentry cache and `execve`
+  from a file are later slices.
+- **The core** (`vfs`, architecture-independent). A file system implements the `FileSystem`
+  trait: a root, a device number, and per node (a 64-bit number of its own) its kind, its
+  attributes, a lookup of a name in a directory, its parent and name, a read of a contiguous
+  slice of its contents at an offset, and its directory entries by position. A `Node` is the
+  file system (a `&'static dyn FileSystem`) and the number: `Copy`, 24 bytes, no reference
+  count. The walk (`vfs::resolve`) follows Linux's path resolution as path_resolution(7)
+  describes it: absolute paths from the root, relative ones from a start directory, empty and
+  `.` components skipped, `..` to the parent and never above the root, each component looked
+  up only in a directory (`ENOTDIR` otherwise, also for `file/.` and `file/..`), `ENAMETOOLONG`
+  for a component over `NAME_MAX` (255) when the walk reaches it, and a trailing slash
+  requiring a directory. Errors come in the order the walk meets them (`/missing/<long name>`
+  is `ENOENT`). Nothing is allocated per lookup; the path is copied once into a 4 KiB buffer
+  on the kernel stack in 64-byte chunks that never cross a page.
+- **Mounts.** One root mount, published once through an atomic pointer to a leaked `Mount`
+  (boot mounts it after paging, before the self-tests, so its index is not counted against any
+  self-test's memory; a first `vfs::root()` on a host test mounts it lazily). The root is never
+  unmounted, which is what lets a node hold a `'static` reference. Mounts that can go away
+  (tmpfs, devfs, disks) will count references in their mount entry, and a "mounted here" bit
+  will send the walk to the mount table only where needed, as the brief says; the lockless
+  dentry cache, `RESOLVE_*` flags, name policies and the page cache come with the file systems
+  that need them.
+- **The initramfs** (`vfs::cpio`, `vfs::initramfs`). `cargo xtask` writes a `newc` cpio
+  archive (cpio(5): `070701` headers, thirteen 8-digit hexadecimal fields, NUL-terminated
+  names, 4-byte padding, `TRAILER!!!`) of the repository's `initramfs/` directory, in name
+  order with each directory before its contents, root-owned, directories `0755`, files `0644`,
+  every time `SOURCE_DATE_EPOCH` (0 if unset), so the archive is reproducible;
+  `.gitattributes` keeps its files byte-exact on Windows checkouts. Each kernel build embeds it
+  with `include_bytes!` through `EGGOS_INITRAMFS` (one ELF per architecture as before). Host
+  builds embed nothing; host tests mount a small archive built in the test. The kernel's
+  parser is clean-room from cpio(5), reads every field in place and refuses a malformed archive
+  as a whole (truncated header, name or data, bad magic or digits, a name that is empty or not
+  NUL-terminated, sizes past the end, a member whose parent is missing or comes later, empty,
+  `.` or `..` components, duplicate paths) without reading out of bounds; the kernel then boots
+  with an empty root and says so. Mounting builds one index (an array of 40-byte entries,
+  allocated once) sorted by (parent path, name), so a directory's entries are contiguous and a
+  lookup is a binary search among them; `..` is a stored parent index. File contents are never
+  copied: a read returns a slice of the archive, so `read` copies the bytes from the kernel
+  image to the program's buffer directly. Symbolic links and device nodes in the archive are
+  skipped for now. Inode numbers are index + 1 (the root is 1), the device is the anonymous
+  0:1, directories have 2 + subdirectories links, blocks are counted in pages as a memory file
+  system's.
+- **Descriptors.** `FileKind` (D101) gains `Regular(Node)`, `Directory(Node)` and `Path(Node)`
+  (`O_PATH`). `openat` (and x86_64's `open`) follows open(2) for a read-only mount: write
+  access, `O_TRUNC`, `O_TMPFILE` and creating a file are `EROFS`, a directory opened for writing
+  or with `O_CREAT` is `EISDIR`, `O_CREAT|O_DIRECTORY` is `EINVAL` (Linux 6.4+), `O_EXCL` on an
+  existing file `EEXIST`, `O_RDONLY|O_CREAT` on an existing file opens it, `O_NOFOLLOW` changes
+  nothing until there are links, `O_NONBLOCK` and `O_APPEND` are kept, others ignored; an
+  absolute path ignores `dirfd`. `read` and `readv` advance the shared offset with a
+  compare-and-swap, redoing the copy if another call moved it meanwhile, so two calls on one
+  description never read the same bytes and nothing is locked. `pread64` reads at an offset
+  (`ESPIPE` on the console). `lseek` takes `SEEK_SET`, `SEEK_CUR`, `SEEK_END`, `SEEK_DATA` and
+  `SEEK_HOLE` on files (`ENXIO` at or past the end, `EINVAL` for a negative result) and
+  `SEEK_SET`/`SEEK_CUR` on directories; the console still answers `ESPIPE`. `getdents64` packs
+  `linux_dirent64` records (`.` at position 0, `..` at 1, then the entries, `d_off` the next
+  position, `d_type` set, records padded to 8 bytes) through a 512-byte buffer on the kernel
+  stack, resumes from the description's offset, and is `EINVAL` when the next record does not
+  fit. `fstat`, `newfstatat` and `statx` report nodes (mode, size, links, inode, block size,
+  blocks, the archive's modification time as access, change and modification time), and
+  `newfstatat`/`statx` resolve real paths, `AT_EMPTY_PATH` with `AT_FDCWD` naming the working
+  directory; x86_64's `stat` and `lstat`, which musl calls, are `newfstatat` from `AT_FDCWD`.
+  `poll` reports files and directories always ready and `O_PATH` descriptors `POLLNVAL`.
+- **The working directory** is per process: an `Arc` of a leaf-locked `Node` that each thread
+  holds (`WorkingDirectory`, in its `LinuxThread`), as the descriptor table is (D101), so
+  `Process` stays in its 256-byte heap class. `clone` with `CLONE_FS` shares it, without it the
+  new thread gets a copy, and `fork` will copy it. `getcwd` writes the path built by walking
+  parents (`ERANGE` when the buffer is too small, the result's length with its NUL); `chdir`
+  and `fchdir` (also on an `O_PATH` directory) are `ENOTDIR` for anything but a directory.
+- **Testing.** Host unit tests of the cpio parser (fields, in-place data, checksummed headers,
+  every truncation of an archive, bad magic, digits, unterminated and empty names, sizes past
+  the end, a missing trailer), of the index (sorting, lookups, parents, links, refused
+  archives), of the walk (dot-dot, repeated and trailing slashes, error order,
+  `ENAMETOOLONG`), of `getcwd`'s path building and of `linux_dirent64` packing; and of the
+  calls through the Linux layer (`openat`'s errors, `O_PATH`, `dirfd`, reads, shared offsets
+  through `dup`, `lseek`, `pread64`, `fstat` of a file, `getdents64` across calls and with
+  small buffers, `getcwd`, `chdir`, `fchdir`). In QEMU on aarch64, riscv64 and x86_64, Rust's
+  std program reads files whole (`read_to_string`), lists directories (`read_dir`, entry
+  types), reads metadata, seeks an open file from the start, the current offset and the end,
+  changes directory and opens files relative to it, and sees `ENOENT`, `ENOTDIR` and `EROFS`.
+- **Cost.** Two new benchmarks gate the new paths (docs/benchmarks.md): `linux_openat_close`
+  (`openat` of `/etc/hostname` from the root, then `close`) 1374.93, 1473.50 and 1361.44 ns,
+  and `linux_file_read` (`pread64` of `/etc/motd`'s 18 bytes) 202.06, 329.64 and 217.57 ns, on
+  aarch64, riscv64 and x86_64. A first version zeroed the 4 KiB path buffer on every call
+  (about 3000 ns for `openat`); the path is now copied into an uninitialized buffer, so a short
+  path costs only its own bytes. Every existing benchmark is as on `main` (same machine, same
+  QEMU) within 0.05%, but riscv64 `frame_contiguous_allocate_free` (200 on `main`, 203.01 here,
+  its baseline line 203.00): the code is untouched; the initramfs index allocated at boot
+  shifts the buddy allocator's state, the kind of state-only shift seen before (PR #31). Each
+  process pays one more small allocation (its working directory) at start and exit: +0.03% to
+  +0.05% on `linux_page_fault`. Kernel image (release, `.text` / `.rodata` / `.data` / `.bss`
+  against `main`): aarch64 +17.9 KiB / +2.0 KiB / 0 / 0, riscv64 +17.9 KiB / +2.3 KiB / 0 /
+  +16 bytes, x86_64 +20.2 KiB / +2.2 KiB / 0 / 0; the embedded archive is 1128 bytes of the
+  `.rodata` growth. The growth is the VFS core, the cpio parser and index, eleven calls and
+  their errors (D24: justified by a must-have of D99; the initramfs is kept to three small
+  files until the userland binaries join it).
