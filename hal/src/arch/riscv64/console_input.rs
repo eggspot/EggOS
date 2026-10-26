@@ -70,21 +70,32 @@ pub(super) fn enable(hart: u64, context: Option<usize>) -> Result<(), &'static s
     Ok(())
 }
 
-/// Claims the pending external interrupt and handles it; returns the source when it was not
-/// UART0's, to be reported. The claim is completed after the kernel has read the UART. Out of
-/// line, so the trap paths keep their length.
+/// Claims the pending external interrupt and handles it: UART0's goes to the kernel, which reads
+/// the UART before the claim is completed; any other source is reported as an unexpected
+/// interrupt at `pc`. Out of line and called last, as a tail call, so the trap paths keep their
+/// length.
 #[cold]
 #[inline(never)]
-pub(super) fn interrupt() -> Option<u32> {
+pub(super) fn interrupt(pc: u64) {
     let context = CONTEXT.load(Ordering::Relaxed);
     if context == NONE {
-        return None;
+        return;
     }
     let plic = plic(context);
-    let source = plic.claim()?;
+    let Some(source) = plic.claim() else {
+        return;
+    };
     if source == UART0_SOURCE {
         crate::interrupt::deliver(crate::Interrupt::ConsoleInput);
     }
     plic.complete(source);
-    (source != UART0_SOURCE).then_some(source)
+    if source != UART0_SOURCE {
+        crate::exception::deliver(&crate::Exception {
+            kind: crate::ExceptionKind::Interrupt,
+            name: "unexpected PLIC source",
+            code: source.into(),
+            pc,
+            address: None,
+        });
+    }
 }

@@ -1248,8 +1248,13 @@ extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
     unsafe { core::arch::asm!("csrr {}, stval", out(reg) stval, options(nomem, nostack)) };
 
     // Exceptions pay one test for the interrupts' checks.
-    if scause & SCAUSE_INTERRUPT != 0 && interrupt(scause) {
-        return;
+    if scause & SCAUSE_INTERRUPT != 0 {
+        if interrupt(scause) {
+            return;
+        }
+        if scause == SCAUSE_SUPERVISOR_EXTERNAL {
+            return super::console_input::interrupt(frame.sepc);
+        }
     }
     let exception = decode(scause, stval, frame.sepc);
     deliver(&exception);
@@ -1276,7 +1281,6 @@ fn interrupt(scause: u64) -> bool {
             crate::interrupt::deliver(Interrupt::Wakeup);
             true
         }
-        SCAUSE_SUPERVISOR_EXTERNAL => super::console_input::interrupt().is_none(),
         _ => false,
     }
 }
@@ -1343,6 +1347,10 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         return UserExit::Syscall;
     }
     if scause & SCAUSE_INTERRUPT != 0 && interrupt(scause) {
+        return UserExit::Interrupt;
+    }
+    if scause == SCAUSE_SUPERVISOR_EXTERNAL {
+        super::console_input::interrupt(registers.pc);
         return UserExit::Interrupt;
     }
     // All `last_exception` needs.
