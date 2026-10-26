@@ -337,6 +337,9 @@ impl System for Linux {
         environment: &[&[u8]],
         job_control: bool,
     ) -> Result<i32, Errno> {
+        if arguments.len() > MAX_WORDS || environment.len() > MAX_VARIABLES + MAX_WORDS {
+            return Err(Errno::E2BIG);
+        }
         let mut argument_pointers = [ptr::null::<u8>(); MAX_WORDS + 1];
         for (slot, argument) in argument_pointers.iter_mut().zip(arguments) {
             *slot = argument.as_ptr();

@@ -75,7 +75,7 @@ impl System for FakeSystem {
     }
 
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno> {
-        let content = self.contents.get(&text(path)).ok_or(Errno::NOT_FOUND)?;
+        let content = self.contents.get(&text(path)).ok_or(Errno::ENOENT)?;
         let descriptor = 3 + self.open.len();
         self.open
             .insert(descriptor, content.iter().copied().collect());
@@ -100,8 +100,8 @@ impl System for FakeSystem {
                 self.working_directory = absolute;
                 Ok(())
             }
-            Kind::Missing => Err(Errno::NOT_FOUND),
-            _ => Err(Errno(20)),
+            Kind::Missing => Err(Errno::ENOENT),
+            _ => Err(Errno::ENOTDIR),
         }
     }
 
@@ -255,7 +255,7 @@ fn a_program_ended_by_a_signal_sets_128_plus_the_signal_and_is_reported() {
 #[test]
 fn a_program_that_fails_to_start_is_reported() {
     let mut shell = shell(false);
-    shell.system.run_error = Some(Errno(8));
+    shell.system.run_error = Some(Errno::ENOEXEC);
     shell.run_text(b"ls; echo $?");
     assert_eq!(output(&shell), "126\n");
     assert_eq!(errors(&shell), "eggsh: ls: Exec format error\n");
