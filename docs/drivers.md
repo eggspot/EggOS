@@ -1,20 +1,21 @@
 # Drivers and the driver model
 
 How EggOS finds devices and binds drivers to them (M5, D110), how the virtio core works (M8,
-D111), and how to add a driver.
+D111), the display (D112), and how to add a driver.
 
 ## The pieces
 
 | Where | What |
 |---|---|
-| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `virtio` (transports, the split virtqueue, the entropy device) |
+| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU) |
 | `hal/src/fdt/nodes.rs` | `Fdt::nodes`: every device-tree node with what a bus needs, allocating nothing |
 | `hal/src/lib.rs` | What the firmware gives: `Platform::device_tree`, `acpi_table`, `device_apertures`, the device-tree DMA default, and `make_kernel_mappings_visible` |
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
 | `kernel/src/devices/fdt_bus.rs`, `pci_bus.rs` | Discovery: the device-tree platform bus, PCI Express through the MCFG |
 | `kernel/src/devices/window.rs` | Device windows: device registers mapped into the kernel |
 | `kernel/src/devices/dma.rs` | DMA regions |
-| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng on top |
+| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng and virtio-gpu on top |
+| `kernel/src/display.rs` | The display: the framebuffer a display driver installs, damage, flushes, the first frame |
 
 ## Discovery
 
@@ -64,8 +65,10 @@ pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
   empty virtio-mmio slot) and leaves it unbound, which is no failure.
   `Err(ProbeError::Refused(reason))` records the refusal, which the boot log shows.
 - **Registration.** `devices::BUILTIN` lists the drivers the kernel's cargo features build in
-  (`virtio`, `virtio-rng`): a driver not enabled is not linked and costs nothing (D18). Test
-  and benchmark kernels (`qemu-test`) enable them; the release kernel enables none yet.
+  (`virtio`, `virtio-gpu`, `virtio-rng`): a driver not enabled is not linked and costs nothing
+  (D18). The release kernel enables `virtio-gpu` by default (D112), which brings the virtio
+  core; `--no-default-features` leaves every driver out. Test and benchmark kernels
+  (`qemu-test`) enable them all.
 
 ## What a probe function gets
 
@@ -102,6 +105,30 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   plus freed descriptors). Polled for now: interrupts are issue #97's slice 3.
 - **virtio-rng.** One request queue of 8 entries and a 1 KiB request buffer in one 4 KiB
   region; `devices::virtio::read_random` fills a buffer, polling until a deadline.
+- **Doorbells.** The kernel's transports run `eggos_hal::memory::doorbell_barrier` before every
+  notification (`dmb oshst` on AArch64, `fence w, o` on RISC-V, a compiler fence on x86), so a
+  device sees the ring's writes before the doorbell (D112).
+- **virtio-gpu** (D112). The control queue (up to 32 entries) and its requests and responses in
+  one 4 KiB region, the framebuffer in another (4 MiB at 1280x800). At probe: the display's
+  mode from `GET_DISPLAY_INFO` (1024x768 when the device reports none, or when the mode's
+  buffer cannot be had), `RESOURCE_CREATE_2D` in `B8G8R8X8_UNORM`, `RESOURCE_ATTACH_BACKING`,
+  `SET_SCANOUT`; then the driver is the kernel's display. Every command is fenced, and a flush
+  sends each damaged rectangle's `TRANSFER_TO_HOST_2D`, waits for their answers, then sends
+  their `RESOURCE_FLUSH`: the spec promises neither order nor completion of unfenced commands.
+
+## The display
+
+`kernel/src/display.rs` (D112) is what the graphical terminal and the desktop draw through:
+
+- `display::draw(|framebuffer| ...)` lends the `Framebuffer` under the display's lock: its
+  `mode()`, its `pixels()` (row after row, `mode().width` per row, each `0x00RRGGBB`), `fill`,
+  and `damage(rect)` to record what changed.
+- `display::flush::<P>()` shows the damage (at most 8 rectangles, overlapping ones merged; a
+  ninth merges where the union grows least) and nothing else; nothing reaches the device while
+  nothing is damaged. A failed flush keeps the damage for the next.
+- At boot the kernel draws the first frame (the whole screen in `wallpaper.top`, `#0E1726`)
+  and prints `boot: display 1280x800`, or `boot: no display` without one.
+- A display driver implements `display::Scanout` and calls `display::install`.
 
 ## Adding a driver
 
@@ -121,7 +148,9 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 
 ## Not yet
 
-Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X), DMA cache
+Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X), the virtio
+GPU's cursor queue, display events (a mode change), modes whose buffer is larger than one DMA
+region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and
 unbinding drivers (with cross-CPU TLB shootdown for kernel mappings), an IOMMU, and the
