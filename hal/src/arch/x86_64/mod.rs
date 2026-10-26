@@ -662,6 +662,10 @@ impl Platform for X86_64 {
         console_input::device_regions(region);
     }
 
+    fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
+        acpi_table(signature)
+    }
+
     unsafe fn activate_page_tables(roots: &[u64]) {
         let [root] = roots else {
             panic!("x86_64 page tables have one root");

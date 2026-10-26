@@ -444,6 +444,20 @@ impl Platform for Aarch64 {
         timer::DEVICE_REGIONS.into_iter().for_each(region);
     }
 
+    fn device_tree() -> Option<&'static [u8]> {
+        // SAFETY: as in `memory_map`.
+        unsafe { boot_memory::device_tree_blob(RAM_BASE) }
+    }
+
+    const DEVICE_TREE_DMA_COHERENT_BY_DEFAULT: bool = false;
+
+    fn make_kernel_mappings_visible(_start: usize, _length: usize) {
+        // SAFETY: barriers change no memory contents: the table writes complete before any walk,
+        // and the next instructions see them. Arm caches no invalid entries, so nothing is
+        // invalidated.
+        unsafe { core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags)) };
+    }
+
     unsafe fn activate_page_tables(roots: &[u64]) {
         let [low, high] = roots else {
             panic!("AArch64 page tables have two roots");
