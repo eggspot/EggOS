@@ -85,7 +85,6 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-/// Prints what the root file system holds (D102).
 fn report_root<W: Write>(console: &mut W, report: vfs::MountReport) -> core::fmt::Result {
     match report.error {
         None => writeln!(
