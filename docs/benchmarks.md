@@ -39,8 +39,8 @@ result is an instruction count per iteration (D27), gated against `benchmarks/ba
   (binary searches in its index), an open file description allocated, a descriptor taken and
   closed again. Without the trap from user mode.
 - `linux_file_read`: `pread64` of `/etc/motd`'s 18 bytes from offset 0 into the program's
-  memory (D102): the descriptor's kind matched, the bytes copied straight from the archive in
-  the kernel image, no allocation. Without the trap from user mode.
+  memory (D102): the descriptor looked up and its kind matched, the bytes copied straight from
+  the archive in the kernel image, no allocation. Without the trap from user mode.
 
 ## Host tests of the benchmarks
 

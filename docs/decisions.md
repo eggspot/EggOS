@@ -4710,6 +4710,9 @@ the license, by an explicit instruction recorded here.
   new thread gets a copy, and `fork` will copy it. `getcwd` writes the path built by walking
   parents (`ERANGE` when the buffer is too small, the result's length with its NUL); `chdir`
   and `fchdir` (also on an `O_PATH` directory) are `ENOTDIR` for anything but a directory.
+- **Review fixes.** `pread64` checks in Linux's order (a negative offset before the
+  descriptor, `EFAULT` before `EISDIR`), and a second mount of the root is refused before the
+  archive is parsed, so nothing leaks.
 - **Testing.** Host unit tests of the cpio parser (fields, in-place data, checksummed headers,
   every truncation of an archive, bad magic, digits, unterminated and empty names, sizes past
   the end, a missing trailer), of the index (sorting, lookups, parents, links, refused
@@ -4723,10 +4726,10 @@ the license, by an explicit instruction recorded here.
   changes directory and opens files relative to it, and sees `ENOENT`, `ENOTDIR` and `EROFS`.
 - **Cost.** Two new benchmarks gate the new paths (docs/benchmarks.md): `linux_openat_close`
   (`openat` of `/etc/hostname` from the root, then `close`) 1374.93, 1473.50 and 1361.44 ns,
-  and `linux_file_read` (`pread64` of `/etc/motd`'s 18 bytes) 202.06, 329.64 and 217.57 ns, on
-  aarch64, riscv64 and x86_64. A first version zeroed the 4 KiB path buffer on every call
-  (about 3000 ns for `openat`); the path is now copied into an uninitialized buffer, so a short
-  path costs only its own bytes. Every existing benchmark is as on `main` (same machine, same
+  and `linux_file_read` (`pread64` of `/etc/motd`'s 18 bytes, the descriptor looked up as the
+  call does) 339.06, 386.63 and 371.57 ns, on aarch64, riscv64 and x86_64. A first version
+  zeroed the 4 KiB path buffer on every call (about 3000 ns for `openat`); the path is now
+  copied into an uninitialized buffer, so a short path costs only its own bytes. Every existing benchmark is as on `main` (same machine, same
   QEMU) within 0.05%, but riscv64 `frame_contiguous_allocate_free` (200 on `main`, 203.01 here,
   its baseline line 203.00): the code is untouched; the initramfs index allocated at boot
   shifts the buddy allocator's state, the kind of state-only shift seen before (PR #31). Each
