@@ -73,7 +73,13 @@ pub fn run(arches: &[&Arch], update: bool) -> Result<(), String> {
     let mut measured = Measurements::default();
     for arch in arches {
         let kernel = crate::build_kernel(arch, Some("qemu-bench"))?;
-        let console = qemu::boot_test(arch, &kernel, qemu::Expect::Pass, BENCH_CPUS, ICOUNT_ARGS)?;
+        let console = qemu::boot_test(
+            arch,
+            &kernel,
+            qemu::Expect::Benchmarks,
+            BENCH_CPUS,
+            ICOUNT_ARGS,
+        )?;
         let results = parse_console(&console)?;
         if results.is_empty() {
             return Err(format!(

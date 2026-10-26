@@ -6,7 +6,8 @@
 //! yet is also how its preemption points see the timer tick (D37), and shares its word with other
 //! CPUs' reschedule requests (D43), so preemption adds nothing to the interrupt path; a wake-up
 //! only has to end the CPU's wait for an interrupt, and have the CPU serve the TLB shootdowns
-//! asked of it (D94). Console input is queued for readers ([`console::read_input`]).
+//! asked of it (D94). Console input goes through the line discipline to readers
+//! ([`console::receive_input`], D100).
 
 use crate::{console, cpu};
 use eggos_hal::{Interrupt, Platform};

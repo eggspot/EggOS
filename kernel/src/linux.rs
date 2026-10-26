@@ -11,7 +11,8 @@
 //! A program is started from its ELF image by [`exec::load`] (D51), which maps it and lays
 //! out its stack as Linux does.
 //!
-//! So far: `write` and `writev` to the standard descriptors (the console, D61), `exit`
+//! So far: `write` and `writev` to the standard descriptors (the console, D61), and `read`
+//! from them through the console's line discipline ([`terminal`], D100), `exit`
 //! and `exit_group`, the memory calls `brk`, `mmap` (anonymous), `munmap` and `mprotect`
 //! ([`memory`], D53), `getpid`, `getppid`, `gettid`, `uname`, `set_tid_address` and
 //! `set_robust_list` ([`identity`], D55), `getrandom` ([`random`], D56), and `sched_yield`
@@ -69,6 +70,7 @@ use thread::LinuxThread;
 pub mod number {
     #[cfg(target_arch = "x86_64")]
     mod table {
+        pub const READ: u64 = 0;
         pub const WRITE: u64 = 1;
         pub const FSTAT: u64 = 5;
         pub const POLL: u64 = 7;
@@ -146,6 +148,7 @@ pub mod number {
     mod table {
         pub const IOCTL: u64 = 29;
         pub const LSEEK: u64 = 62;
+        pub const READ: u64 = 63;
         pub const WRITE: u64 = 64;
         pub const WRITEV: u64 = 66;
         pub const PPOLL: u64 = 73;
@@ -217,6 +220,7 @@ pub mod number {
 
     const _: () = {
         let all = [
+            READ,
             WRITE,
             WRITEV,
             EXIT,
@@ -591,8 +595,9 @@ fn memory_call<P: Platform>(
 /// meanwhile is taken in and delivered ([`signals::deliver_sent`]); the others pay nothing
 /// for it. `rt_sigreturn` sets every register itself and returns the restored result
 /// register's value, so writing the result back changes nothing. The calls that wait (for a
-/// signal, for time, on a `futex`) set their result and deliver themselves, since a signal
-/// that interrupts them decides their result.
+/// signal, for time, on a `futex`, for console input) set their result and deliver
+/// themselves, since a signal that interrupts them decides their result; `poll` delivers
+/// after it as `ppoll` does.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Arc<Process<P>>,
@@ -604,10 +609,18 @@ fn out_of_line_call<P: Platform>(
         number::RT_SIGSUSPEND => signals::rt_sigsuspend(process, thread, context),
         #[cfg(target_arch = "x86_64")]
         number::PAUSE => signals::pause(process, thread, context),
+        number::READ => terminal::read::<P>(process, thread, context),
         number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
         },
+        #[cfg(target_arch = "x86_64")]
+        number::POLL => {
+            let [fds, count, timeout, ..] = context.syscall_arguments();
+            let result = poll::poll::<P>(process, thread, fds, count, timeout);
+            context.set_syscall_result(result.unwrap_or_else(Errno::result));
+            signals::deliver(process, thread, context)
+        }
         number::NANOSLEEP => time::nanosleep(process, thread, context),
         number::CLOCK_NANOSLEEP => time::clock_nanosleep(process, thread, context),
         number::FUTEX => futex::futex::<P>(process, thread, context),
@@ -666,8 +679,6 @@ const SIGNALS_AFTER: CallSet = call_set(&[
     number::RT_SIGACTION,
     number::RT_SIGRETURN,
     number::RT_SIGTIMEDWAIT,
-    #[cfg(target_arch = "x86_64")]
-    number::POLL,
     number::SCHED_YIELD,
 ]);
 
@@ -723,8 +734,6 @@ fn out_of_line_result<P: Platform>(
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
-        #[cfg(target_arch = "x86_64")]
-        number::POLL => poll::poll::<P>(process, thread, first, second, third),
         number::IOCTL => terminal::ioctl::<P>(process, first, second, third),
         number::LSEEK => terminal::lseek(first, third),
         number::FSTAT => stat::fstat(process, first, second),
@@ -828,15 +837,18 @@ fn exit<P: Platform>(
     }
 }
 
-/// Ends the process as `how` says ([`Process::exit`]); its other threads waiting on a futex,
-/// if it has any, stop waiting, so they end too. Breaks: the calling thread ends.
+/// Ends the process as `how` says ([`Process::exit`]); the console forgets it as its
+/// foreground; its other threads waiting on a futex or for console input, if it has any, stop
+/// waiting, so they end too. Breaks: the calling thread ends.
 #[cold]
 #[inline(never)]
 pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> ControlFlow<(), C> {
     let others = process.threads() > 1;
     process.exit(how);
+    crate::console::forget_foreground(process.id().get());
     if others {
         futex::wake_space::<P>(process.id().get());
+        crate::console::wake_input_waiters::<P>();
     }
     ControlFlow::Break(())
 }
@@ -1017,11 +1029,26 @@ mod tests {
     use crate::memory;
     use crate::paging::PageTables;
     use crate::tests::{TestPlatform as P, console_output};
-    use crate::thread::host::frames_for_test;
     use eggos_hal::Exception;
     use eggos_hal::paging::Attributes;
 
     const DATA: u64 = 0x50_0000;
+
+    struct FramesForTest {
+        _frames: crate::thread::host::FramesForTest,
+    }
+
+    impl Drop for FramesForTest {
+        fn drop(&mut self) {
+            crate::console::forget_foreground_for_test();
+        }
+    }
+
+    fn frames_for_test() -> FramesForTest {
+        FramesForTest {
+            _frames: crate::thread::host::frames_for_test(),
+        }
+    }
 
     static FIRST_THREADS: std::sync::Mutex<alloc::collections::BTreeMap<u32, LinuxThread>> =
         std::sync::Mutex::new(alloc::collections::BTreeMap::new());
@@ -2185,8 +2212,11 @@ mod tests {
 
     #[test]
     fn ioctl_answers_as_a_serial_console() {
-        use terminal::{TERMIOS, request};
+        use terminal::request;
+        let _input = crate::interrupt::lock_timer_interrupts_for_test();
         let _frames = frames_for_test();
+        crate::console::set_settings::<P>(Termios::SERIAL_CONSOLE, true);
+        let termios = Termios::SERIAL_CONSOLE.to_bytes();
         let kernel = kernel_tables();
         let process = process_with_iovecs(&kernel, b"\x18\x00\x50\x00\x00\x00\x00\x00", &[]);
         let writable = DATA + 4096;
@@ -2205,12 +2235,12 @@ mod tests {
         for fd in [0, 1, 2, 1 << 32 | 1] {
             process.write_user_memory(writable, &[0xff; 64]).unwrap();
             assert_eq!(ioctl(fd, request::TCGETS, writable), 0);
-            assert_eq!(read(36), TERMIOS);
+            assert_eq!(read(36), termios);
             assert_eq!(read(37)[36], 0xff);
         }
         assert_eq!(ioctl(1, request::TCGETS2, writable), 0);
         let settings = read(44);
-        assert_eq!(settings[..36], TERMIOS);
+        assert_eq!(settings[..36], termios);
         assert_eq!(settings[36..40], 115_200u32.to_ne_bytes());
         assert_eq!(settings[40..], 115_200u32.to_ne_bytes());
         assert_eq!(ioctl(0, request::FIONREAD, writable), 0);
@@ -2227,7 +2257,7 @@ mod tests {
         assert_eq!(ioctl(3, 0x5402, writable), Errno::EBADF.result());
         for unknown in [
             0,
-            0x5402,
+            0x5405,
             0x540f,
             0x5421,
             0x5451,
@@ -2260,7 +2290,287 @@ mod tests {
             );
             assert_eq!(ioctl(1, request, 0), Errno::EFAULT.result(), "{request:#x}");
         }
-        assert_eq!(ioctl(1, request::TIOCSWINSZ, 0), Errno::EFAULT.result());
+        for request in [request::TIOCSWINSZ, request::TCSETS, request::TCSETSF2] {
+            assert_eq!(ioctl(1, request, 0), Errno::EFAULT.result(), "{request:#x}");
+        }
+        assert_eq!(crate::console::settings(), Termios::SERIAL_CONSOLE);
+        assert_eq!(process.exit_status(), None);
+    }
+
+    use crate::console::line_discipline::{Termios, index, local};
+
+    struct ConsoleForTest {
+        _frames: FramesForTest,
+        _interrupts: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ConsoleForTest {
+        fn take() -> Self {
+            let interrupts = crate::interrupt::lock_timer_interrupts_for_test();
+            let frames = frames_for_test();
+            crate::console::set_settings::<P>(Termios::SERIAL_CONSOLE, true);
+            console_output();
+            Self {
+                _frames: frames,
+                _interrupts: interrupts,
+            }
+        }
+
+        fn types(&self, input: &[u8]) {
+            crate::tests::CONSOLE_INPUT.lock().unwrap().extend(input);
+            crate::interrupt::handle::<P>(eggos_hal::Interrupt::ConsoleInput);
+        }
+    }
+
+    impl Drop for ConsoleForTest {
+        fn drop(&mut self) {
+            crate::console::set_settings::<P>(Termios::SERIAL_CONSOLE, true);
+        }
+    }
+
+    fn read_bytes(process: &Arc<Process<P>>, address: u64, length: usize) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec![0u8; length];
+        process.read_user_memory(address, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn ioctl_changes_flushes_and_counts_the_console_s_input() {
+        use terminal::request;
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let ioctl = |request: u32, argument| {
+            call(
+                &process,
+                number::IOCTL,
+                [0, u64::from(request), argument, 0, 0, 0],
+            )
+        };
+        let mut raw = Termios::SERIAL_CONSOLE;
+        raw.local &= !(local::ICANON | local::ECHO);
+        raw.control_characters[index::VMIN] = 0;
+        process
+            .write_user_memory(writable, &raw.to_bytes())
+            .unwrap();
+        assert_eq!(ioctl(request::TCSETS, writable), 0);
+        assert_eq!(crate::console::settings(), raw);
+        assert_eq!(ioctl(request::TCGETS, writable + 64), 0);
+        assert_eq!(read_bytes(&process, writable + 64, 36), raw.to_bytes());
+        console.types(b"abc");
+        assert!(console_output().is_empty());
+        assert_eq!(ioctl(request::FIONREAD, writable + 128), 0);
+        assert_eq!(read_bytes(&process, writable + 128, 4), 3i32.to_ne_bytes());
+        assert_eq!(ioctl(request::TCFLSH, 1), 0);
+        assert_eq!(crate::console::pending_input(), 3);
+        assert_eq!(ioctl(request::TCFLSH, 3), Errno::EINVAL.result());
+        assert_eq!(ioctl(request::TCFLSH, 0), 0);
+        assert_eq!(crate::console::pending_input(), 0);
+        console.types(b"def");
+        let canonical = Termios::SERIAL_CONSOLE.to_bytes();
+        process.write_user_memory(writable, &canonical).unwrap();
+        assert_eq!(ioctl(request::TCSETSW2, writable), 0);
+        assert_eq!(ioctl(request::FIONREAD, writable + 128), 0);
+        assert_eq!(read_bytes(&process, writable + 128, 4), 3i32.to_ne_bytes());
+        assert_eq!(ioctl(request::TCSETSF, writable), 0);
+        assert_eq!(crate::console::pending_input(), 0);
+        console.types(b"partial line");
+        assert_eq!(ioctl(request::FIONREAD, writable + 128), 0);
+        assert_eq!(read_bytes(&process, writable + 128, 4), 0i32.to_ne_bytes());
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn read_returns_typed_lines_one_at_a_time_and_end_of_file_as_zero() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let read = |fd, buffer, count| call(&process, number::READ, [fd, buffer, count, 0, 0, 0]);
+        console.types(b"hello\rab\x08c\rwrongx\x7f\x7f\x7f\x7f\x7f\x7fright\r");
+        console.types(b"discard me\x15kept\rpartial\x04\x04last\r");
+        assert_eq!(read(0, writable, 64), 6);
+        assert_eq!(read_bytes(&process, writable, 6), b"hello\n");
+        for (fd, line) in [
+            (1, &b"ac\n"[..]),
+            (2, b"right\n"),
+            (0, b"kept\n"),
+            (0, b"partial"),
+        ] {
+            assert_eq!(read(fd, writable, 64), line.len() as u64);
+            assert_eq!(read_bytes(&process, writable, line.len()), line);
+        }
+        assert_eq!(read(0, writable, 64), 0);
+        assert_eq!(read(0, writable, 0), 0);
+        assert_eq!(read(0, writable, 2), 2);
+        assert_eq!(read_bytes(&process, writable, 2), b"la");
+        assert_eq!(read(0, writable + 4094, 64), 2);
+        assert_eq!(read_bytes(&process, writable + 4094, 2), b"st");
+        console.types(b"\r");
+        assert_eq!(read(3, writable, 64), Errno::EBADF.result());
+        assert_eq!(read(1 << 32 | 3, writable, 64), Errno::EBADF.result());
+        let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
+        assert_eq!(read(0, user_end, 1), Errno::EFAULT.result());
+        assert_eq!(read(0, DATA, 64), Errno::EFAULT.result());
+        assert!(
+            !crate::console::input_ready(),
+            "a failed copy loses the line"
+        );
+        let echo = console_output();
+        assert!(echo.starts_with(b"hello\nab\x08 \x08c\nwrongx"), "{echo:?}");
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn a_non_canonical_read_takes_what_vmin_and_vtime_allow() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        let read = |count| call(&process, number::READ, [0, writable, count, 0, 0, 0]);
+        let mut raw = Termios::SERIAL_CONSOLE;
+        raw.local &= !(local::ICANON | local::ECHO);
+        raw.control_characters[index::VMIN] = 0;
+        crate::console::set_settings::<P>(raw, false);
+        assert_eq!(read(8), 0);
+        console.types(b"xy\x7fz\r");
+        assert_eq!(read(3), 3);
+        assert_eq!(read_bytes(&process, writable, 3), b"xy\x7f");
+        raw.control_characters[index::VMIN] = 2;
+        crate::console::set_settings::<P>(raw, false);
+        assert_eq!(read(8), 2);
+        assert_eq!(read_bytes(&process, writable, 2), b"z\n");
+        raw.control_characters[index::VMIN] = 0;
+        raw.control_characters[index::VTIME] = 1;
+        crate::console::set_settings::<P>(raw, false);
+        assert_eq!(read(8), 0, "VTIME passes with nothing typed");
+        assert!(console_output().is_empty());
+    }
+
+    #[test]
+    fn a_signal_interrupts_a_console_read_restarted_only_with_sa_restart() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let sigusr1 = 10;
+        set_handler(&process, sigusr1, caught_with(0), 0);
+        let mut send = first_thread_and_sender(&process, sigusr1);
+        let buffer = SCRATCH + 0x100;
+        let call_size = if cfg!(target_arch = "x86_64") { 2 } else { 4 };
+        for restart in [0, signals::flag::RESTART] {
+            set_handler(&process, sigusr1, caught_with(restart), 0);
+            send();
+            let arguments = [0, buffer, 64, 0, 0, 0];
+            let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+            context.simulate_syscall(number::READ, arguments, 0x40_0004);
+            assert_eq!(
+                handle_first(&process, &mut context, UserExit::Syscall),
+                ControlFlow::Continue(())
+            );
+            assert_eq!(context.pc(), HANDLER);
+            assert_eq!(
+                handler_returns(&process, &mut context),
+                ControlFlow::Continue(())
+            );
+            if restart != 0 {
+                assert_eq!(context.pc(), 0x40_0004 - call_size);
+                assert_eq!(context.syscall_number(), number::READ);
+                assert_eq!(context.syscall_arguments(), arguments);
+            } else {
+                assert_eq!(context.pc(), 0x40_0004);
+                assert_eq!(context.syscall_result(), Errno::EINTR.result());
+            }
+        }
+        console.types(b"line\r");
+        send();
+        let mut context = UserContext::new(0x40_0000, HANDLER_STACK_TOP - 0x30);
+        context.simulate_syscall(number::READ, [0, buffer, 64, 0, 0, 0], 0x40_0004);
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(
+            context.pc(),
+            HANDLER,
+            "the signal is delivered with the line"
+        );
+        assert_eq!(
+            handler_returns(&process, &mut context),
+            ControlFlow::Continue(())
+        );
+        assert_eq!((context.pc(), context.syscall_result()), (0x40_0004, 5));
+        assert_eq!(read_bytes(&process, buffer, 5), b"line\n");
+        assert_eq!(process.exit_status(), None);
+    }
+
+    #[test]
+    fn an_interrupt_typed_signals_the_process_that_read_the_console() {
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let writable = DATA + 4096;
+        console.types(b"first\r");
+        assert_eq!(call(&process, number::READ, [0, writable, 64, 0, 0, 0]), 6);
+        let reader = crate::console::reader_id(process.id().get(), process.id().get());
+        assert!(crate::console::is_foreground(reader));
+        console.types(b"gone\x03");
+        assert_eq!(console_output(), b"first\ngone^C");
+        let mut context = called(number::READ, [0, writable, 64, 0, 0, 0]);
+        assert_eq!(
+            handle_first(&process, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        assert_eq!(
+            process.exit_status(),
+            Some(ProcessExit::Killed {
+                signal: signal::SIGINT
+            })
+        );
+        assert!(!crate::console::is_foreground(reader));
+    }
+
+    #[test]
+    fn a_process_that_ended_never_stays_the_console_s_foreground() {
+        let _console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let thread = take_first_thread(&process);
+        process.exit(ProcessExit::Exited(0));
+        terminal::become_foreground(&process, &thread);
+        let reader = crate::console::reader_id(process.id().get(), thread.id());
+        assert!(!crate::console::is_foreground(reader));
+        assert_eq!(Arc::strong_count(&process), 1);
+    }
+
+    #[test]
+    fn ppoll_reports_console_input_once_a_line_is_typed() {
+        use poll::event::{IN, OUT, RDNORM};
+        let console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let (fds, timeout) = (DATA + 4096, DATA + 4096 + 64);
+        process.write_user_memory(timeout, &[0; 16]).unwrap();
+        let entries = pollfds(&[(0, IN | RDNORM), (1, OUT | IN)]);
+        let ppoll = || {
+            process.write_user_memory(fds, &entries).unwrap();
+            let ready = call(&process, number::PPOLL, [fds, 2, timeout, 0, 0, 0]);
+            let revents = |entry: u64| {
+                u16::from_ne_bytes(
+                    read_bytes(&process, fds + 8 * entry + 6, 2)
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            (ready, revents(0), revents(1))
+        };
+        assert_eq!(ppoll(), (1, 0, OUT));
+        console.types(b"not yet");
+        assert_eq!(ppoll(), (1, 0, OUT));
+        console.types(b"\r");
+        assert_eq!(ppoll(), (2, IN | RDNORM, OUT | IN));
+        let reader = crate::console::reader_id(process.id().get(), process.id().get());
+        assert!(crate::console::is_foreground(reader));
         assert_eq!(process.exit_status(), None);
     }
 

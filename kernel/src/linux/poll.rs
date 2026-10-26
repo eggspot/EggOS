@@ -4,16 +4,20 @@
 //! and `poll` with no descriptors is a common way to sleep.
 //!
 //! The only descriptors so far are the console's, 0 to 2 (`is_console`): always
-//! writable, as the console takes every byte at once, and never readable, as there is no
-//! console input yet (M8). Every other descriptor is closed (`POLLNVAL`). So nothing becomes
-//! ready during a wait: a call that finds nothing ready sleeps until its timeout, or for good
-//! without one, as Linux does when no signal comes, unless `ppoll`'s signal mask lets a
-//! pending signal interrupt it first (D71). Waking a poller early comes with the first
-//! descriptor whose readiness changes (console input, pipes).
+//! writable, as the console takes every byte at once, and readable when a read would take
+//! input without waiting for more (D100, superseding D61's "never readable"): a whole line in
+//! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
+//! descriptor is closed (`POLLNVAL`). A call that finds nothing ready waits until its timeout,
+//! or for good without one, unless `ppoll`'s signal mask lets a pending signal interrupt it
+//! first (D71); one that asks for the console's input is woken when it becomes readable, and
+//! its thread becomes the console's foreground ([`terminal::become_foreground`]).
 
+use super::terminal::{self, Waited};
 use super::thread::{self, LinuxThread};
 use super::{Errno, ends_in_user_space, is_console, limits, signals};
+use crate::console;
 use crate::process::Process;
+use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
@@ -67,15 +71,31 @@ const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
 /// The events descriptor `fd` (an `int`) reports when `requested` are asked for: none for a
 /// negative one, which the program uses to skip an entry; `POLLNVAL` for one that is not open;
-/// for the console's, room to write when asked for.
-fn events(fd: i32, requested: u16) -> u16 {
+/// for the console's, room to write and, if it is `readable`, data to read, when asked for.
+fn events(fd: i32, requested: u16, readable: bool) -> u16 {
     if fd < 0 {
         0
     } else if !is_console(fd as u64) {
         event::NVAL
+    } else if readable {
+        requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
     } else {
         requested & (event::OUT | event::WRNORM)
     }
+}
+
+const INPUT_EVENTS: u16 = event::IN | event::RDNORM;
+
+fn fill_in_events(entries: &mut [[u8; POLLFD_SIZE]], readable: bool) -> u64 {
+    let mut ready = 0;
+    for entry in entries {
+        let fd = i32::from_ne_bytes(entry[..4].try_into().unwrap());
+        let requested = u16::from_ne_bytes(entry[4..6].try_into().unwrap());
+        let returned = events(fd, requested, readable);
+        entry[6..].copy_from_slice(&returned.to_ne_bytes());
+        ready += u64::from(returned != 0);
+    }
+    ready
 }
 
 /// When a wait ends, in clock ticks ([`Platform::clock_ticks`]); `u64::MAX` for never.
@@ -104,7 +124,7 @@ pub fn deadline_in<P: Platform>(nanoseconds: u64) -> Option<Deadline> {
 /// `ppoll`, which their C libraries' `poll` calls.
 #[cfg(target_arch = "x86_64")]
 pub fn poll<P: Platform>(
-    process: &Process<P>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     fds: u64,
     count: u64,
@@ -123,30 +143,29 @@ pub fn poll<P: Platform>(
 }
 
 /// `ppoll(fds, nfds, timeout, sigmask, sigsetsize)`, with the program's registers `context`:
-/// reports, in each `struct pollfd` of the `nfds` at `fds`, the events its descriptor has of
-/// those asked for (see `events`), and returns how many report any. If none does, it first
-/// waits for one until the `struct timespec` at `timeout` has passed, for good if that is
-/// null, not at all if it is zero. With a `sigmask`, the signals in that set are blocked
-/// instead of the thread's during the call (D71). If none reports events and a signal is due,
-/// before or during the wait (another thread sent it, D95), the call delivers it and, once a
-/// handler starts, fails with `EINTR`, the handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
-/// action ignores is taken and the call goes on, as Linux restarts it, unless the time left
-/// could not be written back (below): then it fails with `EINTR`, as Linux's does, since it
-/// cannot restart with the time left. Otherwise the thread's mask is back when it returns, and
-/// a signal the call's mask unblocked stays pending. A timeout that is not zero gets the time
-/// not slept written back once the signal mask passed its checks, whatever the result: zero
-/// after a wait that ended with it, about all of it when something was ready at once (D62);
-/// one too long to count in nanoseconds is written back as it was. Linux's system call does
-/// that (its C libraries hide it), and ignores a timeout the program cannot write, as here,
-/// but for that `EINTR`. As Linux, in this order: `EFAULT` if `timeout` is not the
-/// program's memory; `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999;
-/// with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the mask is not the
-/// program's memory; `EINVAL` for more descriptors than the open-file limit (`RLIMIT_NOFILE`'s
-/// soft limit); `EFAULT` if the array is not the program's writable memory; `ENOMEM` if there
-/// is no memory to copy it. `nfds` is an `unsigned int`: the register's upper half is ignored.
-/// Sets the call's result; breaks when a signal ends the process.
+/// reports, in each `struct pollfd` of the `nfds` at `fds`, the events its descriptor has of those
+/// asked for (see `events`), and returns how many report any. If none does, it first waits for one
+/// until the `struct timespec` at `timeout` has passed, for good if that is null, not at all if it
+/// is zero. With a `sigmask`, the signals in that set are blocked instead of the thread's during
+/// the call (D71). If none reports events and a signal is due, before or during the wait (another
+/// thread sent it, D95), the call delivers it and, once a handler starts, fails with `EINTR`, the
+/// handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its action
+/// ignores is taken and the call goes on, as Linux restarts it, unless the time left could not be
+/// written back (below): then it fails with `EINTR`, as Linux's does, since it cannot restart with
+/// the time left. Otherwise the thread's mask is back when it returns, and a signal the call's mask
+/// unblocked stays pending. A timeout that is not zero gets the time not slept written back once
+/// the signal mask passed its checks, whatever the result: zero after a wait that ended with it,
+/// about all of it when something was ready at once (D62); one too long to count in nanoseconds is
+/// written back as it was. Linux's system call does that (its C libraries hide it), and ignores a
+/// timeout the program cannot write, as here, but for that `EINTR`. As Linux, in this order:
+/// `EFAULT` if `timeout` is not the program's memory; `EINVAL` for negative seconds or nanoseconds
+/// outside 0 to 999999999; with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the
+/// mask is not the program's memory; `EINVAL` for more descriptors than the open-file limit
+/// (`RLIMIT_NOFILE`'s soft limit); `EFAULT` if the array is not the program's writable memory;
+/// `ENOMEM` if there is no memory to copy it. `nfds` is an `unsigned int`: the register's upper
+/// half is ignored. Sets the call's result; breaks when a signal ends the process.
 pub fn ppoll<P: Platform>(
-    process: &Process<P>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
@@ -307,7 +326,7 @@ fn parse_timeout(bytes: [u8; TIMESPEC_SIZE]) -> Result<Option<u64>, Errno> {
 /// another thread sent, or one the call's mask unblocked) interrupts it, as on Linux even
 /// with no deadline.
 fn poll_fds<P: Platform>(
-    process: &Process<P>,
+    process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     fds: u64,
     count: u64,
@@ -341,25 +360,22 @@ fn poll_fds<P: Platform>(
     process
         .read_user_memory(fds, array)
         .map_err(|_| Errno::EFAULT)?;
-    let mut ready = 0;
-    for entry in array.as_chunks_mut::<POLLFD_SIZE>().0 {
+    let entries = array.as_chunks_mut::<POLLFD_SIZE>().0;
+    let watches_input = entries.iter().any(|entry| {
         let fd = i32::from_ne_bytes(entry[..4].try_into().unwrap());
         let requested = u16::from_ne_bytes(entry[4..6].try_into().unwrap());
-        let returned = events(fd, requested);
-        entry[6..].copy_from_slice(&returned.to_ne_bytes());
-        ready += u64::from(returned != 0);
+        fd >= 0 && is_console(fd as u64) && requested & INPUT_EVENTS != 0
+    });
+    if watches_input {
+        terminal::become_foreground(process, thread);
     }
+    let mut ready = fill_in_events(entries, watches_input && console::input_ready());
     let mut interrupted = ready == 0 && signals::is_due(thread);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
-        while P::clock_ticks() < deadline {
-            if thread::sleep_until::<P>(process, thread, deadline).is_break() {
-                break;
-            }
-            if signals::is_due(thread) {
-                interrupted = true;
-                break;
-            }
-        }
+        (interrupted, ready) = match watches_input {
+            true => wait_for_input::<P>(process, thread, entries, deadline),
+            false => (sleep::<P>(process, thread, deadline), 0),
+        };
     }
     process
         .write_user_memory(fds, array)
@@ -371,30 +387,70 @@ fn poll_fds<P: Platform>(
     })
 }
 
+fn sleep<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, deadline: Deadline) -> bool {
+    while P::clock_ticks() < deadline {
+        if thread::sleep_until::<P>(process, thread, deadline).is_break() {
+            return false;
+        }
+        if signals::is_due(thread) {
+            return true;
+        }
+    }
+    false
+}
+
+fn wait_for_input<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    entries: &mut [[u8; POLLFD_SIZE]],
+    deadline: Deadline,
+) -> (bool, u64) {
+    loop {
+        match terminal::wait_for_input::<P>(process, thread, deadline, console::input_ready) {
+            ControlFlow::Break(()) | ControlFlow::Continue(Waited::TimedOut) => return (false, 0),
+            ControlFlow::Continue(Waited::Signalled) => return (true, 0),
+            ControlFlow::Continue(Waited::Ready) => {
+                let ready = fill_in_events(entries, true);
+                if ready > 0 {
+                    return (false, ready);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn negative_descriptors_are_skipped() {
-        assert_eq!(events(-1, u16::MAX), 0);
-        assert_eq!(events(i32::MIN, u16::MAX), 0);
+        assert_eq!(events(-1, u16::MAX, true), 0);
+        assert_eq!(events(i32::MIN, u16::MAX, false), 0);
     }
 
     #[test]
     fn closed_descriptors_report_pollnval_whatever_was_asked() {
-        assert_eq!(events(3, 0), event::NVAL);
-        assert_eq!(events(i32::MAX, event::IN), event::NVAL);
+        assert_eq!(events(3, 0, true), event::NVAL);
+        assert_eq!(events(i32::MAX, event::IN, true), event::NVAL);
     }
 
     #[test]
-    fn the_console_has_room_to_write_when_asked_and_never_data_to_read() {
+    fn the_console_has_room_to_write_when_asked_and_data_to_read_only_when_readable() {
         let all = u16::MAX;
         for fd in 0..=2 {
-            assert_eq!(events(fd, 0), 0);
-            assert_eq!(events(fd, event::IN | event::RDNORM | event::PRI), 0);
-            assert_eq!(events(fd, event::OUT), event::OUT);
-            assert_eq!(events(fd, all), event::OUT | event::WRNORM);
+            assert_eq!(events(fd, 0, true), 0);
+            assert_eq!(events(fd, event::IN | event::RDNORM | event::PRI, false), 0);
+            assert_eq!(
+                events(fd, event::IN | event::RDNORM | event::PRI, true),
+                event::IN | event::RDNORM
+            );
+            assert_eq!(events(fd, event::OUT, true), event::OUT);
+            assert_eq!(events(fd, all, false), event::OUT | event::WRNORM);
+            assert_eq!(
+                events(fd, all, true),
+                event::OUT | event::WRNORM | event::IN | event::RDNORM
+            );
         }
     }
 }

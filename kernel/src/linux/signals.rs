@@ -702,9 +702,14 @@ impl Signals {
     /// [`Self::send_to_thread`] says, but a real-time signal sent with `kill` (a `si_code` of
     /// 0 or more) is queued past the limit, as on Linux. What waits stays bounded: a standard
     /// signal already waiting is not left again, and, as POSIX requires, `SIGCONT` removes
-    /// the stop signals waiting and a stop signal a `SIGCONT` waiting.
+    /// the stop signals waiting and a stop signal a `SIGCONT` waiting. A process with one
+    /// thread that never changed an action gets its block of signal state first ([`QueueFull`]
+    /// without memory for it).
     pub fn send_to_process(&mut self, info: Info, queue_limit: u64) -> Result<(), QueueFull> {
         let signal = info.signal();
+        if self.actions_and_queue.is_none() {
+            self.actions_and_queue = Some(actions_and_queue_block().ok_or(QueueFull)?);
+        }
         let [block] = &mut **self.actions_and_queue.as_mut().ok_or(QueueFull)?;
         block
             .sent_to_threads
@@ -1599,6 +1604,36 @@ fn send_to_process<P: Platform>(
     }
     Ok(0)
 }
+
+/// Sends `signal`, typed on the console, to `process`, its foreground's (D100), for the first
+/// of its threads that takes it in without blocking it, with Linux's `siginfo_t` for a signal
+/// from the kernel (`SI_KERNEL`): the wait of `reader`, the thread that made it the
+/// foreground, is ended, and those of the threads the process's signal state records, so a
+/// waiting thread looks; a running one is interrupted. Nothing for a process that has ended,
+/// nor without memory to record the signal. Called from the console's interrupt.
+pub fn send_from_terminal<P: Platform>(process: &Process<P>, reader: &WaitSlot, signal: u32) {
+    if process.has_ended() {
+        return;
+    }
+    {
+        let mut signals = process.signals().lock();
+        if signals
+            .send_to_process(Info::from_kernel(signal), u64::MAX)
+            .is_err()
+        {
+            return;
+        }
+        process.set_sent_signals_waiting(true);
+    }
+    process.record_signal_sent();
+    super::futex::interrupt::<P>(reader);
+    let signals = process.signals().lock();
+    for slot in signals.wait_slots_but(NO_THREAD, process.id().get()) {
+        super::futex::interrupt::<P>(slot);
+    }
+}
+
+const NO_THREAD: u32 = 0;
 
 /// The process's id as a `pid_t`, which it fits: a [`crate::process::ProcessId`] is at most
 /// `i32::MAX`.

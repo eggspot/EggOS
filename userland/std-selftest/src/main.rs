@@ -6,7 +6,10 @@
 //! and exits with 0; otherwise it names each check that failed and exits with 1. Given
 //! [`EXIT_FROM_A_THREAD`] as its only argument, it instead ends from a thread while its other
 //! threads wait ([`exit_from_a_thread`]). Given [`UNMAP_UNDER_A_WRITING_THREAD`], it unmaps a
-//! page another thread is writing on another CPU ([`unmap_under_a_writing_thread`]).
+//! page another thread is writing on another CPU ([`unmap_under_a_writing_thread`]). Given
+//! [`console::READ_THE_CONSOLE`], it reads the console ([`console::read_the_console`]).
+
+mod console;
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -128,6 +131,7 @@ fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some(EXIT_FROM_A_THREAD) => exit_from_a_thread(),
         Some(UNMAP_UNDER_A_WRITING_THREAD) => unmap_under_a_writing_thread(),
+        Some(console::READ_THE_CONSOLE) => console::read_the_console(),
         _ => {}
     }
     let mut output = std::io::stdout().lock();

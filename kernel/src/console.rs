@@ -1,106 +1,234 @@
-//! The kernel's view of the early boot console: output, and the bytes it receives, which its
-//! interrupt queues for readers.
+//! The kernel's view of the early boot console: output, and the input its interrupt receives,
+//! which goes through the console's line discipline ([`line_discipline`], D100) to readers.
+//! Readers wait on [`INPUT_KEY`]; the signal characters reach the console's [`Foreground`].
 
-use crate::sync::LeafSpinLock;
+pub mod line_discipline;
+
+use crate::linux::futex;
+use crate::sync::{LeafSpinLock, SpinLock};
+use alloc::sync::Arc;
 use core::fmt;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_hal::Platform;
+use line_discipline::{LineDiscipline, Received, Taken, Termios};
 
-/// The line the kernel writes once received bytes reach [`read_input`], so a host feeding the
-/// console knows from then on nothing it sends is lost. Must match the QEMU runner's.
+/// The line the kernel writes once received bytes reach the line discipline, so a host feeding
+/// the console knows from then on nothing it sends is lost. Must match the QEMU runner's.
 pub const INPUT_READY_LINE: &str = "EGGOS-CONSOLE: input ready";
 
-/// Received bytes the queue holds before it drops new ones.
-pub const INPUT_CAPACITY: usize = 1024;
+/// The futex key threads waiting for console input wait on: in no process's address space
+/// (process ids start at 1), so no program's futex names it. Woken whenever input becomes
+/// readable, a signal character is typed or the settings change.
+pub const INPUT_KEY: futex::Key = futex::Key::new(0, 0, false);
 
-/// Bytes received and not read yet, oldest first.
-#[derive(Debug)]
-pub struct InputQueue {
-    bytes: [u8; INPUT_CAPACITY],
-    start: usize,
-    len: usize,
-    dropped: u64,
-}
+static LINE_DISCIPLINE: LeafSpinLock<LineDiscipline> =
+    LeafSpinLock::new_leaf(LineDiscipline::new());
 
-impl InputQueue {
-    pub const fn new() -> Self {
-        Self {
-            bytes: [0; INPUT_CAPACITY],
-            start: 0,
-            len: 0,
-            dropped: 0,
-        }
-    }
-
-    /// Appends `received`; what does not fit is dropped and counted.
-    pub fn push(&mut self, received: &[u8]) {
-        let fits = received.len().min(INPUT_CAPACITY - self.len);
-        for &byte in &received[..fits] {
-            self.bytes[(self.start + self.len) % INPUT_CAPACITY] = byte;
-            self.len += 1;
-        }
-        self.dropped += (received.len() - fits) as u64;
-    }
-
-    /// Moves the oldest bytes into `buffer`, as many as fit; returns how many.
-    pub fn pop(&mut self, buffer: &mut [u8]) -> usize {
-        let taken = buffer.len().min(self.len);
-        for slot in &mut buffer[..taken] {
-            *slot = self.bytes[self.start];
-            self.start = (self.start + 1) % INPUT_CAPACITY;
-        }
-        self.len -= taken;
-        taken
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Received bytes dropped because the queue was full.
-    pub fn dropped(&self) -> u64 {
-        self.dropped
-    }
-}
-
-impl Default for InputQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-static INPUT: LeafSpinLock<InputQueue> = LeafSpinLock::new_leaf(InputQueue::new());
-
-/// Has the console's received bytes interrupt the boot CPU and queue for [`read_input`].
-/// Called once, on the boot CPU, once the kernel's page tables are active.
+/// Gives the console a Linux serial console's settings ([`Termios::SERIAL_CONSOLE`]) and has
+/// its received bytes interrupt the boot CPU and reach the line discipline. Called once, on
+/// the boot CPU, once the kernel's page tables are active.
 pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
+    LINE_DISCIPLINE
+        .lock()
+        .set_settings(Termios::SERIAL_CONSOLE, true);
     P::enable_console_input()
 }
 
-/// Queues every byte the console's UART holds; called for [`eggos_hal::Interrupt::ConsoleInput`].
-/// Out of line, so the timer's and the wake-up's way through the interrupt handler keep their
-/// length.
+/// Passes every byte the console's UART holds through the line discipline, a chunk at a time,
+/// echoing each chunk as the discipline says once its lock is released (but for an echo too
+/// long to hold, such as a long line killed), then sends the signals typed to the
+/// [`Foreground`] and wakes the threads waiting for input; called for
+/// [`eggos_hal::Interrupt::ConsoleInput`]. Out of line, so the timer's and the wake-up's way
+/// through the interrupt handler keep their length.
 #[cold]
 #[inline(never)]
 pub fn receive_input<P: Platform>() {
-    let mut chunk = [0u8; 64];
-    let mut input = INPUT.lock();
+    let mut chunk = [0u8; INPUT_CHUNK];
+    let mut received = Received::default();
     loop {
-        let received = P::console_read(&mut chunk);
-        if received == 0 {
+        let mut echo = EchoBuffer::<P>::new();
+        let length = {
+            let mut discipline = LINE_DISCIPLINE.lock();
+            let length = P::console_read(&mut chunk);
+            received |= discipline.receive(&chunk[..length], &mut |bytes| echo.push(bytes));
+            length
+        };
+        echo.write();
+        if length == 0 {
             break;
         }
-        input.push(&chunk[..received]);
+    }
+    if received.interrupt {
+        signal_foreground(TerminalSignal::Interrupt);
+    }
+    if received.quit {
+        signal_foreground(TerminalSignal::Quit);
+    }
+    if received.readable || received.interrupt || received.quit {
+        wake_input_waiters::<P>();
     }
 }
 
-/// Moves the oldest received bytes into `buffer`, as many as are queued and fit; never waits.
+const INPUT_CHUNK: usize = 64;
+
+const ECHO_BUFFER: usize = 4 * INPUT_CHUNK;
+
+struct EchoBuffer<P: Platform> {
+    bytes: [u8; ECHO_BUFFER],
+    length: usize,
+    platform: PhantomData<P>,
+}
+
+impl<P: Platform> EchoBuffer<P> {
+    fn new() -> Self {
+        Self {
+            bytes: [0; ECHO_BUFFER],
+            length: 0,
+            platform: PhantomData,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if self.length + bytes.len() > ECHO_BUFFER {
+            self.write();
+        }
+        if bytes.len() > ECHO_BUFFER {
+            P::console_write(bytes);
+            return;
+        }
+        self.bytes[self.length..self.length + bytes.len()].copy_from_slice(bytes);
+        self.length += bytes.len();
+    }
+
+    fn write(&mut self) {
+        P::console_write(&self.bytes[..self.length]);
+        self.length = 0;
+    }
+}
+
+/// Wakes every thread waiting on [`INPUT_KEY`], which looks again.
+pub fn wake_input_waiters<P: Platform>() {
+    futex::wake::<P>(INPUT_KEY, u32::MAX, u32::MAX);
+}
+
+/// Moves unread input into `buffer`, as [`LineDiscipline::take`] says; never waits.
+pub fn take_input(buffer: &mut [u8]) -> Taken {
+    LINE_DISCIPLINE.lock().take(buffer)
+}
+
+/// Moves unread input into `buffer` and returns how many bytes it moved; never waits.
 pub fn read_input(buffer: &mut [u8]) -> usize {
-    INPUT.lock().pop(buffer)
+    take_input(buffer).length
+}
+
+/// Whether a read would find input ([`LineDiscipline::is_readable`]).
+pub fn input_ready() -> bool {
+    LINE_DISCIPLINE.lock().is_readable()
+}
+
+/// The unread bytes a non-canonical read can take.
+pub fn available_input() -> usize {
+    LINE_DISCIPLINE.lock().available()
+}
+
+/// The bytes a read can take without waiting ([`LineDiscipline::pending`]).
+pub fn pending_input() -> usize {
+    LINE_DISCIPLINE.lock().pending()
+}
+
+/// The console's settings.
+pub fn settings() -> Termios {
+    LINE_DISCIPLINE.lock().settings()
+}
+
+/// Changes the console's settings, discarding its input first if `flush`
+/// ([`LineDiscipline::set_settings`]), and wakes the threads waiting for input.
+pub fn set_settings<P: Platform>(settings: Termios, flush: bool) {
+    LINE_DISCIPLINE.lock().set_settings(settings, flush);
+    wake_input_waiters::<P>();
+}
+
+/// Discards the console's unread input and the line being edited.
+pub fn flush_input() {
+    LINE_DISCIPLINE.lock().flush();
+}
+
+/// A signal the console's input raises for its [`Foreground`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSignal {
+    /// `VINTR`, `^C`: `SIGINT`.
+    Interrupt,
+    /// `VQUIT`, `^\`: `SIGQUIT`.
+    Quit,
+}
+
+/// What the console's signal characters reach: for now the program that last read the
+/// console or waited for its input (D100), until process groups and `TIOCSPGRP` name a
+/// foreground process group (D99, item 7).
+pub trait Foreground: Send + Sync {
+    /// Sends `signal`. Called from the console's interrupt, with the foreground's lock held.
+    fn send(&self, signal: TerminalSignal);
+}
+
+static FOREGROUND: SpinLock<Option<Arc<dyn Foreground>>> = SpinLock::new(None);
+
+static FOREGROUND_READER: AtomicU64 = AtomicU64::new(NO_READER);
+
+const NO_READER: u64 = 0;
+
+/// The id of thread `thread` of process `process` as a [`Foreground`]: never 0, as process ids
+/// start at 1.
+pub fn reader_id(process: u32, thread: u32) -> u64 {
+    u64::from(process) << 32 | u64::from(thread)
+}
+
+/// Whether reader `reader` ([`reader_id`]) is the console's foreground.
+pub fn is_foreground(reader: u64) -> bool {
+    FOREGROUND_READER.load(Ordering::Relaxed) == reader
+}
+
+/// Makes `foreground`, reader `reader` ([`reader_id`]), the console's foreground.
+pub fn set_foreground(reader: u64, foreground: Arc<dyn Foreground>) {
+    let previous = {
+        let mut current = FOREGROUND.lock();
+        FOREGROUND_READER.store(reader, Ordering::Relaxed);
+        current.replace(foreground)
+    };
+    drop(previous);
+}
+
+/// Forgets the foreground if it is one of process `process`'s threads: called as the process
+/// ends, so the console holds no reference to it.
+pub fn forget_foreground(process: u32) {
+    if (FOREGROUND_READER.load(Ordering::Relaxed) >> 32) as u32 != process {
+        return;
+    }
+    let previous = {
+        let mut current = FOREGROUND.lock();
+        if (FOREGROUND_READER.load(Ordering::Relaxed) >> 32) as u32 != process {
+            return;
+        }
+        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
+        current.take()
+    };
+    drop(previous);
+}
+
+#[cfg(test)]
+pub(crate) fn forget_foreground_for_test() {
+    let previous = {
+        let mut current = FOREGROUND.lock();
+        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
+        current.take()
+    };
+    drop(previous);
+}
+
+fn signal_foreground(signal: TerminalSignal) {
+    if let Some(foreground) = FOREGROUND.lock().as_ref() {
+        foreground.send(signal);
+    }
 }
 
 /// A [`fmt::Write`] sink that forwards to the platform's early boot console.
@@ -272,48 +400,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_input_queue_hands_out_bytes_in_order_across_its_end() {
-        let mut queue = InputQueue::new();
-        let mut buffer = [0u8; INPUT_CAPACITY];
-        queue.push(&[1; INPUT_CAPACITY - 3]);
-        assert_eq!(
-            queue.pop(&mut buffer[..INPUT_CAPACITY - 4]),
-            INPUT_CAPACITY - 4
-        );
-        queue.push(b"abcdef");
-        assert_eq!(queue.len(), 7);
-        assert_eq!(queue.pop(&mut buffer), 7);
-        assert_eq!(&buffer[..7], b"\x01abcdef");
-        assert!(queue.is_empty());
-        assert_eq!(queue.pop(&mut buffer), 0);
+    struct ConsoleForTest {
+        _interrupts: std::sync::MutexGuard<'static, ()>,
+        _kernel: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ConsoleForTest {
+        fn take() -> Self {
+            let interrupts = crate::interrupt::lock_timer_interrupts_for_test();
+            let kernel = crate::thread::host::lock_kernel_state_for_test();
+            LINE_DISCIPLINE
+                .lock()
+                .set_settings(Termios::SERIAL_CONSOLE, true);
+            crate::tests::console_output();
+            Self {
+                _interrupts: interrupts,
+                _kernel: kernel,
+            }
+        }
+
+        fn types(&self, input: &[u8]) {
+            use crate::tests::{CONSOLE_INPUT, TestPlatform};
+            CONSOLE_INPUT.lock().unwrap().extend(input);
+            crate::interrupt::handle::<TestPlatform>(eggos_hal::Interrupt::ConsoleInput);
+            assert!(CONSOLE_INPUT.lock().unwrap().is_empty());
+        }
+    }
+
+    impl Drop for ConsoleForTest {
+        fn drop(&mut self) {
+            flush_input();
+        }
     }
 
     #[test]
-    fn a_full_input_queue_drops_and_counts_what_does_not_fit() {
-        let mut queue = InputQueue::new();
-        queue.push(&[7; INPUT_CAPACITY - 1]);
-        queue.push(b"xyz");
-        assert_eq!(queue.len(), INPUT_CAPACITY);
-        assert_eq!(queue.dropped(), 2);
-        let mut buffer = [0u8; INPUT_CAPACITY + 1];
-        assert_eq!(queue.pop(&mut buffer), INPUT_CAPACITY);
-        assert_eq!(buffer[INPUT_CAPACITY - 1], b'x');
-    }
-
-    #[test]
-    fn the_console_input_interrupt_queues_everything_the_uart_holds() {
-        use crate::tests::{CONSOLE_INPUT, TestPlatform};
-        let _boot_test = crate::interrupt::lock_timer_interrupts_for_test();
-        let received: Vec<u8> = (0..200u8).collect();
-        CONSOLE_INPUT.lock().unwrap().extend(&received);
-        crate::interrupt::handle::<TestPlatform>(eggos_hal::Interrupt::ConsoleInput);
-        assert!(CONSOLE_INPUT.lock().unwrap().is_empty());
-        let mut buffer = [0u8; 256];
-        assert_eq!(read_input(&mut buffer[..150]), 150);
-        assert_eq!(read_input(&mut buffer[150..]), 50);
-        assert_eq!(&buffer[..200], &received[..]);
+    fn the_console_input_interrupt_edits_echoes_and_hands_out_lines() {
+        let console = ConsoleForTest::take();
+        console.types(b"hi\x7fey\r");
+        assert_eq!(crate::tests::console_output(), b"hi\x08 \x08ey\n");
+        assert!(input_ready());
+        assert_eq!(pending_input(), 4);
+        let mut buffer = [0u8; 16];
+        assert_eq!(read_input(&mut buffer), 4);
+        assert_eq!(&buffer[..4], b"hey\n");
         assert_eq!(read_input(&mut buffer), 0);
+        assert!(!input_ready());
+    }
+
+    #[test]
+    fn a_long_burst_of_input_is_taken_whole_in_one_interrupt() {
+        let console = ConsoleForTest::take();
+        let burst: Vec<u8> = (0..300).map(|i| b'a' + (i % 26) as u8).collect();
+        console.types(&burst);
+        console.types(b"\n");
+        let mut buffer = [0u8; 400];
+        assert_eq!(read_input(&mut buffer), 301);
+        assert_eq!(&buffer[..300], &burst[..]);
+    }
+
+    #[test]
+    fn echo_longer_than_its_buffer_reaches_the_console_whole_and_in_order() {
+        let console = ConsoleForTest::take();
+        let line: Vec<u8> = (0..300).map(|i| b'a' + (i % 26) as u8).collect();
+        console.types(&[&line[..], b"\x15ok\r"].concat());
+        let rub_out = b"\x08 \x08".repeat(line.len());
+        let expected = [&line[..], &rub_out, b"ok\n"].concat();
+        assert_eq!(crate::tests::console_output(), expected);
+        let mut buffer = [0u8; 8];
+        assert_eq!(read_input(&mut buffer), 3);
+    }
+
+    static SIGNALS_SENT: std::sync::Mutex<Vec<TerminalSignal>> = std::sync::Mutex::new(Vec::new());
+
+    #[derive(Debug)]
+    struct RecordingForeground;
+
+    impl Foreground for RecordingForeground {
+        fn send(&self, signal: TerminalSignal) {
+            SIGNALS_SENT.lock().unwrap().push(signal);
+        }
+    }
+
+    #[test]
+    fn signal_characters_reach_the_foreground_until_its_process_ends() {
+        let console = ConsoleForTest::take();
+        let (process, thread) = (u32::MAX, 7);
+        let reader = reader_id(process, thread);
+        assert!(!is_foreground(reader));
+        set_foreground(reader, Arc::new(RecordingForeground));
+        assert!(is_foreground(reader));
+        console.types(b"x\x03y\x1c");
+        assert_eq!(
+            core::mem::take(&mut *SIGNALS_SENT.lock().unwrap()),
+            [TerminalSignal::Interrupt, TerminalSignal::Quit]
+        );
+        assert_eq!(crate::tests::console_output(), b"x^Cy^\\");
+        forget_foreground(process - 1);
+        assert!(is_foreground(reader));
+        forget_foreground(process);
+        assert!(!is_foreground(reader));
+        console.types(b"\x03");
+        assert!(SIGNALS_SENT.lock().unwrap().is_empty());
     }
 
     #[test]
