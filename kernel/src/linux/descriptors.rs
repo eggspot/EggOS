@@ -606,7 +606,7 @@ pub fn close_range(
 /// if so. `FIOCLEX` and `FIONCLEX` set and clear descriptor `fd`'s close-on-exec flag; `FIONBIO`
 /// sets `O_NONBLOCK` on `file`, what `fd` names, if the `int` at `argument` is not 0 and clears
 /// it otherwise, `EFAULT` if that is not the program's memory.
-pub fn common_ioctl<P: Platform>(
+pub fn descriptor_ioctl<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,
     file: &OpenFile,

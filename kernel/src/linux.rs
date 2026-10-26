@@ -1016,7 +1016,7 @@ fn read<P: Platform>(
 }
 
 /// `ioctl(fd, request, argument)`: `EBADF` if descriptor `fd` is not open; then the requests
-/// every descriptor answers ([`descriptors::common_ioctl`]), then those of what it names, the
+/// every descriptor answers ([`descriptors::descriptor_ioctl`]), then those of what it names, the
 /// console's ([`terminal::ioctl`]). `fd` and `request` are 32-bit.
 fn ioctl<P: Platform>(
     process: &Process<P>,
@@ -1026,7 +1026,9 @@ fn ioctl<P: Platform>(
     argument: u64,
 ) -> Result<u64, Errno> {
     let file = files.file(fd)?;
-    if let Some(result) = descriptors::common_ioctl(process, files, &file, fd, request, argument) {
+    if let Some(result) =
+        descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
+    {
         return result;
     }
     match file.kind() {
