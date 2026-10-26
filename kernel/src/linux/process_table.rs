@@ -64,7 +64,7 @@ pub enum Selector {
 
 /// Which children a wait looks at by the signal their end sends (`__WCLONE`, `__WALL`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+pub enum ChildKind {
     /// Those whose end sends `SIGCHLD`.
     Sigchld,
     /// The "clone" children: those whose end sends another signal or none (`__WCLONE`).
@@ -141,9 +141,21 @@ impl Table {
     }
 
     fn index(&self, id: u32) -> Option<usize> {
-        self.entries
-            .binary_search_by_key(&id, |entry| entry.id)
-            .ok()
+        match self.entries.last() {
+            Some(last) if last.id == id => Some(self.entries.len() - 1),
+            Some(last) if last.id < id => None,
+            _ => self
+                .entries
+                .binary_search_by_key(&id, |entry| entry.id)
+                .ok(),
+        }
+    }
+
+    fn insertion_point(&self, id: u32) -> Result<usize, usize> {
+        match self.entries.last() {
+            Some(last) if last.id < id => Err(self.entries.len()),
+            _ => self.entries.binary_search_by_key(&id, |entry| entry.id),
+        }
     }
 
     fn entry(&self, id: u32) -> Option<&Entry> {
@@ -159,10 +171,11 @@ impl Table {
     /// whether `SIGCHLD` is ignored, its end sending no signal until [`Self::set_exit_signal`].
     /// `Err` without memory for it.
     pub fn add(&mut self, id: u32, parent: Option<u32>) -> Result<(), Errno> {
-        let Err(at) = self.entries.binary_search_by_key(&id, |entry| entry.id) else {
+        let Err(at) = self.insertion_point(id) else {
             return Err(Errno::EAGAIN);
         };
-        let inherited = parent.and_then(|parent| self.entry(parent));
+        let parent_index = parent.and_then(|parent| self.index(parent));
+        let inherited = parent_index.map(|index| &self.entries[index]);
         let entry = Entry {
             id,
             parent: inherited.map_or(0, |parent| parent.id),
@@ -177,11 +190,11 @@ impl Table {
             executed: false,
             running: None,
         };
-        let parent = entry.parent;
         self.entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         self.entries.insert(at, entry);
-        if let Some(parent) = self.entry_mut(parent) {
-            parent.children += 1;
+        if let Some(index) = parent_index {
+            let index = if index >= at { index + 1 } else { index };
+            self.entries[index].children += 1;
         }
         Ok(())
     }
@@ -279,24 +292,14 @@ impl Table {
         }
     }
 
-    fn notice_for(&self, parent: u32, child: &Entry, exit: ProcessExit) -> Notice {
-        Notice {
-            parent,
-            running: self.entry(parent).and_then(|entry| entry.running.clone()),
-            signal: child.exit_signal,
-            child: child.id,
-            uid: child.uid,
-            exit,
-        }
+    fn reaps_at_end(&self, parent: u32, exit_signal: u8) -> bool {
+        Self::reaped_by(self.entry(parent), exit_signal)
     }
 
-    fn reaps_at_end(&self, parent: u32, exit_signal: u8) -> bool {
-        parent == 0
-            || !self.is_alive(parent)
-            || (exit_signal == SIGCHLD
-                && self
-                    .entry(parent)
-                    .is_some_and(|entry| entry.no_zombie_children))
+    fn reaped_by(parent: Option<&Entry>, exit_signal: u8) -> bool {
+        parent.is_none_or(|parent| {
+            parent.exit.is_some() || (exit_signal == SIGCHLD && parent.no_zombie_children)
+        })
     }
 
     /// Records that process `id`, whose real user id is `uid`, ended as `exit`: it becomes a
@@ -315,16 +318,31 @@ impl Table {
         self.entries[index].exit = Some(exit);
         self.entries[index].uid = uid;
         self.entries[index].running = None;
-        ended.to_new_parent = self.hand_over_children(id);
-        let Some(index) = self.index(id) else {
-            return ended;
-        };
-        let entry = &self.entries[index];
-        let (parent, session) = (entry.parent, entry.session);
-        if parent != 0 {
-            ended.to_parent = Some(self.notice_for(parent, entry, exit));
+        let mut index = index;
+        if self.entries[index].children > 0 {
+            ended.to_new_parent = self.hand_over_children(id);
+            let Some(moved) = self.index(id) else {
+                return ended;
+            };
+            index = moved;
         }
-        if self.reaps_at_end(parent, entry.exit_signal) {
+        let entry = &self.entries[index];
+        let (parent, session, exit_signal) = (entry.parent, entry.session, entry.exit_signal);
+        let parent_entry = match parent {
+            0 => None,
+            parent => self.entry(parent),
+        };
+        if let Some(parent_entry) = parent_entry {
+            ended.to_parent = Some(Notice {
+                parent,
+                running: parent_entry.running.clone(),
+                signal: exit_signal,
+                child: id,
+                uid,
+                exit,
+            });
+        }
+        if Self::reaped_by(parent_entry, exit_signal) {
             self.remove_at(index);
         }
         if session == id && self.console.session == id {
@@ -393,7 +411,13 @@ impl Table {
     /// The wait of process `parent` for one of its children that `selector` and `kind` name:
     /// the first of them that has ended, removed from the table unless `look_only`
     /// (`WNOWAIT`); otherwise whether any of them is running.
-    pub fn wait(&mut self, parent: u32, selector: Selector, kind: Kind, look_only: bool) -> Found {
+    pub fn wait(
+        &mut self,
+        parent: u32,
+        selector: Selector,
+        kind: ChildKind,
+        look_only: bool,
+    ) -> Found {
         let matches = |entry: &Entry| {
             entry.parent == parent
                 && match selector {
@@ -402,9 +426,9 @@ impl Table {
                     Selector::Any => true,
                 }
                 && match kind {
-                    Kind::Sigchld => entry.exit_signal == SIGCHLD,
-                    Kind::Clone => entry.exit_signal != SIGCHLD,
-                    Kind::All => true,
+                    ChildKind::Sigchld => entry.exit_signal == SIGCHLD,
+                    ChildKind::Clone => entry.exit_signal != SIGCHLD,
+                    ChildKind::All => true,
                 }
         };
         if self.entry(parent).is_none_or(|entry| entry.children == 0) {
@@ -622,7 +646,7 @@ mod tests {
     fn a_child_ends_as_a_zombie_until_its_parent_reaps_it_once() {
         let mut table = table_with(&[(10, None), (11, Some(10)), (12, Some(10))]);
         assert_eq!(
-            table.wait(10, Selector::Any, Kind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
             Found::Running
         );
         let ended = table.end(11, EXITED, 0);
@@ -632,7 +656,7 @@ mod tests {
             (10, SIGCHLD, 11)
         );
         assert_eq!(
-            table.wait(10, Selector::Process(11), Kind::Sigchld, true),
+            table.wait(10, Selector::Process(11), ChildKind::Sigchld, true),
             Found::Ended {
                 id: 11,
                 uid: 0,
@@ -640,7 +664,7 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(10, Selector::Any, Kind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
             Found::Ended {
                 id: 11,
                 uid: 0,
@@ -648,16 +672,16 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(10, Selector::Process(11), Kind::Sigchld, false),
+            table.wait(10, Selector::Process(11), ChildKind::Sigchld, false),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(10, Selector::Any, Kind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
             Found::Running
         );
         assert_eq!(table.end(12, EXITED, 0).to_parent.unwrap().child, 12);
         assert!(matches!(
-            table.wait(10, Selector::Any, Kind::Sigchld, false),
+            table.wait(10, Selector::Any, ChildKind::Sigchld, false),
             Found::Ended { id: 12, .. }
         ));
         assert_eq!(table.in_session(10), 1);
@@ -672,7 +696,7 @@ mod tests {
             table.end(id, ProcessExit::Exited(id), 0);
         }
         assert_eq!(
-            table.wait(20, Selector::Group(22), Kind::Sigchld, false),
+            table.wait(20, Selector::Group(22), ChildKind::Sigchld, false),
             Found::Ended {
                 id: 22,
                 uid: 0,
@@ -680,11 +704,11 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(20, Selector::Group(22), Kind::Sigchld, false),
+            table.wait(20, Selector::Group(22), ChildKind::Sigchld, false),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(20, Selector::Any, Kind::Clone, false),
+            table.wait(20, Selector::Any, ChildKind::Clone, false),
             Found::Ended {
                 id: 23,
                 uid: 0,
@@ -692,11 +716,11 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(20, Selector::Any, Kind::Clone, false),
+            table.wait(20, Selector::Any, ChildKind::Clone, false),
             Found::NoChild
         );
         assert_eq!(
-            table.wait(20, Selector::Group(20), Kind::All, false),
+            table.wait(20, Selector::Group(20), ChildKind::All, false),
             Found::Ended {
                 id: 21,
                 uid: 0,
@@ -704,7 +728,7 @@ mod tests {
             }
         );
         assert_eq!(
-            table.wait(21, Selector::Any, Kind::All, false),
+            table.wait(21, Selector::Any, ChildKind::All, false),
             Found::NoChild
         );
     }
@@ -722,14 +746,14 @@ mod tests {
         table.set_exit_signal(41, SIGCHLD);
         assert!(table.end(41, EXITED, 0).to_parent.is_some());
         assert_eq!(
-            table.wait(40, Selector::Any, Kind::All, false),
+            table.wait(40, Selector::Any, ChildKind::All, false),
             Found::NoChild
         );
         table.add(42, Some(40)).unwrap();
         table.set_exit_signal(42, 10);
         table.end(42, EXITED, 0);
         assert!(matches!(
-            table.wait(40, Selector::Any, Kind::All, false),
+            table.wait(40, Selector::Any, ChildKind::All, false),
             Found::Ended { id: 42, .. }
         ));
     }
@@ -755,7 +779,7 @@ mod tests {
             (50, 54, SIGCHLD)
         );
         assert!(matches!(
-            table.wait(50, Selector::Any, Kind::Sigchld, false),
+            table.wait(50, Selector::Any, ChildKind::Sigchld, false),
             Found::Ended { id: 54, .. }
         ));
         let mut table = table_with(&[(60, None), (61, None), (62, Some(61)), (63, Some(62))]);

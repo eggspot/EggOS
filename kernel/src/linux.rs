@@ -34,7 +34,9 @@
 //! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
 //! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75), and signals
 //! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
-//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103). Every
+//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103), and
+//! children waited for with `wait4` and `waitid` ([`wait`], D105) and process groups,
+//! sessions and the console's foreground group ([`job_control`], D105). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -1051,6 +1053,7 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     if others {
         futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
+        wait::wake_child_waiters::<P>(process.id().get());
     }
     ControlFlow::Break(())
 }
@@ -6033,11 +6036,11 @@ mod tests {
     }
 
     fn has_children(process: &Process<P>) -> bool {
-        use process_table::{Found, Kind, Selector};
+        use process_table::{ChildKind, Found, Selector};
         let id = process.id().get();
         process_table::TABLE
             .lock()
-            .wait(id, Selector::Any, Kind::All, true)
+            .wait(id, Selector::Any, ChildKind::All, true)
             != Found::NoChild
     }
 
@@ -6082,6 +6085,34 @@ mod tests {
         );
         assert!(!has_children(&parent));
         let _ = child_id;
+    }
+
+    #[test]
+    fn a_wait_for_a_running_child_ends_as_another_thread_ends_the_process() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        crate::thread::start::<P>().unwrap();
+        let (parent, _) = process_with_stacks(&kernel);
+        register_running(&parent);
+        let (_child, _thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        parent.add_thread();
+        static WAIT_ENDED: std::sync::Mutex<Option<ControlFlow<()>>> = std::sync::Mutex::new(None);
+        let waiter = crate::thread::spawn::<P, _>({
+            let parent = Arc::clone(&parent);
+            move || {
+                let mut context = called(number::WAIT4, [u64::MAX, 0, 0, 0, 0, 0]);
+                let flow = handle_first(&parent, &mut context, UserExit::Syscall);
+                *WAIT_ENDED.lock().unwrap() = Some(flow);
+            }
+        })
+        .unwrap();
+        for _ in 0..4 {
+            crate::thread::yield_now::<P>();
+        }
+        assert_eq!(*WAIT_ENDED.lock().unwrap(), None);
+        let _ = end_process::<P, ()>(&parent, ProcessExit::Exited(0));
+        waiter.join::<P>();
+        assert_eq!(*WAIT_ENDED.lock().unwrap(), Some(ControlFlow::Break(())));
     }
 
     #[test]

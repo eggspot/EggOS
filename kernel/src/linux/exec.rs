@@ -691,6 +691,7 @@ fn start<P: Platform>(
     if process.threads() > 1 {
         futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
+        super::wait::wake_child_waiters::<P>(id);
     }
     let robust_list = thread.robust_list();
     if robust_list != 0 {

@@ -283,7 +283,7 @@ impl<P: Platform> PidRecord<P> {
 
 impl<P: Platform> Drop for PidRecord<P> {
     fn drop(&mut self) {
-        if !self.in_table {
+        if !self.in_table || self.exit.is_some() {
             return;
         }
         let notice = process_table::TABLE.lock().remove_unended(self.id.get());
@@ -429,7 +429,7 @@ impl<P: Platform> Process<P> {
 
     /// A child of this process (`fork`, `clone` without `CLONE_THREAD`): a new id, this
     /// process as its parent in the process table, in its process group and session (its end
-    /// sending no signal until [`Self::set_exit_signal`]), a record of its own, the memory
+    /// sending no signal until `clone` sets one), a record of its own, the memory
     /// `memory` says, a copy of the
     /// credentials and resource limits and of the signal actions (nothing queued), and no
     /// threads yet. This process is untouched, so the caller can drop the child if starting it

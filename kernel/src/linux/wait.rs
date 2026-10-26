@@ -10,7 +10,7 @@
 //! reported as zeros.
 
 use super::futex::{self, Key};
-use super::process_table::{self, Found, Kind, Notice, Selector, TABLE};
+use super::process_table::{self, ChildKind, Found, Notice, Selector, TABLE};
 use super::signals::{self, Info, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
 use super::{Errno, credentials};
@@ -96,6 +96,12 @@ pub fn process_ended<P: Platform>(process: &Process<P>, how: ProcessExit) {
     }
 }
 
+/// Wakes the threads of process `id` that wait for its children, which look again: for its
+/// end or its `execve`, which its other threads do not outlive.
+pub fn wake_child_waiters<P: Platform>(id: u32) {
+    futex::wake::<P>(child_wait_key(id), u32::MAX, u32::MAX);
+}
+
 /// Wakes `notice`'s parent from its waits for its children and sends it the notice's signal,
 /// if any.
 pub fn notify<P: Platform>(notice: Notice) {
@@ -155,7 +161,7 @@ pub fn record_running<P: Platform>(
 
 struct Request {
     selector: Selector,
-    kind: Kind,
+    kind: ChildKind,
     no_hang: bool,
     look_only: bool,
     exits: bool,
@@ -178,13 +184,13 @@ fn own_group(caller: u32) -> u32 {
         .map_or(caller, |(group, _)| group)
 }
 
-fn kind(options: u32) -> Kind {
+fn kind(options: u32) -> ChildKind {
     if options & option::WALL != 0 {
-        Kind::All
+        ChildKind::All
     } else if options & option::WCLONE != 0 {
-        Kind::Clone
+        ChildKind::Clone
     } else {
-        Kind::Sigchld
+        ChildKind::Sigchld
     }
 }
 
@@ -437,8 +443,8 @@ mod tests {
         assert_eq!(selector_for_wait4(5, 9), Ok(Selector::Process(9)));
         assert_eq!(selector_for_wait4(5, -9), Ok(Selector::Group(9)));
         assert_eq!(selector_for_wait4(5, i32::MIN), Err(Errno::ESRCH));
-        assert_eq!(kind(option::WCLONE), Kind::Clone);
-        assert_eq!(kind(option::WALL | option::WCLONE), Kind::All);
-        assert_eq!(kind(option::WNOHANG), Kind::Sigchld);
+        assert_eq!(kind(option::WCLONE), ChildKind::Clone);
+        assert_eq!(kind(option::WALL | option::WCLONE), ChildKind::All);
+        assert_eq!(kind(option::WNOHANG), ChildKind::Sigchld);
     }
 }
