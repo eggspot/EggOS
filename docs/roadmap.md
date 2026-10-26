@@ -56,8 +56,11 @@ Must-have, in order:
     reports the time to the first prompt (D108, docs/coreutils.md). Follow-ups: `ls` in
     columns on a terminal and with user names, more utilities (`mkdir`, `rm`, `cp` once there
     is a writable file system), `poweroff` through init.
-11. UI design (Claude Fable, D16) for the boot screen, the terminal and a minimal desktop in
-    `docs/ux/`, then a virtio-gpu 2D driver on all three.
+11. **design done** (D109) — UI design (Claude Fable, D16) for the boot screen, the terminal
+    and a minimal desktop is in `docs/ux/desktop-v0.3.md` (with `terminal-v0.3.md` and the
+    font `font-8x16.txt`), including the rendering plan and the acceptance criteria for items
+    11-14; next, the virtio transport and a virtio-gpu 2D driver on all three, with the boot
+    screen and the first-frame hashes.
 12. virtio-input keyboard and mouse feeding the line discipline and an input event queue.
 13. Graphical terminal: our own font rendering and the ANSI subset on the framebuffer.
 14. Minimal desktop: wallpaper, top bar, the terminal in a window; a first-frame QEMU test.

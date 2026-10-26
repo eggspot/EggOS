@@ -5424,3 +5424,59 @@ the license, by an explicit instruction recorded here.
   time zones; more utilities as the system grows (`mkdir`, `rm`, `cp`, `mv` with a writable
   file system, `ps` and `kill` with `/proc` and signals to other processes, `date` with an RTC);
   `poweroff` through init; a benchmark of boot to prompt (item 15); `-e` for `echo`.
+
+## D109 The v0.3.0 desktop design, by Claude Fable — Decided (design by Fable, D16; placement and test strategy decided by research)
+
+- **What.** Item 11 of the v0.3.0 plan (D99), first half: the design of the first graphical
+  experience (pre-alpha, QEMU only), in `docs/ux/desktop-v0.3.md`, `docs/ux/terminal-v0.3.md`
+  and the font `docs/ux/font-8x16.txt`, with the rendering plan and the acceptance criteria
+  for items 11 to 14. Implementation follows the design; a change that departs from it
+  updates the design first (D16).
+- **Identity.** An egg: one procedural shape (two half-ellipses on a shared equator at
+  0.58·H, width 0.72·H, per-row edges from an integer square root) used for the boot logo,
+  the wallpaper's silhouette with a yolk disc, and the top bar's mark. Dark palette, warm
+  yolk accent `#F2B33D`, every colour an exact sRGB value, every text/background pair that
+  is drawn ≥ 4.5:1 (computed figures in the brief), the one exception being ANSI 0 on the
+  terminal background, identical by design.
+- **Everything drawn by our code.** No image assets, no third-party font: Egg Mono 8x16 is an
+  original bitmap font (95 printable ASCII glyphs as pixel art in the repo, box drawing and
+  blocks authored from stated rules), licensed MIT OR Apache-2.0 like the code; 2x HiDPI is
+  pixel doubling. Rounded corners are inset tables, shadows three shift operations on the
+  packed pixel, gradients and shapes per-row tables: no alpha blending, no anti-aliasing, no
+  wallpaper buffer, nothing drawn while nothing changes.
+- **Terminal.** 80x24 cells of 8x16, a 256-line scrollback in fixed arrays, the ANSI subset
+  the shell, the core utilities and a nano-like editor need (cursor movement, erase, scroll
+  regions, SGR 16 colours, alternate screen, DSR), xterm's key encoding on a US map, keys
+  entering the console's line discipline (D100) as UART bytes do, so the serial console and
+  the graphical terminal show the same session. Selection and mouse reporting wait.
+- **Desktop.** A 28 px top bar (system item, task chips for minimised windows, clock or
+  uptime until there is an RTC, power button with Power off / Restart, the GUI front-end of
+  `poweroff`/`reboot`, D22), one window with left-side controls (close disabled in 0.3.0,
+  minimise), drag, focus on click, maximise by double-click; layouts computed at runtime from
+  screen size and scale, with phone and TV rules named but not built (D23). The window
+  actions and a screenshot have only their GUI front-end in 0.3.0; their CLI commands and
+  MCP tools come with the MCP server, like power's (a D22 gap of this release, in the
+  limitations doc).
+- **D18.** The desktop and the terminal are compiled into the kernel for 0.3.0 and cost
+  nothing without a display (no buffer, no drawing, no tick); a build-time or boot-time
+  option to leave them out, and their move to an optional component, is a recorded exception
+  to D18 until M11.
+- **Placement (decided by research).** In 0.3.0 the terminal emulator and the desktop run in
+  the kernel next to the console's line discipline, in a pure `no_std` drawing crate over
+  `&mut [u32]` that host tests share byte for byte with the kernel; the virtio transport,
+  virtio-gpu and virtio-input go behind the driver model. There is no shared memory or IPC
+  for a userland compositor yet; that is M11's move. Options weighed: a userland terminal over
+  a `/dev/fb`-like mapping (needs `mmap` of device memory and an input device file, neither
+  exists), waiting for the compositor (misses the release).
+- **Tests (decided by research).** Deterministic rendering with a boot parameter
+  (`eggos.ui=test`: fixed clock text, no blink), FNV-1a 64 hashes of named rects computed by
+  the host test and printed by the guest, compared by xtask; QMP over a localhost TCP socket
+  for `input-send-event` and `screendump`, which also gives `cargo xtask screenshot`. Options
+  weighed: screenshots only (host-dependent pixels, no CI verdict), hashes only (no way to
+  look at it).
+- **Cost.** The display buffer (4 MB at 1280x800) is the one large allocation and exists only
+  with a display; the font is 1.5 KiB for ASCII, about 2 KiB with the box-drawing and block
+  extras; budgets: full redraw ≤ 8 ms, echo to flush ≤ 1 ms,
+  first frame ≤ 100 ms, desktop ≤ 300 ms on the Mac's TCG, measured by the tests.
+- **Not in 0.3.0.** Selection and copy/paste, several windows, edge resize, the per-profile
+  control side, a dock, launcher, settings, touch, anti-aliasing, a second font size.
