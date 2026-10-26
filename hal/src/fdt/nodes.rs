@@ -294,24 +294,33 @@ enum Property {
     DmaNoncoherent,
 }
 
-const PROPERTIES: [(&[u8], Property); 13] = [
-    (b"compatible", Property::Compatible),
-    (b"reg", Property::Reg),
-    (b"interrupts", Property::Interrupts),
-    (b"interrupts-extended", Property::InterruptsExtended),
-    (b"interrupt-parent", Property::InterruptParent),
-    (b"phandle", Property::Phandle),
-    (b"linux,phandle", Property::Phandle),
-    (b"#interrupt-cells", Property::InterruptCells),
-    (b"#address-cells", Property::AddressCells),
-    (b"#size-cells", Property::SizeCells),
-    (b"status", Property::Status),
-    (b"dma-coherent", Property::DmaCoherent),
-    (b"dma-noncoherent", Property::DmaNoncoherent),
-];
+fn property(name: &[u8]) -> Option<Property> {
+    use Property::*;
+    let candidates: &[(&[u8], Property)] = match name.len() {
+        3 => &[(b"reg", Reg)],
+        6 => &[(b"status", Status)],
+        7 => &[(b"phandle", Phandle)],
+        10 => &[(b"compatible", Compatible), (b"interrupts", Interrupts)],
+        11 => &[(b"#size-cells", SizeCells)],
+        12 => &[(b"dma-coherent", DmaCoherent)],
+        13 => &[(b"linux,phandle", Phandle)],
+        14 => &[(b"#address-cells", AddressCells)],
+        15 => &[(b"dma-noncoherent", DmaNoncoherent)],
+        16 => &[
+            (b"interrupt-parent", InterruptParent),
+            (b"#interrupt-cells", InterruptCells),
+        ],
+        19 => &[(b"interrupts-extended", InterruptsExtended)],
+        _ => return None,
+    };
+    candidates
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|&(_, property)| property)
+}
 
 fn apply<'a>(node: &mut Node<'a>, own: &mut Level, name: &[u8], value: &'a [u8]) {
-    let Some(&(_, property)) = PROPERTIES.iter().find(|(known, _)| *known == name) else {
+    let Some(property) = property(name) else {
         return;
     };
     let cell = be32(value, 0);

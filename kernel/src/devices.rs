@@ -28,6 +28,7 @@ pub mod window;
 
 use crate::memory::Memory;
 use crate::sync::LeafSpinLock;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_drivers::pci::{self, ConfigSpace};
@@ -341,7 +342,7 @@ impl Deadline {
     }
 }
 
-static DEVICES: LeafSpinLock<Option<DeviceTable>> = LeafSpinLock::new_leaf(None);
+static DEVICES: LeafSpinLock<Option<Box<DeviceTable>>> = LeafSpinLock::new_leaf(None);
 
 /// What discovery and probing did at boot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -387,7 +388,7 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     if let Some(table) = devices.as_ref() {
         return summarize(table, report);
     }
-    let table = devices.insert(DeviceTable::new());
+    let table = devices.insert(Box::new(DeviceTable::new()));
     if let Some(blob) = P::device_tree()
         && let Err(error) = fdt_bus::discover(blob, table, P::DEVICE_TREE_DMA_COHERENT_BY_DEFAULT)
     {
