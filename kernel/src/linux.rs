@@ -34,7 +34,8 @@
 //! refused on it ([`terminal`], D74), and the process's user and group ids with `getuid`,
 //! `setuid`, `setresuid`, `setgroups` and their kin ([`credentials`], D75), and signals
 //! between a process's threads with `tkill`, `tgkill` and `rt_tgsigqueueinfo` ([`signals`],
-//! D95). Every other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
+//! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103). Every
+//! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
