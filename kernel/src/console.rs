@@ -1,5 +1,6 @@
-//! The kernel's view of the early boot console: output, and the input its interrupt receives,
-//! which goes through the console's line discipline ([`line_discipline`], D100) to readers.
+//! The kernel's view of the early boot console: output, and the input its interrupt receives
+//! or a keyboard types ([`receive_from_keyboard`], D113), which goes through the console's line
+//! discipline ([`line_discipline`], D100) to readers.
 //! Readers wait on [`INPUT_KEY`]; the signal characters reach the console's foreground process
 //! group ([`crate::linux::job_control`], D105).
 

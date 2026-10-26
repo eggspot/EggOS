@@ -141,9 +141,10 @@ impl<T: Transport, M: DmaMemory> VirtioInput<T, M> {
                 break;
             };
             taken += 1;
-            let Some(&buffer) = self.buffer_of_head.get(usize::from(used.head)) else {
+            if used.head >= self.queue.size() {
                 continue;
-            };
+            }
+            let buffer = self.buffer_of_head[usize::from(used.head)];
             if used.len as usize >= EVENT_BYTES {
                 event(self.read_event(buffer));
             }
@@ -244,10 +245,10 @@ fn select<T: Transport + ?Sized>(transport: &T, select: u8, subselect: u8) -> us
 
 fn bitmap<T: Transport + ?Sized>(
     transport: &T,
-    which: u8,
+    selector: u8,
     event_type: u8,
 ) -> [u8; config::DATA_BYTES] {
-    let size = select(transport, which, event_type);
+    let size = select(transport, selector, event_type);
     let mut bits = [0; config::DATA_BYTES];
     for (index, byte) in bits[..size].iter_mut().enumerate() {
         *byte = transport.read_config8(config::DATA_OFFSET + index);

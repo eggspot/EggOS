@@ -213,12 +213,6 @@ fn expected_input_events(width: u32, height: u32) -> [InputEvent; 7] {
     ]
 }
 
-/// The virtio keyboard, tablet and mouse are the kernel's input devices, and what the QEMU
-/// runner sends them through QMP once [`INPUT_EVENTS_LINE`] is written arrives in the input
-/// event queue, in order: the tablet's position scaled to the display, a left click, the
-/// mouse's motion from there, a wheel notch up, and Shift pressed and released (keys with no
-/// bytes, so the console's input is left alone). The benchmark kernels, which no runner
-/// answers, check the devices only.
 pub(crate) fn input_devices_deliver_events<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {

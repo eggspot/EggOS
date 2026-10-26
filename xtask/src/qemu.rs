@@ -152,24 +152,49 @@ const UNAME_LINE: &[u8] = b"uname -a\r";
 
 const SHIFTED_KEYS_LINE: &[u8] = b"echo EGGOS-KEYBOARD Typed_On+Virtio:OK\r";
 
-/// The session lines the boot to the prompt types on the virtio keyboard through QMP (D113)
-/// rather than on the serial console, when the machine has one.
 const KEYBOARD_LINES: [&[u8]; 2] = [UNAME_LINE, SHIFTED_KEYS_LINE];
 
-/// How long the runner waits between the keys it types through QMP, so the device's event
-/// queue (64 events, about 3 to 5 per key) never fills between two of the kernel's polls.
 const KEY_PAUSE: Duration = Duration::from_millis(10);
 
-/// The line the input self-test writes for the runner's pointer and key events. Must match
-/// `eggos_kernel::devices::selftest::INPUT_EVENTS_LINE`.
+const KEYS_BEFORE_ECHO: usize = 8;
+
+#[derive(Debug)]
+struct KeyboardTyping {
+    text: Vec<u8>,
+    typed: usize,
+    echo_from: usize,
+}
+
+impl KeyboardTyping {
+    fn new(text: &[u8], echo_from: usize) -> Self {
+        Self {
+            text: text.to_vec(),
+            typed: 0,
+            echo_from,
+        }
+    }
+
+    fn next_keys(&mut self, console: &[u8]) -> Option<String> {
+        let echoed = console.get(self.echo_from..).unwrap_or_default();
+        if self.is_done() || !echoed.starts_with(&self.text[..self.typed]) {
+            return None;
+        }
+        let end = (self.typed + KEYS_BEFORE_ECHO).min(self.text.len());
+        let keys = String::from_utf8_lossy(&self.text[self.typed..end]).into_owned();
+        self.typed = end;
+        Some(keys)
+    }
+
+    fn is_done(&self) -> bool {
+        self.typed == self.text.len()
+    }
+}
+
 const INPUT_EVENTS_LINE: &str = "EGGOS-INPUT: send pointer and key events";
 
-/// The tablet position and the mouse motion the runner sends. Must match the self-test's.
 const TABLET_POSITION: (i32, i32) = (8192, 24576);
 const MOUSE_MOTION: (i32, i32) = (7, -5);
 
-/// How long the runner waits between the reports it sends to different input devices, so the
-/// kernel sees them in order.
 const DEVICE_PAUSE: Duration = Duration::from_millis(100);
 
 const BOOT_INPUT_LINE: &str = "boot: input keyboard pointer";
@@ -384,6 +409,7 @@ pub fn boot_test(
     let mut first_frame = None;
     let mut input_events_sent = 0;
     let mut qmp_errors = Vec::new();
+    let mut keyboard_typing: Option<KeyboardTyping> = None;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -409,22 +435,27 @@ pub fn boot_test(
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
         };
         for script in scripts {
-            if let Some(port) = qmp_port.filter(|_| KEYBOARD_LINES.contains(&script)) {
-                let text = String::from_utf8_lossy(script);
-                match Qmp::connect(port).and_then(|mut qmp| qmp.type_text(&text, KEY_PAUSE)) {
-                    Ok(()) => eprintln!(
-                        "xtask: {}: typed `{}` on the virtio keyboard",
-                        arch.name,
-                        text.trim_end()
-                    ),
-                    Err(e) => {
-                        qmp_errors.push(format!("{}: could not type through QMP: {e}", arch.name))
-                    }
-                }
+            if qmp_port.is_some() && KEYBOARD_LINES.contains(&script) {
+                keyboard_typing = Some(KeyboardTyping::new(script, console.len()));
                 continue;
             }
             if let Err(e) = keyboard.write_all(script).and_then(|()| keyboard.flush()) {
                 eprintln!("xtask: {}: could not type on the console: {e}", arch.name);
+            }
+        }
+        if let (Some(port), Some(typing)) = (qmp_port, keyboard_typing.as_mut())
+            && let Some(keys) = typing.next_keys(&console)
+        {
+            if let Err(e) = Qmp::connect(port).and_then(|mut qmp| qmp.type_text(&keys, KEY_PAUSE)) {
+                qmp_errors.push(format!("{}: could not type through QMP: {e}", arch.name));
+            }
+            if typing.is_done() {
+                eprintln!(
+                    "xtask: {}: typed `{}` on the virtio keyboard",
+                    arch.name,
+                    String::from_utf8_lossy(&typing.text).trim_end()
+                );
+                keyboard_typing = None;
             }
         }
         if let Some(port) = qmp_port {
@@ -483,8 +514,6 @@ fn count_lines(console: &str, wanted: &str) -> usize {
         .count()
 }
 
-/// The reports the input self-test waits for, each to one device: the tablet's position, a
-/// left click, the mouse's motion, a wheel notch up, and Shift pressed and released.
 fn input_self_test_reports() -> [Vec<InputEvent>; 5] {
     let button = |button, down| InputEvent::Button { button, down };
     let shift = |down| InputEvent::Key {
@@ -1096,6 +1125,23 @@ mod tests {
                 assert!(qmp::typing(character).is_ok(), "{character:?}");
             }
         }
+    }
+
+    #[test]
+    fn keyboard_lines_are_typed_a_few_keys_at_a_time_each_after_the_last_one_s_echo() {
+        let mut console = b"eggsh:/# ".to_vec();
+        let mut typing = KeyboardTyping::new(b"echo EGGOS-KEYBOARD\r", console.len());
+        assert_eq!(typing.next_keys(&console).as_deref(), Some("echo EGG"));
+        assert_eq!(typing.next_keys(&console), None);
+        console.extend(b"echo EG");
+        assert_eq!(typing.next_keys(&console), None);
+        console.extend(b"G");
+        assert_eq!(typing.next_keys(&console).as_deref(), Some("OS-KEYBO"));
+        console.extend(b"OS-KEYBO");
+        assert_eq!(typing.next_keys(&console).as_deref(), Some("ARD\r"));
+        assert!(typing.is_done());
+        console.extend(b"ARD\r\n");
+        assert_eq!(typing.next_keys(&console), None);
     }
 
     #[test]

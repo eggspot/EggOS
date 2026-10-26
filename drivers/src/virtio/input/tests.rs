@@ -379,3 +379,21 @@ fn a_reset_hands_the_memory_back_once_the_status_reads_0() {
     assert_eq!(transport.status.get(), 0);
     assert_eq!(memory.len(), 4096);
 }
+
+#[test]
+fn a_used_head_outside_the_queue_is_skipped_and_nothing_is_posted_twice() {
+    let mut input = input(FakeInput {
+        max_queue_size: 8,
+        ..FakeInput::keyboard()
+    });
+    assert_eq!(input.transport().available(), 8);
+    {
+        let fake = input.transport();
+        let mut device = fake.device.borrow_mut();
+        device.as_mut().unwrap().put_used(40, EVENT_BYTES as u32);
+    }
+    let mut events = Vec::new();
+    assert_eq!(input.poll(16, &mut |event| events.push(event)), 1);
+    assert!(events.is_empty());
+    assert_eq!(input.transport().available(), 0);
+}

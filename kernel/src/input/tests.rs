@@ -546,7 +546,9 @@ fn an_installed_keyboard_s_keys_reach_the_console_and_the_event_queue() {
     assert!(summary().keyboards >= 1);
     while next_event().is_some() {}
     let dropped = dropped_events();
-    assert!(poll::<TestPlatform>().is_some());
+    for _ in 0..2 {
+        assert!(poll::<TestPlatform>().is_some());
+    }
     let mut buffer = [0u8; 64];
     let read = console::read_input(&mut buffer);
     let mut expected = b"hi".to_vec();
@@ -562,4 +564,48 @@ fn an_installed_keyboard_s_keys_reach_the_console_and_the_event_queue() {
     );
     assert_eq!(queued[0], key_event(35, true, Modifiers::NONE));
     console::flush_input();
+}
+
+struct NeverDry {
+    polls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl InputDevice for NeverDry {
+    fn capabilities(&self) -> Capabilities {
+        Device::mouse().capabilities
+    }
+
+    fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        for _ in 0..budget {
+            event(SYN);
+        }
+        budget
+    }
+}
+
+#[test]
+fn a_device_that_never_runs_dry_cannot_keep_the_poller_awake() {
+    let devices = LeafSpinLock::new_leaf(Some(Box::new(Input {
+        sources: [const { None }; MAX_DEVICES],
+        state: InputState::new(),
+    })));
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    if let Some(input) = devices.lock().as_mut() {
+        input.sources[0] = Some(Source {
+            device: Box::new(NeverDry {
+                polls: Arc::clone(&polls),
+            }),
+            capabilities: Device::mouse().capabilities,
+            report: PendingReport::default(),
+        });
+    }
+    let next = poll_devices::<TestPlatform>(&devices, None, SCREEN, timing(1000));
+    assert_eq!(next, Some(1000 + ACTIVE_POLL_MS * 1000));
+    assert_eq!(polls.load(Ordering::Relaxed), MAX_POLL_ROUNDS);
+    let empty = LeafSpinLock::new_leaf(None);
+    assert_eq!(
+        poll_devices::<TestPlatform>(&empty, None, SCREEN, timing(0)),
+        None
+    );
 }

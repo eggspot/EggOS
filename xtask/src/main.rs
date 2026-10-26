@@ -272,7 +272,6 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// `args` without every `flag`, and whether there was one.
 fn without_flag(args: &[String], flag: &str) -> (Vec<String>, bool) {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();
     let found = rest.len() != args.len();

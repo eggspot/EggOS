@@ -38,6 +38,10 @@ pub const IDLE_POLL_MS: u64 = 32;
 /// How long after the last event polling stays at [`ACTIVE_POLL_MS`].
 pub const ACTIVE_WINDOW_MS: u64 = 1000;
 
+/// How many rounds one [`poll`] runs at most, so a device that never runs dry cannot keep the
+/// poller from sleeping: 128 events from each device.
+pub const MAX_POLL_ROUNDS: usize = 8;
+
 const POLL_BUDGET_BYTES: usize = 128;
 
 /// What a driver lends the kernel: an input device it polls.
@@ -264,6 +268,7 @@ pub struct PendingReport {
     y: Option<i32>,
     presses: u8,
     releases: u8,
+    pending: bool,
 }
 
 struct Source {
@@ -278,7 +283,6 @@ struct Source {
 pub struct InputState {
     keyboard: Keyboard,
     repeat: KeyRepeat,
-    cursor_keys: CursorKeys,
     pointer: (u32, u32),
     buttons_held: u8,
     last_event: u64,
@@ -327,7 +331,6 @@ impl InputState {
         Self {
             keyboard: Keyboard::new(),
             repeat: KeyRepeat::new(),
-            cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
             buttons_held: 0,
             last_event: 0,
@@ -349,8 +352,6 @@ impl InputState {
         self.repeat.next()
     }
 
-    /// Translates a key or button `event`: a key press updates the keyboard, sends its bytes and
-    /// starts its repeat; a button waits for the end of the report in `report`.
     fn key(
         &mut self,
         event: RawEvent,
@@ -361,6 +362,7 @@ impl InputState {
         if let Some(index) = BUTTONS.iter().position(|(_, code)| *code == event.code) {
             let bit = 1 << index;
             let held = self.buttons_held | report.presses;
+            report.pending = true;
             match event.value {
                 1 if report.releases & bit != 0 => report.releases &= !bit,
                 1 if held & bit == 0 => report.presses |= bit,
@@ -378,7 +380,7 @@ impl InputState {
         let modifiers = self.keyboard.modifiers();
         let pressed = change == KeyChange::Pressed;
         if pressed {
-            let bytes = keymap::encode(event.code, modifiers, self.cursor_keys);
+            let bytes = keymap::encode(event.code, modifiers, CursorKeys::Normal);
             sink.bytes(bytes.as_bytes());
             self.repeat.pressed(
                 event.code,
@@ -396,8 +398,6 @@ impl InputState {
         });
     }
 
-    /// Ends a report of a device with `capabilities`: the pointer's motion (on a `screen` of
-    /// that size, if there is one), then its buttons, then the wheel.
     fn end_report(
         &mut self,
         capabilities: &Capabilities,
@@ -463,14 +463,29 @@ impl InputState {
         self.last_event = timing.now;
         match (event.kind, event.code) {
             (event_type::KEY, _) => self.key(event, report, timing, sink),
-            (event_type::REL, relative::X) => report.dx = report.dx.saturating_add(event.value),
-            (event_type::REL, relative::Y) => report.dy = report.dy.saturating_add(event.value),
-            (event_type::REL, relative::WHEEL) => {
-                report.wheel = report.wheel.saturating_add(event.value)
+            (event_type::REL, relative::X) => {
+                report.dx = report.dx.saturating_add(event.value);
+                report.pending = true;
             }
-            (event_type::ABS, absolute::X) => report.x = Some(event.value),
-            (event_type::ABS, absolute::Y) => report.y = Some(event.value),
-            (event_type::SYN, SYN_REPORT) => self.end_report(capabilities, report, screen, sink),
+            (event_type::REL, relative::Y) => {
+                report.dy = report.dy.saturating_add(event.value);
+                report.pending = true;
+            }
+            (event_type::REL, relative::WHEEL) => {
+                report.wheel = report.wheel.saturating_add(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::X) => {
+                report.x = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::ABS, absolute::Y) => {
+                report.y = Some(event.value);
+                report.pending = true;
+            }
+            (event_type::SYN, SYN_REPORT) if report.pending => {
+                self.end_report(capabilities, report, screen, sink)
+            }
             _ => {}
         }
     }
@@ -479,7 +494,7 @@ impl InputState {
     pub fn repeat_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
         if let Some(code) = self.repeat.due(timing.now, timing.repeat_interval) {
             let modifiers = self.keyboard.modifiers();
-            sink.bytes(keymap::encode(code, modifiers, self.cursor_keys).as_bytes());
+            sink.bytes(keymap::encode(code, modifiers, CursorKeys::Normal).as_bytes());
         }
     }
 }
@@ -578,7 +593,6 @@ struct PollSink {
     bytes: [u8; POLL_BUDGET_BYTES],
     length: usize,
     queue: Option<&'static KernelEventQueue>,
-    events: usize,
 }
 
 impl InputSink for PollSink {
@@ -589,29 +603,35 @@ impl InputSink for PollSink {
     }
 
     fn event(&mut self, event: InputEvent) {
-        self.events += 1;
         if let Some(queue) = self.queue {
             queue.push(event);
         }
     }
 }
 
-/// Polls every input device once (each in rounds of at most a few events, the console fed
-/// between them), sends the held key's repeat if it is due, and returns the clock tick to poll
-/// again at; `None` without input devices.
+/// Polls every input device: in rounds of at most 16 events each, the console fed between
+/// rounds, until the devices have nothing more or [`MAX_POLL_ROUNDS`] rounds ran; then sends the
+/// held key's repeat if it is due, and returns the clock tick to poll again at. `None` without
+/// input devices.
 pub fn poll<P: Platform>() -> Option<u64> {
-    let screen = screen();
-    let timing = Timing::now::<P>();
-    let queue = events();
+    poll_devices::<P>(&INPUT, events(), screen(), Timing::now::<P>())
+}
+
+fn poll_devices<P: Platform>(
+    devices: &LeafSpinLock<Option<Box<Input>>>,
+    queue: Option<&'static KernelEventQueue>,
+    screen: Option<(u32, u32)>,
+    timing: Timing,
+) -> Option<u64> {
+    let mut round = 1;
     loop {
         let mut sink = PollSink {
             bytes: [0; POLL_BUDGET_BYTES],
             length: 0,
             queue,
-            events: 0,
         };
-        let (more, next) = {
-            let mut input = INPUT.lock();
+        let (last, next) = {
+            let mut input = devices.lock();
             let input = input.as_mut()?;
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
@@ -627,20 +647,20 @@ pub fn poll<P: Platform>() -> Option<u64> {
                 });
                 more |= taken == budget;
             }
-            if !more {
+            let last = !more || round == MAX_POLL_ROUNDS;
+            if last {
                 input.state.repeat_key(timing, &mut sink);
             }
-            (
-                more,
-                next_poll(&input.state, timing.now, P::clock_frequency()),
-            )
+            let next = next_poll(&input.state, timing.now, P::clock_frequency());
+            (last, next)
         };
         if sink.length > 0 {
             console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
         }
-        if !more {
+        if last {
             return Some(next);
         }
+        round += 1;
     }
 }
 
