@@ -4518,6 +4518,13 @@ the license, by an explicit instruction recorded here.
   sleep=off` QEMU does not wake an idle RISC-V hart for serial input (observed: the same
   kernel wakes without `-icount` and with `sleep=on`), so the benchmark boot hung once the
   program waited.
+- **Cost.** Every benchmark as on `main` (within 0.25%, same machine): the receive path stays
+  cold and out of line (D98), and the system-call dispatch did not move. Kernel image (release,
+  `.text` / `.rodata` / `.data` / `.bss` against `main`): aarch64 +16.1 KiB / +0.4 / 0 / +1.6,
+  riscv64 +12.7 KiB / +0.6 / 0 / +1.6, x86_64 +15.5 KiB / +0.7 / 0 / +1.6, about 6% of
+  `.text`: the line discipline, `read` with its waits, the settings `ioctl`s and `poll`'s
+  wait for input, the console's first interactive feature (D24: growth justified by a
+  must-have of D99; nothing is added to a path a program pays without reading the console).
 - **Not yet.** `readv` (musl's stdio reads with it, so C programs reading standard input wait
   for it); `O_NONBLOCK` reads (no `fcntl` yet); the actions listed above; tab erase counts
   columns from where the line began, not from the column the output left (after a prompt), which
