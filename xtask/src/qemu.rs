@@ -316,12 +316,8 @@ pub enum Display {
     Absent,
 }
 
-/// The start of the line the release kernel writes once its graphical terminal shows the
-/// console: from the next line on, the serial console carries exactly the terminal's bytes.
-/// Must match `eggos_kernel::init::TERMINAL_LINE_PREFIX`.
 const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
-/// The terminal's grid at the 1280x800 xtask asks QEMU for.
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 158x49";
 
 const TERMINAL_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
@@ -811,8 +807,6 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     Ok(())
 }
 
-/// The serial console's bytes from the line after the kernel's `boot: terminal` line: what the
-/// graphical terminal was fed.
 fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
     let prefix = TERMINAL_LINE_PREFIX.as_bytes();
     let start = console
@@ -845,11 +839,6 @@ pub fn terminal_picture(width: u32, height: u32, stream: &[u8]) -> Option<Pictur
     })
 }
 
-/// Takes pictures of the display through QMP at `port` until one is what the host's terminal
-/// engine renders from the console's bytes since `boot: terminal`, reading new console output
-/// from `output` into `console` meanwhile; fails when none is within
-/// [`TERMINAL_FRAME_TIMEOUT`], leaving the last picture and the expected one for a person to
-/// compare. `at` names the moment for the messages.
 fn check_terminal_frame(
     arch: &Arch,
     port: u16,

@@ -55,9 +55,6 @@ fn from_levels(red: u8, green: u8, blue: u8) -> u8 {
     if bright { colour | BRIGHT } else { colour }
 }
 
-/// The nearest of the 16 colours to colour `index` of the 256: itself below 16, the 6x6x6
-/// cube's channels on when not 0 and bright when one reaches 128, the grey ramp in four bands
-/// of six (black, bright black, white, bright white).
 pub(super) fn from_256(index: u16) -> u8 {
     match index {
         0..=15 => index as u8,
@@ -83,8 +80,6 @@ fn cube_level(channel: u16) -> u8 {
     CUBE_LEVELS[usize::from(step.min(5))]
 }
 
-/// The nearest of the 16 colours to (`red`, `green`, `blue`): each channel taken to the cube's
-/// nearest level, then as [`from_256`].
 pub(super) fn from_rgb(red: u16, green: u16, blue: u16) -> u8 {
     from_levels(cube_level(red), cube_level(green), cube_level(blue))
 }
