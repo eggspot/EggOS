@@ -5129,3 +5129,23 @@ the license, by an explicit instruction recorded here.
   options (programs ignore their `EINVAL`). A signal sent to a process between its `execve`'s
   point of no return and the new program's start goes to the old program, which has ended,
   and is lost. Process ids are still never reused.
+- **Cost (decided by research, D78).** Against `main`'s kernel on the same machine, every
+  benchmark is within 0.4% but the two that create processes in a loop and never reap them:
+  `linux_fork` 124049.86 to 126992.98 ns (+2.4%), 112935.84 to 118416.28 (+4.9%) and
+  139645.96 to 141422.81 (+1.3%), and `linux_vfork_exec` 99329.28 to 103464.86 (+4.2%),
+  68104.45 to 72287.67 (+6.1%) and 38743.31 to 41046.17 (+5.9%), on aarch64, riscv64 and
+  x86_64. Bisected on x86_64: with the benchmarks' ended children removed at once instead of
+  kept as zombies, `linux_fork` was +0.4% and `linux_vfork_exec` +1.8% over the baseline, so
+  most of the cost is the 10,000 zombies each loop leaves: every lookup in the sorted table is
+  a binary search over them. The first version cost twice as much (+2.4% to +11.4%); cut by
+  finding the newest process without a search, looking a parent up once at a child's end,
+  taking the lock once per change, skipping the table for a process that ended or never ran
+  a Linux program (`linux_exec_load` back to `main`), and not interrupting other CPUs for a
+  signal the receiver ignores (a thread that blocks it still finds it pending, as on Linux).
+  What remains is the price of zombies and `SIGCHLD`: Linux too keeps every unreaped child
+  and generates `SIGCHLD` (it can drop a `SIG_DFL` one at once because it sees the target
+  thread's mask; ours would cost every `rt_sigprocmask`), looking a process up in its pid
+  hash in constant time. The loops are not changed to reap their children: that would change
+  what the gate measures against `main`. Only those six baseline lines moved. Follow-ups: a
+  pid hash or radix table with constant-time lookup (then the lines go back down), and
+  benchmarks of `fork` and `vfork` with `wait4`.
