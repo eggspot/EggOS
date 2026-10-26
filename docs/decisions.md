@@ -5786,7 +5786,9 @@ the license, by an explicit instruction recorded here.
 - **The input layer** (`kernel/src/input.rs`). Drivers implement `InputDevice` and `install`
   it (at most 4). `poll` takes every device's events in rounds of at most 16 (a key sends at
   most 8 bytes, so a round fits a 128-byte buffer), translates them under the input lock, then
-  hands the round's bytes to `console::receive_from_keyboard` with the lock released. Pointer
+  hands the round's bytes to `console::receive_from_keyboard` with the lock released; at most 8
+  rounds a poll, so a device that never runs dry cannot keep the poller awake. A poller that
+  cannot start (no memory for its stack) is reported on the console. Pointer
   reports apply at `SYN_REPORT`: the motion first, then the buttons (a click inside one report
   arrives as a press and a release), then the wheel. A tablet's position is scaled to the
   display rounded to the nearest pixel (decided by research: QEMU's windows scale a pixel down

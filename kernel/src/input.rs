@@ -679,17 +679,18 @@ pub fn next_poll(state: &InputState, now: u64, frequency: u64) -> u64 {
     state.next_repeat().map_or(next, |repeat| next.min(repeat))
 }
 
-/// Starts the thread that polls the input devices, if there are any; returns whether it did.
-pub fn start_polling<P: Platform>() -> bool {
+/// Starts the thread that polls the input devices if there are any; `Ok(false)` when there are
+/// none, so nothing needs polling.
+pub fn start_polling<P: Platform>() -> Result<bool, crate::thread::SpawnError> {
     if INPUT.lock().is_none() {
-        return false;
+        return Ok(false);
     }
     crate::thread::spawn::<P, _>(|| {
         while let Some(next) = poll::<P>() {
             crate::thread::sleep_until::<P>(next);
         }
     })
-    .is_ok()
+    .map(|_| true)
 }
 
 #[cfg(test)]

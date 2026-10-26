@@ -137,8 +137,9 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   calls `input::install` (at most `MAX_DEVICES`, 4).
 - `input::poll::<P>()` polls every device in rounds of at most 16 events, so a round's key bytes
   (8 at most per key) fit 128 bytes, which go to the console's line discipline between rounds
-  (`console::receive_from_keyboard`, the UART's path), and sends the held key's repeat when it
-  is due. It returns when to poll next. The release kernel's poller thread
+  (`console::receive_from_keyboard`, the UART's path), at most 8 rounds (`MAX_POLL_ROUNDS`, so
+  a device that never runs dry cannot keep the poller awake), and sends the held key's repeat
+  when it is due. It returns when to poll next. The release kernel's poller thread
   (`input::start_polling`, started by init's boot only with an input device) sleeps until then:
   8 ms while a key or button is held or for 1 s after the last event, 32 ms otherwise, never
   later than the next repeat. An idle device costs one load of its used ring's index.

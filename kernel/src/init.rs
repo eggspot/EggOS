@@ -48,7 +48,9 @@ pub fn run<P: Platform, W: Write>(
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();
-    input::start_polling::<P>();
+    if let Err(error) = input::start_polling::<P>() {
+        writeln!(console, "input: not polled: {error:?}")?;
+    }
     let outcome = start_and_wait::<P>(memory);
     match outcome.wait_status() {
         Some(status) => writeln!(

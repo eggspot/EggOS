@@ -30,8 +30,8 @@ commands:
                          (<arch> may be `all`)
   run   --arch <arch> [--nographic]
                          boot the kernel in QEMU interactively, its display in a window
-                         and its console on this terminal (quit: Ctrl-A then X); with
-                         --nographic, no window
+                         with a keyboard and a pointer, and its console on this terminal
+                         (quit: Ctrl-A then X); with --nographic, no window
   bench --arch <arch> [--update-baseline]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
