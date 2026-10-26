@@ -335,7 +335,7 @@ pub fn pread64<P: Platform>(
     if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
         return Err(Errno::EBADF);
     }
-    if *file.kind() == FileKind::Console {
+    if matches!(file.kind(), FileKind::Console) {
         return Err(Errno::ESPIPE);
     }
     if !super::ends_in_user_space::<P>(buffer, count) {
