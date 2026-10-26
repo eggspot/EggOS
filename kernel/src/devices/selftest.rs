@@ -178,9 +178,6 @@ const TEST_PATTERN: [(Rect, u32); 3] = [
     (Rect::new(600, 0, 1, 800), 0x00e5_534b),
 ];
 
-/// The display: on the QEMU machines, which xtask gives a virtio GPU asking for 1280x800, the
-/// boot's first frame was drawn and shown, and a test pattern drawn over it shows and goes
-/// again, leaving the first frame.
 pub(crate) fn display_shows_the_first_frame<P: Platform>(
     _memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {

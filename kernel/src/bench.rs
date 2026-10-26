@@ -301,8 +301,6 @@ unsafe impl DmaMemory for StaticDma {
     }
 }
 
-/// A virtio GPU that takes no time: answers every command at once, a display info with
-/// [`GPU_MODE`] and success to everything else, and copies nothing.
 #[derive(Debug, Default)]
 struct FakeGpu {
     status: core::cell::Cell<u8>,
@@ -382,8 +380,6 @@ impl Transport for FakeGpu {
     }
 }
 
-/// The virtio GPU driver's flush of one damaged rectangle (its transfer, then its flush, each
-/// fenced and waited for) with a device that takes no time: the driver's own cost per flush.
 fn virtio_gpu_flush_fake(n: u64) {
     let control = StaticDma::of(&GPU_CONTROL);
     let Ok(mut gpu) = VirtioGpu::new(FakeGpu::default(), control, &mut || true) else {

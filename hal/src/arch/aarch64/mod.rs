@@ -212,9 +212,6 @@ pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
     unsafe { crate::memory::zero_by_lines(start, length) }
 }
 
-/// [`crate::memory::doorbell_barrier`]: `dmb oshst`, which orders earlier stores before later
-/// ones for every observer in the outer shareable domain, devices included; the `dmb ish` of a
-/// sequentially consistent fence reaches only the CPUs.
 #[inline]
 pub(crate) fn doorbell_barrier() {
     // SAFETY: a barrier: it touches no memory or register, only orders stores.

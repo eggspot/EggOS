@@ -1,6 +1,6 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
 //! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device on top of either.
+//! device and GPU (D112) on top of either.
 
 use super::dma::DmaRegion;
 use super::{
@@ -345,7 +345,11 @@ mod gpu {
             },
             Err(reason) => (gpu, reason),
         };
-        release(refused.0, &node.identity, &mut deadline);
+        release(
+            refused.0,
+            &node.identity,
+            &mut probe.deadline(ANSWER_TIMEOUT_MS),
+        );
         Err(ProbeError::Refused(refused.1))
     }
 

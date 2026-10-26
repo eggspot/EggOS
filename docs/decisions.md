@@ -5732,7 +5732,7 @@ the license, by an explicit instruction recorded here.
   now have the GPU, whose probe allocates before the benchmarks run): every line within 0.3%,
   riscv64 `frame_contiguous_allocate_free` 203 to 200, back at its baseline. New gated
   benchmark `virtio_gpu_flush_fake`, one rectangle's fenced transfer and flush with a device
-  that takes no time: FLUSH_NUMBERS instructions on aarch64, riscv64 and x86_64.
+  that takes no time: 788, 865 and 786 instructions on aarch64, riscv64 and x86_64.
 - **Not yet.** Interrupts instead of polling, the cursor queue (item 14's pointer), display
   events (`VIRTIO_GPU_EVENT_DISPLAY`, a mode change), EDID, more than one scanout, modes whose
   buffer is larger than the largest DMA region (4 MiB, `MAX_ORDER` 10; 1920x1080 needs 8 MiB:

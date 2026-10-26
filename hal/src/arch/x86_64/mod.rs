@@ -298,9 +298,6 @@ pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
     unsafe { start.write_bytes(0, length) }
 }
 
-/// [`crate::memory::doorbell_barrier`]: x86 makes stores visible in program order, to devices
-/// too, and a store to uncached device memory waits for the stores before it, so only the
-/// compiler needs fencing.
 #[inline]
 pub(crate) fn doorbell_barrier() {
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);

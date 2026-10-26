@@ -161,9 +161,6 @@ pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
     unsafe { crate::memory::zero_by_lines(start, length) }
 }
 
-/// [`crate::memory::doorbell_barrier`]: `fence w, o`, which orders earlier stores to memory
-/// before later stores to device registers; the `fence rw, rw` of a sequentially consistent
-/// fence orders memory accesses only.
 #[inline]
 pub(crate) fn doorbell_barrier() {
     // SAFETY: a barrier: it touches no memory or register, only orders stores.
