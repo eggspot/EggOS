@@ -702,7 +702,9 @@ impl Signals {
     /// [`Self::send_to_thread`] says, but a real-time signal sent with `kill` (a `si_code` of
     /// 0 or more) is queued past the limit, as on Linux. What waits stays bounded: a standard
     /// signal already waiting is not left again, and, as POSIX requires, `SIGCONT` removes
-    /// the stop signals waiting and a stop signal a `SIGCONT` waiting.
+    /// the stop signals waiting and a stop signal a `SIGCONT` waiting. A process with one
+    /// thread that never changed an action gets its block of signal state first ([`QueueFull`]
+    /// without memory for it).
     pub fn send_to_process(&mut self, info: Info, queue_limit: u64) -> Result<(), QueueFull> {
         let signal = info.signal();
         if self.actions_and_queue.is_none() {
