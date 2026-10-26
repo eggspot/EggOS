@@ -25,6 +25,7 @@ use crate::process::Process;
 use crate::sync::LeafSpinLock;
 use crate::vfs::{self, NAME_MAX, Node, NodeKind, PATH_MAX};
 use alloc::sync::Arc;
+use core::mem::MaybeUninit;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
@@ -69,8 +70,11 @@ pub fn walk_error(error: vfs::Error) -> Errno {
     }
 }
 
-/// How many bytes of a path are copied at a time.
 const PATH_CHUNK: usize = 64;
+
+/// A buffer for a path copied from a program ([`read_path`]): left uninitialized, so a short
+/// path costs only its own bytes.
+pub type PathBuffer = MaybeUninit<[u8; PATH_MAX]>;
 
 /// Copies the NUL-terminated path at `address` into `buffer` and returns it, without its NUL:
 /// see the module documentation. Chunks never cross a page, so no byte past the NUL is read
@@ -78,20 +82,34 @@ const PATH_CHUNK: usize = 64;
 pub fn read_path<'a, P: Platform>(
     process: &Process<P>,
     address: u64,
-    buffer: &'a mut [u8; PATH_MAX],
+    buffer: &'a mut PathBuffer,
 ) -> Result<&'a [u8], Errno> {
+    let path = buffer.as_mut_ptr().cast::<u8>();
+    let mut chunk = [0u8; PATH_CHUNK];
     let mut offset = 0;
     while offset < PATH_MAX {
         let at = address.checked_add(offset as u64).ok_or(Errno::EFAULT)?;
         let length = (PATH_MAX - offset)
             .min(PATH_CHUNK)
             .min((FRAME_SIZE - at % FRAME_SIZE) as usize);
-        let chunk = &mut buffer[offset..offset + length];
+        let chunk = &mut chunk[..length];
         process
             .read_user_memory(at, chunk)
             .map_err(|_| Errno::EFAULT)?;
-        if let Some(end) = chunk.iter().position(|&byte| byte == 0) {
-            return Ok(&buffer[..offset + end]);
+        let end = chunk.iter().position(|&byte| byte == 0);
+        // SAFETY: `offset + length` is at most `PATH_MAX`, so the bytes written are within
+        // `buffer`, which `chunk`, on this stack frame, does not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                chunk.as_ptr(),
+                path.wrapping_add(offset),
+                end.unwrap_or(length),
+            )
+        };
+        if let Some(end) = end {
+            // SAFETY: the first `offset + end` bytes of `buffer` were written by this loop, and
+            // the slice borrows `buffer` for as long as it lives.
+            return Ok(unsafe { core::slice::from_raw_parts(path, offset + end) });
         }
         offset += length;
     }
@@ -127,7 +145,7 @@ pub fn lookup<P: Platform>(
     dirfd: u64,
     path: u64,
 ) -> Result<Node, Errno> {
-    let mut buffer = [0; PATH_MAX];
+    let mut buffer = PathBuffer::uninit();
     let path = read_path(process, path, &mut buffer)?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
@@ -168,7 +186,7 @@ pub fn openat<P: Platform>(
             return Err(Errno::EINVAL);
         }
     }
-    let mut buffer = [0; PATH_MAX];
+    let mut buffer = PathBuffer::uninit();
     let path = read_path(process, path, &mut buffer)?;
     if path.is_empty() {
         return Err(Errno::ENOENT);
@@ -412,11 +430,8 @@ pub fn pack_dirent(
     Some(length)
 }
 
-/// How many bytes of entries `getdents64` gathers on the kernel stack before it copies them
-/// out: room for at least one entry with the longest name.
 const DIRENT_CHUNK: usize = 512;
 
-/// The entry at `position` of `directory`: `.` at 0, `..` at 1, then its own entries.
 fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, &'static [u8])> {
     match position {
         0 => Some((directory.attributes().file_id, DT_DIR, b".")),

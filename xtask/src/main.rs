@@ -298,7 +298,6 @@ pub fn build_user_programs(arch: &Arch) -> Result<Vec<(&'static str, String)>, S
         .collect()
 }
 
-/// The variable that names the initramfs archive to kernel builds, and its path, built first.
 fn initramfs_variable() -> Result<(&'static str, String), String> {
     let path = initramfs::build()?;
     Ok(("EGGOS_INITRAMFS", path.to_string_lossy().into_owned()))

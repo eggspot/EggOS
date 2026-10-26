@@ -20,7 +20,7 @@ use super::descriptors::{Descriptors, FileKind};
 use super::files;
 use super::thread::LinuxThread;
 use crate::process::Process;
-use crate::vfs::{self, Node, NodeKind, PATH_MAX};
+use crate::vfs::{self, Node, NodeKind};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
@@ -173,8 +173,6 @@ fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
     bytes[offset..offset + value.len()].copy_from_slice(value);
 }
 
-/// Where `struct stat`'s and `struct statx`'s access, status-change and modification seconds
-/// are.
 const STAT_TIMES: [usize; 3] = [72, 104, 88];
 const STATX_TIMES: [usize; 3] = [64, 96, 112];
 
@@ -287,7 +285,7 @@ fn lookup<P: Platform>(
     if path == 0 && empty_path {
         return named_descriptor_status(thread, dirfd);
     }
-    let mut buffer = [0; PATH_MAX];
+    let mut buffer = files::PathBuffer::uninit();
     let path = files::read_path(process, path, &mut buffer)?;
     if path.is_empty() {
         return match empty_path {

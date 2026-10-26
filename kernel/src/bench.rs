@@ -524,7 +524,6 @@ fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// Where the file benchmarks keep their path and buffer in the program's memory.
 const FILE_BENCH_MEMORY: u64 = 0x1000_0000;
 
 fn process_with_path<P: Platform>(memory: &Memory<P>, path: &[u8]) -> Process<P> {
@@ -544,9 +543,6 @@ fn process_with_path<P: Platform>(memory: &Memory<P>, path: &[u8]) -> Process<P>
     program
 }
 
-/// `openat` of `/etc/hostname` from the root (two components looked up in the embedded
-/// initramfs, the path copied from the program, an open file description made and a
-/// descriptor taken), then `close`, without the trap (D102).
 fn linux_openat_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::stat::at::FDCWD;
     let program = process_with_path(memory, b"/etc/hostname\0");
@@ -558,8 +554,6 @@ fn linux_openat_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
-/// `pread64` of the 18 bytes of `/etc/motd` from offset 0 into the program's memory, straight
-/// from the initramfs in the kernel image, without the trap (D102).
 fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::stat::at::FDCWD;
     let program = process_with_path(memory, b"/etc/motd\0");
