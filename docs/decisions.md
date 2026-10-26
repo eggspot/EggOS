@@ -4390,12 +4390,14 @@ the license, by an explicit instruction recorded here.
   interrupt, the only path that fills the queue, on aarch64, riscv64 and x86_64. It waits by
   taking interrupts without sleeping, so under `-icount sleep=off` (benchmarks) virtual time
   does not run ahead of the host typing. The host test platform types the same script.
-- **Cost.** Measured against main: nothing. The first version added 2–9% to the AArch64 and
-  RISC-V trap round trips (the new call made the trap handlers save `ra`/`x30` on entry and
-  grew their frames). The fixes: the console paths are cold and out of line (AArch64 checks
-  UART0's id first and calls out; RISC-V reaches the PLIC through a tail call after the timer
-  and wake-up checks, so the handler's prologue is main's), and the kernel's
-  `receive_input` is out of line too.
+- **Cost.** Measured against main on the same machine: no benchmark slower. The first version
+  added 2–9% to the AArch64 and RISC-V trap round trips: the new call made the trap handlers
+  save the return address on entry, and a switch on the interrupt id tested the wake-up SGI
+  before the timer. The fixes keep the timer's and the wake-up's paths instruction for
+  instruction as they were: the console paths are cold and out of line (`console_input`); on
+  AArch64 UART0's id is tested after the timer's, with `cold_path`; on RISC-V the PLIC is
+  reached through a tail call after the timer and wake-up checks, so the handler's prologue is
+  main's; the kernel's `receive_input` is out of line too.
 - **Not yet.** Addresses and interrupt numbers stay QEMU's, as D12's, until the driver model's
   discovery (M5, issue #97) reads them from the device tree and ACPI; GICv3, AIA and MSI-X come
   with it. Only the boot CPU takes console input.
