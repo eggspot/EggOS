@@ -13,13 +13,16 @@
 //! ([`exec::exec_into_a_checking_copy`]), which [`exec::EXEC_CHECK`] makes check what it got
 //! ([`exec::check_after_exec`]). Given [`processes::PROCESSES`], it starts child processes
 //! ([`processes::create_processes`]). Given [`children::CHILDREN`], it waits for its children
-//! and moves processes between groups and sessions ([`children::wait_for_children`]).
+//! and moves processes between groups and sessions ([`children::wait_for_children`]). Given
+//! [`init_login::INIT_LOGIN`], it is the init boot test's login program
+//! ([`init_login::log_in`]).
 
 mod children;
 mod console;
 mod descriptors;
 mod exec;
 mod files;
+mod init_login;
 mod processes;
 
 use std::collections::HashMap;
@@ -156,6 +159,7 @@ fn main() -> ExitCode {
         Some(processes::PROCESSES) => return processes::create_processes(),
         Some(processes::SPAWNED_BY_VFORK) => return processes::spawned_by_vfork(),
         Some(children::CHILDREN) => return children::wait_for_children(),
+        Some(init_login::INIT_LOGIN) => return init_login::log_in(),
         _ => {}
     }
     let mut output = std::io::stdout().lock();

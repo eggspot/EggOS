@@ -1,9 +1,11 @@
 //! Builds the initramfs (D102): a `newc` cpio archive of the repository's `initramfs/`
-//! directory, which the kernel embeds and mounts as its root, and for test kernels the
-//! programs they start from it with `execve` (D103), in `usr/libexec/`.
+//! directory, which the kernel embeds and mounts as its root, with the programs and files the
+//! kernel needs: `/init` for the release kernel (D106), and for test kernels the programs they
+//! start from it with `execve` (D103), in `usr/libexec/`.
 //!
 //! The archive is deterministic: members in name order, each directory before what it holds,
-//! the programs last, owned by root, directories and programs `0755` and other files `0644`,
+//! the extra members last, owned by root, directories and programs `0755` and other files
+//! `0644`,
 //! every modification time `SOURCE_DATE_EPOCH` (0 if unset). Only directories and regular
 //! files are taken.
 
@@ -12,13 +14,22 @@ use std::path::{Path, PathBuf};
 const DIRECTORY_MODE: u32 = 0o040755;
 const FILE_MODE: u32 = 0o100644;
 const PROGRAM_MODE: u32 = 0o100755;
-const PROGRAM_DIRECTORY: &str = "usr/libexec";
 const TRAILER: &str = "TRAILER!!!";
 
-/// Writes the archive of `initramfs/` and `programs` (each a name in `usr/libexec/` and the
-/// path of the program to put there) to `file_name` in the target directory, unless an
-/// identical one is there (so the kernel is not rebuilt for nothing), and returns its path.
-pub fn build(programs: &[(&str, &str)], file_name: &str) -> Result<PathBuf, String> {
+/// What an extra member of the archive holds.
+#[derive(Debug, Clone, Copy)]
+pub enum Content<'a> {
+    /// The program at this path on the host, made executable.
+    Program(&'a str),
+    /// This text, as a file of its own.
+    Text(&'a str),
+}
+
+/// Writes the archive of `initramfs/` and `extra` (each a path in the archive and what it
+/// holds, after the directory's own members, with the directories it needs) to `file_name` in
+/// the target directory, unless an identical one is there (so the kernel is not rebuilt for
+/// nothing), and returns its path.
+pub fn build(extra: &[(&str, Content)], file_name: &str) -> Result<PathBuf, String> {
     let root = crate::workspace_root();
     let source = root.join("initramfs");
     let modified = match std::env::var("SOURCE_DATE_EPOCH") {
@@ -29,12 +40,16 @@ pub fn build(programs: &[(&str, &str)], file_name: &str) -> Result<PathBuf, Stri
     };
     let mut members = vec![(".".to_owned(), DIRECTORY_MODE, Vec::new())];
     collect(&source, "", &mut members)?;
-    if !programs.is_empty() {
-        members.push((PROGRAM_DIRECTORY.to_owned(), DIRECTORY_MODE, Vec::new()));
-    }
-    for (name, path) in programs {
-        let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        members.push((format!("{PROGRAM_DIRECTORY}/{name}"), PROGRAM_MODE, data));
+    for (path, content) in extra {
+        add_directories(path, &mut members);
+        let member = match content {
+            Content::Program(file) => {
+                let data = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+                (path.to_string(), PROGRAM_MODE, data)
+            }
+            Content::Text(text) => (path.to_string(), FILE_MODE, text.as_bytes().to_vec()),
+        };
+        members.push(member);
     }
     let archive = archive(&members, modified);
     let target = std::env::var_os("CARGO_TARGET_DIR")
@@ -46,6 +61,18 @@ pub fn build(programs: &[(&str, &str)], file_name: &str) -> Result<PathBuf, Stri
         std::fs::write(&path, &archive).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(path)
+}
+
+fn add_directories(path: &str, members: &mut Vec<(String, u32, Vec<u8>)>) {
+    let mut end = 0;
+    while let Some(slash) = path[end..].find('/') {
+        end += slash;
+        let directory = &path[..end];
+        if !members.iter().any(|(name, _, _)| name == directory) {
+            members.push((directory.to_owned(), DIRECTORY_MODE, Vec::new()));
+        }
+        end += 1;
+    }
 }
 
 fn collect(
@@ -150,5 +177,15 @@ mod tests {
         let trailer = (data + 6).next_multiple_of(4);
         assert_eq!(&bytes[trailer + 110..trailer + 121], b"TRAILER!!!\0");
         assert_eq!(bytes.len(), (trailer + 121).next_multiple_of(4));
+    }
+
+    #[test]
+    fn an_extra_member_gets_the_directories_it_needs_once() {
+        let mut members = vec![("etc".to_owned(), DIRECTORY_MODE, Vec::new())];
+        add_directories("etc/eggos/init.conf", &mut members);
+        add_directories("etc/eggos/other", &mut members);
+        add_directories("init", &mut members);
+        let names: Vec<&str> = members.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert_eq!(names, ["etc", "etc/eggos"]);
     }
 }

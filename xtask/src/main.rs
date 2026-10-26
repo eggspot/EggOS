@@ -74,7 +74,12 @@ pub const ARCHES: &[Arch] = &[
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
 
 /// Crates compiled for the architectures' Linux targets: our own Linux programs.
-const USER_CRATES: &[&str] = &["eggos-runtime", "eggos-selftest", "eggos-std-selftest"];
+const USER_CRATES: &[&str] = &[
+    "eggos-runtime",
+    "eggos-init",
+    "eggos-selftest",
+    "eggos-std-selftest",
+];
 
 /// A Linux program built from our own Rust source that the `qemu-test` kernels run.
 struct UserProgram {
@@ -103,6 +108,24 @@ const USER_PROGRAMS: [UserProgram; 2] = [
 /// A program on our own runtime links no C library or start files, as a static PIE (D85).
 const RUNTIME_PROGRAM_RUSTFLAGS: &[&str] =
     &["-C", "link-self-contained=no", "-C", "relocation-model=pie"];
+
+const INIT_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "link-self-contained=no",
+    "-C",
+    "relocation-model=pie",
+    "-C",
+    "debuginfo=0",
+    "-C",
+    "strip=symbols",
+];
+
+const INIT_PATH: &str = "init";
+
+const INIT_TEST_LOGIN_PATH: &str = "usr/libexec/eggos-std-selftest";
+
+const INIT_TEST_CONFIG: &str =
+    "login=/usr/libexec/eggos-std-selftest init-login\nlogin-exit=poweroff\n";
 
 /// A program on Rust's standard library links the toolchain's own musl and start files,
 /// statically, as a static PIE where the target has one, with no debug information or
@@ -215,6 +238,8 @@ fn ci() -> Result<(), String> {
 /// exception vectors report a fatal exception (a write to read-only data after the
 /// self-tests, which must fault: D29).
 /// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
+/// Then boots the release kernel with a test initramfs whose init runs the std program as its
+/// login program and powers off once it ends (D106).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -225,6 +250,8 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         let poison: Vec<&str> = poison.iter().map(String::as_str).collect();
         qemu::boot_test(arch, &kernel, expect, qemu::TEST_CPUS, &poison)?;
     }
+    let kernel = build_init_test_kernel(arch)?;
+    qemu::boot_test(arch, &kernel, qemu::Expect::Init, qemu::TEST_CPUS, &[])?;
     Ok(())
 }
 
@@ -262,16 +289,28 @@ fn clippy_targets() -> Result<(), String> {
 }
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
-/// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]); every
-/// kernel feature is a test kernel's, which runs the programs [`build_user_programs`] builds
-/// first.
+/// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
+/// feature, the release kernel's, with init; every kernel feature is a test
+/// kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
-    let mut args = vec!["build", "-p", "eggos-kernel", "--target", arch.target];
-    let mut programs = Vec::new();
-    if let Some(feature) = feature {
-        args.extend(["--features", feature]);
-        programs = build_user_programs(arch)?;
-    }
+    let Some(feature) = feature else {
+        let init = build_init(arch)?;
+        let initramfs = initramfs::build(
+            &[(INIT_PATH, initramfs::Content::Program(&init))],
+            &format!("initramfs-{}.cpio", arch.user_target),
+        )?;
+        return build_release_kernel(arch, &initramfs);
+    };
+    let args = [
+        "build",
+        "-p",
+        "eggos-kernel",
+        "--target",
+        arch.target,
+        "--features",
+        feature,
+    ];
+    let mut programs = build_user_programs(arch)?;
     programs.push(initramfs_variable(arch, &programs)?);
     let env = program_variables(&programs);
     build_executable(
@@ -279,6 +318,50 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
         &env,
         &format!("kernel executable for {}", arch.target),
     )
+}
+
+fn build_release_kernel(
+    arch: &Arch,
+    initramfs: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let initramfs = initramfs.to_string_lossy();
+    build_executable(
+        &["build", "-p", "eggos-kernel", "--target", arch.target],
+        &[("EGGOS_INITRAMFS", &initramfs)],
+        &format!("kernel executable for {}", arch.target),
+    )
+}
+
+fn build_init_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let init = build_init(arch)?;
+    let programs = build_user_programs(arch)?;
+    let login = programs
+        .iter()
+        .find(|(variable, _)| *variable == "EGGOS_USERLAND_STD_SELFTEST")
+        .map(|(_, path)| path.as_str())
+        .ok_or("the std program was not built")?;
+    let initramfs = initramfs::build(
+        &[
+            (INIT_PATH, initramfs::Content::Program(&init)),
+            (
+                "etc/eggos/init.conf",
+                initramfs::Content::Text(INIT_TEST_CONFIG),
+            ),
+            (INIT_TEST_LOGIN_PATH, initramfs::Content::Program(login)),
+        ],
+        &format!("initramfs-init-test-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
+fn build_init(arch: &Arch) -> Result<String, String> {
+    let rustflags = INIT_RUSTFLAGS.join("\x1f");
+    let path = build_executable(
+        &["build", "-p", "eggos-init", "--target", arch.user_target],
+        &[("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str())],
+        &format!("eggos-init executable for {}", arch.user_target),
+    )?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Builds [`USER_PROGRAMS`] for `arch`'s Linux target (release profile) and returns each
@@ -307,20 +390,23 @@ fn initramfs_variable(
     arch: &Arch,
     programs: &[(&'static str, String)],
 ) -> Result<(&'static str, String), String> {
-    let members: Vec<(&str, &str)> = programs
+    let paths: Vec<(String, &str)> = programs
         .iter()
         .filter_map(|(variable, path)| {
             INITRAMFS_PROGRAMS
                 .iter()
                 .find(|(program, _)| program == variable)
-                .map(|(_, name)| (*name, path.as_str()))
+                .map(|(_, name)| (format!("usr/libexec/{name}"), path.as_str()))
         })
         .collect();
-    let file_name = match members.is_empty() {
-        true => "initramfs.cpio".to_owned(),
-        false => format!("initramfs-{}.cpio", arch.user_target),
-    };
-    let path = initramfs::build(&members, &file_name)?;
+    let members: Vec<(&str, initramfs::Content)> = paths
+        .iter()
+        .map(|(name, path)| (name.as_str(), initramfs::Content::Program(path)))
+        .collect();
+    let path = initramfs::build(
+        &members,
+        &format!("initramfs-test-{}.cpio", arch.user_target),
+    )?;
     Ok(("EGGOS_INITRAMFS", path.to_string_lossy().into_owned()))
 }
 
