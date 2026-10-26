@@ -17,10 +17,10 @@ const EVERY_PRIORITY_ABOVE_ZERO: u32 = 0;
 const MAPPED_CONTEXTS: usize = 32;
 /// `sie` bit 9: supervisor external interrupt enable.
 const SIE_SEIE: u64 = 1 << 9;
-const NONE: usize = usize::MAX;
+const NO_CONTEXT: usize = usize::MAX;
 
 /// The boot hart's supervisor-mode context, once [`enable`] has routed UART0 there.
-static CONTEXT: AtomicUsize = AtomicUsize::new(NONE);
+static CONTEXT: AtomicUsize = AtomicUsize::new(NO_CONTEXT);
 
 /// The PLIC pages the kernel maps: the source priorities and the enables up to the last mapped
 /// context's, then the mapped contexts' threshold and claim pages.
@@ -77,7 +77,7 @@ pub(super) fn enable(context: Option<usize>) -> Result<(), &'static str> {
 #[inline(never)]
 pub(super) fn interrupt(pc: u64) {
     let context = CONTEXT.load(Ordering::Relaxed);
-    if context == NONE {
+    if context == NO_CONTEXT {
         return;
     }
     let plic = plic(context);

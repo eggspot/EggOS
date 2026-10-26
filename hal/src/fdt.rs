@@ -1,7 +1,8 @@
 //! Reading a flattened device tree (FDT, "DTB"): the description of the machine that Arm and
-//! RISC-V firmware hands the kernel. Today the kernel reads only what it needs to find its
-//! memory: the RAM (`/memory` nodes) and what the firmware reserved (the memory reservation
-//! block and `/reserved-memory`). Full device discovery comes with the driver model (M5).
+//! RISC-V firmware hands the kernel. Today the kernel reads what it needs to find its memory
+//! (the RAM in `/memory` nodes, and what the firmware reserved in the memory reservation block
+//! and `/reserved-memory`), its CPUs, the seeds in `/chosen`, and a hart's PLIC context. Full
+//! device discovery comes with the driver model (M5).
 //!
 //! The format is from the public Devicetree Specification (v0.4, chapter 5): a 40-byte
 //! big-endian header, the memory reservation block (pairs of 64-bit address and size ending in
