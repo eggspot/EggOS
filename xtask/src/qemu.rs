@@ -131,6 +131,11 @@ pub enum Expect {
     /// with what the commands write, and `^C` when the program waiting for it says so; the
     /// shell writes each line the session expects and exits with 7, and init powers off (D107).
     Shell,
+    /// The release kernel boots to the prompt of the shell init starts by default; the test
+    /// types a line of its session at each prompt, which runs the core utilities, each writing
+    /// the lines the session expects, the last `poweroff` (D108). The time from QEMU's start to
+    /// the first prompt is reported.
+    BootToPrompt,
 }
 
 const SHELL_PROMPT: &str = "eggsh:/";
@@ -154,6 +159,62 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"echo EGGSH-TEST prompt interrupt $?\r",
     b"exit 7\r",
 ];
+
+const PROMPT_SESSION: [&[u8]; 8] = [
+    b"ls /\r",
+    b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
+    b"cat /etc/motd /etc/hostname\r",
+    b"uname -a\r",
+    b"/bin/echo -n EGGOS-COREUTILS external; /bin/echo ' echo'\r",
+    b"sleep 0; sleep 0.05; echo EGGOS-COREUTILS slept $?\r",
+    b"/bin/false; echo EGGOS-COREUTILS false $?\r",
+    b"poweroff\r",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Line {
+    Whole(String),
+    Around(&'static str, &'static str),
+}
+
+impl Line {
+    fn matches(&self, line: &str) -> bool {
+        match self {
+            Line::Whole(whole) => line == whole,
+            Line::Around(start, end) => {
+                line.len() >= start.len() + end.len()
+                    && line.starts_with(start)
+                    && line.ends_with(end)
+            }
+        }
+    }
+}
+
+fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
+    let whole = |lines: &[&str]| {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    [
+        whole(&["bin", "etc", "init", "usr"]),
+        vec![
+            Line::Around("-rwxr-xr-x 11 0 0 ", " /bin/ls"),
+            Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
+            Line::Whole("EGGOS-COREUTILS ls status 2".into()),
+        ],
+        whole(&["Welcome to EggOS.", "eggos"]),
+        vec![Line::Whole(format!(
+            "Linux localhost 6.1.0-eggos #1 SMP EggOS {} {arch} EggOS",
+            env!("CARGO_PKG_VERSION")
+        ))],
+        whole(&["EGGOS-COREUTILS external echo"]),
+        whole(&["EGGOS-COREUTILS slept 0"]),
+        whole(&["EGGOS-COREUTILS false 1"]),
+        whole(&[POWER_DOWN_LINE]),
+    ]
+}
 
 const SHELL_INTERRUPT: (&str, &[u8]) = (
     "EGGOS-SHELL-CHILD: waiting for an interrupt in the foreground group",
@@ -296,6 +357,7 @@ pub fn boot_test(
     let mut console = Vec::new();
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
     let mut shell_typed = ShellTyping::default();
+    let mut first_prompt = None;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -303,8 +365,17 @@ pub fn boot_test(
         console.extend(rx.try_iter().flatten());
         let scripts = match expect {
             Expect::Init | Expect::InitRestart => Vec::new(),
-            Expect::Shell => {
-                shell_scripts_to_type(&String::from_utf8_lossy(&console), &mut shell_typed)
+            Expect::Shell => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &SHELL_SESSION,
+                &mut shell_typed,
+            ),
+            Expect::BootToPrompt => {
+                let text = String::from_utf8_lossy(&console);
+                if first_prompt.is_none() && text.contains(SHELL_PROMPT) {
+                    first_prompt = Some(started.elapsed());
+                }
+                shell_scripts_to_type(&text, &PROMPT_SESSION, &mut shell_typed)
             }
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
         };
@@ -337,6 +408,13 @@ pub fn boot_test(
     console.extend(rest_until_qemu_closes_stdout);
     let console = String::from_utf8_lossy(&console).into_owned();
     verdict(arch.name, expect, status.success(), &console)?;
+    if let Some(first_prompt) = first_prompt {
+        eprintln!(
+            "xtask: {}: boot to prompt in {} ms (QEMU started to the first `{SHELL_PROMPT}` prompt, {cpus} CPUs)",
+            arch.name,
+            first_prompt.as_millis()
+        );
+    }
     Ok(console)
 }
 
@@ -377,14 +455,15 @@ fn scripts_to_type(
     scripts
 }
 
-fn shell_scripts_to_type(console: &str, typed: &mut ShellTyping) -> Vec<&'static [u8]> {
+fn shell_scripts_to_type(
+    console: &str,
+    session: &[&'static [u8]],
+    typed: &mut ShellTyping,
+) -> Vec<&'static [u8]> {
     let mut scripts = Vec::new();
-    let prompts = console
-        .matches(SHELL_PROMPT)
-        .count()
-        .min(SHELL_SESSION.len());
+    let prompts = console.matches(SHELL_PROMPT).count().min(session.len());
     while typed.lines < prompts {
-        scripts.push(SHELL_SESSION[typed.lines]);
+        scripts.push(session[typed.lines]);
         typed.lines += 1;
     }
     let (text, interrupt) = SHELL_INTERRUPT;
@@ -424,6 +503,7 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         Expect::Init => return init_verdict(arch, clean_exit, console, POWER_DOWN_LINE),
         Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
         Expect::Shell => return shell_verdict(arch, clean_exit, console),
+        Expect::BootToPrompt => return prompt_verdict(arch, clean_exit, console),
         _ => {}
     }
     if expect == Expect::FatalException {
@@ -530,6 +610,44 @@ fn shell_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Stri
         ));
     }
     eprintln!("xtask: {arch}: shell boot test passed");
+    Ok(())
+}
+
+fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+    let lines: Vec<&str> = console.lines().map(str::trim_end).collect();
+    if let Some(panic) = lines
+        .iter()
+        .find(|line| line.starts_with(KERNEL_PANIC_PREFIX))
+    {
+        return Err(format!("{arch}: init ended: {panic}"));
+    }
+    if !clean_exit {
+        return Err(format!("{arch}: QEMU exited with an error"));
+    }
+    for (typed, expected) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
+        let command = String::from_utf8_lossy(typed);
+        let command = command.trim_end_matches('\r');
+        let Some(echoed) = lines
+            .iter()
+            .position(|line| line.starts_with(SHELL_PROMPT) && line.ends_with(command))
+        else {
+            return Err(format!("{arch}: `{command}` was not typed at a prompt"));
+        };
+        let written = lines.get(echoed + 1..echoed + 1 + expected.len());
+        let matched = written.is_some_and(|written| {
+            expected
+                .iter()
+                .zip(written)
+                .all(|(expected, line)| expected.matches(line))
+        });
+        if !matched {
+            return Err(format!(
+                "{arch}: `{command}` did not write {expected:?} but {:?}",
+                written.unwrap_or(&lines[echoed + 1..])
+            ));
+        }
+    }
+    eprintln!("xtask: {arch}: boot-to-prompt test passed");
     Ok(())
 }
 
@@ -756,29 +874,85 @@ mod tests {
     #[test]
     fn the_shell_session_types_a_line_at_each_prompt_and_c_for_the_waiting_program() {
         let mut typed = ShellTyping::default();
-        assert!(shell_scripts_to_type("init: starting /bin/eggsh\r\n", &mut typed).is_empty());
+        let session = &SHELL_SESSION;
+        let starting = "init: starting /bin/eggsh\r\n";
+        assert!(shell_scripts_to_type(starting, session, &mut typed).is_empty());
         let started = "init: starting /bin/eggsh\r\neggsh:/# ";
         assert_eq!(
-            shell_scripts_to_type(started, &mut typed),
+            shell_scripts_to_type(started, session, &mut typed),
             [SHELL_SESSION[0]]
         );
-        assert!(shell_scripts_to_type(started, &mut typed).is_empty());
+        assert!(shell_scripts_to_type(started, session, &mut typed).is_empty());
         let error = format!("{started}x\r\neggsh: x: command not found\r\neggsh:/usr# ");
         assert_eq!(
-            shell_scripts_to_type(&error, &mut typed),
+            shell_scripts_to_type(&error, session, &mut typed),
             [SHELL_SESSION[1]]
         );
         let waiting = format!("{error}{}\r\n", SHELL_INTERRUPT.0);
         assert_eq!(
-            shell_scripts_to_type(&waiting, &mut typed),
+            shell_scripts_to_type(&waiting, session, &mut typed),
             [SHELL_INTERRUPT.1]
         );
         let many = SHELL_PROMPT.repeat(SHELL_SESSION.len() + 5);
         assert_eq!(
-            shell_scripts_to_type(&many, &mut typed).len(),
+            shell_scripts_to_type(&many, session, &mut typed).len(),
             SHELL_SESSION.len() - 2
         );
         assert_eq!(typed.lines, SHELL_SESSION.len());
+    }
+
+    fn prompt_console(arch: &str) -> String {
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n{INIT_BANNER}\r\n");
+        for (typed, written) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in written {
+                match line {
+                    Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
+                    Line::Around(start, end) => {
+                        console.push_str(&format!("{start}42408 1970-01-01 00:00{end}\r\n"))
+                    }
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn a_boot_to_prompt_needs_each_command_s_lines_right_after_it_and_the_power_down() {
+        let ok = prompt_console("riscv64");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &ok).is_ok());
+        assert!(verdict("riscv64", Expect::BootToPrompt, false, &ok).is_err());
+        assert!(verdict("x86_64", Expect::BootToPrompt, true, &ok).is_err());
+        for missing in [
+            "usr\r\n",
+            "EGGOS-COREUTILS ls status 2\r\n",
+            "eggos\r\n",
+            POWER_DOWN_LINE,
+        ] {
+            let without = ok.replacen(missing, "", 1);
+            assert!(
+                verdict("riscv64", Expect::BootToPrompt, true, &without).is_err(),
+                "{missing}"
+            );
+        }
+        let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
+        let one_link = ok.replace("-rwxr-xr-x 11 ", "-rwxr-xr-x 1 ");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
+        let untyped = ok.replace("# uname -a", "# uname");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
+        let panicked = format!("{ok}Kernel panic - not syncing: Attempted to kill init!\r\n");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &panicked).is_err());
+    }
+
+    #[test]
+    fn a_line_around_a_middle_needs_its_start_and_end_apart() {
+        let line = Line::Around("ab", "ba");
+        assert!(line.matches("ab ba"));
+        assert!(line.matches("abba"));
+        assert!(!line.matches("aba"));
+        assert!(!line.matches("xabba"));
     }
 
     #[test]

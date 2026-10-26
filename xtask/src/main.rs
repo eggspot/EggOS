@@ -78,6 +78,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-runtime",
     "eggos-init",
     "eggos-eggsh",
+    "eggos-coreutils",
     "eggos-selftest",
     "eggos-std-selftest",
 ];
@@ -124,6 +125,12 @@ const INIT_RUSTFLAGS: &[&str] = &[
 const INIT_PATH: &str = "init";
 
 const SHELL_PATH: &str = "bin/eggsh";
+
+const COREUTILS_PATH: &str = "bin/coreutils";
+
+const COREUTILS: [&str; 10] = [
+    "cat", "echo", "false", "halt", "ls", "poweroff", "reboot", "sleep", "true", "uname",
+];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
 
@@ -256,8 +263,10 @@ fn ci() -> Result<(), String> {
 /// Both boots start with the `.bss` probe poisoned, so the `.bss` self-test can fail.
 /// Then boots the release kernel twice with a test initramfs whose init runs the std program
 /// as its login program, and powers off once it ends, or resets the machine, which ends QEMU
-/// under `-no-reboot` (D106); and once more with init starting the shell, which the test
-/// drives on the serial console (D107).
+/// under `-no-reboot` (D106); once more with init starting the shell, which the test
+/// drives on the serial console (D107); and last the release kernel itself, booted to the
+/// shell's prompt, where the test runs the core utilities and powers off with `poweroff`
+/// (D108).
 fn boot_tests(arch: &Arch) -> Result<(), String> {
     for (feature, expect) in [
         ("qemu-test", qemu::Expect::Pass),
@@ -277,6 +286,14 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let kernel = build_shell_test_kernel(arch)?;
     qemu::boot_test(arch, &kernel, qemu::Expect::Shell, qemu::TEST_CPUS, &[])?;
+    let kernel = build_kernel(arch, None)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::BootToPrompt,
+        qemu::TEST_CPUS,
+        &[],
+    )?;
     Ok(())
 }
 
@@ -315,19 +332,26 @@ fn clippy_targets() -> Result<(), String> {
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
 /// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]): without a
-/// feature, the release kernel's, with init and the shell; every kernel feature is a test
-/// kernel's, which runs the programs [`build_user_programs`] builds first.
+/// feature, the release kernel's, with init, the shell and the core utilities; every kernel
+/// feature is a test kernel's, which runs the programs [`build_user_programs`] builds first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let Some(feature) = feature else {
         let init = build_init(arch)?;
         let shell = build_shell(arch)?;
-        let initramfs = initramfs::build(
-            &[
-                (INIT_PATH, initramfs::Content::Program(&init)),
-                (SHELL_PATH, initramfs::Content::Program(&shell)),
-            ],
-            &format!("initramfs-{}.cpio", arch.user_target),
-        )?;
+        let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
+        let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
+        let mut members = vec![
+            (INIT_PATH, initramfs::Content::Program(&init)),
+            (SHELL_PATH, initramfs::Content::Program(&shell)),
+            (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+        ];
+        members.extend(
+            links
+                .iter()
+                .map(|link| (link.as_str(), initramfs::Content::HardLink(COREUTILS_PATH))),
+        );
+        let initramfs =
+            initramfs::build(&members, &format!("initramfs-{}.cpio", arch.user_target))?;
         return build_release_kernel(arch, &initramfs);
     };
     let args = [
@@ -537,7 +561,7 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
                     let hex: String = chars.by_ref().take(4).collect();
                     value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
                 }
-                other => value.push(other), // `\\`, `\"`, `\/`
+                other => value.push(other),
             },
             c => value.push(c),
         }
