@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use eggos_drivers::display::Damage;
+use eggos_drivers::terminal::{TERM_BACKGROUND, Terminal, TextArea};
+
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
 const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 
@@ -147,6 +150,8 @@ const PROMPT_SESSION: [&[u8]; 9] = [
     SHIFTED_KEYS_LINE,
     b"poweroff\r",
 ];
+
+const PROMPT_SESSION_FRAME_PROMPT: usize = PROMPT_SESSION.len();
 
 const UNAME_LINE: &[u8] = b"uname -a\r";
 
@@ -311,9 +316,17 @@ pub enum Display {
     Absent,
 }
 
-/// The first frame the release kernel shows at 1280x800, as `eggos_kernel::display` draws it:
-/// its pixel hash, `FIRST_FRAME_HASH_1280X800`.
-const FIRST_FRAME: (u32, u32, u64) = (1280, 800, 0x1125_09e9_e81d_2325);
+/// The start of the line the release kernel writes once its graphical terminal shows the
+/// console: from the next line on, the serial console carries exactly the terminal's bytes.
+/// Must match `eggos_kernel::init::TERMINAL_LINE_PREFIX`.
+const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
+
+/// The terminal's grid at the 1280x800 xtask asks QEMU for.
+const TERMINAL_LINE_1280X800: &str = "boot: terminal 158x49";
+
+const TERMINAL_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+const TERMINAL_FRAME_RETRY: Duration = Duration::from_millis(50);
 
 /// CPUs in the boot tests and interactive runs, so every boot starts the secondary CPUs
 /// (D40). Must match `eggos_kernel::selftest::QEMU_CPUS`.
@@ -406,7 +419,7 @@ pub fn boot_test(
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
     let mut shell_typed = ShellTyping::default();
     let mut first_prompt = None;
-    let mut first_frame = None;
+    let mut terminal_frames = Vec::new();
     let mut input_events_sent = 0;
     let mut qmp_errors = Vec::new();
     let mut keyboard_typing: Option<KeyboardTyping> = None;
@@ -423,13 +436,25 @@ pub fn boot_test(
                 &mut shell_typed,
             ),
             Expect::BootToPrompt => {
-                let text = String::from_utf8_lossy(&console);
-                if first_prompt.is_none() && text.contains(SHELL_PROMPT) {
+                let prompts = String::from_utf8_lossy(&console)
+                    .matches(SHELL_PROMPT)
+                    .count();
+                if first_prompt.is_none() && prompts > 0 {
                     first_prompt = Some(started.elapsed());
-                    if let Some(port) = qmp_port {
-                        first_frame = Some(check_first_frame(arch, port));
-                    }
                 }
+                let at = match prompts {
+                    1 => Some("the first prompt"),
+                    PROMPT_SESSION_FRAME_PROMPT => {
+                        Some("the output of the line typed on the virtio keyboard")
+                    }
+                    _ => None,
+                };
+                if let (Some(port), Some(at)) = (qmp_port, at)
+                    && terminal_frames.len() < prompts.min(2)
+                {
+                    terminal_frames.push(check_terminal_frame(arch, port, &mut console, &rx, at));
+                }
+                let text = String::from_utf8_lossy(&console);
                 shell_scripts_to_type(&text, &PROMPT_SESSION, &mut shell_typed)
             }
             _ => scripts_to_type(&String::from_utf8_lossy(&console), &mut typed),
@@ -494,8 +519,8 @@ pub fn boot_test(
     if let Some(error) = qmp_errors.into_iter().next() {
         return Err(error);
     }
-    if let Some(first_frame) = first_frame {
-        first_frame?;
+    for frame in terminal_frames {
+        frame?;
     }
     if let Some(first_prompt) = first_prompt {
         eprintln!(
@@ -749,6 +774,11 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     if !clean_exit {
         return Err(format!("{arch}: QEMU exited with an error"));
     }
+    if !lines.contains(&TERMINAL_LINE_1280X800) {
+        return Err(format!(
+            "{arch}: no `{TERMINAL_LINE_1280X800}`: the graphical terminal did not start"
+        ));
+    }
     if !lines.contains(&BOOT_INPUT_LINE) {
         return Err(format!(
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
@@ -781,33 +811,103 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     Ok(())
 }
 
-/// Takes a picture of the display through QMP at `port` and checks it is the first frame.
-fn check_first_frame(arch: &Arch, port: u16) -> Result<(), String> {
+/// The serial console's bytes from the line after the kernel's `boot: terminal` line: what the
+/// graphical terminal was fed.
+fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
+    let prefix = TERMINAL_LINE_PREFIX.as_bytes();
+    let start = console
+        .windows(prefix.len() + 1)
+        .position(|window| window[0] == b'\n' && &window[1..] == prefix)?
+        + 1;
+    let end = start + console[start..].iter().position(|&byte| byte == b'\n')?;
+    Some(&console[end + 1..])
+}
+
+/// What a `width` by `height` display shows once the release kernel's terminal was fed
+/// `stream`, rendered by the same terminal engine on the host; `None` when not one cell fits.
+pub fn terminal_picture(width: u32, height: u32, stream: &[u8]) -> Option<Picture> {
+    let area = TextArea::full_screen(width, height)?;
+    let mut terminal = Terminal::new(area.columns, area.rows)?;
+    terminal.set_onlcr(true);
+    terminal.feed(stream);
+    let mut pixels = vec![TERM_BACKGROUND; width as usize * height as usize];
+    terminal.render(
+        &mut pixels,
+        width as usize,
+        area.x,
+        area.y,
+        &mut Damage::new(),
+    );
+    Some(Picture {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Takes pictures of the display through QMP at `port` until one is what the host's terminal
+/// engine renders from the console's bytes since `boot: terminal`, reading new console output
+/// from `output` into `console` meanwhile; fails when none is within
+/// [`TERMINAL_FRAME_TIMEOUT`], leaving the last picture and the expected one for a person to
+/// compare. `at` names the moment for the messages.
+fn check_terminal_frame(
+    arch: &Arch,
+    port: u16,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    at: &str,
+) -> Result<(), String> {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::workspace_root().join("target"));
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
     let path = target.join(format!("screendump-{}.ppm", arch.name));
-    Qmp::connect(port)?.screendump(&path)?;
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let picture = Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (width, height, hash) = FIRST_FRAME;
-    if (picture.width, picture.height, picture.hash()) != (width, height, hash) {
-        return Err(format!(
-            "{}: the display shows a {}x{} picture with hash {:#x}, not the {width}x{height} \
-             first frame ({hash:#x}); see {}",
-            arch.name,
-            picture.width,
-            picture.height,
-            picture.hash(),
-            path.display()
-        ));
+    let mut qmp = Qmp::connect(port)?;
+    let started = Instant::now();
+    loop {
+        console.extend(output.try_iter().flatten());
+        qmp.screendump(&path)?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let picture = Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let stream = terminal_stream(console).ok_or_else(|| {
+            format!(
+                "{}: no `{TERMINAL_LINE_PREFIX}...` line before {at}",
+                arch.name
+            )
+        })?;
+        let expected =
+            terminal_picture(picture.width, picture.height, stream).ok_or_else(|| {
+                format!(
+                    "{}: a {}x{} display holds no terminal",
+                    arch.name, picture.width, picture.height
+                )
+            })?;
+        if picture == expected {
+            eprintln!(
+                "xtask: {}: the display shows the terminal at {at} ({}x{}, hash {:#x})",
+                arch.name,
+                picture.width,
+                picture.height,
+                picture.hash()
+            );
+            return Ok(());
+        }
+        if started.elapsed() > TERMINAL_FRAME_TIMEOUT {
+            let expected_path = target.join(format!("screendump-{}-expected.ppm", arch.name));
+            std::fs::write(&expected_path, expected.to_ppm())
+                .map_err(|e| format!("{}: {e}", expected_path.display()))?;
+            return Err(format!(
+                "{}: at {at} the display shows a picture with hash {:#x}, not the terminal the \
+                 host renders ({:#x}); compare {} with {}",
+                arch.name,
+                picture.hash(),
+                expected.hash(),
+                path.display(),
+                expected_path.display()
+            ));
+        }
+        std::thread::sleep(TERMINAL_FRAME_RETRY);
     }
-    eprintln!(
-        "xtask: {}: the display shows the first frame ({width}x{height}, hash {hash:#x})",
-        arch.name
-    );
-    Ok(())
 }
 
 /// Boots `kernel` with the console on this terminal, until the user quits QEMU; its display in
@@ -1069,7 +1169,9 @@ mod tests {
     }
 
     fn prompt_console(arch: &str) -> String {
-        let mut console = format!("EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{INIT_BANNER}\r\n");
+        let mut console = format!(
+            "EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+        );
         for (typed, written) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
             let command = String::from_utf8_lossy(typed);
             console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
@@ -1115,6 +1217,31 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_input).is_err());
         let unshifted = ok.replace("Typed_On+Virtio:OK\r\n", "typed-on=virtio;ok\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
+        let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_terminal).is_err());
+    }
+
+    #[test]
+    fn the_terminal_s_bytes_are_the_console_s_after_the_terminal_line() {
+        let console = b"EggOS 0.2.0 (aarch64)\r\nboot: terminal 158x49\r\nEggOS 0.2.0\r\neggsh:/# ";
+        assert_eq!(
+            terminal_stream(console),
+            Some(&b"EggOS 0.2.0\r\neggsh:/# "[..])
+        );
+        assert_eq!(terminal_stream(b"EggOS\r\nboot: terminal 158x49"), None);
+        assert_eq!(terminal_stream(b"EggOS\r\nboot: no display\r\nx"), None);
+    }
+
+    #[test]
+    fn the_expected_terminal_picture_is_the_engine_s_render_of_the_stream() {
+        let picture = terminal_picture(1024, 768, b"eggsh:/# ").unwrap();
+        assert_eq!((picture.width, picture.height), (1024, 768));
+        assert_eq!(picture.pixels.len(), 1024 * 768);
+        assert_eq!(picture.pixels[0], TERM_BACKGROUND);
+        let cursor = picture.pixels[8 * 1024 + 8 + 9 * 8];
+        assert_eq!(cursor, eggos_drivers::terminal::TERM_CURSOR);
+        assert_ne!(picture, terminal_picture(1024, 768, b"eggsh:/#").unwrap());
+        assert!(terminal_picture(20, 20, b"").is_none());
     }
 
     #[test]

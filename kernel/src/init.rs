@@ -5,7 +5,7 @@
 use crate::linux::{self, exec, process_table};
 use crate::memory::Memory;
 use crate::process::{Process, ProcessExit};
-use crate::{cpu, input, thread, vfs};
+use crate::{cpu, input, terminal, thread, vfs};
 use alloc::sync::Arc;
 use core::fmt::Write;
 use eggos_hal::Platform;
@@ -16,6 +16,11 @@ pub const PATH: &[u8] = b"/init";
 const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
 const CPU_START_TIMEOUT_MS: u64 = 1000;
+
+/// The start of the line the kernel writes once the graphical terminal shows the console, before
+/// its grid's columns and rows (`158x49`): from the next line on, the serial console and the
+/// terminal receive the same bytes. Must match the QEMU runner's.
+pub const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 /// Why init could not run, or how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +55,17 @@ pub fn run<P: Platform, W: Write>(
     thread::enable_preemption::<P>();
     if let Err(error) = input::start_polling::<P>() {
         writeln!(console, "input: not polled: {error:?}")?;
+    }
+    if let Some(area) = terminal::start::<P>() {
+        writeln!(
+            console,
+            "{TERMINAL_LINE_PREFIX}{}x{}",
+            area.columns, area.rows
+        )?;
+        if let Err(error) = terminal::start_drawing::<P>() {
+            terminal::stop();
+            writeln!(console, "terminal: not drawn: {error:?}")?;
+        }
     }
     let outcome = start_and_wait::<P>(memory);
     match outcome.wait_status() {

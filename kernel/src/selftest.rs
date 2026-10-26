@@ -64,7 +64,7 @@ fn virtio_rng_returns_bytes<P: Platform>(_memory: &mut Memory<P>) -> Result<(), 
 }
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 53] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 54] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -101,6 +101,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 53] {
         (
             "display_shows_the_first_frame",
             crate::devices::selftest::display_shows_the_first_frame::<P>,
+        ),
+        (
+            "terminal_draws_on_the_display",
+            crate::devices::selftest::terminal_draws_on_the_display::<P>,
         ),
         (
             "input_devices_deliver_events",

@@ -1327,7 +1327,7 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         if process.read_user_memory(address, bytes).is_err() {
             break;
         }
-        P::console_write(bytes);
+        crate::console::write::<P>(bytes);
         written += length as u64;
         crate::thread::preemption_point::<P>();
         process.interrupt_here_if_sent_signals_wait();

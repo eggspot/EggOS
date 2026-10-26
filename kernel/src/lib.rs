@@ -29,6 +29,7 @@ pub mod random;
 pub mod regions;
 pub mod selftest;
 pub mod sync;
+pub mod terminal;
 pub mod thread;
 pub mod vfs;
 

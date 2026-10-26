@@ -470,8 +470,14 @@ impl input::InputSink for DiscardingSink {
     fn bytes(&mut self, bytes: &[u8]) {
         black_box(bytes);
     }
+    fn room(&self) -> usize {
+        usize::MAX
+    }
     fn event(&mut self, event: input::InputEvent) {
         black_box(event);
+    }
+    fn view(&mut self, change: crate::terminal::ViewMove) {
+        black_box(change);
     }
 }
 

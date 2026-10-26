@@ -7,14 +7,27 @@ use std::sync::Arc;
 struct Recorded {
     bytes: Vec<u8>,
     events: Vec<InputEvent>,
+    views: Vec<ViewMove>,
+    full: bool,
 }
 
 impl InputSink for Recorded {
     fn bytes(&mut self, bytes: &[u8]) {
+        assert!(!self.full, "bytes were sent to a full sink");
         self.bytes.extend_from_slice(bytes);
+    }
+    fn room(&self) -> usize {
+        if self.full {
+            KeyBytes::CAPACITY - 1
+        } else {
+            usize::MAX
+        }
     }
     fn event(&mut self, event: InputEvent) {
         self.events.push(event);
+    }
+    fn view(&mut self, change: ViewMove) {
+        self.views.push(change);
     }
 }
 
@@ -434,16 +447,15 @@ fn wheel(delta: i32) -> InputEvent {
 }
 
 #[test]
-fn the_queue_hands_events_out_in_order_and_drops_and_counts_what_does_not_fit() {
+fn the_queue_hands_events_out_in_order_and_drops_and_counts_the_oldest_when_full() {
     let queue = EventQueue::<4>::new();
     assert!(queue.is_empty() && queue.pop().is_none());
-    for delta in 0..6 {
-        queue.push(wheel(delta));
-    }
+    let kept: Vec<bool> = (0..6).map(|delta| queue.push(wheel(delta))).collect();
+    assert_eq!(kept, [true, true, true, true, false, false]);
     assert_eq!(queue.len(), 4);
     assert_eq!(queue.dropped(), 2);
     let popped: Vec<_> = std::iter::from_fn(|| queue.pop()).collect();
-    assert_eq!(popped, [wheel(0), wheel(1), wheel(2), wheel(3)]);
+    assert_eq!(popped, [wheel(2), wheel(3), wheel(4), wheel(5)]);
     for round in 0..1000 {
         assert!(queue.push(wheel(round)));
         assert!(queue.push(wheel(-round)));
@@ -455,45 +467,37 @@ fn the_queue_hands_events_out_in_order_and_drops_and_counts_what_does_not_fit() 
 }
 
 #[test]
-fn consumers_on_other_threads_take_every_event_exactly_once() {
+fn consumers_on_other_threads_take_each_event_once_and_the_rest_are_counted_dropped() {
     const EVENTS: i32 = 200_000;
     let queue = Arc::new(EventQueue::<64>::new());
+    let done = Arc::new(AtomicBool::new(false));
     let consumers: Vec<_> = (0..3)
         .map(|_| {
             let queue = Arc::clone(&queue);
+            let done = Arc::clone(&done);
             std::thread::spawn(move || {
                 let mut taken = Vec::new();
-                let mut idle = 0;
-                while idle < 1_000_000 {
+                loop {
                     match queue.pop() {
-                        Some(InputEvent::Wheel { delta }) if delta < 0 => break,
-                        Some(InputEvent::Wheel { delta }) => {
-                            taken.push(delta);
-                            idle = 0;
-                        }
+                        Some(InputEvent::Wheel { delta }) => taken.push(delta),
                         Some(other) => panic!("{other:?} was never pushed"),
-                        None => {
-                            idle += 1;
-                            std::hint::spin_loop();
-                        }
+                        None if done.load(Ordering::Acquire) => break,
+                        None => std::hint::spin_loop(),
                     }
                 }
                 taken
             })
         })
         .collect();
-    let mut pushed = 0;
     for delta in 0..EVENTS {
-        while !queue.push(wheel(delta)) {
-            std::hint::spin_loop();
+        if delta % 2 == 0 {
+            while queue.len() >= 64 {
+                std::hint::spin_loop();
+            }
         }
-        pushed += 1;
+        queue.push(wheel(delta));
     }
-    for _ in 0..3 {
-        while !queue.push(wheel(-1)) {
-            std::hint::spin_loop();
-        }
-    }
+    done.store(true, Ordering::Release);
     let mut taken: Vec<i32> = consumers
         .into_iter()
         .flat_map(|consumer| {
@@ -502,9 +506,88 @@ fn consumers_on_other_threads_take_every_event_exactly_once() {
             taken
         })
         .collect();
+    while let Some(InputEvent::Wheel { delta }) = queue.pop() {
+        taken.push(delta);
+    }
     taken.sort_unstable();
-    assert_eq!(taken.len(), pushed as usize);
-    assert!(taken.iter().copied().eq(0..EVENTS));
+    let before = taken.len();
+    taken.dedup();
+    assert_eq!(taken.len(), before, "an event was taken twice");
+    assert_eq!(taken.len() as u64 + queue.dropped(), EVENTS as u64);
+    assert!(taken.iter().all(|delta| (0..EVENTS).contains(delta)));
+}
+
+#[test]
+fn a_repeat_waits_for_room_for_its_whole_sequence() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    send(&mut state, &mut keyboard, &press(key::UP), SCREEN, 0);
+    let mut full = Recorded {
+        full: true,
+        ..Recorded::default()
+    };
+    state.repeat_key(timing(400), &mut full);
+    assert!(full.bytes.is_empty());
+    assert_eq!(state.next_repeat(), Some(400));
+    let mut room = Recorded::default();
+    state.repeat_key(timing(401), &mut room);
+    assert_eq!(room.bytes, b"\x1b[A");
+    state.set_cursor_keys(CursorKeys::Application);
+    state.repeat_key(timing(441), &mut room);
+    assert_eq!(room.bytes, b"\x1b[A\x1bOA");
+}
+
+#[test]
+fn shift_with_the_page_keys_and_the_wheel_move_the_scrollback_view() {
+    let mut state = InputState::new();
+    let mut keyboard = Device::keyboard();
+    send(
+        &mut state,
+        &mut keyboard,
+        &press(key::LEFT_SHIFT),
+        SCREEN,
+        0,
+    );
+    let mut moves = Vec::new();
+    for code in [key::PAGE_UP, key::PAGE_DOWN, key::HOME, key::END] {
+        let sent = send(&mut state, &mut keyboard, &tap(code), SCREEN, 0);
+        assert!(sent.bytes.is_empty());
+        moves.extend(sent.views);
+    }
+    assert_eq!(
+        moves,
+        [
+            ViewMove::PageBack,
+            ViewMove::PageForward,
+            ViewMove::Oldest,
+            ViewMove::Live
+        ]
+    );
+    send(
+        &mut state,
+        &mut keyboard,
+        &release(key::LEFT_SHIFT),
+        SCREEN,
+        0,
+    );
+    let unshifted = send(&mut state, &mut keyboard, &tap(key::PAGE_UP), SCREEN, 0);
+    assert_eq!(unshifted.bytes, b"\x1b[5~");
+    assert!(unshifted.views.is_empty());
+    let mut mouse = Device::mouse();
+    let wheel_events = [
+        RawEvent::new(event_type::REL, relative::WHEEL, 2),
+        SYN,
+        RawEvent::new(event_type::REL, relative::WHEEL, -1),
+        SYN,
+    ];
+    let wheeled = send(&mut state, &mut mouse, &wheel_events, SCREEN, 0);
+    assert_eq!(
+        wheeled.views,
+        [
+            ViewMove::Back(2 * WHEEL_LINES),
+            ViewMove::Forward(WHEEL_LINES)
+        ]
+    );
 }
 
 struct ScriptedKeyboard {
@@ -544,6 +627,7 @@ fn an_installed_keyboard_s_keys_reach_the_console_and_the_event_queue() {
     assert!(has_room());
     install(Box::new(ScriptedKeyboard { events: line })).unwrap_or_else(|_| panic!("no room"));
     assert!(summary().keyboards >= 1);
+    subscribe();
     while next_event().is_some() {}
     let dropped = dropped_events();
     for _ in 0..2 {
