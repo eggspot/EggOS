@@ -108,6 +108,10 @@ const MENU_ITEMS: [(&str, Action); 2] = [
     ("Restart", Action::Restart),
 ];
 const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 3600;
+const MINUTES_PER_HOUR: u64 = 60;
+const HOURS_PER_DAY: u64 = 24;
+const MOST_DAYS_SHOWN: u64 = 999_999;
 
 /// What a pointer or key event asks of the machine, beyond redrawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,7 +242,7 @@ impl Desktop {
         self.menu_open
     }
 
-    /// The clock's text, `up m:ss`, centred in [`CLOCK_GLYPHS`] cells.
+    /// The clock's text ([`Self::set_uptime`]), centred in [`CLOCK_GLYPHS`] cells.
     pub fn clock_text(&self) -> &str {
         core::str::from_utf8(&self.clock).unwrap_or("")
     }
@@ -320,15 +324,39 @@ impl Desktop {
         )
     }
 
-    /// Shows `seconds` of uptime on the clock as `up m:ss`; returns whether its text changed,
-    /// adding its rectangle to `damage` if so.
+    /// Shows `seconds` of uptime on the clock, in at most [`CLOCK_GLYPHS`]: `up m:ss` for the
+    /// first hour, then `up h:mm:ss`, `up 10h 05m` from ten hours and `up 4d 03h` from a
+    /// hundred hours, `up 100d` from a hundred days. Returns whether its text changed, adding
+    /// its rectangle to `damage` if so.
     pub fn set_uptime(&mut self, seconds: u64, damage: &mut Damage) -> bool {
         let mut text = [b' '; CLOCK_GLYPHS];
         let mut written = Writer::new(&mut text);
         written.push_str("up ");
-        written.push_number(seconds / SECONDS_PER_MINUTE, 1);
-        written.push_str(":");
-        written.push_number(seconds % SECONDS_PER_MINUTE, 2);
+        let (minutes, hours) = (seconds / SECONDS_PER_MINUTE, seconds / SECONDS_PER_HOUR);
+        let days = hours / HOURS_PER_DAY;
+        let fields: [(u64, usize, &str); 3] = match hours {
+            0 => [
+                (minutes, 1, ":"),
+                (seconds % SECONDS_PER_MINUTE, 2, ""),
+                (0, 0, ""),
+            ],
+            1..10 => [
+                (hours, 1, ":"),
+                (minutes % MINUTES_PER_HOUR, 2, ":"),
+                (seconds % SECONDS_PER_MINUTE, 2, ""),
+            ],
+            10..100 => [
+                (hours, 2, "h "),
+                (minutes % MINUTES_PER_HOUR, 2, "m"),
+                (0, 0, ""),
+            ],
+            _ if days < 100 => [(days, 1, "d "), (hours % HOURS_PER_DAY, 2, "h"), (0, 0, "")],
+            _ => [(days.min(MOST_DAYS_SHOWN), 1, "d"), (0, 0, ""), (0, 0, "")],
+        };
+        for (value, digits, unit) in fields.into_iter().filter(|field| field.1 > 0) {
+            written.push_number(value, digits);
+            written.push_str(unit);
+        }
         let length = written.length;
         let shift = (CLOCK_GLYPHS - length) / 2;
         let mut centred = [b' '; CLOCK_GLYPHS];

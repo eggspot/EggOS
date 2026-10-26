@@ -188,8 +188,20 @@ fn the_clock_shows_uptime_and_damages_only_its_rect_when_it_changes() {
     assert!(desktop.set_uptime(61, &mut damage));
     assert_eq!(desktop.clock_text().trim(), "up 1:01");
     assert_eq!(damage.rects(), &[desktop.clock_rect()]);
-    desktop.set_uptime(3600 * 100 + 7, &mut damage);
-    assert_eq!(desktop.clock_text().trim(), "up 6000:07");
+    for (seconds, text) in [
+        (3599, "up 59:59"),
+        (3600, "up 1:00:00"),
+        (35_999, "up 9:59:59"),
+        (36_000, "up 10h 00m"),
+        (359_999, "up 99h 59m"),
+        (360_000, "up 4d 04h"),
+        (100 * 86_400 - 1, "up 99d 23h"),
+        (100 * 86_400, "up 100d"),
+        (u64::MAX, "up 999999d"),
+    ] {
+        desktop.set_uptime(seconds, &mut damage);
+        assert_eq!(desktop.clock_text().trim(), text);
+    }
     assert_eq!(desktop.clock_rect(), Rect::new(600, 6, 80, 16));
 }
 
