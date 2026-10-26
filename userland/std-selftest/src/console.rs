@@ -1,8 +1,10 @@
 //! Given [`READ_THE_CONSOLE`], the program reads the console through its line discipline
 //! (D100) as a C library's terminal calls do, asking the QEMU runner to type each script by
 //! writing one of the [`request`] lines: canonical lines with their editing, an end of file,
-//! `^C` interrupting a `ppoll` and a `read`, and raw bytes. It writes [`PASSED_LINE`] and exits
-//! with 0 if every answer was Linux's, or names the first that was not and exits with 1.
+//! a line read with `O_NONBLOCK` (D101), lines read through musl's stdio, which reads with
+//! `readv`, and Rust's, `^C` interrupting a `ppoll` and a `read`, and raw bytes. It writes
+//! [`PASSED_LINE`] and exits with 0 if every answer was Linux's, or names the first that was
+//! not and exits with 1.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -25,6 +27,10 @@ pub mod request {
     pub const RESTART: &str = "EGGOS-CONSOLE: type an interrupt and a line";
     /// Bytes for a non-canonical read.
     pub const RAW: &str = "EGGOS-CONSOLE: type raw bytes";
+    /// A line for a read with `O_NONBLOCK`.
+    pub const WITHOUT_WAITING: &str = "EGGOS-CONSOLE: type a line to read without waiting";
+    /// A line for musl's `fgets`, then one for Rust's `read_line`.
+    pub const STDIO: &str = "EGGOS-CONSOLE: type lines for stdio";
 }
 
 /// What a `read` of the lines script returns, in order, with the most each read asks for.
@@ -41,12 +47,19 @@ const LINES_READ: [(&[u8], usize); 9] = [
 ];
 
 const RAW_READ: &[u8] = b"xy\x7fz\n";
+const WITHOUT_WAITING_READ: &[u8] = b"ready\n";
+const FGETS_READ: &[u8] = b"from musl's stdio\n";
+const READ_LINE_READ: &str = "from Rust's std\n";
 const RESTARTED_READ: &[u8] = b"after\n";
 
 const SIGINT: i32 = 2;
 const SIG_BLOCK: i32 = 0;
 const SIG_SETMASK: i32 = 2;
 const EINTR: i32 = 4;
+const EAGAIN: i32 = 11;
+const F_GETFL: i32 = 3;
+const F_SETFL: i32 = 4;
+const O_NONBLOCK: i32 = 0o4000;
 const POLLIN: i16 = 1;
 const TCSANOW: i32 = 0;
 const TCSAFLUSH: i32 = 2;
@@ -99,6 +112,13 @@ unsafe extern "C" {
         mask: *const u64,
     ) -> i32;
     fn ioctl(fd: i32, request: i32, ...) -> i32;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
+    fn fgets(
+        line: *mut std::ffi::c_char,
+        size: i32,
+        stream: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_char;
+    static stdin: *mut std::ffi::c_void;
     fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
     fn siginterrupt(signal: i32, interrupt: i32) -> i32;
     fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32;
@@ -150,6 +170,8 @@ fn checks() -> Result<(), &'static str> {
         "FIONREAD found input before anything was typed",
     )?;
     lines()?;
+    read_without_waiting()?;
+    read_through_stdio()?;
     interrupt_a_poll()?;
     interrupt_and_restart_a_read()?;
     raw_bytes(original)?;
@@ -245,6 +267,63 @@ fn lines() -> Result<(), &'static str> {
     check(
         poll_input(0) == 0 && pending() == Some(0),
         "input was left after the last line",
+    )
+}
+
+fn set_nonblocking(nonblocking: bool) -> Result<(), &'static str> {
+    // SAFETY: plain libc calls on descriptor 0.
+    let flags = unsafe { fcntl(0, F_GETFL) };
+    check(flags >= 0, "fcntl(F_GETFL) failed on the console")?;
+    let flags = match nonblocking {
+        true => flags | O_NONBLOCK,
+        false => flags & !O_NONBLOCK,
+    };
+    // SAFETY: as above.
+    let set = unsafe { fcntl(0, F_SETFL, flags) };
+    check(set == 0, "fcntl(F_SETFL) failed on the console")
+}
+
+fn read_without_waiting() -> Result<(), &'static str> {
+    set_nonblocking(true)?;
+    check(
+        read_console(64) == Err(EAGAIN),
+        "a read with O_NONBLOCK did not fail with EAGAIN before anything was typed",
+    )?;
+    ask_for(request::WITHOUT_WAITING);
+    check(
+        poll_input(-1) == i32::from(POLLIN),
+        "poll did not wait for a line with O_NONBLOCK set",
+    )?;
+    check(
+        read_console(64).as_deref() == Ok(WITHOUT_WAITING_READ),
+        "a read with O_NONBLOCK did not return the line typed",
+    )?;
+    check(
+        read_console(64) == Err(EAGAIN),
+        "a read with O_NONBLOCK did not fail with EAGAIN once the line was read",
+    )?;
+    set_nonblocking(false)
+}
+
+fn read_through_stdio() -> Result<(), &'static str> {
+    ask_for(request::STDIO);
+    let mut line = [0 as std::ffi::c_char; 64];
+    // SAFETY: `line` holds 64 bytes; musl's `stdin` is its standard input stream.
+    let read = unsafe { fgets(line.as_mut_ptr(), line.len() as i32, stdin) };
+    check(
+        !read.is_null(),
+        "musl's fgets read nothing from the console",
+    )?;
+    // SAFETY: `fgets` ended the line with a zero within `line`.
+    let line = unsafe { std::ffi::CStr::from_ptr(line.as_ptr()) };
+    check(
+        line.to_bytes() == FGETS_READ,
+        "musl's fgets did not read the line typed",
+    )?;
+    let mut next = String::new();
+    check(
+        std::io::stdin().read_line(&mut next).is_ok() && next == READ_LINE_READ,
+        "Rust's read_line did not read the line typed",
     )
 }
 
