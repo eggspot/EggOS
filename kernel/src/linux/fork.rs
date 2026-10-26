@@ -181,3 +181,76 @@ pub fn release_vfork_parent<P: Platform>(process: &Process<P>) {
         futex::wake::<P>(vfork_key(futex_space), u32::MAX, u32::MAX);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory;
+    use crate::paging::PageTables;
+    use crate::process::ProcessExit;
+    use crate::tests::TestPlatform as P;
+    use crate::thread::{self, host::frames_for_test};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    fn kernel_tables() -> PageTables<<P as Platform>::PageTableFormat> {
+        let mut frames = memory::FRAMES.lock();
+        let mut tables = PageTables::new(frames.as_mut().unwrap()).unwrap();
+        tables.mark_active();
+        tables
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Release {
+        ChildExits,
+        ChildExecs,
+        ParentEnds,
+    }
+
+    #[test]
+    fn a_vfork_parent_sleeps_until_its_child_execs_or_ends_or_its_own_process_ends() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        thread::start::<P>().unwrap();
+        static RELEASED: AtomicBool = AtomicBool::new(false);
+        for release in [
+            Release::ChildExits,
+            Release::ChildExecs,
+            Release::ParentEnds,
+        ] {
+            RELEASED.store(false, Ordering::SeqCst);
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let parent = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
+            let child = Arc::new(parent.new_child(ChildMemory::Shared).unwrap());
+            child.set_vfork_parent(parent.futex_space());
+            let waiter = thread::spawn::<P, _>({
+                let (parent, child) = (Arc::clone(&parent), Arc::clone(&child));
+                move || {
+                    let thread = LinuxThread::first(&parent);
+                    wait_for_release(&parent, &thread, &child);
+                    RELEASED.store(true, Ordering::SeqCst);
+                }
+            })
+            .unwrap();
+            for _ in 0..4 {
+                thread::yield_now::<P>();
+            }
+            assert!(!RELEASED.load(Ordering::SeqCst), "{release:?}");
+            match release {
+                Release::ChildExits => {
+                    assert!(child.exit(ProcessExit::Exited(0)));
+                    release_vfork_parent::<P>(&child);
+                }
+                Release::ChildExecs => {
+                    assert!(child.end_for_exec());
+                    release_vfork_parent::<P>(&child);
+                }
+                Release::ParentEnds => {
+                    assert!(parent.exit(ProcessExit::Exited(0)));
+                    futex::wake_space::<P>(parent.futex_space());
+                }
+            }
+            waiter.join::<P>();
+            assert!(RELEASED.load(Ordering::SeqCst), "{release:?}");
+        }
+    }
+}

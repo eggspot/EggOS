@@ -2007,6 +2007,165 @@ mod tests {
     }
 
     #[test]
+    fn a_child_gets_a_copy_of_every_page_region_and_the_break_and_frees_them() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free();
+        {
+            // SAFETY: as above.
+            let mut parent = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            let kept = DATA + FRAME_SIZE;
+            let untouched = DATA + 2 * FRAME_SIZE;
+            parent
+                .map_new_page(DATA, Attributes::USER_READ_WRITE, b"parent data")
+                .unwrap();
+            parent
+                .map_new_page(kept, Attributes::USER_TEXT, b"code")
+                .unwrap();
+            parent
+                .add_region(DATA, kept, Attributes::USER_READ_WRITE)
+                .unwrap();
+            parent
+                .add_region(kept, untouched, Attributes::USER_TEXT)
+                .unwrap();
+            parent
+                .add_region(
+                    untouched,
+                    untouched + FRAME_SIZE,
+                    Attributes::USER_READ_WRITE,
+                )
+                .unwrap();
+            parent.set_program_break(untouched + FRAME_SIZE);
+            let parent = Arc::new(parent);
+            parent.protect_range(kept, untouched, None).unwrap();
+            let with_parent = free();
+            let child = parent.new_child(ChildMemory::Copied).unwrap();
+            assert_ne!(child.id(), parent.id());
+            assert_eq!(child.parent_id(), parent.id().get());
+            assert_eq!(child.futex_space(), child.id().get());
+            assert!(!parent.shares_memory() && !child.shares_memory());
+            let (parent_frame, attributes) = parent.address_space().translate(DATA).unwrap();
+            let (child_frame, child_attributes) = child.address_space().translate(DATA).unwrap();
+            assert_ne!(parent_frame, child_frame);
+            assert_eq!(attributes, child_attributes);
+            assert_eq!(&page_bytes(&child, DATA)[..11], b"parent data");
+            child.write_user_memory(DATA, b"child").unwrap();
+            assert_eq!(&page_bytes(&parent, DATA)[..11], b"parent data");
+            assert_eq!(&page_bytes(&child, DATA)[..11], b"childt data");
+            for address in [DATA, kept, untouched] {
+                assert_eq!(child.region(address), parent.region(address));
+            }
+            assert_eq!(child.address_space().translate(kept), None);
+            assert_eq!(child.address_space().translate(untouched), None);
+            child
+                .protect_range(kept, untouched, Some(Attributes::USER_READ_ONLY))
+                .unwrap();
+            assert_eq!(&page_bytes(&child, kept)[..4], b"code");
+            let end = untouched + FRAME_SIZE;
+            assert_eq!(child.move_program_break(end + 10, u64::MAX), end + 10);
+            assert_eq!(parent.move_program_break(0, u64::MAX), end);
+            assert!(free() < with_parent);
+            drop(child);
+            assert_eq!(free(), with_parent);
+        }
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn a_copy_without_frames_enough_takes_none_and_leaves_the_parent_as_it_was() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let mut parent = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        for page in 0..3 {
+            parent
+                .map_new_page(
+                    DATA + page * FRAME_SIZE,
+                    Attributes::USER_READ_WRITE,
+                    b"kept",
+                )
+                .unwrap();
+        }
+        let mut hoard = Vec::new();
+        while free() > 6 {
+            hoard.push(memory::FRAMES.lock().as_mut().unwrap().allocate().unwrap());
+        }
+        let before = free();
+        assert_eq!(
+            parent.new_child(ChildMemory::Copied).err(),
+            Some(NewChildError::OutOfMemory)
+        );
+        assert_eq!(free(), before);
+        for page in 0..3 {
+            assert_eq!(&page_bytes(&parent, DATA + page * FRAME_SIZE)[..4], b"kept");
+        }
+        let mut frames = memory::FRAMES.lock();
+        for frame in hoard {
+            // SAFETY: allocated above from this allocator and never mapped.
+            unsafe { frames.as_mut().unwrap().free(frame) };
+        }
+    }
+
+    #[test]
+    fn a_child_sharing_the_memory_shares_its_pages_and_futex_space() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let mut parent = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        parent
+            .map_new_page(DATA, Attributes::USER_READ_WRITE, b"shared")
+            .unwrap();
+        let parent = Arc::new(parent);
+        let used = free();
+        let child = parent.new_child(ChildMemory::Shared).unwrap();
+        assert_eq!(free(), used);
+        assert_eq!(child.futex_space(), parent.id().get());
+        assert!(parent.shares_memory() && child.shares_memory());
+        child.write_user_memory(DATA, b"SHARED").unwrap();
+        assert_eq!(&page_bytes(&parent, DATA)[..6], b"SHARED");
+        let image = child.new_image().unwrap();
+        assert_eq!(image.futex_space(), child.id().get());
+        assert_eq!(image.parent_id(), parent.id().get());
+        drop((child, image));
+        assert!(!parent.shares_memory());
+    }
+
+    #[test]
+    fn children_keep_their_exit_with_the_parent_s_record_and_a_vfork_parent_is_taken_once() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let parent = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
+        let child = parent.new_child(ChildMemory::Shared).unwrap();
+        parent.add_child(&child, 17).unwrap();
+        let image = parent.new_image().unwrap();
+        let expected = |exit, gone| {
+            [ChildState {
+                exit_signal: 17,
+                exit,
+                gone,
+            }]
+        };
+        assert_eq!(image.children(), expected(None, false));
+        assert!(child.exit(ProcessExit::Exited(3)));
+        assert_eq!(
+            parent.children(),
+            expected(Some(ProcessExit::Exited(3)), false)
+        );
+        child.set_vfork_parent(parent.futex_space());
+        assert_eq!(child.take_vfork_parent(), Some(parent.futex_space()));
+        assert_eq!(child.take_vfork_parent(), None);
+        let id = child.id();
+        drop(child);
+        assert_eq!(
+            parent.children(),
+            expected(Some(ProcessExit::Exited(3)), true)
+        );
+        image.remove_child(id);
+        assert!(parent.children().is_empty());
+    }
+
+    #[test]
     fn a_user_thread_hands_every_exit_to_its_handler_and_frees_its_process() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();

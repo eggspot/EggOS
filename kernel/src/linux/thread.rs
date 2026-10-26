@@ -364,10 +364,10 @@ impl Arguments {
 /// the last two), with the caller's registers `context`: without `CLONE_THREAD`, starts a new
 /// process ([`super::fork::clone_process`]); with it, starts a thread of the caller's
 /// process, which returns 0 from the call on `stack` (the caller's stack pointer if 0) with
-/// every other register the caller's, its FP/SIMD registers among them, and returns its id. With `CLONE_SETTLS` its thread
-/// pointer is `tls`; with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` its id is written to
-/// the 32-bit words at `parent_tid` and `child_tid` before it runs, silently not if they are
-/// not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
+/// every other register the caller's, its FP/SIMD registers among them, and returns its id.
+/// With `CLONE_SETTLS` its thread pointer is `tls`; with `CLONE_PARENT_SETTID` and
+/// `CLONE_CHILD_SETTID` its id is written to the 32-bit words at `parent_tid` and `child_tid`
+/// before it runs, silently not if they are not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
 /// the word at `child_tid` and wakes a futex there. With `CLONE_FILES` it shares the caller's
 /// descriptor table, and without it starts with a copy (D101); with `CLONE_FS` it shares the
 /// working directory, and without it starts with a copy (D102). It blocks the signals the caller blocks,
@@ -456,7 +456,7 @@ pub fn clone<P: Platform>(
 }
 
 /// A copy of the calling thread's FP/SIMD registers as its program left them, for a thread or
-/// process it starts; `None` if it has none yet ([`crate::thread::with_running_fp`]).
+/// process it starts; `None` if it has none yet.
 pub fn running_fp<P: Platform>() -> Option<Box<FpState>> {
     let mut copy = Box::new(FpState::new());
     crate::thread::with_running_fp::<P, _>(|state| copy.as_mut().clone_from(state))?;

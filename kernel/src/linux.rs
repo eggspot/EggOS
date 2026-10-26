@@ -5773,12 +5773,13 @@ mod tests {
     }
 
     #[test]
-    fn clone_refuses_what_linux_refuses_and_new_processes_until_they_exist() {
+    fn clone_refuses_what_linux_refuses_and_what_processes_do_not_share() {
         use thread::flag::*;
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let (process, _) = process_with_stacks(&kernel);
         let clone = |flags| call(&process, number::CLONE, [flags, 0, 0, 0, 0, 0]);
+        const SIGCHLD: u64 = 17;
         for flags in [
             NEW_THREAD | PIDFD | PARENT_SETTID,
             NEW_THREAD | NEWNS | FS,
@@ -5793,30 +5794,135 @@ mod tests {
             NEW_THREAD | NEWNS,
             NEW_THREAD | NEWNET,
             VM | PIDFD,
+            SIGCHLD | NEWPID,
+            65,
+            VM | VFORK | EXIT_SIGNAL,
         ] {
             assert_eq!(clone(flags), Errno::EINVAL.result(), "{flags:#x}");
         }
-        const SIGCHLD: u64 = 17;
         for flags in [
-            SIGCHLD,
-            VM | VFORK | SIGCHLD,
-            VM | SIGHAND,
+            VM | SIGHAND | SIGCHLD,
+            PARENT | SIGCHLD,
             NEW_THREAD | PARENT,
             NEW_THREAD | VFORK,
         ] {
             assert_eq!(clone(flags), Errno::ENOSYS.result(), "{flags:#x}");
         }
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(
-            call(
-                &process,
-                number::CLONE,
-                [NEW_THREAD | SETTLS, 0, 0, 0, 1 << 63, 0]
-            ),
-            Errno::EPERM.result()
-        );
+        for flags in [NEW_THREAD | SETTLS, SETTLS | SIGCHLD] {
+            assert_eq!(
+                call(&process, number::CLONE, [flags, 0, 0, 0, 1 << 63, 0]),
+                Errno::EPERM.result()
+            );
+        }
         assert!(!process.has_ended());
+        assert!(process.children().is_empty());
         assert!(process.remove_thread(), "a refused clone counted a thread");
+    }
+
+    #[test]
+    fn a_fork_without_frames_for_the_copy_is_enomem_and_takes_none() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        process.write_user_memory(SCRATCH, b"kept").unwrap();
+        let free = || memory::FRAMES.lock().as_ref().unwrap().free_frames();
+        let mut hoard = Vec::new();
+        while free() > 2 {
+            hoard.push(memory::FRAMES.lock().as_mut().unwrap().allocate().unwrap());
+        }
+        let before = free();
+        let fork = || call(&process, number::CLONE, [17, 0, 0, 0, 0, 0]);
+        assert_eq!(fork(), Errno::ENOMEM.result());
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(call(&process, number::FORK, [0; 6]), Errno::ENOMEM.result());
+        assert_eq!(free(), before);
+        assert!(process.children().is_empty());
+        let mut kept = [0u8; 4];
+        process.read_user_memory(SCRATCH, &mut kept).unwrap();
+        assert_eq!(&kept, b"kept");
+        let mut frames = memory::FRAMES.lock();
+        for frame in hoard {
+            // SAFETY: allocated above from this allocator and never mapped.
+            unsafe { frames.as_mut().unwrap().free(frame) };
+        }
+    }
+
+    fn child_thread(
+        parent: &Arc<Process<P>>,
+        memory: process::ChildMemory,
+        clear_child_tid: u64,
+    ) -> (Arc<Process<P>>, LinuxThread) {
+        let first = take_first_thread(parent);
+        let child = Arc::new(parent.new_child(memory).unwrap());
+        parent.add_child(&child, 17).unwrap();
+        child.add_thread();
+        let thread = first.new_process_thread(
+            child.id().get(),
+            clear_child_tid,
+            first.files().copy().unwrap(),
+            first.working_directory().copy(),
+            true,
+        );
+        FIRST_THREADS
+            .lock()
+            .unwrap()
+            .insert(parent.id().get(), first);
+        (child, thread)
+    }
+
+    #[test]
+    fn a_child_knows_its_parent_keeps_its_actions_and_its_exit_is_recorded_for_it() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (parent, pid) = process_with_stacks(&kernel);
+        let sigusr1 = u64::from(signal::SIGUSR1);
+        set_handler(&parent, sigusr1, 0, 0);
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Copied, 0);
+        assert_eq!(call_as(&child, &mut thread, number::GETPPID, [0; 6]), pid);
+        assert_eq!(
+            call_as(&child, &mut thread, number::GETPID, [0; 6]),
+            u64::from(child.id().get())
+        );
+        assert_eq!(call(&parent, number::GETPPID, [0; 6]), 0);
+        assert_eq!(
+            child.signals().lock().action(signal::SIGUSR1),
+            parent.signals().lock().action(signal::SIGUSR1)
+        );
+        let mut context = called(number::EXIT_GROUP, [0x115, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&child, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let [state] = parent.children()[..] else {
+            panic!("not one child");
+        };
+        assert_eq!(state.exit, Some(ProcessExit::Exited(0x15)));
+        assert_eq!(state.exit_signal, 17);
+        assert!(!state.gone);
+        drop((child, thread));
+        assert!(parent.children()[0].gone);
+    }
+
+    #[test]
+    fn a_child_sharing_the_memory_clears_its_tid_word_there_as_it_ends() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (parent, _) = process_with_stacks(&kernel);
+        parent.write_user_memory(SCRATCH, &[0xff; 8]).unwrap();
+        let (child, mut thread) = child_thread(&parent, process::ChildMemory::Shared, SCRATCH);
+        assert_eq!(child.futex_space(), parent.futex_space());
+        assert!(parent.shares_memory());
+        let mut context = called(number::EXIT_GROUP, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            handle(&child, &mut thread, &mut context, UserExit::Syscall),
+            ControlFlow::Break(())
+        );
+        let mut word = [0u8; 8];
+        parent.read_user_memory(SCRATCH, &mut word).unwrap();
+        assert_eq!(word, [0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+        drop((child, thread));
+        assert!(!parent.shares_memory());
     }
 
     #[test]
