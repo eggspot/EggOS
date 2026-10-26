@@ -11,6 +11,7 @@ const GICD_CTLR: usize = 0x000;
 const GICD_ISENABLER: usize = 0x100;
 const GICD_IPRIORITYR: usize = 0x400;
 const GICD_ITARGETSR: usize = 0x800;
+const GICD_ICFGR: usize = 0xc00;
 const GICD_SGIR: usize = 0xf00;
 const BANKED_TARGET_BYTE_OF_SGI_0: usize = GICD_ITARGETSR;
 
@@ -25,9 +26,20 @@ const IAR_INTERRUPT_ID_MASK: u32 = 0x3ff;
 const FIRST_SPECIAL_INTERRUPT_ID: u32 = 1020;
 const MAX_INTERRUPT_ID: u32 = 1019;
 const MAX_SGI_ID: u32 = 15;
+const FIRST_SPI_ID: u32 = 32;
+const ICFGR_EDGE_TRIGGERED: u32 = 0b10;
 const SGIR_TARGET_LIST_SHIFT: u32 = 16;
 const SGIR_FILTER_TO_TARGET_LIST: u32 = 0b00 << 24;
 const SGIR_FILTER_TO_THIS_CPU: u32 = 0b10 << 24;
+
+/// How a shared peripheral interrupt's line signals it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// Pending while the line is asserted.
+    Level,
+    /// Pending once per rising edge.
+    Edge,
+}
 
 /// Size of the distributor's register block in bytes.
 pub const DISTRIBUTOR_BLOCK_SIZE: usize = 0x1000;
@@ -72,6 +84,27 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
         self.regs.write8(GICD_IPRIORITYR + id, priority);
         self.regs
             .write32(GICD_ISENABLER + id / 32 * 4, 1 << (id % 32));
+    }
+
+    /// Routes shared peripheral interrupt `id` (32-1019) to the CPU interfaces in `targets` (a
+    /// target list from [`Self::this_cpu_target`]; ignored on a uniprocessor GIC), triggered as
+    /// `trigger` says, with `priority`, and enables it.
+    pub fn route_shared_interrupt(&self, id: u32, priority: u8, targets: u8, trigger: Trigger) {
+        assert!(
+            (FIRST_SPI_ID..=MAX_INTERRUPT_ID).contains(&id),
+            "GIC SPI ID {id} out of range"
+        );
+        let index = id as usize;
+        let configuration = GICD_ICFGR + index / 16 * 4;
+        let shift = index % 16 * 2;
+        let edge = match trigger {
+            Trigger::Level => 0,
+            Trigger::Edge => ICFGR_EDGE_TRIGGERED << shift,
+        };
+        let others = self.regs.read32(configuration) & !(ICFGR_EDGE_TRIGGERED << shift);
+        self.regs.write32(configuration, others | edge);
+        self.regs.write8(GICD_ITARGETSR + index, targets);
+        self.enable_interrupt(id, priority);
     }
 
     /// The calling CPU's interface, as a target list with one bit set (bit n for CPU interface
@@ -157,6 +190,35 @@ mod tests {
         let gicd = Gicv2Distributor::new(FakeRegs::default());
         gicd.enable_interrupt(33, 0);
         assert_eq!(gicd.regs.writes(), vec![(0x400 + 33, 0), (0x104, 1 << 1)]);
+    }
+
+    #[test]
+    fn routing_a_level_spi_clears_only_its_edge_bit_then_targets_and_enables_it() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.regs.script_reads(0xc08, &[u32::MAX]);
+        gicd.route_shared_interrupt(33, 0x40, 0b0001, Trigger::Level);
+        assert_eq!(
+            gicd.regs.writes(),
+            vec![
+                (0xc08, !(0b10 << 2)),
+                (0x800 + 33, 0b0001),
+                (0x400 + 33, 0x40),
+                (0x104, 1 << 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn routing_an_edge_spi_sets_its_edge_bit() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.route_shared_interrupt(79, 0, 0b0010, Trigger::Edge);
+        assert_eq!(gicd.regs.writes()[0], (0xc00 + 4 * 4, 0b10 << 30));
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn only_spis_can_be_routed() {
+        Gicv2Distributor::new(FakeRegs::default()).route_shared_interrupt(31, 0, 1, Trigger::Level);
     }
 
     #[test]

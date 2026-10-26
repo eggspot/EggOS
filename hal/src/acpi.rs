@@ -33,6 +33,19 @@ const MADT_ENTRIES: usize = 44;
 const MADT_LOCAL_APIC: u8 = 0;
 const MADT_LOCAL_APIC_LENGTH: usize = 8;
 const MADT_LOCAL_APIC_ENABLED: u32 = 1;
+/// MADT structure type 1, I/O APIC (5.2.12.3): 12 bytes, the registers' address at 4 and the
+/// first global system interrupt it handles at 8.
+const MADT_IO_APIC: u8 = 1;
+const MADT_IO_APIC_LENGTH: usize = 12;
+/// MADT structure type 2, Interrupt Source Override (5.2.12.5): 10 bytes, the bus at 2 (0 is
+/// ISA), the ISA line at 3, its global system interrupt at 4 and the MPS INTI flags at 8.
+const MADT_SOURCE_OVERRIDE: u8 = 2;
+const MADT_SOURCE_OVERRIDE_LENGTH: usize = 10;
+const MADT_BUS_ISA: u8 = 0;
+const MPS_POLARITY_MASK: u16 = 0b11;
+const MPS_POLARITY_ACTIVE_LOW: u16 = 0b11;
+const MPS_TRIGGER_MASK: u16 = 0b11 << 2;
+const MPS_TRIGGER_LEVEL: u16 = 0b11 << 2;
 
 /// Where the root table list lives, from the RSDP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,20 +155,78 @@ pub fn parse_fadt(fadt: &[u8]) -> Option<Fadt> {
 /// its flags is skipped; a structure whose length runs past the table, or is below 2, ends the
 /// walk.
 pub fn madt_local_apic_ids(madt: &[u8], cpu: &mut dyn FnMut(u8)) {
-    let mut at = MADT_ENTRIES;
-    while let (Some(&kind), Some(&length)) = (madt.get(at), madt.get(at + 1)) {
-        let length = usize::from(length);
-        let Some(entry) = madt.get(at..at + length).filter(|_| length >= 2) else {
-            return;
-        };
-        if kind == MADT_LOCAL_APIC
-            && length >= MADT_LOCAL_APIC_LENGTH
-            && read_u32(entry, 4).is_some_and(|flags| flags & MADT_LOCAL_APIC_ENABLED != 0)
-        {
+    for entry in madt_structures(madt, MADT_LOCAL_APIC, MADT_LOCAL_APIC_LENGTH) {
+        if read_u32(entry, 4).is_some_and(|flags| flags & MADT_LOCAL_APIC_ENABLED != 0) {
             cpu(entry[3]);
         }
-        at += length;
     }
+}
+
+/// The MADT's structures of type `kind` at least `minimum_length` bytes long, in order. A
+/// structure whose length runs past the table, or is below 2, ends the walk.
+fn madt_structures(madt: &[u8], kind: u8, minimum_length: usize) -> impl Iterator<Item = &[u8]> {
+    let mut at = MADT_ENTRIES;
+    core::iter::from_fn(move || {
+        let length = usize::from(*madt.get(at + 1)?);
+        let entry = madt
+            .get(at..at.checked_add(length)?)
+            .filter(|_| length >= 2)?;
+        at += length;
+        Some(entry)
+    })
+    .filter(move |entry| entry[0] == kind && entry.len() >= minimum_length)
+}
+
+/// An I/O APIC a MADT lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoApic {
+    /// Physical address of its registers.
+    pub address: u64,
+    /// The global system interrupt its line 0 receives.
+    pub first_interrupt: u32,
+}
+
+/// The I/O APICs a validated MADT lists, in its order.
+pub fn madt_io_apics(madt: &[u8]) -> impl Iterator<Item = IoApic> + '_ {
+    madt_structures(madt, MADT_IO_APIC, MADT_IO_APIC_LENGTH).filter_map(|entry| {
+        Some(IoApic {
+            address: read_u32(entry, 4)?.into(),
+            first_interrupt: read_u32(entry, 8)?,
+        })
+    })
+}
+
+/// Where an ISA interrupt line arrives and how it signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IsaInterrupt {
+    /// Its global system interrupt.
+    pub global_interrupt: u32,
+    /// Asserted low.
+    pub active_low: bool,
+    /// Pending while asserted rather than on an edge.
+    pub level_triggered: bool,
+}
+
+/// Where ISA line `line` arrives: as a validated MADT's first Interrupt Source Override for it
+/// says, or, with none, at the global system interrupt of the same number, active high and
+/// edge-triggered, as ISA lines signal (5.2.12.5). Flags that say "conforms to the bus" keep
+/// ISA's signalling.
+pub fn madt_isa_interrupt(madt: &[u8], line: u8) -> IsaInterrupt {
+    madt_structures(madt, MADT_SOURCE_OVERRIDE, MADT_SOURCE_OVERRIDE_LENGTH)
+        .find(|entry| entry[2] == MADT_BUS_ISA && entry[3] == line)
+        .and_then(|entry| {
+            let flags = u16::from_le_bytes([entry[8], entry[9]]);
+            Some(IsaInterrupt {
+                global_interrupt: read_u32(entry, 4)?,
+                active_low: flags & MPS_POLARITY_MASK == MPS_POLARITY_ACTIVE_LOW,
+                level_triggered: flags & MPS_TRIGGER_MASK == MPS_TRIGGER_LEVEL,
+            })
+        })
+        .unwrap_or(IsaInterrupt {
+            global_interrupt: line.into(),
+            active_low: false,
+            level_triggered: false,
+        })
 }
 
 /// The `SLP_TYPa` and `SLP_TYPb` values for sleep state S5 (soft off).
@@ -305,6 +376,83 @@ mod tests {
         ]
         .concat();
         assert_eq!(madt_ids(&body), [0, 1, 6]);
+    }
+
+    fn madt(body: &[u8]) -> Vec<u8> {
+        table(b"APIC", &[&[0u8; 8][..], body].concat())
+    }
+
+    fn io_apic(address: u32, first_interrupt: u32) -> Vec<u8> {
+        [
+            &[1u8, 12, 0, 0][..],
+            &address.to_le_bytes(),
+            &first_interrupt.to_le_bytes(),
+        ]
+        .concat()
+    }
+
+    fn source_override(bus: u8, line: u8, global_interrupt: u32, flags: u16) -> Vec<u8> {
+        [
+            &[2u8, 10, bus, line][..],
+            &global_interrupt.to_le_bytes(),
+            &flags.to_le_bytes(),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn madt_lists_io_apics_with_their_first_interrupt() {
+        let body = [
+            local_apic(0, 1),
+            io_apic(0xfec0_0000, 0),
+            source_override(0, 0, 2, 0),
+            io_apic(0xfec0_1000, 24),
+            vec![1, 8, 0, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+        let found: Vec<IoApic> = madt_io_apics(&madt(&body)).collect();
+        assert_eq!(
+            found,
+            [
+                IoApic {
+                    address: 0xfec0_0000,
+                    first_interrupt: 0
+                },
+                IoApic {
+                    address: 0xfec0_1000,
+                    first_interrupt: 24
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn isa_lines_follow_their_override_or_keep_their_number_and_isa_signalling() {
+        let body = [
+            io_apic(0xfec0_0000, 0),
+            source_override(0, 0, 2, 0),
+            source_override(1, 4, 40, 0b1111),
+            source_override(0, 9, 9, 0b1111),
+            source_override(0, 4, 20, 0b0101),
+        ]
+        .concat();
+        let madt = madt(&body);
+        let isa = |global_interrupt| IsaInterrupt {
+            global_interrupt,
+            active_low: false,
+            level_triggered: false,
+        };
+        assert_eq!(madt_isa_interrupt(&madt, 0), isa(2));
+        assert_eq!(madt_isa_interrupt(&madt, 4), isa(20));
+        assert_eq!(madt_isa_interrupt(&madt, 3), isa(3));
+        assert_eq!(
+            madt_isa_interrupt(&madt, 9),
+            IsaInterrupt {
+                global_interrupt: 9,
+                active_low: true,
+                level_triggered: true
+            }
+        );
     }
 
     #[test]

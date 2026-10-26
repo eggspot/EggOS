@@ -597,6 +597,12 @@ mod tests {
     impl Platform for CountingPlatform {
         const ARCH: &'static str = "counting";
         fn console_write(_bytes: &[u8]) {}
+        fn console_read(_buffer: &mut [u8]) -> usize {
+            unreachable!("not used in tests")
+        }
+        fn enable_console_input() -> Result<(), &'static str> {
+            unreachable!("not used in tests")
+        }
         fn exit(_status: ExitStatus) -> ! {
             unreachable!("not used in tests")
         }

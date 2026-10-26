@@ -45,6 +45,16 @@ pub trait Platform: 'static {
     /// Writes raw bytes to the early boot console. Must work before memory management is up.
     fn console_write(bytes: &[u8]);
 
+    /// Takes bytes the early boot console's UART received into `buffer`, until it is full or
+    /// nothing is waiting, and returns how many. Never waits.
+    fn console_read(buffer: &mut [u8]) -> usize;
+
+    /// Routes the early boot console's receive interrupt to the boot CPU and turns it on: from
+    /// then on, received bytes raise [`Interrupt::ConsoleInput`] there. Bytes received before
+    /// may be lost. Called once, on the boot CPU, once the kernel's page tables are active. Fails
+    /// when the machine's description gives no way to route it.
+    fn enable_console_input() -> Result<(), &'static str>;
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 

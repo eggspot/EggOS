@@ -9,7 +9,7 @@ use crate::linux::exec;
 use crate::memory::{self, FrameAllocator, MAX_ORDER, Memory};
 use crate::process::{self, Process, ProcessExit};
 use crate::sync::SpinLock;
-use crate::{cpu, exception, interrupt, linux, random, thread};
+use crate::{console, cpu, exception, interrupt, linux, random, thread};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
@@ -31,6 +31,11 @@ pub const FAIL_MARKER: &str = "EGGOS-SELFTEST: FAIL";
 /// read-only data. The QEMU runner requires the fault report to name that address.
 pub const WRITE_PROTECT_PROBE: &str = "fatal exception test: writing read-only data at ";
 
+/// What the QEMU runner types on the serial console once the kernel writes
+/// [`console::INPUT_READY_LINE`], ending in the carriage return a terminal sends for Enter.
+/// Must match the runner's.
+pub const CONSOLE_INPUT_SCRIPT: &[u8] = b"EggOS reads its console\r";
+
 /// CPUs the QEMU boot tests run with (`-smp`). Must match `TEST_CPUS` in `xtask`. The
 /// benchmarks run on one.
 #[cfg(all(feature = "qemu-test", not(feature = "qemu-bench")))]
@@ -50,11 +55,14 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 43] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 44] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
         ("timer_interrupt_fires", |_| timer_interrupt_fires::<P>()),
+        ("console_input_arrives_by_interrupt", |_| {
+            console_input_arrives_by_interrupt::<P>()
+        }),
         // Before the secondary CPUs start: it asks the HAL for seeds again.
         ("random_generator_is_seeded", |_| {
             random_generator_is_seeded::<P>()
@@ -322,6 +330,28 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
     }
     if P::clock_ticks() < deadline {
         return Err("the timer interrupt came before its deadline");
+    }
+    Ok(())
+}
+
+/// The bytes the QEMU runner types after [`console::INPUT_READY_LINE`] must reach
+/// [`console::read_input`] through the console's receive interrupt, the only path that queues
+/// them, whole and in order. Waits up to 2 s of clock time, taking interrupts without sleeping,
+/// so a clock that runs ahead while the CPU sleeps (QEMU's `-icount sleep=off`) still leaves the
+/// host time to type.
+fn console_input_arrives_by_interrupt<P: Platform>() -> Result<(), &'static str> {
+    let give_up = P::clock_ticks() + 2 * P::clock_frequency();
+    let mut received = [0u8; CONSOLE_INPUT_SCRIPT.len() + 1];
+    let mut length = 0;
+    while length < CONSOLE_INPUT_SCRIPT.len() {
+        if P::clock_ticks() > give_up {
+            return Err("the console's input did not arrive within 2 s");
+        }
+        P::interrupt_window();
+        length += console::read_input(&mut received[length..]);
+    }
+    if received[..length] != *CONSOLE_INPUT_SCRIPT {
+        return Err("the console's input arrived changed, out of order or with extra bytes");
     }
     Ok(())
 }
@@ -2702,6 +2732,12 @@ mod tests {
     impl Platform for LostBreakpoints {
         const ARCH: &'static str = "lost";
         fn console_write(_bytes: &[u8]) {}
+        fn console_read(_buffer: &mut [u8]) -> usize {
+            unreachable!("not used in tests")
+        }
+        fn enable_console_input() -> Result<(), &'static str> {
+            unreachable!("not used in tests")
+        }
         fn exit(_status: eggos_hal::ExitStatus) -> ! {
             unreachable!("not used in tests")
         }
@@ -2830,6 +2866,12 @@ mod tests {
     impl Platform for DeadTimer {
         const ARCH: &'static str = "dead-timer";
         fn console_write(_bytes: &[u8]) {}
+        fn console_read(_buffer: &mut [u8]) -> usize {
+            unreachable!("not used in tests")
+        }
+        fn enable_console_input() -> Result<(), &'static str> {
+            unreachable!("not used in tests")
+        }
         fn exit(_status: eggos_hal::ExitStatus) -> ! {
             unreachable!("not used in tests")
         }

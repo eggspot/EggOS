@@ -1235,6 +1235,8 @@ const SCAUSE_INTERRUPT: u64 = 1 << 63;
 const SCAUSE_SUPERVISOR_TIMER: u64 = SCAUSE_INTERRUPT | 5;
 /// `scause` for the supervisor software interrupt: the wake-up interrupt (D41).
 const SCAUSE_SUPERVISOR_SOFTWARE: u64 = SCAUSE_INTERRUPT | 1;
+/// `scause` for the supervisor external interrupt: a device's, through the PLIC.
+const SCAUSE_SUPERVISOR_EXTERNAL: u64 = SCAUSE_INTERRUPT | 9;
 
 /// Called by the entry code with the saved registers.
 extern "C" fn riscv64_exception(frame: &mut TrapFrame) {
@@ -1274,6 +1276,7 @@ fn interrupt(scause: u64) -> bool {
             crate::interrupt::deliver(Interrupt::Wakeup);
             true
         }
+        SCAUSE_SUPERVISOR_EXTERNAL => super::console_input::interrupt().is_none(),
         _ => false,
     }
 }

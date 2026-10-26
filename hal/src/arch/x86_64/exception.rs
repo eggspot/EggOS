@@ -3,7 +3,7 @@
 //!
 //! The IDT has a gate for each of the 32 architecture-defined exception vectors and for each
 //! interrupt vector in use (the legacy PICs' 0x20-0x2f, the APIC timer's 0x30, the wake-up
-//! interrupt's 0x31 and the APIC's spurious vector 0xff, see [`super::timer`]). Each points at
+//! interrupt's 0x31, the console input's 0x32 and the APIC's spurious vector 0xff, see [`super::timer`]). Each points at
 //! a 16-byte stub that pushes the vector number (and a 0 error code for the vectors where the
 //! CPU pushes none), so every exception and interrupt reaches `exception_common` with the same
 //! frame. From the kernel, that saves the registers a call may change (the handler keeps the
@@ -21,7 +21,10 @@
 //! stacks for double faults, NMIs and machine checks are needed before untrusted programs run
 //! (D47): `syscall` and `sysretq` leave a moment in ring 0 on the program's stack.
 
-use super::timer::{self, APIC_SPURIOUS_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR, WAKEUP_VECTOR};
+use super::timer::{
+    self, APIC_SPURIOUS_VECTOR, CONSOLE_INPUT_VECTOR, LEGACY_PIC_VECTORS, TIMER_VECTOR,
+    WAKEUP_VECTOR,
+};
 use crate::cpu::{
     FS_BASE_ID_OFFSET, GDT_ENTRIES, HalCpuLocal, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
 };
@@ -84,9 +87,9 @@ exception_stubs:
     EXCEPTION_STUB_WITH_ERROR_CODE 29
     EXCEPTION_STUB_WITH_ERROR_CODE 30
     EXCEPTION_STUB 31
-    // Interrupts 0x20-0x31 (legacy PIC inputs 0-15, APIC timer, wake-up); the CPU pushes no
-    // error code.
-    .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49
+    // Interrupts 0x20-0x32 (legacy PIC inputs 0-15, APIC timer, wake-up, console input); the
+    // CPU pushes no error code.
+    .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50
     EXCEPTION_STUB \vector
     .endr
     .balign 16                      // so the label is the stub, not the padding before it
@@ -1240,9 +1243,10 @@ x86_64_user_test_end:
 /// Every vector the IDT can hold.
 const VECTORS: usize = 256;
 /// The vectors with a stub at `exception_stubs + vector * STUB_SIZE`: the exceptions 0-31 and
-/// the interrupts up to the wake-up interrupt's.
-const CONTIGUOUS_STUBS: usize = WAKEUP_VECTOR as usize + 1;
-const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR);
+/// the interrupts up to the console input interrupt's.
+const CONTIGUOUS_STUBS: usize = CONSOLE_INPUT_VECTOR as usize + 1;
+const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR && WAKEUP_VECTOR < CONSOLE_INPUT_VECTOR);
+const _: () = assert!(CONSOLE_INPUT_VECTOR == 50);
 /// Vectors below this are the architecture's exceptions.
 const FIRST_INTERRUPT_VECTOR: u64 = 32;
 /// Every stub starts on a 16-byte boundary.
@@ -1414,6 +1418,10 @@ fn interrupt(vector: u64) -> bool {
         vector if vector < FIRST_INTERRUPT_VECTOR => false,
         vector if vector == u64::from(WAKEUP_VECTOR) => {
             timer::wakeup_interrupt();
+            true
+        }
+        vector if vector == u64::from(CONSOLE_INPUT_VECTOR) => {
+            super::console_input::interrupt();
             true
         }
         // Spurious: the APIC needs no end of interrupt for it.

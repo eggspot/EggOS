@@ -6,6 +6,7 @@
 //!
 //! Board addresses are QEMU `virt`'s for now; device-tree discovery replaces them in M5.
 
+mod console_input;
 mod exception;
 mod fp;
 mod thread;
@@ -258,6 +259,21 @@ const SBI_SRST_SHUTDOWN: usize = 0;
 const SBI_SRST_REASON_NONE: usize = 0;
 const SBI_SRST_REASON_FAILURE: usize = 1;
 
+/// The early console, UART0.
+#[inline]
+fn uart0() -> Ns16550<Mmio> {
+    // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page table
+    // and the kernel's own tables map at the direct map offset; only the early console's
+    // transmit and receive paths use it, and neither relies on the other's register state.
+    let regs = unsafe {
+        Mmio::new(
+            DIRECT_MAP_OFFSET + UART0_BASE,
+            Ns16550::<Mmio>::register_block_size(UART0_REG_SHIFT),
+        )
+    };
+    Ns16550::new(regs, UART0_REG_SHIFT)
+}
+
 #[derive(Debug)]
 pub struct Riscv64;
 
@@ -266,16 +282,21 @@ impl Platform for Riscv64 {
 
     #[inline]
     fn console_write(bytes: &[u8]) {
-        // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
-        // table and the kernel's own tables map at the direct map offset; the early console is
-        // its only user.
-        let regs = unsafe {
-            Mmio::new(
-                DIRECT_MAP_OFFSET + UART0_BASE,
-                Ns16550::<Mmio>::register_block_size(UART0_REG_SHIFT),
-            )
-        };
-        Ns16550::new(regs, UART0_REG_SHIFT).write_bytes(bytes);
+        uart0().write_bytes(bytes);
+    }
+
+    fn console_read(buffer: &mut [u8]) -> usize {
+        uart0().read_bytes(buffer)
+    }
+
+    fn enable_console_input() -> Result<(), &'static str> {
+        let hart = BOOT_HART.load(Ordering::Relaxed);
+        // SAFETY: as in `memory_map`.
+        let context =
+            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
+        console_input::enable(hart, context)?;
+        uart0().enable_receive_interrupt();
+        Ok(())
     }
 
     fn exit(status: ExitStatus) -> ! {
@@ -396,6 +417,7 @@ impl Platform for Riscv64 {
             UART0_BASE as u64,
             Ns16550::<Mmio>::register_block_size(UART0_REG_SHIFT) as u64,
         ));
+        console_input::device_regions(region);
     }
 
     unsafe fn activate_page_tables(roots: &[u64]) {

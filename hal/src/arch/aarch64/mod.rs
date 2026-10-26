@@ -286,6 +286,16 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     (start.entry)(start.argument)
 }
 
+/// The early console, UART0.
+#[inline]
+fn uart0() -> Pl011<Mmio> {
+    // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
+    // tables and the kernel's own map as device memory at the direct map offset; only the early
+    // console's transmit and receive paths use it, and neither relies on the other's register
+    // state.
+    Pl011::new(unsafe { Mmio::new(DIRECT_MAP_OFFSET + UART0_BASE, pl011::REGISTER_BLOCK_SIZE) })
+}
+
 #[derive(Debug)]
 pub struct Aarch64;
 
@@ -294,11 +304,17 @@ impl Platform for Aarch64 {
 
     #[inline]
     fn console_write(bytes: &[u8]) {
-        // SAFETY: on QEMU `virt` UART0's register block is at UART0_BASE, which the boot page
-        // tables and the kernel's own map as device memory at the direct map offset; the early
-        // console is its only user.
-        let regs = unsafe { Mmio::new(DIRECT_MAP_OFFSET + UART0_BASE, pl011::REGISTER_BLOCK_SIZE) };
-        Pl011::new(regs).write_bytes(bytes);
+        uart0().write_bytes(bytes);
+    }
+
+    fn console_read(buffer: &mut [u8]) -> usize {
+        uart0().read_bytes(buffer)
+    }
+
+    fn enable_console_input() -> Result<(), &'static str> {
+        uart0().enable_receive_interrupt();
+        timer::route_console_input();
+        Ok(())
     }
 
     fn exit(_status: ExitStatus) -> ! {

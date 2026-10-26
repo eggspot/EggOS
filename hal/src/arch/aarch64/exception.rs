@@ -1291,7 +1291,11 @@ pub(super) fn user_test_program() -> TestProgram {
     }
 }
 
-/// Takes the pending interrupt from the GIC and handles it.
+/// Takes the pending interrupt from the GIC and handles it. The timer's and the wake-up's are
+/// ended before the kernel sees them: the kernel may not return here soon (later, a context
+/// switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile. UART0's is ended
+/// after the kernel has read the UART, which then no longer asserts it, so the GIC does not
+/// raise it again for bytes already taken.
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
 // trap path keeps its length (D47).
 #[inline(always)]
@@ -1299,12 +1303,13 @@ fn irq(pc: u64) {
     let Some(interrupt) = timer::acknowledge() else {
         return; // Spurious: the interrupt went away before it was acknowledged.
     };
-    // End the interrupt before handing it on: the kernel may not return here soon (later, a
-    // context switch), and `PSTATE.I` keeps this CPU from taking another one meanwhile.
     let id = interrupt.id();
     let timer_fired = id == timer::VIRTUAL_TIMER_INTERRUPT && timer::expired();
     if timer_fired {
         timer::disarm();
+    }
+    if id == timer::UART0_INTERRUPT {
+        crate::interrupt::deliver(Interrupt::ConsoleInput);
     }
     timer::end_of_interrupt(interrupt);
     match id {
@@ -1315,6 +1320,7 @@ fn irq(pc: u64) {
             }
         }
         timer::WAKEUP_SGI => crate::interrupt::deliver(Interrupt::Wakeup),
+        timer::UART0_INTERRUPT => {}
         _ => deliver(&Exception {
             kind: ExceptionKind::Interrupt,
             name: "unexpected IRQ",

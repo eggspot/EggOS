@@ -10,6 +10,7 @@
 //! The console is COM1, the PC's first serial port. Power-off uses ACPI sleep state S5, read
 //! from the firmware's ACPI tables (see [`crate::acpi`]).
 
+mod console_input;
 mod exception;
 mod fp;
 mod port;
@@ -474,6 +475,16 @@ const MAX_TABLE_LENGTH: usize = 1 << 20;
 /// register.
 const ACPI_ENABLE_POLLS: u32 = 1_000_000;
 
+/// The early console, COM1.
+#[inline]
+fn com1() -> Ns16550<PortIo> {
+    // SAFETY: COM1's ports are the PC's first serial port by platform convention; only the early
+    // console's transmit and receive paths use them, and neither relies on the other's register
+    // state.
+    let regs = unsafe { PortIo::new(COM1_PORT, Ns16550::<PortIo>::register_block_size(0)) };
+    Ns16550::new(regs, 0)
+}
+
 #[derive(Debug)]
 pub struct X86_64;
 
@@ -482,10 +493,17 @@ impl Platform for X86_64 {
 
     #[inline]
     fn console_write(bytes: &[u8]) {
-        // SAFETY: COM1's ports are the PC's first serial port by platform convention, and the
-        // early console is their only user.
-        let regs = unsafe { PortIo::new(COM1_PORT, Ns16550::<PortIo>::register_block_size(0)) };
-        Ns16550::new(regs, 0).write_bytes(bytes);
+        com1().write_bytes(bytes);
+    }
+
+    fn console_read(buffer: &mut [u8]) -> usize {
+        com1().read_bytes(buffer)
+    }
+
+    fn enable_console_input() -> Result<(), &'static str> {
+        console_input::enable()?;
+        com1().enable_receive_interrupt();
+        Ok(())
     }
 
     fn exit(_status: ExitStatus) -> ! {
@@ -616,6 +634,7 @@ impl Platform for X86_64 {
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
         region(timer::local_apic_registers());
+        console_input::device_regions(region);
     }
 
     unsafe fn activate_page_tables(roots: &[u64]) {
