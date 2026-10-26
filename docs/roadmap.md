@@ -138,6 +138,21 @@ Must-have, in order:
     users can run static glibc programs, tested in CI; users can choose a program's CPUs
     (`sched_setaffinity`); users can add programs to a running system once there is a writable file
     system; static PIEs built for aarch64 and riscv64 are tested too.
+18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
+    x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
+    natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that
+    `cargo xtask image --add` installs with the first Windows program; the kernel's `execve`
+    starts it for a file that starts with `MZ` (elsewhere, and without the layer, `ENOEXEC`).
+    The layer checks and maps the image (preferred base or relocated), binds its kernel32 and
+    ntdll imports to our own `extern "win64"` functions (console, files, heap, virtual memory,
+    command line, environment, time, last error, TLS, modules, `__chkstk`), builds the TEB and
+    PEB through GS (`arch_prctl(ARCH_SET_GS)`, behind the SWAPGS fence D49 asked for) and runs
+    the entry point; a missing import is refused by name with status 126. A QEMU test on all
+    three boots two programs built from our own source for `x86_64-pc-windows-msvc`. Next, as
+    user capabilities (item 19): users can run programs with threads and waits, list
+    directories, and run programs built on Rust's std or a C runtime; then structured exception
+    handling, other DLLs, ARM64 programs and x86_64 programs on Arm through ahead-of-time
+    translation.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
@@ -165,7 +180,7 @@ architecture as "boots, no shell". The graphical terminal is the owner's priorit
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
 | M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
-| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | |
+| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, part 1: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118) |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
 Timer follow-ups (D26): on x86_64, read the TSC/APIC frequencies from CPUID 0x15 and hypervisor

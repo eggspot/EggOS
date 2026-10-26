@@ -6212,3 +6212,95 @@ the license, by an explicit instruction recorded here.
   riscv64 (798,048) and +176 on x86_64 (602,976), which the baseline now holds (D116). No
   hot-path benchmark moved beyond its gate (the call is out of line; PR #116 has the
   numbers).
+
+## D118 The Windows layer, part 1: a PE32+ loader and a minimal Win32 layer for console programs on x86_64, `ARCH_SET_GS` and the SWAPGS fence — Decided by the build loop (where the layer lives and the fence's form decided by research)
+- **What.** v0.3.0 item 18: an unmodified Windows console program (PE32+, x86_64, console
+  subsystem) runs from `eggsh` on x86_64. Its machine code runs directly on the CPU; the
+  functions it imports from kernel32 and ntdll are our own Rust implementations, called
+  directly through its import address table (D17). Guide and exact function list:
+  docs/windows-programs.md.
+- **Order.** The owner's exception to the D17/D34 compatibility order for v0.3.0 (owner,
+  2026-10-26): Windows console programs come in v0.3.0, right after static Linux programs
+  (D117), before macOS's layer starts.
+- **Clean room.** Implemented only from Microsoft's PE/COFF specification ("PE Format"), its
+  public API documentation (learn.microsoft.com), its public headers' structure layouts
+  (`NT_TIB` in `winnt.h`; `TEB`, `PEB` in `winternl.h`) and debugger documentation, the
+  C runtime's documented command-line parsing rules, and the observed behaviour of programs we
+  built ourselves. No Wine, ReactOS or other GPL/LGPL code was read or copied.
+- **Where it lives (decided by research).** A user-mode "interpreter", like a Linux `binfmt_misc`
+  handler, rather than in the kernel: the kernel's `execve` sees a file that starts with
+  `MZ`, and on x86_64 starts `/usr/lib/eggos/windows` with the arguments
+  `<layer> <program as execve was given it> <program's argv...>` (a table of magic bytes to
+  interpreter path, `linux::exec::Interpreter`). The layer is a static PIE on our Linux ABI
+  (`userland/windows`): it reads the file, checks it, maps the image at its preferred base
+  (`MAP_FIXED_NOREPLACE`) or anywhere else with its base relocations applied, binds the
+  imports, protects each section (headers read-only, W^X: a writable and executable section
+  is refused), builds the TEB and PEB, sets GS with `arch_prctl(ARCH_SET_GS)`, runs TLS
+  callbacks and calls the entry point; its return value is the exit code. Reasons: Windows
+  itself runs kernel32 and ntdll in the process, so `HeapAlloc`, `GetLastError`, TLS and the
+  like need no kernel entry; the kernel gains only the magic-bytes hook and stays free of PE
+  and Win32 code; a bug in the layer ends one process, not the system; and the layer is an
+  optional component that costs nothing when absent (D18).
+- **Optional component.** The release images do not carry the layer. `cargo xtask image`
+  (and `run`) installs it in an x86_64 image when one of the added files starts with `MZ`.
+  Without it, and on aarch64 and riscv64 (no interpreter in the table), a Windows program
+  fails with `ENOEXEC` (`Exec format error`, status 126 from the shell), as a missing
+  `binfmt_misc` handler does on Linux. The layer itself builds for every architecture and
+  says Windows programs need x86_64 where it cannot run them.
+- **The PE loader.** A checked parser of the DOS, COFF and PE32+ optional headers and the
+  section table, with every offset and size checked against the file and the image before
+  use: AMD64 machine, executable image, not a DLL, PE32+ magic, console subsystem, section
+  alignment a power of two of at least a page, file alignment a power of two up to it, a
+  64 KiB-aligned image base inside user space, an image of at most 1 GiB, headers inside the
+  image and the file, sections in order without overlap and inside the image, their data
+  inside the file, the entry point inside an executable section, data directories inside the
+  image. Base relocations: `DIR64` and `HIGHLOW`, `ABSOLUTE` skipped, anything else refused;
+  blocks checked against the table and each target against the image. Imports: by name from
+  kernel32 (and `kernelbase`, and the `api-ms-win-core-*` API sets, which resolve there) and
+  ntdll, compared ignoring case with or without `.dll`; a missing function or an import by
+  ordinal refuses the program before any of its code runs, naming the function and the
+  library (`windows: /bin/x.exe: needs CreateProcessW from kernel32.dll, which EggOS does not
+  provide yet`, status 126). Static TLS: the template is copied into a block, the index is 0,
+  `ThreadLocalStoragePointer` points at the one-slot array, callbacks get
+  `DLL_PROCESS_ATTACH`. Host tests cover each check, every truncation of a valid file and a
+  sweep of single-byte changes to its headers (refused or parsed, never a panic).
+- **TEB and PEB.** Two pages for the TEB and one for the PEB, zeroed, with the fields
+  programs read: `NtTib.StackBase`/`StackLimit` (the stack the layer runs on, 8 MiB),
+  `NtTib.Self` at `0x30`, `ClientId` at `0x40`, `ThreadLocalStoragePointer` at `0x58`,
+  `ProcessEnvironmentBlock` at `0x60`, `LastErrorValue` at `0x68`, `TlsSlots[64]` at
+  `0x1480`; the PEB's `ImageBaseAddress` at `0x10` and `ProcessHeap` at `0x30`. The last error
+  and TLS slots are read and written through GS, so they are per thread when threads come.
+- **The Win64 boundary.** Each function is an `extern "win64"` Rust function, so the
+  compiler handles the convention (arguments in `rcx`, `rdx`, `r8`, `r9` then the stack after
+  the 32-byte shadow space, `rsi`, `rdi` and `xmm6`-`xmm15` callee-saved); the program calls
+  it through its import address table with nothing in between. `__chkstk` is assembly (it
+  probes each page down to `rsp - rax` and keeps every register). Strings are converted
+  between UTF-16 and UTF-8 a stack buffer at a time, never allocated per call.
+- **The heap.** `HeapAlloc` and its family are a user-mode allocator: 12 power-of-two classes
+  from 32 bytes to 64 KiB, each a free list, carved from 1 MiB chunks, blocks over 64 KiB a
+  mapping each; a 16-byte header (magic, class, size) keeps blocks 16-byte aligned, answers
+  `HeapSize` exactly and refuses a pointer the heap did not hand out or a second free. One
+  heap: `HeapCreate` returns the process heap.
+- **`ARCH_SET_GS` and the SWAPGS fence (decided by research).** Programs may now set their GS
+  base (`arch_prctl(ARCH_SET_GS)`, below the end of user space, `ARCH_GET_GS` reads it back).
+  The HAL keeps it per thread next to the FS base, and one id names both
+  (`segment_bases_id`): the way into user mode loads both MSRs only when the id differs from
+  the CPU's, so the system-call round trip gains no instruction. D49 required the SWAPGS fence
+  before this: an `lfence` now follows the `testb $3` branch of the exception and interrupt
+  entry on both sides (after `swapgs` from ring 3, first thing from the kernel), so no load
+  runs ahead with a program-chosen GS base. Research compared it with D49's two copies of the
+  entry stubs chosen at boot: Linux fences the same two places (patched in at boot on
+  affected CPUs only), the kernel cannot tell affected CPUs apart yet, the `syscall` entry's
+  unconditional `swapgs` needs no fence, and an `lfence` costs a few cycles on an entry that
+  costs hundreds; a boot-time patch to skip it on AMD can come when a benchmark shows the
+  interrupt path matters. `AT_HWCAP2` still has no `FSGSBASE` (`CR4.FSGSBASE` stays clear).
+- **Not yet** (roadmap item 19 and later): threads and waits, synchronisation, directory
+  listing, other processes, structured exception handling, other DLLs, programs on a C/C++
+  runtime or Rust's std (they import more: MinGW's and MSVC's CRT start-up, `ProcessPrng`,
+  vectored exception handlers, SRW locks), GUI and ARM64 programs, ahead-of-time translation.
+  A benchmark of the program start path and of the hot Win32 calls against Windows on the same
+  hardware needs a way to run a Windows program inside the benchmark kernel; it comes with
+  item 19.
+- **Cost.** No release image grows: the layer is in images only with a Windows program. The
+  kernel gains the interpreter hook in `execve` (out of the system-call fast path) and the
+  GS base in `arch_prctl`; x86_64's exception and interrupt entry gain one `lfence`.
