@@ -684,8 +684,10 @@ fn start<P: Platform>(
     } = prepared;
     let id = process.id().get();
     let signals = process.signals().lock().take_for_exec(thread.id(), id);
+    let sigchld_ignored = signals
+        .action(super::signal::SIGCHLD)
+        .is_some_and(|action| action.handler == signals::IGNORE);
     *image.signals().lock() = signals;
-    crate::console::forget_foreground(id);
     if process.threads() > 1 {
         futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();
@@ -710,6 +712,12 @@ fn start<P: Platform>(
     }
     thread::with_running_fp::<P, _>(|state| *state = FpState::new());
     image.add_thread();
+    super::wait::record_running(&image, thread);
+    {
+        let mut table = super::process_table::TABLE.lock();
+        table.mark_executed(id);
+        table.set_no_zombie_children(id, sigchld_ignored);
+    }
     *context = started;
     image
 }

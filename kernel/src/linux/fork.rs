@@ -8,8 +8,8 @@
 //! its descriptor table and working directory are copies, or the caller's with `CLONE_FILES`
 //! and `CLONE_FS`. With `CLONE_VFORK` the calling thread sleeps until the child's `execve`
 //! passes its point of no return or the child ends ([`release_vfork_parent`]), or until the
-//! caller's own process ends. The record of how the child ends stays with the parent's until
-//! `wait4` reads it ([`Process::add_child`]).
+//! caller's own process ends. The child is in the process table under its parent, in the
+//! parent's group and session, until the parent reaps it ([`super::wait`], D105).
 
 use super::Errno;
 use super::futex::{self, Key};
@@ -136,9 +136,8 @@ pub fn clone_process<P: Platform>(
         keeps_alternate_stack,
     );
     first.inherit_fp(running_fp::<P>());
-    process
-        .add_child(&child, arguments.exit_signal as u8)
-        .map_err(|_| Errno::ENOMEM)?;
+    child.set_exit_signal(arguments.exit_signal as u8);
+    super::wait::record_running(&child, &first);
     let id_bytes = id.to_ne_bytes();
     if any(flag::PARENT_SETTID) {
         let _ = process.write_user_memory(arguments.parent_tid, &id_bytes);
@@ -153,7 +152,6 @@ pub fn clone_process<P: Platform>(
         process.address_space().spread_over_cpus();
     }
     if super::spawn_thread(Arc::clone(&child), first, child_context).is_err() {
-        process.remove_child(child.id());
         return Err(Errno::ENOMEM);
     }
     if any(flag::VFORK) {

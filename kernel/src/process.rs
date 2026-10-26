@@ -33,6 +33,7 @@ use crate::address_space::{self, AddressSpace};
 use crate::cpu;
 use crate::linux::credentials::Credentials;
 use crate::linux::limits::ResourceLimits;
+use crate::linux::process_table;
 use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
@@ -40,7 +41,6 @@ use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
@@ -189,7 +189,6 @@ pub struct Process<P: Platform> {
     first_thread_status: AtomicU32,
     /// Its id, unique while the kernel runs ([`Self::id`]).
     id: ProcessId,
-    parent: u32,
     vfork_parent: AtomicU32,
     /// Its credentials and resource limits ([`Self::credentials_and_limits`]).
     credentials_and_limits: SpinLock<CredentialsAndLimits>,
@@ -265,43 +264,28 @@ impl<P: Platform> Memory<P> {
 }
 
 struct PidRecord<P: Platform> {
+    id: ProcessId,
     exit: Option<ProcessExit>,
     handed_over: Option<(usize, Arc<Process<P>>)>,
-    children: Vec<Child<P>>,
 }
 
 impl<P: Platform> PidRecord<P> {
-    fn new() -> Self {
+    fn new(id: ProcessId) -> Self {
         Self {
+            id,
             exit: None,
             handed_over: None,
-            children: Vec::new(),
         }
     }
 }
 
 impl<P: Platform> Drop for PidRecord<P> {
     fn drop(&mut self) {
-        let mut orphans = core::mem::take(&mut self.children);
-        while let Some(child) = orphans.pop() {
-            if let Ok(mut record) = Arc::try_unwrap(child.record) {
-                orphans.append(&mut record.get_mut().children);
-            }
+        let notice = process_table::TABLE.lock().remove_unended(self.id.get());
+        if let Some(notice) = notice {
+            crate::linux::wait::notify::<P>(notice);
         }
     }
-}
-
-struct Child<P: Platform> {
-    id: ProcessId,
-    exit_signal: u8,
-    record: Arc<SpinLock<PidRecord<P>>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ChildState {
-    pub(crate) exit_signal: u8,
-    pub(crate) exit: Option<ProcessExit>,
-    pub(crate) freed: bool,
 }
 
 /// What memory a child process starts with ([`Process::new_child`]).
@@ -380,11 +364,14 @@ impl<P: Platform> Process<P> {
             .physical_memory_offset();
         let id = ProcessId::allocate().ok_or("out of process ids")?;
         let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
+        process_table::TABLE
+            .lock()
+            .add(id.get(), None)
+            .map_err(|_| "no memory for the process table")?;
         Ok(Self::with_memory(
             Arc::new(Memory::new(space, frame_offset, futex_space)),
-            Arc::new(SpinLock::new(PidRecord::new())),
+            Arc::new(SpinLock::new(PidRecord::new(id))),
             id,
-            0,
             CredentialsAndLimits::default(),
             Signals::new(),
         ))
@@ -394,7 +381,6 @@ impl<P: Platform> Process<P> {
         memory: Arc<Memory<P>>,
         record: Arc<SpinLock<PidRecord<P>>>,
         id: ProcessId,
-        parent: u32,
         credentials_and_limits: CredentialsAndLimits,
         signals: Signals,
     ) -> Self {
@@ -408,7 +394,6 @@ impl<P: Platform> Process<P> {
             threads: AtomicU32::new(0),
             first_thread_status: AtomicU32::new(NO_STATUS),
             id,
-            parent,
             vfork_parent: AtomicU32::new(0),
             credentials_and_limits: SpinLock::new(credentials_and_limits),
             signals: SpinLock::new(signals),
@@ -416,8 +401,8 @@ impl<P: Platform> Process<P> {
     }
 
     /// A process for the program `execve` starts in this one's place: an empty address space
-    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id, parent and
-    /// record of how it ends (its children's among it), a copy of the credentials and resource
+    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id, place in
+    /// the process table and record of how it ends, a copy of the credentials and resource
     /// limits, no signal actions and no threads yet. This process is untouched, so the caller
     /// can still drop the new one if loading the program fails.
     pub fn new_image(&self) -> Result<Self, &'static str> {
@@ -436,14 +421,15 @@ impl<P: Platform> Process<P> {
             Arc::new(Memory::new(space, self.memory.frame_offset, futex_space)),
             Arc::clone(&self.record),
             self.id,
-            self.parent,
             credentials_and_limits,
             Signals::new(),
         ))
     }
 
     /// A child of this process (`fork`, `clone` without `CLONE_THREAD`): a new id, this
-    /// process as its parent, a record of its own, the memory `memory` says, a copy of the
+    /// process as its parent in the process table, in its process group and session (its end
+    /// sending no signal until [`Self::set_exit_signal`]), a record of its own, the memory
+    /// `memory` says, a copy of the
     /// credentials and resource limits and of the signal actions (nothing queued), and no
     /// threads yet. This process is untouched, so the caller can drop the child if starting it
     /// fails; a copy that runs out of frames frees every one it took. Pages other threads of
@@ -470,55 +456,31 @@ impl<P: Platform> Process<P> {
             .lock()
             .copy_actions()
             .ok_or(NewChildError::OutOfMemory)?;
+        process_table::TABLE
+            .lock()
+            .add(id.get(), Some(self.id.get()))
+            .map_err(|_| NewChildError::OutOfMemory)?;
         Ok(Self::with_memory(
             memory,
-            Arc::new(SpinLock::new(PidRecord::new())),
+            Arc::new(SpinLock::new(PidRecord::new(id))),
             id,
-            self.id.get(),
             credentials_and_limits,
             signals,
         ))
     }
 
-    /// Records `child` as one of this process's children, whose end it learns with
-    /// `exit_signal` (0 for none) once `wait4` exists: the record of how the child ends stays
-    /// until then, however the child ends, or until this process's record goes. `Err` without
-    /// memory for it.
-    pub fn add_child(&self, child: &Self, exit_signal: u8) -> Result<(), NewChildError> {
-        let mut record = self.record.lock();
-        record
-            .children
-            .try_reserve(1)
-            .map_err(|_| NewChildError::OutOfMemory)?;
-        record.children.push(Child {
-            id: child.id,
-            exit_signal,
-            record: Arc::clone(&child.record),
-        });
-        Ok(())
-    }
-
-    /// Forgets the child [`Self::add_child`] recorded with id `id`, which did not start.
-    pub fn remove_child(&self, id: ProcessId) {
-        self.record.lock().children.retain(|child| child.id != id);
-    }
-
-    pub(crate) fn children(&self) -> Vec<ChildState> {
-        self.record
+    /// Sets the signal this process's end sends its parent, 0 for none (`clone`'s exit
+    /// signal): its parent learns of the end with `wait4` all the same.
+    pub fn set_exit_signal(&self, exit_signal: u8) {
+        process_table::TABLE
             .lock()
-            .children
-            .iter()
-            .map(|child| ChildState {
-                exit_signal: child.exit_signal,
-                exit: child.record.lock().exit,
-                freed: Arc::strong_count(&child.record) == 1,
-            })
-            .collect()
+            .set_exit_signal(self.id.get(), exit_signal);
     }
 
-    /// The id of the process that started this one, 0 if the kernel did (`getppid`).
+    /// The id of this process's parent in the process table, 0 for the kernel (`getppid`):
+    /// the process that started it, or the one its orphans went to once that one ended.
     pub fn parent_id(&self) -> u32 {
-        self.parent
+        process_table::TABLE.lock().parent(self.id.get())
     }
 
     /// The futex space of the process's memory: a number of its own, given to each memory as
@@ -1709,6 +1671,7 @@ mod tests {
     use super::*;
     use crate::tests::{TestPlatform as P, active_root, dropped_translations, set_active_root};
     use crate::thread::host::frames_for_test;
+    use alloc::vec::Vec;
     use core::sync::atomic::{AtomicU64, Ordering};
     use eggos_hal::{Exception, ExceptionKind};
 
@@ -2251,60 +2214,28 @@ mod tests {
     }
 
     #[test]
-    fn a_record_of_a_hundred_thousand_generations_is_dropped_without_recursion() {
-        let mut youngest = Arc::new(SpinLock::new(PidRecord::<P>::new()));
-        for _ in 0..100_000 {
-            let mut parent = PidRecord::new();
-            parent.children.push(Child {
-                id: ProcessId(1),
-                exit_signal: 17,
-                record: youngest,
-            });
-            youngest = Arc::new(SpinLock::new(parent));
-        }
-        let still_held = Arc::new(SpinLock::new(PidRecord::<P>::new()));
-        youngest.lock().children.push(Child {
-            id: ProcessId(2),
-            exit_signal: 17,
-            record: Arc::clone(&still_held),
-        });
-        drop(youngest);
-        assert_eq!(Arc::strong_count(&still_held), 1);
-    }
-
-    #[test]
-    fn children_keep_their_exit_with_the_parent_s_record_and_a_vfork_parent_is_taken_once() {
+    fn a_child_is_in_the_table_under_its_parent_until_it_goes_and_a_vfork_parent_is_taken_once() {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         // SAFETY: as above.
         let parent = Arc::new(unsafe { Process::<P>::new(&kernel) }.unwrap());
         let child = parent.new_child(ChildMemory::Shared).unwrap();
-        parent.add_child(&child, 17).unwrap();
-        let image = parent.new_image().unwrap();
-        let expected = |exit, freed| {
-            [ChildState {
-                exit_signal: 17,
-                exit,
-                freed,
-            }]
-        };
-        assert_eq!(image.children(), expected(None, false));
-        assert!(child.exit(ProcessExit::Exited(3)));
-        assert_eq!(
-            parent.children(),
-            expected(Some(ProcessExit::Exited(3)), false)
-        );
+        let (parent_id, child_id) = (parent.id().get(), child.id().get());
+        let in_table = |id| process_table::TABLE.lock().group_and_session(id);
+        assert_eq!(in_table(parent_id), Some((parent_id, parent_id)));
+        assert_eq!(in_table(child_id), Some((parent_id, parent_id)));
+        assert_eq!(child.parent_id(), parent_id);
+        let image = child.new_image().unwrap();
+        assert_eq!(image.parent_id(), parent_id);
         child.set_vfork_parent(parent.futex_space());
         assert_eq!(child.take_vfork_parent(), Some(parent.futex_space()));
         assert_eq!(child.take_vfork_parent(), None);
-        let id = child.id();
         drop(child);
-        assert_eq!(
-            parent.children(),
-            expected(Some(ProcessExit::Exited(3)), true)
-        );
-        image.remove_child(id);
-        assert!(parent.children().is_empty());
+        assert!(in_table(child_id).is_some());
+        drop(image);
+        assert_eq!(in_table(child_id), None);
+        drop(parent);
+        assert_eq!(in_table(parent_id), None);
     }
 
     #[test]

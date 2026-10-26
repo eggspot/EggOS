@@ -16,22 +16,21 @@
 //! - `TIOCGWINSZ` and `TIOCSWINSZ`: the window size, zero until a program sets one, as on a
 //!   serial line, whose size the kernel cannot know. Nobody is told of a change (`SIGWINCH`).
 //! - `FIONREAD`: the bytes a read would take without waiting.
+//! - `TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP` and `TIOCGSID`: the console as a session's
+//!   controlling terminal and its foreground process group ([`super::job_control`], D105),
+//!   which the signal characters (`^C`, `^\`) signal.
 //!
-//! Every other request is `ENOTTY`, as Linux answers a request a terminal does not know: job
-//! control (`TIOCGPGRP`, `TIOCSPGRP`) waits for sessions. The requests every descriptor
-//! answers (`FIONBIO`, `FIOCLEX`, `FIONCLEX`) come first ([`super::descriptors`]).
-//!
-//! The thread that last read the console or polled it for input is its foreground: the
-//! signal characters (`^C`, `^\`) signal its process ([`console::Foreground`]), until process
-//! groups name a foreground group.
+//! Every other request is `ENOTTY`, as Linux answers a request a terminal does not know. The
+//! requests every descriptor answers (`FIONBIO`, `FIOCLEX`, `FIONCLEX`) come first
+//! ([`super::descriptors`]).
 
 use super::descriptors::OpenFile;
-use super::futex::{self, WaitSlot};
+use super::futex;
 use super::signals::{self, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
-use super::{Errno, Iovecs, MAX_RW_COUNT, iovec, poll, signal};
+use super::{Errno, Iovecs, MAX_RW_COUNT, iovec, job_control, poll};
+use crate::console;
 use crate::console::line_discipline::Termios;
-use crate::console::{self, TerminalSignal};
 use crate::process::Process;
 use crate::sync::SpinLock;
 use alloc::sync::Arc;
@@ -119,6 +118,9 @@ pub fn ioctl<P: Platform>(process: &Process<P>, request: u64, argument: u64) -> 
         console::set_settings::<P>(Termios::from_bytes(&bytes), flush);
         Ok(0)
     };
+    if let Some(result) = job_control::ioctl(process, request as u32, argument) {
+        return result;
+    }
     match request as u32 {
         request::TCGETS => write(&console::settings().to_bytes()),
         request::TCGETS2 => {
@@ -209,7 +211,6 @@ fn read_or_wait<P: Platform>(
     if count == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
     }
-    become_foreground(process, thread);
     let mut deadline = None;
     loop {
         let settings = console::settings();
@@ -396,39 +397,6 @@ pub fn wait_for_input<P: Platform>(
         if waited == Err(Errno::EINTR) {
             signals::take_in_sent_now(process, thread);
         }
-    }
-}
-
-/// Makes `thread`, of `process`, the console's foreground, if it is not already, unless the
-/// process has ended meanwhile (another thread's end forgot it first), so the console never
-/// keeps an ended process.
-pub fn become_foreground<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) {
-    let reader = console::reader_id(process.id().get(), thread.id());
-    if console::is_foreground(reader) {
-        return;
-    }
-    let foreground: Arc<dyn console::Foreground> = Arc::new(ConsoleReader {
-        process: Arc::clone(process),
-        wait_slot: Arc::clone(thread.wait_slot()),
-    });
-    console::set_foreground(reader, Arc::clone(&foreground));
-    if process.has_ended() {
-        console::forget_this_foreground(&foreground);
-    }
-}
-
-struct ConsoleReader<P: Platform> {
-    process: Arc<Process<P>>,
-    wait_slot: Arc<WaitSlot>,
-}
-
-impl<P: Platform> console::Foreground for ConsoleReader<P> {
-    fn send(&self, sent: TerminalSignal) {
-        let number = match sent {
-            TerminalSignal::Interrupt => signal::SIGINT,
-            TerminalSignal::Quit => signal::SIGQUIT,
-        };
-        signals::send_from_terminal::<P>(&self.process, &self.wait_slot, number);
     }
 }
 

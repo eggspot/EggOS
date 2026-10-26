@@ -57,7 +57,7 @@ const THREADS_SPREAD_TIMEOUT_MS: u64 = 1000;
 pub type SelfTest<C> = (&'static str, fn(&mut C) -> Result<(), &'static str>);
 
 /// Every boot self-test for platform `P`, in run order.
-pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 47] {
+pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 48] {
     [
         ("bss_is_zeroed", |_| bss_is_zeroed()),
         ("breakpoint_resumes", |_| breakpoint_resumes::<P>()),
@@ -200,6 +200,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 47] {
         (
             "linux_programs_create_processes",
             linux_programs_create_processes::<P>,
+        ),
+        (
+            "linux_programs_wait_for_their_children",
+            linux_programs_wait_for_their_children::<P>,
         ),
         (
             "secondary_cpus_start_and_report_in",
@@ -1013,11 +1017,12 @@ fn release_loaded_address_spaces<P: Platform>(freed: impl Fn() -> bool) -> bool 
     released
 }
 
-fn children_end_and_are_freed<P: Platform>(process: &Process<P>) -> bool {
+fn descendants_end_and_are_reaped<P: Platform>(process: &Process<P>) -> bool {
     let here = cpu::current::<P>();
     let millisecond = P::clock_frequency() / 1000;
     let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
-    let freed = || process.children().iter().all(|child| child.freed);
+    let session = process.id().get();
+    let freed = || linux::process_table::TABLE.lock().in_session(session) == 0;
     while !freed() && P::clock_ticks() < give_up {
         for &other in cpu::CPUS.all() {
             if !core::ptr::eq(other, here) {
@@ -1790,7 +1795,6 @@ struct RustProgram {
     arguments_after_path: &'static [&'static [u8]],
     failure_statuses: &'static [(u32, &'static str)],
     failure_signals: &'static [(u32, &'static str)],
-    children_statuses: &'static [u32],
 }
 
 static NO_STD_PROGRAM: RustProgram = RustProgram {
@@ -1811,7 +1815,6 @@ static NO_STD_PROGRAM: RustProgram = RustProgram {
         (101, "the Rust program panicked"),
     ],
     failure_signals: &[],
-    children_statuses: &[],
 };
 
 static STD_PROGRAM: RustProgram = RustProgram {
@@ -1826,7 +1829,6 @@ static STD_PROGRAM: RustProgram = RustProgram {
     arguments_after_path: &[b"first", b"second"],
     failure_statuses: &[],
     failure_signals: &[(SIGABRT, "the std Rust program panicked: it aborted")],
-    children_statuses: &[],
 };
 
 static STD_PROGRAM_EXITING_FROM_A_THREAD: RustProgram = RustProgram {
@@ -1885,13 +1887,19 @@ static STD_PROGRAM_CREATING_PROCESSES: RustProgram = RustProgram {
         1,
         "a process-creation check of the std Rust program failed: it named it on the console",
     )],
-    children_statuses: &[21, 22, 24, 25, 26, 27],
+    ..STD_PROGRAM
+};
+
+static STD_PROGRAM_WAITING_FOR_CHILDREN: RustProgram = RustProgram {
+    arguments_after_path: &[b"children"],
+    failure_statuses: &[(
+        1,
+        "a check of the std Rust program's waits, groups or sessions failed: it named it on the console",
+    )],
     ..STD_PROGRAM
 };
 
 const SIGABRT: u32 = 6;
-
-const SIGCHLD: u8 = 17;
 
 const RUST_PROGRAM_ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
 
@@ -1932,6 +1940,16 @@ fn linux_programs_create_processes<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
     run_rust_program(memory, &STD_PROGRAM_CREATING_PROCESSES)
+}
+
+/// The std program waits for its children with `wait4` and `waitid`, as they end before and
+/// during the wait, by id, group and any, and as a signal ended them; takes in an orphaned
+/// grandchild as a subreaper; runs a `SIGCHLD` handler; lets the kernel reap the children
+/// while it ignores `SIGCHLD`; and moves processes between groups and sessions (D105).
+fn linux_programs_wait_for_their_children<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    run_rust_program(memory, &STD_PROGRAM_WAITING_FOR_CHILDREN)
 }
 
 /// The std program's checks again, with every CPU running (D94): its threads spread over
@@ -1993,8 +2011,8 @@ fn run_rust_program<P: Platform>(
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
-        if !children_end_and_are_freed::<P>(&process) {
-            return Err("a child of the Rust program did not end, or was not freed");
+        if !descendants_end_and_are_reaped::<P>(&process) {
+            return Err("a process the Rust program started did not end, or was not reaped");
         }
         match process.exit_status() {
             Some(ProcessExit::Exited(0)) => {}
@@ -2018,17 +2036,6 @@ fn run_rust_program<P: Platform>(
                     }));
             }
             None => return Err("a Linux program's thread ended without ending it"),
-        }
-        let children = process.children();
-        let statuses_as_expected = children.len() == program.children_statuses.len()
-            && children
-                .iter()
-                .zip(program.children_statuses)
-                .all(|(child, &status)| {
-                    child.exit == Some(ProcessExit::Exited(status)) && child.exit_signal == SIGCHLD
-                });
-        if !statuses_as_expected {
-            return Err("a child of the Rust program ended otherwise than it should");
         }
     }
     let freed = || free_and_slab_frames() == before;

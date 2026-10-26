@@ -1,15 +1,15 @@
 //! The kernel's view of the early boot console: output, and the input its interrupt receives,
 //! which goes through the console's line discipline ([`line_discipline`], D100) to readers.
-//! Readers wait on [`INPUT_KEY`]; the signal characters reach the console's [`Foreground`].
+//! Readers wait on [`INPUT_KEY`]; the signal characters reach the console's foreground process
+//! group ([`crate::linux::job_control`], D105).
 
 pub mod line_discipline;
 
 use crate::linux::futex;
-use crate::sync::{LeafSpinLock, SpinLock};
-use alloc::sync::Arc;
+use crate::sync::LeafSpinLock;
 use core::fmt;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+use core::sync::atomic::{AtomicU32, Ordering};
 use eggos_hal::Platform;
 use line_discipline::{LineDiscipline, Received, Taken, Termios};
 
@@ -37,8 +37,8 @@ pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
 
 /// Passes every byte the console's UART holds through the line discipline, a chunk at a time,
 /// echoing each chunk as the discipline says once its lock is released (but for an echo too
-/// long to hold, such as a long line killed), then sends the signals typed to the
-/// [`Foreground`] and wakes the threads waiting for input; called for
+/// long to hold, such as a long line killed), then sends the signals typed to the foreground
+/// process group and wakes the threads waiting for input; called for
 /// [`eggos_hal::Interrupt::ConsoleInput`]. Out of line, so the timer's and the wake-up's way
 /// through the interrupt handler keep their length.
 #[cold]
@@ -67,10 +67,10 @@ pub fn receive_input<P: Platform>() {
         }
     }
     if received.interrupt {
-        signal_foreground(TerminalSignal::Interrupt);
+        crate::linux::job_control::signal_console_foreground::<P>(TerminalSignal::Interrupt);
     }
     if received.quit {
-        signal_foreground(TerminalSignal::Quit);
+        crate::linux::job_control::signal_console_foreground::<P>(TerminalSignal::Quit);
     }
     if received.readable || received.interrupt || received.quit {
         wake_input_waiters::<P>();
@@ -171,105 +171,13 @@ pub fn flush_input() {
     LINE_DISCIPLINE.lock().flush();
 }
 
-/// A signal the console's input raises for its [`Foreground`].
+/// A signal the console's input raises for its foreground process group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSignal {
     /// `VINTR`, `^C`: `SIGINT`.
     Interrupt,
     /// `VQUIT`, `^\`: `SIGQUIT`.
     Quit,
-}
-
-/// What the console's signal characters reach: for now the program that last read the
-/// console or waited for its input (D100), until process groups and `TIOCSPGRP` name a
-/// foreground process group (D99, item 7).
-pub trait Foreground: Send + Sync {
-    /// Sends `signal`. Called from the console's interrupt, with the foreground's lock held.
-    fn send(&self, signal: TerminalSignal);
-}
-
-static FOREGROUND: SpinLock<Option<Arc<dyn Foreground>>> = SpinLock::new(None);
-
-static FOREGROUND_READER: AtomicU64 = AtomicU64::new(NO_READER);
-
-const NO_READER: u64 = 0;
-
-/// The id of thread `thread` of process `process` as a [`Foreground`]: never 0, as process ids
-/// start at 1.
-pub fn reader_id(process: u32, thread: u32) -> u64 {
-    u64::from(process) << 32 | u64::from(thread)
-}
-
-/// Whether reader `reader` ([`reader_id`]) is the console's foreground.
-pub fn is_foreground(reader: u64) -> bool {
-    FOREGROUND_READER.load(Ordering::Relaxed) == reader
-}
-
-/// Makes `foreground`, reader `reader` ([`reader_id`]), the console's foreground. A caller
-/// that then checks whether the reader's process ended, and forgets it if so, is ordered
-/// against [`forget_foreground`] by the fence here.
-pub fn set_foreground(reader: u64, foreground: Arc<dyn Foreground>) {
-    let previous = {
-        let mut current = FOREGROUND.lock();
-        FOREGROUND_READER.store(reader, Ordering::Relaxed);
-        current.replace(foreground)
-    };
-    fence(Ordering::SeqCst);
-    drop(previous);
-}
-
-/// Forgets the foreground if it is one of process `process`'s threads: called as the process
-/// ends, after it is marked ended, so the console holds no reference to it. The fence pairs
-/// with the one in [`set_foreground`]: either this sees the new reader, or that reader sees
-/// the process ended.
-pub fn forget_foreground(process: u32) {
-    fence(Ordering::SeqCst);
-    if (FOREGROUND_READER.load(Ordering::Relaxed) >> 32) as u32 != process {
-        return;
-    }
-    let previous = {
-        let mut current = FOREGROUND.lock();
-        if (FOREGROUND_READER.load(Ordering::Relaxed) >> 32) as u32 != process {
-            return;
-        }
-        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
-        current.take()
-    };
-    drop(previous);
-}
-
-/// Forgets `foreground` if it is still the console's foreground ([`set_foreground`]), and
-/// nothing else: for a reader whose process ended as it became the foreground, which must not
-/// forget a later reader of the program `execve` started with the same process id.
-pub fn forget_this_foreground(foreground: &Arc<dyn Foreground>) {
-    let previous = {
-        let mut current = FOREGROUND.lock();
-        if !current
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, foreground))
-        {
-            return;
-        }
-        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
-        current.take()
-    };
-    drop(previous);
-}
-
-#[cfg(test)]
-pub(crate) fn forget_foreground_for_test() {
-    let previous = {
-        let mut current = FOREGROUND.lock();
-        FOREGROUND_READER.store(NO_READER, Ordering::Relaxed);
-        current.take()
-    };
-    drop(previous);
-}
-
-fn signal_foreground(signal: TerminalSignal) {
-    if let Some(foreground) = FOREGROUND.lock().as_ref() {
-        foreground.send(signal);
-    }
 }
 
 /// A [`fmt::Write`] sink that forwards to the platform's early boot console.
@@ -509,39 +417,6 @@ mod tests {
         assert_eq!(crate::tests::console_output(), expected);
         let mut buffer = [0u8; 8];
         assert_eq!(read_input(&mut buffer), 3);
-    }
-
-    static SIGNALS_SENT: std::sync::Mutex<Vec<TerminalSignal>> = std::sync::Mutex::new(Vec::new());
-
-    #[derive(Debug)]
-    struct RecordingForeground;
-
-    impl Foreground for RecordingForeground {
-        fn send(&self, signal: TerminalSignal) {
-            SIGNALS_SENT.lock().unwrap().push(signal);
-        }
-    }
-
-    #[test]
-    fn signal_characters_reach_the_foreground_until_its_process_ends() {
-        let console = ConsoleForTest::take();
-        let (process, thread) = (u32::MAX, 7);
-        let reader = reader_id(process, thread);
-        assert!(!is_foreground(reader));
-        set_foreground(reader, Arc::new(RecordingForeground));
-        assert!(is_foreground(reader));
-        console.types(b"x\x03y\x1c");
-        assert_eq!(
-            core::mem::take(&mut *SIGNALS_SENT.lock().unwrap()),
-            [TerminalSignal::Interrupt, TerminalSignal::Quit]
-        );
-        assert_eq!(crate::tests::console_output(), b"x^Cy^\\");
-        forget_foreground(process - 1);
-        assert!(is_foreground(reader));
-        forget_foreground(process);
-        assert!(!is_foreground(reader));
-        console.types(b"\x03");
-        assert!(SIGNALS_SENT.lock().unwrap().is_empty());
     }
 
     #[test]
