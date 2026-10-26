@@ -2,7 +2,8 @@
 //! directory, which the kernel embeds and mounts as its root, with the programs and files the
 //! kernel needs: `/init`, `/bin/eggsh` and the core utilities for the release kernel (D106,
 //! D107, D108), and for test kernels the programs they start from it with `execve` (D103), in
-//! `usr/libexec/`.
+//! `usr/libexec/`, and the files `cargo xtask image --add` adds (D117). A member whose path is
+//! already in the archive is refused.
 //!
 //! The archive is deterministic: members in name order, each directory before what it holds,
 //! the extra members last, owned by root, directories and programs `0755` and other files
@@ -67,9 +68,7 @@ pub fn build(extra: &[(&str, Content)], file_name: &str) -> Result<PathBuf, Stri
         add(&mut members, path, *content)?;
     }
     let archive = archive(&members, modified);
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("target"));
+    let target = crate::target_directory();
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
     let path = target.join(file_name);
     if std::fs::read(&path).ok().as_deref() != Some(archive.as_slice()) {

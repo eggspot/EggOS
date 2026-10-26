@@ -71,11 +71,11 @@ pub fn members(added: &[AddedFile]) -> Vec<(&str, initramfs::Content<'_>)> {
         .collect()
 }
 
-/// Builds the release image of `arch` with `added`, copies it to
-/// `target/image/eggos-<arch>.elf` and returns that path.
+/// Builds the release image of `arch` with `added`, copies it to `image/eggos-<arch>.elf` in
+/// the target directory and returns that path.
 pub fn build(arch: &Arch, added: &[AddedFile]) -> Result<PathBuf, String> {
     let kernel = crate::build_release_image(arch, added)?;
-    let directory = crate::workspace_root().join("target").join("image");
+    let directory = crate::target_directory().join("image");
     std::fs::create_dir_all(&directory).map_err(|e| format!("{}: {e}", directory.display()))?;
     let image = directory.join(format!("eggos-{}.elf", arch.name));
     std::fs::copy(&kernel, &image).map_err(|e| format!("{}: {e}", image.display()))?;

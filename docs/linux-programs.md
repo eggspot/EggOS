@@ -21,9 +21,9 @@ cargo xtask run --arch riscv64 --add path/to/hello      # build that image and b
   `--as <path>` right after it puts it at that path instead. Repeat both for more files.
 - Added files are executable (`0755`), owned by root. A path already in the image (`/init`,
   `/bin/eggsh`, `/bin/ls`, ...) is refused, as is a path with an empty, `.` or `..` part.
-- `image` writes `target/image/eggos-<arch>.elf` (`--arch all` writes all three), which boots
-  as the release images do (`run-eggos.sh` with that file, or `cargo xtask run`); `run` takes
-  the same `--add` options and boots the image in QEMU.
+- `image` writes `target/image/eggos-<arch>.elf` (`--arch all` writes all three), a release
+  image with your files, to boot with QEMU's `-kernel` and the arguments `cargo xtask run`
+  uses; `run` takes the same `--add` options, builds that image and boots it.
 
 Then, at the prompt, type its name: `hello`, or `tool --help` with `/usr/bin` on `PATH`
 (`export PATH=$PATH:/usr/bin`). The shell reports the exit status in `$?` as on Linux, and a

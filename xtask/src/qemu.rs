@@ -118,8 +118,8 @@ pub enum Expect {
     /// the first prompt is reported.
     BootToPrompt,
     /// The release kernel with two builds of an ordinary static Linux program added to its
-    /// initramfs as `cargo xtask image --add` adds them, a static one and a static PIE, boots to
-    /// the shell's prompt; the test types a line at each prompt that runs them by name, and
+    /// initramfs as `cargo xtask image --add` adds them, a static executable and one with the
+    /// target's default relocation model (a static PIE on x86_64), boots to the shell's prompt; the test types a line at each prompt that runs them by name, and
     /// each command must write its lines in order before the next prompt; the shell exits with
     /// 7 and init powers off (D117).
     LinuxPrograms,
@@ -1156,9 +1156,7 @@ fn screen_size(qmp: &mut Qmp, arch: &Arch) -> Result<(u32, u32), String> {
 }
 
 fn screendump_path(arch: &Arch, suffix: &str) -> Result<std::path::PathBuf, String> {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| crate::workspace_root().join("target"));
+    let target = crate::target_directory();
     std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
     Ok(target.join(format!("screendump-{}{suffix}.ppm", arch.name)))
 }

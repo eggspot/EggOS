@@ -6205,6 +6205,7 @@ the license, by an explicit instruction recorded here.
   prompt; each command's lines must appear in order before the next prompt, with the exit
   statuses 0, 42 and 134. The workspace's release profile aborts on panic, so the panic test
   checks the abort (`Aborted`, 134), not unwinding's exit status 101.
-- **Cost.** The release image is unchanged: its initramfs holds the same members, and the
-  kernel grows only by the new call (`release_image_bytes` is gated on CI's sizes, D116). The
-  hot-path benchmarks were run before and after on this Mac (PR #116).
+- **Cost.** The release image's initramfs holds the same members; the kernel grows by the new
+  call's code only, a few hundred bytes, and `release_image_bytes` takes CI's sizes (D116). No
+  hot-path benchmark moved beyond its gate (the call is out of line; PR #116 has the
+  numbers).

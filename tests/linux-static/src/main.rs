@@ -28,7 +28,8 @@ fn main() -> ExitCode {
         .first()
         .and_then(|path| path.rsplit('/').next())
         .unwrap_or_default();
-    println!("{PREFIX} {name} args {}", args[1..].join("|"));
+    let arguments = args.get(1..).unwrap_or_default();
+    println!("{PREFIX} {name} args {}", arguments.join("|"));
     let greeting = std::env::var("GREETING").unwrap_or_else(|_| "unset".into());
     println!("{PREFIX} env GREETING={greeting}");
     match std::fs::read_to_string("/etc/hostname") {

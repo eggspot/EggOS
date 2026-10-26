@@ -478,6 +478,12 @@ pub fn build_release_image(
     if added.is_empty() {
         return build_kernel(arch, None);
     }
+    if let Some(missing) = added
+        .iter()
+        .find(|file| !std::path::Path::new(&file.host).is_file())
+    {
+        return Err(format!("`{}` is not a file to add", missing.host));
+    }
     let initramfs = release_initramfs(
         arch,
         &image::members(added),
@@ -595,14 +601,14 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
 
 const LINUX_STATIC_PACKAGE: &str = "eggos-linux-static";
 
-const LINUX_STATIC_PATHS: [(&str, &str); 2] = [
+const LINUX_STATIC_BUILDS: [(&str, &str); 2] = [
     ("static", "bin/linux-static"),
     ("pie", "bin/linux-static-pie"),
 ];
 
 fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
     let mut added = Vec::new();
-    for (relocation_model, path) in LINUX_STATIC_PATHS {
+    for (relocation_model, path) in LINUX_STATIC_BUILDS {
         added.push(image::AddedFile {
             host: build_linux_static(arch, relocation_model)?,
             path: path.to_owned(),
@@ -636,7 +642,7 @@ fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, Str
         "strip=symbols",
     ]
     .join("\x1f");
-    let target_dir = workspace_root().join("target").join(format!(
+    let target_dir = target_directory().join(format!(
         "linux-static-{}",
         relocation_model.replace('=', "-")
     ));
@@ -786,6 +792,13 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Cargo's target directory: `CARGO_TARGET_DIR`, or `target/` in the workspace.
+pub fn target_directory() -> std::path::PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"))
 }
 
 pub fn workspace_root() -> std::path::PathBuf {
