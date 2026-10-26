@@ -98,6 +98,22 @@ const TENTH_OF_A_SECOND_NS: u64 = 100_000_000;
 /// machine. Never held while user memory is copied.
 static WINDOW_SIZE: SpinLock<[u8; WINSIZE_SIZE]> = SpinLock::new([0; WINSIZE_SIZE]);
 
+/// Sets the console's window size to the graphical terminal's grid, `rows` by `columns` cells
+/// of `cell_width` by `cell_height` pixels, as `TIOCGWINSZ` reports it.
+pub fn set_window_size(rows: u16, columns: u16, cell_width: u16, cell_height: u16) {
+    let mut size = [0; WINSIZE_SIZE];
+    let fields = [
+        rows,
+        columns,
+        columns.saturating_mul(cell_width),
+        rows.saturating_mul(cell_height),
+    ];
+    for (bytes, field) in size.as_chunks_mut::<2>().0.iter_mut().zip(fields) {
+        *bytes = field.to_ne_bytes();
+    }
+    *WINDOW_SIZE.lock() = size;
+}
+
 /// `ioctl(fd, request, argument)` on a descriptor that names the console, which the caller
 /// looked up: see the module documentation. As Linux: `ENOTTY` for a request the console does
 /// not answer; `EFAULT` if `argument` is not the program's memory (writable, for a request

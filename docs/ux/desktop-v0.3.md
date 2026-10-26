@@ -123,7 +123,7 @@ programs rely on it. Nothing is conveyed by colour alone (section 7).
   2534, 253C), the double set `═ ║ ╔ ╗ ╚ ╝` (U+2550, 2551, 2554, 2557, 255A, 255D), blocks
   `█ ▀ ▄ ░ ▒ ▓` (U+2588, 2580, 2584, 2591, 2592, 2593; the shades are 1-in-4, 2-in-4 and
   3-in-4 checkerboards), `▪ ● ○ ◆` (U+25AA, 25CF, 25CB, 25C6) and `→ ← ↑ ↓` (U+2192, 2190,
-  2191, 2193). Any other codepoint draws `?` (U+003F) in 0.3.0; the glyph table is indexed by
+  2191, 2193), then `▲` (U+25B2), the terminal's scrollback mark (D114). Any other codepoint draws `?` (U+003F) in 0.3.0; the glyph table is indexed by
   a `u8` glyph id: 0x20-0x7E are themselves, the extras take 0x80 upwards in the order listed,
   and the terminal's UTF-8 decoder maps codepoints to ids.
 - 2x (HiDPI) is the same bitmap drawn with every pixel doubled in both directions

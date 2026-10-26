@@ -4,6 +4,7 @@ use crate::console;
 use crate::display::{self, Mode, Rect};
 use crate::input::{self, Button, InputEvent, Modifiers};
 use crate::memory::{FRAMES, Memory};
+use crate::terminal;
 use eggos_drivers::dma::DmaMemory;
 use eggos_drivers::input::{AxisRange, key, scale_to_screen};
 use eggos_drivers::virtio::device_type;
@@ -232,6 +233,7 @@ pub(crate) fn input_devices_deliver_events<P: Platform>(
     let (width, height) = display::mode()
         .map(|mode| (mode.width, mode.height))
         .ok_or("there is no display to move the pointer on")?;
+    input::subscribe();
     while input::next_event().is_some() {}
     P::console_write(INPUT_EVENTS_LINE.as_bytes());
     P::console_write(b"\n");
@@ -314,6 +316,40 @@ pub(crate) fn display_shows_the_first_frame<P: Platform>(
         || first_frame() != Some(display::FIRST_FRAME_HASH_1280X800)
     {
         return Err("the first frame did not come back after the test pattern");
+    }
+    Ok(())
+}
+
+pub(crate) fn terminal_draws_on_the_display<P: Platform>(
+    _memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    if display::mode().is_none() {
+        return match cfg!(all(target_os = "none", feature = "virtio-gpu")) {
+            true => Err("there is no display (no virtio GPU found?)"),
+            false => Ok(()),
+        };
+    }
+    if terminal::is_active() {
+        return Err("the terminal was shown before its self-test");
+    }
+    let area = terminal::start::<P>().ok_or("no terminal could be made for the display")?;
+    let flushes = display::flushes();
+    console::write::<P>(terminal::TEST_SCREEN.as_bytes());
+    let shown = terminal::show::<P>();
+    let hash = display::draw(|framebuffer| display::pixel_hash(framebuffer.pixels()));
+    terminal::stop();
+    let first_frame = display::show_first_frame::<P>();
+    if (area.columns, area.rows) != (158, 49) {
+        return Err("the terminal's grid at 1280x800 is not 158x49");
+    }
+    if shown.is_err() || display::flushes() <= flushes {
+        return Err("the terminal's lines were not flushed to the display");
+    }
+    if hash != Some(terminal::TEST_SCREEN_HASH_1280X800) {
+        return Err("the terminal did not draw the lines the host renders");
+    }
+    if first_frame.is_err() || terminal::is_active() {
+        return Err("the terminal did not let go of the display and the console");
     }
     Ok(())
 }

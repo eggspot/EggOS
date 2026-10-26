@@ -124,7 +124,7 @@ impl<P: Platform> EchoBuffer<P> {
             self.write();
         }
         if bytes.len() > ECHO_BUFFER {
-            P::console_write(bytes);
+            write::<P>(bytes);
             return;
         }
         self.bytes[self.length..self.length + bytes.len()].copy_from_slice(bytes);
@@ -132,8 +132,21 @@ impl<P: Platform> EchoBuffer<P> {
     }
 
     fn write(&mut self) {
-        P::console_write(&self.bytes[..self.length]);
+        write::<P>(&self.bytes[..self.length]);
         self.length = 0;
+    }
+}
+
+/// Writes `bytes` of the console's session, what programs write and the input's echo, to the
+/// platform's console and, when the graphical terminal is shown, to it as well, in the same
+/// order ([`crate::terminal`], D114). The kernel's own messages go to the platform's console
+/// alone ([`PlatformConsole`]).
+#[inline(always)]
+pub fn write<P: Platform>(bytes: &[u8]) {
+    if crate::terminal::is_active() {
+        crate::terminal::write_mirrored::<P>(bytes);
+    } else {
+        P::console_write(bytes);
     }
 }
 

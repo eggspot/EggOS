@@ -5870,3 +5870,135 @@ the license, by an explicit instruction recorded here.
   keys and the scrollback keys (item 13); touch screens and multitouch; more than four input
   devices; the repeat rate and delay as settings; the input capability's CLI and MCP
   front-ends (M10); hot-plug.
+
+## D114 The graphical terminal: Egg Mono, the terminal engine and the console's session on the display — Decided by the build loop (the full-screen layout, what the screen shows, the steady cursor and the brief's ambiguous points decided from the brief, D109)
+
+- **What.** Item 13 of the v0.3.0 plan (D99): the terminal of `docs/ux/terminal-v0.3.md` on the
+  display of D112, in the release kernel, on aarch64, riscv64 and x86_64. Typing on the virtio
+  keyboard (D113) or the serial console shows the echo, the shell's prompt and every command's
+  output on the QEMU window in Egg Mono 8x16.
+- **Placement.** The pure parts in `eggos-drivers`, next to the display's `Rect` and `Damage`
+  and the keymap, so host tests, xtask and the kernel share every byte of them: `font` (the 95
+  ASCII glyphs generated from `docs/ux/font-8x16.txt`, a host test failing when they differ and
+  printing the table; the extras authored from the brief's stroke rules; `glyph_id`,
+  `draw_glyph`) and `terminal` (cells, screens, scrollback, parser, rendering). The design's
+  suggested `eggos-gfx` crate was not made: the split is the engineer's (D109) and a crate
+  holding only these two modules would duplicate `display`'s types or depend on `eggos-drivers`
+  anyway; the desktop (item 14) can move them when it adds the wallpaper and window primitives.
+  The grid, the alternate screen and the scrollback are allocated once from the heap, sized from
+  the display's mode (`Terminal::new` fails without memory), not fixed arrays: the grid follows
+  the mode (D23), and 158x49 cells do not fit the brief's 80x24 arrays. Kernel glue in
+  `kernel/src/terminal.rs`.
+- **The full-screen terminal** (the brief's closest reading). Until the desktop (item 14) there
+  is no window: the terminal's content is the whole screen, with the brief's 8 px padding around
+  the grid and the rest of the padding to the right and bottom, as the maximised window does:
+  `(w - 16) / 8` by `(h - 16) / 16` cells, 158x49 at 1280x800 and 126x47 at 1024x768, all in
+  `term.bg`. `TIOCGWINSZ` reports the grid (`ws_xpixel = cols·8`, `ws_ypixel = rows·16`). The
+  engine renders into any rectangle of a framebuffer (`render(pixels, stride, x, y, damage)`),
+  so the window of item 14 reuses it unchanged.
+- **What the screen shows.** The console's session: what programs write and the input's echo,
+  through one `console::write`. The kernel's log lines stay on the serial console alone, as the
+  design says (the serial side carries the boot stages and may be a log file; the screen shows
+  the boot screen, then the desktop), which also keeps panics and fatal exceptions from taking
+  the terminal's lock. The release kernel starts the terminal in init's boot just before
+  `/init` and prints `boot: terminal 158x49`; from the next line the serial console and the
+  terminal receive exactly the same bytes, which the QEMU test relies on. The UART turns `\n`
+  into `\r\n`; the terminal does the same (`set_onlcr`, Linux's `ONLCR`), so both look alike.
+- **Ordering and the flush.** With the terminal shown, `console::write` takes the terminal's
+  lock, writes the UART, feeds the parser and lets go: the serial console and the terminal see
+  the same bytes in the same order, and feeding only updates cells (no drawing). A drawing
+  thread, started only with a terminal, waits on a wait queue until something changed, renders
+  the damaged cells into the framebuffer under the display's lock then the terminal's (that
+  order only), and flushes the damage after letting the terminal's lock go: a stalled device
+  stops the picture, never the console, and a writer waits at most for one render. Flushes are
+  paced as the design's section 8 says: at most one every 16 ms, at once after an idle frame,
+  nothing while nothing changed (no tick). Replies to `CSI 6 n` and `CSI c` go to the console's
+  input from that thread, never from inside a write, which can run under the line discipline's
+  lock (the echo).
+- **Rendering.** Per row, the span of columns that changed; one damage rectangle per band of
+  changed rows. A scroll of the whole region whose pixels are on screen is recorded as a pixel
+  move (rows copied up within the framebuffer, the change marks moved with them) instead of a
+  redraw, so a line of output at the bottom costs a copy and one line of glyphs; any other
+  scroll redraws its region. The cursor's old and new cells are redrawn each render. A host test
+  feeds random mixes of the subset (scroll regions, inserts, deletes, the alternate screen,
+  views) to a terminal rendered at random points and checks the picture equals a fresh render
+  of the same bytes and that every changed pixel is inside the reported damage.
+- **The brief's open points, decided from it.** The cursor is drawn steady: its 500 ms blink
+  needs the periodic frame tick of the design's section 8, which "also drives the blink and the
+  clock" and comes with the desktop (item 14); a blinking cursor would also make every picture
+  test depend on time. The terminal always has focus (no windows yet), so the outline cursor is
+  item 14's. `▲`, the scrollback mark, is not in the font section's list: it is glyph 0x9F,
+  after the listed extras, authored like them; `▪ ● ○ ◆ → ← ↑ ↓` are 5 to 11 px shapes centred
+  on column 3 and row 8. 256-colour SGR: a cube channel is on when not 0, the colour bright
+  when a channel reaches 128 (the brief's "levels ≥ 128 count as bright"); greys 232-237 black,
+  238-243 bright black, 244-249 white, 250-255 bright white; `38;2;r;g;b` takes each channel to
+  the nearest cube level, then the same rule. `CSI 3 J` clears the screen and the scrollback as
+  the brief's table says (xterm clears only the scrollback). Lines enter the scrollback when a
+  scroll on the main screen starts at its top row (`SU` too), not from `CSI M`. The alternate
+  screen starts cleared for 47, 1047 and 1049. Erased and scrolled-in cells take the current
+  background. A parameter with `:` drops the whole sequence; an `OSC`/`DCS`/`APC` string longer
+  than 1 KiB is abandoned and parsing goes back to ground (no endless swallowing). `ESC c`
+  keeps the scrollback. A cursor restored (`ESC 8`, `CSI u`) in origin mode is kept inside the
+  scroll region, as xterm does, so `CSI 6 n` never reports a row above it. `CSI c` and `CSI > c`
+  are answered only with no parameter or a single 0, so a reply fed back (`stty -echoctl` echoes
+  it into the terminal) asks for nothing more (both found in review).
+- **Input** (with D113). The arrow keys follow the terminal's application cursor mode; Shift
+  with Page Up, Page Down, Home and End moves the scrollback view by 48 lines (rows - 1), to the
+  oldest line or to the live screen and sends nothing; a wheel notch moves it 3 lines; any key
+  that sends bytes brings the view back to the live screen.
+- **Review fixes of D113 (from #112).** The input event queue drops its oldest event when full
+  (the producer moves the head with a compare-and-swap; a consumer that read the overwritten
+  slot fails its own and reads again), and keeps events only once a reader subscribed
+  (`input::subscribe`), so no keystroke stays in memory with no desktop to read it. A key repeat
+  is sent only when the poll's 128-byte buffer has room for its whole sequence, else it stays
+  due for the next poll (it could have been cut into a broken escape sequence).
+- **Testing.** Host tests: the font against the design file and the stroke rules; every row of
+  the brief's table (cursor movement and positions with origin mode, erase in display and line,
+  insert and delete of lines and characters, scroll regions, save and restore, index and reverse
+  index, reset, tabs, autowrap at the last column, the alternate screen round trip, DSR and DA
+  replies, private modes, SGR's 16 colours with bold, underline and inverse, 256 and true
+  colours), the scrollback ring and view, the UTF-8 decoder's error path, unknown and overlong
+  sequences, rendering (`EggOS` against the font's pixels, the cursor, damage only, scroll by
+  pixel moves, the random mixes); the input queue's drop-oldest with three consumers, the repeat
+  without room, the view keys and wheel. QEMU, all three: the self-test
+  `terminal_draws_on_the_display` writes a screen with SGR colours, box drawing and blocks
+  through `console::write` and checks the display's hash against the host's; the
+  boot-to-prompt test compares QEMU's `screendump` pixel for pixel with the host engine's render
+  of the serial bytes after `boot: terminal`, at the first prompt and after the line typed on
+  the virtio keyboard, and requires `boot: terminal 158x49`.
+- **Cost.** Measured against `main` on the same machine (this Mac, QEMU 10.2, release builds).
+  The release kernel's loaded size (text + data + bss) grows by 31.8 KiB on aarch64 (538940 to
+  571504 bytes), 27.5 KiB on riscv64 (484042 to 512192) and 32.6 KiB on x86_64 (564276 to
+  598460): the engine (11 KiB of code on aarch64), the kernel's glue with the parser and the
+  render inlined into the write path and the drawing thread (12 KiB), the font (2 KiB of
+  `.rodata`) and the input layer's view keys; `.data` is unchanged (HEAP and FRAMES still
+  adjacent, D110's lesson: the drawing thread's wait queue is boxed behind a null pointer) and
+  `.bss` grows by 16 to 48 bytes. Accepted as the feature itself, which D109 puts in the kernel for
+  0.3.0. Memory at run time, only with a display: at 1280x800 two screens of 158x49 cells
+  (30,968 bytes each, which the heap takes as 32 KiB blocks of whole frames), the scrollback
+  (256 lines of 158 cells, 161,792 bytes, a 256 KiB block: the heap rounds large allocations up
+  to a power of two of frames, D30; the brief's 256 lines are kept rather than filling the
+  block, so its size does not depend on the mode), the drawing thread's 16 KiB stack: 336 KiB
+  of frames in all. Without a display nothing is made, no thread runs, and a console write costs one load
+  more. Boot to prompt (QEMU's start to the first prompt, as xtask measures it with a 20 ms
+  console poll; three runs each): aarch64 59-60 ms against `main`'s 50-60, riscv64 77-145
+  (82 median) against 83-90, x86_64 113-129 (117) against 112-119, within the measurement's
+  resolution; the boot path only fills the screen once (the blank grid is not rendered, and
+  the drawing thread flushes it). No existing benchmark moved against `main` beyond its gate:
+  `input_event_queue_push_pop` +1 instruction on aarch64 and x86_64 (68 to 69, 66 to 67; the
+  drop-oldest compare-and-swap loop's setup), `input_key_to_bytes` 313 to 314 on aarch64 and
+  385 to 374 on riscv64 (a first version that read the cursor key mode into one `encode` call
+  and checked the view keys inline was 324 on aarch64: the mode is now matched to two
+  constant calls and the view keys are behind a cold call). New gated benchmarks, in
+  instructions on aarch64, riscv64 and x86_64: `gfx_glyph_cell` 562, 681, 690 (well inside the
+  design's 2 µs a cell); `gfx_terminal_line` 45342, 56241, 59320 (80 glyphs); `term_feed_line`
+  6047, 6840, 5949 (about 50 instructions a byte for a shell line with SGR); `term_scroll_line`
+  540783, 669769, 196730 (a line feed at the bottom of 80x24 and its render: 23 lines of pixels
+  moved by the platform's `memmove`, which x86_64's `rep movs` makes cheap under `-icount`,
+  against about 1.1 to 1.4 million instructions to draw them again).
+- **Not yet.** The boot screen (logo, name, progress and its `fb: boot` hash: moved to item 14,
+  which replaces it with the desktop at the first prompt), the cursor's blink and the unfocused
+  outline (item 14), `TERM=xterm` in init's environment, `SIGWINCH` on a grid change, 2x scale,
+  selection, the kernel's messages (a panic) on the screen, rendering from a snapshot so a
+  writer never waits for a render, a sleeping display lock, the terminal capability's CLI and
+  MCP front-ends (M10).

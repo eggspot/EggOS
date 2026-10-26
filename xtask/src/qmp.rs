@@ -320,6 +320,15 @@ impl Picture {
         })
     }
 
+    /// The picture as a binary PPM, as `screendump` writes one.
+    pub fn to_ppm(&self) -> Vec<u8> {
+        let mut ppm = format!("P6\n{} {}\n255\n", self.width, self.height).into_bytes();
+        for pixel in &self.pixels {
+            ppm.extend([(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
+        }
+        ppm
+    }
+
     /// FNV-1a, 64 bits, over the pixels' little-endian bytes: the kernel's `pixel_hash`.
     pub fn hash(&self) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -426,6 +435,7 @@ mod tests {
             pixels: vec![0x6463_6261],
         };
         assert_eq!(one.hash(), 0xfc17_9f83_ee07_24dd);
+        assert_eq!(Picture::from_ppm(&picture.to_ppm()), Ok(picture));
     }
 
     #[test]

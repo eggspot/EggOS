@@ -79,11 +79,23 @@ Must-have, in order:
     virtio keyboard through QMP `input-send-event`, and a self-test checks the pointer,
     button, wheel and key events QMP sends. Polled from a thread that exists only with an
     input device (8 ms while active, 32 ms idle) until device interrupts (issue #97 slice 3).
-    Follow-ups: device interrupts, the keyboard layout setting, LEDs (the status queue),
-    application cursor keys once the terminal tracks `CSI ? 1 h` (item 13).
-13. Graphical terminal: our own font rendering and the ANSI subset on the framebuffer, starting
-    with the drawing crate and the boot screen moved here from item 11 (D112).
-14. Minimal desktop: wallpaper, top bar, the terminal in a window; a first-frame QEMU test.
+    Follow-ups: device interrupts, the keyboard layout setting, LEDs (the status queue).
+13. **done** — graphical terminal (D114, docs/drivers.md): the Egg Mono 8x16 font (the design
+    file's 95 ASCII glyphs, checked by a host test, and the box drawing, block, shape and arrow
+    extras) and the terminal emulator of `terminal-v0.3.md` in `eggos-drivers` (cell grid,
+    256-line scrollback with Shift+Page Up/Down, Home, End and the wheel, the ANSI subset with
+    SGR's 16 colours, bold, underline and inverse, the alternate screen, DSR and DA replies,
+    UTF-8 to glyph ids); the release kernel shows the console's session on the whole display
+    (158x49 cells at 1280x800, 126x47 at 1024x768), mirrored from the serial console, rendering
+    only damaged cells and moving pixels on scrolls, flushed at most every 16 ms by a drawing
+    thread; `boot: terminal 158x49`. The boot-to-prompt test compares QEMU's `screendump` pixel
+    for pixel with the host's render of the serial bytes at the first prompt and after the line
+    typed on the virtio keyboard; a self-test checks an SGR screen's hash on all three.
+    Follow-ups: the boot screen (logo, name, progress, `fb: boot` hash) moved to item 14, which
+    replaces it with the desktop at the first prompt; the cursor's blink (item 14's frame tick);
+    `TERM=xterm` in init's environment; `SIGWINCH`.
+14. Minimal desktop: wallpaper, top bar, the terminal in a window; a first-frame QEMU test;
+    the boot screen (D114).
 15. Release engineering: `cargo xtask release`, boot-to-prompt time in the benchmarks, README
     "Try EggOS" and a limitations doc.
 
@@ -109,7 +121,7 @@ architecture as "boots, no shell". The graphical terminal is the owner's priorit
 | M8 | virtio drivers (console, block, net, rng, input) | **in progress** — the polled virtio core: virtio-mmio version 2 and modern virtio-pci behind one `Transport`, the reset, feature and status handshake, the split virtqueue with the spec's barriers, DMA regions freed only after the device's reset reads back 0; virtio-rng returns bytes on aarch64, riscv64 and x86_64 (D111); the doorbell ordered after the ring's writes for devices, virtio-gpu 2D on all three (D112), virtio-input keyboard, tablet and mouse on all three (D113); next: interrupts instead of polling, virtio-blk (M7), virtio-console and virtio-net, the kernel's generator reseeded from virtio-rng |
 | M9 | More architectures through the HAL | |
 | M10 | Userland: init, shell, core utilities, and the built-in MCP server with its permission model (default deny, local only): every command is also an MCP tool (D21, D22); first size/memory/boot budgets (D24); the first installer: a compressed base image that downloads and installs in seconds, with download size, install time and first-boot time measured (D69) | **in progress** — init as pid 1, started by the release kernel, with `reboot(2)` (D106); next: the `eggsh` shell and the core utilities |
-| M11 | Graphics stack (virtio-gpu first) and compositor | **in progress** — the polled virtio-gpu 2D driver and the kernel's display API: a framebuffer on scanout 0, damage, fenced transfers and flushes (D112); next: the drawing crate, the graphical terminal and the desktop (v0.3.0 items 13-14), the cursor queue, display events, interrupts instead of polling, 3D (virgl, Venus), a userland compositor |
+| M11 | Graphics stack (virtio-gpu first) and compositor | **in progress** — the polled virtio-gpu 2D driver and the kernel's display API: a framebuffer on scanout 0, damage, fenced transfers and flushes (D112); the Egg Mono font and the graphical terminal, the console's session on the display (D114); next: the desktop (v0.3.0 item 14), the cursor queue, display events, interrupts instead of polling, 3D (virgl, Venus), a userland compositor |
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
 | M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
@@ -391,6 +403,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | virtio-rng (polled) | **done** (D111) |
 | virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
 | virtio-input (polled): keyboard, tablet and mouse, capabilities from the device's configuration, the US keymap and key repeat, the input event queue (D113) | **done** (interrupts, LEDs, keyboard layouts: planned) |
+| Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
 | virtio (console, block, net) | planned (M8) |
 
 ## Toward "better than macOS, Windows and Linux"
@@ -402,6 +415,6 @@ Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86
 | Kernel | per-CPU scheduler locks, the Linux syscalls (processes run their programs in user mode on every CPU, preempted on return to user mode, and make system calls; user address spaces exist; CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points; they sleep and wait in wait queues, and an idle CPU takes no tick; every CPU starts, has its per-CPU block, takes its own timer and wake-up interrupts and runs threads, and idle CPUs take threads from busy ones) |
 | Hardware | the other architectures; every driver beyond the early UARTs and the polled virtio core with virtio-rng (D111), virtio-gpu 2D (D112) and virtio-input (D113); device interrupts for drivers |
 | Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write`, `writev`, `exit`, `brk`, `mmap`, `munmap`, `mprotect`, `getpid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`, `getrandom`, `sched_yield`, `arch_prctl`, the resource limits and the signal state's calls, `poll`, `ppoll` and the console's `ioctl`s work, with `AT_RANDOM` from the kernel's generator; pages are mapped on first touch and the stack grows on demand; each thread keeps its own thread pointer; signals are sent and delivered to handlers on Linux's frames, faults included, real-time signals are queued with their `siginfo_t`, and `rt_sigsuspend` and `pause` wait for a handler; the clocks read and programs sleep; the console's status is a character device and it cannot seek; `futex` waits and wakes; `clone` starts threads, Rust's `std::thread` runs, each on its process's one CPU until TLB shootdown; FP state per thread; signals between a process's threads and to the process sent and delivered, interrupted futex waits and sleeps still missing; new processes and files still missing), Android, Windows, macOS and iOS layers |
-| Desktop / UX | compositor, shell, apps; research started in `docs/ux/` |
+| Desktop / UX | compositor, desktop, apps (the shell runs on a full-screen graphical terminal, D114); design in `docs/ux/` |
 | AI-native | built-in MCP server, app capability registry, agent permissions |
 | Editions | component manager; packaging and policy per edition |

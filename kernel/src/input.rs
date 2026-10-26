@@ -2,7 +2,9 @@
 //! interrupt (issue #97). A keyboard's keys become bytes through the US keymap
 //! ([`eggos_drivers::input::keymap`]) and enter the console's line discipline as the UART's do
 //! ([`console::receive_from_keyboard`]); every key, pointer motion, button and wheel notch also
-//! goes into the input event queue ([`next_event`]) the desktop reads.
+//! goes into the input event queue ([`next_event`]) once a reader subscribed ([`subscribe`]),
+//! and the scrollback keys and the wheel move the graphical terminal's view
+//! ([`crate::terminal`]).
 //!
 //! Polling costs nothing without an input device. With one, the release kernel's poller thread
 //! ([`start_polling`]) polls every [`ACTIVE_POLL_MS`] while a key or button is held and for
@@ -12,12 +14,15 @@
 
 use crate::console;
 use crate::sync::LeafSpinLock;
+use crate::terminal::{self, ViewMove};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use eggos_drivers::input::key;
 use eggos_drivers::input::keymap::{self, CursorKeys, KeyBytes, KeyChange, KeyRepeat, Keyboard};
 use eggos_drivers::input::{
     Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative, scale_to_screen,
 };
+use eggos_drivers::terminal::WHEEL_LINES;
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
 
@@ -156,8 +161,8 @@ impl InputEvent {
 }
 
 /// A bounded queue of input events: one producer at a time (the input poller), any number of
-/// consumers, lock-free, allocating nothing. A full queue drops new events and counts them.
-/// `N` must be a power of two.
+/// consumers, lock-free, allocating nothing. A full queue drops its oldest event to take a new
+/// one and counts it. `N` must be a power of two.
 #[derive(Debug)]
 pub struct EventQueue<const N: usize> {
     slots: [AtomicU64; N],
@@ -186,17 +191,30 @@ impl<const N: usize> EventQueue<N> {
         }
     }
 
-    /// Adds `event` at the back; `false`, and the event dropped and counted, when the queue is
-    /// full. Only one producer may push at a time.
+    /// Adds `event` at the back; `false` when the queue was full, so its oldest event was dropped
+    /// and counted to make room. Only one producer may push at a time.
     pub fn push(&self, event: InputEvent) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
-        if tail.wrapping_sub(self.head.load(Ordering::Acquire)) >= N as u64 {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            return false;
+        let mut head = self.head.load(Ordering::Acquire);
+        let mut kept_all = true;
+        while tail.wrapping_sub(head) >= N as u64 {
+            match self.head.compare_exchange_weak(
+                head,
+                head.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    kept_all = false;
+                    break;
+                }
+                Err(current) => head = current,
+            }
         }
         self.slots[tail as usize & (N - 1)].store(event.pack(), Ordering::Relaxed);
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
-        true
+        kept_all
     }
 
     /// Takes the event at the front, if any.
@@ -230,7 +248,7 @@ impl<const N: usize> EventQueue<N> {
         self.len() == 0
     }
 
-    /// How many events were dropped because the queue was full.
+    /// How many old events were dropped because the queue was full.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -246,6 +264,18 @@ fn events() -> Option<&'static KernelEventQueue> {
     // SAFETY: `EVENTS` is null or a leaked `Box` that `install` stored once, with release
     // ordering after making it, and that nothing frees.
     unsafe { queue.as_ref() }
+}
+
+static SUBSCRIBED: AtomicBool = AtomicBool::new(false);
+
+/// Has the input layer keep its events for [`next_event`] from now on. Until a reader
+/// subscribes none are kept, so no keystroke waits in memory for a reader that does not exist.
+pub fn subscribe() {
+    SUBSCRIBED.store(true, Ordering::Release);
+}
+
+fn subscribed_events() -> Option<&'static KernelEventQueue> {
+    events().filter(|_| SUBSCRIBED.load(Ordering::Acquire))
 }
 
 /// The oldest input event not read yet, if any.
@@ -283,6 +313,7 @@ struct Source {
 pub struct InputState {
     keyboard: Keyboard,
     repeat: KeyRepeat,
+    cursor_keys: CursorKeys,
     pointer: (u32, u32),
     buttons_held: u8,
     last_event: u64,
@@ -317,12 +348,34 @@ impl Timing {
     }
 }
 
-/// Where translated input goes: bytes for the console, events for the queue.
+/// Where translated input goes: bytes for the console, events for the queue, moves of the
+/// terminal's scrollback view.
 pub trait InputSink {
     /// Bytes a key sent.
     fn bytes(&mut self, bytes: &[u8]);
+    /// How many more bytes [`Self::bytes`] takes whole.
+    fn room(&self) -> usize;
     /// An event for the queue.
     fn event(&mut self, event: InputEvent);
+    /// A move of the terminal's scrollback view: Shift with Page Up, Page Down, Home or End,
+    /// or the wheel.
+    fn view(&mut self, change: ViewMove);
+}
+
+#[cold]
+#[inline(never)]
+fn move_view_with_key(code: u16, modifiers: Modifiers, sink: &mut dyn InputSink) {
+    if !modifiers.contains(Modifiers::SHIFT) {
+        return;
+    }
+    let change = match code {
+        key::PAGE_UP => ViewMove::PageBack,
+        key::PAGE_DOWN => ViewMove::PageForward,
+        key::HOME => ViewMove::Oldest,
+        key::END => ViewMove::Live,
+        _ => return,
+    };
+    sink.view(change);
 }
 
 impl InputState {
@@ -331,6 +384,7 @@ impl InputState {
         Self {
             keyboard: Keyboard::new(),
             repeat: KeyRepeat::new(),
+            cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
             buttons_held: 0,
             last_event: 0,
@@ -350,6 +404,11 @@ impl InputState {
     /// When the held key repeats next, if one does.
     pub fn next_repeat(&self) -> Option<u64> {
         self.repeat.next()
+    }
+
+    /// Has the arrow keys send `mode`'s forms, as the terminal's program asked.
+    pub fn set_cursor_keys(&mut self, mode: CursorKeys) {
+        self.cursor_keys = mode;
     }
 
     fn key(
@@ -380,7 +439,15 @@ impl InputState {
         let modifiers = self.keyboard.modifiers();
         let pressed = change == KeyChange::Pressed;
         if pressed {
-            let bytes = keymap::encode(event.code, modifiers, CursorKeys::Normal);
+            let bytes = match self.cursor_keys {
+                CursorKeys::Normal => keymap::encode(event.code, modifiers, CursorKeys::Normal),
+                CursorKeys::Application => {
+                    keymap::encode(event.code, modifiers, CursorKeys::Application)
+                }
+            };
+            if bytes.is_empty() {
+                move_view_with_key(event.code, modifiers, sink);
+            }
             sink.bytes(bytes.as_bytes());
             self.repeat.pressed(
                 event.code,
@@ -443,6 +510,12 @@ impl InputState {
             }
         }
         if report.wheel != 0 {
+            let lines = report.wheel.unsigned_abs() as usize * WHEEL_LINES;
+            sink.view(if report.wheel > 0 {
+                ViewMove::Back(lines)
+            } else {
+                ViewMove::Forward(lines)
+            });
             sink.event(InputEvent::Wheel {
                 delta: report.wheel,
             });
@@ -490,11 +563,15 @@ impl InputState {
         }
     }
 
-    /// Sends the held key's bytes again if its repeat is due.
+    /// Sends the held key's bytes again if its repeat is due and `sink` has room for them
+    /// whole; without room the repeat stays due for the next poll.
     pub fn repeat_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
+        if sink.room() < KeyBytes::CAPACITY {
+            return;
+        }
         if let Some(code) = self.repeat.due(timing.now, timing.repeat_interval) {
             let modifiers = self.keyboard.modifiers();
-            sink.bytes(keymap::encode(code, modifiers, CursorKeys::Normal).as_bytes());
+            sink.bytes(keymap::encode(code, modifiers, self.cursor_keys).as_bytes());
         }
     }
 }
@@ -589,22 +666,36 @@ fn screen() -> Option<(u32, u32)> {
     Some((mode.width, mode.height))
 }
 
+const POLL_VIEW_MOVES: usize = 4;
+
 struct PollSink {
     bytes: [u8; POLL_BUDGET_BYTES],
     length: usize,
     queue: Option<&'static KernelEventQueue>,
+    views: [Option<ViewMove>; POLL_VIEW_MOVES],
 }
 
 impl InputSink for PollSink {
     fn bytes(&mut self, bytes: &[u8]) {
-        let end = (self.length + bytes.len()).min(POLL_BUDGET_BYTES);
-        self.bytes[self.length..end].copy_from_slice(&bytes[..end - self.length]);
-        self.length = end;
+        if bytes.len() <= self.room() {
+            self.bytes[self.length..self.length + bytes.len()].copy_from_slice(bytes);
+            self.length += bytes.len();
+        }
+    }
+
+    fn room(&self) -> usize {
+        POLL_BUDGET_BYTES - self.length
     }
 
     fn event(&mut self, event: InputEvent) {
         if let Some(queue) = self.queue {
             queue.push(event);
+        }
+    }
+
+    fn view(&mut self, change: ViewMove) {
+        if let Some(slot) = self.views.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(change);
         }
     }
 }
@@ -614,7 +705,7 @@ impl InputSink for PollSink {
 /// held key's repeat if it is due, and returns the clock tick to poll again at. `None` without
 /// input devices.
 pub fn poll<P: Platform>() -> Option<u64> {
-    poll_devices::<P>(&INPUT, events(), screen(), Timing::now::<P>())
+    poll_devices::<P>(&INPUT, subscribed_events(), screen(), Timing::now::<P>())
 }
 
 fn poll_devices<P: Platform>(
@@ -629,10 +720,18 @@ fn poll_devices<P: Platform>(
             bytes: [0; POLL_BUDGET_BYTES],
             length: 0,
             queue,
+            views: [None; POLL_VIEW_MOVES],
         };
         let (last, next) = {
             let mut input = devices.lock();
             let input = input.as_mut()?;
+            input
+                .state
+                .set_cursor_keys(if terminal::application_cursor_keys() {
+                    CursorKeys::Application
+                } else {
+                    CursorKeys::Normal
+                });
             let mut more = false;
             for source in input.sources.iter_mut().flatten() {
                 let budget = (POLL_BUDGET_BYTES - sink.length) / KeyBytes::CAPACITY;
@@ -654,7 +753,11 @@ fn poll_devices<P: Platform>(
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
         };
+        for change in sink.views.into_iter().flatten() {
+            terminal::move_view::<P>(change);
+        }
         if sink.length > 0 {
+            terminal::move_view::<P>(ViewMove::Live);
             console::receive_from_keyboard::<P>(&sink.bytes[..sink.length]);
         }
         if last {

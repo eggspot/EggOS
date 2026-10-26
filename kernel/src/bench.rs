@@ -20,10 +20,12 @@ use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
-use eggos_drivers::display::{Mode, Rect};
+use eggos_drivers::display::{Damage, Mode, Rect};
 use eggos_drivers::dma::DmaAddr;
 use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::font::{self, GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::input::{Capabilities, RawEvent, SYN_REPORT, event_type};
+use eggos_drivers::terminal::{TERM_BACKGROUND, TERM_FOREGROUND, Terminal};
 use eggos_drivers::virtio::gpu::{self as virtio_gpu, VirtioGpu};
 use eggos_drivers::virtio::input::{self as virtio_input, VirtioInput};
 use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
@@ -48,7 +50,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 40] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 44] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -122,6 +124,10 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 40] {
         ("linux_file_read", linux_file_read::<P>),
         ("linux_fork", linux_fork::<P>),
         ("linux_vfork_exec", linux_vfork_exec::<P>),
+        ("gfx_glyph_cell", |_, n| gfx_glyph_cell(n)),
+        ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
+        ("term_feed_line", |_, n| term_feed_line(n)),
+        ("term_scroll_line", |_, n| term_scroll_line(n)),
     ]
 }
 
@@ -470,8 +476,14 @@ impl input::InputSink for DiscardingSink {
     fn bytes(&mut self, bytes: &[u8]) {
         black_box(bytes);
     }
+    fn room(&self) -> usize {
+        usize::MAX
+    }
     fn event(&mut self, event: input::InputEvent) {
         black_box(event);
+    }
+    fn view(&mut self, change: crate::terminal::ViewMove) {
+        black_box(change);
     }
 }
 
@@ -518,6 +530,70 @@ fn input_event_queue_push_pop(n: u64) {
         };
         black_box(BENCH_EVENTS.push(black_box(event)));
         black_box(BENCH_EVENTS.pop());
+    }
+}
+
+const BENCH_COLUMNS: u16 = 80;
+const BENCH_ROWS: u16 = 24;
+const BENCH_STRIDE: usize = BENCH_COLUMNS as usize * GLYPH_WIDTH;
+
+fn bench_terminal(rows: u16) -> Terminal {
+    let Some(mut terminal) = Terminal::new(BENCH_COLUMNS, rows) else {
+        panic!("terminal benchmark: no memory for an 80-column terminal");
+    };
+    terminal.set_onlcr(true);
+    terminal
+}
+
+fn gfx_glyph_cell(n: u64) {
+    let mut pixels = alloc::vec![0u32; BENCH_STRIDE * GLYPH_HEIGHT];
+    for i in 0..n {
+        let column = (i % u64::from(BENCH_COLUMNS)) as usize;
+        font::draw_glyph(
+            black_box(&mut pixels),
+            BENCH_STRIDE,
+            column * GLYPH_WIDTH,
+            b'!' + (i % 90) as u8,
+            TERM_FOREGROUND,
+            TERM_BACKGROUND,
+            false,
+        );
+    }
+}
+
+fn gfx_terminal_line(n: u64) {
+    let mut terminal = bench_terminal(1);
+    terminal.feed(b"\x1b[?25l");
+    terminal.feed(&[b'x'; BENCH_COLUMNS as usize]);
+    let mut pixels = alloc::vec![0u32; BENCH_STRIDE * GLYPH_HEIGHT];
+    let mut damage = Damage::new();
+    for _ in 0..n {
+        terminal.invalidate();
+        terminal.render(black_box(&mut pixels), BENCH_STRIDE, 0, 0, &mut damage);
+        damage.clear();
+    }
+}
+
+const SGR_LINE: &[u8] = b"\x1b[1;32meggsh\x1b[0m:\x1b[34m/usr/share\x1b[0m# ls -l --color     README.md Cargo.toml docs kernel drivers hal\r";
+
+fn term_feed_line(n: u64) {
+    let mut terminal = bench_terminal(BENCH_ROWS);
+    for _ in 0..n {
+        terminal.feed(black_box(SGR_LINE));
+    }
+    black_box(terminal.cursor());
+}
+
+fn term_scroll_line(n: u64) {
+    let mut terminal = bench_terminal(BENCH_ROWS);
+    let mut pixels = alloc::vec![0u32; BENCH_STRIDE * BENCH_ROWS as usize * GLYPH_HEIGHT];
+    let mut damage = Damage::new();
+    terminal.feed(b"\x1b[24;1H");
+    terminal.render(&mut pixels, BENCH_STRIDE, 0, 0, &mut damage);
+    for _ in 0..n {
+        damage.clear();
+        terminal.feed(black_box(b"\nscrolled"));
+        terminal.render(black_box(&mut pixels), BENCH_STRIDE, 0, 0, &mut damage);
     }
 }
 
@@ -1277,29 +1353,37 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (
-            benchmarks,
-            [
-                (syscall, _),
-                (process_syscall, _),
-                (process_switch, _),
-                (fp_process_switch, _),
-                (linux_syscall, _),
-                (linux_exec, _),
-                (linux_execve, _),
-                (linux_page_fault, _),
-                (linux_mmap_munmap, _),
-                (linux_dup3_close, _),
-                (linux_descriptor_lookup, _),
-                (linux_openat_close, _),
-                (linux_file_read, _),
-                (linux_fork, _),
-                (linux_vfork_exec, _),
-            ],
-        ) = all.split_at(all.len() - 15)
+        let (machine_only, terminal) = all[all.len() - 19..].split_at(15);
+        let benchmarks = &[&all[..all.len() - 19], terminal].concat()[..];
+        let [
+            (syscall, _),
+            (process_syscall, _),
+            (process_switch, _),
+            (fp_process_switch, _),
+            (linux_syscall, _),
+            (linux_exec, _),
+            (linux_execve, _),
+            (linux_page_fault, _),
+            (linux_mmap_munmap, _),
+            (linux_dup3_close, _),
+            (linux_descriptor_lookup, _),
+            (linux_openat_close, _),
+            (linux_file_read, _),
+            (linux_fork, _),
+            (linux_vfork_exec, _),
+        ] = machine_only
         else {
             unreachable!()
         };
+        assert_eq!(
+            terminal.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            [
+                "gfx_glyph_cell",
+                "gfx_terminal_line",
+                "term_feed_line",
+                "term_scroll_line"
+            ]
+        );
         assert_eq!(
             [
                 *syscall,

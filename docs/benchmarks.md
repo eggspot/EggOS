@@ -84,6 +84,16 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   doorbells' MMIO writes and the device's copy, which an emulated device makes
   host-dependent. Its 4 KiB control region and 64x64 framebuffer are statics of the benchmark
   kernel.
+- `gfx_glyph_cell`: one Egg Mono glyph drawn into an 8x16 cell of an 80-column framebuffer
+  (D114): 16 rows of 8 pixels, each the foreground or the background colour.
+- `gfx_terminal_line`: the terminal engine's render of one changed line of 80 cells (D114):
+  80 glyphs and the line's damage rectangle.
+- `term_feed_line`: the terminal engine's parser and cells for one 80-column shell line with
+  SGR colours, ending in a carriage return (D114): about 120 bytes, so the parser's cost per byte
+  is this divided by 120.
+- `term_scroll_line`: a line feed at the bottom of an 80x24 terminal and its render (D114): the
+  grid moved up a line into the scrollback, the pixels of 23 lines moved up instead of drawn
+  again, the new line and the cursor drawn.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties
