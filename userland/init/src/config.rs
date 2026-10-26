@@ -132,9 +132,30 @@ impl Config {
     }
 }
 
+/// The whole lines of `text`, the start of a configuration too long to read at once: up to
+/// and including its last newline, so a line cut short is never taken.
+pub fn whole_lines(text: &[u8]) -> &[u8] {
+    text.iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(&text[..0], |end| &text[..=end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_whole_lines_are_kept_of_a_configuration_cut_short() {
+        assert_eq!(
+            whole_lines(b"login-exit=poweroff\nlogin=/bin/egg"),
+            b"login-exit=poweroff\n"
+        );
+        assert_eq!(whole_lines(b"a=b\n"), b"a=b\n");
+        assert_eq!(whole_lines(b"login=/bin/egg"), b"");
+        let config = Config::parse(whole_lines(b"login-exit=halt\nlogin=/bin/x"));
+        assert_eq!(config.login_exit, LoginExit::Halt);
+        assert_eq!(config.login, Config::default().login);
+    }
 
     #[test]
     fn without_a_file_init_respawns_the_shell() {
