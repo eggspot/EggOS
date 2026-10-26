@@ -210,6 +210,12 @@ impl<R: RegisterIo> Transport for PciTransport<R> {
             .map_or(0, |device| device.read8(offset))
     }
 
+    fn write_config8(&self, offset: usize, value: u8) {
+        if let Some(device) = self.device.as_ref() {
+            device.write8(offset, value);
+        }
+    }
+
     fn read_config32(&self, offset: usize) -> u32 {
         self.device
             .as_ref()

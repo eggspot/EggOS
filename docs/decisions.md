@@ -5740,3 +5740,133 @@ the license, by an explicit instruction recorded here.
   display lock, the display capability's CLI and MCP front-ends (M10), the used ring checked
   against the chains in flight and `window::map` refusing RAM (D111's other follow-ups, which
   the GPU does not depend on), 3D (virgl, Venus).
+
+## D113 virtio-input, the US keymap, the input event queue and the poller — Decided by the build loop (polling, key repeat, the interrupt hint, QMP routing and the tablet's rounding decided by research)
+
+- **What.** Item 12 of the v0.3.0 plan (D99): the virtio keyboard, tablet and mouse on
+  aarch64, riscv64 and x86_64, in the release kernel. Keys become bytes that enter the
+  console's line discipline exactly as the UART's do, and every key, pointer motion, button and
+  wheel notch goes into an input event queue for the desktop (item 14). The design is the
+  terminal brief's "Keyboard" and "Pointer" sections and the desktop brief's item 12 (D109).
+- **The driver** (`eggos_drivers::virtio::input`, clean-room from the virtio 1.2 input
+  chapter; event codes are the Linux input event code values, facts of the wire protocol
+  taken from public documentation). Generic over the transport and the DMA memory like
+  virtio-rng and the GPU. One event queue of up to 64 entries (QEMU's size) and 64 buffers of 8
+  bytes in one 4 KiB region; every buffer stays posted: `poll` takes what the device wrote,
+  oldest first, up to a budget, posts each buffer again and notifies once per poll. What the
+  device reports is read from its configuration (`select` 0x11 with `EV_KEY`, `EV_REL`,
+  `EV_ABS` for the code bitmaps, 0x12 with `ABS_X`, `ABS_Y` for their ranges), which needed a
+  byte write to the device configuration: `Transport::write_config8`. A device that is neither
+  a keyboard (any key from Esc to F12) nor a pointer (relative or absolute X and Y) is refused.
+  The status queue (LEDs) is not set up. `virtio-input` is a default feature of the kernel
+  crate, as `virtio-gpu` is (D112): a driver for hardware present belongs to the base (D18), and
+  without a device it costs no memory and no thread.
+- **The interrupt hint** (decided by research). Every polled driver (rng, GPU, input) now sets
+  `VIRTQ_AVAIL_F_NO_INTERRUPT` on its available ring (`SplitQueue::disable_used_notifications`).
+  QEMU honours it without the event index; without it a virtio-mmio device's interrupt line
+  stays asserted forever (nobody writes `InterruptACK`), harmless while the GIC or PLIC source
+  stays disabled but an immediate interrupt the day issue #97's slice 3 enables it. Setting PCI's
+  INTx Disable bit as well is left to slice 3, which configures each device's interrupts.
+- **The keymap** (`eggos_drivers::input::keymap`): the terminal brief's table exactly, host
+  tested key by key against an independently written copy of it: characters with Shift, Caps
+  Lock (letters only), Ctrl (control characters, `@` to `_` and letters, Ctrl+Space `NUL`) and
+  Alt (an `ESC` before), Enter `CR` (keypad Enter too), Backspace `DEL` (Ctrl `BS`), Tab and
+  Shift+Tab `ESC [ Z`, Esc, the arrows, Home, End, Insert, Delete, Page Up and Down and F1 to F12
+  in xterm's form, modified ones with xterm's parameter `1 + Shift + 2·Alt + 4·Ctrl`; nothing
+  for modifiers, locks, Super and Shift with the scrollback keys. The application cursor mode
+  is in the map but nothing sets it until the terminal tracks `CSI ? 1 h` (item 13). The
+  keyboard's state is a 768-bit held-key map and the modifier keys, all zeros when new.
+- **Key repeat and the host's autorepeat** (decided by research). QEMU's virtio keyboard
+  advertises `EV_REP` with no codes (the driver repeats) and never sends value 2, but its
+  windows (GTK, Cocoa, SDL) and VNC pass the host's autorepeat on as repeated presses without
+  releases. So a press of a key already held and value 2 are ignored, and the kernel repeats
+  itself as the design says: the last key pressed that sends bytes, after 400 ms, then every
+  40 ms, until it is released or another key is pressed; a late poll sends one repeat, never a
+  burst. Repeats send bytes but are not queued as events.
+- **The input layer** (`kernel/src/input.rs`). Drivers implement `InputDevice` and `install`
+  it (at most 4). `poll` takes every device's events in rounds of at most 16 (a key sends at
+  most 8 bytes, so a round fits a 128-byte buffer), translates them under the input lock, then
+  hands the round's bytes to `console::receive_from_keyboard` with the lock released; at most 8
+  rounds a poll, so a device that never runs dry cannot keep the poller awake. A poller that
+  cannot start (no memory for its stack) is reported on the console. Pointer
+  reports apply at `SYN_REPORT`: the motion first, then the buttons (a click inside one report
+  arrives as a press and a release), then the wheel. A tablet's position is scaled to the
+  display rounded to the nearest pixel (decided by research: QEMU's windows scale a pixel down
+  by truncating, `v = x · 32767 / w`, and only rounding brings every pixel back; the design's
+  `v · (w - 1) / 32767` lost one pixel in two at 1280 wide, so the terminal brief now says so);
+  a mouse's motion is added and clamped to the display. Without a display there is no
+  position, only buttons and the wheel. Wheel releases arrive from QEMU as `BTN_GEAR_UP` and
+  `BTN_GEAR_DOWN` key events, which are ignored with every other code from 0x100 on that is not
+  the left, right or middle button.
+- **The console.** The keyboard's bytes run through the very function the UART's receive
+  interrupt runs (one out-of-line `receive` taking `Option<&[u8]>`): a first version gave each
+  source its own copy of the line discipline's echo code (4.7 KiB). The UART path gains one
+  compare per 64-byte chunk.
+- **The event queue.** `Key` (code, pressed, the modifiers after it), `PointerMove` (x, y),
+  `Button` (left, right, middle), `Wheel` (notches), each packed into one 64-bit word in a
+  lock-free ring of 256 (the design's), one producer at a time (the poller) and any consumers
+  (a compare-and-swap on the head); a full queue drops new events and counts them
+  (`dropped_events`). It is made with the first input device.
+- **Polling** (decided by research; interrupts are issue #97's slice 3). The kernel is
+  tickless, so the idle loop never runs without a timer; a poller thread, which the release
+  kernel's init boot starts only when an input device was bound, polls every 8 ms (USB HID's
+  125 Hz) while a key or button is held and for 1 s after the last event, every 32 ms
+  otherwise, and wakes exactly at a key repeat. Idle, that is about 31 wake-ups a second with
+  one load of each device's used ring index; the first key after a pause waits 16 ms on
+  average, 32 ms at worst, far below what people notice for indirect input (Deber et al., CHI
+  2015, about 55 to 96 ms). Options weighed: a fixed 8 or 10 ms (four times the idle wake-ups),
+  polling from the idle loop (needs a timer anyway on a tickless kernel, and adds work to every
+  idle entry). The self-test and benchmark kernels have no poller: the input self-test polls
+  itself.
+- **QEMU** (decided by research). Every run with the display gets `-device
+  virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on the `virt`
+  machines (5 of riscv64's 8 slots are now used) and the `-pci` devices with
+  `disable-legacy=on` on q35. QEMU routes `input-send-event` to the input handler activated
+  last, which a virtio device becomes when its driver sets `DRIVER_OK`, so q35's PS/2 keyboard
+  and mouse lose the events then; the command's `device` argument names a display, not an input
+  device, and is not used. The boot-to-prompt test types `uname -a` and a line of shifted
+  characters (`echo EGGOS-KEYBOARD Typed_On+Virtio:OK`) on the virtio keyboard, one report per
+  key 10 ms apart and at most 8 keys ahead of their echo (a burst could fill the device's 64
+  events between polls on a slow machine, and QEMU drops a whole report that does not fit),
+  checks the same echo and output as the serial lines, and
+  requires `boot: input keyboard pointer`. In `cargo xtask run` the window types on the
+  keyboard and points with the tablet.
+- **Testing.** Host tests: every key code against the design's table, Shift, Caps Lock, Ctrl,
+  Alt, the special keys and their modified forms, sequence lengths for every code and
+  modifier; the keyboard's state, autorepeat and repeat timing; the tablet's rounding for every
+  pixel at four screen sizes; the driver against a fake device (capabilities of a keyboard, a
+  mouse, a tablet and nothing; every buffer posted before `DRIVER_OK`; order; 5000 reports
+  through a 64-entry queue; budgets; short events; refusals; reset); the input layer's
+  translation (keys, modifiers, repeat, tablet, mouse, buttons in one report, no display), the
+  next poll's time, the packing, the queue's order, overflow and consumers on three threads;
+  an installed keyboard's keys reaching the console's line discipline and the queue; QMP's
+  JSON and its US typing. QEMU, all three: `devices_are_discovered` expects the three devices
+  (and q35's three `0x1052` functions bound), and `input_devices_deliver_events` writes
+  `EGGOS-INPUT: send pointer and key events`, to which the runner answers through QMP with the
+  tablet at (8192, 24576), a left click, the mouse moved by (7, -5), a wheel notch and Shift
+  pressed and released, 100 ms apart; the queue must hold them in that order (the move to
+  (320, 600), then to (327, 595) at 1280x800) and the console no bytes.
+- **Cost.** Measured against `main` on the same machine (this Mac, QEMU 10.2, release
+  builds). The release kernel's loaded size grows by 20.7 KiB on aarch64 (517656 to 538848
+  bytes), 17.4 KiB on riscv64 (466122 to 483964) and 24.7 KiB on x86_64 (538852 to 564148):
+  the driver and its probe, the keymap, the input layer and its poller; `.data` is unchanged
+  (HEAP and FRAMES still adjacent, D110's lesson) and `.bss` grows by 32 bytes (the input
+  state's and the queue's null pointers, the cached display size). Memory at run time, only
+  with input devices: a 4 KiB DMA region per device, the event queue (2 KiB, in a 4 KiB
+  block), the poller's 16 KiB stack and about half a KiB of state. Boot to prompt, median of
+  three alternating runs (the runner polls every 20 ms): 60 against `main`'s 60 ms on aarch64,
+  88 against 84 on riscv64 (three more devices probed through virtio-mmio's configuration),
+  114 against 117 on x86_64. No existing benchmark moved against `main` but riscv64
+  `frame_contiguous_allocate_free`, 200 to 203, its baseline line: the frame allocator's
+  state after three more DMA regions at probe, its machine code identical (disassembly
+  compared; D112 saw the same number move the other way). New gated benchmarks, in
+  instructions: `virtio_input_poll_idle` (a poll that finds nothing) 25, 28 and 37 on
+  aarch64, riscv64 and x86_64; `input_key_to_bytes` (a key's press and release with the ends
+  of their reports, through the keymap and the input layer) 313, 385 and 334;
+  `input_event_queue_push_pop` 68, 69 and 66. Skipping a keyboard report's empty pointer work
+  took `input_key_to_bytes` from 352, 440 and 391.
+- **Not yet.** Device interrupts (issue #97, slice 3: then the poller goes); keyboard layouts
+  other than US and the layout setting; the keyboard's LEDs (status queue); application cursor
+  keys and the scrollback keys (item 13); touch screens and multitouch; more than four input
+  devices; the repeat rate and delay as settings; the input capability's CLI and MCP
+  front-ends (M10); hot-plug.

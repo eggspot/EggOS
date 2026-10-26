@@ -124,6 +124,10 @@ impl<R: RegisterIo> Transport for MmioTransport<R> {
         self.regs.read8(CONFIG + offset)
     }
 
+    fn write_config8(&self, offset: usize, value: u8) {
+        self.regs.write8(CONFIG + offset, value);
+    }
+
     fn read_config32(&self, offset: usize) -> u32 {
         self.regs.read32(CONFIG + offset)
     }

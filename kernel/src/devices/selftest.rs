@@ -1,8 +1,11 @@
 use super::dma::DmaRegion;
 use super::{Binding, DeviceNode, Identity};
+use crate::console;
 use crate::display::{self, Mode, Rect};
+use crate::input::{self, Button, InputEvent, Modifiers};
 use crate::memory::{FRAMES, Memory};
 use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::input::{AxisRange, key, scale_to_screen};
 use eggos_drivers::virtio::device_type;
 use eggos_hal::paging::{Format, MemoryType};
 use eggos_hal::{PhysicalRange, Platform};
@@ -31,7 +34,9 @@ fn virtio_devices(found: &[DeviceNode], wanted: u32) -> usize {
         .count()
 }
 
-const VIRTIO_DEVICES: usize = 2;
+const VIRTIO_DEVICES: usize = 5;
+
+const VIRTIO_INPUT_DEVICES: usize = 3;
 
 fn virtio_mmio_slots(found: &[DeviceNode], expected: usize) -> Result<(), &'static str> {
     let slots: alloc::vec::Vec<_> = found
@@ -113,6 +118,15 @@ fn q35_functions(found: &[DeviceNode]) -> Result<(), &'static str> {
     {
         return Err("the virtio-pci driver did not bind a virtio-gpu-pci function");
     }
+    let inputs = functions()
+        .filter(|(f, node)| {
+            (f.vendor_id, f.device_id) == (0x1af4, 0x1052)
+                && node.binding == Binding::Bound("virtio-pci")
+        })
+        .count();
+    if cfg!(feature = "virtio") && inputs != VIRTIO_INPUT_DEVICES {
+        return Err("the virtio-pci driver did not bind the three virtio-input-pci functions");
+    }
     Ok(())
 }
 
@@ -150,6 +164,93 @@ pub(crate) fn devices_are_discovered<P: Platform>(
     }
     if cfg!(feature = "virtio") && virtio_devices(&found, device_type::GPU) != 1 {
         return Err("no virtio GPU behind the transports");
+    }
+    if cfg!(feature = "virtio")
+        && virtio_devices(&found, device_type::INPUT) != VIRTIO_INPUT_DEVICES
+    {
+        return Err("not three virtio input devices behind the transports");
+    }
+    Ok(())
+}
+
+/// The line the input self-test writes when it is ready for the QEMU runner's pointer and key
+/// events. Must match the runner's.
+pub const INPUT_EVENTS_LINE: &str = "EGGOS-INPUT: send pointer and key events";
+
+/// Where the runner puts the tablet's pointer: its `ABS_X` and `ABS_Y` values, 0 to 32767.
+/// Must match the runner's.
+pub const TABLET_POSITION: (i32, i32) = (8192, 24576);
+
+/// How far the runner moves the mouse after that. Must match the runner's.
+pub const MOUSE_MOTION: (i32, i32) = (7, -5);
+
+const INPUT_EVENTS_TIMEOUT_MS: u64 = 10_000;
+
+fn expected_input_events(width: u32, height: u32) -> [InputEvent; 7] {
+    let range = AxisRange { min: 0, max: 32767 };
+    let x = scale_to_screen(TABLET_POSITION.0, range, width);
+    let y = scale_to_screen(TABLET_POSITION.1, range, height);
+    let button = |pressed| InputEvent::Button {
+        button: Button::Left,
+        pressed,
+    };
+    let shift = |pressed, modifiers| InputEvent::Key {
+        code: key::LEFT_SHIFT,
+        pressed,
+        modifiers,
+    };
+    [
+        InputEvent::PointerMove { x, y },
+        button(true),
+        button(false),
+        InputEvent::PointerMove {
+            x: x.saturating_add_signed(MOUSE_MOTION.0),
+            y: y.saturating_add_signed(MOUSE_MOTION.1),
+        },
+        InputEvent::Wheel { delta: 1 },
+        shift(true, Modifiers::SHIFT),
+        shift(false, Modifiers::NONE),
+    ]
+}
+
+pub(crate) fn input_devices_deliver_events<P: Platform>(
+    _memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
+    if !cfg!(all(target_os = "none", feature = "virtio-input")) {
+        return Ok(());
+    }
+    let summary = input::summary();
+    if summary == input::Summary::default() {
+        return Err("there are no input devices (no virtio keyboard, tablet and mouse?)");
+    }
+    if summary.keyboards != 1 || summary.pointers != 2 {
+        return Err("the input devices are not one keyboard and two pointers");
+    }
+    if cfg!(feature = "qemu-bench") {
+        return Ok(());
+    }
+    let (width, height) = display::mode()
+        .map(|mode| (mode.width, mode.height))
+        .ok_or("there is no display to move the pointer on")?;
+    while input::next_event().is_some() {}
+    P::console_write(INPUT_EVENTS_LINE.as_bytes());
+    P::console_write(b"\n");
+    let expected = expected_input_events(width, height);
+    let mut matched = 0;
+    let mut deadline = super::Deadline::after::<P>(INPUT_EVENTS_TIMEOUT_MS);
+    while matched < expected.len() {
+        if !deadline.keep_waiting() {
+            return Err("the pointer and key events QEMU sent did not all arrive within 10 s");
+        }
+        input::poll::<P>();
+        while let Some(event) = input::next_event() {
+            if expected.get(matched) == Some(&event) {
+                matched += 1;
+            }
+        }
+    }
+    if console::available_input() != 0 {
+        return Err("Shift alone sent bytes to the console");
     }
     Ok(())
 }

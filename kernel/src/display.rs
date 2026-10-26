@@ -130,9 +130,9 @@ pub fn draw<R>(draw: impl FnOnce(&mut Framebuffer<'_>) -> R) -> Option<R> {
 /// Shows what was drawn on the display since the last flush ([`Display::flush`]); 0 without a
 /// display.
 pub fn flush<P: Platform>() -> Result<usize, &'static str> {
+    let mut display = DISPLAY.lock();
     let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
-    DISPLAY
-        .lock()
+    display
         .as_mut()
         .map_or(Ok(0), |display| display.flush(&mut deadline))
 }

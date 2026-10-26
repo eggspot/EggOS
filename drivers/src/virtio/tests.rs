@@ -139,6 +139,7 @@ impl Transport for FakeDevice {
     fn read_config8(&self, _offset: usize) -> u8 {
         0
     }
+    fn write_config8(&self, _offset: usize, _value: u8) {}
     fn read_config32(&self, _offset: usize) -> u32 {
         0
     }
@@ -669,6 +670,9 @@ impl Transport for &FakeDevice {
     }
     fn read_config8(&self, offset: usize) -> u8 {
         (**self).read_config8(offset)
+    }
+    fn write_config8(&self, offset: usize, value: u8) {
+        (**self).write_config8(offset, value)
     }
     fn read_config32(&self, offset: usize) -> u32 {
         (**self).read_config32(offset)

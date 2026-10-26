@@ -1,6 +1,6 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
 //! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device and GPU (D112) on top of either.
+//! device, GPU (D112) and input devices (D113) on top of either.
 
 use super::dma::DmaRegion;
 use super::{
@@ -67,6 +67,9 @@ impl Transport for AnyTransport {
     }
     fn read_config8(&self, offset: usize) -> u8 {
         each_transport!(self, t => t.read_config8(offset))
+    }
+    fn write_config8(&self, offset: usize, value: u8) {
+        each_transport!(self, t => t.write_config8(offset, value))
     }
     fn read_config32(&self, offset: usize) -> u32 {
         each_transport!(self, t => t.read_config32(offset))
@@ -383,6 +386,96 @@ mod gpu {
                 if let Some(framebuffer) = framebuffer {
                     framebuffer.free_after_reset(&reset);
                 }
+                give_back_transport(identity, transport);
+            }
+            Err((_, transport)) => give_back_transport(identity, transport),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "virtio-input"))]
+pub use input::INPUT_DRIVER;
+
+#[cfg(any(test, feature = "virtio-input"))]
+mod input {
+    use super::*;
+    use crate::input::InputDevice;
+    use eggos_drivers::input::{Capabilities, RawEvent};
+    use eggos_drivers::virtio::input::{MEMORY_BYTES, VirtioInput};
+
+    type Input = VirtioInput<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio input device (virtio 1.2, 5.8): a keyboard, a mouse or a tablet,
+    /// installed as one of the kernel's input devices ([`crate::input`]).
+    pub static INPUT_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-input",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::INPUT)],
+        probe: probe_input,
+    };
+
+    struct VirtioInputDevice(Input);
+
+    impl InputDevice for VirtioInputDevice {
+        fn capabilities(&self) -> Capabilities {
+            self.0.capabilities()
+        }
+
+        fn poll(&mut self, budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
+            self.0.poll(budget, &mut |raw| event(raw))
+        }
+    }
+
+    fn probe_input(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let input = match VirtioInput::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(input) => input,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioInput::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        let capabilities = input.capabilities();
+        let refusal = if !capabilities.keyboard && !capabilities.is_pointer() {
+            "neither a keyboard nor a pointer"
+        } else if !crate::input::has_room() {
+            "no room for another input device"
+        } else {
+            return crate::input::install(Box::new(VirtioInputDevice(input)))
+                .map_err(|_| ProbeError::Refused("no room for another input device"));
+        };
+        release(
+            input,
+            &node.identity,
+            &mut probe.deadline(ANSWER_TIMEOUT_MS),
+        );
+        Err(ProbeError::Refused(refusal))
+    }
+
+    fn release(input: Input, identity: &Identity, deadline: &mut Deadline) {
+        match input.reset(&mut || deadline.keep_waiting()) {
+            Ok((transport, memory, reset)) => {
+                memory.free_after_reset(&reset);
                 give_back_transport(identity, transport);
             }
             Err((_, transport)) => give_back_transport(identity, transport),

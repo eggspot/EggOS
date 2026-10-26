@@ -203,9 +203,10 @@ impl Transport for FakeGpu {
     fn read_config8(&self, _offset: usize) -> u8 {
         0
     }
+    fn write_config8(&self, _offset: usize, _value: u8) {}
     fn read_config32(&self, offset: usize) -> u32 {
         match offset {
-            NUM_SCANOUTS => self.scanouts,
+            CONFIG_NUM_SCANOUTS_OFFSET => self.scanouts,
             _ => 0,
         }
     }

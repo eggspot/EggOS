@@ -55,10 +55,11 @@ impl<T: Transport, M: DmaMemory> VirtioRng<T, M> {
         // driver, which keeps it for as long as the queue lives; the device reaches it at its
         // DMA address.
         let queue = unsafe { SplitQueue::new(memory.as_mut_ptr(), memory.dma_addr(), size) };
-        let queue = match queue {
+        let mut queue = match queue {
             Ok(queue) => queue,
             Err(error) => return Err((error, transport, Some(memory))),
         };
+        queue.disable_used_notifications();
         if let Err(error) = transport.set_up_queue(REQUEST_QUEUE, size, &queue.addresses()) {
             super::fail(&transport);
             let memory = match super::reset(&transport, keep_waiting) {

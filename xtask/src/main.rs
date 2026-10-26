@@ -30,8 +30,8 @@ commands:
                          (<arch> may be `all`)
   run   --arch <arch> [--nographic]
                          boot the kernel in QEMU interactively, its display in a window
-                         and its console on this terminal (quit: Ctrl-A then X); with
-                         --nographic, no window
+                         with a keyboard and a pointer, and its console on this terminal
+                         (quit: Ctrl-A then X); with --nographic, no window
   bench --arch <arch> [--update-baseline]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -51,6 +51,9 @@ pub struct Arch {
     /// The display device every boot but the no-display ones adds: a virtio GPU asking for
     /// 1280x800 (D112).
     pub display_args: &'static [&'static str],
+    /// The input devices every boot with a display adds: a virtio keyboard, tablet and mouse
+    /// (D113).
+    pub input_args: &'static [&'static str],
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -71,6 +74,7 @@ pub const ARCHES: &[Arch] = &[
             "virtio-rng-device",
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+        input_args: MMIO_INPUT_ARGS,
     },
     Arch {
         name: "riscv64",
@@ -88,6 +92,7 @@ pub const ARCHES: &[Arch] = &[
             "virtio-rng-device",
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+        input_args: MMIO_INPUT_ARGS,
     },
     Arch {
         name: "x86_64",
@@ -108,7 +113,24 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800",
         ],
+        input_args: &[
+            "-device",
+            "virtio-keyboard-pci,disable-legacy=on",
+            "-device",
+            "virtio-tablet-pci,disable-legacy=on",
+            "-device",
+            "virtio-mouse-pci,disable-legacy=on",
+        ],
     },
+];
+
+const MMIO_INPUT_ARGS: &[&str] = &[
+    "-device",
+    "virtio-keyboard-device",
+    "-device",
+    "virtio-tablet-device",
+    "-device",
+    "virtio-mouse-device",
 ];
 
 const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
@@ -238,19 +260,22 @@ fn run(args: &[String]) -> Result<(), String> {
             bench::run(&arch_option(options)?, update)
         }
         Some("run") => {
-            let (options, window) = match &args[1..] {
-                [options @ .., last] if last == "--nographic" => (options, false),
-                options => (options, true),
-            };
-            let arches = arch_option(options)?;
+            let (options, nographic) = without_flag(&args[1..], "--nographic");
+            let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
             let kernel = build_kernel(arch, None)?;
-            qemu::run_interactive(arch, &kernel, window)
+            qemu::run_interactive(arch, &kernel, !nographic)
         }
         _ => Err(USAGE.into()),
     }
+}
+
+fn without_flag(args: &[String], flag: &str) -> (Vec<String>, bool) {
+    let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();
+    let found = rest.len() != args.len();
+    (rest, found)
 }
 
 fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
@@ -641,7 +666,25 @@ fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::json_string_field;
+    use super::{arch_option, json_string_field, without_flag};
+
+    #[test]
+    fn a_flag_is_taken_out_wherever_it_is() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        for given in [
+            &["--nographic", "--arch", "riscv64"][..],
+            &["--arch", "--nographic", "riscv64"],
+            &["--arch", "riscv64", "--nographic"],
+        ] {
+            let (rest, found) = without_flag(&args(given), "--nographic");
+            assert!(found);
+            assert_eq!(rest, args(&["--arch", "riscv64"]));
+            assert_eq!(arch_option(&rest).unwrap()[0].name, "riscv64");
+        }
+        let (rest, found) = without_flag(&args(&["--arch", "x86_64"]), "--nographic");
+        assert!(!found);
+        assert_eq!(rest.len(), 2);
+    }
 
     #[test]
     fn reads_executable_path_from_cargo_json() {

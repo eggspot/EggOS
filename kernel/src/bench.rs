@@ -12,7 +12,7 @@ use crate::linux::exec;
 use crate::linux::futex::{self, Key};
 use crate::memory::{FRAMES, FrameAllocator, Memory};
 use crate::process::{self, Process};
-use crate::{cpu, linux, random, selftest, thread};
+use crate::{cpu, input, linux, random, selftest, thread};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::alloc::{GlobalAlloc, Layout};
@@ -23,7 +23,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use eggos_drivers::display::{Mode, Rect};
 use eggos_drivers::dma::DmaAddr;
 use eggos_drivers::dma::DmaMemory;
+use eggos_drivers::input::{Capabilities, RawEvent, SYN_REPORT, event_type};
 use eggos_drivers::virtio::gpu::{self as virtio_gpu, VirtioGpu};
+use eggos_drivers::virtio::input::{self as virtio_input, VirtioInput};
 use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
 use eggos_drivers::virtio::rng as virtio_rng;
 use eggos_drivers::virtio::{self, Transport};
@@ -46,7 +48,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 37] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 40] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -93,6 +95,11 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 37] {
             virtqueue_round_trip_fake(n)
         }),
         ("virtio_gpu_flush_fake", |_, n| virtio_gpu_flush_fake(n)),
+        ("virtio_input_poll_idle", |_, n| virtio_input_poll_idle(n)),
+        ("input_key_to_bytes", |_, n| input_key_to_bytes(n)),
+        ("input_event_queue_push_pop", |_, n| {
+            input_event_queue_push_pop(n)
+        }),
         ("device_tree_walk", |_, n| device_tree_walk(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
@@ -375,6 +382,7 @@ impl Transport for FakeGpu {
     fn read_config8(&self, _: usize) -> u8 {
         0
     }
+    fn write_config8(&self, _: usize, _: u8) {}
     fn read_config32(&self, _: usize) -> u32 {
         1
     }
@@ -383,17 +391,133 @@ impl Transport for FakeGpu {
 fn virtio_gpu_flush_fake(n: u64) {
     let control = StaticDma::of(&GPU_CONTROL);
     let Ok(mut gpu) = VirtioGpu::new(FakeGpu::default(), control, &mut || true) else {
-        return;
+        panic!("virtio_gpu_flush_fake: the fake GPU could not be set up");
     };
     let framebuffer = StaticDma::of(&GPU_FRAMEBUFFER);
     if gpu
         .attach_framebuffer(framebuffer, GPU_MODE, &mut || true)
         .is_err()
     {
-        return;
+        panic!("virtio_gpu_flush_fake: the fake GPU refused the framebuffer");
     }
     for _ in 0..n {
         black_box(gpu.flush(black_box(&[GPU_DAMAGE]), &mut || true).ok());
+    }
+}
+
+static INPUT_MEMORY: QueueMemory<{ virtio_input::MEMORY_BYTES }> =
+    QueueMemory(core::cell::UnsafeCell::new([0; virtio_input::MEMORY_BYTES]));
+
+#[derive(Debug, Default)]
+struct IdleInputDevice {
+    status: core::cell::Cell<u8>,
+}
+
+impl Transport for IdleInputDevice {
+    fn device_type(&self) -> u32 {
+        virtio::device_type::INPUT
+    }
+    fn status(&self) -> u8 {
+        self.status.get()
+    }
+    fn set_status(&self, status: u8) {
+        self.status.set(status);
+    }
+    fn device_features(&self) -> u64 {
+        virtio::feature::VERSION_1
+    }
+    fn set_driver_features(&self, _: u64) {}
+    fn max_queue_size(&self, queue: u16) -> u16 {
+        if queue == 0 {
+            virtio_input::QUEUE_SIZE
+        } else {
+            0
+        }
+    }
+    fn set_up_queue(
+        &self,
+        _: u16,
+        _: u16,
+        _: &virtio::QueueAddresses,
+    ) -> Result<(), virtio::Error> {
+        Ok(())
+    }
+    fn notify(&self, _: u16) {}
+    fn read_config8(&self, _: usize) -> u8 {
+        0
+    }
+    fn write_config8(&self, _: usize, _: u8) {}
+    fn read_config32(&self, _: usize) -> u32 {
+        0
+    }
+}
+
+fn virtio_input_poll_idle(n: u64) {
+    let memory = StaticDma::of(&INPUT_MEMORY);
+    let Ok(mut device) = VirtioInput::new(IdleInputDevice::default(), memory, &mut || true) else {
+        panic!("virtio_input_poll_idle: the fake input device could not be set up");
+    };
+    for _ in 0..n {
+        black_box(device.poll(black_box(16), &mut |event| {
+            black_box(event);
+        }));
+    }
+}
+
+struct DiscardingSink;
+
+impl input::InputSink for DiscardingSink {
+    fn bytes(&mut self, bytes: &[u8]) {
+        black_box(bytes);
+    }
+    fn event(&mut self, event: input::InputEvent) {
+        black_box(event);
+    }
+}
+
+fn input_key_to_bytes(n: u64) {
+    let mut state = input::InputState::new();
+    let keyboard = Capabilities {
+        keyboard: true,
+        ..Capabilities::default()
+    };
+    let mut report = input::PendingReport::default();
+    let timing = input::Timing {
+        now: 0,
+        repeat_delay: 400,
+        repeat_interval: 40,
+    };
+    let syn = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
+    for i in 0..n {
+        let code = 16 + (i % 10) as u16;
+        for event in [
+            RawEvent::new(event_type::KEY, code, 1),
+            syn,
+            RawEvent::new(event_type::KEY, code, 0),
+            syn,
+        ] {
+            state.translate(
+                black_box(event),
+                &keyboard,
+                &mut report,
+                None,
+                timing,
+                &mut DiscardingSink,
+            );
+        }
+    }
+}
+
+static BENCH_EVENTS: input::EventQueue<{ input::EVENT_QUEUE_CAPACITY }> = input::EventQueue::new();
+
+fn input_event_queue_push_pop(n: u64) {
+    for i in 0..n {
+        let event = input::InputEvent::PointerMove {
+            x: i as u32 & 1023,
+            y: 7,
+        };
+        black_box(BENCH_EVENTS.push(black_box(event)));
+        black_box(BENCH_EVENTS.pop());
     }
 }
 

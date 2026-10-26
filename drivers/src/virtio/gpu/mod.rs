@@ -34,7 +34,7 @@ const DISPLAY_INFO: usize = 2560;
 const MAX_BATCH: usize = (RESPONSES - REQUESTS) / REQUEST_SLOT;
 const RESOURCE_ID: u32 = 1;
 const SCANOUT_ID: u32 = 0;
-const NUM_SCANOUTS: usize = 8;
+const CONFIG_NUM_SCANOUTS_OFFSET: usize = 8;
 const FLAG_FENCE: u32 = 1;
 
 const HEADER_BYTES: usize = 24;
@@ -115,7 +115,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             return Err((error, transport, Some(control)));
         }
         let max = transport.max_queue_size(CONTROL_QUEUE).min(QUEUE_SIZE);
-        if max < 2 || transport.read_config32(NUM_SCANOUTS) == 0 {
+        if max < 2 || transport.read_config32(CONFIG_NUM_SCANOUTS_OFFSET) == 0 {
             super::fail(&transport);
             let error = match max < 2 {
                 true => Error::QueueUnavailable,
@@ -128,10 +128,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         // `memory_size(QUEUE_SIZE)` before `REQUESTS`, 4096-aligned, and owned by this driver,
         // which keeps it for as long as the queue lives; the device reaches it at its DMA address.
         let queue = unsafe { SplitQueue::new(control.as_mut_ptr(), control.dma_addr(), size) };
-        let queue = match queue {
+        let mut queue = match queue {
             Ok(queue) => queue,
             Err(error) => return Err((error, transport, Some(control))),
         };
+        queue.disable_used_notifications();
         if let Err(error) = transport.set_up_queue(CONTROL_QUEUE, size, &queue.addresses()) {
             super::fail(&transport);
             let control = match super::reset(&transport, keep_waiting) {

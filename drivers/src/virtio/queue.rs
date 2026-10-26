@@ -18,6 +18,8 @@ pub const DESCRIPTOR_NEXT: u16 = 1;
 pub const DESCRIPTOR_WRITE: u16 = 2;
 /// Used ring flag: the device asks not to be notified of new buffers.
 pub const USED_NO_NOTIFY: u16 = 1;
+/// Available ring flag: the driver asks not to be notified of used buffers (it polls).
+pub const AVAIL_NO_INTERRUPT: u16 = 1;
 
 const DESCRIPTOR_SIZE: usize = 16;
 const NO_DESCRIPTOR: u16 = u16::MAX;
@@ -154,6 +156,13 @@ impl SplitQueue {
             avail_idx: 0,
             last_used: 0,
         })
+    }
+
+    /// Asks the device not to notify the driver (an interrupt) when it uses buffers: for a
+    /// driver that polls. The spec makes it a hint the device should follow.
+    pub fn disable_used_notifications(&mut self) {
+        // SAFETY: the available ring's flags field, which only the driver writes.
+        unsafe { self.ring.avail(0).write_volatile(AVAIL_NO_INTERRUPT) };
     }
 
     /// Where the device finds the queue's three areas.
@@ -374,6 +383,13 @@ impl DeviceSide {
         self.ring
             .index(self.ring.used(2))
             .store(self.used_idx, Ordering::Release);
+    }
+
+    /// Whether the driver asked not to be notified of used buffers.
+    pub fn used_notifications_disabled(&self) -> bool {
+        // SAFETY: the available ring's flags field, which the driver writes.
+        let flags = unsafe { self.ring.avail(0).read_volatile() };
+        flags & AVAIL_NO_INTERRUPT != 0
     }
 
     /// Asks the driver not to notify (`on`) or to notify again.
