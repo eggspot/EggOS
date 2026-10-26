@@ -60,7 +60,7 @@ const CONSOLE_INPUT_SCRIPT: &[u8] = b"EggOS reads its console\r";
 /// What the boot tests type on the serial console, each time its line (the first) appears: the
 /// kernel's [`INPUT_READY_LINE`], then the std program's requests, which must match
 /// `console::request` in `userland/std-selftest` (the program checks what it reads, D100).
-const CONSOLE_SCRIPTS: [(&str, &[u8]); 7] = [
+const CONSOLE_SCRIPTS: [(&str, &[u8]); 8] = [
     (INPUT_READY_LINE, CONSOLE_INPUT_SCRIPT),
     ("EGGOS-CONSOLE: type lines", LINES_SCRIPT),
     ("EGGOS-CONSOLE: type an interrupt", b"doomed\x03"),
@@ -76,6 +76,10 @@ const CONSOLE_SCRIPTS: [(&str, &[u8]); 7] = [
     (
         "EGGOS-CONSOLE: type lines for stdio",
         b"from musl's stdio\rfrom Rust's std\r",
+    ),
+    (
+        "EGGOS-CONSOLE: type an interrupt for the foreground group",
+        b"\x03",
     ),
 ];
 
@@ -452,7 +456,7 @@ mod tests {
             scripts_to_type(&console, &mut typed),
             [LINES_SCRIPT, LINES_SCRIPT, CONSOLE_SCRIPTS[4].1]
         );
-        assert_eq!(typed, [1, 2, 0, 0, 1, 0, 0]);
+        assert_eq!(typed, [1, 2, 0, 0, 1, 0, 0, 0]);
         let partial = format!("{console}EGGOS-CONSOLE: type an interrupt");
         assert!(scripts_to_type(&partial, &mut typed).is_empty());
         let whole = format!("{partial} and a line\r\n");

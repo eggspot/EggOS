@@ -2,7 +2,8 @@
 //! (D100) as a C library's terminal calls do, asking the QEMU runner to type each script by
 //! writing one of the [`request`] lines: canonical lines with their editing, an end of file,
 //! a line read with `O_NONBLOCK` (D101), lines read through musl's stdio, which reads with
-//! `readv`, and Rust's, `^C` interrupting a `ppoll` and a `read`, and raw bytes. It writes
+//! `readv`, and Rust's, `^C` interrupting a `ppoll` and a `read`, raw bytes, and `^C` reaching
+//! a child the program made the foreground process group with `tcsetpgrp` (D105). It writes
 //! [`PASSED_LINE`] and exits with 0 if every answer was Linux's, or names the first that was
 //! not and exits with 1.
 
@@ -31,6 +32,9 @@ pub mod request {
     pub const WITHOUT_WAITING: &str = "EGGOS-CONSOLE: type a line to read without waiting";
     /// A line for musl's `fgets`, then one for Rust's `read_line`.
     pub const STDIO: &str = "EGGOS-CONSOLE: type lines for stdio";
+    /// `^C`, while a child is the foreground process group.
+    pub const FOREGROUND_INTERRUPT: &str =
+        "EGGOS-CONSOLE: type an interrupt for the foreground group";
 }
 
 /// What a `read` of the lines script returns, in order, with the most each read asks for.
@@ -120,6 +124,17 @@ unsafe extern "C" {
     ) -> *mut std::ffi::c_char;
     static stdin: *mut std::ffi::c_void;
     fn signal(signal: i32, handler: extern "C" fn(i32)) -> usize;
+    #[link_name = "bsd_signal"]
+    fn set_disposition(signal: i32, handler: usize) -> usize;
+    fn fork() -> i32;
+    fn _exit(status: i32) -> !;
+    safe fn getpgrp() -> i32;
+    safe fn getpgid(pid: i32) -> i32;
+    safe fn setpgid(pid: i32, group: i32) -> i32;
+    safe fn tcgetpgrp(fd: i32) -> i32;
+    safe fn tcsetpgrp(fd: i32, group: i32) -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    fn sigsuspend(mask: *const u64) -> i32;
     fn siginterrupt(signal: i32, interrupt: i32) -> i32;
     fn pthread_sigmask(how: i32, set: *const u64, old: *mut u64) -> i32;
 }
@@ -175,6 +190,7 @@ fn checks() -> Result<(), &'static str> {
     interrupt_a_poll()?;
     interrupt_and_restart_a_read()?;
     raw_bytes(original)?;
+    interrupt_the_foreground_group()?;
     // SAFETY: `original` is a `struct termios` that `tcgetattr` filled.
     let restored = unsafe { tcsetattr(0, TCSAFLUSH, &original) };
     check(restored == 0, "tcsetattr could not restore the settings")?;
@@ -411,6 +427,72 @@ fn raw_bytes(original: Termios) -> Result<(), &'static str> {
     check(
         started.elapsed() >= Duration::from_millis(100),
         "a read with VTIME 1 returned before a tenth of a second",
+    )
+}
+
+const SIGTTOU: i32 = 22;
+const SIG_IGN: usize = 1;
+const FOREGROUND_CHILD_STATUS: i32 = 50;
+const MOST_POLLS: u32 = 5000;
+
+fn interrupted_child() -> ! {
+    let before = INTERRUPTS.load(Ordering::SeqCst);
+    let none = [0u64; super::SIGSET_WORDS];
+    let grouped = setpgid(0, 0) == 0;
+    while grouped && INTERRUPTS.load(Ordering::SeqCst) == before {
+        // SAFETY: `none` is a signal set of musl's size.
+        unsafe { sigsuspend(none.as_ptr()) };
+    }
+    // SAFETY: `_exit` ends the process at once.
+    unsafe { _exit(FOREGROUND_CHILD_STATUS) }
+}
+
+fn interrupt_the_foreground_group() -> Result<(), &'static str> {
+    let own = getpgrp();
+    check(
+        tcgetpgrp(0) == own,
+        "the program the kernel started is not the console's foreground group",
+    )?;
+    // SAFETY: `SIG_IGN` is a disposition, not a handler to call.
+    unsafe { set_disposition(SIGTTOU, SIG_IGN) };
+    let mut sigint = [0u64; super::SIGSET_WORDS];
+    sigint[0] = 1 << (SIGINT - 1);
+    let mut before = [0u64; super::SIGSET_WORDS];
+    // SAFETY: two signal sets of musl's size.
+    unsafe { pthread_sigmask(SIG_BLOCK, sigint.as_ptr(), before.as_mut_ptr()) };
+    let interrupts = INTERRUPTS.load(Ordering::SeqCst);
+    // SAFETY: this program has one thread here; the child only makes plain calls and ends
+    // with `_exit`.
+    let child = unsafe { fork() };
+    if child == 0 {
+        interrupted_child();
+    }
+    // SAFETY: a signal set of musl's size.
+    unsafe { pthread_sigmask(SIG_SETMASK, before.as_ptr(), std::ptr::null_mut()) };
+    let mut polls = 0;
+    while getpgid(child) != child && polls < MOST_POLLS {
+        std::thread::sleep(Duration::from_millis(1));
+        polls += 1;
+    }
+    let handed = tcsetpgrp(0, child) == 0 && tcgetpgrp(0) == child;
+    check(
+        handed,
+        "tcsetpgrp did not hand the console to the child's group",
+    )?;
+    ask_for(request::FOREGROUND_INTERRUPT);
+    let mut status = -1;
+    // SAFETY: `status` is an `int` that lives across the call.
+    let waited = unsafe { waitpid(child, &mut status, 0) };
+    let taken_back = tcsetpgrp(0, own) == 0 && tcgetpgrp(0) == own;
+    end_the_echoed_line();
+    check(
+        waited == child && status == FOREGROUND_CHILD_STATUS << 8,
+        "^C did not reach the child in the foreground group",
+    )?;
+    check(taken_back, "tcsetpgrp did not give the console back")?;
+    check(
+        INTERRUPTS.load(Ordering::SeqCst) == interrupts,
+        "^C reached the program in the background group",
     )
 }
 
