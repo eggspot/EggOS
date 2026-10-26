@@ -313,15 +313,14 @@ fn dispatch_csi(terminal: &mut Terminal, final_byte: u8) {
         }
         (0, b'r') => terminal.set_scroll_region(parameters.raw(0), parameters.raw(1)),
         (0, b's') => terminal.position_saved = (terminal.row, terminal.column),
-        (0, b'u') => {
-            let (row, column) = terminal.position_saved;
-            terminal.row = row.min(terminal.rows - 1);
-            terminal.column = column.min(terminal.columns - 1);
-            terminal.pending_wrap = false;
-        }
+        (0, b'u') => terminal.restore_position(),
         (0, b'n') if parameters.raw(0) == 6 => terminal.report_position(),
-        (0, b'c') if parameters.raw(0) == 0 => terminal.reply(PRIMARY_ATTRIBUTES),
-        (b'>', b'c') if parameters.raw(0) == 0 => terminal.reply(SECONDARY_ATTRIBUTES),
+        (0, b'c') if parameters.count <= 1 && parameters.raw(0) == 0 => {
+            terminal.reply(PRIMARY_ATTRIBUTES)
+        }
+        (b'>', b'c') if parameters.count <= 1 && parameters.raw(0) == 0 => {
+            terminal.reply(SECONDARY_ATTRIBUTES)
+        }
         (0, b'm') => select_graphic_rendition(terminal, &parameters),
         (b'?', b'h' | b'l') => {
             for index in 0..parameters.count {

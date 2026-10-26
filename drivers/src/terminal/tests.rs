@@ -302,6 +302,96 @@ fn device_status_and_attributes_reply_into_the_input() {
 }
 
 #[test]
+fn a_cursor_restored_above_the_scroll_region_in_origin_mode_stays_inside_it() {
+    let mut terminal = fed(20, 12, b"\x1b[s\x1b[5;10r\x1b[?6h\x1b[u");
+    assert_eq!(terminal.cursor(), (4, 0));
+    terminal.feed(b"\x1b[6n");
+    assert_eq!(terminal.replies(), b"\x1b[1;1R");
+    let mut terminal = fed(20, 12, b"\x1b[3;10r\x1b[?6h\x1b7\x1b[r\x1b[5;10r\x1b8");
+    assert_eq!(terminal.cursor(), (4, 0));
+    terminal.feed(b"\x1b[6n");
+    assert_eq!(terminal.replies(), b"\x1b[1;1R");
+    let terminal = fed(20, 12, b"\x1b[12;3H\x1b[s\x1b[5;10r\x1b[?6h\x1b[u\x1b[6n");
+    assert_eq!(terminal.cursor(), (9, 2));
+    assert_eq!(terminal.replies(), b"\x1b[6;3R");
+}
+
+#[test]
+fn replies_fed_back_into_the_terminal_ask_for_nothing_more() {
+    let requests: [&[u8]; 6] = [
+        b"\x1b[6n",
+        b"\x1b[c",
+        b"\x1b[0c",
+        b"\x1b[>c",
+        b"\x1b[>0c",
+        b"\x1b[3;8r\x1b[?6h\x1b[4;5H\x1b[6n",
+    ];
+    for request in requests {
+        let mut terminal = fed(20, 10, request);
+        let reply = terminal.replies().to_vec();
+        assert!(!reply.is_empty(), "{request:?}");
+        terminal.clear_replies();
+        terminal.feed(&reply);
+        assert!(
+            terminal.replies().is_empty(),
+            "{reply:?} asked for {:?}",
+            terminal.replies()
+        );
+    }
+    let mut terminal = fed(20, 10, b"\x1b[1;2c\x1b[>0;10;0c\x1b[>1c");
+    assert!(terminal.replies().is_empty());
+    terminal.feed(b"\x1b[>c");
+    assert_eq!(terminal.replies(), b"\x1b[>0;10;0c");
+}
+
+#[test]
+fn no_mix_of_sequences_panics_on_any_grid() {
+    const PIECES_AT_THE_EDGES: [&[u8]; 24] = [
+        b"\x1b[s",
+        b"\x1b[u",
+        b"\x1b7",
+        b"\x1b8",
+        b"\x1b[?6h",
+        b"\x1b[?6l",
+        b"\x1b[3;6r",
+        b"\x1b[r",
+        b"\x1b[6n",
+        b"\x1b[65535A",
+        b"\x1b[65535B",
+        b"\x1b[65535C",
+        b"\x1b[65535L",
+        b"\x1b[65535M",
+        b"\x1b[65535@",
+        b"\x1b[65535P",
+        b"\x1b[65535X",
+        b"\x1b[65535S",
+        b"\x1b[65535T",
+        b"\x1b[65535d",
+        b"\x1b[999;999H",
+        b"\x1b[?1049h",
+        b"\x1b[?1049l",
+        b"xxxxxxxxxxxx\n\n",
+    ];
+    for (columns, rows) in [(1u16, 1u16), (1, 2), (2, 1), (3, 3), (12, 7)] {
+        for seed in 0..100 {
+            let mut random = Lcg(seed);
+            let mut terminal = terminal(columns, rows);
+            let width = usize::from(columns) * 8 + 16;
+            let mut pixels = vec![0u32; width * (usize::from(rows) * 16 + 16)];
+            for _ in 0..100 {
+                terminal.feed(PIECES_AT_THE_EDGES[random.below(PIECES_AT_THE_EDGES.len())]);
+                if random.below(4) == 0 {
+                    terminal.render(&mut pixels, width, 8, 8, &mut Damage::new());
+                }
+                let (row, column) = terminal.cursor();
+                assert!(row < rows && column < columns);
+                terminal.clear_replies();
+            }
+        }
+    }
+}
+
+#[test]
 fn private_modes_switch_the_cursor_keys_and_the_cursor() {
     let mut terminal = fed(4, 2, b"\x1b[?1h\x1b[?25l\x1b[?12l");
     assert!(terminal.application_cursor_keys());
@@ -697,7 +787,13 @@ impl Lcg {
     }
 }
 
-const PIECES: [&[u8]; 34] = [
+const PIECES: [&[u8]; 40] = [
+    b"\x1b[s",
+    b"\x1b[u",
+    b"\x1b7",
+    b"\x1b8",
+    b"\x1b[?6h",
+    b"\x1b[?6l",
     b"hello",
     b"x",
     b"\r\n",

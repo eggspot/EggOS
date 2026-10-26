@@ -5938,7 +5938,10 @@ the license, by an explicit instruction recorded here.
   screen starts cleared for 47, 1047 and 1049. Erased and scrolled-in cells take the current
   background. A parameter with `:` drops the whole sequence; an `OSC`/`DCS`/`APC` string longer
   than 1 KiB is abandoned and parsing goes back to ground (no endless swallowing). `ESC c`
-  keeps the scrollback.
+  keeps the scrollback. A cursor restored (`ESC 8`, `CSI u`) in origin mode is kept inside the
+  scroll region, as xterm does, so `CSI 6 n` never reports a row above it. `CSI c` and `CSI > c`
+  are answered only with no parameter or a single 0, so a reply fed back (`stty -echoctl` echoes
+  it into the terminal) asks for nothing more (both found in review).
 - **Input** (with D113). The arrow keys follow the terminal's application cursor mode; Shift
   with Page Up, Page Down, Home and End moves the scrollback view by 48 lines (rows - 1), to the
   oldest line or to the live screen and sends nothing; a wheel notch moves it 3 lines; any key
@@ -5971,9 +5974,12 @@ the license, by an explicit instruction recorded here.
   `.rodata`) and the input layer's view keys; `.data` is unchanged (HEAP and FRAMES still
   adjacent, D110's lesson: the drawing thread's wait queue is boxed behind a null pointer) and
   `.bss` grows by 16 to 48 bytes. Accepted as the feature itself, which D109 puts in the kernel for
-  0.3.0. Memory at run time, only with a display: at 1280x800 two screens of 158x49 cells (30
-  KiB each), the scrollback (256 lines of 158 cells, 158 KiB), the drawing thread's 16 KiB
-  stack. Without a display nothing is made, no thread runs, and a console write costs one load
+  0.3.0. Memory at run time, only with a display: at 1280x800 two screens of 158x49 cells
+  (30,968 bytes each, which the heap takes as 32 KiB blocks of whole frames), the scrollback
+  (256 lines of 158 cells, 161,792 bytes, a 256 KiB block: the heap rounds large allocations up
+  to a power of two of frames, D30; the brief's 256 lines are kept rather than filling the
+  block, so its size does not depend on the mode), the drawing thread's 16 KiB stack: 336 KiB
+  of frames in all. Without a display nothing is made, no thread runs, and a console write costs one load
   more. Boot to prompt (QEMU's start to the first prompt, as xtask measures it with a 20 ms
   console poll; three runs each): aarch64 59-60 ms against `main`'s 50-60, riscv64 77-145
   (82 median) against 83-90, x86_64 113-129 (117) against 112-119, within the measurement's

@@ -785,11 +785,26 @@ impl Terminal {
         self.attributes = saved.attributes;
         self.pending_wrap = saved.pending_wrap;
         self.modes.origin = saved.origin;
+        self.keep_inside_region_in_origin_mode();
+    }
+
+    fn restore_position(&mut self) {
+        let (row, column) = self.position_saved;
+        self.row = row.min(self.rows - 1);
+        self.column = column.min(self.columns - 1);
+        self.pending_wrap = false;
+        self.keep_inside_region_in_origin_mode();
+    }
+
+    fn keep_inside_region_in_origin_mode(&mut self) {
+        if self.modes.origin {
+            self.row = self.row.clamp(self.top, self.bottom);
+        }
     }
 
     fn report_position(&mut self) {
         let row = if self.modes.origin {
-            self.row - self.top
+            self.row.saturating_sub(self.top)
         } else {
             self.row
         };
