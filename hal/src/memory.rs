@@ -241,6 +241,18 @@ pub unsafe fn zero(start: *mut u8, length: usize) {
     };
 }
 
+/// Orders every store this CPU made before it ahead of its next store to device registers, as
+/// a device sees them: what a driver runs between filling memory a device reads by DMA (a
+/// virtqueue) and ringing the device's doorbell. `dmb oshst` on AArch64, `fence w, o` on RISC-V,
+/// a compiler fence on x86_64, a full fence in host builds.
+#[inline]
+pub fn doorbell_barrier() {
+    #[cfg(target_os = "none")]
+    crate::arch::doorbell_barrier();
+    #[cfg(not(target_os = "none"))]
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+}
+
 /// Zeroes the `length` bytes at `start` a 64-byte line at a time, with eight 8-byte stores,
 /// where the range is so aligned, and the ragged ends byte by byte: a frame costs about a
 /// quarter of what a loop of single word stores does. The stores are volatile only so that

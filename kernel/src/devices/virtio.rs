@@ -62,6 +62,7 @@ impl Transport for AnyTransport {
         each_transport!(self, t => t.set_up_queue(queue, size, addresses))
     }
     fn notify(&self, queue: u16) {
+        eggos_hal::memory::doorbell_barrier();
         each_transport!(self, t => t.notify(queue))
     }
     fn read_config8(&self, offset: usize) -> u8 {
