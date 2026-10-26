@@ -6,6 +6,13 @@ and how EggOS maps each habit, so the desktop (M12) is designed before it is bui
 Sources: each platform's public user documentation and human interface guidelines, and observed
 behaviour. A UX regression is treated like a performance regression.
 
+## Designs
+- `desktop-v0.3.md`: the v0.3.0 desktop (boot screen, tokens, wallpaper, top bar, terminal
+  window, minimise, accessibility, rendering plan, implementation order for items 11-14).
+- `terminal-v0.3.md`: the v0.3.0 terminal emulator (text area, ANSI subset, keyboard map,
+  pointer).
+- `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
+
 ## Principles
 1. **Habits just work.** A user's muscle memory from their previous OS keeps working: shortcuts,
    window controls, where files live, how settings are found.
