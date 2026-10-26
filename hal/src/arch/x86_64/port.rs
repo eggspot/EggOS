@@ -20,8 +20,6 @@ impl PortIo {
         Self { base, size }
     }
 
-    /// Checked in release builds too, as in `Mmio`: a stray offset from safe code must panic,
-    /// never reach another device's ports.
     #[inline]
     fn port(&self, offset: usize, width: usize) -> u16 {
         assert!(
@@ -31,7 +29,6 @@ impl PortIo {
             "port offset {offset:#x} (+{width}) outside block of {:#x} ports",
             self.size
         );
-        // In range by the check above, and `new`'s contract keeps base + size within u16.
         self.base.wrapping_add(offset as u16)
     }
 }
