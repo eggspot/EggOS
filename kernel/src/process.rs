@@ -2369,9 +2369,11 @@ mod tests {
         thread.join::<P>();
         assert_eq!(EXITS.load(Ordering::Relaxed), 2);
         let calls = fp_calls();
-        let calls = calls
-            .strip_prefix(&[FpCall::SetUser(false)])
-            .unwrap_or(&calls);
+        let calls = match &calls[..] {
+            [FpCall::Restore(_), FpCall::SetUser(false), rest @ ..] => rest,
+            [FpCall::SetUser(false), rest @ ..] => rest,
+            rest => rest,
+        };
         let [
             FpCall::SetUser(true),
             FpCall::Restore(loaded),
