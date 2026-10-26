@@ -1851,6 +1851,9 @@ fn linux_programs_built_with_rust_std_run<P: Platform>(
 fn linux_programs_read_the_console_through_its_line_discipline<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
+    if cfg!(feature = "qemu-bench") {
+        return Ok(());
+    }
     run_rust_program(memory, &STD_PROGRAM_READING_THE_CONSOLE)
 }
 

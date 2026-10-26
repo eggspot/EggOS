@@ -35,12 +35,11 @@ const CONSOLE_PROGRAM_LINE: &str =
     "EGGOS-USER: a std program read the console through its line discipline";
 
 /// The lines the Linux test programs write, which a passing boot must show whole.
-const USER_LINES: [&str; 5] = [
+const USER_LINES: [&str; 4] = [
     USER_HELLO,
     ELF_START_LINE,
     RUST_PROGRAM_LINE,
     STD_PROGRAM_LINE,
-    CONSOLE_PROGRAM_LINE,
 ];
 
 /// Must match the start of `eggos_kernel::exception::report`'s line.
@@ -100,8 +99,13 @@ const LINES_ECHO: &str = concat!(
 /// What a boot test expects the kernel to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {
-    /// Pass every self-test and power off.
+    /// Pass every self-test and power off, the std program reading the console as the
+    /// runner types (D100).
     Pass,
+    /// Pass every self-test but the interactive console test, which the benchmark kernels skip
+    /// (under `-icount sleep=off`, QEMU does not wake an idle RISC-V hart for serial input),
+    /// and power off.
+    Benchmarks,
     /// Pass every self-test, then report a fatal exception with the fail marker and power off
     /// (the kernel's `qemu-test-fatal-exception` feature).
     FatalException,
@@ -245,15 +249,18 @@ fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiv
 }
 
 /// The scripts of [`CONSOLE_SCRIPTS`] to type now: each as many more times as its line
-/// appears whole in `console` (trailing whitespace aside) beyond the times `typed` counts,
-/// which it then counts.
+/// appears whole in `console`, ended by a newline (trailing whitespace aside), beyond the times
+/// `typed` counts, which it then counts.
 fn scripts_to_type(
     console: &str,
     typed: &mut [usize; CONSOLE_SCRIPTS.len()],
 ) -> Vec<&'static [u8]> {
     let mut scripts = Vec::new();
     for ((line, script), typed) in CONSOLE_SCRIPTS.iter().zip(typed) {
-        let asked = console.lines().filter(|l| l.trim_end() == *line).count();
+        let asked = console
+            .split_inclusive('\n')
+            .filter(|l| l.ends_with('\n') && l.trim_end() == *line)
+            .count();
         while *typed < asked {
             scripts.push(*script);
             *typed += 1;
@@ -270,8 +277,9 @@ fn banner_count(console: &str) -> usize {
         .count()
 }
 
-/// [`Expect::Pass`]: a clean exit, the pass marker, no fail marker and the line the Linux test
-/// program writes.
+/// [`Expect::Pass`]: a clean exit, the pass marker, no fail marker, the lines the Linux test
+/// programs write, and the line discipline's echo of [`LINES_SCRIPT`]. [`Expect::Benchmarks`]:
+/// the same but the console program's line and the echo.
 /// [`Expect::FatalException`]: a clean exit, the pass marker (the self-tests ran), the address
 /// of the read-only data the kernel writes, then a report of an exception at that address
 /// followed by the fail marker.
@@ -311,11 +319,14 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
             )),
         };
     }
+    let interactive = expect == Expect::Pass;
     let user_lines = USER_LINES
         .iter()
+        .chain(interactive.then_some(&CONSOLE_PROGRAM_LINE))
         .all(|&user_line| lines().any(|l| l == user_line));
+    let echoed = !interactive || console.contains(LINES_ECHO);
     match (clean_exit, passed, failed) {
-        (true, true, false) if user_lines && console.contains(LINES_ECHO) => {
+        (true, true, false) if user_lines && echoed => {
             eprintln!("xtask: {arch}: boot test passed");
             Ok(())
         }
@@ -356,6 +367,14 @@ pub fn run_interactive(arch: &Arch, kernel: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn all_user_lines() -> Vec<String> {
+        USER_LINES
+            .iter()
+            .chain([&CONSOLE_PROGRAM_LINE])
+            .map(|line| line.to_string())
+            .collect()
+    }
+
     fn passing_console(user_lines: &[String]) -> String {
         format!(
             "EggOS\r\n{LINES_ECHO}{}\r\n{PASS_MARKER}\r\n",
@@ -365,7 +384,7 @@ mod tests {
 
     #[test]
     fn passes_only_on_clean_exit_with_pass_marker() {
-        let ok = passing_console(&USER_LINES.map(String::from));
+        let ok = passing_console(&all_user_lines());
         assert!(verdict("x", Expect::Pass, true, &ok).is_ok());
         assert!(verdict("x", Expect::Pass, false, &ok).is_err());
         assert!(verdict("x", Expect::Pass, true, "EggOS\r\n").is_err());
@@ -375,19 +394,28 @@ mod tests {
     fn a_pass_needs_every_linux_test_program_s_line_whole() {
         let silent = format!("EggOS\r\n{LINES_ECHO}{PASS_MARKER}\r\n");
         assert!(verdict("x", Expect::Pass, true, &silent).is_err());
-        for (index, line) in USER_LINES.iter().enumerate() {
-            let mut garbled = USER_LINES.map(String::from);
+        for (index, line) in all_user_lines().iter().enumerate() {
+            let mut garbled = all_user_lines();
             garbled[index] = format!("{line}x");
             assert!(verdict("x", Expect::Pass, true, &passing_console(&garbled)).is_err());
-            let mut missing = USER_LINES.map(String::from).to_vec();
+            let mut missing = all_user_lines();
             missing.remove(index);
             assert!(verdict("x", Expect::Pass, true, &passing_console(&missing)).is_err());
         }
     }
 
     #[test]
+    fn a_benchmark_boot_needs_no_console_program_line_or_echo() {
+        let console = format!("EggOS\r\n{}\r\n{PASS_MARKER}\r\n", USER_LINES.join("\r\n"));
+        assert!(verdict("x", Expect::Benchmarks, true, &console).is_ok());
+        assert!(verdict("x", Expect::Pass, true, &console).is_err());
+        let without_hello = console.replace(USER_HELLO, "");
+        assert!(verdict("x", Expect::Benchmarks, true, &without_hello).is_err());
+    }
+
+    #[test]
     fn a_pass_needs_the_typed_lines_echoed_as_edited() {
-        let ok = passing_console(&USER_LINES.map(String::from));
+        let ok = passing_console(&all_user_lines());
         let unechoed = ok.replace(LINES_ECHO, "");
         assert!(verdict("x", Expect::Pass, true, &unechoed).is_err());
         let raw = ok.replace(LINES_ECHO, "hello\r\nab\x08c\r\n");
@@ -411,6 +439,10 @@ mod tests {
             [LINES_SCRIPT, LINES_SCRIPT, CONSOLE_SCRIPTS[4].1]
         );
         assert_eq!(typed, [1, 2, 0, 0, 1]);
+        let partial = format!("{console}EGGOS-CONSOLE: type an interrupt");
+        assert!(scripts_to_type(&partial, &mut typed).is_empty());
+        let whole = format!("{partial} and a line\r\n");
+        assert_eq!(scripts_to_type(&whole, &mut typed), [CONSOLE_SCRIPTS[3].1]);
     }
 
     #[test]
