@@ -9,7 +9,7 @@ use crate::sync::{LeafSpinLock, SpinLock};
 use alloc::sync::Arc;
 use core::fmt;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 use eggos_hal::Platform;
 use line_discipline::{LineDiscipline, Received, Taken, Termios};
 
@@ -48,13 +48,20 @@ pub fn receive_input<P: Platform>() {
     let mut received = Received::default();
     loop {
         let mut echo = EchoBuffer::<P>::new();
-        let length = {
+        let (length, echoing) = {
             let mut discipline = LINE_DISCIPLINE.lock();
             let length = P::console_read(&mut chunk);
             received |= discipline.receive(&chunk[..length], &mut |bytes| echo.push(bytes));
-            length
+            let echoing = echo.length > 0;
+            if echoing {
+                ECHOES_BEING_WRITTEN.fetch_add(1, Ordering::Relaxed);
+            }
+            (length, echoing)
         };
         echo.write();
+        if echoing {
+            ECHOES_BEING_WRITTEN.fetch_sub(1, Ordering::Release);
+        }
         if length == 0 {
             break;
         }
@@ -71,6 +78,12 @@ pub fn receive_input<P: Platform>() {
 }
 
 const INPUT_CHUNK: usize = 64;
+
+/// How many chunks of echo the receive interrupt has taken in under the line discipline's lock
+/// but not yet written to the UART. A reader that took input waits for them
+/// ([`take_input`]), so the echo of what it read reaches the console before anything it
+/// writes next.
+static ECHOES_BEING_WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 const ECHO_BUFFER: usize = 4 * INPUT_CHUNK;
 
@@ -112,9 +125,17 @@ pub fn wake_input_waiters<P: Platform>() {
     futex::wake::<P>(INPUT_KEY, u32::MAX, u32::MAX);
 }
 
-/// Moves unread input into `buffer`, as [`LineDiscipline::take`] says; never waits.
+/// Moves unread input into `buffer`, as [`LineDiscipline::take`] says; never waits for input.
+/// Returns once the echo of what it took is written, which the receive interrupt on another
+/// CPU may still be writing.
 pub fn take_input(buffer: &mut [u8]) -> Taken {
-    LINE_DISCIPLINE.lock().take(buffer)
+    let taken = LINE_DISCIPLINE.lock().take(buffer);
+    if taken.length > 0 || taken.line_ended {
+        while ECHOES_BEING_WRITTEN.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+    taken
 }
 
 /// Moves unread input into `buffer` and returns how many bytes it moved; never waits.
@@ -188,19 +209,25 @@ pub fn is_foreground(reader: u64) -> bool {
     FOREGROUND_READER.load(Ordering::Relaxed) == reader
 }
 
-/// Makes `foreground`, reader `reader` ([`reader_id`]), the console's foreground.
+/// Makes `foreground`, reader `reader` ([`reader_id`]), the console's foreground. A caller
+/// that then checks whether the reader's process ended, and forgets it if so, is ordered
+/// against [`forget_foreground`] by the fence here.
 pub fn set_foreground(reader: u64, foreground: Arc<dyn Foreground>) {
     let previous = {
         let mut current = FOREGROUND.lock();
         FOREGROUND_READER.store(reader, Ordering::Relaxed);
         current.replace(foreground)
     };
+    fence(Ordering::SeqCst);
     drop(previous);
 }
 
 /// Forgets the foreground if it is one of process `process`'s threads: called as the process
-/// ends, so the console holds no reference to it.
+/// ends, after it is marked ended, so the console holds no reference to it. The fence pairs
+/// with the one in [`set_foreground`]: either this sees the new reader, or that reader sees
+/// the process ended.
 pub fn forget_foreground(process: u32) {
+    fence(Ordering::SeqCst);
     if (FOREGROUND_READER.load(Ordering::Relaxed) >> 32) as u32 != process {
         return;
     }
