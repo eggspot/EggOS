@@ -6,12 +6,16 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
 pub mod display;
 pub mod dma;
+pub mod font;
 pub mod input;
 pub mod interrupt;
 pub mod io;
 pub mod pci;
 pub mod serial;
+pub mod terminal;
 pub mod timer;
 pub mod virtio;
