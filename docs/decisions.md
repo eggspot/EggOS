@@ -5635,3 +5635,108 @@ the license, by an explicit instruction recorded here.
   coherence domain; real hardware, M13), and a used ring checked against the chains in flight,
   so a faulty device cannot hand back a descriptor twice and corrupt the free list (found in
   review).
+
+## D112 The polled virtio-gpu 2D driver, the kernel's display and the first frame — Decided by the build loop (the flush's order, the release kernel's display, the first frame and the windowed `run` decided by research)
+
+- **What.** Item 11 of the v0.3.0 plan (D99), part 2: a virtio GPU driver over D111's core,
+  2D and polled, on aarch64, riscv64 and x86_64, in the release kernel, and the kernel's display
+  API that the graphical terminal and the desktop (items 13 and 14) draw through. Item 11 is
+  done with it; the drawing crate, the boot screen's logo, name and progress with its
+  `fb: boot <hash>` line, and the cursor queue move to item 13, which needs them first (the
+  coordinator's scope for this part).
+- **The driver** (`eggos_drivers::virtio::gpu`, clean-room from the virtio 1.2/1.3 GPU
+  chapter). Generic over the transport and the DMA memory like virtio-rng. The control queue
+  only (up to 32 entries), its requests (16 slots of 64 bytes) and responses (16 of 32, and
+  408 bytes for the display information) in one 4 KiB region; the framebuffer in another.
+  `GET_DISPLAY_INFO` gives scanout 0's mode, 1024x768 when the device reports none (the spec's
+  suggestion, and the design's fallback); `RESOURCE_CREATE_2D` in `B8G8R8X8_UNORM` (bytes
+  `B, G, R, X`, the little-endian `u32` `0x00RRGGBB` of the design's colours),
+  `RESOURCE_ATTACH_BACKING` with one entry, `SET_SCANOUT`. A device without a scanout
+  (`num_scanouts` 0) or a usable queue is refused. Every field is written little-endian.
+- **Flush order** (decided by research, from the spec's text). The spec lets a device answer
+  an unfenced control command before it has processed it and does not promise to process
+  commands in order (no `VIRTIO_F_IN_ORDER` for execution). So every command carries
+  `VIRTIO_GPU_FLAG_FENCE` with a rising fence id, and a flush sends every damaged
+  rectangle's `TRANSFER_TO_HOST_2D` (offset `y · stride + x · 4` in the packed backing),
+  waits for all their answers, then sends their `RESOURCE_FLUSH`es: two doorbells per frame
+  whatever the number of rectangles, at most 16 per round. Options weighed: transfer and
+  flush in one batch with one doorbell (works on QEMU, whose 2D path is synchronous, but
+  nothing in the spec makes it correct), waiting after every command (a doorbell per command).
+- **Failure.** A device that does not answer within the deadline (1 s) may still process what
+  it was given, so the driver then refuses every command (`TimedOut`) until a reset. A
+  framebuffer the device was given stays with the driver even when a later command fails,
+  unseen by `mode`, `pixels` and `flush`, and comes back only from `reset` with the
+  `ResetDone` proof (D111). On a refused probe the kernel resets the device and frees both
+  regions. Teardown with `SET_SCANOUT` 0, `DETACH_BACKING` and `UNREF` comes with hot-unplug.
+- **The display** (`kernel/src/display.rs`). A driver implements `Scanout` (mode, pixels,
+  flush of rectangles) and `install`s it; `display::draw` lends the `Framebuffer` (mode,
+  packed pixels, `fill`, `damage`) under the display's lock, and `display::flush::<P>` shows
+  the damage and nothing else. Damage is at most 8 rectangles that never overlap (an
+  overlapping one is merged, a ninth merged where the union grows least, the design's
+  section 8, `eggos_drivers::display::Damage`); a failed flush keeps it. The lock is a leaf
+  spin lock held while drawing and flushing; a sleeping lock comes with the terminal, when
+  more than one thread draws.
+- **The release kernel drives the display** (decided by research). `virtio-gpu` is a default
+  feature of the kernel crate, which brings the virtio core (D110's "none yet" ends here):
+  drivers for the hardware present are part of the base (D18, CLAUDE.md note 3), D109 already
+  accepts the display code compiled in at no cost without a display, and without it the
+  user-facing sentence of this item (a QEMU window showing EggOS's display) is false.
+  `--no-default-features` leaves every driver out. virtio-rng stays test-only until the
+  generator reseeds from it (D56's follow-up), where its cost buys something.
+- **The first frame** (decided by research). At boot, after the devices, the kernel fills the
+  whole screen with `wallpaper.top` (`#0E1726`, the boot screen's background, design
+  sections 1 and 2), flushes it, and prints `boot: display 1280x800`, or `boot: no display`
+  without a display (the design's serial lines). The boot screen draws on top of it later, so
+  nothing flashes.
+- **QEMU** (decided by research). Every boot gets `-device
+  virtio-gpu-device,xres=1280,yres=800` on the `virt` machines and `-vga none -device
+  virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800` on q35 (without `-vga none` QEMU's
+  window shows the standard VGA first), headless with `-display none` in the tests, which
+  keeps the device. The two init boots run without it, so a kernel without a display keeps
+  being tested. `cargo xtask run` opens QEMU's window with `-serial mon:stdio` (Ctrl-A then X
+  still quits); `--nographic` as before, for a machine without a screen.
+- **The doorbell** (review of D111). `eggos_hal::memory::doorbell_barrier` (`dmb oshst` on
+  AArch64, `fence w, o` on RISC-V, a compiler fence on x86, where stores reach devices in
+  order) runs before every notification in the kernel's transports: the virtqueue's full fence
+  (`dmb ish`, `fence rw, rw`) orders memory for the CPUs only, and a device outside their
+  coherence domain could see the doorbell before the ring. This closes D111's follow-up.
+  `DmaRegion::allocate` now zeroes after dropping the frame allocator's lock, which a 4 MiB
+  framebuffer would otherwise hold for the whole zeroing.
+- **Testing.** Host tests: rectangles, damage merging and the ninth rectangle, saturating
+  sizes; the driver against a fake GPU that keeps the host's copy of the resource (commands,
+  order and fences, exactly the damaged pixels arriving at the right offsets, batches beyond
+  the queue, clipping, refusals with the memory handed back or kept, a device that stops
+  answering, resets); the display's fill, damage and flush with a fake scanout; the
+  first-frame hash; QMP's PPM reading and JSON strings in xtask. QEMU, all three
+  architectures: `devices_are_discovered` expects the GPU behind its transport;
+  `display_shows_the_first_frame` checks the 1280x800 mode and the framebuffer's FNV-1a 64
+  hash against `FIRST_FRAME_HASH_1280X800`, then shows a clipped test pattern and the first
+  frame again, each flush answered; the boot-to-prompt test opens QMP on a free localhost port
+  and at the first prompt checks QEMU's `screendump` of the display, 1280x800 with the same
+  hash, so the device really shows what the kernel drew.
+- **Cost.** Measured against `main` on the same machine (this Mac, QEMU 10.2, release builds).
+  The release kernel's loaded size (text + data + bss) grows by 28.9 KiB on aarch64 (488610 to
+  517556 bytes), 25.6 KiB on riscv64 (439908 to 466078) and 27.3 KiB on x86_64 (510950 to
+  538868): the virtio core (both transports, the split virtqueue, D111), which the release
+  kernel had not linked before, the GPU driver, the display and the damage code; `.data` is
+  unchanged (HEAP and FRAMES still adjacent, D110's lesson) and `.bss` grows by the device
+  windows' table, the transports' table and the display's pointer (80 to 880 bytes). Memory at
+  run time, only with a display: the 4 MiB framebuffer (the display itself, accepted in D109)
+  and a 4 KiB control region. Boot to prompt, median of nine runs: without a display the same
+  as `main` (38.7 against 39.5 ms on aarch64, 58.7 against 58.9 on riscv64, 97.3 against 96.6
+  on x86_64); with one, 3 to 6 ms for probing, filling and showing the first frame (42.3
+  against `main`'s 38.3 ms with the same device attached on aarch64, 60.6 against 57.5 on
+  riscv64, 96.7 against 91.1 on x86_64, where `-vga none` also takes q35's VGA away), far
+  inside the design's 100 ms first-frame budget. Leaving the framebuffer unzeroed saved
+  0.4 ms and was not kept. No existing benchmark moved against `main` (the benchmark machines
+  now have the GPU, whose probe allocates before the benchmarks run): every line within 0.3%,
+  riscv64 `frame_contiguous_allocate_free` 203 to 200, back at its baseline. New gated
+  benchmark `virtio_gpu_flush_fake`, one rectangle's fenced transfer and flush with a device
+  that takes no time: 788, 865 and 786 instructions on aarch64, riscv64 and x86_64.
+- **Not yet.** Interrupts instead of polling, the cursor queue (item 14's pointer), display
+  events (`VIRTIO_GPU_EVENT_DISPLAY`, a mode change), EDID, more than one scanout, modes whose
+  buffer is larger than the largest DMA region (4 MiB, `MAX_ORDER` 10; 1920x1080 needs 8 MiB:
+  a virtually contiguous mapping of several regions), teardown and hot-unplug, a sleeping
+  display lock, the display capability's CLI and MCP front-ends (M10), the used ring checked
+  against the chains in flight and `window::map` refusing RAM (D111's other follow-ups, which
+  the GPU does not depend on), 3D (virgl, Venus).

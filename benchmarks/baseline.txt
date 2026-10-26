@@ -41,6 +41,7 @@ aarch64 thread_wait_wake_round_trip 218.06
 aarch64 thread_yield_round_trip 131.08
 aarch64 timer_arm 6.00
 aarch64 timer_interrupt_round_trip 96.00
+aarch64 virtio_gpu_flush_fake 788.14
 aarch64 virtqueue_round_trip_fake 375.00
 aarch64 virtqueue_submit_one 47.00
 aarch64 wait_queue_wake_empty 15.00
@@ -77,6 +78,7 @@ riscv64 thread_wait_wake_round_trip 222.07
 riscv64 thread_yield_round_trip 162.10
 riscv64 timer_arm 266.01
 riscv64 timer_interrupt_round_trip 640.00
+riscv64 virtio_gpu_flush_fake 865.17
 riscv64 virtqueue_round_trip_fake 353.00
 riscv64 virtqueue_submit_one 84.01
 riscv64 wait_queue_wake_empty 13.01
@@ -113,6 +115,7 @@ x86_64 thread_wait_wake_round_trip 206.05
 x86_64 thread_yield_round_trip 122.07
 x86_64 timer_arm 33.00
 x86_64 timer_interrupt_round_trip 71.00
+x86_64 virtio_gpu_flush_fake 786.13
 x86_64 virtqueue_round_trip_fake 233.00
 x86_64 virtqueue_submit_one 55.00
 x86_64 wait_queue_wake_empty 14.00

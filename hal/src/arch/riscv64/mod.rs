@@ -161,6 +161,12 @@ pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
     unsafe { crate::memory::zero_by_lines(start, length) }
 }
 
+#[inline]
+pub(crate) fn doorbell_barrier() {
+    // SAFETY: a barrier: it touches no memory or register, only orders stores.
+    unsafe { core::arch::asm!("fence w, o", options(nostack, preserves_flags)) };
+}
+
 /// The direct map: the start of Sv39's high half (D29). It holds 254 GiB: the top 2 GiB are
 /// the kernel's (D33).
 const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;

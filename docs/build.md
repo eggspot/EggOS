@@ -99,7 +99,19 @@ holds what used to be written in them.
   `-device virtio-rng-pci,disable-legacy=on` (modern only) on q35, which the self-tests read.
   The `virt` machines also get `-global virtio-mmio.force-legacy=false`: QEMU (10.2 included)
   still makes virtio-mmio devices legacy (version 1) by default, which EggOS refuses. A release
-  kernel has no virtio driver yet, so the device only shows in its device count.
+  kernel has no entropy driver yet, so that device only shows in its device count.
+- **Display** (D112). Every run but the two init boots gets a virtio GPU asking for 1280x800:
+  `-device virtio-gpu-device,xres=1280,yres=800` on the `virt` machines, and `-vga none
+  -device virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800` on q35 (without `-vga none`,
+  QEMU's window would show q35's standard VGA first). The tests stay headless with `-display
+  none`, which hides the window but keeps the device. The two init boots run without it, to
+  check that a kernel without a display behaves as before (`boot: no display`). The
+  boot-to-prompt test also opens QEMU's machine protocol (QMP) on a free local TCP port and, at
+  the first prompt, saves the display with `screendump` (`target/screendump-<arch>.ppm`) and
+  checks it is the release kernel's first frame: 1280x800, pixel hash
+  `eggos_kernel::display::FIRST_FRAME_HASH_1280X800`. `cargo xtask run` shows the display in a
+  window and the serial console on the terminal (`-serial mon:stdio`, so Ctrl-A then X still
+  quits); `--nographic` keeps both on the terminal for a machine without a screen.
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 

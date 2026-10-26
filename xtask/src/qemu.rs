@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+use crate::qmp::{self, Picture, Qmp};
 use crate::{Arch, elf};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -249,6 +250,18 @@ const BANNER_PREFIX: &str = "EggOS ";
 
 const COMMON_ARGS: &[&str] = &["-m", "128M"];
 
+/// Whether a boot gives the machine its display device ([`Arch::display_args`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Display {
+    Attached,
+    /// No display device: the kernel must behave as it did before it drove displays (D112).
+    Absent,
+}
+
+/// The first frame the release kernel shows at 1280x800, as `eggos_kernel::display` draws it:
+/// its pixel hash, `FIRST_FRAME_HASH_1280X800`.
+const FIRST_FRAME: (u32, u32, u64) = (1280, 800, 0x1125_09e9_e81d_2325);
+
 /// CPUs in the boot tests and interactive runs, so every boot starts the secondary CPUs
 /// (D40). Must match `eggos_kernel::selftest::QEMU_CPUS`.
 pub const TEST_CPUS: u32 = 4;
@@ -286,22 +299,38 @@ pub fn bss_poison_args(kernel: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Boots `kernel` headless on `cpus` CPUs with `extra_args` added to QEMU's and passes only if
-/// QEMU powers off cleanly within the timeout and the console shows what `expect` asks for
-/// (see [`verdict`]). Returns the console output.
+/// Boots `kernel` headless on `cpus` CPUs, with its display device unless `display` is
+/// [`Display::Absent`] and `extra_args` added to QEMU's, and passes only if QEMU powers off
+/// cleanly within the timeout and the console shows what `expect` asks for (see [`verdict`]).
+/// A boot to the prompt with a display also checks, through QMP, that the display shows the
+/// first frame. Returns the console output.
 pub fn boot_test(
     arch: &Arch,
     kernel: &Path,
     expect: Expect,
     cpus: u32,
+    display: Display,
     extra_args: &[&str],
 ) -> Result<String, String> {
-    eprintln!("xtask: booting {} in {} ({expect:?})", arch.name, arch.qemu);
+    eprintln!(
+        "xtask: booting {} in {} ({expect:?}, display {display:?})",
+        arch.name, arch.qemu
+    );
+    let display_args = match display {
+        Display::Attached => arch.display_args,
+        Display::Absent => &[],
+    };
+    let qmp_port = match (expect, display) {
+        (Expect::BootToPrompt, Display::Attached) => Some(qmp::free_port()?),
+        _ => None,
+    };
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
+        .args(display_args)
         .args(COMMON_ARGS)
         .arg("-smp")
         .arg(cpus.to_string())
+        .args(qmp_port.map(qmp::qemu_args).unwrap_or_default())
         .args(extra_args)
         .args(["-display", "none", "-serial", "stdio", "-monitor", "none"])
         .arg("-kernel")
@@ -323,6 +352,7 @@ pub fn boot_test(
     let mut typed = [0; CONSOLE_SCRIPTS.len()];
     let mut shell_typed = ShellTyping::default();
     let mut first_prompt = None;
+    let mut first_frame = None;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
@@ -339,6 +369,9 @@ pub fn boot_test(
                 let text = String::from_utf8_lossy(&console);
                 if first_prompt.is_none() && text.contains(SHELL_PROMPT) {
                     first_prompt = Some(started.elapsed());
+                    if let Some(port) = qmp_port {
+                        first_frame = Some(check_first_frame(arch, port));
+                    }
                 }
                 shell_scripts_to_type(&text, &PROMPT_SESSION, &mut shell_typed)
             }
@@ -373,6 +406,9 @@ pub fn boot_test(
     console.extend(rest_until_qemu_closes_stdout);
     let console = String::from_utf8_lossy(&console).into_owned();
     verdict(arch.name, expect, status.success(), &console)?;
+    if let Some(first_frame) = first_frame {
+        first_frame?;
+    }
     if let Some(first_prompt) = first_prompt {
         eprintln!(
             "xtask: {}: boot to prompt in {} ms (QEMU started to the first `{SHELL_PROMPT}` prompt, {cpus} CPUs)",
@@ -603,14 +639,50 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     Ok(())
 }
 
-/// Boots `kernel` with the console on this terminal, until the user quits QEMU.
-pub fn run_interactive(arch: &Arch, kernel: &Path) -> Result<(), String> {
+/// Takes a picture of the display through QMP at `port` and checks it is the first frame.
+fn check_first_frame(arch: &Arch, port: u16) -> Result<(), String> {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::workspace_root().join("target"));
+    std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    let path = target.join(format!("screendump-{}.ppm", arch.name));
+    Qmp::connect(port)?.screendump(&path)?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let picture = Picture::from_ppm(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (width, height, hash) = FIRST_FRAME;
+    if (picture.width, picture.height, picture.hash()) != (width, height, hash) {
+        return Err(format!(
+            "{}: the display shows a {}x{} picture with hash {:#x}, not the {width}x{height} \
+             first frame ({hash:#x}); see {}",
+            arch.name,
+            picture.width,
+            picture.height,
+            picture.hash(),
+            path.display()
+        ));
+    }
+    eprintln!(
+        "xtask: {}: the display shows the first frame ({width}x{height}, hash {hash:#x})",
+        arch.name
+    );
+    Ok(())
+}
+
+/// Boots `kernel` with the console on this terminal, until the user quits QEMU; its display in
+/// a window when `window` says so.
+pub fn run_interactive(arch: &Arch, kernel: &Path, window: bool) -> Result<(), String> {
+    let console: &[&str] = match window {
+        true => &["-serial", "mon:stdio"],
+        false => &["-nographic"],
+    };
     let status = Command::new(arch.qemu)
         .args(arch.machine_args)
+        .args(arch.display_args)
         .args(COMMON_ARGS)
         .arg("-smp")
         .arg(TEST_CPUS.to_string())
-        .args(["-no-reboot", "-nographic"])
+        .arg("-no-reboot")
+        .args(console)
         .arg("-kernel")
         .arg(kernel)
         .status()

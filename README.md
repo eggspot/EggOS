@@ -30,7 +30,7 @@ Requires [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.to
 cargo xtask ci                   # everything CI runs, cheapest first
 cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
 cargo xtask bench --arch all     # benchmarks (instruction counts), checked against benchmarks/baseline.txt
-cargo xtask run --arch aarch64   # boot interactively (quit: Ctrl-A then X)
+cargo xtask run --arch aarch64   # boot interactively: display in a window, console here (quit: Ctrl-A then X)
 ```
 QEMU (`qemu-system-aarch64`, `qemu-system-riscv64`, `qemu-system-x86_64`) must be on `PATH` for the
 boot commands.

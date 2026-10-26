@@ -38,12 +38,15 @@ impl DmaRegion {
         if order > crate::memory::MAX_ORDER {
             return Err(DmaError::TooLarge);
         }
-        let mut allocator = FRAMES.lock();
-        let allocator = allocator.as_mut().ok_or(DmaError::OutOfMemory)?;
-        let first = allocator
-            .allocate_contiguous(order)
-            .ok_or(DmaError::OutOfMemory)?;
-        let virt = (first as usize).wrapping_add(allocator.physical_memory_offset());
+        let (first, virt) = {
+            let mut allocator = FRAMES.lock();
+            let allocator = allocator.as_mut().ok_or(DmaError::OutOfMemory)?;
+            let first = allocator
+                .allocate_contiguous(order)
+                .ok_or(DmaError::OutOfMemory)?;
+            let virt = (first as usize).wrapping_add(allocator.physical_memory_offset());
+            (first, virt)
+        };
         let region = Self { first, order, virt };
         // SAFETY: the block was just allocated, so nothing else uses it, and the direct map
         // reaches all of it at `virt`.

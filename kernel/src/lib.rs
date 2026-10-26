@@ -14,6 +14,7 @@ pub mod bench;
 pub mod console;
 pub mod cpu;
 pub mod devices;
+pub mod display;
 pub mod elf;
 pub mod exception;
 pub mod heap;
@@ -82,6 +83,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     P::direct_map_offset()
                 )?;
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
+                report_display(console, display::show_first_frame::<P>())?;
                 match console::enable_input::<P>() {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
@@ -138,6 +140,17 @@ fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::f
         }
     });
     result
+}
+
+fn report_display<W: Write>(
+    console: &mut W,
+    shown: Result<Option<display::Mode>, &'static str>,
+) -> core::fmt::Result {
+    match shown {
+        Ok(Some(mode)) => writeln!(console, "boot: display {}x{}", mode.width, mode.height),
+        Ok(None) => writeln!(console, "boot: no display"),
+        Err(reason) => writeln!(console, "boot: display not shown: {reason}"),
+    }
 }
 
 fn report_root<W: Write>(console: &mut W, report: vfs::MountReport) -> core::fmt::Result {

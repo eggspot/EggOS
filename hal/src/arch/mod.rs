@@ -22,6 +22,8 @@ pub use aarch64::Aarch64 as CurrentPlatform;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub(crate) use aarch64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub(crate) use aarch64::doorbell_barrier;
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
 pub(crate) use aarch64::zero;
 
 #[cfg(all(target_os = "none", target_arch = "riscv64"))]
@@ -31,6 +33,8 @@ pub(crate) use riscv64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(target_os = "none", target_arch = "riscv64"))]
 pub use riscv64::Riscv64 as CurrentPlatform;
 #[cfg(all(target_os = "none", target_arch = "riscv64"))]
+pub(crate) use riscv64::doorbell_barrier;
+#[cfg(all(target_os = "none", target_arch = "riscv64"))]
 pub(crate) use riscv64::zero;
 
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
@@ -39,6 +43,8 @@ pub mod x86_64;
 pub(crate) use x86_64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
 pub use x86_64::X86_64 as CurrentPlatform;
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+pub(crate) use x86_64::doorbell_barrier;
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
 pub(crate) use x86_64::zero;
 

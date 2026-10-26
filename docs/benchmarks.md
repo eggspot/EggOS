@@ -77,6 +77,13 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   device (`virtio::queue::DeviceSide`) takes the chain, fills the bytes and returns it, the
   driver pops it (freeing the chain) and copies the bytes out. Without the doorbell's MMIO
   write and the device's own time, which an emulated device makes host-dependent.
+- `virtio_gpu_flush_fake`: the virtio GPU driver's flush of one damaged 16x16 rectangle (D112)
+  with a device that takes no time: the fenced `TRANSFER_TO_HOST_2D` written and posted, the
+  notification check and the fake device's answer, the wait, the answer checked; then the
+  same for `RESOURCE_FLUSH`. The driver's own cost per frame and rectangle, without the
+  doorbells' MMIO writes and the device's copy, which an emulated device makes
+  host-dependent. Its 4 KiB control region and 64x64 framebuffer are statics of the benchmark
+  kernel.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties
