@@ -15,3 +15,7 @@ rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
 [target.riscv64gc-unknown-linux-musl]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=no", "-C", "relocation-model=pie"]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+rustflags = ["-C", "link-arg=/NODEFAULTLIB", "-C", "link-arg=/SUBSYSTEM:CONSOLE", "-C", "link-arg=/ENTRY:mainCRTStartup"]
