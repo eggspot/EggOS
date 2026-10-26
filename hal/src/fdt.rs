@@ -13,6 +13,12 @@
 //! (the reservation block on 8 bytes, the structure block on 4), so every read is aligned, as
 //! the AArch64 kernel's `strict-align` build needs (D10).
 
+mod nodes;
+
+pub use nodes::{
+    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, Node,
+};
+
 use crate::memory::PhysicalRange;
 use crate::random::SeedSource;
 
@@ -645,29 +651,29 @@ fn be64(bytes: &[u8], offset: usize) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct Builder {
+    pub(crate) struct Builder {
         structure: Vec<u8>,
         strings: Vec<u8>,
         reservations: Vec<(u64, u64)>,
     }
 
     impl Builder {
-        fn begin(&mut self, name: &str) -> &mut Self {
+        pub(crate) fn begin(&mut self, name: &str) -> &mut Self {
             self.token(FDT_BEGIN_NODE);
             self.structure.extend_from_slice(name.as_bytes());
             self.structure.push(0);
             self.pad();
             self
         }
-        fn end(&mut self) -> &mut Self {
+        pub(crate) fn end(&mut self) -> &mut Self {
             self.token(FDT_END_NODE);
             self
         }
-        fn prop(&mut self, name: &str, value: &[u8]) -> &mut Self {
+        pub(crate) fn prop(&mut self, name: &str, value: &[u8]) -> &mut Self {
             let offset = self.strings.len() as u32;
             self.strings.extend_from_slice(name.as_bytes());
             self.strings.push(0);
@@ -678,7 +684,7 @@ mod tests {
             self.pad();
             self
         }
-        fn cells(&mut self, name: &str, cells: &[u32]) -> &mut Self {
+        pub(crate) fn cells(&mut self, name: &str, cells: &[u32]) -> &mut Self {
             let value: Vec<u8> = cells.iter().flat_map(|c| c.to_be_bytes()).collect();
             self.prop(name, &value)
         }
@@ -690,7 +696,7 @@ mod tests {
                 self.structure.push(0);
             }
         }
-        fn build(&mut self) -> Vec<u8> {
+        pub(crate) fn build(&mut self) -> Vec<u8> {
             self.token(FDT_END);
             let reservations_offset = HEADER_LENGTH;
             let mut reservations = Vec::new();
