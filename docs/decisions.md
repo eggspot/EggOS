@@ -5400,8 +5400,9 @@ the license, by an explicit instruction recorded here.
   `ls -l /bin/ls` and a missing path with its status, `cat` of two files, `uname -a`,
   `/bin/echo -n`, `sleep 0` and `sleep 0.05`, `/bin/false`), checks the lines it writes right
   after its echo, and ends with `poweroff`: QEMU must exit cleanly after `reboot: Power down`
-  within the boot timeout. It reports the time from QEMU's start to the first prompt: 60 ms on
-  aarch64, 60 ms on riscv64 and 120 ms on x86_64 on an Apple-silicon Mac (QEMU's TCG, 4 CPUs).
+  within the boot timeout. It reports the time from QEMU's start to the first prompt: 50 to 60 ms
+  on aarch64, 60 to 81 ms on riscv64 and 111 to 120 ms on x86_64 in two runs on an
+  Apple-silicon Mac (QEMU's TCG, 4 CPUs, the runner polling every 20 ms).
   That time is wall-clock, not an instruction count, so it is printed rather than gated against
   `benchmarks/baseline.txt` (the `-icount` benchmarks, D27); putting boot-to-prompt into the
   benchmarks is item 15's.
@@ -5416,8 +5417,9 @@ the license, by an explicit instruction recorded here.
   52352 to 51808). The release initramfs grows from 62368 to 106012 bytes on aarch64, 61696
   to 107716 on riscv64 and 68512 to 116788 on x86_64, and the release kernel's loaded size
   from 431681 to 476137, 381784 to 428624 and 450749 to 500349: the utilities the release
-  needs (D99) plus 812, 820 and 1324 bytes of kernel code for hard links. Benchmarks: no
-  result changed (the initramfs's lookups and reads run the same instructions).
+  needs (D99) plus 812, 820 and 1324 bytes of kernel code for hard links. Benchmarks, against
+  `main` on the same machine: no result slower by more than 0.06%; on x86_64
+  `linux_openat_close` is 0.8% and `linux_file_read` 0.5% faster.
 - **Not done yet (follow-ups).** `ls` in columns on a terminal, with user and group names and
   time zones; more utilities as the system grows (`mkdir`, `rm`, `cp`, `mv` with a writable
   file system, `ps` and `kill` with `/proc` and signals to other processes, `date` with an RTC);
