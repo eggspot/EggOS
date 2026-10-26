@@ -272,7 +272,7 @@ struct Child<P: Platform> {
 pub(crate) struct ChildState {
     pub(crate) exit_signal: u8,
     pub(crate) exit: Option<ProcessExit>,
-    pub(crate) gone: bool,
+    pub(crate) freed: bool,
 }
 
 /// What memory a child process starts with ([`Process::new_child`]).
@@ -467,7 +467,7 @@ impl<P: Platform> Process<P> {
             .map(|child| ChildState {
                 exit_signal: child.exit_signal,
                 exit: child.record.lock().exit,
-                gone: Arc::strong_count(&child.record) == 1,
+                freed: Arc::strong_count(&child.record) == 1,
             })
             .collect()
     }
@@ -2183,11 +2183,11 @@ mod tests {
         let child = parent.new_child(ChildMemory::Shared).unwrap();
         parent.add_child(&child, 17).unwrap();
         let image = parent.new_image().unwrap();
-        let expected = |exit, gone| {
+        let expected = |exit, freed| {
             [ChildState {
                 exit_signal: 17,
                 exit,
-                gone,
+                freed,
             }]
         };
         assert_eq!(image.children(), expected(None, false));

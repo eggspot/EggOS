@@ -5899,9 +5899,9 @@ mod tests {
         };
         assert_eq!(state.exit, Some(ProcessExit::Exited(0x15)));
         assert_eq!(state.exit_signal, 17);
-        assert!(!state.gone);
+        assert!(!state.freed);
         drop((child, thread));
-        assert!(parent.children()[0].gone);
+        assert!(parent.children()[0].freed);
     }
 
     #[test]

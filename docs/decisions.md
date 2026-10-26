@@ -4944,7 +4944,8 @@ the license, by an explicit instruction recorded here.
   parent's record goes (the parent and every image of it ended and nothing holds it), which
   stands in for reparenting to an `init` that reaps. Nothing is kept by pid in a global table.
   Item 7 adds `wait4` on this list, `SIGCHLD` to the parent with the stored exit signal, and
-  reparenting to pid 1. The self-tests and benchmarks read the list through
+  reparenting to pid 1; until then a child whose parent ended still reads its old parent's id
+  from `getppid`. The self-tests and benchmarks read the list through
   `Process::children` (crate-internal), which `wait4` replaces for programs.
 - **Review fixes (D103).** The console's foreground is forgotten by the reader that became it
   only if it still is that one (`console::forget_this_foreground`, a pointer compare), not by

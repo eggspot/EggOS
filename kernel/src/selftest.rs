@@ -1013,12 +1013,12 @@ fn release_loaded_address_spaces<P: Platform>(freed: impl Fn() -> bool) -> bool 
     released
 }
 
-fn children_end_and_go<P: Platform>(process: &Process<P>) -> bool {
+fn children_end_and_are_freed<P: Platform>(process: &Process<P>) -> bool {
     let here = cpu::current::<P>();
     let millisecond = P::clock_frequency() / 1000;
     let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
-    let gone = || process.children().iter().all(|child| child.gone);
-    while !gone() && P::clock_ticks() < give_up {
+    let freed = || process.children().iter().all(|child| child.freed);
+    while !freed() && P::clock_ticks() < give_up {
         for &other in cpu::CPUS.all() {
             if !core::ptr::eq(other, here) {
                 cpu::wake::<P>(other);
@@ -1026,7 +1026,7 @@ fn children_end_and_go<P: Platform>(process: &Process<P>) -> bool {
         }
         thread::sleep_until::<P>(P::clock_ticks() + millisecond);
     }
-    gone()
+    freed()
 }
 
 /// Programs that never make a system call must still take turns (D48): with preemption on, two
@@ -1993,7 +1993,7 @@ fn run_rust_program<P: Platform>(
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
-        if !children_end_and_go::<P>(&process) {
+        if !children_end_and_are_freed::<P>(&process) {
             return Err("a child of the Rust program did not end, or was not freed");
         }
         match process.exit_status() {
