@@ -171,6 +171,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
             Line::Whole("LINUX-STATIC time monotonic realtime".into()),
             Line::Whole("LINUX-STATIC hashmap egg=3 shell=1 yolk=1".into()),
             Line::Whole("LINUX-STATIC threads 4 joined sum 30".into()),
+            Line::Whole(format!("LINUX-STATIC cpus {TEST_CPUS}")),
             Line::Whole("LINUX-STATIC stderr".into()),
             Line::Whole("LINUX-STATIC status 0".into()),
         ]

@@ -3,7 +3,7 @@
 //! test adds to the image with `cargo xtask image --add` and runs from `eggsh` (D117). It
 //! uses what typical console programs use and writes one `LINUX-STATIC` line for each:
 //! its arguments, the environment, a file, a directory listing, the clocks, a `HashMap`
-//! with random keys, threads and standard error, then exits with 0. `exit <status>` exits
+//! with random keys, threads, the CPUs it may use and standard error, then exits with 0. `exit <status>` exits
 //! with that status instead, and `panic` panics, which aborts the program.
 
 use std::collections::HashMap;
@@ -39,6 +39,10 @@ fn main() -> ExitCode {
     println!("{PREFIX} time {}", clocks());
     println!("{PREFIX} hashmap {}", word_counts());
     println!("{PREFIX} threads {}", threads());
+    match std::thread::available_parallelism() {
+        Ok(cpus) => println!("{PREFIX} cpus {cpus}"),
+        Err(error) => println!("{PREFIX} cpus error {error}"),
+    }
     eprintln!("{PREFIX} stderr");
     ExitCode::SUCCESS
 }
