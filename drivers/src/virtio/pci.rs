@@ -24,7 +24,8 @@ pub const DEVICE: u8 = 4;
 /// `cfg_type` of the PCI configuration access structure.
 pub const PCI: u8 = 5;
 
-const MODERN_DEVICE_IDS: core::ops::RangeInclusive<u16> = 0x1040..=0x107f;
+/// The PCI device ids of modern (non-transitional) virtio devices: 0x1040 plus the device type.
+pub const MODERN_DEVICE_IDS: core::ops::RangeInclusive<u16> = 0x1040..=0x107f;
 
 const DEVICE_FEATURE_SELECT: usize = 0x00;
 const DEVICE_FEATURE: usize = 0x04;

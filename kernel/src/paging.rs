@@ -787,16 +787,15 @@ pub fn kernel_page_tables<P: Platform>(
     result.map(|()| tables)
 }
 
-/// `memory` without the pages of `P`'s early device regions. Firmware may describe a device's
-/// registers inside a range it reports (x86 loaders often list the local APIC's page as
-/// reserved, and the x86_64 direct map covers reserved ranges for the ACPI tables): those
-/// pages are mapped as device memory only, since a second, normal mapping would give one page
-/// two memory types (D33) and make the device's mapping fail as a page mapped twice.
+fn device_ranges<P: Platform>(each: &mut dyn FnMut(PhysicalRange)) {
+    P::early_device_regions(&mut |device| each(device.covering_frames()));
+    P::device_apertures(&mut |aperture| each(aperture.covering_frames()));
+}
+
 fn without_early_devices<P: Platform>(memory: &MemoryMap) -> Result<MemoryMap, MapError> {
     let mut normal = memory.clone();
     let mut left_out = MemoryMap::new();
-    P::early_device_regions(&mut |device| {
-        let device = device.covering_frames();
+    device_ranges::<P>(&mut |device| {
         normal.reserve(device);
         for range in memory.ranges() {
             left_out.add_ram(PhysicalRange {
@@ -805,21 +804,15 @@ fn without_early_devices<P: Platform>(memory: &MemoryMap) -> Result<MemoryMap, M
             });
         }
     });
-    // A full map drops a piece of a range it cannot split (`MemoryMap::reserve`): memory the
-    // direct map must reach would be unmapped.
     if normal.total() + left_out.total() != memory.total() {
         return Err(MapError::TooManyRanges);
     }
     Ok(normal)
 }
 
-/// Whether any page of `memory` holds an early device's registers. Free memory must not: the
-/// direct map leaves those pages out ([`without_early_devices`]), and firmware that reports
-/// one as free RAM would otherwise have the kernel write the device's registers.
 fn overlaps_early_devices<P: Platform>(memory: &MemoryMap) -> bool {
     let mut overlaps = false;
-    P::early_device_regions(&mut |device| {
-        let device = device.covering_frames();
+    device_ranges::<P>(&mut |device| {
         overlaps |= memory
             .ranges()
             .iter()

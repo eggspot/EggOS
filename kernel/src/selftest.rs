@@ -89,9 +89,10 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 51] {
             "heap_allocates_in_the_direct_map",
             heap_allocates_in_the_direct_map::<P>,
         ),
-        ("devices_are_discovered", |_| {
-            crate::devices::selftest::devices_are_discovered()
-        }),
+        (
+            "devices_are_discovered",
+            crate::devices::selftest::devices_are_discovered::<P>,
+        ),
         ("virtio_rng_returns_bytes", virtio_rng_returns_bytes::<P>),
         (
             "dma_regions_are_zeroed_and_freed_after_reset",

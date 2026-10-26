@@ -25,7 +25,7 @@ fn pci_device(vendor: u16, device: u16, class: u8, subclass: u8) -> Identity {
 }
 
 fn never(_: &mut dyn Probe, _: DeviceId) -> Result<(), ProbeError> {
-    Err(ProbeError("not expected to probe"))
+    Err(ProbeError::Refused("not expected to probe"))
 }
 
 static GENERIC: DriverDescriptor = DriverDescriptor {
@@ -55,10 +55,14 @@ static CLASS: DriverDescriptor = DriverDescriptor {
     probe: never,
 };
 
-static VENDOR: DriverDescriptor = DriverDescriptor {
-    name: "vendor",
+static RANGE: DriverDescriptor = DriverDescriptor {
+    name: "range",
     pass: ProbePass::Device,
-    matches: &[Match::PciVendor(0x1af4)],
+    matches: &[Match::PciIdRange {
+        vendor: 0x1af4,
+        first: 0x1040,
+        last: 0x107f,
+    }],
     probe: never,
 };
 
@@ -92,8 +96,8 @@ fn the_most_specific_compatible_string_wins_whatever_the_driver_order() {
 }
 
 #[test]
-fn a_pci_id_beats_a_vendor_which_beats_a_class() {
-    let drivers = [&CLASS, &VENDOR, &EXACT];
+fn a_pci_id_beats_an_id_range_which_beats_a_class() {
+    let drivers = [&CLASS, &RANGE, &EXACT];
     let block = pci_device(0x1af4, 0x1042, 1, 8);
     assert_eq!(
         best_driver(&drivers, ProbePass::Device, &block)
@@ -104,8 +108,12 @@ fn a_pci_id_beats_a_vendor_which_beats_a_class() {
     let rng = pci_device(0x1af4, 0x1044, 0xff, 0);
     assert_eq!(
         best_driver(&drivers, ProbePass::Device, &rng).unwrap().name,
-        "vendor"
+        "range"
     );
+    let transitional = pci_device(0x1af4, 0x1005, 0xff, 0);
+    assert!(best_driver(&drivers, ProbePass::Device, &transitional).is_none());
+    let past_the_range = pci_device(0x1af4, 0x1080, 0xff, 0);
+    assert!(best_driver(&drivers, ProbePass::Device, &past_the_range).is_none());
     let nvme = pci_device(0x8086, 0x5845, 1, 8);
     assert_eq!(
         best_driver(&drivers, ProbePass::Device, &nvme)
@@ -143,7 +151,12 @@ fn matches_never_cross_bus_kinds() {
     assert_eq!(Match::VirtioId(4).rank(&virtio), Some(0));
     assert_eq!(Match::VirtioId(2).rank(&virtio), None);
     assert_eq!(Match::Compatible(b"virtio,mmio").rank(&virtio), None);
-    assert_eq!(Match::PciVendor(0x1af4).rank(&tree_device(b"x\0")), None);
+    let range = Match::PciIdRange {
+        vendor: 0x1af4,
+        first: 0,
+        last: u16::MAX,
+    };
+    assert_eq!(range.rank(&tree_device(b"x\0")), None);
     assert_eq!(
         Match::AcpiHid(b"PNP0A08").rank(&pci_device(1, 2, 3, 4)),
         None
@@ -185,7 +198,10 @@ fn bus_adding_a_child(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeEr
         transport: 0,
     });
     child.parent = Some(id);
-    probe.table().add(child).ok_or(ProbeError("full"))?;
+    probe
+        .table()
+        .add(child)
+        .ok_or(ProbeError::Refused("full"))?;
     Ok(())
 }
 
@@ -194,9 +210,14 @@ fn device_driver(_: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     Ok(())
 }
 
+fn finding_nothing(_: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+    PROBED.lock().unwrap().push(("empty", id.index()));
+    Err(ProbeError::Absent)
+}
+
 fn refusing(_: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     PROBED.lock().unwrap().push(("refusing", id.index()));
-    Err(ProbeError("a legacy device"))
+    Err(ProbeError::Refused("a legacy device"))
 }
 
 #[test]
@@ -219,42 +240,53 @@ fn passes_probe_buses_before_devices_and_the_children_buses_add() {
         matches: &[Match::Compatible(b"test,old")],
         probe: refusing,
     };
+    static EMPTY_SLOT: DriverDescriptor = DriverDescriptor {
+        name: "test-slot",
+        pass: ProbePass::Bus,
+        matches: &[Match::Compatible(b"test,slot")],
+        probe: finding_nothing,
+    };
     PROBED.lock().unwrap().clear();
     let mut probe = FakeProbe {
         table: DeviceTable::new(),
     };
-    for compatible in [&b"test,bus\0"[..], b"test,old\0", b"test,nobody\0"] {
+    for compatible in [
+        &b"test,bus\0"[..],
+        b"test,old\0",
+        b"test,nobody\0",
+        b"test,slot\0",
+    ] {
         probe.table.add(DeviceNode::new(tree_device(compatible)));
     }
-    probe_all(&mut probe, &[&DEVICE, &BUS, &REFUSING]);
+    probe_all(&mut probe, &[&DEVICE, &BUS, &REFUSING, &EMPTY_SLOT]);
     assert_eq!(
         *PROBED.lock().unwrap(),
-        [("refusing", 1), ("bus", 0), ("device", 3)]
+        [("refusing", 1), ("bus", 0), ("empty", 3), ("device", 4)]
     );
     let bindings: Vec<_> = probe.table.iter().map(|(_, node)| node.binding).collect();
     assert_eq!(
         bindings,
         [
             Binding::Bound("test-bus"),
-            Binding::Failed("test-refusing", ProbeError("a legacy device")),
+            Binding::Failed("test-refusing", "a legacy device"),
+            Binding::Unbound,
             Binding::Unbound,
             Binding::Bound("test-device"),
         ]
     );
-    let child = probe.table.get(DeviceId(3)).unwrap();
+    let child = probe.table.get(DeviceId(4)).unwrap();
     assert_eq!(child.parent, Some(DeviceId(0)));
 }
 
 #[test]
-fn the_table_keeps_discovery_order_and_counts_what_it_drops() {
+fn the_table_keeps_discovery_order() {
     let mut table = DeviceTable::new();
     assert!(table.is_empty());
-    for index in 0..MAX_DEVICES + 2 {
-        let added = table.add(DeviceNode::new(pci_device(index as u16, 0, 0, 0)));
-        assert_eq!(added.is_some(), index < MAX_DEVICES);
+    for index in 0..300 {
+        let id = table.add(DeviceNode::new(pci_device(index, 0, 0, 0)));
+        assert_eq!(id.map(DeviceId::index), Some(usize::from(index)));
     }
-    assert_eq!(table.len(), MAX_DEVICES);
-    assert_eq!(table.dropped(), 2);
+    assert_eq!((table.len(), table.dropped()), (300, 0));
     for (id, node) in table.iter() {
         let Identity::Pci(function) = node.identity else {
             panic!("not PCI");
@@ -273,7 +305,7 @@ fn a_device_prints_its_identity_registers_and_driver() {
         "dev@0 (virtio,mmio) 0xa000000..0xa000200: virtio-mmio"
     );
     let mut pci = DeviceNode::new(pci_device(0x1af4, 0x1044, 0xff, 0));
-    pci.binding = Binding::Failed("virtio-pci", ProbeError("no capabilities"));
+    pci.binding = Binding::Failed("virtio-pci", "no capabilities");
     assert_eq!(
         format!("{pci}"),
         "pci 00:03.0 1af4:1044 class ff00: virtio-pci refused: no capabilities"

@@ -83,20 +83,27 @@ pub static MMIO_DRIVER: DriverDescriptor = DriverDescriptor {
     probe: probe_mmio,
 };
 
-/// Modern virtio-pci (D110): any function of virtio's PCI vendor.
+/// Modern virtio-pci (D110): virtio's PCI vendor with a modern device id (0x1040 to 0x107f).
 pub static PCI_DRIVER: DriverDescriptor = DriverDescriptor {
     name: "virtio-pci",
     pass: ProbePass::Bus,
-    matches: &[Match::PciVendor(virtio_pci::VIRTIO_VENDOR_ID)],
+    matches: &[Match::PciIdRange {
+        vendor: virtio_pci::VIRTIO_VENDOR_ID,
+        first: *virtio_pci::MODERN_DEVICE_IDS.start(),
+        last: *virtio_pci::MODERN_DEVICE_IDS.end(),
+    }],
     probe: probe_pci,
 };
 
 fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-    let node = *probe.table().get(id).ok_or(ProbeError("no such device"))?;
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
     let region = node
         .regions()
         .next()
-        .ok_or(ProbeError("the slot has no registers"))?;
+        .ok_or(ProbeError::Refused("the slot has no registers"))?;
     let base = probe.map_window(region)?;
     let size = (region.len() as usize).min(virtio::mmio::REGISTER_BLOCK_SIZE);
     // SAFETY: `map_window` mapped the slot's registers as device memory, for good, and only
@@ -104,23 +111,27 @@ fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let regs = unsafe { Mmio::new(base, size) };
     match MmioTransport::new(regs) {
         Ok(transport) => add_device(probe, id, &node, AnyTransport::Mmio(transport)),
-        Err(virtio::Error::NoDevice) => Ok(()),
-        Err(error) => Err(ProbeError(error.description())),
+        Err(virtio::Error::NoDevice) => Err(ProbeError::Absent),
+        Err(error) => Err(ProbeError::Refused(error.description())),
     }
 }
 
 fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-    let node = *probe.table().get(id).ok_or(ProbeError("no such device"))?;
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
     let Identity::Pci(function) = node.identity else {
-        return Err(ProbeError("not a PCI function"));
+        return Err(ProbeError::Refused("not a PCI function"));
     };
-    let device_type = virtio_pci::modern_device_type(function.device_id).ok_or(ProbeError(
-        "a legacy or transitional virtio-pci device: only modern ones are supported (QEMU: \
+    let device_type =
+        virtio_pci::modern_device_type(function.device_id).ok_or(ProbeError::Refused(
+            "a legacy or transitional virtio-pci device: only modern ones are supported (QEMU: \
          disable-legacy=on)",
-    ))?;
+        ))?;
     let config = probe
         .pci_config()
-        .ok_or(ProbeError("no PCI configuration space"))?;
+        .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let mut common = None;
     let mut notify = None;
     let mut device = None;
@@ -135,7 +146,9 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     }
     pci::enable_memory_and_bus_master(config, function.address);
     let (Some(common), Some(notify)) = (common, notify) else {
-        return Err(ProbeError(virtio::Error::BadCapabilities.description()));
+        return Err(ProbeError::Refused(
+            virtio::Error::BadCapabilities.description(),
+        ));
     };
     let mut windows = [None; super::MAX_REGIONS];
     let mut regs = |capability: VirtioPciCapability| -> Result<Mmio, ProbeError> {
@@ -143,7 +156,9 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         let region = node.regions[bar];
         let end = u64::from(capability.offset) + u64::from(capability.length);
         if region.is_empty() || end > region.len() {
-            return Err(ProbeError(virtio::Error::BarOutOfRange.description()));
+            return Err(ProbeError::Refused(
+                virtio::Error::BarOutOfRange.description(),
+            ));
         }
         let base = match windows[bar] {
             Some(base) => base,
@@ -181,7 +196,7 @@ fn add_device(
         let free = transports
             .iter()
             .position(Option::is_none)
-            .ok_or(ProbeError("no room for another virtio transport"))?;
+            .ok_or(ProbeError::Refused("no room for another virtio transport"))?;
         transports[free] = Some(Box::new(transport));
         free as u8
     };
@@ -195,7 +210,7 @@ fn add_device(
     probe
         .table()
         .add(child)
-        .ok_or(ProbeError("the device table is full"))?;
+        .ok_or(ProbeError::Refused("no memory to record the device"))?;
     Ok(())
 }
 
@@ -246,18 +261,22 @@ mod entropy {
     };
 
     fn probe_rng(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-        let node = *probe.table().get(id).ok_or(ProbeError("no such device"))?;
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
         if node.dma != DmaCoherence::Coherent {
-            return Err(ProbeError(
+            return Err(ProbeError::Refused(
                 "the device's DMA is not coherent, which the kernel does not support yet",
             ));
         }
         if RNG.lock().is_some() {
-            return Err(ProbeError("an entropy device is already in use"));
+            return Err(ProbeError::Refused("an entropy device is already in use"));
         }
-        let transport = take_transport(&node.identity).ok_or(ProbeError("no transport"))?;
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
         let memory = DmaRegion::allocate(MEMORY_BYTES)
-            .map_err(|_| ProbeError("no memory for the device's queue"))?;
+            .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
         match VirtioRng::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(rng) => {
@@ -271,7 +290,7 @@ mod entropy {
                     unsafe { memory.free() };
                 }
                 give_back_transport(&node.identity, transport);
-                Err(ProbeError(error.description()))
+                Err(ProbeError::Refused(error.description()))
             }
         }
     }

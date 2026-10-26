@@ -2,7 +2,8 @@ use super::dma::DmaRegion;
 use super::{Binding, DeviceNode, Identity};
 use crate::memory::{FRAMES, Memory};
 use eggos_drivers::dma::DmaMemory;
-use eggos_hal::Platform;
+use eggos_hal::paging::{Format, MemoryType};
+use eggos_hal::{PhysicalRange, Platform};
 
 fn devices() -> alloc::vec::Vec<DeviceNode> {
     let mut found = alloc::vec::Vec::new();
@@ -48,12 +49,42 @@ fn virtio_mmio_slots(found: &[DeviceNode], expected: usize) -> Result<(), &'stat
     {
         return Err("a virtio-mmio slot has no registers or no interrupt");
     }
-    if cfg!(feature = "virtio")
-        && slots
-            .iter()
-            .any(|node| node.binding != Binding::Bound("virtio-mmio"))
+    if slots
+        .iter()
+        .any(|node| matches!(node.binding, Binding::Failed(..)))
     {
-        return Err("a virtio-mmio slot was not bound (a legacy device?)");
+        return Err("a virtio-mmio slot was refused (a legacy device?)");
+    }
+    let bound = slots
+        .iter()
+        .filter(|node| node.binding == Binding::Bound("virtio-mmio"))
+        .count();
+    if cfg!(feature = "virtio") && bound != 1 {
+        return Err("the virtio-mmio driver did not bind exactly the slot with a device");
+    }
+    Ok(())
+}
+
+fn no_normal_alias<P: Platform>(
+    memory: &Memory<P>,
+    found: &[DeviceNode],
+) -> Result<(), &'static str> {
+    if !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE {
+        return Ok(());
+    }
+    let mut ranges: alloc::vec::Vec<PhysicalRange> =
+        found.iter().flat_map(DeviceNode::regions).collect();
+    P::device_apertures(&mut |aperture| ranges.push(aperture));
+    let offset = P::direct_map_offset() as u64;
+    for range in ranges {
+        let frames = range.covering_frames();
+        let middle = frames.start + (frames.len() / 2) / 4096 * 4096;
+        for page in [frames.start, middle, frames.end - 4096] {
+            let alias = memory.page_tables.translate(page.wrapping_add(offset));
+            if alias.is_some_and(|(_, attributes)| attributes.memory_type == MemoryType::Normal) {
+                return Err("device registers are also mapped as normal memory in the direct map");
+            }
+        }
     }
     Ok(())
 }
@@ -81,8 +112,11 @@ fn q35_functions(found: &[DeviceNode]) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub(crate) fn devices_are_discovered() -> Result<(), &'static str> {
+pub(crate) fn devices_are_discovered<P: Platform>(
+    memory: &mut Memory<P>,
+) -> Result<(), &'static str> {
     let found = devices();
+    no_normal_alias(memory, &found)?;
     let machine = if cfg!(all(target_os = "none", target_arch = "aarch64")) {
         virtio_mmio_slots(&found, 32).and_then(|()| {
             let gic = found

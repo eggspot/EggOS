@@ -2,16 +2,19 @@
 //! kernel that bind to them.
 //!
 //! - **Discovery.** At boot the buses describe what they find as plain [`DeviceNode`]s, an
-//!   identity and resources (register ranges, interrupts, DMA coherence), in a fixed-size
-//!   [`DeviceTable`]: every enabled device-tree node with a `compatible` on AArch64 and RISC-V,
-//!   every PCI function the firmware's `MCFG` lets the kernel reach on x86_64.
+//!   identity and resources (register ranges, interrupts, DMA coherence), in a [`DeviceTable`]
+//!   on the heap, as large as what was found: every enabled device-tree node with a
+//!   `compatible` on AArch64 and RISC-V, every PCI function the firmware's `MCFG` lets the
+//!   kernel reach on x86_64.
 //! - **Drivers.** A driver is a `const` [`DriverDescriptor`]: a name, a probe pass, a match table
 //!   and a probe function. [`BUILTIN`] lists those the kernel's cargo features build in, so a
 //!   driver not enabled costs nothing (D18).
 //! - **Probing.** Passes run in order, interrupt controllers, then buses, then devices (as
 //!   FreeBSD's bus passes), each offering every unbound device to the driver that matches it
 //!   best ([`best_driver`]). A bus driver adds the devices it finds behind a device as its
-//!   children (a virtio transport adds the virtio device), which the later passes probe.
+//!   children (a virtio transport adds the virtio device), which the later passes probe; a
+//!   driver that finds nothing there ([`ProbeError::Absent`], an empty virtio-mmio slot)
+//!   leaves the device unbound.
 //! - **The `devices` capability** ([`for_each`]) lists them all with their binding, for the
 //!   CLI and MCP front-ends (D22), which come with the MCP server (M10).
 
@@ -25,14 +28,12 @@ pub mod window;
 
 use crate::memory::Memory;
 use crate::sync::LeafSpinLock;
+use alloc::vec::Vec;
 use core::fmt::Write;
-use core::mem::MaybeUninit;
 use eggos_drivers::pci::{self, ConfigSpace};
 use eggos_hal::fdt::InterruptSpecifier;
 use eggos_hal::{PhysicalRange, Platform};
 
-/// Devices the table holds; more are counted as dropped.
-pub const MAX_DEVICES: usize = 96;
 /// Register ranges a device records: a PCI function's six BARs, by BAR number.
 pub const MAX_REGIONS: usize = 6;
 /// Interrupts a device records.
@@ -70,8 +71,8 @@ pub enum Match {
     Compatible(&'static [u8]),
     /// A PCI function's vendor and device id.
     PciId { vendor: u16, device: u16 },
-    /// Any PCI function of a vendor (a driver that decides by device id itself).
-    PciVendor(u16),
+    /// A PCI function of a vendor whose device id is in `first..=last`.
+    PciIdRange { vendor: u16, first: u16, last: u16 },
     /// A PCI function's class and subclass.
     PciClass { class: u8, subclass: u8 },
     /// An ACPI `_HID`; nothing is discovered from ACPI's namespace yet (AML is M13's).
@@ -83,8 +84,8 @@ pub enum Match {
 impl Match {
     /// How well this entry matches `identity`: `None` if it does not, else a rank, lower being
     /// more specific. A device-tree match ranks by the position of the matching string in the
-    /// device's `compatible` list (its most specific string is first); a PCI id ranks 0, a
-    /// vendor 1, a class 2; a virtio type 0.
+    /// device's `compatible` list (its most specific string is first); a PCI id ranks 0, an
+    /// id range 1, a class 2; a virtio type 0.
     pub fn rank(&self, identity: &Identity) -> Option<u32> {
         match (*self, identity) {
             (Match::Compatible(wanted), Identity::DeviceTree { compatible, .. }) => compatible
@@ -95,8 +96,16 @@ impl Match {
             (Match::PciId { vendor, device }, Identity::Pci(function)) => {
                 (function.vendor_id == vendor && function.device_id == device).then_some(0)
             }
-            (Match::PciVendor(vendor), Identity::Pci(function)) => {
-                (function.vendor_id == vendor).then_some(1)
+            (
+                Match::PciIdRange {
+                    vendor,
+                    first,
+                    last,
+                },
+                Identity::Pci(function),
+            ) => {
+                let in_range = (first..=last).contains(&function.device_id);
+                (function.vendor_id == vendor && in_range).then_some(1)
             }
             (Match::PciClass { class, subclass }, Identity::Pci(function)) => {
                 (function.class == class && function.subclass == subclass).then_some(2)
@@ -111,7 +120,12 @@ impl Match {
 
 /// Why a driver did not take a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProbeError(pub &'static str);
+pub enum ProbeError {
+    /// Nothing is there (an empty slot): the device stays unbound, which is no failure.
+    Absent,
+    /// The driver cannot drive the device, for this reason.
+    Refused(&'static str),
+}
 
 /// What a probe function is given: the table and what the kernel lends drivers.
 pub trait Probe {
@@ -202,7 +216,7 @@ pub enum Binding {
     Unbound,
     Bound(&'static str),
     /// The driver named refused it, for the reason given.
-    Failed(&'static str, ProbeError),
+    Failed(&'static str, &'static str),
 }
 
 /// A device: what it is and the resources the firmware gave it.
@@ -241,70 +255,60 @@ impl DeviceNode {
     }
 }
 
-/// Every device discovered, in discovery order, children after their parents. Its storage is
-/// all zeros until used, so the kernel's table costs no bytes of the image (`.bss`).
+/// Every device discovered, in discovery order, children after their parents.
 #[derive(Debug)]
 pub struct DeviceTable {
-    nodes: [MaybeUninit<DeviceNode>; MAX_DEVICES],
-    len: usize,
+    nodes: Vec<DeviceNode>,
     dropped: usize,
 }
 
 impl DeviceTable {
     pub const fn new() -> Self {
         Self {
-            nodes: [const { MaybeUninit::uninit() }; MAX_DEVICES],
-            len: 0,
+            nodes: Vec::new(),
             dropped: 0,
         }
     }
 
-    /// Adds `node`; `None`, counted as dropped, when the table is full.
+    /// Adds `node`; `None`, counted as dropped, when there is no memory for it.
     pub fn add(&mut self, node: DeviceNode) -> Option<DeviceId> {
-        let Some(slot) = self.nodes.get_mut(self.len) else {
+        let id = u16::try_from(self.nodes.len()).ok().map(DeviceId);
+        if id.is_none() || self.nodes.try_reserve(1).is_err() {
             self.dropped += 1;
             return None;
-        };
-        slot.write(node);
-        self.len += 1;
-        Some(DeviceId(self.len as u16 - 1))
+        }
+        self.nodes.push(node);
+        id
     }
 
     pub fn get(&self, id: DeviceId) -> Option<&DeviceNode> {
-        let slot = self.nodes[..self.len].get(id.index())?;
-        // SAFETY: every slot below `len` was written by `add`.
-        Some(unsafe { slot.assume_init_ref() })
+        self.nodes.get(id.index())
     }
 
     pub fn get_mut(&mut self, id: DeviceId) -> Option<&mut DeviceNode> {
-        let slot = self.nodes[..self.len].get_mut(id.index())?;
-        // SAFETY: every slot below `len` was written by `add`.
-        Some(unsafe { slot.assume_init_mut() })
+        self.nodes.get_mut(id.index())
     }
 
     /// How many devices it holds.
     pub fn len(&self) -> usize {
-        self.len
+        self.nodes.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.nodes.is_empty()
     }
 
-    /// Devices discovery found but the table had no room for.
+    /// Devices discovery found but there was no memory to record.
     pub fn dropped(&self) -> usize {
         self.dropped
     }
 
     /// Every device with its id, in order.
     pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &DeviceNode)> {
-        self.nodes[..self.len]
+        self.nodes
             .iter()
             .enumerate()
-            .map(|(index, slot)| {
-                // SAFETY: every slot below `len` was written by `add`.
-                (DeviceId(index as u16), unsafe { slot.assume_init_ref() })
-            })
+            .map(|(index, node)| (DeviceId(index as u16), node))
     }
 }
 
@@ -337,7 +341,7 @@ impl Deadline {
     }
 }
 
-static DEVICES: LeafSpinLock<DeviceTable> = LeafSpinLock::new_leaf(DeviceTable::new());
+static DEVICES: LeafSpinLock<Option<DeviceTable>> = LeafSpinLock::new_leaf(None);
 
 /// What discovery and probing did at boot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -362,7 +366,8 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     }
 
     fn map_window(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
-        window::map::<P>(self.memory, region).map_err(|error| ProbeError(error.description()))
+        window::map::<P>(self.memory, region)
+            .map_err(|error| ProbeError::Refused(error.description()))
     }
 
     fn pci_config(&self) -> Option<&dyn ConfigSpace> {
@@ -377,19 +382,19 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
 /// Discovers the devices the firmware describes and probes [`BUILTIN`]'s drivers on them, once,
 /// at boot on the boot CPU before any other starts (device windows are mapped on it alone).
 pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
-    let mut table = DEVICES.lock();
+    let mut devices = DEVICES.lock();
     let mut report = Report::default();
-    if !table.is_empty() {
-        return summarize(&table, report);
+    if let Some(table) = devices.as_ref() {
+        return summarize(table, report);
     }
+    let table = devices.insert(DeviceTable::new());
     if let Some(blob) = P::device_tree()
-        && let Err(error) =
-            fdt_bus::discover(blob, &mut table, P::DEVICE_TREE_DMA_COHERENT_BY_DEFAULT)
+        && let Err(error) = fdt_bus::discover(blob, table, P::DEVICE_TREE_DMA_COHERENT_BY_DEFAULT)
     {
         report.discovery_error = Some(error);
     }
     let mut probe = BootProbe {
-        table: &mut table,
+        table,
         memory,
         ecam: None,
     };
@@ -399,7 +404,8 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
         report.discovery_error = Some(error);
     }
     probe_all(&mut probe, BUILTIN);
-    summarize(&table, report)
+    table.nodes.shrink_to_fit();
+    summarize(table, report)
 }
 
 fn summarize(table: &DeviceTable, mut report: Report) -> Report {
@@ -434,7 +440,8 @@ pub fn probe_all(probe: &mut dyn Probe, drivers: &[&'static DriverDescriptor]) {
             };
             let binding = match (driver.probe)(probe, id) {
                 Ok(()) => Binding::Bound(driver.name),
-                Err(error) => Binding::Failed(driver.name, error),
+                Err(ProbeError::Absent) => Binding::Unbound,
+                Err(ProbeError::Refused(reason)) => Binding::Failed(driver.name, reason),
             };
             if let Some(node) = probe.table().get_mut(id) {
                 node.binding = binding;
@@ -445,9 +452,10 @@ pub fn probe_all(probe: &mut dyn Probe, drivers: &[&'static DriverDescriptor]) {
 
 /// The `devices` capability (D22): calls `device` with every device discovered, in order.
 pub fn for_each(device: &mut dyn FnMut(DeviceId, &DeviceNode)) {
-    let table = DEVICES.lock();
-    for (id, node) in table.iter() {
-        device(id, node);
+    if let Some(table) = DEVICES.lock().as_ref() {
+        for (id, node) in table.iter() {
+            device(id, node);
+        }
     }
 }
 
@@ -482,7 +490,7 @@ impl core::fmt::Display for DeviceNode {
         match self.binding {
             Binding::Unbound => Ok(()),
             Binding::Bound(driver) => write!(f, ": {driver}"),
-            Binding::Failed(driver, ProbeError(reason)) => {
+            Binding::Failed(driver, reason) => {
                 write!(f, ": {driver} refused: {reason}")
             }
         }

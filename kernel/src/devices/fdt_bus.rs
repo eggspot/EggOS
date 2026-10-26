@@ -159,20 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn a_full_table_counts_the_devices_it_drops() {
-        let mut table = DeviceTable::new();
-        for _ in 0..super::super::MAX_DEVICES - 3 {
-            table.add(DeviceNode::new(Identity::Virtio {
-                device_type: 4,
-                transport: 0,
-            }));
-        }
-        discover(QEMU_AARCH64_VIRT, &mut table, false).unwrap();
-        assert_eq!(table.len(), super::super::MAX_DEVICES);
-        assert!(table.dropped() > 30);
-    }
-
-    #[test]
     fn a_malformed_tree_is_reported() {
         let mut table = DeviceTable::new();
         assert!(discover(&QEMU_RISCV64_VIRT[..100], &mut table, true).is_err());

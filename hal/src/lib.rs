@@ -142,6 +142,13 @@ pub trait Platform: 'static {
     /// set up the timer (as `kernel_main` runs).
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange));
 
+    /// Calls `aperture` for each range of device registers that the firmware's memory description
+    /// may cover but that the kernel must only reach as device memory, through a device window
+    /// (D110): the direct map leaves those pages out, so no page has two memory types (D33). On
+    /// x86_64, the PCI Express configuration space the `MCFG` names, which QEMU's loader lists as
+    /// reserved. The default: none.
+    fn device_apertures(_aperture: &mut dyn FnMut(PhysicalRange)) {}
+
     /// The flattened device tree the firmware handed over (AArch64 and RISC-V), whole, for device
     /// discovery (D110); `None` on a machine without one (the default) or when it is not valid.
     /// The kernel only reads it.
