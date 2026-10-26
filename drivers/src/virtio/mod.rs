@@ -5,6 +5,7 @@
 //! fake transport in host tests. Only version 1 (non-legacy) devices are driven:
 //! [`feature::VERSION_1`] is required.
 
+pub mod gpu;
 pub mod mmio;
 pub mod pci;
 pub mod queue;
@@ -97,6 +98,14 @@ pub enum Error {
     BarOutOfRange,
     /// The device is not of the type the driver drives.
     WrongDeviceType,
+    /// The device answered a command with this error response type.
+    CommandFailed(u32),
+    /// The device has no display output (scanout), or the driver has not set one up yet.
+    NoScanout,
+    /// The display output already shows a framebuffer.
+    ScanoutInUse,
+    /// A display mode the driver cannot set: empty, or too large for one region of memory.
+    UnsupportedMode,
 }
 
 impl Error {
@@ -121,6 +130,10 @@ impl Error {
             Error::BadCapabilities => "the virtio-pci capabilities are missing or malformed",
             Error::BarOutOfRange => "a virtio register lies outside its mapped BAR region",
             Error::WrongDeviceType => "the device is not of the type the driver drives",
+            Error::CommandFailed(_) => "the device answered a command with an error",
+            Error::NoScanout => "the device has no display output, or none is set up",
+            Error::ScanoutInUse => "the display output already shows a framebuffer",
+            Error::UnsupportedMode => "a display mode the driver cannot set",
         }
     }
 }
