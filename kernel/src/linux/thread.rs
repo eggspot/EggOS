@@ -8,6 +8,7 @@
 
 use super::Errno;
 use super::descriptors::Descriptors;
+use super::files::WorkingDirectory;
 use super::futex::{self, WaitSlot};
 use super::signals::{self, LockedSignals, Signals, ThreadSignals};
 use crate::process::{self, Process};
@@ -96,12 +97,13 @@ pub struct LinuxThread {
     signals_seen: u16,
     wait_slot: Arc<WaitSlot>,
     files: Descriptors,
+    working_directory: WorkingDirectory,
 }
 
 impl LinuxThread {
     /// The first thread of `process`, which has the process's id, as on Linux, with a
     /// descriptor table of its own holding the console's standard streams
-    /// ([`Descriptors::with_console_streams`]).
+    /// ([`Descriptors::with_console_streams`]) and the root as its working directory.
     pub fn first<P: Platform>(process: &Process<P>) -> Self {
         Self {
             id: process.id().get(),
@@ -111,13 +113,21 @@ impl LinuxThread {
             signals_seen: process.signals_sent(),
             wait_slot: Arc::new(WaitSlot::new()),
             files: Descriptors::with_console_streams(),
+            working_directory: WorkingDirectory::at_root(),
         }
     }
 
     /// A thread with id `id` that this thread starts (`clone`), clearing and waking
     /// `clear_child_tid` when it exits, unless that is 0, with its signal state
-    /// ([`ThreadSignals::for_new_thread`]) and the descriptor table `files`.
-    pub fn new_thread(&self, id: u32, clear_child_tid: u64, files: Descriptors) -> Self {
+    /// ([`ThreadSignals::for_new_thread`]), the descriptor table `files` and the working
+    /// directory `working_directory`.
+    pub fn new_thread(
+        &self,
+        id: u32,
+        clear_child_tid: u64,
+        files: Descriptors,
+        working_directory: WorkingDirectory,
+    ) -> Self {
         Self {
             id,
             clear_child_tid,
@@ -126,12 +136,18 @@ impl LinuxThread {
             signals_seen: self.signals_seen,
             wait_slot: Arc::new(WaitSlot::new()),
             files,
+            working_directory,
         }
     }
 
     /// Its descriptor table (D101).
     pub fn files(&self) -> &Descriptors {
         &self.files
+    }
+
+    /// Its working directory (D102), shared with the threads started with `CLONE_FS`.
+    pub fn working_directory(&self) -> &WorkingDirectory {
+        &self.working_directory
     }
 
     /// Gives it `files` as its descriptor table (`close_range` with `CLOSE_RANGE_UNSHARE`).
@@ -284,7 +300,8 @@ impl Arguments {
 /// the 32-bit words at `parent_tid` and `child_tid` before it runs, silently not if they are
 /// not the program's writable memory, as on Linux; with `CLONE_CHILD_CLEARTID` its exit clears
 /// the word at `child_tid` and wakes a futex there. With `CLONE_FILES` it shares the caller's
-/// descriptor table, and without it starts with a copy (D101). It blocks the signals the caller blocks,
+/// descriptor table, and without it starts with a copy (D101); with `CLONE_FS` it shares the
+/// working directory, and without it starts with a copy (D102). It blocks the signals the caller blocks,
 /// has none pending and no alternate stack, as on Linux.
 ///
 /// As Linux, in this order: `EINVAL` for `CLONE_PIDFD` with `CLONE_PARENT_SETTID`, for
@@ -340,7 +357,11 @@ pub fn clone<P: Platform>(
         true => thread.files().share(),
         false => thread.files().copy()?,
     };
-    let new = thread.new_thread(id, clear_child_tid, files);
+    let working_directory = match any(flag::FS) {
+        true => thread.working_directory().share(),
+        false => thread.working_directory().copy(),
+    };
+    let new = thread.new_thread(id, clear_child_tid, files, working_directory);
     process
         .signals()
         .lock()

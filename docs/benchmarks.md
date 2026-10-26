@@ -34,6 +34,13 @@ result is an instruction count per iteration (D27), gated against `benchmarks/ba
 - `linux_descriptor_lookup`: what every call on a descriptor (`read`, `write`, `ioctl`,
   `lseek`, `fstat`, `poll`, ...) pays to find what the descriptor names (D101): the table's
   lock taken and released, and the open file description's count taken and dropped.
+- `linux_openat_close`: `openat(AT_FDCWD, "/etc/hostname", O_RDONLY)` then `close` (D102):
+  the path copied from the program, two components looked up in the embedded initramfs
+  (binary searches in its index), an open file description allocated, a descriptor taken and
+  closed again. Without the trap from user mode.
+- `linux_file_read`: `pread64` of `/etc/motd`'s 18 bytes from offset 0 into the program's
+  memory (D102): the descriptor looked up and its kind matched, the bytes copied straight from
+  the archive in the kernel image, no allocation. Without the trap from user mode.
 
 ## Host tests of the benchmarks
 

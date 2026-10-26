@@ -5,6 +5,7 @@
 
 mod bench;
 mod elf;
+mod initramfs;
 mod qemu;
 
 use std::process::{Command, ExitCode};
@@ -239,7 +240,8 @@ fn clippy_targets() -> Result<(), String> {
         }
         args.extend(["--", "-D", "warnings"]);
         cargo(&args)?;
-        let programs = build_user_programs(arch)?;
+        let mut programs = build_user_programs(arch)?;
+        programs.push(initramfs_variable()?);
         let env = program_variables(&programs);
         for features in [
             &[][..],
@@ -260,8 +262,9 @@ fn clippy_targets() -> Result<(), String> {
 }
 
 /// Builds the kernel image for `arch` (release profile) with the kernel feature `feature`, if
-/// any, and returns its path. Every kernel feature is a test kernel's, which runs the programs
-/// [`build_user_programs`] builds first.
+/// any, and returns its path. The image embeds the initramfs ([`initramfs::build`]); every
+/// kernel feature is a test kernel's, which runs the programs [`build_user_programs`] builds
+/// first.
 pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::PathBuf, String> {
     let mut args = vec!["build", "-p", "eggos-kernel", "--target", arch.target];
     let mut programs = Vec::new();
@@ -269,6 +272,7 @@ pub fn build_kernel(arch: &Arch, feature: Option<&str>) -> Result<std::path::Pat
         args.extend(["--features", feature]);
         programs = build_user_programs(arch)?;
     }
+    programs.push(initramfs_variable()?);
     let env = program_variables(&programs);
     build_executable(
         &args,
@@ -292,6 +296,11 @@ pub fn build_user_programs(arch: &Arch) -> Result<Vec<(&'static str, String)>, S
             Ok((program.variable, path.to_string_lossy().into_owned()))
         })
         .collect()
+}
+
+fn initramfs_variable() -> Result<(&'static str, String), String> {
+    let path = initramfs::build()?;
+    Ok(("EGGOS_INITRAMFS", path.to_string_lossy().into_owned()))
 }
 
 fn program_variables<'a>(programs: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {

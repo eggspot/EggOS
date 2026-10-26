@@ -38,7 +38,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 28] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 30] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -96,6 +96,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 28] {
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
+        ("linux_openat_close", linux_openat_close::<P>),
+        ("linux_file_read", linux_file_read::<P>),
     ]
 }
 
@@ -522,6 +524,56 @@ fn linux_dup3_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     }
 }
 
+const FILE_BENCH_MEMORY: u64 = 0x1000_0000;
+
+fn process_with_path<P: Platform>(memory: &Memory<P>, path: &[u8]) -> Process<P> {
+    // SAFETY: as in `process_syscall_round_trip`.
+    let mut program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    program
+        .add_region(
+            FILE_BENCH_MEMORY,
+            FILE_BENCH_MEMORY + FRAME_SIZE,
+            Attributes::USER_READ_WRITE,
+        )
+        .expect("the region is in user space");
+    program
+        .write_user_memory(FILE_BENCH_MEMORY, path)
+        .expect("the region is writable");
+    program
+}
+
+fn linux_openat_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::stat::at::FDCWD;
+    let program = process_with_path(memory, b"/etc/hostname\0");
+    let thread = linux::thread::LinuxThread::first(&program);
+    for _ in 0..n {
+        let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0)
+            .expect("/etc/hostname is in the initramfs");
+        linux::descriptors::close(thread.files(), black_box(fd)).expect("it was just opened");
+    }
+}
+
+fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::stat::at::FDCWD;
+    let program = process_with_path(memory, b"/etc/motd\0");
+    let thread = linux::thread::LinuxThread::first(&program);
+    let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0)
+        .expect("/etc/motd is in the initramfs");
+    for _ in 0..n {
+        let read = linux::files::pread64(
+            &program,
+            thread.files(),
+            black_box(fd),
+            FILE_BENCH_MEMORY + 256,
+            64,
+            0,
+        )
+        .expect("the buffer is the program's");
+        black_box(read);
+    }
+}
+
 /// Two processes' threads taking turns on one CPU, each yielding at every null system call
 /// (D48): per iteration two system calls, two thread switches and two address-space switches,
 /// with what each switch costs on the CPU afterwards (the user translations it drops). Compare
@@ -772,8 +824,10 @@ mod tests {
                 (linux_mmap_munmap, _),
                 (linux_dup3_close, _),
                 (linux_descriptor_lookup, _),
+                (linux_openat_close, _),
+                (linux_file_read, _),
             ],
-        ) = all.split_at(all.len() - 10)
+        ) = all.split_at(all.len() - 12)
         else {
             unreachable!()
         };
@@ -788,7 +842,9 @@ mod tests {
                 *linux_page_fault,
                 *linux_mmap_munmap,
                 *linux_dup3_close,
-                *linux_descriptor_lookup
+                *linux_descriptor_lookup,
+                *linux_openat_close,
+                *linux_file_read
             ],
             [
                 "syscall_round_trip",
@@ -800,7 +856,9 @@ mod tests {
                 "linux_page_fault",
                 "linux_mmap_munmap",
                 "linux_dup3_close",
-                "linux_descriptor_lookup"
+                "linux_descriptor_lookup",
+                "linux_openat_close",
+                "linux_file_read"
             ]
         );
         assert_eq!(

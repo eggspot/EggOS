@@ -20,6 +20,7 @@
 use super::{Errno, limits};
 use crate::process::Process;
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
+use crate::vfs::Node;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -42,6 +43,28 @@ pub mod open_flag {
     pub const NONBLOCK: u32 = 0o4000;
     /// The new descriptor is closed by `execve` (`dup3`, `open`).
     pub const CLOEXEC: u32 = 0o2_000_000;
+    /// Create the file if it does not exist.
+    pub const CREAT: u32 = 0o100;
+    /// With [`CREAT`], fail if the file exists.
+    pub const EXCL: u32 = 0o200;
+    /// Truncate a regular file opened for writing.
+    pub const TRUNC: u32 = 0o1000;
+    /// Fail unless the path names a directory.
+    #[cfg(target_arch = "aarch64")]
+    pub const DIRECTORY: u32 = 0o40_000;
+    /// Fail unless the path names a directory.
+    #[cfg(not(target_arch = "aarch64"))]
+    pub const DIRECTORY: u32 = 0o200_000;
+    /// Do not follow a symbolic link in the last component.
+    #[cfg(target_arch = "aarch64")]
+    pub const NOFOLLOW: u32 = 0o100_000;
+    /// Do not follow a symbolic link in the last component.
+    #[cfg(not(target_arch = "aarch64"))]
+    pub const NOFOLLOW: u32 = 0o400_000;
+    /// Open only a location in the file system: no reads or writes.
+    pub const PATH: u32 = 0o10_000_000;
+    /// An unnamed temporary file in the directory named: its own bit and [`DIRECTORY`].
+    pub const TMPFILE: u32 = 0o20_000_000 | DIRECTORY;
     /// The status flags kept and changed (`F_SETFL`): the others Linux lets `F_SETFL` change
     /// (`O_ASYNC`, `O_DIRECT`, `O_NOATIME`) are ignored until something acts on them.
     pub const STATUS: u32 = APPEND | NONBLOCK;
@@ -94,12 +117,27 @@ pub mod request {
     pub const FIOASYNC: u32 = 0x5452;
 }
 
-/// What an open file description names. The console is the first; the file system's nodes
-/// come with the VFS (M7).
+/// What an open file description names: the console, or a node of the file system (D102).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
     Console,
+    /// A regular file.
+    Regular(Node),
+    /// A directory, read with `getdents64`.
+    Directory(Node),
+    /// A location only (`O_PATH`): its status, a start for relative paths, `fchdir`.
+    Path(Node),
+}
+
+impl FileKind {
+    /// The node it names, if it names one.
+    pub fn node(&self) -> Option<Node> {
+        match self {
+            Self::Console => None,
+            Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
+        }
+    }
 }
 
 /// An open file description: what was opened, how, and where reads and writes go next.
@@ -180,6 +218,14 @@ impl OpenFile {
     pub fn set_offset(&self, offset: u64) {
         self.offset.store(offset, Ordering::Relaxed);
     }
+
+    /// Moves the offset from `from` to `to`, unless another call moved it since it was
+    /// `from`: then it returns `false` and changes nothing.
+    pub fn move_offset(&self, from: u64, to: u64) -> bool {
+        self.offset
+            .compare_exchange(from, to, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
 }
 
 /// An open descriptor: the open file description it names, and its own close-on-exec flag.
@@ -244,6 +290,28 @@ impl DescriptorTable {
         limit: u64,
     ) -> Result<u32, Errno> {
         let file = Arc::clone(&self.get(old).ok_or(Errno::EBADF)?.file);
+        self.open_at_least(file, lowest, close_on_exec, limit)
+    }
+
+    /// Opens the lowest free descriptor below `limit` on `file`, with `close_on_exec`, and
+    /// returns its number (`open`). `EMFILE` if every number up to `limit` is taken, `ENOMEM`
+    /// without memory for the table to grow.
+    pub fn open(
+        &mut self,
+        file: Arc<OpenFile>,
+        close_on_exec: bool,
+        limit: u64,
+    ) -> Result<u32, Errno> {
+        self.open_at_least(file, 0, close_on_exec, limit)
+    }
+
+    fn open_at_least(
+        &mut self,
+        file: Arc<OpenFile>,
+        lowest: u32,
+        close_on_exec: bool,
+        limit: u64,
+    ) -> Result<u32, Errno> {
         let start = (lowest as usize).max(self.first_maybe_free);
         let free = self
             .slots

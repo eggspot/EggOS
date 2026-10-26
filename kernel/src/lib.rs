@@ -26,6 +26,7 @@ pub mod regions;
 pub mod selftest;
 pub mod sync;
 pub mod thread;
+pub mod vfs;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
@@ -61,6 +62,9 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     Ok(()) => writeln!(console, "{}", console::INPUT_READY_LINE)?,
                     Err(reason) => writeln!(console, "console: no input: {reason}")?,
                 }
+                if let Some(report) = vfs::mount_embedded_initramfs() {
+                    report_root(console, report)?;
+                }
                 let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
                 // Benchmarks only mean something on a kernel that passed its self-tests.
                 #[cfg(feature = "qemu-bench")]
@@ -78,6 +82,17 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     match report {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
+    }
+}
+
+fn report_root<W: Write>(console: &mut W, report: vfs::MountReport) -> core::fmt::Result {
+    match report.error {
+        None => writeln!(
+            console,
+            "vfs: initramfs mounted at / ({} nodes, {} bytes)",
+            report.nodes, report.archive_size
+        ),
+        Some(error) => writeln!(console, "vfs: initramfs NOT READ ({error:?}): / is empty"),
     }
 }
 
