@@ -204,8 +204,8 @@ Descriptor follow-ups (D61): a descriptor table per process with `close`, `dup`,
 (console input with `read`, `POLLIN` and a line discipline behind `TCSETS`, `TCSETSW` and
 `TCSETSF`, pollers woken when input arrives: done, D100); the line discipline's follow-ups
 (D100): `readv`, `O_NONBLOCK` reads, `VREPRINT`, `VDISCARD`, `VSUSP` with job control, `IXON`
-flow control, output flags that the UART driver obeys, tab erase from the real column, echo
-written outside the discipline's lock, virtio-console input (M8); `SIGWINCH` on
+flow control, output flags that the UART driver obeys, tab erase from the column the output
+left (output column tracking), virtio-console input (M8); `SIGWINCH` on
 `TIOCSWINSZ`; sessions
 and job control (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) with `setsid` (M10); `select`,
 `pselect6` and `epoll` (M7); `poll` arrays copied in pieces with preemption points

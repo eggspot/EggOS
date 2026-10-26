@@ -181,6 +181,12 @@ fn settings() -> Result<Termios, &'static str> {
     Ok(termios)
 }
 
+fn end_the_echoed_line() {
+    let mut output = std::io::stdout();
+    let _ = writeln!(output);
+    let _ = output.flush();
+}
+
 fn ask_for(script: &str) {
     let mut output = std::io::stdout();
     let _ = writeln!(output, "{script}");
@@ -263,6 +269,7 @@ fn interrupt_a_poll() -> Result<(), &'static str> {
     let error = std::io::Error::last_os_error().raw_os_error();
     // SAFETY: as above.
     unsafe { pthread_sigmask(SIG_SETMASK, before.as_ptr(), std::ptr::null_mut()) };
+    end_the_echoed_line();
     check(
         result == -1 && error == Some(EINTR),
         "^C did not interrupt ppoll with EINTR",

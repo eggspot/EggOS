@@ -242,16 +242,32 @@ fn read_or_wait<P: Platform>(
         return ControlFlow::Continue(Some(Ok(0)));
     }
     become_foreground(process, thread);
-    let settings = console::settings();
-    let waited = if settings.is_canonical() {
-        wait_for_input(process, thread, u64::MAX, console::input_ready)?
-    } else {
-        wait_for_bytes(process, thread, settings, count)?
-    };
-    ControlFlow::Continue(match waited {
-        Waited::Signalled => None,
-        Waited::Ready | Waited::TimedOut => Some(take_into(process, buffer, count)),
-    })
+    loop {
+        let settings = console::settings();
+        let waited = if settings.is_canonical() {
+            wait_for_input(process, thread, u64::MAX, console::input_ready)?
+        } else {
+            wait_for_bytes(process, thread, settings, count)?
+        };
+        if waited == Waited::Signalled {
+            return ControlFlow::Continue(None);
+        }
+        let took = take_into(process, buffer, count);
+        if read_is_over(settings, waited, took.consumed) {
+            return ControlFlow::Continue(Some(took.result));
+        }
+    }
+}
+
+/// Whether a read that waited as `waited` says, with `settings`, ends with what it took: it
+/// does once it consumed input (bytes, or a line's end or an end of file), when `VTIME` passed,
+/// or with `VMIN` and `VTIME` both 0. Otherwise the input it was woken for went first (another
+/// reader took it, or `^C` discarded it), and it waits again rather than return a false end of
+/// file.
+fn read_is_over(settings: Termios, waited: Waited, consumed: bool) -> bool {
+    consumed
+        || waited == Waited::TimedOut
+        || (!settings.is_canonical() && settings.minimum_and_time() == (0, 0))
 }
 
 fn wait_for_bytes<P: Platform>(
@@ -296,31 +312,42 @@ fn wait_for_bytes<P: Platform>(
     }
 }
 
-fn take_into<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> Result<u64, Errno> {
+struct Took {
+    result: Result<u64, Errno>,
+    consumed: bool,
+}
+
+fn take_into<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> Took {
     let mut chunk = [0u8; READ_CHUNK];
     let mut copied = 0;
+    let mut consumed = false;
     while copied < count {
         let address = buffer + copied;
         let wanted = (count - copied)
             .min(READ_CHUNK as u64)
             .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
         let taken = console::take_input(&mut chunk[..wanted]);
+        consumed |= taken.length > 0 || taken.line_ended;
         if taken.length > 0
             && process
                 .write_user_memory(address, &chunk[..taken.length])
                 .is_err()
         {
-            return match copied {
+            let result = match copied {
                 0 => Err(Errno::EFAULT),
                 _ => Ok(copied),
             };
+            return Took { result, consumed };
         }
         copied += taken.length as u64;
         if taken.line_ended || taken.length < wanted {
             break;
         }
     }
-    Ok(copied)
+    Took {
+        result: Ok(copied),
+        consumed,
+    }
 }
 
 /// How a wait for console input ended.
@@ -381,7 +408,9 @@ pub fn wait_for_input<P: Platform>(
     }
 }
 
-/// Makes `thread`, of `process`, the console's foreground, if it is not already.
+/// Makes `thread`, of `process`, the console's foreground, if it is not already, unless the
+/// process has ended meanwhile (another thread's end forgot it first), so the console never
+/// keeps an ended process.
 pub fn become_foreground<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxThread) {
     let reader = console::reader_id(process.id().get(), thread.id());
     if console::is_foreground(reader) {
@@ -394,6 +423,9 @@ pub fn become_foreground<P: Platform>(process: &Arc<Process<P>>, thread: &LinuxT
             wait_slot: Arc::clone(thread.wait_slot()),
         }),
     );
+    if process.has_ended() {
+        console::forget_foreground(process.id().get());
+    }
 }
 
 struct ConsoleReader<P: Platform> {
@@ -414,6 +446,29 @@ impl<P: Platform> console::Foreground for ConsoleReader<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_woken_for_input_that_went_first_waits_again_instead_of_returning_zero() {
+        use crate::console::line_discipline::{index, local};
+        let canonical = Termios::SERIAL_CONSOLE;
+        let raw = |minimum, time| {
+            let mut settings = canonical;
+            settings.local &= !local::ICANON;
+            settings.control_characters[index::VMIN] = minimum;
+            settings.control_characters[index::VTIME] = time;
+            settings
+        };
+        for settings in [canonical, raw(1, 0), raw(1, 5), raw(0, 5)] {
+            assert!(
+                !read_is_over(settings, Waited::Ready, false),
+                "{settings:?}"
+            );
+            assert!(read_is_over(settings, Waited::Ready, true), "{settings:?}");
+        }
+        assert!(read_is_over(raw(0, 5), Waited::TimedOut, false));
+        assert!(read_is_over(raw(1, 5), Waited::TimedOut, false));
+        assert!(read_is_over(raw(0, 0), Waited::Ready, false));
+    }
 
     #[test]
     fn the_termios2_size_is_termios_and_two_speeds() {

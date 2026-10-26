@@ -2515,7 +2515,7 @@ mod tests {
         let reader = crate::console::reader_id(process.id().get(), process.id().get());
         assert!(crate::console::is_foreground(reader));
         console.types(b"gone\x03");
-        assert_eq!(console_output(), b"first\ngone^C\n");
+        assert_eq!(console_output(), b"first\ngone^C");
         let mut context = called(number::READ, [0, writable, 64, 0, 0, 0]);
         assert_eq!(
             handle_first(&process, &mut context, UserExit::Syscall),
@@ -2528,6 +2528,19 @@ mod tests {
             })
         );
         assert!(!crate::console::is_foreground(reader));
+    }
+
+    #[test]
+    fn a_process_that_ended_never_stays_the_console_s_foreground() {
+        let _console = ConsoleForTest::take();
+        let kernel = kernel_tables();
+        let process = process_with_iovecs(&kernel, b"", &[]);
+        let thread = take_first_thread(&process);
+        process.exit(ProcessExit::Exited(0));
+        terminal::become_foreground(&process, &thread);
+        let reader = crate::console::reader_id(process.id().get(), thread.id());
+        assert!(!crate::console::is_foreground(reader));
+        assert_eq!(Arc::strong_count(&process), 1);
     }
 
     #[test]

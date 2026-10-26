@@ -4433,17 +4433,20 @@ the license, by an explicit instruction recorded here.
   input is edited a line at a time and a read returns at most one line (the rest of a long one
   next); delete (`VERASE`) and backspace (`^H`) erase a character (a whole UTF-8 one with
   `IUTF8`), rubbed out with backspace-space-backspace with `ECHOE`; `^U` (`VKILL`) kills the
-  line, rubbed out with `ECHOKE`; with `IEXTEN`, `^W` erases a word and `^V` takes the next
-  byte as it is; newline, `VEOL` and `VEOL2` end a line and are read with it; `^D` (`VEOF`)
-  pushes the line without a newline, or, at the start of a line, reads as an end of file
-  (`read` returns 0). `ICRNL`, `INLCR`, `IGNCR` and `ISTRIP` map input first. With `ISIG`,
-  `^C` and `^\` discard the input (but with `NOFLSH`), echo as `^C` and a newline, and raise
-  `SIGINT` and `SIGQUIT`. Control characters echo as `^X` with `ECHOCTL`; `ECHONL` echoes a
-  newline without `ECHO`. Non-canonical mode makes each byte readable as it arrives, and `VMIN`
-  and `VTIME` decide how a read waits, as termios(3) says (both 0: what is there; `VMIN` 0: up
-  to `VTIME` tenths for a byte; `VTIME` 0: `VMIN` bytes, or `count` if fewer; both: a first
-  byte, then until `VMIN` or a `VTIME` with nothing new). Switching to non-canonical mode makes
-  the line being edited readable; switching back makes what is unread one line.
+  line, rubbed out with `ECHOE`, `ECHOK` and `ECHOKE` (otherwise echoed, with a newline with
+  `ECHOK`); with `IEXTEN`, `^W` erases a word (letters, digits and `_`, after whatever else ends
+  the line, as BSD's `ALTWERASE`) and `^V` takes the next byte as it is (`ISTRIP` applies, and
+  it is echoed only with `ECHO`, so a password typed without echo never shows); newline, `VEOL`
+  and `VEOL2` end a line and are read with it; `^D` (`VEOF`) pushes the line without a newline,
+  or, at the start of a line, reads as an end of file (`read` returns 0). `ICRNL`, `INLCR`,
+  `IGNCR` and `ISTRIP` map input first. With `ISIG`, `^C` and `^\` discard the input (but with
+  `NOFLSH`), echo as `^C` and `^\` (no newline, as on Linux: the shell writes its own), and
+  raise `SIGINT` and `SIGQUIT`. Control characters echo as `^X` with `ECHOCTL`; `ECHONL` echoes
+  a newline without `ECHO`. Non-canonical mode makes each byte readable as it arrives, and
+  `VMIN` and `VTIME` decide how a read waits, as termios(3) says (both 0: what is there; `VMIN`
+  0: up to `VTIME` tenths for a byte; `VTIME` 0: `VMIN` bytes, or `count` if fewer; both: a
+  first byte, then until `VMIN` or a `VTIME` with nothing new). Switching to non-canonical mode
+  makes the line being edited readable; switching back makes what is unread one line.
 - **Backspace erases too.** Linux reads `^H` as a character when `VERASE` is delete; the plan
   asks for both, as terminals send either for the backspace key. BSD has the same with its
   second erase character (`VERASE2`, `^H` by default); termios on Linux has no slot for one, so
@@ -4461,15 +4464,18 @@ the license, by an explicit instruction recorded here.
   settings when the kernel enables input at boot, so it lives in `.bss` and adds nothing to
   the kernel image (with the settings in its initial value it was 2.6 KiB of `.data`). A line
   keeps room for the byte that ends it; bytes that find no room are dropped and counted.
-- **`read`** (`linux::terminal::read`): `EBADF`, then `EFAULT` for a buffer that does not end
-  in user space, then 0 for a count of 0; at most `MAX_RW_COUNT` bytes, copied a page-bounded
-  chunk at a time (a chunk that cannot be written is lost, and the call returns what it copied,
-  or `EFAULT`). It waits on one futex key in no process's address space (`console::INPUT_KEY`),
+- **`read`** (`linux::terminal::read`): `EBADF`, then `EFAULT` for a buffer that does not end in
+  user space, then 0 for a count of 0; at most `MAX_RW_COUNT` bytes, copied a page-bounded chunk
+  at a time (a chunk that cannot be written is lost, and the call returns what it copied, or
+  `EFAULT`). It waits on one futex key in no process's address space (`console::INPUT_KEY`),
   whose waiters the interrupt wakes after it drops the discipline's leaf lock whenever input
   becomes readable, a signal character is typed or the settings change; a process's end wakes
-  them too when it has other threads. A signal due before input is taken interrupts it as
-  Linux's `-ERESTARTSYS` (restarted after an `SA_RESTART` handler, `EINTR` otherwise, D97); one
-  that came with the input is delivered once it is taken, as Linux returns the data first.
+  them too when it has other threads. A reader woken for input that went before it could take it
+  (another thread read it first, or `^C` discarded it) waits again rather than return 0, which
+  only an end of file, `VTIME` passing, or `VMIN` and `VTIME` both 0 return (independent
+  review). A signal due before input is taken interrupts it as Linux's `-ERESTARTSYS` (restarted
+  after an `SA_RESTART` handler, `EINTR` otherwise, D97); one that came with the input is
+  delivered once it is taken, as Linux returns the data first.
 - **`poll` and `ppoll`** report `POLLIN` (and `POLLRDNORM`) on the console when a read would
   take input without waiting for more: a whole line (or an end of file) in canonical mode,
   otherwise `VMIN` bytes, at least one, or one when `VTIME` is set. A call asking for the
@@ -4481,15 +4487,19 @@ the license, by an explicit instruction recorded here.
   other argument `EINVAL`); `FIONREAD`, the bytes of whole lines in canonical mode; the window
   size as before.
 - **Where `^C` goes** until process groups and `TIOCSPGRP` (D99, item 7): the console's
-  foreground is the thread that last read it or polled it for input (`console::Foreground`).
-  The interrupt sends its process the signal with Linux's kernel `siginfo_t` (`SI_KERNEL`),
-  queued for the process (the signal state's block made on demand, so a process with one thread
-  that never changed an action can take it), and ends the wait of that thread, whose slot the
+  foreground is the thread that last read it or polled it for input (`console::Foreground`). The
+  interrupt sends its process the signal with Linux's kernel `siginfo_t` (`SI_KERNEL`), queued
+  for the process (the signal state's block made on demand, so a process with one thread that
+  never changed an action can take it), and ends the wait of that thread, whose slot the
   process's signal state does not record when it is the only thread (D97), and of the others it
   records. The console holds the foreground's process (an `Arc`) until the process ends
   (`linux::end_process` forgets it), so the interrupt never drops the last reference to a
-  process. A reader that already is the foreground pays one atomic load; a process that ends
-  without being it, one load and a compare.
+  process; a thread that becomes the foreground after its process's end forgot it forgets it
+  again at once. A reader that already is the foreground pays one atomic load; a process that
+  ends without being it, one load and a compare. The echo of each chunk of input is written to
+  the UART after the discipline's lock is released, so other CPUs do not spin on it for the
+  UART's time (only an echo longer than 256 bytes, such as a long line killed, is written while
+  it is held).
 - **Testing.** Host unit tests of the discipline (each behaviour above by name); kernel host
   tests of `read` (lines, end of file, partial reads, `EBADF`, `EFAULT`), non-canonical reads
   with `VMIN` and `VTIME`, a read interrupted with and without `SA_RESTART` and one that finds
@@ -4510,6 +4520,6 @@ the license, by an explicit instruction recorded here.
   program waited.
 - **Not yet.** `readv` (musl's stdio reads with it, so C programs reading standard input wait
   for it); `O_NONBLOCK` reads (no `fcntl` yet); the actions listed above; tab erase counts
-  columns from where the line began, not from the real column after a prompt; the echo is
-  written under the discipline's lock, which waits as long as the UART takes on real hardware;
-  virtio-console input (M8).
+  columns from where the line began, not from the column the output left (after a prompt), which
+  needs the output's column tracked; a long echo written under the lock; virtio-console input
+  (M8).

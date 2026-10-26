@@ -423,11 +423,13 @@ impl LineDiscipline {
     /// Takes in `input`, as the console received it, echoing through `echo` with
     /// [`local::ECHO`] (control characters as `^X` with [`local::ECHOCTL`]). The input flags
     /// map carriage return and newline first. With [`local::ISIG`], `VINTR` and `VQUIT` discard
-    /// the input (unless [`local::NOFLSH`]), echo as themselves and a newline, and are reported.
+    /// the input (unless [`local::NOFLSH`]), echo as themselves (`^C`, `^\`), and are reported.
     /// In canonical mode `VERASE` and [`BACKSPACE`] remove the last character (a UTF-8 one with
     /// [`input::IUTF8`]), rubbing it out with [`local::ECHOE`], `VKILL` the line (rubbed out
-    /// with [`local::ECHOKE`], else echoed with a newline with [`local::ECHOK`]), and with
-    /// [`local::IEXTEN`] `VWERASE` the last word and `VLNEXT` takes the next byte as it is;
+    /// with [`local::ECHOE`], [`local::ECHOK`] and [`local::ECHOKE`], else echoed, with a
+    /// newline with [`local::ECHOK`]), and with [`local::IEXTEN`] `VWERASE` the last word
+    /// (letters, digits and `_`, after anything else before them) and `VLNEXT` takes the next
+    /// byte as it is (echoed only with [`local::ECHO`]);
     /// newline, `VEOL` and `VEOL2` end the line and are read with it, `VEOF` ends it without
     /// being read (an empty line reads as an end of file). A line keeps room for the byte
     /// that ends it; bytes that find no room are dropped and counted.
@@ -442,13 +444,15 @@ impl LineDiscipline {
     fn receive_byte(&mut self, byte: u8, echo: &mut impl FnMut(&[u8])) -> Received {
         let settings = self.settings;
         let canonical = settings.is_canonical();
-        if core::mem::take(&mut self.literal_next) {
-            self.echo_character(byte, echo);
-            return self.append(byte, canonical);
-        }
         let mut byte = byte;
         if settings.input & input::ISTRIP != 0 {
             byte &= 0x7f;
+        }
+        if core::mem::take(&mut self.literal_next) {
+            if settings.has(local::ECHO) {
+                self.echo_character(byte, echo);
+            }
+            return self.append(byte, canonical);
         }
         if byte == b'\r' {
             if settings.input & input::IGNCR != 0 {
@@ -469,7 +473,6 @@ impl LineDiscipline {
                 }
                 if settings.has(local::ECHO) {
                     self.echo_character(byte, echo);
-                    echo(b"\n");
                 }
                 return Received {
                     readable: false,
@@ -561,7 +564,7 @@ impl LineDiscipline {
     fn erase(&mut self, what: Erase, typed: u8, echo: &mut impl FnMut(&[u8])) {
         let settings = self.settings;
         let visual = match what {
-            Erase::Line => settings.has(local::ECHOE | local::ECHOKE),
+            Erase::Line => settings.has(local::ECHOE | local::ECHOK | local::ECHOKE),
             _ => settings.has(local::ECHOE),
         };
         let echoing = settings.has(local::ECHO);
@@ -576,11 +579,11 @@ impl LineDiscipline {
             let start = self.character_start();
             let first = self.bytes[start % CAPACITY];
             if what == Erase::Word {
-                let blank = first == b' ' || first == b'\t';
-                if blank && in_word {
+                let word = first.is_ascii_alphanumeric() || first == b'_';
+                if !word && in_word {
                     break;
                 }
-                in_word |= !blank;
+                in_word |= word;
             }
             if echoing && visual {
                 self.rub_out(start, echo);
@@ -792,12 +795,31 @@ mod tests {
     }
 
     #[test]
+    fn kill_without_echok_echoes_only_the_kill_character() {
+        let mut settings = Termios::SERIAL_CONSOLE;
+        settings.local &= !local::ECHOK;
+        let mut console = Console::with(settings);
+        console.types(b"gone\x15ok\n");
+        assert_eq!(console.echo(), b"gone^Uok\n");
+        assert_eq!(console.read(64), b"ok\n");
+    }
+
+    #[test]
     fn word_erase_removes_the_last_word_and_the_blanks_after_it() {
         let mut console = Console::new();
         console.types(b"two words \x17\x17one\n");
         assert_eq!(console.read(64), b"one\n");
         console.types(b"keep this\x17that\n");
         assert_eq!(console.read(64), b"keep that\n");
+    }
+
+    #[test]
+    fn word_erase_takes_letters_digits_and_underscores_after_anything_else() {
+        let mut console = Console::new();
+        console.types(b"cd /usr/my_dir2/ \x17\n");
+        assert_eq!(console.read(64), b"cd /usr/\n");
+        console.types(b"a.b\x17\x17\n");
+        assert_eq!(console.read(64), b"\n");
     }
 
     #[test]
@@ -863,7 +885,7 @@ mod tests {
                 quit: false
             }
         );
-        assert_eq!(console.echo(), b"unread\ndoomed^C\n");
+        assert_eq!(console.echo(), b"unread\ndoomed^C");
         assert!(!console.discipline.is_readable());
         console.types(b"after\r");
         assert_eq!(console.read(64), b"after\n");
@@ -934,6 +956,17 @@ mod tests {
         console.types(b"\x16\x03\x16\x7f\n");
         assert_eq!(console.read(64), b"\x03\x7f\n");
         assert_eq!(console.echo(), b"^\x08^C^\x08^?\n");
+    }
+
+    #[test]
+    fn a_literal_byte_is_not_echoed_without_echo_and_is_stripped_with_istrip() {
+        let mut settings = Termios::SERIAL_CONSOLE;
+        settings.local &= !local::ECHO;
+        settings.input |= input::ISTRIP;
+        let mut console = Console::with(settings);
+        console.types(b"\x16\xf3ecret\n");
+        assert!(console.echo().is_empty());
+        assert_eq!(console.read(64), b"secret\n");
     }
 
     #[test]

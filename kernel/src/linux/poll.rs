@@ -143,28 +143,27 @@ pub fn poll<P: Platform>(
 }
 
 /// `ppoll(fds, nfds, timeout, sigmask, sigsetsize)`, with the program's registers `context`:
-/// reports, in each `struct pollfd` of the `nfds` at `fds`, the events its descriptor has of
-/// those asked for (see `events`), and returns how many report any. If none does, it first
-/// waits for one until the `struct timespec` at `timeout` has passed, for good if that is
-/// null, not at all if it is zero. With a `sigmask`, the signals in that set are blocked
-/// instead of the thread's during the call (D71). If none reports events and a signal is due,
-/// before or during the wait (another thread sent it, D95), the call delivers it and, once a
-/// handler starts, fails with `EINTR`, the handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its
-/// action ignores is taken and the call goes on, as Linux restarts it, unless the time left
-/// could not be written back (below): then it fails with `EINTR`, as Linux's does, since it
-/// cannot restart with the time left. Otherwise the thread's mask is back when it returns, and
-/// a signal the call's mask unblocked stays pending. A timeout that is not zero gets the time
-/// not slept written back once the signal mask passed its checks, whatever the result: zero
-/// after a wait that ended with it, about all of it when something was ready at once (D62);
-/// one too long to count in nanoseconds is written back as it was. Linux's system call does
-/// that (its C libraries hide it), and ignores a timeout the program cannot write, as here,
-/// but for that `EINTR`. As Linux, in this order: `EFAULT` if `timeout` is not the
-/// program's memory; `EINVAL` for negative seconds or nanoseconds outside 0 to 999999999;
-/// with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the mask is not the
-/// program's memory; `EINVAL` for more descriptors than the open-file limit (`RLIMIT_NOFILE`'s
-/// soft limit); `EFAULT` if the array is not the program's writable memory; `ENOMEM` if there
-/// is no memory to copy it. `nfds` is an `unsigned int`: the register's upper half is ignored.
-/// Sets the call's result; breaks when a signal ends the process.
+/// reports, in each `struct pollfd` of the `nfds` at `fds`, the events its descriptor has of those
+/// asked for (see `events`), and returns how many report any. If none does, it first waits for one
+/// until the `struct timespec` at `timeout` has passed, for good if that is null, not at all if it
+/// is zero. With a `sigmask`, the signals in that set are blocked instead of the thread's during
+/// the call (D71). If none reports events and a signal is due, before or during the wait (another
+/// thread sent it, D95), the call delivers it and, once a handler starts, fails with `EINTR`, the
+/// handler's frame saving the thread's own mask, as `rt_sigsuspend` does (D70); a signal its action
+/// ignores is taken and the call goes on, as Linux restarts it, unless the time left could not be
+/// written back (below): then it fails with `EINTR`, as Linux's does, since it cannot restart with
+/// the time left. Otherwise the thread's mask is back when it returns, and a signal the call's mask
+/// unblocked stays pending. A timeout that is not zero gets the time not slept written back once
+/// the signal mask passed its checks, whatever the result: zero after a wait that ended with it,
+/// about all of it when something was ready at once (D62); one too long to count in nanoseconds is
+/// written back as it was. Linux's system call does that (its C libraries hide it), and ignores a
+/// timeout the program cannot write, as here, but for that `EINTR`. As Linux, in this order:
+/// `EFAULT` if `timeout` is not the program's memory; `EINVAL` for negative seconds or nanoseconds
+/// outside 0 to 999999999; with a `sigmask`, `EINVAL` if `sigsetsize` is not 8 and `EFAULT` if the
+/// mask is not the program's memory; `EINVAL` for more descriptors than the open-file limit
+/// (`RLIMIT_NOFILE`'s soft limit); `EFAULT` if the array is not the program's writable memory;
+/// `ENOMEM` if there is no memory to copy it. `nfds` is an `unsigned int`: the register's upper
+/// half is ignored. Sets the call's result; breaks when a signal ends the process.
 pub fn ppoll<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,

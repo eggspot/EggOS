@@ -35,23 +35,28 @@ pub fn enable_input<P: Platform>() -> Result<(), &'static str> {
     P::enable_console_input()
 }
 
-/// Passes every byte the console's UART holds through the line discipline, echoing as it says,
-/// then sends the signals typed to the [`Foreground`] and wakes the threads waiting for input;
-/// called for [`eggos_hal::Interrupt::ConsoleInput`]. Out of line, so the timer's and the
-/// wake-up's way through the interrupt handler keep their length.
+/// Passes every byte the console's UART holds through the line discipline, a chunk at a time,
+/// echoing each chunk as the discipline says once its lock is released (but for an echo too
+/// long to hold, such as a long line killed), then sends the signals typed to the
+/// [`Foreground`] and wakes the threads waiting for input; called for
+/// [`eggos_hal::Interrupt::ConsoleInput`]. Out of line, so the timer's and the wake-up's way
+/// through the interrupt handler keep their length.
 #[cold]
 #[inline(never)]
 pub fn receive_input<P: Platform>() {
-    let mut chunk = [0u8; 64];
+    let mut chunk = [0u8; INPUT_CHUNK];
     let mut received = Received::default();
-    {
-        let mut discipline = LINE_DISCIPLINE.lock();
-        loop {
+    loop {
+        let mut echo = EchoBuffer::<P>::new();
+        let length = {
+            let mut discipline = LINE_DISCIPLINE.lock();
             let length = P::console_read(&mut chunk);
-            if length == 0 {
-                break;
-            }
-            received |= discipline.receive(&chunk[..length], &mut |bytes| P::console_write(bytes));
+            received |= discipline.receive(&chunk[..length], &mut |bytes| echo.push(bytes));
+            length
+        };
+        echo.write();
+        if length == 0 {
+            break;
         }
     }
     if received.interrupt {
@@ -62,6 +67,43 @@ pub fn receive_input<P: Platform>() {
     }
     if received.readable || received.interrupt || received.quit {
         wake_input_waiters::<P>();
+    }
+}
+
+const INPUT_CHUNK: usize = 64;
+
+const ECHO_BUFFER: usize = 4 * INPUT_CHUNK;
+
+struct EchoBuffer<P: Platform> {
+    bytes: [u8; ECHO_BUFFER],
+    length: usize,
+    platform: PhantomData<P>,
+}
+
+impl<P: Platform> EchoBuffer<P> {
+    fn new() -> Self {
+        Self {
+            bytes: [0; ECHO_BUFFER],
+            length: 0,
+            platform: PhantomData,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if self.length + bytes.len() > ECHO_BUFFER {
+            self.write();
+        }
+        if bytes.len() > ECHO_BUFFER {
+            P::console_write(bytes);
+            return;
+        }
+        self.bytes[self.length..self.length + bytes.len()].copy_from_slice(bytes);
+        self.length += bytes.len();
+    }
+
+    fn write(&mut self) {
+        P::console_write(&self.bytes[..self.length]);
+        self.length = 0;
     }
 }
 
@@ -416,6 +458,18 @@ mod tests {
         assert_eq!(&buffer[..300], &burst[..]);
     }
 
+    #[test]
+    fn echo_longer_than_its_buffer_reaches_the_console_whole_and_in_order() {
+        let console = ConsoleForTest::take();
+        let line: Vec<u8> = (0..300).map(|i| b'a' + (i % 26) as u8).collect();
+        console.types(&[&line[..], b"\x15ok\r"].concat());
+        let rub_out = b"\x08 \x08".repeat(line.len());
+        let expected = [&line[..], &rub_out, b"ok\n"].concat();
+        assert_eq!(crate::tests::console_output(), expected);
+        let mut buffer = [0u8; 8];
+        assert_eq!(read_input(&mut buffer), 3);
+    }
+
     static SIGNALS_SENT: std::sync::Mutex<Vec<TerminalSignal>> = std::sync::Mutex::new(Vec::new());
 
     #[derive(Debug)]
@@ -440,7 +494,7 @@ mod tests {
             core::mem::take(&mut *SIGNALS_SENT.lock().unwrap()),
             [TerminalSignal::Interrupt, TerminalSignal::Quit]
         );
-        assert_eq!(crate::tests::console_output(), b"x^C\ny^\\\n");
+        assert_eq!(crate::tests::console_output(), b"x^Cy^\\");
         forget_foreground(process - 1);
         assert!(is_foreground(reader));
         forget_foreground(process);
