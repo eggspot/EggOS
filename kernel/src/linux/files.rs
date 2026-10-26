@@ -141,9 +141,10 @@ pub fn lookup<P: Platform>(
 /// `EINVAL` for `O_CREAT` with `O_DIRECTORY`, and for `O_TMPFILE` without write access; the
 /// path's errors (module documentation; `ENOENT` for an empty one); with `O_CREAT`, a missing
 /// last component is `EROFS` if its directory exists (`EISDIR` for a path ending in `/`);
-/// `EEXIST` for `O_CREAT` with `O_EXCL`; `EISDIR` for a directory with `O_CREAT` or write
-/// access; `ENOTDIR` for anything else with `O_DIRECTORY`; `EROFS` for a regular file opened
-/// for writing or with `O_TRUNC`, and for `O_TMPFILE`; `EMFILE` when every descriptor below
+/// `O_TMPFILE` is `EROFS` in a directory, `ENOTDIR` elsewhere; `EEXIST` for `O_CREAT` with
+/// `O_EXCL`; `EISDIR` for a directory with `O_CREAT` or write access; `ENOTDIR` for anything
+/// else with `O_DIRECTORY`; `EROFS` for a regular file opened for writing or with `O_TRUNC`;
+/// `EMFILE` when every descriptor below
 /// the open-file limit is taken. `O_PATH` opens a location only, ignoring the other flags
 /// but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`. With no symbolic links yet, `O_NOFOLLOW`
 /// changes nothing; `O_NONBLOCK` and `O_APPEND` are kept as status flags, and the other
@@ -186,6 +187,11 @@ pub fn openat<P: Platform>(
             return Err(Errno::ENOTDIR);
         }
         FileKind::Path(node)
+    } else if flags & open_flag::TMPFILE == open_flag::TMPFILE {
+        return Err(match directory {
+            true => Errno::EROFS,
+            false => Errno::ENOTDIR,
+        });
     } else {
         if flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
             return Err(Errno::EEXIST);
@@ -196,9 +202,7 @@ pub fn openat<P: Platform>(
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
-        if flags & open_flag::TMPFILE == open_flag::TMPFILE
-            || (!directory && (writes || flags & open_flag::TRUNC != 0))
-        {
+        if !directory && (writes || flags & open_flag::TRUNC != 0) {
             return Err(Errno::EROFS);
         }
         match directory {
@@ -552,4 +556,30 @@ fn change_directory(thread: &LinuxThread, node: Node) -> Result<u64, Errno> {
     }
     thread.working_directory().set(node);
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirents_are_packed_with_their_header_name_nul_and_padding() {
+        let mut buffer = [0xffu8; 64];
+        assert_eq!(
+            pack_dirent(&mut buffer, 7, 3, DT_REG, b"hostname"),
+            Some(32)
+        );
+        assert_eq!(u64::from_ne_bytes(buffer[0..8].try_into().unwrap()), 7);
+        assert_eq!(u64::from_ne_bytes(buffer[8..16].try_into().unwrap()), 3);
+        assert_eq!(u16::from_ne_bytes([buffer[16], buffer[17]]), 32);
+        assert_eq!(buffer[18], DT_REG);
+        assert_eq!(&buffer[19..27], b"hostname");
+        assert!(buffer[27..32].iter().all(|&byte| byte == 0));
+        assert_eq!(buffer[32], 0xff);
+        assert_eq!(pack_dirent(&mut buffer, 1, 1, DT_DIR, b"."), Some(24));
+        assert_eq!(pack_dirent(&mut buffer[..23], 1, 1, DT_DIR, b"."), None);
+        let longest = [b'n'; NAME_MAX];
+        let mut large = [0u8; DIRENT_CHUNK];
+        assert_eq!(pack_dirent(&mut large, 1, 1, DT_REG, &longest), Some(280));
+    }
 }

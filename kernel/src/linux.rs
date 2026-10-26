@@ -79,7 +79,9 @@ pub mod number {
         pub const WRITE: u64 = 1;
         pub const OPEN: u64 = 2;
         pub const CLOSE: u64 = 3;
+        pub const STAT: u64 = 4;
         pub const FSTAT: u64 = 5;
+        pub const LSTAT: u64 = 6;
         pub const POLL: u64 = 7;
         pub const LSEEK: u64 = 8;
         pub const MMAP: u64 = 9;
@@ -307,6 +309,10 @@ pub mod number {
             LSEEK,
             #[cfg(target_arch = "x86_64")]
             OPEN,
+            #[cfg(target_arch = "x86_64")]
+            STAT,
+            #[cfg(target_arch = "x86_64")]
+            LSTAT,
             OPENAT,
             PREAD64,
             GETDENTS64,
@@ -818,6 +824,17 @@ fn out_of_line_result<P: Platform>(
         number::OPENAT => files::openat(process, thread, first, second, third),
         #[cfg(target_arch = "x86_64")]
         number::OPEN => files::openat(process, thread, stat::at::FDCWD as u64, first, second),
+        #[cfg(target_arch = "x86_64")]
+        number::STAT => stat::newfstatat(process, thread, stat::at::FDCWD as u64, first, second, 0),
+        #[cfg(target_arch = "x86_64")]
+        number::LSTAT => stat::newfstatat(
+            process,
+            thread,
+            stat::at::FDCWD as u64,
+            first,
+            second,
+            stat::at::SYMLINK_NOFOLLOW,
+        ),
         number::PREAD64 => files::pread64(
             process,
             &*thread.files().file(first)?,
@@ -5044,6 +5061,303 @@ mod tests {
         process.write_user_memory(lowest + 4096, b"a\0").unwrap();
         assert_eq!(fstatat(lowest + 1), Errno::ENAMETOOLONG.result());
         assert_eq!(fstatat(0xffff_ffff_ffff_fff0), Errno::EFAULT.result());
+    }
+
+    const PATH: u64 = SCRATCH + 0x700;
+    const READ_BUFFER: u64 = SCRATCH + 0x800;
+    const FDCWD: u64 = stat::at::FDCWD as u32 as u64;
+
+    fn at_path(process: &Arc<Process<P>>, path: &[u8]) -> u64 {
+        let mut bytes = path.to_vec();
+        bytes.push(0);
+        process.write_user_memory(PATH, &bytes).unwrap();
+        PATH
+    }
+
+    fn open_at(process: &Arc<Process<P>>, dirfd: u64, path: &[u8], flags: u32) -> u64 {
+        let path = at_path(process, path);
+        call(
+            process,
+            number::OPENAT,
+            [dirfd, path, u64::from(flags), 0, 0, 0],
+        )
+    }
+
+    fn read_into(
+        process: &Arc<Process<P>>,
+        fd: u64,
+        count: u64,
+    ) -> Result<alloc::vec::Vec<u8>, u64> {
+        let read = call(process, number::READ, [fd, READ_BUFFER, count, 0, 0, 0]);
+        match read > MAX_RW_COUNT {
+            true => Err(read),
+            false => Ok(read_bytes(process, READ_BUFFER, read as usize)),
+        }
+    }
+
+    #[test]
+    fn files_are_opened_read_and_seeked_through_the_calls() {
+        use descriptors::open_flag;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let fd = open_at(&process, FDCWD, b"/etc/hostname", open_flag::CLOEXEC);
+        assert_eq!(fd, 3);
+        assert_eq!(call(&process, number::FCNTL, [fd, 1, 0, 0, 0, 0]), 1);
+        assert_eq!(read_into(&process, fd, 4), Ok(b"eggo".to_vec()));
+        assert_eq!(read_into(&process, fd, 100), Ok(b"s\n".to_vec()));
+        assert_eq!(read_into(&process, fd, 100), Ok(alloc::vec::Vec::new()));
+        let lseek = |offset: i64, whence| {
+            call(
+                &process,
+                number::LSEEK,
+                [fd, offset as u64, whence, 0, 0, 0],
+            )
+        };
+        assert_eq!(lseek(1, 0), 1);
+        assert_eq!(read_into(&process, fd, 3), Ok(b"ggo".to_vec()));
+        assert_eq!(lseek(-1, 2), 5);
+        assert_eq!(lseek(-10, 1), Errno::EINVAL.result());
+        assert_eq!(lseek(0, 1), 5);
+        assert_eq!(lseek(100, 0), 100);
+        assert_eq!(read_into(&process, fd, 3), Ok(alloc::vec::Vec::new()));
+        assert_eq!(lseek(6, 3), Errno::ENXIO.result());
+        assert_eq!(lseek(2, 3), 2);
+        assert_eq!(lseek(0, 4), 6);
+        assert_eq!(lseek(0, 5), Errno::EINVAL.result());
+        let pread = |offset: i64| {
+            call(
+                &process,
+                number::PREAD64,
+                [fd, READ_BUFFER, 3, offset as u64, 0, 0],
+            )
+        };
+        assert_eq!(pread(2), 3);
+        assert_eq!(read_bytes(&process, READ_BUFFER, 3), b"gos");
+        assert_eq!(lseek(0, 1), 6);
+        assert_eq!(pread(-1), Errno::EINVAL.result());
+        assert_eq!(
+            call(&process, number::PREAD64, [1, READ_BUFFER, 3, 0, 0, 0]),
+            Errno::ESPIPE.result()
+        );
+        let duplicate = call(&process, number::DUP, [fd, 0, 0, 0, 0, 0]);
+        assert_eq!(lseek(1, 0), 1);
+        assert_eq!(read_into(&process, duplicate, 2), Ok(b"gg".to_vec()));
+        assert_eq!(lseek(0, 1), 3);
+        assert_eq!(
+            call(&process, number::READ, [fd, UNMAPPED, 3, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(
+            call(&process, number::WRITE, [fd, READ_BUFFER, 1, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        let status = call(&process, number::FSTAT, [fd, STAT_BUFFER, 0, 0, 0, 0]);
+        assert_eq!(status, 0);
+        let bytes: [u8; stat::STAT_SIZE] = user_bytes(&process, STAT_BUFFER);
+        let mode_offset = if cfg!(target_arch = "x86_64") { 24 } else { 16 };
+        assert_eq!(word(&bytes, mode_offset), stat::S_IFREG | 0o644);
+        assert_eq!(double_word(&bytes, 48), 6);
+        assert_eq!(double_word(&bytes, 88), 1_700_000_000);
+        for fd in [fd, duplicate] {
+            assert_eq!(call(&process, number::CLOSE, [fd, 0, 0, 0, 0, 0]), 0);
+        }
+    }
+
+    #[test]
+    fn opening_fails_as_on_a_read_only_linux_mount() {
+        use descriptors::open_flag::*;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let open = |path: &[u8], flags| open_at(&process, FDCWD, path, flags);
+        for (path, flags, error) in [
+            (&b""[..], RDONLY, Errno::ENOENT),
+            (b"/etc/missing", RDONLY, Errno::ENOENT),
+            (b"/missing/x", CREAT, Errno::ENOENT),
+            (b"/etc/hostname/", RDONLY, Errno::ENOTDIR),
+            (b"/etc/hostname/x", CREAT, Errno::ENOTDIR),
+            (b"/etc/hostname", WRONLY, Errno::EROFS),
+            (b"/etc/hostname", RDWR, Errno::EROFS),
+            (b"/etc/hostname", TRUNC, Errno::EROFS),
+            (b"/etc/new", CREAT | WRONLY, Errno::EROFS),
+            (b"/etc/new/", CREAT, Errno::EISDIR),
+            (b"/etc/hostname", CREAT | EXCL, Errno::EEXIST),
+            (b"/etc/hostname", DIRECTORY, Errno::ENOTDIR),
+            (b"/etc", WRONLY, Errno::EISDIR),
+            (b"/etc", CREAT, Errno::EISDIR),
+            (b"/etc", CREAT | DIRECTORY, Errno::EINVAL),
+            (b"/etc", TMPFILE, Errno::EINVAL),
+            (b"/etc", TMPFILE | RDWR, Errno::EROFS),
+        ] {
+            assert_eq!(open(path, flags), error.result(), "{path:?} {flags:#o}");
+        }
+        let mut long = b"/etc/".to_vec();
+        long.extend_from_slice(&[b'n'; 256]);
+        assert_eq!(open(&long, RDONLY), Errno::ENAMETOOLONG.result());
+        assert_eq!(open(&long, CREAT), Errno::ENAMETOOLONG.result());
+        assert_eq!(
+            call(&process, number::OPENAT, [FDCWD, UNMAPPED, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(open(b"/etc/hostname", CREAT | NOFOLLOW), 3);
+        assert_eq!(open(b"/etc/", DIRECTORY), 4);
+        assert_eq!(read_into(&process, 4, 10), Err(Errno::EISDIR.result()));
+        let only_path = open(b"/etc/motd", PATH | WRONLY | TRUNC);
+        assert_eq!(only_path, 5);
+        assert_eq!(
+            read_into(&process, only_path, 10),
+            Err(Errno::EBADF.result())
+        );
+        assert_eq!(
+            call(&process, number::LSEEK, [only_path, 0, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(
+            call(
+                &process,
+                number::FSTAT,
+                [only_path, STAT_BUFFER, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(open_at(&process, 4, b"motd", RDONLY), 6);
+        assert_eq!(
+            open_at(&process, only_path, b"x", RDONLY),
+            Errno::ENOTDIR.result()
+        );
+        assert_eq!(
+            open_at(&process, 1, b"motd", RDONLY),
+            Errno::ENOTDIR.result()
+        );
+        assert_eq!(
+            open_at(&process, 99, b"motd", RDONLY),
+            Errno::EBADF.result()
+        );
+        assert_eq!(open_at(&process, 99, b"/etc/motd", RDONLY), 7);
+        let directory_path = open(b"/usr", PATH | DIRECTORY);
+        assert_eq!(
+            open_at(&process, directory_path, b"share/eggos/about", RDONLY),
+            9
+        );
+    }
+
+    fn dirents(bytes: &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, u8, u64)> {
+        let mut entries = alloc::vec::Vec::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            let length = u16::from_ne_bytes([bytes[at + 16], bytes[at + 17]]) as usize;
+            let name = &bytes[at + 19..at + length];
+            let name = &name[..name.iter().position(|&byte| byte == 0).unwrap()];
+            assert_eq!(length % 8, 0);
+            entries.push((name.to_vec(), bytes[at + 18], double_word(bytes, at + 8)));
+            at += length;
+        }
+        entries
+    }
+
+    #[test]
+    fn directories_are_listed_in_records_resumed_from_the_offset() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let fd = open_at(&process, FDCWD, b"/etc", descriptors::open_flag::DIRECTORY);
+        let getdents =
+            |fd, buffer, count| call(&process, number::GETDENTS64, [fd, buffer, count, 0, 0, 0]);
+        let all = getdents(fd, READ_BUFFER, 1024);
+        let entries = dirents(&read_bytes(&process, READ_BUFFER, all as usize));
+        let expected: [(&[u8], u8, u64); 4] = [
+            (b".", 4, 1),
+            (b"..", 4, 2),
+            (b"hostname", 8, 3),
+            (b"motd", 8, 4),
+        ];
+        assert_eq!(entries.len(), 4);
+        for ((name, kind, next), (expected_name, expected_kind, expected_next)) in
+            entries.iter().zip(expected)
+        {
+            assert_eq!(
+                (&name[..], *kind, *next),
+                (expected_name, expected_kind, expected_next)
+            );
+        }
+        assert_eq!(getdents(fd, READ_BUFFER, 1024), 0);
+        assert_eq!(call(&process, number::LSEEK, [fd, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(getdents(fd, READ_BUFFER, 24), 24);
+        assert_eq!(getdents(fd, READ_BUFFER, 24), 24);
+        assert_eq!(getdents(fd, READ_BUFFER, 31), Errno::EINVAL.result());
+        assert_eq!(getdents(fd, READ_BUFFER, 1 << 32 | 32), 32);
+        assert_eq!(
+            dirents(&read_bytes(&process, READ_BUFFER, 32))[0].0,
+            b"hostname"
+        );
+        assert_eq!(getdents(fd, READ_BUFFER, 1024), 24);
+        assert_eq!(getdents(fd, READ_BUFFER, 1024), 0);
+        assert_eq!(
+            call(&process, number::LSEEK, [fd, 2, 2, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(call(&process, number::LSEEK, [fd, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(getdents(fd, UNMAPPED, 64), Errno::EFAULT.result());
+        assert_eq!(getdents(fd, u64::MAX - 8, 64), Errno::EFAULT.result());
+        let file = open_at(&process, FDCWD, b"/etc/motd", 0);
+        assert_eq!(getdents(file, READ_BUFFER, 1024), Errno::ENOTDIR.result());
+        assert_eq!(getdents(1, READ_BUFFER, 1024), Errno::ENOTDIR.result());
+        assert_eq!(getdents(99, READ_BUFFER, 1024), Errno::EBADF.result());
+    }
+
+    #[test]
+    fn the_working_directory_is_changed_and_reported() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let process = process_for_status(&kernel);
+        let getcwd = |size| call(&process, number::GETCWD, [READ_BUFFER, size, 0, 0, 0, 0]);
+        let chdir = |path: &[u8]| {
+            let path = at_path(&process, path);
+            call(&process, number::CHDIR, [path, 0, 0, 0, 0, 0])
+        };
+        assert_eq!(getcwd(100), 2);
+        assert_eq!(read_bytes(&process, READ_BUFFER, 2), b"/\0");
+        assert_eq!(getcwd(1), Errno::ERANGE.result());
+        assert_eq!(chdir(b"/usr/share/eggos"), 0);
+        assert_eq!(getcwd(17), 17);
+        assert_eq!(read_bytes(&process, READ_BUFFER, 17), b"/usr/share/eggos\0");
+        assert_eq!(getcwd(16), Errno::ERANGE.result());
+        assert_eq!(
+            call(&process, number::GETCWD, [UNMAPPED, 100, 0, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        assert_eq!(open_at(&process, FDCWD, b"about", 0), 3);
+        assert_eq!(chdir(b".."), 0);
+        assert_eq!(getcwd(100), 11);
+        assert_eq!(chdir(b"/etc/hostname"), Errno::ENOTDIR.result());
+        assert_eq!(chdir(b"/nowhere"), Errno::ENOENT.result());
+        assert_eq!(chdir(b""), Errno::ENOENT.result());
+        let etc = open_at(&process, FDCWD, b"/etc", descriptors::open_flag::PATH);
+        assert_eq!(call(&process, number::FCHDIR, [etc, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(getcwd(100), 5);
+        let path = at_path(&process, b"hostname");
+        assert_eq!(
+            call(
+                &process,
+                number::NEWFSTATAT,
+                [FDCWD, path, STAT_BUFFER, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            call(&process, number::FCHDIR, [3, 0, 0, 0, 0, 0]),
+            Errno::ENOTDIR.result()
+        );
+        assert_eq!(
+            call(&process, number::FCHDIR, [1, 0, 0, 0, 0, 0]),
+            Errno::ENOTDIR.result()
+        );
+        assert_eq!(
+            call(&process, number::FCHDIR, [99, 0, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(getcwd(100), 5);
     }
 
     #[test]
