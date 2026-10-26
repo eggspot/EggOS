@@ -5963,7 +5963,33 @@ the license, by an explicit instruction recorded here.
   boot-to-prompt test compares QEMU's `screendump` pixel for pixel with the host engine's render
   of the serial bytes after `boot: terminal`, at the first prompt and after the line typed on
   the virtio keyboard, and requires `boot: terminal 158x49`.
-- **Cost.** COST-TBD
+- **Cost.** Measured against `main` on the same machine (this Mac, QEMU 10.2, release builds).
+  The release kernel's loaded size (text + data + bss) grows by 31.8 KiB on aarch64 (538940 to
+  571504 bytes), 27.5 KiB on riscv64 (484042 to 512192) and 32.6 KiB on x86_64 (564276 to
+  598460): the engine (11 KiB of code on aarch64), the kernel's glue with the parser and the
+  render inlined into the write path and the drawing thread (12 KiB), the font (2 KiB of
+  `.rodata`) and the input layer's view keys; `.data` is unchanged (HEAP and FRAMES still
+  adjacent, D110's lesson: the drawing thread's wait queue is boxed behind a null pointer) and
+  `.bss` grows by 16 to 48 bytes. Accepted as the feature itself, which D109 puts in the kernel for
+  0.3.0. Memory at run time, only with a display: at 1280x800 two screens of 158x49 cells (30
+  KiB each), the scrollback (256 lines of 158 cells, 158 KiB), the drawing thread's 16 KiB
+  stack. Without a display nothing is made, no thread runs, and a console write costs one load
+  more. Boot to prompt (QEMU's start to the first prompt, as xtask measures it with a 20 ms
+  console poll; three runs each): aarch64 59-60 ms against `main`'s 50-60, riscv64 77-145
+  (82 median) against 83-90, x86_64 113-129 (117) against 112-119, within the measurement's
+  resolution; the boot path only fills the screen once (the blank grid is not rendered, and
+  the drawing thread flushes it). No existing benchmark moved against `main` beyond its gate:
+  `input_event_queue_push_pop` +1 instruction on aarch64 and x86_64 (68 to 69, 66 to 67; the
+  drop-oldest compare-and-swap loop's setup), `input_key_to_bytes` 313 to 314 on aarch64 and
+  385 to 374 on riscv64 (a first version that read the cursor key mode into one `encode` call
+  and checked the view keys inline was 324 on aarch64: the mode is now matched to two
+  constant calls and the view keys are behind a cold call). New gated benchmarks, in
+  instructions on aarch64, riscv64 and x86_64: `gfx_glyph_cell` 562, 681, 690 (well inside the
+  design's 2 µs a cell); `gfx_terminal_line` 45342, 56241, 59320 (80 glyphs); `term_feed_line`
+  6047, 6840, 5949 (about 50 instructions a byte for a shell line with SGR); `term_scroll_line`
+  540783, 669769, 196730 (a line feed at the bottom of 80x24 and its render: 23 lines of pixels
+  moved by the platform's `memmove`, which x86_64's `rep movs` makes cheap under `-icount`,
+  against about 1.1 to 1.4 million instructions to draw them again).
 - **Not yet.** The boot screen (logo, name, progress and its `fb: boot` hash: moved to item 14,
   which replaces it with the desktop at the first prompt), the cursor's blink and the unfocused
   outline (item 14), `TERM=xterm` in init's environment, `SIGWINCH` on a grid change, 2x scale,

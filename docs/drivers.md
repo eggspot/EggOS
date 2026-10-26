@@ -185,8 +185,8 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 `eggos_drivers::terminal` (the design: docs/ux/terminal-v0.3.md):
 
 - `terminal::start::<P>()` makes a terminal over the whole display (an 8 px padding, the grid
-  `(w - 16) / 8` by `(h - 16) / 16` cells: 158x49 at 1280x800, 126x47 at 1024x768), fills the
-  screen with `term.bg` and shows it; `TIOCGWINSZ` then reports the grid. The release kernel
+  `(w - 16) / 8` by `(h - 16) / 16` cells: 158x49 at 1280x800, 126x47 at 1024x768) and fills
+  the screen with `term.bg`, which the drawing thread shows; `TIOCGWINSZ` then reports the grid. The release kernel
   starts it in init's boot, before `/init`, and prints `boot: terminal 158x49`; from the next
   line on the serial console and the terminal receive the same bytes. Without a display
   nothing is made.
