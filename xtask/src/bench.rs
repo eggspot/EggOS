@@ -36,10 +36,10 @@ const BENCH_CPUS: u32 = 1;
 const TOLERANCE_RELATIVE: f64 = 0.01;
 const TOLERANCE_ABSOLUTE_NS: f64 = 0.5;
 
-/// Results named with this suffix are sizes in bytes, gated exactly: any growth fails.
-const BYTES_SUFFIX: &str = "_bytes";
-
 const RELEASE_IMAGE_BYTES: &str = "release_image_bytes";
+
+/// Results that are sizes in bytes, gated exactly: any growth fails.
+const SIZES: &[&str] = &[RELEASE_IMAGE_BYTES];
 
 /// Header of the baseline file, rewritten by `--update-baseline`.
 const BASELINE_HEADER: &str = "\
@@ -334,8 +334,13 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
     }
     for ((arch, name), &now) in &measured.results {
         let key = (arch.clone(), name.clone());
+        let exact = SIZES.contains(&name.as_str());
+        let unit = if exact { "bytes" } else { "ns" };
         let Some(&before) = baseline.results.get(&key) else {
-            let _ = writeln!(report.text, "  {arch} {name}: {now:.2} ns (no baseline)");
+            let _ = writeln!(
+                report.text,
+                "  {arch} {name}: {now:.2} {unit} (no baseline)"
+            );
             report
                 .failures
                 .push(format!("{arch} {name}: no baseline (new benchmark?)"));
@@ -346,8 +351,6 @@ fn compare(baseline: &Measurements, measured: &Measurements, ran: &[&str]) -> Co
         } else {
             0.0
         };
-        let exact = name.ends_with(BYTES_SUFFIX);
-        let unit = if exact { "bytes" } else { "ns" };
         let limit = match exact {
             true => before,
             false => before * (1.0 + TOLERANCE_RELATIVE) + TOLERANCE_ABSOLUTE_NS,
@@ -470,19 +473,37 @@ mod tests {
 
     #[test]
     fn a_size_may_not_grow_by_one_byte() {
-        let baseline = results(&[("a", "release_image_bytes", 1000.0)]);
+        let baseline = results(&[
+            ("a", "release_image_bytes", 1000.0),
+            ("a", "input_key_to_bytes", 300.0),
+        ]);
         let same = compare(&baseline, &baseline, &["a"]);
         assert!(same.failures.is_empty());
+        let within_the_time_gate = results(&[
+            ("a", "release_image_bytes", 1000.0),
+            ("a", "input_key_to_bytes", 301.0),
+        ]);
+        assert!(
+            compare(&baseline, &within_the_time_gate, &["a"])
+                .failures
+                .is_empty()
+        );
         let grown = compare(
             &baseline,
-            &results(&[("a", "release_image_bytes", 1001.0)]),
+            &results(&[
+                ("a", "release_image_bytes", 1001.0),
+                ("a", "input_key_to_bytes", 300.0),
+            ]),
             &["a"],
         );
-        assert_eq!(grown.failures.len(), 1);
+        assert_eq!(grown.failures.len(), 1, "{:?}", grown.failures);
         assert!(grown.failures[0].contains("1001.00 bytes"));
         let shrunk = compare(
             &baseline,
-            &results(&[("a", "release_image_bytes", 999.0)]),
+            &results(&[
+                ("a", "release_image_bytes", 999.0),
+                ("a", "input_key_to_bytes", 300.0),
+            ]),
             &["a"],
         );
         assert!(shrunk.failures.is_empty());

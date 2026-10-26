@@ -44,6 +44,9 @@ holds what used to be written in them.
   (the QEMU runner then expects that failure, at that address).
 - **`qemu-bench`**: after the self-tests pass, run the boot-time benchmarks and print their
   results, which `cargo xtask bench` reads (it boots with `-icount shift=0`).
+- **`qemu-boot-clock`**: the release kernel, plus one line: the clock ticks from the start of
+  `boot` to the first time a program waits for console input (the shell at its first prompt),
+  written once as `EGGOS-BENCH: boot_to_prompt ...`, which `cargo xtask bench` reads (D116).
 
 ## Developer commands (`xtask/`)
 - **`cargo xtask ci`** runs CI's checks in CI's order, cheapest first. **`clippy-targets`**
@@ -134,6 +137,25 @@ holds what used to be written in them.
   report per key 10 ms apart and at most 8 keys ahead of their echo, so the device's 64-event
   queue never fills between the kernel's polls, however slow the machine. In `cargo xtask
   run`, QEMU's window types on the virtio keyboard and points with the tablet.
+- **Releases** (D116). **`cargo xtask release`** builds the release kernel of every
+  architecture, runs the boot-to-prompt test on it (the time it reports goes into the notes),
+  and writes to `target/release-dist/` (under `CARGO_TARGET_DIR` when set): the image as
+  `eggos-<version>-<arch>.elf` (the version is `[workspace.package]`'s), `SHA256SUMS` in
+  `sha256sum`'s format (xtask's own SHA-256), `run-eggos.sh` and `run-eggos.ps1`, and
+  `RELEASE-NOTES.md`, a skeleton with each image's size and boot-to-prompt time whose
+  what's-new section the release PR writes. The scripts' QEMU arguments are
+  `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
+  (`-Serial`); a host test checks they match. Each script picks the host's architecture
+  unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
+  `Get-FileHash` (refusing a mismatch, warning when no tool is found), and looks for
+  `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one
+  kind of shell and PowerShell file in the repository, generated, never committed, and hold no
+  comments. **`cargo xtask screenshot --arch <arch>`** boots the release image headless with
+  its display, types `uname -a` and `ls /bin` at the prompts, checks at the last prompt that
+  the display shows the desktop exactly as the host renders it, then saves QMP's
+  `screendump` as `docs/images/desktop.png` (8-bit RGB, each row with the PNG filter whose
+  bytes sum smallest, DEFLATE with LZ77 and the fixed Huffman codes: about 27 KiB at
+  1280x800).
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 

@@ -363,7 +363,8 @@ From a source checkout, `cargo xtask run --arch <arch>` boots the same image.
 
 ## Known limits
 
-See `docs/limitations.md` in the source for what this release does not do yet.
+See [docs/limitations.md](https://github.com/eggspot/EggOS/blob/v{VERSION}/docs/limitations.md)
+for what this release does not do yet.
 "#
     )
 }

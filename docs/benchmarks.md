@@ -100,6 +100,22 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   discovery uses decoded, and the enabled nodes with a `compatible` counted. About what the
   device-tree platform bus pays per walk at boot (it walks twice, D110).
 
+## Release kernel
+
+Two results per architecture come from the release kernel rather than the benchmark kernel
+(D116):
+- `boot_to_prompt`: guest time from the start of the kernel's `boot` to the shell waiting for
+  input at its first prompt, read by a release kernel built with `qemu-boot-clock` and booted
+  under the same `-icount` on one CPU, serial only (no display or input devices, whose polled
+  virtio completions arrive at host-dependent times under `-icount`). Firmware runs before
+  the clock starts, so the result does not depend on QEMU's firmware build. Under `-icount
+  sleep=off` an idle CPU jumps to its next timer, so the time is instructions plus the timer
+  deadlines the boot waits for. The wall-clock time with the display, the number a user
+  feels, is printed by the boot-to-prompt test and recorded in the release notes, ungated.
+- `release_image_bytes`: the size in bytes of the image `cargo xtask release` ships. Gated
+  exactly: any growth fails until the baseline line is updated with the reason (CLAUDE.md,
+  note 8).
+
 ## Host tests of the benchmarks
 
 The benchmarks' host tests run on a counting platform: its clock advances one tick per read,
