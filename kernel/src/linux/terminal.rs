@@ -1,9 +1,9 @@
-//! The console as a terminal (M6, D61, D100): `read` from descriptors 0 to 2 through the
-//! console's line discipline ([`crate::console::line_discipline`]), `ioctl` on them, and
-//! `lseek`, which a terminal refuses (D74). C libraries ask whether a descriptor is a terminal
-//! before they choose how to buffer it (musl's stdout and `isatty` with `TIOCGWINSZ`, glibc's
-//! `isatty` and `tcgetattr` with `TCGETS`), so a program that writes to the console
-//! line-buffers as it would on a Linux serial console.
+//! The console as a terminal (M6, D61, D100): `read` and `readv` through the console's line
+//! discipline ([`crate::console::line_discipline`]), `ioctl`, and `lseek`, which a terminal
+//! refuses (D74), on any descriptor that names the console (D101). C libraries ask whether a
+//! descriptor is a terminal before they choose how to buffer it (musl's stdout and `isatty`
+//! with `TIOCGWINSZ`, glibc's `isatty` and `tcgetattr` with `TCGETS`), so a program that
+//! writes to the console line-buffers as it would on a Linux serial console.
 //!
 //! The requests answered:
 //! - `TCGETS` and `TCGETS2`: the console's settings, a Linux serial console's at 115200 baud
@@ -18,17 +18,18 @@
 //! - `FIONREAD`: the bytes a read would take without waiting.
 //!
 //! Every other request is `ENOTTY`, as Linux answers a request a terminal does not know: job
-//! control (`TIOCGPGRP`, `TIOCSPGRP`) waits for sessions, and the descriptor flags (`FIONBIO`,
-//! `FIOCLEX`, `FIONCLEX`) for a descriptor table.
+//! control (`TIOCGPGRP`, `TIOCSPGRP`) waits for sessions. The requests every descriptor
+//! answers (`FIONBIO`, `FIOCLEX`, `FIONCLEX`) come first ([`super::descriptors`]).
 //!
 //! The thread that last read the console or polled it for input is its foreground: the
 //! signal characters (`^C`, `^\`) signal its process ([`console::Foreground`]), until process
 //! groups name a foreground group.
 
+use super::descriptors::OpenFile;
 use super::futex::{self, WaitSlot};
 use super::signals::{self, Interrupted};
 use super::thread::{LinuxThread, unless_signalled_or_ended};
-use super::{Errno, MAX_RW_COUNT, ends_in_user_space, is_console, poll, signal};
+use super::{Errno, Iovecs, MAX_RW_COUNT, iovec, poll, signal};
 use crate::console::line_discipline::Termios;
 use crate::console::{self, TerminalSignal};
 use crate::process::Process;
@@ -98,20 +99,12 @@ const TENTH_OF_A_SECOND_NS: u64 = 100_000_000;
 /// machine. Never held while user memory is copied.
 static WINDOW_SIZE: SpinLock<[u8; WINSIZE_SIZE]> = SpinLock::new([0; WINSIZE_SIZE]);
 
-/// `ioctl(fd, request, argument)` on the console: see the module documentation. As Linux:
-/// `EBADF` for a descriptor that is not open, before the request is looked at; `ENOTTY` for a
-/// request the console does not answer; `EFAULT` if `argument` is not the program's memory
-/// (writable, for a request that reports something); `EINVAL` for a `TCFLSH` argument other
-/// than the three. `fd` and `request` are 32-bit: the registers' upper halves are ignored.
-pub fn ioctl<P: Platform>(
-    process: &Process<P>,
-    fd: u64,
-    request: u64,
-    argument: u64,
-) -> Result<u64, Errno> {
-    if !is_console(fd) {
-        return Err(Errno::EBADF);
-    }
+/// `ioctl(fd, request, argument)` on a descriptor that names the console, which the caller
+/// looked up: see the module documentation. As Linux: `ENOTTY` for a request the console does
+/// not answer; `EFAULT` if `argument` is not the program's memory (writable, for a request
+/// that reports something); `EINVAL` for a `TCFLSH` argument other than the three. `request`
+/// is 32-bit: the register's upper half is ignored.
+pub fn ioctl<P: Platform>(process: &Process<P>, request: u64, argument: u64) -> Result<u64, Errno> {
     let write = |bytes: &[u8]| {
         process
             .write_user_memory(argument, bytes)
@@ -169,48 +162,49 @@ pub fn ioctl<P: Platform>(
 /// `SEEK_DATA`).
 const SEEK_LAST: u32 = 4;
 
-/// `lseek(fd, offset, whence)` on the console, which a terminal cannot do. As Linux: `EBADF`
-/// for a descriptor that is not open, `EINVAL` for a `whence` it does not know (an `unsigned
-/// int`), then `ESPIPE`; the offset is never looked at.
-pub fn lseek(fd: u64, whence: u64) -> Result<u64, Errno> {
-    if !is_console(fd) {
-        Err(Errno::EBADF)
-    } else if whence as u32 > SEEK_LAST {
+/// `lseek(fd, offset, whence)` on a descriptor that names the console, which a terminal
+/// cannot do. As Linux: `EINVAL` for a `whence` it does not know (an `unsigned int`), then
+/// `ESPIPE`; the offset is never looked at.
+pub fn lseek(whence: u64) -> Result<u64, Errno> {
+    if whence as u32 > SEEK_LAST {
         Err(Errno::EINVAL)
     } else {
         Err(Errno::ESPIPE)
     }
 }
 
-/// `read(fd, buffer, count)`, with the program's registers `context`: takes the console's
-/// input as its line discipline says. In canonical mode it waits for a line and returns it,
-/// or as much of it as `count` allows (the rest is read next), or 0 for an end of file typed
-/// at the start of a line. Otherwise `VMIN` and `VTIME` decide (termios(3)): with both 0 it
-/// returns what is there, maybe nothing; with `VMIN` 0 it waits up to `VTIME` tenths of a
-/// second for a byte; with `VTIME` 0 it waits for `VMIN` bytes (or `count`, if fewer); with
-/// both, for a first byte, then until `VMIN` bytes or `VTIME` passes with none arriving. The
-/// calling thread becomes the console's foreground ([`console::Foreground`]).
+/// `read` or `readv` of `file`, the console, into `buffers`, with the program's registers
+/// `context`; the caller checked the descriptor and the buffers. Takes the console's input as
+/// its line discipline says. In canonical mode it waits for a line and returns it, or as much
+/// of it as the buffers hold (the rest is read next), or 0 for an end of file typed at the
+/// start of a line. Otherwise `VMIN` and `VTIME` decide (termios(3)): with both 0 it returns
+/// what is there, maybe nothing; with `VMIN` 0 it waits up to `VTIME` tenths of a second from
+/// the call for a byte; with `VTIME` 0 it waits for `VMIN` bytes (or as many as the buffers
+/// hold, if fewer); with both, for a first byte, then until `VMIN` bytes or `VTIME` passes with
+/// none arriving. With `O_NONBLOCK` it never waits: where it would, it returns what is there,
+/// or fails with `EAGAIN` if nothing is. The calling thread becomes the console's foreground
+/// ([`console::Foreground`]).
 ///
-/// As Linux: `EBADF` for a descriptor that is not open, `EFAULT` if the buffer does not end
-/// within user space, then 0 for a `count` of 0; at most 0x7ffff000 bytes; if part of
-/// the buffer is not the program's writable memory, the bytes before it, or `EFAULT` if there
-/// are none (what was taken for the rest is lost). A signal due before input is taken
-/// interrupts it, as Linux's `-ERESTARTSYS`: it is made again once the handler returns if the
-/// handler's action has `SA_RESTART`, and fails with `EINTR` otherwise; if no handler starts,
-/// it goes on. A signal that came with the input is delivered once the input is taken. Sets
-/// the call's result; breaks when the process ends.
-pub fn read<P: Platform>(
+/// As Linux: 0 for buffers of no bytes; at most 0x7ffff000 bytes; the buffers filled one after
+/// another; if part of them is not the program's writable memory, the bytes before it, or
+/// `EFAULT` if there are none (what was taken for the rest is lost). A signal due before input
+/// is taken interrupts it, as Linux's `-ERESTARTSYS`: it is made again once the handler returns
+/// if the handler's action has `SA_RESTART`, and fails with `EINTR` otherwise; if no handler
+/// starts, it goes on. A signal that came with the input is delivered once the input is taken.
+/// Sets the call's result; breaks when the process ends.
+pub(super) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
+    file: &OpenFile,
+    buffers: &Iovecs,
 ) -> ControlFlow<()> {
-    let [fd, buffer, count, ..] = context.syscall_arguments();
     let interrupted = Interrupted::RestartsIfAsked {
         number: context.syscall_number(),
-        first_argument: fd,
+        first_argument: context.syscall_arguments()[0],
     };
     let result = loop {
-        match read_or_wait(process, thread, fd, buffer, count)? {
+        match read_or_wait(process, thread, file, buffers)? {
             Some(result) => break result,
             None => {
                 if signals::deliver_interrupting(process, thread, context, interrupted)? {
@@ -227,54 +221,69 @@ pub fn read<P: Platform>(
 fn read_or_wait<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
-    fd: u64,
-    buffer: u64,
-    count: u64,
+    file: &OpenFile,
+    buffers: &Iovecs,
 ) -> ControlFlow<(), Option<Result<u64, Errno>>> {
-    if !is_console(fd) {
-        return ControlFlow::Continue(Some(Err(Errno::EBADF)));
-    }
-    if !ends_in_user_space::<P>(buffer, count) {
-        return ControlFlow::Continue(Some(Err(Errno::EFAULT)));
-    }
-    let count = count.min(MAX_RW_COUNT);
+    let count = buffers.total().min(MAX_RW_COUNT);
     if count == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
     }
     become_foreground(process, thread);
+    let mut deadline = None;
     loop {
         let settings = console::settings();
-        let waited = if settings.is_canonical() {
+        let waited = if file.is_nonblocking() {
+            if !finds_input_at_once(settings) {
+                return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
+            }
+            Waited::Ready
+        } else if settings.is_canonical() {
             wait_for_input(process, thread, u64::MAX, console::input_ready)?
         } else {
-            wait_for_bytes(process, thread, settings, count)?
+            wait_for_bytes(process, thread, settings, count, &mut deadline)?
         };
         if waited == Waited::Signalled {
             return ControlFlow::Continue(None);
         }
-        let took = take_into(process, buffer, count);
+        let took = take_into(process, buffers, count);
         if read_is_over(settings, waited, took.consumed) {
             return ControlFlow::Continue(Some(took.result));
         }
     }
 }
 
-/// Whether a read that waited as `waited` says, with `settings`, ends with what it took: it
-/// does once it consumed input (bytes, or a line's end or an end of file), when `VTIME` passed,
-/// or with `VMIN` and `VTIME` both 0. Otherwise the input it was woken for went first (another
-/// reader took it, or `^C` discarded it), and it waits again rather than return a false end of
-/// file.
-fn read_is_over(settings: Termios, waited: Waited, consumed: bool) -> bool {
-    consumed
-        || waited == Waited::TimedOut
-        || (!settings.is_canonical() && settings.minimum_and_time() == (0, 0))
+/// Whether a read with `settings` finds what it would wait for without waiting: a line in
+/// canonical mode; otherwise a byte, or anything at all with `VMIN` and `VTIME` both 0, when
+/// it never waits.
+fn finds_input_at_once(settings: Termios) -> bool {
+    if settings.is_canonical() {
+        console::input_ready()
+    } else {
+        settings.minimum_and_time() == (0, 0) || console::available_input() > 0
+    }
 }
 
+/// Whether a read that waited as `waited` says, with `settings`, ends with what it took: it
+/// does once it consumed input (bytes, or a line's end or an end of file), and with `VMIN` 0
+/// once `VTIME` passed or when `VTIME` is 0 too. Otherwise the input it was woken for went
+/// first (another reader took it, or `^C` discarded it), and it waits again rather than return
+/// a false end of file: with `VMIN` and `VTIME` both set, for a first byte again, as the timer
+/// runs only between bytes.
+fn read_is_over(settings: Termios, waited: Waited, consumed: bool) -> bool {
+    let (minimum, time) = settings.minimum_and_time();
+    consumed
+        || (!settings.is_canonical() && minimum == 0 && (time == 0 || waited == Waited::TimedOut))
+}
+
+/// Waits for what a non-canonical read with `settings` of up to `count` bytes waits for. With
+/// `VMIN` 0 the wait ends by `deadline`, set from `VTIME` on the read's first wait and kept for
+/// its others, so a read woken for input another reader took waits no longer than its time.
 fn wait_for_bytes<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
     settings: Termios,
     count: u64,
+    deadline: &mut Option<u64>,
 ) -> ControlFlow<(), Waited> {
     let (minimum, time) = settings.minimum_and_time();
     let wanted = usize::try_from(count).map_or(usize::from(minimum), |count| {
@@ -284,9 +293,10 @@ fn wait_for_bytes<P: Platform>(
         || poll::deadline_in::<P>(u64::from(time) * TENTH_OF_A_SECOND_NS).unwrap_or(u64::MAX);
     match (minimum, time) {
         (0, 0) => ControlFlow::Continue(Waited::Ready),
-        (0, _) => wait_for_input(process, thread, interval(), || {
-            console::available_input() > 0
-        }),
+        (0, _) => {
+            let deadline = *deadline.get_or_insert_with(interval);
+            wait_for_input(process, thread, deadline, || console::available_input() > 0)
+        }
         (_, 0) => wait_for_input(process, thread, u64::MAX, || {
             console::available_input() >= wanted
         }),
@@ -317,30 +327,44 @@ struct Took {
     consumed: bool,
 }
 
-fn take_into<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> Took {
+/// Takes up to `count` bytes of input into `buffers`, one after another, a page-bounded chunk
+/// at a time, ending at a line's end in canonical mode or once no more input is there.
+fn take_into<P: Platform>(process: &Process<P>, buffers: &Iovecs, count: u64) -> Took {
     let mut chunk = [0u8; READ_CHUNK];
     let mut copied = 0;
     let mut consumed = false;
-    while copied < count {
-        let address = buffer + copied;
-        let wanted = (count - copied)
-            .min(READ_CHUNK as u64)
-            .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
-        let taken = console::take_input(&mut chunk[..wanted]);
-        consumed |= taken.length > 0 || taken.line_ended;
-        if taken.length > 0
-            && process
-                .write_user_memory(address, &chunk[..taken.length])
-                .is_err()
-        {
-            let result = match copied {
-                0 => Err(Errno::EFAULT),
-                _ => Ok(copied),
-            };
-            return Took { result, consumed };
+    for entry in buffers.entries() {
+        let (base, length) = iovec(entry);
+        let length = length.min(count - copied);
+        let mut done = 0;
+        while done < length {
+            let address = base + done;
+            let wanted = (length - done)
+                .min(READ_CHUNK as u64)
+                .min(FRAME_SIZE - address % FRAME_SIZE) as usize;
+            let taken = console::take_input(&mut chunk[..wanted]);
+            consumed |= taken.length > 0 || taken.line_ended;
+            if taken.length > 0
+                && process
+                    .write_user_memory(address, &chunk[..taken.length])
+                    .is_err()
+            {
+                let result = match copied {
+                    0 => Err(Errno::EFAULT),
+                    _ => Ok(copied),
+                };
+                return Took { result, consumed };
+            }
+            done += taken.length as u64;
+            copied += taken.length as u64;
+            if taken.line_ended || taken.length < wanted {
+                return Took {
+                    result: Ok(copied),
+                    consumed,
+                };
+            }
         }
-        copied += taken.length as u64;
-        if taken.line_ended || taken.length < wanted {
+        if copied == count {
             break;
         }
     }
@@ -466,8 +490,18 @@ mod tests {
             assert!(read_is_over(settings, Waited::Ready, true), "{settings:?}");
         }
         assert!(read_is_over(raw(0, 5), Waited::TimedOut, false));
-        assert!(read_is_over(raw(1, 5), Waited::TimedOut, false));
         assert!(read_is_over(raw(0, 0), Waited::Ready, false));
+    }
+
+    #[test]
+    fn a_read_with_vmin_and_vtime_whose_bytes_another_reader_took_waits_for_a_first_byte_again() {
+        use crate::console::line_discipline::{index, local};
+        let mut settings = Termios::SERIAL_CONSOLE;
+        settings.local &= !local::ICANON;
+        settings.control_characters[index::VMIN] = 1;
+        settings.control_characters[index::VTIME] = 5;
+        assert!(!read_is_over(settings, Waited::TimedOut, false));
+        assert!(read_is_over(settings, Waited::TimedOut, true));
     }
 
     #[test]
