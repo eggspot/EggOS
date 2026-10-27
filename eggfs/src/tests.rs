@@ -342,7 +342,6 @@ fn a_full_disk_refuses_with_no_space_and_removing_gives_it_back() {
     }
     volume.check().unwrap();
     volume.remove(root, b"fill", false, 0).unwrap();
-    volume.commit().unwrap();
     let again = volume.create(root, b"again", Kind::Regular, 0o644, 0);
     assert!(again.is_ok() || again == Err(Error::NoSpace));
     volume.remove(root, b"n0", false, 0).unwrap();

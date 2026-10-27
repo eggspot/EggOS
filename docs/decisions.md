@@ -7609,7 +7609,11 @@ the license, by an explicit instruction recorded here.
   no data) when the device has a volatile cache; QEMU's default write-back cache passes a guest
   flush to the host file. `BlockDevice` gains `flush`; `block::take_all` replaces `take_first`.
 - **The VFS** gains `FileSystem::sync`, `vfs::sync_all`, `vfs::is_mount_point` and
-  `Refused::Storage` (`EIO`). A volume whose commit failed refuses every change after it.
+  `Refused::Storage` (`EIO`). A disk failure or an inconsistency met while a change is under
+  way, or in a commit, leaves the volume refusing every change until the next boot, so a
+  half-made change is never committed. Blocks freed by the running transaction wait for its
+  commit, so when the free space left is low and some is waiting, the next operation commits
+  first (deleting then writing on a full disk works at once).
   `/Applications` is a new empty directory of the initramfs (read-only without a disk); the
   shell's `ls /` lists it. Moving a file between `/home` and `/Applications` is `EXDEV`, as
   between two mounts.
@@ -7620,8 +7624,9 @@ the license, by an explicit instruction recorded here.
   `-blockdev driver=file` and `driver=raw`; QEMU locks the image on macOS and Linux, so a second
   QEMU on the same image refuses to start (Windows has no such lock: do not run two).
 - **Limits.** Freeing a file spread over more bitmap blocks than a transaction holds (a disk
-  over about 120 GiB) may commit midway; a power cut then can leave blocks or an inode that
-  nothing names: lost space, which the check reports (there is no repair yet).
+  over about 120 GiB) may commit midway: a power cut then leaves that file, or the file a
+  rename replaces, shorter, and the file system consistent (blocks are freed from the end,
+  before the name goes). There is no repair tool yet.
   No hard links, symbolic links, extended attributes, access times or quotas; directories are
   searched linearly (16384 blocks at most); one request at a time, polled.
 - **D18 and D24.** Without a disk nothing is allocated and nothing runs: the boot probes no
@@ -7646,3 +7651,8 @@ the license, by an explicit instruction recorded here.
   check, every file's bytes); a second boot reads it back, then QEMU is killed while a loop
   replaces the large file through a temporary name, and the image must check clean with the
   file one version whole; a third boot recovers and powers off cleanly.
+- **Review fixes (pass 1).** A rename over an existing file frees the replaced file's blocks
+  first, then points its directory record at the moved file in place, so a commit midway never
+  leaves an inode nothing names; records naming the root are refused; corrupt pointers and
+  counts cannot overflow; an undecodable journal descriptor's sequence restarts past the one it
+  held.

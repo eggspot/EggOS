@@ -1,5 +1,6 @@
 //! The virtio block device (virtio 1.2, 5.2), polled: one request queue, one request at a time,
-//! each a header the device reads, the data and a status byte the device writes. Disks are
+//! each a header the device reads, the data (none for a flush) and a status byte the device
+//! writes. Disks are
 //! addressed in sectors of [`SECTOR_SIZE`] bytes whatever their own block size; a transfer
 //! larger than [`MAX_TRANSFER`] goes as several requests.
 

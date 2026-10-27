@@ -10,7 +10,8 @@
 //!   blocks are written to the journal, flushed, a CRC-32C commit record is written and
 //!   flushed, then the blocks go to their places and are flushed. File data is written copy on
 //!   write, to blocks the last committed state does not use, before the commit. A crash
-//!   anywhere leaves exactly the state of the last commit, which mounting restores
+//!   anywhere leaves exactly the state of the last commit (an operation that frees more than
+//!   a transaction holds commits as it goes, each step consistent), which mounting restores
 //!   ([`Volume::mount`] replays a committed transaction whose blocks did not all reach their
 //!   places).
 //! - **Use.** [`probe`] says what a disk holds, [`format`] writes an empty file system,

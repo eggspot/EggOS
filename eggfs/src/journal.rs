@@ -1,7 +1,8 @@
 use crate::checksum::Crc64;
 use crate::layout::{
-    BITS_PER_BLOCK, BLOCK_SIZE, Block, Descriptor, FIRST_FREE_INODE, FORMATTING_MAGIC, Geometry,
-    Inode, InodeKind, ROOT_INODE, commit_matches, encode_commit, zeroed_block,
+    BITS_PER_BLOCK, BLOCK_SIZE, Block, DESCRIPTOR_MAGIC, Descriptor, FIRST_FREE_INODE,
+    FORMATTING_MAGIC, Geometry, Inode, InodeKind, ROOT_INODE, commit_matches, encode_commit,
+    u64_at, zeroed_block,
 };
 use crate::volume::Volume;
 use crate::{Disk, DiskError, Error, MountError, Mounted};
@@ -110,7 +111,11 @@ fn replay<D: Disk>(disk: &mut D, geometry: &Geometry) -> Result<(u64, u32), Moun
     let mut block = zeroed_block();
     disk.read(journal, &mut block[..]).map_err(io)?;
     let Some(descriptor) = Descriptor::decode(&block[..]) else {
-        return Ok((1, 0));
+        let next = match block[..8] == DESCRIPTOR_MAGIC {
+            true => u64_at(&block[..], 8).wrapping_add(2),
+            false => 1,
+        };
+        return Ok((next, 0));
     };
     let next = descriptor.sequence.wrapping_add(1);
     let count = descriptor.targets.len() as u32;
@@ -261,6 +266,7 @@ impl<D: Disk> Volume<D> {
             return Err(Error::Io);
         }
         self.cache.mark_clean();
+        self.freed_waiting = 0;
         self.sequence = self.sequence.wrapping_add(1);
         self.commits += 1;
         Ok(())

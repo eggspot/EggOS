@@ -1,7 +1,7 @@
 use crate::cache::Cache;
 use crate::layout::{
-    BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, Geometry, Inode, InodeKind,
-    MAX_DIRECTORY_BLOCKS, MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE, put_u32, record_at,
+    BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, FIRST_FREE_INODE, Geometry, Inode,
+    InodeKind, MAX_DIRECTORY_BLOCKS, MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE, put_u32, record_at,
     record_length, records_end, remove_record, u32_at, write_record, zeroed_block,
 };
 use crate::{Disk, Error, Kind, generation_of, inode_of, kind_of, node_number};
@@ -10,6 +10,8 @@ use alloc::boxed::Box;
 pub const OPERATION_RESERVE: usize = 32;
 
 const RELEASE_RESERVE: usize = 8;
+
+const LOW_SPACE_BLOCKS: u64 = 64;
 
 const MAX_RUN_BLOCKS: u64 = 64;
 
@@ -97,6 +99,7 @@ pub struct Volume<D: Disk> {
     pub(crate) sequence: u64,
     pub(crate) broken: bool,
     pub(crate) commits: u64,
+    pub(crate) freed_waiting: u64,
     pub(crate) root_generation: u32,
     block_cursor: u32,
     inode_cursor: u32,
@@ -150,6 +153,7 @@ impl<D: Disk> Volume<D> {
             sequence,
             broken: false,
             commits: 0,
+            freed_waiting: 0,
             root_generation: 0,
             block_cursor: geometry.data_start,
             inode_cursor: 0,
@@ -242,12 +246,25 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    fn ensure_room(&mut self) -> Result<(), Error> {
+    fn needs_commit(&self) -> bool {
         let capacity = self.geometry.transaction_capacity() as usize;
-        if self.cache.dirty_count() + OPERATION_RESERVE > capacity {
+        let allocatable = self.free_blocks.saturating_sub(self.freed_waiting);
+        self.cache.dirty_count() + OPERATION_RESERVE > capacity
+            || (self.freed_waiting > 0 && allocatable < LOW_SPACE_BLOCKS)
+    }
+
+    fn ensure_room(&mut self) -> Result<(), Error> {
+        if self.needs_commit() {
             self.commit()?;
         }
         Ok(())
+    }
+
+    fn broken_by<R>(&mut self, result: Result<R, Error>) -> Result<R, Error> {
+        if matches!(result, Err(Error::Io | Error::Corrupt)) {
+            self.broken = true;
+        }
+        result
     }
 
     fn bit_location(start: u32, index: u32) -> (u32, usize, u8) {
@@ -322,6 +339,9 @@ impl<D: Disk> Volume<D> {
     fn free_block(&mut self, block: u32) -> Result<(), Error> {
         if !self.geometry.is_data_block(block) {
             return Err(Error::Corrupt);
+        }
+        if !self.is_fresh(block) {
+            self.freed_waiting += 1;
         }
         self.set_block_bit(block, false)?;
         self.free_blocks += 1;
@@ -464,6 +484,7 @@ impl<D: Disk> Volume<D> {
             }
             self.release_tree(number, inode, root, level, first, keep)?;
             if first >= keep {
+                self.room_while_releasing(number, inode, first)?;
                 self.free_block(root)?;
                 inode.indirect[level] = 0;
             }
@@ -506,6 +527,7 @@ impl<D: Disk> Volume<D> {
             }
             self.release_tree(number, inode, child, depth - 1, child_first, keep)?;
             if child_first >= keep {
+                self.room_while_releasing(number, inode, child_first)?;
                 self.free_block(child)?;
                 self.set_pointer_in(block, slot, 0)?;
             }
@@ -544,7 +566,7 @@ impl<D: Disk> Volume<D> {
             permissions: u32::from(inode.permissions),
             inode: number,
             links: match kind {
-                Kind::Directory => 2 + inode.child_directories,
+                Kind::Directory => inode.child_directories.saturating_add(2),
                 Kind::Regular => 1,
             },
             owner: inode.owner,
@@ -642,8 +664,15 @@ impl<D: Disk> Volume<D> {
         Ok(())
     }
 
+    fn point_record(&mut self, found: Found, inode: u32) -> Result<(), Error> {
+        let data = self.cache.get_mut(&mut self.disk, found.block, false)?;
+        put_u32(&mut data[..], found.offset, inode);
+        self.changes += 1;
+        Ok(())
+    }
+
     fn child_node(&mut self, found: &Found) -> Result<u64, Error> {
-        if found.inode >= self.geometry.inodes || found.inode < ROOT_INODE {
+        if found.inode >= self.geometry.inodes || found.inode < FIRST_FREE_INODE {
             return Err(Error::Corrupt);
         }
         let child = self.inode(found.inode)?;
@@ -778,14 +807,13 @@ impl<D: Disk> Volume<D> {
         if within == 0 && wanted >= BLOCK_SIZE && block != 0 {
             let mut count = 1u64;
             while count < MAX_RUN_BLOCKS && (count as usize + 1) * BLOCK_SIZE <= wanted {
-                if self.locate(&inode, index + count)? != block + count as u32 {
+                if Some(self.locate(&inode, index + count)?) != block.checked_add(count as u32) {
                     break;
                 }
                 count += 1;
             }
-            if !self.geometry.is_data_block(block)
-                || !self.geometry.is_data_block(block + count as u32 - 1)
-            {
+            let last = block.checked_add(count as u32 - 1).ok_or(Error::Corrupt)?;
+            if !self.geometry.is_data_block(block) || !self.geometry.is_data_block(last) {
                 return Err(Error::Corrupt);
             }
             let length = count as usize * BLOCK_SIZE;
@@ -805,8 +833,7 @@ impl<D: Disk> Volume<D> {
         Ok(length)
     }
 
-    /// Makes an empty `kind` named `name` in `directory` with `permissions` at time `now`.
-    pub fn create(
+    fn create_changing(
         &mut self,
         directory: u64,
         name: &[u8],
@@ -844,9 +871,9 @@ impl<D: Disk> Volume<D> {
             now,
         );
         self.write_inode(number, &inode)?;
-        parent.entries += 1;
+        parent.entries = parent.entries.saturating_add(1);
         if is_directory {
-            parent.child_directories += 1;
+            parent.child_directories = parent.child_directories.saturating_add(1);
         }
         parent.modified = now;
         self.write_inode(parent_number, &parent)?;
@@ -909,9 +936,7 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    /// Writes `bytes` to regular file `node` at `offset`, or at its end for `None`, at time
-    /// `now`: how many it wrote, fewer when the disk filled, and the offset after them.
-    pub fn write(
+    fn write_changing(
         &mut self,
         node: u64,
         offset: Option<u64>,
@@ -933,14 +958,11 @@ impl<D: Disk> Volume<D> {
         let mut failure = None;
         while written < bytes.len() {
             let position = offset + written as u64;
-            if written > 0 {
-                let capacity = self.geometry.transaction_capacity() as usize;
-                if self.cache.dirty_count() + OPERATION_RESERVE > capacity {
-                    inode.size = inode.size.max(position);
-                    inode.modified = now;
-                    self.write_inode(number, &inode)?;
-                    self.commit()?;
-                }
+            if written > 0 && self.needs_commit() {
+                inode.size = inode.size.max(position);
+                inode.modified = now;
+                self.write_inode(number, &inode)?;
+                self.commit()?;
             }
             let index = position / BLOCK_SIZE as u64;
             let within = (position % BLOCK_SIZE as u64) as usize;
@@ -965,8 +987,7 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    /// Makes regular file `node` `length` bytes long at time `now`, cutting it or adding zeros.
-    pub fn truncate(&mut self, node: u64, length: u64, now: u64) -> Result<(), Error> {
+    fn truncate_changing(&mut self, node: u64, length: u64, now: u64) -> Result<(), Error> {
         self.writable()?;
         self.ensure_room()?;
         let (number, mut inode) = self.live(node)?;
@@ -993,8 +1014,7 @@ impl<D: Disk> Volume<D> {
         self.write_inode(number, &inode)
     }
 
-    /// Sets when `node`'s contents last changed.
-    pub fn set_modified(&mut self, node: u64, time: u64) -> Result<(), Error> {
+    fn set_modified_changing(&mut self, node: u64, time: u64) -> Result<(), Error> {
         self.writable()?;
         self.ensure_room()?;
         let (number, mut inode) = self.live(node)?;
@@ -1014,9 +1034,7 @@ impl<D: Disk> Volume<D> {
         self.release_inode_number(number)
     }
 
-    /// Removes `name` from `directory` at time `now`: an empty directory if `directories`,
-    /// else a file.
-    pub fn remove(
+    fn remove_changing(
         &mut self,
         directory: u64,
         name: &[u8],
@@ -1064,9 +1082,7 @@ impl<D: Disk> Volume<D> {
         Err(Error::Corrupt)
     }
 
-    /// Moves `from_name` in `from` to `to_name` in `to` at time `now`, replacing what is there
-    /// unless `no_replace`, as Linux's `rename` does.
-    pub fn rename(
+    fn rename_changing(
         &mut self,
         from: u64,
         from_name: &[u8],
@@ -1108,25 +1124,41 @@ impl<D: Disk> Volume<D> {
                 _ => {}
             }
         }
-        let mut to_inode = to_inode;
-        if let Err(error) = self.add_entry(&mut to_inode, to_name, moved.inode, moved.directory) {
-            self.write_inode(to_number, &to_inode)?;
-            return Err(error);
-        }
-        if replaced.is_none() {
-            to_inode.entries += 1;
-            if moved.directory {
-                to_inode.child_directories += 1;
+        match replaced {
+            Some(replaced) => {
+                let mut victim = self.inode(replaced.inode)?;
+                self.release_from(replaced.inode, &mut victim, 0)?;
+                victim.size = 0;
+                self.write_inode(replaced.inode, &victim)?;
+                let to_inode = self.inode(to_number)?;
+                let entry = self
+                    .find_entry(&to_inode, to_name, Some(replaced.inode))?
+                    .ok_or(Error::Corrupt)?;
+                self.point_record(entry, moved.inode)?;
+            }
+            None => {
+                let mut to_inode = to_inode;
+                let added = self.add_entry(&mut to_inode, to_name, moved.inode, moved.directory);
+                if let Err(error) = added {
+                    self.write_inode(to_number, &to_inode)?;
+                    return Err(error);
+                }
+                to_inode.entries = to_inode.entries.saturating_add(1);
+                if moved.directory {
+                    to_inode.child_directories = to_inode.child_directories.saturating_add(1);
+                }
+                self.write_inode(to_number, &to_inode)?;
             }
         }
+        let mut to_inode = self.inode(to_number)?;
         to_inode.modified = now;
         self.write_inode(to_number, &to_inode)?;
-        let mut from_inode = self.inode(from_number)?;
+        let from_inode = self.inode(from_number)?;
         let old = self
             .find_entry(&from_inode, from_name, Some(moved.inode))?
             .ok_or(Error::Corrupt)?;
         self.remove_found(old)?;
-        from_inode = self.inode(from_number)?;
+        let mut from_inode = self.inode(from_number)?;
         from_inode.entries = from_inode.entries.saturating_sub(1);
         if moved.directory {
             from_inode.child_directories = from_inode.child_directories.saturating_sub(1);
@@ -1134,15 +1166,76 @@ impl<D: Disk> Volume<D> {
         from_inode.modified = now;
         self.write_inode(from_number, &from_inode)?;
         if let Some(replaced) = replaced {
-            let to_inode = self.inode(to_number)?;
-            let entry = self
-                .find_entry(&to_inode, to_name, Some(replaced.inode))?
-                .ok_or(Error::Corrupt)?;
-            self.remove_found(entry)?;
             self.discard_inode(replaced.inode)?;
         }
         let mut moved_inode = self.inode(moved.inode)?;
         moved_inode.parent = to_number;
         self.write_inode(moved.inode, &moved_inode)
+    }
+
+    /// Makes an empty `kind` named `name` in `directory` with `permissions` at time `now`.
+    pub fn create(
+        &mut self,
+        directory: u64,
+        name: &[u8],
+        kind: Kind,
+        permissions: u32,
+        now: u64,
+    ) -> Result<u64, Error> {
+        let result = self.create_changing(directory, name, kind, permissions, now);
+        self.broken_by(result)
+    }
+
+    /// Writes `bytes` to regular file `node` at `offset`, or at its end for `None`, at time
+    /// `now`: how many it wrote, fewer when the disk filled, and the offset after them.
+    pub fn write(
+        &mut self,
+        node: u64,
+        offset: Option<u64>,
+        bytes: &[u8],
+        now: u64,
+    ) -> Result<(usize, u64), Error> {
+        let result = self.write_changing(node, offset, bytes, now);
+        self.broken_by(result)
+    }
+
+    /// Makes regular file `node` `length` bytes long at time `now`, cutting it or adding zeros.
+    pub fn truncate(&mut self, node: u64, length: u64, now: u64) -> Result<(), Error> {
+        let result = self.truncate_changing(node, length, now);
+        self.broken_by(result)
+    }
+
+    /// Sets when `node`'s contents last changed.
+    pub fn set_modified(&mut self, node: u64, time: u64) -> Result<(), Error> {
+        let result = self.set_modified_changing(node, time);
+        self.broken_by(result)
+    }
+
+    /// Removes `name` from `directory` at time `now`: an empty directory if `directories`,
+    /// else a file.
+    pub fn remove(
+        &mut self,
+        directory: u64,
+        name: &[u8],
+        directories: bool,
+        now: u64,
+    ) -> Result<(), Error> {
+        let result = self.remove_changing(directory, name, directories, now);
+        self.broken_by(result)
+    }
+
+    /// Moves `from_name` in `from` to `to_name` in `to` at time `now`, replacing what is there
+    /// unless `no_replace`, as Linux's `rename` does.
+    pub fn rename(
+        &mut self,
+        from: u64,
+        from_name: &[u8],
+        to: u64,
+        to_name: &[u8],
+        no_replace: bool,
+        now: u64,
+    ) -> Result<(), Error> {
+        let result = self.rename_changing(from, from_name, to, to_name, no_replace, now);
+        self.broken_by(result)
     }
 }
