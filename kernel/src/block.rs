@@ -45,6 +45,11 @@ pub trait BlockDevice: Send {
         buffer: &[u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError>;
+    /// Returns once every write before it is on stable storage, polling the device until
+    /// `deadline`; a disk without a volatile cache has nothing to do.
+    fn flush(&mut self, _deadline: &mut Deadline) -> Result<(), BlockError> {
+        Ok(())
+    }
 }
 
 static DISKS: LeafSpinLock<[Option<Box<dyn BlockDevice>>; MAX_DISKS]> =
@@ -67,7 +72,8 @@ pub fn has_room() -> bool {
     DISKS.lock().iter().any(Option::is_none)
 }
 
-/// Takes the first disk installed, for a file system to own.
-pub fn take_first() -> Option<Box<dyn BlockDevice>> {
-    DISKS.lock().iter_mut().find_map(Option::take)
+/// Takes every disk installed, in the order they were installed, for file systems to own;
+/// those they do not take go back with [`install`].
+pub fn take_all() -> [Option<Box<dyn BlockDevice>>; MAX_DISKS] {
+    core::mem::take(&mut *DISKS.lock())
 }

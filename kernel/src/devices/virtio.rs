@@ -545,6 +545,12 @@ mod disk {
                 .write(sector, buffer, &mut || deadline.keep_waiting())
                 .map_err(block_error)
         }
+
+        fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
+            self.0
+                .flush(&mut || deadline.keep_waiting())
+                .map_err(block_error)
+        }
     }
 
     fn probe_block(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
