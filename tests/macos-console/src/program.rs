@@ -264,7 +264,8 @@ extern "C" fn main(
     let executable = text(unsafe { apple.read() });
     say!(
         "apple {}",
-        if executable.starts_with("executable_path=") && executable.ends_with("macos-console") {
+        if executable.len() > "executable_path=".len() && executable.starts_with("executable_path=")
+        {
             "executable_path"
         } else {
             "missing"

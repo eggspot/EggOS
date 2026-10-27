@@ -53,6 +53,9 @@ commands:
   screenshot --arch <arch>
                          boot the release image headless and save its desktop to
                          docs/images/desktop.png
+  macos-programs         build the macOS programs boot test's Mach-O programs with Apple's
+                         linker (macOS hosts only) into target/macos-console/programs and
+                         print that folder, which EGGOS_MACOS_PROGRAMS can name elsewhere
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -278,6 +281,13 @@ fn run(args: &[String]) -> Result<(), String> {
                 options => (options, false),
             };
             bench::run(&arch_option(options)?, update)
+        }
+        Some("macos-programs") if args.len() == 1 => {
+            let programs = macos::find_or_build_programs(&target_directory())?.ok_or(
+                "Apple's linker builds the Mach-O test programs: run this on a macOS host",
+            )?;
+            println!("{}", programs.directory.display());
+            Ok(())
         }
         Some("release") if args.len() == 1 => release::run(),
         Some("screenshot") => {

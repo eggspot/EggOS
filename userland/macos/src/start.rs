@@ -19,6 +19,7 @@ use eggos_runtime::startup::Startup;
 const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
 const EXECUTABLE_PATH: &[u8] = b"executable_path=";
+const LAYER_ARGUMENTS: usize = 2;
 
 enum Failure {
     Usage,
@@ -169,7 +170,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // SAFETY: the program has not started; these record its image, arguments and streams.
     unsafe {
         libsystem::set_image(base, slide);
-        libsystem::set_process(startup.argument_count() - 1, arguments, environment);
+        libsystem::set_process(argument_count(&startup), arguments, environment);
         libsystem::set_up_streams();
     }
     let entry = base + program.entry as usize;
@@ -178,7 +179,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // `int main(int, char **, char **, char **)`.
     let main: Main = unsafe { core::mem::transmute(entry) };
     let status = main(
-        (startup.argument_count() - 1) as c_int,
+        argument_count(&startup) as c_int,
         arguments,
         environment,
         apple,
@@ -191,7 +192,7 @@ fn bind_imports<'a>(
     fixups: &ChainedFixups<'a>,
 ) -> Result<&'static [u64], Failure> {
     let count = fixups.import_count();
-    let table = libsystem_allocate(count.max(1) * 8)?.cast::<u64>();
+    let table = allocate_pages(count.max(1) * 8)?.cast::<u64>();
     let mut missing = 0;
     for index in 0..count {
         let import = fixups.import(index).map_err(Failure::Invalid)?;
@@ -237,16 +238,25 @@ fn bind_imports<'a>(
     Ok(unsafe { core::slice::from_raw_parts(table, count) })
 }
 
-fn libsystem_allocate(size: usize) -> Result<*mut u8, Failure> {
+fn allocate_pages(size: usize) -> Result<*mut u8, Failure> {
     let block = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
         .map_err(|_| Failure::Memory)?;
     Ok(block as *mut u8)
 }
 
+fn argument_count(startup: &Startup) -> usize {
+    startup.argument_count().saturating_sub(LAYER_ARGUMENTS)
+}
+
 fn argument_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
-    let count = startup.argument_count().saturating_sub(1);
-    let vector = libsystem_allocate((count + 1) * 8)?.cast::<*mut c_char>();
-    for (index, argument) in startup.arguments().skip(1).enumerate().take(count) {
+    let count = argument_count(startup);
+    let vector = allocate_pages((count + 1) * 8)?.cast::<*mut c_char>();
+    for (index, argument) in startup
+        .arguments()
+        .skip(LAYER_ARGUMENTS)
+        .enumerate()
+        .take(count)
+    {
         // SAFETY: `vector` holds `count + 1` pointers; the strings stay on the start-up stack.
         unsafe { vector.add(index).write(argument.as_ptr().cast_mut()) };
     }
@@ -255,7 +265,7 @@ fn argument_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
 
 fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
     let count = startup.environment().count();
-    let vector = libsystem_allocate((count + 1) * 8)?.cast::<*mut c_char>();
+    let vector = allocate_pages((count + 1) * 8)?.cast::<*mut c_char>();
     for (index, entry) in startup.environment().enumerate().take(count) {
         // SAFETY: as in `argument_vector`.
         unsafe { vector.add(index).write(entry.as_ptr().cast_mut()) };
@@ -265,7 +275,7 @@ fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
 
 fn apple_vector(path: &[u8]) -> Result<*mut *mut c_char, Failure> {
     let length = EXECUTABLE_PATH.len() + path.len() + 1;
-    let block = libsystem_allocate(16 + length)?;
+    let block = allocate_pages(16 + length)?;
     // SAFETY: the block holds two pointers, then the `executable_path=` string and its NUL.
     unsafe {
         let text = block.add(16);

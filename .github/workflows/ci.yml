@@ -21,13 +21,14 @@ jobs:
       contents: read
       pull-requests: read
       packages: read
+      actions: read
     container:
       image: ghcr.io/eggspot/eggos-ci:main
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       volumes:
-        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk
+        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
     timeout-minutes: 25
     outputs:
       code: ${{ steps.changes.outputs.code }}
@@ -87,8 +88,27 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace
 
+      - name: Wait for the Mach-O test programs
+        if: steps.changes.outputs.code == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=${{ github.run_id }}; repo=${{ github.repository }}
+          for attempt in $(seq 1 120); do
+            if gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx macos-programs; then
+              gh run download "$run" --repo "$repo" --name macos-programs --dir target/macos-programs
+              exit 0
+            fi
+            state=$(gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[] | select(.name == "macos-programs") | .conclusion // ""')
+            case "$state" in failure|cancelled|skipped) echo "macos-programs: $state"; exit 1;; esac
+            sleep 5
+          done
+          echo "macos-programs: no artifact after 10 minutes"; exit 1
+
       - name: QEMU boot tests (every architecture)
         if: steps.changes.outputs.code == 'true'
+        env:
+          EGGOS_MACOS_PROGRAMS: target/macos-programs
         run: cargo xtask qemu --arch all
 
       - name: Benchmarks against the baseline (every architecture)
@@ -100,6 +120,27 @@ jobs:
         with:
           path: target
           key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
+
+  macos-programs:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build the Mach-O test programs with Apple's linker
+        run: cargo xtask macos-programs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-programs
+          path: target/macos-console/programs
+          retention-days: 1
+          if-no-files-found: error
 
   hosts:
     needs: check
