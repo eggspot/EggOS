@@ -188,7 +188,8 @@ pub fn ioctl<P: Platform>(
                 .map_err(|_| Errno::EFAULT)?;
         }
         Request::ListWindow { index } => {
-            let info = on_windows::<P, _>(|desktop, _, _, _| desktop.window_info(index as usize))?;
+            let info =
+                on_windows::<P, _>(|desktop, _, _, _| desktop.listed_window(index as usize))?;
             bytes.fill(0);
             for (offset, value) in [
                 (list_reply::WINDOW, u32::from(info.id)),

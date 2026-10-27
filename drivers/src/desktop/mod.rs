@@ -29,7 +29,7 @@ mod tests;
 mod window_tests;
 
 pub use events::EventQueue;
-pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, NOT_RESPONDING_AFTER_MS, WindowInfo};
+pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use windows::{
@@ -863,7 +863,12 @@ impl Desktop {
             WindowState::Maximised if !self.window_at(slot).can_maximise() => {
                 return Err(WindowError::Invalid);
             }
-            WindowState::Maximised => self.maximise(slot, damage, events),
+            WindowState::Maximised => {
+                if self.window_at(slot).shown {
+                    self.restore(slot, damage, events);
+                }
+                self.maximise(slot, damage, events);
+            }
             WindowState::Minimised if self.window_at(slot).role != Role::Normal => {
                 return Err(WindowError::Invalid);
             }

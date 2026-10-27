@@ -5,7 +5,7 @@
 use super::pointer;
 use super::popups::{Switcher, WindowMenu};
 use super::protocol::{
-    EventRecord, EventSink, Management, PointerShape, Role, TITLE_CAPACITY, WindowError,
+    EventRecord, EventSink, PointerShape, Role, TITLE_CAPACITY, WindowAction, WindowError,
     WindowState, event,
 };
 use super::shortcuts::{Shortcut, shortcut};
@@ -21,9 +21,9 @@ pub const NOT_RESPONDING_AFTER_MS: u32 = 500;
 /// How far the window menu's keyboard move and size go per arrow key.
 pub const KEYBOARD_STEP: u32 = 8;
 
-/// One window as `wm list` shows it ([`Desktop::window_info`]).
+/// One window as `wm list` shows it ([`Desktop::listed_window`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowInfo {
+pub struct ListedWindow {
     /// Its id.
     pub id: super::WindowId,
     /// Normal, minimised or maximised.
@@ -64,7 +64,7 @@ impl Desktop {
 
     /// The window at `index` among the shown windows (minimised ones included), in the order
     /// they were created; [`WindowError::NoSuchWindow`] past the last.
-    pub fn window_info(&self, index: usize) -> Result<WindowInfo, WindowError> {
+    pub fn listed_window(&self, index: usize) -> Result<ListedWindow, WindowError> {
         let slot = self.created[..self.created_length]
             .iter()
             .map(|&slot| usize::from(slot))
@@ -77,7 +77,7 @@ impl Desktop {
             (false, true) => WindowState::Maximised,
             (false, false) => WindowState::Normal,
         };
-        Ok(WindowInfo {
+        Ok(ListedWindow {
             id: window.id,
             state,
             rect: window.outside(),
@@ -87,7 +87,7 @@ impl Desktop {
         })
     }
 
-    /// Does `action` ([`Management`]'s numbers) to window `id`, whoever's it is, as `wm`
+    /// Does `action` ([`WindowAction`]'s numbers) to window `id`, whoever's it is, as `wm`
     /// asks: with (`a`, `b`) the position of `Move` or the content size of `Size`.
     pub fn manage(
         &mut self,
@@ -103,33 +103,33 @@ impl Desktop {
             .find(id)
             .filter(|&slot| self.window_at(slot).shown)
             .ok_or(WindowError::Invalid)?;
-        let action = Management::from_value(action).ok_or(WindowError::Invalid)?;
+        let action = WindowAction::from_value(action).ok_or(WindowError::Invalid)?;
         let window = *self.window_at(slot);
         match action {
-            Management::Focus => self.activate(slot, damage, events),
-            Management::Minimise if window.role != Role::Normal => {
+            WindowAction::Focus => self.activate(slot, damage, events),
+            WindowAction::Minimise if window.role != Role::Normal => {
                 return Err(WindowError::Invalid);
             }
-            Management::Minimise => self.minimise(slot, damage, events),
-            Management::Maximise if !window.can_maximise() => return Err(WindowError::Invalid),
-            Management::Maximise => {
+            WindowAction::Minimise => self.minimise(slot, damage, events),
+            WindowAction::Maximise if !window.can_maximise() => return Err(WindowError::Invalid),
+            WindowAction::Maximise => {
                 self.restore(slot, damage, events);
                 self.maximise(slot, damage, events);
             }
-            Management::Restore => {
+            WindowAction::Restore => {
                 self.restore(slot, damage, events);
                 self.unmaximise(slot, damage, events);
             }
-            Management::Close if !window.closable => return Err(WindowError::NotAllowed),
-            Management::Close => self.request_close(slot, events),
-            Management::Move => {
+            WindowAction::Close if !window.closable => return Err(WindowError::NotAllowed),
+            WindowAction::Close => self.request_close(slot, events),
+            WindowAction::Move => {
                 self.unmaximise(slot, damage, events);
                 self.move_window(slot, i64::from(a), i64::from(b), damage);
             }
-            Management::Size if window.role != Role::Normal || window.is_fixed_size() => {
+            WindowAction::Size if window.role != Role::Normal || window.is_fixed_size() => {
                 return Err(WindowError::Invalid);
             }
-            Management::Size => {
+            WindowAction::Size => {
                 self.unmaximise(slot, damage, events);
                 let window = *self.window_at(slot);
                 let outside = window.outside();

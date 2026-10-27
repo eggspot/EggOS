@@ -391,7 +391,7 @@ pub mod list_reply {
 
 /// What `ManageWindow` does to the window it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Management {
+pub enum WindowAction {
     /// Raise and focus it, restoring it if it is minimised.
     Focus,
     Minimise,
@@ -406,7 +406,7 @@ pub enum Management {
     Size,
 }
 
-impl Management {
+impl WindowAction {
     /// The action numbered `value`, 0 to 6 in the order above.
     pub const fn from_value(value: u32) -> Option<Self> {
         Some(match value {

@@ -141,12 +141,12 @@ pub fn keys_go_to_console() -> bool {
 }
 
 /// The desktop's layout profile: the controls' side and the shortcuts (D128).
-pub const PROFILE: Profile = Profile::Macos;
+pub const DESKTOP_PROFILE: Profile = Profile::Macos;
 
 /// Whether key `code` pressed with `modifiers` is a shortcut the desktop takes from the
 /// terminal, which takes every Ctrl key: its bytes do not go to the console.
 pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
-    is_active() && shortcut(code, modifiers, PROFILE, true).is_some()
+    is_active() && shortcut(code, modifiers, DESKTOP_PROFILE, true).is_some()
 }
 
 /// Draws the desktop with the terminal's window, blank, over the whole display, and from then
@@ -156,7 +156,7 @@ pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
 pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mode = display::mode()?;
     let mut desktop = Desktop::new(mode.width, mode.height)?;
-    desktop.set_profile(PROFILE, &mut Damage::new());
+    desktop.set_profile(DESKTOP_PROFILE, &mut Damage::new());
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);

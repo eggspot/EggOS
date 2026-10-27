@@ -1,4 +1,4 @@
-use super::protocol::{DiscardEvents, EventRecord, Management, flags};
+use super::protocol::{DiscardEvents, EventRecord, WindowAction, flags};
 use super::tests::{BlankTerminal, at};
 use super::*;
 use crate::input::keymap::Modifiers;
@@ -414,6 +414,34 @@ fn super_arrows_maximise_restore_minimise_and_snap_the_focused_window() {
     tap(&mut desktop, key::DOWN, held, &mut DiscardEvents);
     assert!(desktop.is_minimised(window));
     assert_eq!(desktop.focused_window(), Some(desktop.terminal_window()));
+}
+
+#[test]
+fn maximising_a_minimised_window_shows_it_maximised() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    let mut damage = Damage::new();
+    desktop
+        .set_state(
+            CLIENT,
+            u32::from(window),
+            1,
+            &mut damage,
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    let mut events = Recorded::default();
+    desktop
+        .set_state(CLIENT, u32::from(window), 2, &mut damage, &mut events)
+        .unwrap();
+    assert!(!desktop.is_minimised(window) && desktop.is_maximised(window));
+    assert_eq!(desktop.focused_window(), Some(window));
+    let states: Vec<i32> = events
+        .of_kind(event::STATE_CHANGED)
+        .iter()
+        .map(|record| record.a)
+        .collect();
+    assert_eq!(states, [0, 2]);
 }
 
 #[test]
@@ -1000,14 +1028,14 @@ fn wm_lists_shown_windows_and_manages_any_of_them() {
         .set_title(CLIENT, u32::from(window), b"first", &mut Damage::new())
         .unwrap();
     let _unshown = desktop.create(CLIENT, 0, 0, 100, 100, 0).unwrap();
-    let terminal = desktop.window_info(0).unwrap();
+    let terminal = desktop.listed_window(0).unwrap();
     assert_eq!(terminal.id, desktop.terminal_window());
     assert_eq!(terminal.client, KERNEL_CLIENT);
     assert_eq!(&terminal.title[..terminal.title_length], b"Terminal");
-    let info = desktop.window_info(1).unwrap();
+    let info = desktop.listed_window(1).unwrap();
     assert_eq!((info.id, info.state), (window, WindowState::Normal));
-    assert_eq!(desktop.window_info(2), Err(WindowError::NoSuchWindow));
-    let manage = |desktop: &mut Desktop, action: Management, a: i32, b: i32| {
+    assert_eq!(desktop.listed_window(2), Err(WindowError::NoSuchWindow));
+    let manage = |desktop: &mut Desktop, action: WindowAction, a: i32, b: i32| {
         desktop.manage(
             u32::from(window),
             action as u32,
@@ -1017,27 +1045,27 @@ fn wm_lists_shown_windows_and_manages_any_of_them() {
             &mut DiscardEvents,
         )
     };
-    manage(&mut desktop, Management::Maximise, 0, 0).unwrap();
+    manage(&mut desktop, WindowAction::Maximise, 0, 0).unwrap();
     assert_eq!(
-        desktop.window_info(1).unwrap().state,
+        desktop.listed_window(1).unwrap().state,
         WindowState::Maximised
     );
-    manage(&mut desktop, Management::Restore, 0, 0).unwrap();
-    manage(&mut desktop, Management::Move, 100, 200).unwrap();
+    manage(&mut desktop, WindowAction::Restore, 0, 0).unwrap();
+    manage(&mut desktop, WindowAction::Move, 100, 200).unwrap();
     assert_eq!(
         desktop.window_rect(window).map(|rect| (rect.x, rect.y)),
         Some((100, 200))
     );
-    manage(&mut desktop, Management::Size, 500, 260).unwrap();
+    manage(&mut desktop, WindowAction::Size, 500, 260).unwrap();
     assert_eq!(
         desktop
             .content_rect(window)
             .map(|rect| (rect.width, rect.height)),
         Some((500, 260))
     );
-    manage(&mut desktop, Management::Minimise, 0, 0).unwrap();
+    manage(&mut desktop, WindowAction::Minimise, 0, 0).unwrap();
     assert!(desktop.is_minimised(window));
-    manage(&mut desktop, Management::Focus, 0, 0).unwrap();
+    manage(&mut desktop, WindowAction::Focus, 0, 0).unwrap();
     assert_eq!(desktop.focused_window(), Some(window));
     let mut events = Recorded::default();
     desktop
