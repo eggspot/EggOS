@@ -20,6 +20,8 @@ use core::fmt::Write;
 use core::hint::black_box;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicU64, Ordering};
+use eggos_drivers::desktop::protocol::DiscardEvents;
+use eggos_drivers::desktop::{Contents, Desktop, WindowId};
 use eggos_drivers::display::{Damage, Mode, Rect};
 use eggos_drivers::dma::DmaAddr;
 use eggos_drivers::dma::DmaMemory;
@@ -50,7 +52,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 44] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 47] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -128,6 +130,11 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 44] {
         ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
         ("term_feed_line", |_, n| term_feed_line(n)),
         ("term_scroll_line", |_, n| term_scroll_line(n)),
+        ("gfx_compose_four_windows", |_, n| {
+            gfx_compose_four_windows(n)
+        }),
+        ("window_commit_line", |_, n| window_commit_line(n)),
+        ("window_hit_test", |_, n| window_hit_test(n)),
     ]
 }
 
@@ -595,6 +602,101 @@ fn term_scroll_line(n: u64) {
         terminal.feed(black_box(b"\nscrolled"));
         terminal.render(black_box(&mut pixels), BENCH_STRIDE, 0, 0, &mut damage);
     }
+}
+
+const BENCH_SCREEN: (u32, u32) = (1280, 800);
+const BENCH_WINDOW: (u32, u32) = (656, 400);
+
+struct BenchContents(alloc::vec::Vec<u32>);
+
+impl Contents for BenchContents {
+    fn copy_row(&self, _window: WindowId, x: u32, y: u32, out: &mut [u32]) {
+        let start = (y * BENCH_WINDOW.0 + x) as usize;
+        if let Some(row) = self.0.get(start..start + out.len()) {
+            out.copy_from_slice(row);
+        }
+    }
+}
+
+fn bench_desktop(windows: u16) -> (Desktop, alloc::vec::Vec<WindowId>) {
+    let Some(mut desktop) = Desktop::new(BENCH_SCREEN.0, BENCH_SCREEN.1) else {
+        panic!("window benchmark: no memory for the desktop");
+    };
+    let ids = (0..windows)
+        .map(|client| {
+            let Ok(created) = desktop.create(client, 0, 0, BENCH_WINDOW.0, BENCH_WINDOW.1, 0)
+            else {
+                panic!("window benchmark: the desktop refused a window");
+            };
+            let _ = desktop.commit(
+                client,
+                u32::from(created.window),
+                &[],
+                &mut Damage::new(),
+                &mut DiscardEvents,
+            );
+            created.window
+        })
+        .collect();
+    (desktop, ids)
+}
+
+fn bench_screen() -> (alloc::vec::Vec<u32>, BenchContents) {
+    let pixels = alloc::vec![0u32; (BENCH_SCREEN.0 * BENCH_SCREEN.1) as usize];
+    let contents = (0..BENCH_WINDOW.0 * BENCH_WINDOW.1)
+        .map(|at| at * 0x0101)
+        .collect();
+    (pixels, BenchContents(contents))
+}
+
+fn gfx_compose_four_windows(n: u64) {
+    let (desktop, ids) = bench_desktop(4);
+    let (mut pixels, contents) = bench_screen();
+    let Some(top) = desktop.window_rect(ids[3]) else {
+        panic!("window benchmark: the top window is not shown");
+    };
+    let rect = Rect::new(top.x - 40, top.y - 24, 64, 64);
+    for _ in 0..n {
+        desktop.draw(
+            black_box(&mut pixels),
+            BENCH_SCREEN.0 as usize,
+            rect,
+            &contents,
+        );
+    }
+}
+
+fn window_commit_line(n: u64) {
+    let (mut desktop, ids) = bench_desktop(4);
+    let (mut pixels, contents) = bench_screen();
+    let band = [Rect::new(0, 192, BENCH_WINDOW.0, GLYPH_HEIGHT as u32)];
+    let mut damage = Damage::new();
+    for _ in 0..n {
+        damage.clear();
+        let _ = desktop.commit(3, u32::from(ids[3]), &band, &mut damage, &mut DiscardEvents);
+        for &rect in damage.rects() {
+            desktop.draw(
+                black_box(&mut pixels),
+                BENCH_SCREEN.0 as usize,
+                rect,
+                &contents,
+            );
+        }
+    }
+}
+
+fn window_hit_test(n: u64) {
+    let (mut desktop, ids) = bench_desktop(8);
+    let Some(bottom) = desktop.content_rect(ids[0]) else {
+        panic!("window benchmark: the bottom window is not shown");
+    };
+    let mut damage = Damage::new();
+    for i in 0..n {
+        let x = bottom.x + 10 + (i % 2) as u32 * 300;
+        desktop.pointer_moved(x, bottom.y + 10, &mut damage, &mut DiscardEvents);
+        damage.clear();
+    }
+    black_box(desktop.focused_window());
 }
 
 const DEVICE_TREE: &[u8] = include_bytes!("../../hal/src/fdt/testdata/qemu-aarch64-virt.dtb");
@@ -1353,8 +1455,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 19..].split_at(15);
-        let benchmarks = &[&all[..all.len() - 19], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 22..].split_at(15);
+        let benchmarks = &[&all[..all.len() - 22], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1381,7 +1483,10 @@ mod tests {
                 "gfx_glyph_cell",
                 "gfx_terminal_line",
                 "term_feed_line",
-                "term_scroll_line"
+                "term_scroll_line",
+                "gfx_compose_four_windows",
+                "window_commit_line",
+                "window_hit_test"
             ]
         );
         assert_eq!(

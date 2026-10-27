@@ -1,16 +1,21 @@
-//! The graphical terminal (D114) on the desktop (D115): the console's session shown on the
-//! display in the Egg Mono font, by the terminal engine of [`eggos_drivers::terminal`], in the
-//! terminal window of [`eggos_drivers::desktop`], over the wallpaper and under the top bar.
+//! The graphical terminal (D114) on the desktop (D115) and its window server (D127): the
+//! console's session shown on the display in the Egg Mono font, by the terminal engine of
+//! [`eggos_drivers::terminal`], in the terminal window of [`eggos_drivers::desktop`], among the
+//! windows programs open through `/dev/window` ([`crate::window`]), over the wallpaper and
+//! under the top bar.
 //!
 //! Once [`start`] made it, every byte [`console::write`] sends to the serial console is fed to
-//! the terminal as well, under the terminal's lock, so both see the same bytes in the same
+//! the terminal as well, under the screen's lock, so both see the same bytes in the same
 //! order. Feeding only updates cells; the drawing thread ([`start_drawing`]) renders what changed
-//! and flushes it to the display, at most once every [`FRAME_INTERVAL_MS`] and at once after an
+//! into the terminal's own buffer, the grid's pixels, composes the rectangles that changed on
+//! screen into the framebuffer (each window's content from its buffer, clipped by the windows
+//! above it) and flushes them, at most once every [`FRAME_INTERVAL_MS`] and at once after an
 //! idle frame, so a burst of output costs one flush. The same thread hands the desktop the
-//! pointer and key events the input layer queued and repaints the rectangles they changed.
-//! The display's flush, which waits for the device, never holds the terminal's lock: a stalled
-//! device stops the picture, not the console. Without a display nothing is made and a console
-//! write costs one load.
+//! pointer and key events the input layer queued, which may become events for the windows'
+//! programs, and composes what they changed; a program's requests compose what they change
+//! during the call ([`with_windows`]). The display's flush, which waits for the device, never
+//! holds the screen's lock: a stalled device stops the picture, not the console. Without a
+//! display nothing is made and a console write costs one load.
 
 use crate::console;
 use crate::display;
@@ -18,12 +23,16 @@ use crate::input::{self, Button, InputEvent};
 use crate::linux::reboot::{self, take_machine_down};
 use crate::sync::LeafSpinLock;
 use crate::thread::{self, SpawnError, WaitQueue};
+use crate::window::{self, Buffers, Clients, Queues};
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use eggos_drivers::desktop::{Action, Desktop};
-use eggos_drivers::display::Damage;
+use eggos_drivers::desktop::protocol::EventSink;
+use eggos_drivers::desktop::{Action, Contents, Desktop, GRID_SIZE, WindowId, colour};
+use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
-use eggos_drivers::terminal::{REPLY_CAPACITY, Terminal, TextArea};
+use eggos_drivers::input::button;
+use eggos_drivers::terminal::{REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea};
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
 
@@ -44,8 +53,60 @@ pub enum Session {
 
 struct Screen {
     terminal: Terminal,
+    terminal_pixels: Box<[u32]>,
     desktop: Desktop,
     session: Session,
+    buffers: Buffers,
+    clients: Clients,
+}
+
+struct ScreenContents<'a> {
+    terminal: WindowId,
+    terminal_pixels: &'a [u32],
+    buffers: &'a Buffers,
+}
+
+impl Contents for ScreenContents<'_> {
+    fn copy_row(&self, window: WindowId, x: u32, y: u32, out: &mut [u32]) {
+        if window == self.terminal {
+            let start = y as usize * GRID_SIZE.0 as usize + x as usize;
+            if let Some(row) = self.terminal_pixels.get(start..start + out.len()) {
+                out.copy_from_slice(row);
+            }
+            return;
+        }
+        match self.buffers.of(window) {
+            Some(buffer) => buffer.copy_row(x, y, out),
+            None => out.fill(colour::WINDOW_BACKGROUND),
+        }
+    }
+}
+
+fn compose(
+    desktop: &Desktop,
+    terminal_pixels: &[u32],
+    buffers: &Buffers,
+    framebuffer: &mut display::Framebuffer<'_>,
+    damage: &Damage,
+) {
+    let stride = framebuffer.mode().width as usize;
+    let contents = ScreenContents {
+        terminal: desktop.terminal_window(),
+        terminal_pixels,
+        buffers,
+    };
+    for &rect in damage.rects() {
+        desktop.draw(framebuffer.pixels(), stride, rect, &contents);
+        framebuffer.damage(rect);
+    }
+}
+
+fn grid_pixels() -> Option<Box<[u32]>> {
+    let count = GRID_SIZE.0 as usize * GRID_SIZE.1 as usize;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(count).ok()?;
+    pixels.resize(count, TERM_BACKGROUND);
+    Some(pixels.into_boxed_slice())
 }
 
 static SCREEN: LeafSpinLock<Option<Box<Screen>>> = LeafSpinLock::new_leaf(None);
@@ -89,18 +150,25 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     terminal.assume_drawn_blank();
     let screen = Box::new(Screen {
         terminal,
+        terminal_pixels: grid_pixels()?,
         desktop,
         session,
+        buffers: Buffers::new(),
+        clients: Clients::new(),
     });
     if drawer().is_none() {
         DRAWER.store(Box::into_raw(Box::new(WaitQueue::new())), Ordering::Release);
     }
     display::draw(|framebuffer| {
-        let stride = framebuffer.mode().width as usize;
-        screen
-            .desktop
-            .draw(framebuffer.pixels(), stride, mode.rect());
-        framebuffer.damage(mode.rect());
+        let mut whole = Damage::new();
+        whole.add(mode.rect());
+        compose(
+            &screen.desktop,
+            &screen.terminal_pixels,
+            &screen.buffers,
+            framebuffer,
+            &whole,
+        );
     })?;
     KEYS_TO_TERMINAL.store(true, Ordering::Relaxed);
     SHOWN_SECOND.store(0, Ordering::Relaxed);
@@ -117,6 +185,47 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     ACTIVE.store(true, Ordering::Release);
     request_render::<P>();
     Some(area)
+}
+
+/// Runs `change` on the window server's desktop and buffers with the damage it records and
+/// the sink for its clients' events, under the display's and the screen's locks; then composes
+/// the damage into the framebuffer, has it flushed and wakes the programs that got events.
+/// `None` without a screen.
+pub fn with_windows<P: Platform, R>(
+    change: impl FnOnce(&mut Desktop, &mut Buffers, &mut Damage, &mut dyn EventSink) -> R,
+) -> Option<R> {
+    let time_ms = window::time_ms::<P>();
+    let (result, sent, damaged) = display::draw(|framebuffer| {
+        let mut screen = SCREEN.lock();
+        let Screen {
+            desktop,
+            terminal_pixels,
+            buffers,
+            clients,
+            ..
+        } = &mut **screen.as_mut()?;
+        let mut queues = Queues::new(clients, time_ms);
+        let mut damage = Damage::new();
+        let result = change(desktop, buffers, &mut damage, &mut queues);
+        compose(desktop, terminal_pixels, buffers, framebuffer, &damage);
+        KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
+        Some((result, queues.sent(), !damage.is_empty()))
+    })??;
+    if sent {
+        console::wake_input_waiters::<P>();
+    }
+    if damaged {
+        request_render::<P>();
+    }
+    Some(result)
+}
+
+/// Runs `change` on the window server's clients; `None` without a screen.
+pub fn with_clients<R>(change: impl FnOnce(&mut Clients) -> R) -> Option<R> {
+    SCREEN
+        .lock()
+        .as_mut()
+        .map(|screen| change(&mut screen.clients))
 }
 
 /// Stops mirroring the console and frees the terminal; the display keeps its last picture.
@@ -182,61 +291,87 @@ fn request_render<P: Platform>() {
     }
 }
 
-fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Action {
+fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> (Action, bool) {
     let mut action = Action::None;
+    let Screen {
+        desktop, clients, ..
+    } = screen;
+    let mut queues = Queues::new(clients, window::time_ms::<P>());
     while let Some(event) = input::next_event() {
-        let desktop = &mut screen.desktop;
         let asked = match event {
             InputEvent::PointerMove { x, y } => {
-                desktop.pointer_moved(x, y, damage);
+                desktop.pointer_moved(x, y, damage, &mut queues);
                 Action::None
             }
             InputEvent::Button {
-                button: Button::Left,
+                button: pressed_button,
                 pressed,
-            } => desktop.left_button(pressed, damage),
-            InputEvent::Key { code, pressed, .. } => desktop.key(code, pressed, damage),
-            InputEvent::Button { .. } | InputEvent::Wheel { .. } => Action::None,
+            } => {
+                let code = match pressed_button {
+                    Button::Left => button::LEFT,
+                    Button::Right => button::RIGHT,
+                    Button::Middle => button::MIDDLE,
+                };
+                desktop.button(code, pressed, damage, &mut queues)
+            }
+            InputEvent::Key {
+                code,
+                pressed,
+                modifiers,
+            } => desktop.key(code, pressed, modifiers, damage, &mut queues),
+            InputEvent::Wheel { delta } => {
+                desktop.wheel(delta, &mut queues);
+                Action::None
+            }
         };
         if asked != Action::None {
             action = asked;
         }
     }
+    let sent = queues.sent();
     let second = P::clock_ticks() / P::clock_frequency().max(1);
     SHOWN_SECOND.store(second, Ordering::Relaxed);
-    screen.desktop.set_uptime(second, damage);
-    KEYS_TO_TERMINAL.store(screen.desktop.keys_go_to_terminal(), Ordering::Relaxed);
-    action
+    desktop.set_uptime(second, damage);
+    KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
+    (action, sent)
 }
 
 fn draw_screen<P: Platform>(
     screen: &mut Screen,
     framebuffer: &mut display::Framebuffer<'_>,
-) -> Action {
-    let stride = framebuffer.mode().width as usize;
+) -> (Action, bool) {
     let mut damage = Damage::new();
-    let action = match screen.session {
+    let (action, sent) = match screen.session {
         Session::Interactive => take_events::<P>(screen, &mut damage),
-        Session::SelfTest => Action::None,
+        Session::SelfTest => (Action::None, false),
     };
-    let grid = screen.desktop.text_area().rect();
-    for &rect in damage.rects() {
-        screen.desktop.draw(framebuffer.pixels(), stride, rect);
-        framebuffer.damage(rect);
-        if rect.overlaps(&grid) {
-            screen.terminal.invalidate();
-        }
-    }
+    let mut drawn = Damage::new();
+    screen.terminal.render(
+        &mut screen.terminal_pixels,
+        GRID_SIZE.0 as usize,
+        0,
+        0,
+        &mut drawn,
+    );
     if screen.desktop.terminal_shown() {
-        let mut drawn = Damage::new();
-        screen
-            .terminal
-            .render(framebuffer.pixels(), stride, grid.x, grid.y, &mut drawn);
-        for &rect in drawn.rects() {
-            framebuffer.damage(rect);
+        let area = screen.desktop.text_area();
+        for rect in drawn.rects() {
+            damage.add(Rect::new(
+                area.x + rect.x,
+                area.y + rect.y,
+                rect.width,
+                rect.height,
+            ));
         }
     }
-    action
+    compose(
+        &screen.desktop,
+        &screen.terminal_pixels,
+        &screen.buffers,
+        framebuffer,
+        &damage,
+    );
+    (action, sent)
 }
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed
@@ -244,13 +379,18 @@ fn draw_screen<P: Platform>(
 /// the console's input. Returns how many rectangles the flush showed. Does not return when the
 /// power menu powered the machine off or restarted it.
 pub fn show<P: Platform>() -> Result<usize, &'static str> {
-    let action = display::draw(|framebuffer| {
+    let drawn = display::draw(|framebuffer| {
         SCREEN
             .lock()
             .as_mut()
-            .map_or(Action::None, |screen| draw_screen::<P>(screen, framebuffer))
+            .map_or((Action::None, false), |screen| {
+                draw_screen::<P>(screen, framebuffer)
+            })
     });
-    match action {
+    if drawn.is_some_and(|(_, sent)| sent) {
+        console::wake_input_waiters::<P>();
+    }
+    match drawn.map(|(action, _)| action) {
         Some(Action::PowerOff) => take_machine_down::<P>(reboot::Action::PowerOff),
         Some(Action::Restart) => take_machine_down::<P>(reboot::Action::Restart),
         Some(Action::None) | None => {}
@@ -312,9 +452,16 @@ mod tests {
         let mut terminal = Terminal::new(area.columns, area.rows).unwrap();
         terminal.set_onlcr(true);
         terminal.feed(TEST_SCREEN.as_bytes());
+        let mut grid = grid_pixels().unwrap();
+        terminal.render(&mut grid, GRID_SIZE.0 as usize, 0, 0, &mut Damage::new());
+        let buffers = Buffers::new();
+        let contents = ScreenContents {
+            terminal: desktop.terminal_window(),
+            terminal_pixels: &grid,
+            buffers: &buffers,
+        };
         let mut pixels = vec![0; 1280 * 800];
-        desktop.draw(&mut pixels, 1280, desktop.screen());
-        terminal.render(&mut pixels, 1280, area.x, area.y, &mut Damage::new());
+        desktop.draw(&mut pixels, 1280, desktop.screen(), &contents);
         assert_eq!(
             display::pixel_hash(&pixels),
             TEST_SCREEN_HASH_1280X800,

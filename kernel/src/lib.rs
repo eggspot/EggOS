@@ -34,6 +34,7 @@ pub mod sync;
 pub mod terminal;
 pub mod thread;
 pub mod vfs;
+pub mod window;
 
 use core::fmt::Write;
 use eggos_hal::{ExitStatus, Platform};
@@ -132,6 +133,9 @@ fn mount_system_file_systems<P: Platform>() {
     if exists(b"/proc") {
         let proc: &'static linux::proc::Proc<P> = Box::leak(Box::new(linux::proc::Proc::new()));
         let _ = vfs::mount(b"/proc", proc);
+    }
+    if exists(b"/dev") {
+        let _ = vfs::mount(b"/dev", &vfs::devfs::DeviceFiles);
     }
     if !MEMORY_FILE_SYSTEMS.iter().any(|(path, _)| exists(path)) {
         return;

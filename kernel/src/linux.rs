@@ -69,6 +69,7 @@ pub mod thread_pointer;
 pub mod time;
 pub mod trampoline;
 pub mod wait;
+pub mod window;
 
 use crate::process::{self, Process, ProcessExit, UnresolvedFault};
 use crate::thread::{JoinHandle, SpawnError};
@@ -497,7 +498,7 @@ impl Errno {
     /// No such device: here, a CPU feature the call needs is missing.
     pub const ENODEV: Self = Self(19);
     /// No such device or address: an offset at or past the end of a file (`lseek`'s
-    /// `SEEK_DATA` and `SEEK_HOLE`).
+    /// `SEEK_DATA` and `SEEK_HOLE`), or `/dev/window` without a display.
     pub const ENXIO: Self = Self(6);
     /// Not a directory: a path component, or a descriptor a relative path starts from, that
     /// is not one.
@@ -520,6 +521,9 @@ impl Errno {
     /// Too many open files: every descriptor below the open-file limit is taken (`dup`,
     /// `fcntl`'s `F_DUPFD`).
     pub const EMFILE: Self = Self(24);
+    /// Too many open files in the system: here, every client slot of the window server is
+    /// taken (`/dev/window`, D127).
+    pub const ENFILE: Self = Self(23);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
     /// Not seekable: here, the console or a pipe (`lseek`, `pread64`).
@@ -761,7 +765,7 @@ fn syscall<P: Platform>(
         },
         number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
         number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
-            memory_call::<P>(process, number, context.syscall_arguments())
+            memory_call::<P>(process, thread.files(), number, context.syscall_arguments())
         }
         _ => return out_of_line_call::<P>(process, thread, number, context),
     };
@@ -774,12 +778,16 @@ fn syscall<P: Platform>(
 #[inline(never)]
 fn memory_call<P: Platform>(
     process: &Process<P>,
+    files: &Descriptors,
     number: u64,
-    [first, second, third, fourth, _, sixth]: [u64; 6],
+    [first, second, third, fourth, fifth, sixth]: [u64; 6],
 ) -> Result<u64, Errno> {
     match number {
         number::BRK => Ok(memory::brk::<P>(process, first)),
-        number::MMAP => memory::mmap::<P>(process, first, second, third, fourth, sixth),
+        number::MMAP => {
+            let file = memory::MappedFile { files, fd: fifth };
+            memory::mmap_file::<P>(process, first, second, third, fourth, file, sixth)
+        }
         number::MUNMAP => memory::munmap::<P>(process, first, second),
         _ => memory::mprotect::<P>(process, first, second, third),
     }
@@ -1179,6 +1187,7 @@ fn write<P: Platform>(
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
         FileKind::Pipe(_) | FileKind::Regular(_) => return Err(NOT_THE_CONSOLE),
+        FileKind::Window(_) => return Err(Errno::EINVAL),
         _ => return Err(Errno::EBADF),
     };
     if written == 0 && count > 0 {
@@ -1251,6 +1260,10 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::Window(_) => {
+                context.set_syscall_result(Errno::EINVAL.result());
+                ControlFlow::Continue(())
+            }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1292,6 +1305,9 @@ fn read<P: Platform>(
         Ok((file, iovecs)) => match file.kind() {
             FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
             FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
+            FileKind::Window(connection) => {
+                window::read(process, thread, context, &file, connection, &iovecs)
+            }
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {
@@ -1329,6 +1345,7 @@ fn ioctl<P: Platform>(
     }
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
+        FileKind::Window(connection) => window::ioctl(process, connection, request, argument),
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
@@ -1343,7 +1360,7 @@ fn ioctl<P: Platform>(
 fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) => terminal::lseek(whence),
+        FileKind::Console | FileKind::Pipe(_) | FileKind::Window(_) => terminal::lseek(whence),
         _ => files::lseek_node(&file, offset, whence),
     }
 }

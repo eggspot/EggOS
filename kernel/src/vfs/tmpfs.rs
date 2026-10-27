@@ -486,6 +486,9 @@ impl FileSystem for Tmpfs {
         now: u64,
     ) -> Result<u64, Refused> {
         check_name(name)?;
+        if kind == NodeKind::CharacterDevice {
+            return Err(Refused::InvalidArgument);
+        }
         let mut state = self.state.lock();
         if state.child(directory, name)?.is_some() {
             return Err(Refused::Exists);
@@ -517,7 +520,7 @@ impl FileSystem for Tmpfs {
             modified: now,
             contents: match kind {
                 NodeKind::Directory => Contents::Directory(Vec::new()),
-                NodeKind::Regular => Contents::File {
+                NodeKind::Regular | NodeKind::CharacterDevice => Contents::File {
                     pages: Vec::new(),
                     size: 0,
                 },

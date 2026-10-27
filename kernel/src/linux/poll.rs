@@ -81,6 +81,7 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
         }
         Some(FileKind::Path(_)) => event::NVAL,
         Some(FileKind::Pipe(end)) => end.events(requested),
+        Some(FileKind::Window(connection)) => super::window::events(connection, requested),
     }
 }
 
@@ -373,24 +374,26 @@ fn poll_fds<P: Platform>(
         .read_user_memory(fds, array)
         .map_err(|_| Errno::EFAULT)?;
     let entries = array.as_chunks_mut::<POLLFD_SIZE>().0;
-    let watches_input = entries.iter().any(|entry| {
+    let mut watches = Watches::default();
+    for entry in entries.iter() {
         let (fd, requested) = pollfd(entry);
-        fd >= 0
-            && thread
-                .files()
-                .file(fd as u64)
-                .is_ok_and(|file| match file.kind() {
-                    FileKind::Console => requested & INPUT_EVENTS != 0,
-                    FileKind::Pipe(_) => true,
-                    _ => false,
-                })
-    });
-    let readable = watches_input && console::input_ready();
-    let mut ready = fill_in_events(entries, thread.files(), readable);
+        if fd < 0 {
+            continue;
+        }
+        let Ok(file) = thread.files().file(fd as u64) else {
+            continue;
+        };
+        match file.kind() {
+            FileKind::Console => watches.console_input |= requested & INPUT_EVENTS != 0,
+            FileKind::Pipe(_) | FileKind::Window(_) => watches.devices = true,
+            _ => {}
+        }
+    }
+    let mut ready = fill_in_events(entries, thread.files(), console::input_ready());
     let mut interrupted = ready == 0 && signals::is_due(thread);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
-        (interrupted, ready) = match watches_input {
-            true => wait_for_input::<P>(process, thread, entries, deadline),
+        (interrupted, ready) = match watches.console_input || watches.devices {
+            true => wait_for_input::<P>(process, thread, entries, deadline, watches),
             false => (sleep::<P>(process, thread, deadline), 0),
         };
     }
@@ -416,7 +419,13 @@ fn sleep<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, deadline: 
     false
 }
 
-fn any_pipe_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
+#[derive(Debug, Clone, Copy, Default)]
+struct Watches {
+    console_input: bool,
+    devices: bool,
+}
+
+fn any_device_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
     let table = files.lock();
     entries.iter().any(|entry| {
         let (fd, requested) = pollfd(entry);
@@ -425,6 +434,9 @@ fn any_pipe_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
                 .get(fd as u32)
                 .is_some_and(|descriptor| match descriptor.file.kind() {
                     FileKind::Pipe(end) => end.events(requested) != 0,
+                    FileKind::Window(connection) => {
+                        super::window::events(connection, requested) != 0
+                    }
                     _ => false,
                 })
     })
@@ -435,15 +447,19 @@ fn wait_for_input<P: Platform>(
     thread: &mut LinuxThread,
     entries: &mut [[u8; POLLFD_SIZE]],
     deadline: Deadline,
+    watches: Watches,
 ) -> (bool, u64) {
     loop {
         let files = thread.files().share();
-        let ready = || console::input_ready() || any_pipe_ready(entries, &files);
+        let ready = || {
+            (watches.console_input && console::input_ready())
+                || (watches.devices && any_device_ready(entries, &files))
+        };
         match terminal::wait_for_input::<P>(process, thread, deadline, ready) {
             ControlFlow::Break(()) | ControlFlow::Continue(Waited::TimedOut) => return (false, 0),
             ControlFlow::Continue(Waited::Signalled) => return (true, 0),
             ControlFlow::Continue(Waited::Ready) => {
-                let ready = fill_in_events(entries, thread.files(), true);
+                let ready = fill_in_events(entries, thread.files(), console::input_ready());
                 if ready > 0 {
                     return (false, ready);
                 }
@@ -488,13 +504,13 @@ mod tests {
             entry[4..6].copy_from_slice(&events.to_ne_bytes());
             entry
         };
-        assert!(!any_pipe_ready(&[entry(read_fd, event::IN)], &files));
-        assert!(any_pipe_ready(&[entry(write_fd, event::OUT)], &files));
+        assert!(!any_device_ready(&[entry(read_fd, event::IN)], &files));
+        assert!(any_device_ready(&[entry(write_fd, event::OUT)], &files));
         assert_eq!(Arc::strong_count(&reading), 2);
         let closed = files.lock().remove(write_fd);
         drop(closed);
-        assert!(any_pipe_ready(&[entry(read_fd, event::IN)], &files));
-        assert!(!any_pipe_ready(
+        assert!(any_device_ready(&[entry(read_fd, event::IN)], &files));
+        assert!(!any_device_ready(
             &[entry(write_fd, event::OUT), entry(-1i32 as u32, 0)],
             &files
         ));

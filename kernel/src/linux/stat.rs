@@ -121,7 +121,9 @@ pub fn node_status(node: Node) -> Status {
     let file_type = match attributes.kind {
         NodeKind::Directory => S_IFDIR,
         NodeKind::Regular => S_IFREG,
+        NodeKind::CharacterDevice => S_IFCHR,
     };
+    let (represented_major, represented_minor) = node.character_device().unwrap_or((0, 0));
     Status {
         device: Device { major, minor },
         inode: attributes.file_id,
@@ -129,7 +131,10 @@ pub fn node_status(node: Node) -> Status {
         links: attributes.links,
         owner: attributes.owner,
         group: attributes.group,
-        represented_device: Device { major: 0, minor: 0 },
+        represented_device: Device {
+            major: represented_major,
+            minor: represented_minor,
+        },
         size: attributes.size,
         block_size: FRAME_SIZE as u32,
         blocks: attributes.size.div_ceil(FRAME_SIZE) * (FRAME_SIZE / 512),
@@ -158,6 +163,18 @@ pub const CONSOLE: Status = Status {
     block_size: FRAME_SIZE as u32,
     blocks: 0,
     modified: 0,
+};
+
+/// `/dev/window`'s status (D127): a character device on [`DEVICE_FILES`].
+pub const WINDOW: Status = Status {
+    device: DEVICE_FILES,
+    inode: crate::vfs::devfs::WINDOW,
+    mode: S_IFCHR | 0o666,
+    represented_device: Device {
+        major: crate::vfs::devfs::WINDOW_DEVICE.0,
+        minor: crate::vfs::devfs::WINDOW_DEVICE.1,
+    },
+    ..CONSOLE
 };
 
 /// The size of the architecture's `struct stat`: x86_64's own, or the generic one AArch64 and
@@ -277,6 +294,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             Ok(node_status(*node))
         }
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
+        FileKind::Window(_) => Ok(WINDOW),
     }
 }
 

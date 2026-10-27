@@ -17,6 +17,7 @@
 //! from a mounted root leaves through its mount point.
 
 pub mod cpio;
+pub mod devfs;
 pub mod initramfs;
 pub mod tmpfs;
 
@@ -82,6 +83,8 @@ pub enum NodeKind {
     Directory,
     /// A regular file: it has contents.
     Regular,
+    /// A character device (`/dev`, D127): opening it opens the device.
+    CharacterDevice,
 }
 
 /// A node's attributes, as `stat` reports them.
@@ -241,6 +244,11 @@ pub trait FileSystem: Sync + Send {
     ) -> Result<(), Refused> {
         Err(Refused::ReadOnly)
     }
+    /// The device number (major, minor) of character device `node`, if it is one.
+    fn character_device(&self, _node: u64) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Sets when `node`'s contents last changed.
     fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
         Err(Refused::ReadOnly)
@@ -301,6 +309,11 @@ impl Node {
     #[inline]
     pub fn kind(&self) -> NodeKind {
         self.file_system.kind(self.id)
+    }
+
+    /// The device number of the character device it is, if it is one.
+    pub fn character_device(&self) -> Option<(u32, u32)> {
+        self.file_system.character_device(self.id)
     }
 
     /// Whether it is a directory.
