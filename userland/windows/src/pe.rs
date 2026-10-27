@@ -1,7 +1,7 @@
 //! The PE32+ executable format (Microsoft's "PE Format" specification): a checked parser of
-//! the headers and section table of an x64 or ARM64 Windows console executable. Every offset and size
-//! read from the file is checked against the file and the image before it is used, so a
-//! malformed file is refused with a reason, never a panic.
+//! the headers and section table of an x64 or ARM64 Windows console executable. Every offset
+//! and size read from the file is checked against the file and the image before it is used, so
+//! a malformed file is refused with a reason, never a panic.
 
 pub const MACHINE_AMD64: u16 = 0x8664;
 pub const MACHINE_ARM64: u16 = 0xaa64;

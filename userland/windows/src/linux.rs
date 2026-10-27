@@ -305,8 +305,8 @@ pub fn thread_id() -> u32 {
 }
 
 /// Points the calling thread's register for its thread environment block at `address`: GS's
-/// base on x86_64, `tpidr_el0` on aarch64 (the layer's own copy, which it loads into `x18`
-/// whenever the program's code runs, D124).
+/// base on x86_64, `tpidr_el0` on aarch64 (the layer's own copy, from which it loads `x18`
+/// before it calls into the program, D124).
 ///
 /// # Safety
 /// `address` must be the thread environment block every Win32 function finds through it.

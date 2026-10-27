@@ -7,10 +7,10 @@
 mod abi;
 
 macro_rules! exports {
-    ($($name:literal => $function:path $([$stack_arguments:ident])?),* $(,)?) => {
+    ($($name:literal => $function:path $([$entry_kind:ident])?),* $(,)?) => {
         &[$(crate::library::Export {
             name: $name,
-            address: export_entry!($function $(, $stack_arguments)?),
+            address: export_entry!($function $(, $entry_kind)?),
         }),*]
     };
 }

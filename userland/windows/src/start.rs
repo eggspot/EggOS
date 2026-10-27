@@ -2,8 +2,8 @@
 //! for a file that starts with `MZ` (D118). The layer reads the file, checks it, maps the image
 //! at its preferred base (or relocates it), binds its imports to the layer's own functions,
 //! protects each section, builds the TEB and PEB, points the thread's TEB register at the TEB
-//! (GS on x86_64, `x18` on aarch64) and calls the entry point, whose return value is the exit
-//! code.
+//! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
+//! calls the entry point, whose return value is the exit code.
 
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};

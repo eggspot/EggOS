@@ -3,14 +3,16 @@
 //! the Arm64 procedure call standard on aarch64: Windows' own conventions there for functions
 //! that are not variadic. On aarch64 Windows also keeps the TEB's address in `x18`, which the
 //! program's code reads at any time and never writes, while the layer's code, built for Linux,
-//! may use `x18` as a scratch register. So on aarch64 the layer keeps each thread's TEB in
-//! `tpidr_el0` too, every export the program calls is a small entry that calls the function and
-//! reloads `x18` from `tpidr_el0` before returning (`direct` exports are assembly that never
-//! writes `x18`, called as they are), and every call into the program loads `x18` first.
+//! may use `x18` as a scratch register. So on aarch64 every export the program calls is a small
+//! entry that saves the program's `x18` with the return address, calls the function and
+//! restores both (one marked `stack_arguments` copies the caller's first two stack words for
+//! the function; `direct` exports are assembly that never writes `x18`, called as they are);
+//! the layer keeps each thread's TEB in `tpidr_el0` for its own use, and every call into the
+//! program loads `x18` from there first.
 
 #[cfg(target_arch = "x86_64")]
 macro_rules! export_entry {
-    ($function:path $(, $stack_arguments:ident)?) => {
+    ($function:path $(, $entry_kind:ident)?) => {
         $function as *const ()
     };
 }
@@ -24,11 +26,9 @@ macro_rules! export_entry {
         #[unsafe(naked)]
         unsafe extern "C" fn entry() {
             core::arch::naked_asm!(
-                "stp x29, x30, [sp, #-16]!",
-                "mov x29, sp",
+                "stp x18, x30, [sp, #-16]!",
                 "bl {function}",
-                "mrs x18, tpidr_el0",
-                "ldp x29, x30, [sp], #16",
+                "ldp x18, x30, [sp], #16",
                 "ret",
                 function = sym $function,
             )
@@ -40,13 +40,11 @@ macro_rules! export_entry {
         unsafe extern "C" fn entry() {
             core::arch::naked_asm!(
                 "sub sp, sp, #32",
-                "stp x29, x30, [sp, #16]",
-                "add x29, sp, #16",
+                "stp x18, x30, [sp, #16]",
                 "ldp x16, x17, [sp, #32]",
                 "stp x16, x17, [sp]",
                 "bl {function}",
-                "mrs x18, tpidr_el0",
-                "ldp x29, x30, [sp, #16]",
+                "ldp x18, x30, [sp, #16]",
                 "add sp, sp, #32",
                 "ret",
                 function = sym $function,
