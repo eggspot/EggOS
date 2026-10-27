@@ -215,13 +215,10 @@ fn remove_tree<S: System>(output: &mut Output<S>, directory: &[u8]) -> Result<()
                 continue;
             }
             let child = Path::join(directory, name).ok_or(Errno::ENAMETOOLONG)?;
-            let result = match output.system.remove(child.as_c_str(), false) {
+            match output.system.remove(child.as_c_str(), false) {
                 Err(Errno::EISDIR) => remove_tree(output, child.as_bytes()),
                 result => result,
-            };
-            if let Err(errno) = result {
-                return Err(errno);
-            }
+            }?;
             removed_any = true;
         }
         if !removed_any {

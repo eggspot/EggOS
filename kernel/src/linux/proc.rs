@@ -29,7 +29,6 @@ const PS: u64 = 3;
 
 const UPTIME: u64 = 4;
 
-/// The device `/proc` reports (`st_dev`): Linux's procfs usually gets the anonymous 0:4.
 const DEVICE: (u32, u32) = (0, 4);
 
 /// The `/proc` file system on platform `P`.

@@ -19,7 +19,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 const PAGE_SIZE: usize = 4096;
 
-/// What a node costs its budget besides its pages: its record and its name.
 const NODE_COST: usize = 128;
 
 type Page = Box<[u8]>;
@@ -69,10 +68,7 @@ impl Budget {
 #[derive(Debug)]
 enum Contents {
     Directory(Vec<u32>),
-    File {
-        pages: Vec<Option<Page>>,
-        size: u64,
-    },
+    File { pages: Vec<Option<Page>>, size: u64 },
 }
 
 #[derive(Debug)]
@@ -817,7 +813,8 @@ mod tests {
             fs.rename(root, b"a", a, b"z", false, 0),
             Err(Refused::InvalidArgument)
         );
-        fs.create(root, b"c", NodeKind::Directory, 0o755, 0).unwrap();
+        fs.create(root, b"c", NodeKind::Directory, 0o755, 0)
+            .unwrap();
         assert_eq!(
             fs.rename(root, b"c", a, b"z", false, 0),
             Err(Refused::NotDirectory)

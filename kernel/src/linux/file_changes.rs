@@ -21,8 +21,6 @@ pub const AT_REMOVEDIR: u64 = 0x200;
 /// `renameat2`'s flag that refuses to replace an existing name (`RENAME_NOREPLACE`).
 pub const RENAME_NOREPLACE: u64 = 1;
 
-/// The permission bits a new file or directory loses: the usual `umask`, as there is no
-/// `umask` call yet.
 const UMASK: u32 = 0o022;
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
@@ -50,23 +48,22 @@ pub fn refused(refused: Refused) -> Errno {
     }
 }
 
-/// The directory that holds the last component of `path` (from `start`, or the root for an
-/// absolute path) and that component, trailing slashes ignored; `ENOENT` for a path with no
-/// last name (`/`, `.`, `..`), unless `dots_are_names`, which gives `.` and `..` as names for
-/// the caller to refuse as it must.
-fn parent_and_name<'p>(
+fn parent_and_name(
     root: Node,
     start: Node,
-    path: &'p [u8],
+    path: &[u8],
     dots_are_names: bool,
-) -> Result<(Node, &'p [u8]), Errno> {
+) -> Result<(Node, &[u8]), Errno> {
     let end = path
         .iter()
         .rposition(|&byte| byte != b'/')
         .map_or(0, |at| at + 1);
     let trimmed = &path[..end];
     let split = vfs::split_last(trimmed).or_else(|| {
-        let name_start = trimmed.iter().rposition(|&byte| byte == b'/').map_or(0, |at| at + 1);
+        let name_start = trimmed
+            .iter()
+            .rposition(|&byte| byte == b'/')
+            .map_or(0, |at| at + 1);
         let name = &trimmed[name_start..];
         (dots_are_names && matches!(name, b"." | b"..")).then(|| match name_start {
             0 => (&b"."[..], name),
@@ -125,14 +122,20 @@ pub fn create_file<P: Platform>(
     }
     let permissions = mode as u32 & 0o7777 & !UMASK;
     let id = file_system
-        .create(directory.id(), name, NodeKind::Regular, permissions, now::<P>())
+        .create(
+            directory.id(),
+            name,
+            NodeKind::Regular,
+            permissions,
+            now::<P>(),
+        )
         .map_err(refused)?;
-    vfs::resolve(root, directory, name).map_err(walk_error).and_then(|node| {
-        match node.id() == id {
+    vfs::resolve(root, directory, name)
+        .map_err(walk_error)
+        .and_then(|node| match node.id() == id {
             true => Ok(node),
             false => Err(Errno::ENOENT),
-        }
-    })
+        })
 }
 
 /// What `openat` does to existing regular file `node` opened with `flags` for writing or with
@@ -233,7 +236,13 @@ pub fn pwrite64<P: Platform>(
     if !super::ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    write_regular(process, &file, node, &Iovecs::one(buffer, count), Some(offset))
+    write_regular(
+        process,
+        &file,
+        node,
+        &Iovecs::one(buffer, count),
+        Some(offset),
+    )
 }
 
 /// `ftruncate(fd, length)`: makes the regular file `fd` names `length` bytes long. As Linux:
@@ -266,19 +275,25 @@ pub fn mkdirat<P: Platform>(
     mode: u64,
 ) -> Result<u64, Errno> {
     let mut buffer = PathBuffer::uninit();
-    let (directory, name) = match parent_and_name_at(process, thread, dirfd, path, &mut buffer, true)
-    {
-        Ok(found) => found,
-        Err(Errno::EBUSY) => return Err(Errno::EEXIST),
-        Err(error) => return Err(error),
-    };
+    let (directory, name) =
+        match parent_and_name_at(process, thread, dirfd, path, &mut buffer, true) {
+            Ok(found) => found,
+            Err(Errno::EBUSY) => return Err(Errno::EEXIST),
+            Err(error) => return Err(error),
+        };
     if matches!(name, b"." | b"..") || directory.lookup(name).is_ok() {
         return Err(Errno::EEXIST);
     }
     let file_system = directory.file_system();
     let permissions = mode as u32 & 0o7777 & !UMASK;
     file_system
-        .create(directory.id(), name, NodeKind::Directory, permissions, now::<P>())
+        .create(
+            directory.id(),
+            name,
+            NodeKind::Directory,
+            permissions,
+            now::<P>(),
+        )
         .map(|_| 0)
         .map_err(refused)
 }
@@ -348,7 +363,10 @@ pub fn renameat2<P: Platform>(
         parent_and_name_at(process, thread, old_dirfd, old_path, &mut old_buffer, true)?;
     let (to, to_name) =
         parent_and_name_at(process, thread, new_dirfd, new_path, &mut new_buffer, true)?;
-    if [from_name, to_name].iter().any(|name| matches!(*name, b"." | b"..")) {
+    if [from_name, to_name]
+        .iter()
+        .any(|name| matches!(*name, b"." | b".."))
+    {
         return Err(Errno::EBUSY);
     }
     let moved = from.lookup(from_name).map_err(walk_error)?;
@@ -443,19 +461,32 @@ mod tests {
     fn a_path_splits_into_its_directory_and_last_name_trailing_slashes_ignored() {
         let root = tmpfs();
         let fs = root.file_system();
-        fs.create(root.id(), b"d", NodeKind::Directory, 0o755, 0).unwrap();
+        fs.create(root.id(), b"d", NodeKind::Directory, 0o755, 0)
+            .unwrap();
         let (directory, name) = parent_and_name(root, root, b"/d/x//", false).unwrap();
         assert_eq!((directory, name), (root.lookup(b"d").unwrap(), &b"x"[..]));
-        assert_eq!(parent_and_name(root, root, b"x", false).unwrap(), (root, &b"x"[..]));
+        assert_eq!(
+            parent_and_name(root, root, b"x", false).unwrap(),
+            (root, &b"x"[..])
+        );
         assert_eq!(parent_and_name(root, root, b"/", false), Err(Errno::EBUSY));
-        assert_eq!(parent_and_name(root, root, b"d/..", false), Err(Errno::ENOENT));
+        assert_eq!(
+            parent_and_name(root, root, b"d/..", false),
+            Err(Errno::ENOENT)
+        );
         assert_eq!(
             parent_and_name(root, root, b"d/..", true).unwrap(),
             (root.lookup(b"d").unwrap(), &b".."[..])
         );
-        assert_eq!(parent_and_name(root, root, b"/missing/x", false), Err(Errno::ENOENT));
+        assert_eq!(
+            parent_and_name(root, root, b"/missing/x", false),
+            Err(Errno::ENOENT)
+        );
         let long = [b'a'; NAME_MAX + 1];
-        assert_eq!(parent_and_name(root, root, &long, false), Err(Errno::ENAMETOOLONG));
+        assert_eq!(
+            parent_and_name(root, root, &long, false),
+            Err(Errno::ENAMETOOLONG)
+        );
     }
 
     #[test]

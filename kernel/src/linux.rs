@@ -916,9 +916,7 @@ fn out_of_line_result<P: Platform>(
         number::DUP3 => descriptors::dup3(process, thread.files(), first, second, third),
         number::FCNTL => descriptors::fcntl(process, thread.files(), first, second, third),
         number::PIPE2 => pipe::pipe2::<P>(process, thread, first, second),
-        number::PWRITE64 => {
-            file_changes::pwrite64(process, thread, first, second, third, fourth)
-        }
+        number::PWRITE64 => file_changes::pwrite64(process, thread, first, second, third, fourth),
         number::FTRUNCATE => file_changes::ftruncate::<P>(thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
@@ -928,9 +926,7 @@ fn out_of_line_result<P: Platform>(
         number::RENAMEAT2 => {
             file_changes::renameat2(process, thread, first, second, third, fourth, fifth)
         }
-        number::UTIMENSAT => {
-            file_changes::utimensat(process, thread, first, second, third, fourth)
-        }
+        number::UTIMENSAT => file_changes::utimensat(process, thread, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
         number::MKDIR => file_changes::mkdirat(process, thread, CWD, first, second),
         #[cfg(target_arch = "x86_64")]

@@ -222,7 +222,9 @@ pub fn openat<P: Platform>(
             false => Errno::ENOTDIR,
         });
     } else {
-        if !created && flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
+        if !created
+            && flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL
+        {
             return Err(Errno::EEXIST);
         }
         if directory && (flags & (open_flag::CREAT | open_flag::TRUNC) != 0 || writes) {

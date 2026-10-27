@@ -36,7 +36,6 @@ pub const PIPE_BUF: usize = 4096;
 
 const READ_CHUNK: usize = 512;
 
-/// `SIGPIPE`, sent to a thread that writes to a pipe with no reader.
 const SIGPIPE: u32 = 13;
 
 #[derive(Debug)]
@@ -187,7 +186,6 @@ impl PartialEq for PipeEnd {
 
 impl Eq for PipeEnd {}
 
-/// The flags `pipe2` takes.
 const PIPE2_FLAGS: u32 = open_flag::CLOEXEC | open_flag::NONBLOCK;
 
 /// A new pipe's two open file descriptions, reading then writing, with `O_NONBLOCK` if

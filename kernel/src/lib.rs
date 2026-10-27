@@ -123,7 +123,6 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-/// The anonymous devices the memory file systems on `/tmp` and `/home` report.
 const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 2] = [(b"/tmp", (0, 30)), (b"/home", (0, 31))];
 
 fn mount_system_file_systems<P: Platform>() {

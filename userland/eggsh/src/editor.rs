@@ -197,12 +197,10 @@ impl Editor {
                     .map_or(0, |at| at + 1);
                 self.erase_to(start, buffer, echo);
             }
-            b'\t' | 0x20.. => {
-                if self.length + 1 < buffer.len() {
-                    buffer[self.length] = byte;
-                    self.length += 1;
-                    echo(&[byte]);
-                }
+            b'\t' | 0x20.. if self.length + 1 < buffer.len() => {
+                buffer[self.length] = byte;
+                self.length += 1;
+                echo(&[byte]);
             }
             _ => {}
         }
