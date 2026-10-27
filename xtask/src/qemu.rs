@@ -10,8 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use eggos_drivers::desktop::Desktop;
-use eggos_drivers::display::Damage;
+use eggos_drivers::desktop::protocol::DiscardEvents;
+use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, WindowId, colour};
+use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::input::{AxisRange, scale_to_screen};
 use eggos_drivers::terminal::Terminal;
 
@@ -145,6 +146,12 @@ pub enum Expect {
     /// write its lines in order before the next prompt: the program's checks, exit statuses,
     /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120).
     MacosPrograms,
+    /// The release kernel with `hello-window` added boots to the shell's prompt; the test types
+    /// a pipeline of two of them, each opening a window through `/dev/window` (D127), then
+    /// clicks the first to raise it, drags it by its title bar and closes both with their close
+    /// controls through QMP, checking the display against the host's render after each step,
+    /// and each program writes its lines in order (`shown`, then `close request`).
+    ProgramWindows,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -182,6 +189,32 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"exit 7\r",
 ];
+
+const PROGRAM_WINDOW_SESSION: [&[u8]; 3] = [
+    b"ls /dev\r",
+    b"/usr/libexec/hello-window -o first | /usr/libexec/hello-window -i second; \
+      echo EGGOS-WINDOWS status $?\r",
+    b"exit 7\r",
+];
+
+const WINDOW_TITLES: [&str; 2] = ["first", "second"];
+
+const WINDOW_CONTENT: (u32, u32) = (400, 300);
+
+fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
+    let line = |text: &str| Line::Whole(text.to_owned());
+    [
+        vec![line("window")],
+        vec![
+            line("hello-window first: shown"),
+            line("hello-window second: shown"),
+            line("hello-window first: close request"),
+            line("hello-window second: close request"),
+            line("EGGOS-WINDOWS status 0"),
+        ],
+        vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
+    ]
+}
 
 const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
@@ -671,7 +704,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&["bin", "etc", "home", "init", "proc", "tmp", "usr"]),
+        whole(&["bin", "dev", "etc", "home", "init", "proc", "tmp", "usr"]),
         vec![
             Line::Around("-rwxr-xr-x 23 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
@@ -945,6 +978,25 @@ fn boot(
                 &LINUX_PROGRAM_SESSION,
                 &mut shell_typed,
             ),
+            Expect::ProgramWindows => {
+                let text = String::from_utf8_lossy(&console).into_owned();
+                let both_shown = WINDOW_TITLES
+                    .iter()
+                    .all(|title| has_line(&text, &format!("hello-window {title}: shown")));
+                if let Some(port) = qmp_port
+                    && both_shown
+                    && terminal_frames.is_empty()
+                {
+                    let checked = check_program_windows(arch, port, &mut console, &rx);
+                    if let Err(error) = checked {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    terminal_frames.push(Ok(()));
+                }
+                shell_scripts_to_type(&text, &PROGRAM_WINDOW_SESSION, &mut shell_typed)
+            }
             Expect::WindowsPrograms => shell_scripts_to_type(
                 &String::from_utf8_lossy(&console),
                 &WINDOWS_PROGRAM_SESSION,
@@ -1218,6 +1270,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 "Linux programs",
             );
         }
+        Expect::ProgramWindows => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &PROGRAM_WINDOW_SESSION,
+                program_window_output(),
+                "program windows",
+            );
+        }
         Expect::WindowsPrograms => {
             return session_verdict(
                 arch,
@@ -1486,27 +1548,71 @@ fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
     Some(&console[end + 1..])
 }
 
+struct HostContents<'a> {
+    terminal: WindowId,
+    grid: &'a [u32],
+    windows: &'a [(WindowId, [u32; 2])],
+}
+
+impl Contents for HostContents<'_> {
+    fn copy_row(&self, window: WindowId, x: u32, y: u32, out: &mut [u32]) {
+        if window == self.terminal {
+            let start = y as usize * GRID_SIZE.0 as usize + x as usize;
+            if let Some(row) = self.grid.get(start..start + out.len()) {
+                out.copy_from_slice(row);
+            }
+            return;
+        }
+        let colours = self
+            .windows
+            .iter()
+            .find(|(id, _)| *id == window)
+            .map(|&(_, colours)| colours);
+        for (index, pixel) in out.iter_mut().enumerate() {
+            *pixel = match colours {
+                Some(colours) => window_pattern(colours, x + index as u32, y),
+                None => colour::WINDOW_BACKGROUND,
+            };
+        }
+    }
+}
+
+fn window_colours(title: &str) -> [u32; 2] {
+    match title {
+        "first" => [0x00f2_b33d, 0x000b_0e13],
+        _ => [0x004f_8fe0, 0x00e6_eaf0],
+    }
+}
+
+fn window_pattern(colours: [u32; 2], x: u32, y: u32) -> u32 {
+    colours[((x / 16 + y / 16) % 2) as usize]
+}
+
 /// What a `width` by `height` display shows once the release kernel's desktop is in
 /// `desktop`'s state with its clock at `up 0:00` and its terminal was fed `stream`, rendered
-/// by the same desktop and terminal engine on the host.
-pub fn desktop_picture(desktop: &Desktop, stream: &[u8]) -> Option<Picture> {
+/// by the same desktop and terminal engine on the host; `windows` are the programs' windows
+/// and their checkerboards' colours.
+pub fn desktop_picture(
+    desktop: &Desktop,
+    stream: &[u8],
+    windows: &[(WindowId, [u32; 2])],
+) -> Option<Picture> {
     let screen = desktop.screen();
     let (width, height) = (screen.width, screen.height);
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
     terminal.feed(stream);
+    let mut grid =
+        vec![eggos_drivers::terminal::TERM_BACKGROUND; GRID_SIZE.0 as usize * GRID_SIZE.1 as usize];
+    terminal.render(&mut grid, GRID_SIZE.0 as usize, 0, 0, &mut Damage::new());
+    let contents = HostContents {
+        terminal: desktop.terminal_window(),
+        grid: &grid,
+        windows,
+    };
     let mut pixels = vec![0; width as usize * height as usize];
-    desktop.draw(&mut pixels, width as usize, screen);
-    if desktop.terminal_shown() {
-        terminal.render(
-            &mut pixels,
-            width as usize,
-            area.x,
-            area.y,
-            &mut Damage::new(),
-        );
-    }
+    desktop.draw(&mut pixels, width as usize, screen, &contents);
     Some(Picture {
         width,
         height,
@@ -1518,7 +1624,17 @@ fn with_uptime(desktop: &Desktop, picture: &mut Picture, seconds: u64) {
     let mut desktop_then = Desktop::new(picture.width, picture.height).expect("the desktop fits");
     desktop_then.set_uptime(seconds, &mut Damage::new());
     let clock = desktop.clock_rect();
-    desktop_then.draw(&mut picture.pixels, picture.width as usize, clock);
+    let contents = HostContents {
+        terminal: desktop_then.terminal_window(),
+        grid: &[],
+        windows: &[],
+    };
+    desktop_then.draw(
+        &mut picture.pixels,
+        picture.width as usize,
+        clock,
+        &contents,
+    );
 }
 
 const TABLET_RANGE: AxisRange = AxisRange { min: 0, max: 32767 };
@@ -1595,6 +1711,7 @@ fn send_pointer_step(qmp: &mut Qmp, step: PointerStep, screen: (u32, u32)) -> Re
 fn apply_pointer_step(desktop: &mut Desktop, step: PointerStep) {
     let screen = desktop.screen();
     let mut damage = Damage::new();
+    let events = &mut DiscardEvents;
     desktop.pointer_moved(
         scale_to_screen(
             tablet_value(step.x, screen.width),
@@ -1607,9 +1724,10 @@ fn apply_pointer_step(desktop: &mut Desktop, step: PointerStep) {
             screen.height,
         ),
         &mut damage,
+        events,
     );
     if let Some(pressed) = step.button {
-        desktop.left_button(pressed, &mut damage);
+        desktop.left_button(pressed, &mut damage, events);
     }
 }
 
@@ -1625,7 +1743,7 @@ fn check_terminal_frame(
     let (width, height) = screen_size(&mut qmp, arch)?;
     let mut desktop = Desktop::new(width, height)
         .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
-    check_desktop_frame(arch, &mut qmp, console, output, at, &desktop)?;
+    check_desktop_frame(arch, &mut qmp, console, output, at, &desktop, &[])?;
     if !with_pointer {
         return Ok(());
     }
@@ -1634,7 +1752,172 @@ fn check_terminal_frame(
             send_pointer_step(&mut qmp, step, (width, height))?;
             apply_pointer_step(&mut desktop, step);
         }
-        check_desktop_frame(arch, &mut qmp, console, output, state, &desktop)?;
+        check_desktop_frame(arch, &mut qmp, console, output, state, &desktop, &[])?;
+    }
+    Ok(())
+}
+
+const CLOSE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn has_line(console: &str, wanted: &str) -> bool {
+    console
+        .split_inclusive('\n')
+        .any(|line| line.ends_with('\n') && line.trim_end() == wanted)
+}
+
+fn wait_for_line(
+    arch: &Arch,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    wanted: &str,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        console.extend(output.try_iter().flatten());
+        if has_line(&String::from_utf8_lossy(console), wanted) {
+            return Ok(());
+        }
+        if started.elapsed() > CLOSE_REQUEST_TIMEOUT {
+            return Err(format!("{}: no `{wanted}` line", arch.name));
+        }
+        std::thread::sleep(TERMINAL_FRAME_RETRY);
+    }
+}
+
+fn click_steps(x: u32, y: u32) -> [PointerStep; 2] {
+    [
+        PointerStep {
+            x,
+            y,
+            button: Some(true),
+        },
+        PointerStep {
+            x,
+            y,
+            button: Some(false),
+        },
+    ]
+}
+
+fn check_program_windows(
+    arch: &Arch,
+    port: u16,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+) -> Result<(), String> {
+    let mut qmp = Qmp::connect(port)?;
+    let (width, height) = screen_size(&mut qmp, arch)?;
+    let mut desktop = Desktop::new(width, height)
+        .ok_or_else(|| format!("{}: a {width}x{height} display holds no desktop", arch.name))?;
+    let mut windows = Vec::new();
+    let refused = |error| {
+        format!(
+            "{}: the host's desktop refused a window: {error:?}",
+            arch.name
+        )
+    };
+    for (client, title) in WINDOW_TITLES.iter().enumerate() {
+        let client = client as u16;
+        let (content_width, content_height) = WINDOW_CONTENT;
+        let created = desktop
+            .create(client, 0, 0, content_width, content_height, 0)
+            .map_err(refused)?;
+        let id = u32::from(created.window);
+        desktop
+            .set_title(client, id, title.as_bytes(), &mut Damage::new())
+            .map_err(refused)?;
+        desktop
+            .commit(client, id, &[], &mut Damage::new(), &mut DiscardEvents)
+            .map_err(refused)?;
+        windows.push((created.window, window_colours(title)));
+    }
+    let [(first, _), (second, _)] = [windows[0], windows[1]];
+    let screen = (width, height);
+    let check = |qmp: &mut Qmp, desktop: &Desktop, console: &mut Vec<u8>, at: &str| {
+        check_desktop_frame(arch, qmp, console, output, at, desktop, &windows)
+    };
+    check(
+        &mut qmp,
+        &desktop,
+        console,
+        "two programs' windows cascaded",
+    )?;
+    let rect = |desktop: &Desktop, id: WindowId| {
+        desktop
+            .window_rect(id)
+            .ok_or_else(|| format!("{}: the window {id} is gone", arch.name))
+    };
+    let content = desktop.content_rect(first).unwrap_or_default();
+    for step in click_steps(content.x + 8, content.bottom() - 40) {
+        send_pointer_step(&mut qmp, step, screen)?;
+        apply_pointer_step(&mut desktop, step);
+    }
+    if desktop.stacking().last() != Some(first) {
+        return Err(format!(
+            "{}: the click did not raise the first window",
+            arch.name
+        ));
+    }
+    check(
+        &mut qmp,
+        &desktop,
+        console,
+        "the first window raised by a click",
+    )?;
+    let before: Rect = rect(&desktop, first)?;
+    let (grab_x, grab_y) = (before.x + before.width / 2, before.y + 14);
+    for (x, y, button) in [
+        (grab_x, grab_y, Some(true)),
+        (grab_x + 30, grab_y + 20, None),
+        (grab_x + 60, grab_y + 40, None),
+        (grab_x + 60, grab_y + 40, Some(false)),
+    ] {
+        let step = PointerStep { x, y, button };
+        send_pointer_step(&mut qmp, step, screen)?;
+        apply_pointer_step(&mut desktop, step);
+    }
+    let after = rect(&desktop, first)?;
+    if (after.x, after.y) != (before.x + 60, before.y + 40) {
+        return Err(format!(
+            "{}: the drag did not move the first window",
+            arch.name
+        ));
+    }
+    check(
+        &mut qmp,
+        &desktop,
+        console,
+        "the first window dragged by its title bar",
+    )?;
+    for (client, (id, name)) in [(0u16, (first, "first")), (1, (second, "second"))] {
+        let close = desktop.close_control(id).unwrap_or_default();
+        if desktop.stacking().last() != Some(id) {
+            return Err(format!("{}: the {name} window is not on top", arch.name));
+        }
+        for step in click_steps(close.x + 10, close.y + 14) {
+            send_pointer_step(&mut qmp, step, screen)?;
+            apply_pointer_step(&mut desktop, step);
+        }
+        wait_for_line(
+            arch,
+            console,
+            output,
+            &format!("hello-window {name}: close request"),
+        )?;
+        desktop
+            .destroy(
+                client,
+                u32::from(id),
+                &mut Damage::new(),
+                &mut DiscardEvents,
+            )
+            .map_err(refused)?;
+        check(
+            &mut qmp,
+            &desktop,
+            console,
+            &format!("the {name} window closed by its close control"),
+        )?;
     }
     Ok(())
 }
@@ -1662,6 +1945,7 @@ fn check_desktop_frame(
     output: &mpsc::Receiver<Vec<u8>>,
     at: &str,
     desktop: &Desktop,
+    windows: &[(WindowId, [u32; 2])],
 ) -> Result<(), String> {
     let path = screendump_path(arch, "")?;
     let started = Instant::now();
@@ -1676,7 +1960,7 @@ fn check_desktop_frame(
                 arch.name
             )
         })?;
-        let mut expected = desktop_picture(desktop, stream)
+        let mut expected = desktop_picture(desktop, stream, windows)
             .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?;
         let matched = (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
             with_uptime(desktop, &mut expected, seconds);
@@ -1823,6 +2107,7 @@ fn screenshot_session(
         rx,
         "the screenshot's last prompt",
         &desktop,
+        &[],
     )?;
     let path = screendump_path(arch, "-screenshot")?;
     qmp.screendump(&path)?;
@@ -2085,6 +2370,32 @@ mod tests {
     }
 
     #[test]
+    fn the_program_windows_session_passes_only_with_both_programs_lines_in_order() {
+        let mut ok = String::from("EggOS 0.2.0 (aarch64)\r\n");
+        for (typed, output) in PROGRAM_WINDOW_SESSION.iter().zip(program_window_output()) {
+            let command = String::from_utf8_lossy(typed);
+            ok.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                if let Line::Whole(line) = line {
+                    ok.push_str(&format!("{line}\r\n"));
+                }
+            }
+        }
+        assert!(verdict("aarch64", Expect::ProgramWindows, true, &ok).is_ok());
+        let unclosed = ok.replacen("hello-window second: close request\r\n", "", 1);
+        assert!(verdict("aarch64", Expect::ProgramWindows, true, &unclosed).is_err());
+        let swapped = ok.replacen(
+            "first: close request\r\nhello-window second: close request",
+            "second: close request\r\nhello-window first: close request",
+            1,
+        );
+        assert!(verdict("aarch64", Expect::ProgramWindows, true, &swapped).is_err());
+        assert!(has_line(&ok, "hello-window first: shown"));
+        assert!(!has_line(&ok, "hello-window first: show"));
+        assert!(!has_line("hello-window first: shown", "hello-window first: shown"));
+    }
+
+    #[test]
     fn the_linux_programs_session_passes_only_with_each_command_s_lines_in_order() {
         let ok = linux_programs_console();
         assert!(verdict("riscv64", Expect::LinuxPrograms, true, &ok).is_ok());
@@ -2294,7 +2605,7 @@ mod tests {
                 "{missing}"
             );
         }
-        let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
+        let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
         let one_link = ok.replace("-rwxr-xr-x 23 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
@@ -2324,14 +2635,17 @@ mod tests {
     #[test]
     fn the_expected_picture_is_the_desktop_with_the_engine_s_render_of_the_stream() {
         let desktop = Desktop::new(1024, 768).unwrap();
-        let picture = desktop_picture(&desktop, b"eggsh:/# ").unwrap();
+        let picture = desktop_picture(&desktop, b"eggsh:/# ", &[]).unwrap();
         assert_eq!((picture.width, picture.height), (1024, 768));
         assert_eq!(picture.pixels.len(), 1024 * 768);
         assert_eq!(picture.pixels[10], eggos_drivers::desktop::colour::BAR);
         let area = desktop.text_area();
         let cursor = picture.pixels[(area.y as usize) * 1024 + area.x as usize + 9 * 8];
         assert_eq!(cursor, eggos_drivers::terminal::TERM_CURSOR);
-        assert_ne!(picture, desktop_picture(&desktop, b"eggsh:/#").unwrap());
+        assert_ne!(
+            picture,
+            desktop_picture(&desktop, b"eggsh:/#", &[]).unwrap()
+        );
     }
 
     #[test]

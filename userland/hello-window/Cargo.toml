@@ -1,0 +1,16 @@
+[package]
+name = "eggos-hello-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hello-window"
+path = "src/main.rs"
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

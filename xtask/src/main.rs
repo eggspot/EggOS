@@ -168,6 +168,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-init",
     "eggos-eggsh",
     "eggos-coreutils",
+    "eggos-hello-window",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
@@ -215,6 +216,10 @@ const SHELL_PATH: &str = "bin/eggsh";
 const COREUTILS_PATH: &str = "bin/coreutils";
 
 const PROC_PATH: &str = "proc";
+
+const DEV_PATH: &str = "dev";
+
+const HELLO_WINDOW_PATH: &str = "usr/libexec/hello-window";
 
 const TMP_PATH: &str = "tmp";
 
@@ -433,6 +438,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Expect::LinuxPrograms,
         qemu::TEST_CPUS,
         qemu::Display::Absent,
+        &[],
+    )?;
+    let kernel = build_program_windows_test_kernel(arch)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::ProgramWindows,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
         &[],
     )?;
     let kernel = build_windows_programs_test_kernel(arch)?;
@@ -756,6 +770,7 @@ fn release_initramfs(
         (INIT_PATH, initramfs::Content::Program(&init)),
         (SHELL_PATH, initramfs::Content::Program(&shell)),
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+        (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
         (HOME_PATH, initramfs::Content::Directory),
@@ -877,6 +892,26 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
         arch,
         &extra,
         &format!("initramfs-linux-programs-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
+fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let hello_window = build_runtime_program(arch, "eggos-hello-window")?;
+    let extra = [
+        (
+            "etc/eggos/init.conf",
+            initramfs::Content::Text(SHELL_TEST_CONFIG),
+        ),
+        (
+            HELLO_WINDOW_PATH,
+            initramfs::Content::Program(&hello_window),
+        ),
+    ];
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-program-windows-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
 }
