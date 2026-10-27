@@ -124,6 +124,12 @@ pub enum Expect {
     /// command must write its lines in order before the next prompt; the shell exits with 7 and
     /// init powers off (D117).
     LinuxPrograms,
+    /// The release kernel with two Windows console programs built for `x86_64-pc-windows-msvc`
+    /// added as `cargo xtask image --add` adds them (with the Windows layer on x86_64), boots to
+    /// the shell's prompt; the test types a line at each prompt that runs one, and each command
+    /// must write its lines in order before the next prompt: on x86_64 the programs' checks,
+    /// exit codes and the refusal of an unsupported import, elsewhere `ENOEXEC` (D118).
+    WindowsPrograms,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -161,6 +167,63 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"exit 7\r",
 ];
+
+const WINDOWS_PROGRAM_SESSION: [&[u8]; 4] = [
+    b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
+    b"/bin/windows-console.exe exit 300; echo WINDOWS-CONSOLE status $?\r",
+    b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
+    b"exit 7\r",
+];
+
+fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
+    if arch != "x86_64" {
+        let refused = |name: &str| {
+            vec![
+                Line::Whole(format!("eggsh: {name}: Exec format error")),
+                Line::Whole("WINDOWS-CONSOLE status 126".into()),
+            ]
+        };
+        return [
+            refused("windows-console.exe"),
+            refused("/bin/windows-console.exe"),
+            refused("windows-unsupported.exe"),
+            end,
+        ];
+    }
+    [
+        whole(&[
+            "WINDOWS-CONSOLE windows-console.exe args a|b c",
+            "WINDOWS-CONSOLE env GREETING=hi",
+            "WINDOWS-CONSOLE teb ok",
+            "WINDOWS-CONSOLE file eggos",
+            "WINDOWS-CONSOLE missing file refused error 2",
+            "WINDOWS-CONSOLE heap ok",
+            "WINDOWS-CONSOLE time ok",
+            "WINDOWS-CONSOLE stack ok",
+            "WINDOWS-CONSOLE library ok",
+            "WINDOWS-CONSOLE tls ok",
+            "WINDOWS-CONSOLE stderr",
+            "WINDOWS-CONSOLE status 0",
+        ]),
+        whole(&["WINDOWS-CONSOLE status 44"]),
+        vec![
+            Line::Around(
+                "windows: ",
+                "windows-unsupported.exe: needs CreateProcessW from kernel32.dll, \
+                 which EggOS does not provide yet",
+            ),
+            Line::Whole("WINDOWS-CONSOLE status 126".into()),
+        ],
+        end,
+    ]
+}
 
 fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     let checks = |name: &'static str| {
@@ -530,6 +593,11 @@ fn boot(
                 &LINUX_PROGRAM_SESSION,
                 &mut shell_typed,
             ),
+            Expect::WindowsPrograms => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &WINDOWS_PROGRAM_SESSION,
+                &mut shell_typed,
+            ),
             Expect::BootToPrompt => {
                 let prompts = String::from_utf8_lossy(&console)
                     .matches(SHELL_PROMPT)
@@ -766,7 +834,26 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
         Expect::InitRestart => return init_verdict(arch, clean_exit, console, RESTART_LINE),
         Expect::Shell => return shell_verdict(arch, clean_exit, console),
         Expect::BootToPrompt => return prompt_verdict(arch, clean_exit, console),
-        Expect::LinuxPrograms => return linux_programs_verdict(arch, clean_exit, console),
+        Expect::LinuxPrograms => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &LINUX_PROGRAM_SESSION,
+                linux_program_output(),
+                "Linux programs",
+            );
+        }
+        Expect::WindowsPrograms => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &WINDOWS_PROGRAM_SESSION,
+                windows_program_output(arch),
+                "Windows programs",
+            );
+        }
         Expect::BootClock => return boot_clock_verdict(arch, console),
         _ => {}
     }
@@ -877,7 +964,14 @@ fn shell_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn linux_programs_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), String> {
+fn session_verdict<const N: usize>(
+    arch: &str,
+    clean_exit: bool,
+    console: &str,
+    session: &[&[u8]; N],
+    outputs: [Vec<Line>; N],
+    name: &str,
+) -> Result<(), String> {
     let lines: Vec<&str> = console.lines().map(str::trim_end).collect();
     if let Some(panic) = lines
         .iter()
@@ -888,7 +982,7 @@ fn linux_programs_verdict(arch: &str, clean_exit: bool, console: &str) -> Result
     if !clean_exit {
         return Err(format!("{arch}: QEMU exited with an error"));
     }
-    for (typed, expected) in LINUX_PROGRAM_SESSION.iter().zip(linux_program_output()) {
+    for (typed, expected) in session.iter().zip(outputs) {
         let command = String::from_utf8_lossy(typed);
         let command = command.trim_end_matches('\r');
         let Some(echoed) = lines
@@ -906,7 +1000,7 @@ fn linux_programs_verdict(arch: &str, clean_exit: bool, console: &str) -> Result
             ));
         }
     }
-    eprintln!("xtask: {arch}: Linux programs boot test passed");
+    eprintln!("xtask: {arch}: {name} boot test passed");
     Ok(())
 }
 
@@ -1450,6 +1544,43 @@ mod tests {
         assert!(scripts_to_type(&partial, &mut typed).is_empty());
         let whole = format!("{partial} and a line\r\n");
         assert_eq!(scripts_to_type(&whole, &mut typed), [CONSOLE_SCRIPTS[3].1]);
+    }
+
+    fn windows_programs_console(arch: &str) -> String {
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n");
+        for (typed, output) in WINDOWS_PROGRAM_SESSION
+            .iter()
+            .zip(windows_program_output(arch))
+        {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                let line = match line {
+                    Line::Whole(whole) => whole,
+                    Line::Around(start, end) => format!("{start}/bin/{end}"),
+                };
+                console.push_str(&format!("{line}\r\n"));
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_windows_programs_session_expects_the_checks_on_x86_64_and_enoexec_elsewhere() {
+        for arch in ["x86_64", "aarch64", "riscv64"] {
+            let ok = windows_programs_console(arch);
+            assert!(
+                verdict(arch, Expect::WindowsPrograms, true, &ok).is_ok(),
+                "{arch}"
+            );
+            let without = ok.replace("WINDOWS-CONSOLE status 126\r\n", "");
+            assert!(verdict(arch, Expect::WindowsPrograms, true, &without).is_err());
+        }
+        let x86 = windows_programs_console("x86_64");
+        let refused = x86.replace("WINDOWS-CONSOLE heap ok", "WINDOWS-CONSOLE heap failed");
+        assert!(verdict("x86_64", Expect::WindowsPrograms, true, &refused).is_err());
+        let elsewhere = windows_programs_console("aarch64");
+        assert!(verdict("x86_64", Expect::WindowsPrograms, true, &elsewhere).is_err());
     }
 
     fn linux_programs_console() -> String {

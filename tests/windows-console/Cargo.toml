@@ -1,0 +1,17 @@
+[package]
+name = "eggos-windows-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "windows-console"
+path = "src/main.rs"
+
+[[bin]]
+name = "windows-unsupported"
+path = "src/bin/unsupported.rs"
+
+[lints]
+workspace = true

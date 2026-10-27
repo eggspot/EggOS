@@ -26,7 +26,7 @@ use super::timer::{
     WAKEUP_VECTOR,
 };
 use crate::cpu::{
-    FS_BASE_ID_OFFSET, GDT_ENTRIES, HalCpuLocal, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
+    GDT_ENTRIES, HalCpuLocal, SEGMENT_BASES_ID_OFFSET, TSS_RSP0_OFFSET, Tss, USER_RSP_OFFSET,
 };
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Format, x86_64::X86_64};
@@ -101,6 +101,7 @@ exception_common:
     // From ring 3 (D47)? The code segment the CPU pushed is above the vector and error code.
     testb   $3, 24(%rsp)
     jnz     user_exception
+    lfence
     // From the kernel: the handler keeps the callee-saved registers itself, as any call does.
     pushq   %rax
     pushq   %rcx
@@ -135,6 +136,7 @@ exception_common:
     // stack it left.
 user_exception:
     swapgs
+    lfence
 user_exception_save:
     pushq   %rax
     pushq   %rbx
@@ -197,9 +199,8 @@ x86_64_enter_user:
     movq    %rsp, {kernel_rsp}(%rdi)
     leaq    {kernel_rsp}(%rdi), %rax
     movq    %rax, %gs:{tss_rsp0}
-    // The program's FS base, unless this CPU's is already the one its `fs_base_id` names.
-    movq    {fs_base_id}(%rdi), %rax
-    cmpq    %rax, %gs:{cpu_fs_base_id}
+    movq    {segment_bases_id}(%rdi), %rax
+    cmpq    %rax, %gs:{cpu_segment_bases_id}
     jne     2f
 3:  cmpq    ${syscall_vector}, {vector}(%rdi)
     je      1f
@@ -243,13 +244,16 @@ x86_64_enter_user:
     swapgs
     sysretq
     int3
-    // Loads the FS base (`rax` holds the context's `fs_base_id`): `rax`, `rcx` and `rdx` are
-    // the program's to load after this.
-2:  movq    %rax, %gs:{cpu_fs_base_id}
+2:  movq    %rax, %gs:{cpu_segment_bases_id}
     movq    {fs_base}(%rdi), %rax
     movq    %rax, %rdx
     shrq    $32, %rdx
     movl    ${ia32_fs_base}, %ecx
+    wrmsr
+    movq    {gs_base}(%rdi), %rax
+    movq    %rax, %rdx
+    shrq    $32, %rdx
+    movl    ${ia32_kernel_gs_base}, %ecx
     wrmsr
     jmp     3b
     int3
@@ -1197,9 +1201,11 @@ x86_64_user_test_end:
     rflags = const core::mem::offset_of!(Registers, rflags),
     rsp = const core::mem::offset_of!(Registers, rsp),
     fs_base = const core::mem::offset_of!(Registers, fs_base),
-    fs_base_id = const core::mem::offset_of!(Registers, fs_base_id),
-    cpu_fs_base_id = const FS_BASE_ID_OFFSET,
+    segment_bases_id = const core::mem::offset_of!(Registers, segment_bases_id),
+    cpu_segment_bases_id = const SEGMENT_BASES_ID_OFFSET,
     ia32_fs_base = const IA32_FS_BASE,
+    gs_base = const core::mem::offset_of!(Registers, gs_base),
+    ia32_kernel_gs_base = const IA32_KERNEL_GS_BASE,
     tss_rsp0 = const TSS_RSP0_OFFSET,
     user_rsp = const USER_RSP_OFFSET,
     user_cs = const USER_CODE_SELECTOR,
@@ -1650,10 +1656,6 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             options(nomem, nostack),
         );
     }
-    // Programs' FS and GS bases start at zero, whatever firmware left: the FS base as the
-    // per-CPU block's `fs_base_id` 0 says (`x86_64_enter_user` loads another only for a
-    // context that set one), the GS base for good, since no program can set it yet
-    // (`ARCH_SET_GS` waits for the SWAPGS fence, D49). Neither is used in the kernel.
     // SAFETY: both MSRs are architectural, and nothing runs in ring 3 on this CPU yet.
     unsafe { super::write_msr(IA32_FS_BASE, 0) };
     // SAFETY: as above; the kernel's own GS base is `IA32_GS_BASE`, which this leaves alone.

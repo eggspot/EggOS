@@ -53,6 +53,14 @@ cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello
 cargo xtask image --arch all --add path/to/hello       # writes target/image/eggos-<arch>.elf
 ```
 
+### Run Windows console programs
+On x86_64, Windows console programs run natively through EggOS's own Windows layer, part 1
+([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
+
+```
+cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.exe
+```
+
 ## Layout
 | Path | What |
 |------|------|
@@ -60,7 +68,7 @@ cargo xtask image --arch all --add path/to/hello       # writes target/image/egg
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
 | `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
-| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)) |
+| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), and `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 

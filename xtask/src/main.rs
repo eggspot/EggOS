@@ -158,6 +158,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
+    "eggos-windows",
 ];
 
 struct UserProgram {
@@ -396,6 +397,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Absent,
         &[],
     )?;
+    let kernel = build_windows_programs_test_kernel(arch)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::WindowsPrograms,
+        qemu::TEST_CPUS,
+        qemu::Display::Absent,
+        &[],
+    )?;
     let kernel = build_kernel(arch, None)?;
     qemu::boot_test(
         arch,
@@ -409,6 +419,16 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
 }
 
 fn clippy_targets() -> Result<(), String> {
+    cargo(&[
+        "clippy",
+        "--target",
+        WINDOWS_TARGET,
+        "-p",
+        WINDOWS_CONSOLE_PACKAGE,
+        "--",
+        "-D",
+        "warnings",
+    ])?;
     for arch in ARCHES {
         let mut args = vec!["clippy", "--target", arch.user_target];
         for krate in USER_CRATES {
@@ -484,12 +504,114 @@ pub fn build_release_image(
     {
         return Err(format!("`{}` is not a file to add", missing.host));
     }
+    let layer = windows_layer_for(arch, added)?;
+    let mut members = image::members(added);
+    members.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
         arch,
-        &image::members(added),
+        &members,
         &format!("initramfs-image-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
+}
+
+const WINDOWS_LAYER_PACKAGE: &str = "eggos-windows";
+
+const WINDOWS_LAYER_PATH: &str = "usr/lib/eggos/windows";
+
+const WINDOWS_LAYER_ARCH: &str = "x86_64";
+
+const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
+
+const WINDOWS_CONSOLE_PACKAGE: &str = "eggos-windows-console";
+
+const WINDOWS_CONSOLE_PROGRAMS: [(&str, &str); 2] = [
+    ("windows-console", "bin/windows-console.exe"),
+    ("windows-unsupported", "bin/windows-unsupported.exe"),
+];
+
+struct WindowsLayer {
+    host: String,
+}
+
+impl WindowsLayer {
+    fn member(&self) -> (&str, initramfs::Content<'_>) {
+        (WINDOWS_LAYER_PATH, initramfs::Content::Program(&self.host))
+    }
+}
+
+fn windows_layer_for(
+    arch: &Arch,
+    added: &[image::AddedFile],
+) -> Result<Option<WindowsLayer>, String> {
+    let windows_program = added.iter().any(|file| {
+        let mut magic = [0u8; 2];
+        std::fs::File::open(&file.host)
+            .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
+            .is_ok_and(|()| &magic == b"MZ")
+    });
+    if !windows_program || arch.name != WINDOWS_LAYER_ARCH {
+        return Ok(None);
+    }
+    let host = build_runtime_program(arch, WINDOWS_LAYER_PACKAGE)?;
+    Ok(Some(WindowsLayer { host }))
+}
+
+fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let mut added = Vec::new();
+    for (program, path) in WINDOWS_CONSOLE_PROGRAMS {
+        added.push(image::AddedFile {
+            host: build_windows_program(program)?,
+            path: path.to_owned(),
+        });
+    }
+    let layer = windows_layer_for(arch, &added)?;
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(layer.iter().map(|layer| layer.member()));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-windows-programs-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
+
+const WINDOWS_PROGRAM_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "link-arg=/NODEFAULTLIB",
+    "-C",
+    "link-arg=/SUBSYSTEM:CONSOLE",
+    "-C",
+    "link-arg=/ENTRY:mainCRTStartup",
+];
+
+fn build_windows_program(program: &str) -> Result<String, String> {
+    let rustflags = WINDOWS_PROGRAM_RUSTFLAGS.join("\x1f");
+    let target_dir = target_directory().join("windows-console");
+    let target_dir = target_dir.to_string_lossy();
+    let path = build_executable(
+        &[
+            "build",
+            "-p",
+            WINDOWS_CONSOLE_PACKAGE,
+            "--bin",
+            program,
+            "--target",
+            WINDOWS_TARGET,
+        ],
+        &[
+            ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
+            ("CARGO_TARGET_DIR", &target_dir),
+        ],
+        &format!("{program} executable for {WINDOWS_TARGET}"),
+    )?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn release_initramfs(

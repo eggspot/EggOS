@@ -80,11 +80,19 @@ holds what used to be written in them.
   that run them, by name or by path; each command's `LINUX-STATIC` lines, the panic's message,
   `Aborted` and the exit statuses must appear in order before the next prompt (D117). A boot that
   has not powered off within 30 seconds (90 for the benchmarks) has hung.
+- **The Windows programs boot test** adds `tests/windows-console`'s two programs, built for
+  `x86_64-pc-windows-msvc` with `rust-lld`, as `/bin/windows-console.exe` and
+  `/bin/windows-unsupported.exe` (with the Windows layer on x86_64) and types three commands:
+  on x86_64 each `WINDOWS-CONSOLE` line, the exit codes 0 and 44 (`ExitProcess(300)`) and the
+  refusal of the unsupported import with status 126 must appear in order; on aarch64 and
+  riscv64, `Exec format error` and 126 (D118).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
   refused) and writes `target/image/eggos-<arch>.elf`; `cargo xtask run` takes the same options
-  ([Linux programs](linux-programs.md), D117).
+  ([Linux programs](linux-programs.md), D117). Adding a Windows program (a file that starts with
+  `MZ`) to an x86_64 image installs the Windows layer at `/usr/lib/eggos/windows` with it
+  ([Windows programs](windows-programs.md), D118).
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
