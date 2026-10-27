@@ -2,9 +2,9 @@
 
 `userland/coreutils` (D108) is one program, `/bin/coreutils`, with the utilities as hard links
 to it in `/bin`: `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`, `mkdir`,
-`mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `true`, `uname`, `uptime` and
-`wc` (D108, D125). It runs the utility named by the last component of the name it was started by, so
-`ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
+`mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `true`, `uname`, `uptime`,
+`wc` and `wm` (D108, D125, D128). It runs the utility named by the last component of the name
+it was started by, so `ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
 the utility its first argument names (`coreutils ls /`); `coreutils --list` lists them. It is
 our own Rust program on our own runtime, like the shell: no C library, no allocator, about
 45 KiB, and every name costs only a directory entry in the initramfs.
@@ -32,6 +32,7 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
 | `mkdir [-p] directory...` | Makes each directory; `-p` makes its missing parents too and accepts existing directories. | 0, or 1 if any failed |
 | `touch [-c] file...` | Sets each file's modification time to now, creating an empty file for a missing one unless `-c`. | 0, or 1 if any failed |
 | `grep [-icnqvFG] pattern [file...]` | Writes the lines that match `pattern`, a POSIX basic regular expression subset (`^`, `$`, `.`, `*`, `[...]` with ranges and `[^...]`, `\` before a character), or a fixed string with `-F`; `-i` ignores ASCII case, `-v` selects the lines that do not match, `-n` adds line numbers, `-c` writes only the count, `-q` writes nothing and stops at the first match. With several files each line starts with its file's name. | 0 if a line was selected, 1 if none, 2 for an error |
+| `wm list`, `wm focus\|minimise\|maximise\|restore\|close <id>`, `wm move <id> <x> <y>`, `wm size <id> <width> <height>` | The window capability's command line (D128, docs/windows.md): `list` writes `ID STATE X Y WIDTH HEIGHT CLIENT TITLE` and a line per shown or minimised window, oldest first (its id, `normal`, `minimised` or `maximised`, its outside rectangle on the screen, its client's number or `kernel`, its title); the others focus (restoring a minimised window), minimise, maximise, restore, ask to close, move (its outside top-left, on the screen, kept in the work area) or size (its content) window `id`, as the desktop's controls and keys do. Root only, through `/dev/window`. | 0; 1 if the server refused (`wm: id: why`) or there is no display; 2 for a bad command or number |
 | `wc [-lwc] [file...]` | Writes the lines, words and bytes of each file (or standard input), or those asked for, and a total for several; a single count of a single input is written alone, standard input's counts 7 wide, files' as wide as the largest. | 0, or 1 if a file failed |
 | `head [-n count] [-qv] [file...]` | Writes the first 10 lines of each file, or `count`; `==> file <==` headers for several files (`-q` none, `-v` always). | 0, or 1 if a file failed |
 | `tail [-n count] [-n +line] [-qv] [file...]` | Writes the last 10 lines, or `count`, or everything from line `line` on with `+`; headers as `head`'s. It keeps the last 64 KiB and 4096 lines. | 0, or 1 if a file failed |

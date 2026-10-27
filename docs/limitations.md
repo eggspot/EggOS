@@ -62,22 +62,28 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   no wildcards, `if`, `while`, `for`, `case`, functions or `2>` ([shell](shell.md)).
 - The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
   `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `true`, `uname`,
-  `uptime` and `wc`, each with the common options only ([core utilities](coreutils.md)); they
-  are command-line only, with no GUI or MCP front-end yet.
+  `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
+  they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
+  capability's CLI; its GUI is the desktop's own chrome and keys).
 - The keyboard layout is US only (D113).
 
 ## The desktop
-The desktop is minimal (D115, D127): wallpaper, a top bar with the uptime and a power menu, the
-shell in an 80x24 terminal window, and the windows programs open through `/dev/window`
-([windows from programs](windows.md)). You can focus any window by clicking it, drag it by its
-title bar and minimise it to a chip in the bar; a program's close control asks it to close.
-Not yet:
+The desktop is minimal (D115, D127, D128): wallpaper, a top bar with the uptime and a power
+menu, the shell in an 80x24 terminal window, and the windows programs open through
+`/dev/window` ([windows from programs](windows.md)). You can focus any window by clicking it or
+with Alt+Tab, drag it by its title bar, resize it from its edges and corners, maximise and
+restore it (its green control, a double-click on the title bar, Super+Up and Super+Down), snap
+it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
+menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
+on screen, in the shape of a resize zone or of what a program asks for. Not yet:
 - a boot screen with the logo and progress (the plain wallpaper shows until init starts);
-- a pointer drawn on screen (the host's cursor is the only one in the QEMU window);
-- resizing windows from their edges, maximising (double-click on the title bar), snapping,
-  Alt+Tab, Alt+F4 and the other window keys, the window menu, and opening the power menu from
-  the keyboard (item 31); hover highlights on the bar and the controls;
+- hover highlights on the bar, the pressed look of the controls, and the `Hand` and `Busy`
+  pointer shapes;
 - dragging a window partly off screen;
+- resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
+- a setting for the layout profile: the controls are on the left (macOS habits) until the
+  Settings app (item 34); the launcher's key (Super alone) and F11 come with the shell
+  (item 35);
 - closing the terminal (its close control is disabled), a second terminal, the taskbar, dock,
   launcher and desktop icons, and the layout profiles of other systems (item 35);
 - no programs with windows come with the image yet (the window test's `hello-window` is added

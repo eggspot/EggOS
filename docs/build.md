@@ -84,9 +84,11 @@ holds what used to be written in them.
   `Aborted` and the exit statuses must appear in order before the next prompt (D117). Then the
   program windows test boots the release image with `userland/hello-window` added as
   `/usr/libexec/hello-window`, with its display, types `ls /dev` and a pipeline of two of them,
-  and through QMP clicks the first window to raise it, drags it by its title bar and closes both
-  with their close controls, comparing the display with the host's render of the same desktop
-  after each step (D127). A boot that has not powered off within 30 seconds (90 for the
+  and through QMP clicks the first window to raise it, drags it by its title bar, hovers and
+  drags its corner to resize it by (100, 60), maximises and restores it by its control and by
+  double-clicks on its title bar, cycles the windows with Alt+Tab, closes the first with Alt+F4
+  and the second with its close control, comparing the display, the pointer included, with the
+  host's render of the same desktop after each step, and runs `wm list` (D127, D128). A boot that has not powered off within 30 seconds (90 for the
   benchmarks) has hung.
 - **The Windows programs boot test** adds `tests/windows-console`'s two programs, built for
   `x86_64-pc-windows-msvc` with `rust-lld`, as `/bin/windows-console.exe` and

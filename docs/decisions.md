@@ -7193,3 +7193,96 @@ the license, by an explicit instruction recorded here.
   screen, the `wm` command and its MCP tools (D22: the CLI and MCP front-ends of the window
   capability ship with item 31; this item's front-end is the GUI), the 2 s rule, key repeat
   records, scales, buffers over 4 MiB, the server in user space.
+
+## D128 Window management: resize, maximise, snap, the switcher, the window menu, the server's keys, the drawn pointer and `wm` (v0.3.0 item 31) — Decided by the build loop (the design is Claude Fable's, D16; the ambiguities decided by research)
+- **What.** Users can now resize, maximise, restore, close and switch between windows with the
+  mouse and keyboard: edges and corners resize (the 6 px ring and 16x16 corners of
+  `docs/ux/desktop-v0.3-gui.md` section 3.5, live, the client told by a `Resize` event and
+  answering with `SET_SIZE` and a commit), the green third control, a double-click on the title
+  bar (400 ms, 4 px) and Super+Up maximise and restore, Super+Left/Right snap to halves,
+  Super+Down restores or minimises, Alt+Tab (and Cmd+Tab) opens the switcher (most recently
+  focused first, 32 px rows), Alt+Esc cycles without it, Alt+F4 and Cmd+W (Ctrl+W in the
+  Windows and Linux profiles unless the window takes Ctrl keys) ask the focused window to
+  close, Alt+Space or a right-click on the title bar opens the window menu (`Restore`, `Move`,
+  `Size`, `Minimise`, `Maximise`, `Close`, with keyboard moving and sizing by 8 px), Super+D
+  shows the desktop, Super+X opens the power menu. The pointer is drawn: the arrow, the four
+  resize shapes over resize zones and the shape a client asks for (`SET_POINTER`) over its
+  content. A close request nobody reads for 2 s closes the window (`(not responding)` after the
+  title meanwhile). The `wm` command lists windows and focuses, minimises, maximises, restores,
+  closes, moves and sizes them.
+- **Placement.** As D127: the logic is pure state in `eggos_drivers::desktop`
+  (`windows.rs` geometry, the controls on either side, resize zones and the resize, maximise
+  and snap geometry; `management.rs` resizing, maximising, the shortcuts, the 2 s rule, show
+  desktop, `wm`'s list and actions and the pointer's shape; `popups.rs` the switcher and the
+  window menu; `pointer.rs` the shapes' bitmaps; `shortcuts.rs` the keys per profile), with host
+  tests; the kernel times events (`Desktop::set_time`, `Desktop::tick` on each drawing pass),
+  tells the desktop when a client read its close request, and keeps the console from getting
+  the bytes of a key the desktop takes while the terminal is focused.
+- **Contract (docs/windows.md).** `SET_STATE` maximises (2); `SET_POINTER` is shown; the
+  server sends `Resize` (coalesced: a `Resize` replaces the one of its window still queued) and
+  `StateChanged` for maximise and restore too. `SET_SIZE` now clamps to the minimum and the
+  whole work area (the brief's rule; `CREATE` keeps the 32 px margin), and while a `Resize` the
+  server sent is unanswered it replaces only the buffer, so a late answer never undoes the
+  user's drag. Two requests for `wm`, root only (the permission model comes with the MCP
+  server): `LIST_WINDOW` 11 (`0xc060770b`, 96 bytes: index in; id, state, outside rectangle,
+  client, title out; `ENOENT` past the last) and `MANAGE_WINDOW` 12 (`0x4010770c`, 16 bytes:
+  window, action 0 focus, 1 minimise, 2 maximise, 3 restore, 4 close, 5 move, 6 size, then two
+  operands). The brief's separate `Manage` request is folded into the privilege check on these
+  two. The terminal is `FIXED_SIZE` and `TAKES_CTRL_KEYS`.
+- **Default profile.** macOS habits, as the brief says (controls on the left: close,
+  minimise, maximise); the Windows and Linux profiles mirror the controls to the right (close,
+  maximise, minimise from the edge) and are one call away (`Desktop::set_profile`); the kernel's
+  profile is a constant until Settings (item 34) or a boot parameter sets it.
+- **Review fixes (from D127's review).** Unmapping the middle of a lent range reserves room
+  before splitting it (`ENOMEM`, never a panic); `mprotect` refuses to make a lent range
+  executable or inaccessible (`EINVAL`), as `mmap` does; a dialog whose parent is unshown or
+  minimised is not raised or focused when it first shows; `CREATE` and `SET_SIZE` compare the
+  size before changing anything (a race retries `SET_SIZE` up to four times, then `EAGAIN`); a
+  buffer's rows read the window background outside the buffer; a failed `open` drops the new
+  connection after the descriptor table's lock; client numbers carry a generation (and a
+  connection's end acts only on the desktop it joined), so a restarted desktop never confuses an
+  old client with a new one; a client's pixel buffers, those its windows show and those it still
+  maps, are capped at 32 MiB (`ENOMEM` past it).
+- **Decided by research.** The pointer is hidden until it first moves, so the first frame and
+  the self-tests' pictures stay as they were (the brief's TV rule, applied everywhere). The
+  title says `(not responding)` once a close request is 500 ms unread, not at once, so a
+  program that answers promptly never flickers; the 2 s run from the request and are checked
+  on each drawing pass (at least once a second). The terminal keeps its fixed 80x24 grid, so it
+  is fixed-size: no resize zones and an inactive maximise control. Windows still stay wholly in
+  the work area when moved (hanging off the edges is for later). Shortcuts act on the press; the
+  release still reaches the window. A snapped window keeps square corners until it is moved or
+  resized; `Move` in the window menu is off for a maximised window. A control's hover glyph is
+  drawn on the hovered control only. Opening a popup sends the focused window `FocusOut`,
+  closing it `FocusIn` (to the window it chose). `wm` is a utility of the core utilities (one
+  more hard link, no new program in the image).
+- **Cost.** No new allocation: the switcher and the window menu are fixed state in the
+  desktop, the pointer's bitmaps are constant tables. Pointer motion walks the stack once for
+  the content, the resize zones, the control hover and the pointer's shape together, and damages
+  the pointer's old and new rectangles (at most 19x19 each). A maximised window's buffer at
+  1280x800 is 3.79 MB (a 4 MiB block). The kernel image grows by the new desktop code; the
+  release image by `wm`'s code in `coreutils`. CI's benchmark deltas and size report are in the
+  PR.
+- **Testing.** Host tests: the resize ring and corners, the resize geometry against minimums and
+  the work area, live resize with stale and current answers, the window background while a
+  resize waits, maximise by control, by double-click (and its 400 ms and 4 px) and by Super+Up,
+  restore by dragging a maximised window, snap, fixed-size windows, the controls on both sides
+  and their hover glyph, the switcher's order, keys, minimised entries and rendering, the close
+  keys per profile and `TAKES_CTRL_KEYS`, the 2 s rule, the pointer's shapes, bitmaps, choice and
+  damage, the window menu by keys and by right-click, show desktop, the power menu's key, a
+  dialog of a minimised parent, `wm`'s list and actions, painting in many rects with popups and
+  the pointer, `Resize` coalescing; in the kernel, the lent frames' lifecycle (split, `MAP_FIXED`
+  over them, `mremap`, `madvise`, `mprotect` and `fork` refused, freed once), buffers by window
+  and offset, the pixel cap and client numbers; `wm` against the core utilities' fake. QEMU, on
+  aarch64, riscv64 and x86_64: the program windows test hovers the first window's corner (the
+  diagonal pointer), resizes it by (100, 60), maximises it by its control, restores it by a
+  double-click, maximises it by a double-click, restores it by its control, opens the switcher
+  with Alt+Tab, moves to the terminal and chooses it, goes back with Alt+Tab, closes the first
+  window with Alt+F4 and the second with its close control after Alt+Tab, comparing the display
+  with the host's render after each step; `hello-window` answers each `Resize` and reports its
+  states, and `wm list` lists the terminal at the end.
+- **Not yet.** Hanging windows off the work area's edges; the launcher (Super alone), F11, the
+  `Hand` and `Busy` shapes and the pressed look of the controls; a profile setting and a boot
+  parameter; the MCP tools `wm_list`, `wm_focus`, ... (no MCP server yet, D21); `wm
+  screenshot`; the client's process id in `wm list` (it shows the client's number); key repeat
+  as `Key` records. `COMMIT` still composes under the display's and the screen's locks, so a
+  console write on another CPU waits for a large commit.
