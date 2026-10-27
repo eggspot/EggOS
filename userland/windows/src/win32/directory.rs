@@ -20,6 +20,7 @@ const DIRENT_LENGTH: usize = 16;
 const ENOENT: u16 = 2;
 const ENOTDIR: u16 = 20;
 const ENOSYS: u16 = 38;
+const EROFS: u16 = 30;
 
 struct Search {
     fd: usize,
@@ -285,6 +286,7 @@ unsafe extern "win64" fn get_file_information_by_handle(handle: usize, out: *mut
 fn read_only_error(errno: Errno) -> u32 {
     match errno.0 {
         ENOSYS => error::ACCESS_DENIED,
+        EROFS => error::WRITE_PROTECT,
         _ => error_for(errno),
     }
 }

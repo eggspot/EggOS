@@ -12,6 +12,7 @@ pub mod code {
     pub const NOT_ENOUGH_MEMORY: u32 = 8;
     pub const INVALID_DATA: u32 = 13;
     pub const NO_MORE_FILES: u32 = 18;
+    pub const WRITE_PROTECT: u32 = 19;
     pub const BROKEN_PIPE: u32 = 109;
     pub const NOT_SUPPORTED: u32 = 50;
     pub const FILE_EXISTS: u32 = 80;
@@ -72,6 +73,7 @@ pub fn message(code: u32) -> Option<&'static str> {
         }
         code::INVALID_DATA => "The data is invalid.",
         code::NO_MORE_FILES => "There are no more files.",
+        code::WRITE_PROTECT => "The media is write protected.",
         code::NOT_SUPPORTED => "The request is not supported.",
         code::FILE_EXISTS => "The file exists.",
         code::INVALID_PARAMETER => "The parameter is incorrect.",
