@@ -124,8 +124,8 @@ fn scene_content(state: &Scene) -> WindowContent {
     WindowContent::Pixels { width, pixels }
 }
 
-fn message_cells() -> Vec<Cell> {
-    let message = units(scene::MESSAGE);
+fn message_cells(text: &str) -> Vec<Cell> {
+    let message = units(text);
     let mut cells = vec![Cell::Space; message.len()];
     let filled = text::decode(&message, Reading::default(), &mut cells);
     cells.truncate(filled);
@@ -234,6 +234,27 @@ impl GuiSteps<'_> {
             .ok_or_else(|| format!("{}: the window {window} is gone", self.arch.name))
     }
 
+    fn open_message_box(&mut self, text: &str, kind: u32) -> Result<(), String> {
+        let cells = message_cells(text);
+        let work_width = self.desktop.work_area().width as i32;
+        let layout = Layout::new(&cells, kind, work_width);
+        let message_box = self.create(
+            ROLE_DIALOG,
+            u32::from(self.window),
+            (layout.width as u32, layout.height as u32),
+        )?;
+        self.message_box = Some((message_box, message_box_content(&layout, &cells)));
+        Ok(())
+    }
+
+    fn answer_message_box(&mut self) -> Result<(), String> {
+        self.tap("ret", key::ENTER)?;
+        if let Some((message_box, _)) = self.message_box.take() {
+            self.destroy(message_box)?;
+        }
+        Ok(())
+    }
+
     fn run(&mut self) -> Result<(), String> {
         self.check("win-paint's window painted", FIRST_FRAME_TIMEOUT)?;
 
@@ -248,22 +269,24 @@ impl GuiSteps<'_> {
         self.check("a letter typed into the window", TERMINAL_FRAME_TIMEOUT)?;
 
         self.tap("spc", key::SPACE)?;
-        let cells = message_cells();
-        let work_width = self.desktop.work_area().width as i32;
-        let layout = Layout::new(&cells, scene::MESSAGE_TYPE, work_width);
-        let message_box = self.create(
-            ROLE_DIALOG,
-            u32::from(self.window),
-            (layout.width as u32, layout.height as u32),
-        )?;
-        self.message_box = Some((message_box, message_box_content(&layout, &cells)));
+        self.open_message_box(scene::MESSAGE, scene::MESSAGE_TYPE)?;
         self.check("the message box over the window", TERMINAL_FRAME_TIMEOUT)?;
-
-        self.tap("ret", key::ENTER)?;
-        self.destroy(message_box)?;
-        self.message_box = None;
+        self.answer_message_box()?;
         self.scene.message_box_result = Some(message_box::result::OK);
         self.check("the message box answered with OK", TERMINAL_FRAME_TIMEOUT)?;
+
+        self.tap("f2", key::F2)?;
+        self.open_message_box(scene::THREAD_MESSAGE, scene::THREAD_MESSAGE_TYPE)?;
+        self.check(
+            "a second thread's message box over the window",
+            TERMINAL_FRAME_TIMEOUT,
+        )?;
+        self.answer_message_box()?;
+        self.scene.thread_message_box_result = Some(message_box::result::OK);
+        self.check(
+            "the second thread's message box answered with OK",
+            TERMINAL_FRAME_TIMEOUT,
+        )?;
 
         let close = self.desktop.close_control(self.window).unwrap_or_default();
         self.click(close.x + 10, close.y + 14)?;
@@ -335,7 +358,7 @@ mod tests {
             panic!("the scene is pixels");
         };
         assert_eq!(pixels[(y * 400 + x) as usize], colour::pixel(0x0050_b030));
-        let cells = message_cells();
+        let cells = message_cells(scene::MESSAGE);
         let layout = Layout::new(&cells, scene::MESSAGE_TYPE, 1280);
         assert_eq!((layout.width, layout.height), (288, 108));
         let WindowContent::Pixels { width, pixels } = message_box_content(&layout, &cells) else {

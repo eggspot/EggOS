@@ -164,9 +164,10 @@ pub enum Expect {
     /// `cargo xtask image --add` adds it, boots to the shell's prompt; the test runs it with its
     /// standard output redirected to a file and, on x86_64 and aarch64, checks the display
     /// against the host's render as the window appears painted, a click recolours its ellipse,
-    /// a key adds a letter, Space opens a message box, Enter closes it with OK and the close
-    /// control closes the window (D129); then the program's lines in the file, its status 0, and
-    /// on riscv64 `ENOEXEC`.
+    /// a key adds a letter, Space opens a message box, Enter closes it with OK, F2 has a second
+    /// thread open a message box while the first runs its loop, Enter closes that one too, and
+    /// the close control closes the window (D129); then the program's lines in the file, its
+    /// status 0, and on riscv64 `ENOEXEC`.
     WindowsGui,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
@@ -249,7 +250,7 @@ const WINDOWS_GUI_SESSION: [&[u8]; 3] = [
     b"exit 7\r",
 ];
 
-const WIN_PAINT_LINES: [&str; 12] = [
+const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT class registered",
     "WIN-PAINT created",
     "WIN-PAINT window 400x300 caption 28",
@@ -260,6 +261,8 @@ const WIN_PAINT_LINES: [&str; 12] = [
     "WIN-PAINT clicked 296 124",
     "WIN-PAINT typed a",
     "WIN-PAINT message box 1",
+    "WIN-PAINT thread started",
+    "WIN-PAINT thread message box 1",
     "WIN-PAINT destroyed",
     "WIN-PAINT quit 0",
 ];

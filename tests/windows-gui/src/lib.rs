@@ -17,6 +17,9 @@ pub const MESSAGE: &str = "You pressed the space bar.";
 pub const MESSAGE_CAPTION: &str = "win-paint";
 /// The message box's type: `MB_OKCANCEL | MB_ICONINFORMATION`.
 pub const MESSAGE_TYPE: u32 = 0x1 | 0x40;
+/// The message box a second thread shows, and its type: `MB_OK | MB_ICONINFORMATION`.
+pub const THREAD_MESSAGE: &str = "From a thread.";
+pub const THREAD_MESSAGE_TYPE: u32 = 0x40;
 /// The class background, `COLOR_WINDOW + 1`.
 pub const BACKGROUND: usize = 5 + 1;
 /// The window's background: `COLOR_WINDOW`, white.
@@ -102,6 +105,7 @@ pub struct Scene {
     typed: [u8; MAX_TYPED],
     typed_length: usize,
     pub message_box_result: Option<i32>,
+    pub thread_message_box_result: Option<i32>,
 }
 
 impl Default for Scene {
@@ -123,6 +127,7 @@ impl Scene {
             typed: [0; MAX_TYPED],
             typed_length: 0,
             message_box_result: None,
+            thread_message_box_result: None,
         }
     }
 
@@ -227,11 +232,13 @@ impl Scene {
             BLACK,
             Some(FIELD),
         );
-        let status = match self.message_box_result {
-            None => "Space: message box",
-            Some(1) => "Message box: OK",
-            Some(2) => "Message box: Cancel",
-            Some(_) => "Message box: other",
+        let status = match (self.thread_message_box_result, self.message_box_result) {
+            (Some(1), _) => "Thread's message box: OK",
+            (Some(_), _) => "Thread's message box: other",
+            (None, None) => "Space: message box",
+            (None, Some(1)) => "Message box: OK",
+            (None, Some(2)) => "Message box: Cancel",
+            (None, Some(_)) => "Message box: other",
         };
         painter.text_in(
             STATUS_RECT,

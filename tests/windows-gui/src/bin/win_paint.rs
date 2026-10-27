@@ -5,7 +5,9 @@
 //! class, creates a window and paints the scene of `eggos_windows_gui_tests` on `WM_PAINT`; a
 //! left click toggles the ellipse's colour (redrawn through `GetDC`), a letter or digit is added
 //! to the typed line, Space opens a message box whose answer the status line shows, and closing
-//! the window ends the program with 0. It writes one `WIN-PAINT` line for each step to its
+//! the window ends the program with 0; F2 starts a second thread that shows a message box owned
+//! by the window while the first thread keeps running its message loop, and posts the answer
+//! back. It writes one `WIN-PAINT` line for each step to its
 //! standard output, which the test redirects to a file: a GUI program has no console.
 
 #![cfg_attr(all(windows, not(test)), no_std, no_main)]
@@ -35,6 +37,7 @@ mod program {
     const WM_APP: u32 = 0x8000;
     const PM_NO_REMOVE: u32 = 0;
     const VK_SPACE: usize = 0x20;
+    const VK_F2: usize = 0x71;
     const GWLP_USER_DATA: i32 = -21;
     const SM_CY_CAPTION: i32 = 4;
     const IDC_ARROW: usize = 32512;
@@ -106,6 +109,15 @@ mod program {
         safe fn GetStdHandle(which: u32) -> usize;
         fn WriteFile(h: usize, b: *const u8, n: u32, w: *mut u32, o: *mut c_void) -> i32;
         safe fn ExitProcess(code: u32) -> !;
+        fn CreateThread(
+            security: *mut c_void,
+            stack: usize,
+            start: extern "system" fn(*mut c_void) -> u32,
+            parameter: *mut c_void,
+            flags: u32,
+            id: *mut u32,
+        ) -> usize;
+        safe fn CloseHandle(handle: usize) -> i32;
     }
 
     #[link(name = "user32", kind = "raw-dylib")]
@@ -455,6 +467,35 @@ mod program {
                 say!("message box {result}");
                 0
             }
+            WM_KEY_DOWN if wparam == VK_F2 => {
+                // SAFETY: the thread gets the window's handle as its parameter and asks for no
+                // id.
+                let thread = unsafe {
+                    CreateThread(
+                        core::ptr::null_mut(),
+                        0,
+                        message_box_thread,
+                        window as *mut c_void,
+                        0,
+                        core::ptr::null_mut(),
+                    )
+                };
+                if thread != 0 {
+                    CloseHandle(thread);
+                    say!("thread started");
+                }
+                0
+            }
+            message if message == WM_APP + 2 => {
+                if let Some(scene) = scene_of(window) {
+                    scene.thread_message_box_result = Some(wparam as i32);
+                    let rect = scene.status_rect();
+                    // SAFETY: the rectangle is a local.
+                    unsafe { InvalidateRect(window, &rect, 1) };
+                }
+                say!("thread message box {wparam}");
+                0
+            }
             WM_DESTROY => {
                 say!("destroyed");
                 PostQuitMessage(0);
@@ -463,6 +504,23 @@ mod program {
             // SAFETY: the default procedure takes the message as it came.
             _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
         }
+    }
+
+    extern "system" fn message_box_thread(window: *mut c_void) -> u32 {
+        let window = window as Window;
+        let text = Wide::new(scene::THREAD_MESSAGE);
+        let caption = Wide::new(scene::MESSAGE_CAPTION);
+        // SAFETY: both strings are NUL-terminated locals.
+        let result = unsafe {
+            MessageBoxW(
+                window,
+                text.pointer(),
+                caption.pointer(),
+                scene::THREAD_MESSAGE_TYPE,
+            )
+        };
+        PostMessageW(window, WM_APP + 2, result as usize, 0);
+        0
     }
 
     #[unsafe(no_mangle)]
