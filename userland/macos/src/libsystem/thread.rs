@@ -467,14 +467,7 @@ pub unsafe extern "C" fn pthread_create(
             thread as usize,
         )
     } {
-        Ok(id) => {
-            if !detached {
-                // SAFETY: a joinable thread's mapping is unmapped only by `pthread_join` or,
-                // after `pthread_detach`, by a reap, and neither can happen before the caller
-                // has the thread from `out` below. A detached thread may already have ended
-                // and been reaped, so its block is not touched: `thread_main` stores its id.
-                unsafe { &(*thread).id }.store(id as u32, Ordering::Relaxed);
-            }
+        Ok(_) => {
             if !out.is_null() {
                 // SAFETY: the caller's promise.
                 unsafe { out.write(thread) };
@@ -566,7 +559,7 @@ pub unsafe extern "C" fn pthread_threadid_np(thread: *mut Thread, id: *mut u64) 
         return EINVAL;
     }
     // SAFETY: the caller's promise.
-    let value = unsafe { &(*thread_or_current(thread)).id }.load(Ordering::Relaxed);
+    let value = unsafe { id_of(thread_or_current(thread)) };
     // SAFETY: as above.
     unsafe { id.write(u64::from(value)) };
     0
@@ -576,7 +569,16 @@ pub unsafe extern "C" fn pthread_threadid_np(thread: *mut Thread, id: *mut u64) 
 /// `thread` must be a live thread.
 pub unsafe extern "C" fn pthread_mach_thread_np(thread: *mut Thread) -> u32 {
     // SAFETY: the caller's promise.
-    unsafe { &(*thread_or_current(thread)).id }.load(Ordering::Relaxed)
+    unsafe { id_of(thread_or_current(thread)) }
+}
+
+unsafe fn id_of(thread: *mut Thread) -> u32 {
+    // SAFETY: the caller's duty: a live thread's block.
+    let block = unsafe { &*thread };
+    match block.id.load(Ordering::Relaxed) {
+        0 => block.id_word.load(Ordering::Acquire),
+        id => id,
+    }
 }
 
 /// # Safety
