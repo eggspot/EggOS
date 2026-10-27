@@ -7,8 +7,8 @@
 //!   packed records of an inode number, a kind and a name.
 //! - **Crash safety.** Metadata (bitmaps, inodes, directory and indirect blocks) changes in a
 //!   cache and reaches the disk only through the journal, one transaction at a time: the
-//!   blocks are written to the journal, flushed, a CRC-32C commit record is written and
-//!   flushed, then the blocks go to their places and are flushed. File data is written copy on
+//!   blocks are written to the journal, flushed, a commit record holding the transaction's
+//!   CRC-64 is written and flushed, then the blocks go to their places and are flushed. File data is written copy on
 //!   write, to blocks the last committed state does not use, before the commit. A crash
 //!   anywhere leaves exactly the state of the last commit (an operation that frees more than
 //!   a transaction holds commits as it goes, each step consistent), which mounting restores

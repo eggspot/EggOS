@@ -278,7 +278,12 @@ fn mount_persistent<P: Platform, W: Write>(
         mebibytes(free)
     )?;
     let committer = thread::spawn::<P, _>(move || {
-        eggfs.commit_changes(&|| thread::sleep::<P>(vfs::eggfs::COMMIT_DELAY))
+        eggfs.commit_changes(&|| thread::sleep::<P>(vfs::eggfs::COMMIT_DELAY), &|| {
+            let _ = writeln!(
+                console::PlatformConsole::<P>::new(),
+                "vfs: EggFS could not commit to the disk: changes are refused until the next boot"
+            );
+        })
     });
     if committer.is_err() {
         writeln!(

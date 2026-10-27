@@ -7590,8 +7590,9 @@ the license, by an explicit instruction recorded here.
   everything changed meanwhile (decided by research: Linux's ext4 also commits every 5 s;
   nothing runs while nothing changes, and without a disk there is no thread, D18). `sync`,
   `syncfs`, `fsync` and `fdatasync` commit at once (a file's changes are not committed apart from
-  the rest), an operation that would not fit the journal commits first, and `reboot(2)` syncs
-  every file system before the machine goes down; `poweroff`, `reboot` and `halt` also call
+  the rest), an operation that would not fit the journal commits first, and every way down
+  (`reboot(2)` and the desktop's power menu, through `take_machine_down`) syncs every file
+  system first, which the QEMU test pins by powering off from the menu right after a write; `poweroff`, `reboot` and `halt` also call
   `sync` first, as elsewhere. The new `sync` utility is the command-line front-end; the GUI and
   MCP front-ends (D22) come with the capability framework and the MCP server (M14).
 - **Disks by role, never by order.** The kernel takes every disk and reads what it holds: an
@@ -7664,3 +7665,8 @@ the license, by an explicit instruction recorded here.
   leaves an inode nothing names; records naming the root are refused; corrupt pointers and
   counts cannot overflow; an undecodable journal descriptor's sequence restarts past the one it
   held.
+- **Independent review fixes.** The desktop's Power off and Restart skipped the sync (only
+  `reboot(2)` had it): the sync moves into `take_machine_down`, which both reach. The committer
+  reports its first failed commit on the console; the crate's documentation names the CRC-64;
+  xtask extends an empty image as the scripts do; the PowerShell script checks `qemu-img`'s exit
+  status and resolves a relative `-Disk` against the current location.

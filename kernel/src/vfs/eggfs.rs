@@ -201,15 +201,20 @@ impl<D: Disk + Send> EggFs<D> {
     }
 
     /// The committer's loop: waits for a change, has `pause` wait [`COMMIT_DELAY`], commits,
-    /// and waits again. Never returns.
-    pub fn commit_changes(&self, pause: &dyn Fn()) -> ! {
+    /// and waits again; the first commit that fails is told to `failed` (the volume then
+    /// refuses every change). Never returns.
+    pub fn commit_changes(&self, pause: &dyn Fn(), failed: &dyn Fn()) -> ! {
+        let mut reported = false;
         loop {
             self.sleeping.wait(&self.committer, &mut || {
                 self.changed.load(Ordering::Acquire)
             });
             pause();
             self.changed.store(false, Ordering::Release);
-            let _ = self.commit();
+            if self.commit().is_err() && !reported {
+                reported = true;
+                failed();
+            }
         }
     }
 }

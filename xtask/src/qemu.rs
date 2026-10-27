@@ -299,14 +299,15 @@ pub fn disk_args(arch: &Arch, image: &str) -> Vec<String> {
     ]
 }
 
-/// Creates the disk image `path`, `bytes` long and empty, unless it exists; returns whether
-/// it made one. The file is extended without writing (sparse on APFS, ext4 and most Unix
-/// file systems; on NTFS Windows reserves the space, see docs/build.md).
+/// Creates the disk image `path`, `bytes` long and empty, unless it exists with something in
+/// it; returns whether it made one. An empty file is extended, as the run scripts do; a file
+/// with contents is never cut. The file is extended without writing (sparse on APFS, ext4 and
+/// most Unix file systems; on NTFS Windows reserves the space, see docs/build.md).
 pub fn create_disk_image(path: &Path, bytes: u64) -> Result<bool, String> {
-    if path.exists() {
-        return Ok(false);
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > 0 => Ok(false),
+        _ => reset_disk_image(path, bytes).map(|()| true),
     }
-    reset_disk_image(path, bytes).map(|()| true)
 }
 
 /// Makes the disk image `path` `bytes` long and empty, whatever it held: `--format-disk`.

@@ -95,18 +95,19 @@ pub fn reboot<P: Platform>(
     let privileged = credentials::get_effective(process, Kind::User) == 0;
     match decode(privileged, magic as u32, magic2 as u32, cmd as u32)? {
         Action::None => Ok(0),
-        action => {
-            let _ = crate::vfs::sync_all();
-            take_machine_down::<P>(action)
-        }
+        action => take_machine_down::<P>(action),
     }
 }
 
-/// Parks every other CPU, says `action`'s line on the console, then takes the machine down as
-/// `action` says.
+/// Puts every file system's changes on the disk ([`crate::vfs::sync_all`], D131), parks every
+/// other CPU, says `action`'s line on the console, then takes the machine down as `action`
+/// says: for `reboot(2)` and the desktop's power menu alike. Call it as
+/// [`crate::thread::yield_now`] is called, with no spin lock held: syncing may sleep on a file
+/// system's lock.
 #[cold]
 #[inline(never)]
 pub fn take_machine_down<P: Platform>(action: Action) -> ! {
+    let _ = crate::vfs::sync_all();
     crate::cpu::stop_others::<P>();
     if let Some(line) = action.announcement() {
         let _ = writeln!(crate::console::PlatformConsole::<P>::new(), "{line}");

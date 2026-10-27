@@ -11,8 +11,11 @@
 //!    replaces a large file through a temporary name and renames it over the old one, and QEMU
 //!    is killed in the middle. The image must check clean, the large file must be one of the
 //!    two versions whole, and the temporary file absent or a prefix of one.
-//! 4. The same disk boots once more, recovering through the journal if the kill left a commit
-//!    half in place, reads the files back and powers off cleanly.
+//! 4. The same disk boots once more, with the display, recovering through the journal if the
+//!    kill left a commit half in place, and reads the files back; then a file is written and
+//!    the machine powered off at once through the desktop's power menu (Super+X, Enter), before
+//!    the committer would commit: the image must hold the file, which only the sync on the way
+//!    down can have written.
 
 use super::*;
 use eggos_eggfs::memory::MemoryDisk;
@@ -86,8 +89,17 @@ const COPIED_LINE: &str = "EGGOS-PERSIST copied";
 const RECOVERY_SESSION: [&[u8]; 3] = [
     b"cat /home/docs/a.txt /home/docs/deep/new.txt; ls /home/docs/deep\r",
     b"wc -c /home/docs/large.bin; sync; echo EGGOS-PERSIST recovered $?\r",
-    b"poweroff\r",
+    b"echo gui > /home/gui.txt; echo EGGOS-PERSIST written\r",
 ];
+
+const WRITTEN_LINE: &str = "EGGOS-PERSIST written";
+
+#[derive(Debug, Clone, Copy)]
+enum Then {
+    Nothing,
+    Kill(&'static str),
+    PowerMenu(&'static str),
+}
 
 fn whole(lines: &[&str]) -> Vec<Line> {
     lines
@@ -120,8 +132,22 @@ fn recovery_output() -> [Vec<Line>; RECOVERY_SESSION.len()] {
             Line::Whole(format!("{LARGE_FILE_BYTES} /home/docs/large.bin")),
             Line::Whole("EGGOS-PERSIST recovered 0".into()),
         ],
-        whole(&[POWER_DOWN_LINE]),
+        whole(&[WRITTEN_LINE]),
     ]
+}
+
+fn power_off_through_the_menu(port: u16) -> Result<(), String> {
+    let key = |qcode, down| InputEvent::Key { qcode, down };
+    let mut qmp = Qmp::connect(port)?;
+    for events in [
+        [key("meta_l", true), key("x", true)],
+        [key("x", false), key("meta_l", false)],
+        [key("ret", true), key("ret", false)],
+    ] {
+        qmp.send_input(&events)?;
+        std::thread::sleep(DEVICE_PAUSE);
+    }
+    Ok(())
 }
 
 fn pattern(seed: u64, length: usize) -> Vec<u8> {
@@ -175,15 +201,26 @@ fn boot_on_disk(
     kernel: &Path,
     args: &[String],
     session: &[&'static [u8]],
-    kill_after: Option<&str>,
+    then: Then,
 ) -> Result<Ended, String> {
     eprintln!(
         "xtask: booting {} in {} (persistent files)",
         arch.name, arch.qemu
     );
     let cpus = TEST_CPUS.to_string();
+    let port = match then {
+        Then::PowerMenu(_) => Some(qmp::free_port()?),
+        Then::Nothing | Then::Kill(_) => None,
+    };
+    let (display, input): (&[&str], &[&str]) = match port {
+        Some(_) => (arch.display_args, arch.input_args),
+        None => (&[], &[]),
+    };
     let mut child = Command::new(arch.qemu)
         .args(arch.machine_args)
+        .args(display)
+        .args(input)
+        .args(port.map(qmp::qemu_args).unwrap_or_default())
         .args(COMMON_ARGS)
         .args(["-smp", cpus.as_str()])
         .args(args)
@@ -200,6 +237,7 @@ fn boot_on_disk(
     let mut console = Vec::new();
     let mut typed = ShellTyping::default();
     let mut kill_at = None;
+    let mut menu_used = false;
     let (status, killed) = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break (status, false);
@@ -211,11 +249,21 @@ fn boot_on_disk(
                 eprintln!("xtask: {}: could not type on the console: {e}", arch.name);
             }
         }
-        if let Some(line) = kill_after
-            && kill_at.is_none()
-            && has_line(&text, line)
-        {
-            kill_at = Some(Instant::now() + KILL_DELAY);
+        match then {
+            Then::Kill(line) if kill_at.is_none() && has_line(&text, line) => {
+                kill_at = Some(Instant::now() + KILL_DELAY);
+            }
+            Then::PowerMenu(line) if !menu_used && has_line(&text, line) => {
+                menu_used = true;
+                if let Some(port) = port
+                    && let Err(error) = power_off_through_the_menu(port)
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{}: the power menu: {error}", arch.name));
+                }
+            }
+            _ => {}
         }
         if kill_at.is_some_and(|at| Instant::now() >= at) {
             let _ = child.kill();
@@ -305,7 +353,7 @@ fn check_garbage_disk(arch: &Arch, kernel: &Path, files: &Files) -> Result<(), S
     image[..GARBAGE_BYTES].copy_from_slice(&garbage);
     std::fs::write(&files.garbage, &image).map_err(|e| e.to_string())?;
     let args = disk_args(arch, &files.garbage.to_string_lossy());
-    let ended = boot_on_disk(arch, kernel, &args, &GARBAGE_SESSION, None)?;
+    let ended = boot_on_disk(arch, kernel, &args, &GARBAGE_SESSION, Then::Nothing)?;
     if !has_line(&ended.console, GARBAGE_LINE) {
         return Err(format!("{}: no `{GARBAGE_LINE}`", arch.name));
     }
@@ -340,7 +388,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let apps = host_folder_args(arch, &files.apps);
     let both: Vec<String> = disk.iter().chain(&apps).cloned().collect();
 
-    let first = boot_on_disk(arch, kernel, &both, &FIRST_SESSION, None)?;
+    let first = boot_on_disk(arch, kernel, &both, &FIRST_SESSION, Then::Nothing)?;
     if !has_line(&first.console, FORMATTED_LINE) {
         return Err(format!("{}: the blank disk was not formatted", arch.name));
     }
@@ -390,7 +438,13 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     expect_contents(arch.name, &mut volume, "/home/gone.txt", None)?;
     expect_contents(arch.name, &mut volume, "/home/old.txt", None)?;
 
-    let second = boot_on_disk(arch, kernel, &both, &SECOND_SESSION, Some(COPYING_LINE))?;
+    let second = boot_on_disk(
+        arch,
+        kernel,
+        &both,
+        &SECOND_SESSION,
+        Then::Kill(COPYING_LINE),
+    )?;
     if has_line(&second.console, FORMATTED_LINE) {
         return Err(format!("{}: the EggFS disk was formatted again", arch.name));
     }
@@ -442,15 +496,31 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         Some(b"hello\nmore\n"),
     )?;
 
-    let third = boot_on_disk(arch, kernel, &disk, &RECOVERY_SESSION, None)?;
+    let third = boot_on_disk(
+        arch,
+        kernel,
+        &disk,
+        &RECOVERY_SESSION,
+        Then::PowerMenu(WRITTEN_LINE),
+    )?;
     session_verdict(
         arch.name,
         third.clean_exit,
         &third.console,
         &RECOVERY_SESSION,
         recovery_output(),
-        "persistent files (after the kill)",
+        "persistent files (after the kill, powered off from the desktop)",
     )?;
+    if !third
+        .console
+        .lines()
+        .any(|line| line.trim_end().ends_with(POWER_DOWN_LINE))
+    {
+        return Err(format!(
+            "{}: the desktop's power menu did not power the machine off",
+            arch.name
+        ));
+    }
     let mut volume = image_volume(&files.disk)?;
     expect_contents(
         arch.name,
@@ -458,6 +528,7 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         "/home/docs/a.txt",
         Some(b"hello\nmore\n"),
     )?;
+    expect_contents(arch.name, &mut volume, "/home/gui.txt", Some(b"gui\n"))?;
     eprintln!("xtask: {}: persistent files boot test passed", arch.name);
     Ok(())
 }

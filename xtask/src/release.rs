@@ -448,12 +448,16 @@ if ($Apps) {{
 }}
 if (-not $NoDisk) {{
     if (-not $Disk) {{ $Disk = Join-Path $PSScriptRoot "eggos-$Arch-disk.img" }}
+    $Disk = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Disk)
     $missing = -not (Test-Path -LiteralPath $Disk) -or (Get-Item -LiteralPath $Disk).Length -eq 0
     if ($FormatDisk -or $missing) {{
         $QemuImg = Join-Path (Split-Path -Parent (Get-Command $Qemu).Source) 'qemu-img.exe'
+        $created = $false
         if (Test-Path -LiteralPath $QemuImg) {{
             & $QemuImg create -q -f raw $Disk {disk_bytes}
-        }} else {{
+            $created = $LASTEXITCODE -eq 0
+        }}
+        if (-not $created) {{
             $stream = [System.IO.File]::Open($Disk, [System.IO.FileMode]::Create)
             $stream.SetLength({disk_bytes})
             $stream.Close()
