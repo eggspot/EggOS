@@ -12,11 +12,11 @@
 #[cfg(any(test, target_env = "musl"))]
 mod cat;
 #[cfg(any(test, target_env = "musl"))]
-mod changes;
-#[cfg(any(test, target_env = "musl"))]
 mod echo;
 #[cfg(test)]
 mod fake;
+#[cfg(any(test, target_env = "musl"))]
+mod file_changes;
 #[cfg(any(test, target_env = "musl"))]
 mod grep;
 #[cfg(any(test, target_env = "musl"))]

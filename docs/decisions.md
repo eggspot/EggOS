@@ -6944,7 +6944,7 @@ the license, by an explicit instruction recorded here.
   files from `eggsh`: the kernel gains pipes, a writable file system in memory and a minimal
   `/proc`; the shell gains `|`, `<`, `>`, `>>` and a history of recent lines on the arrows; the
   core utilities gain `grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `cp`, `mv`, `rm`,
-  `mkdir` and `touch` (docs/shell.md, docs/coreutils.md). Two of the roadmap's nice-to-haves
+  `mkdir` and `touch` (docs/shell.md, docs/coreutils.md). Four of the roadmap's nice-to-haves
   before the freeze (pipes, a tmpfs at `/tmp`, a minimal `/proc`, line history).
 - **Pipes** (`linux::pipe`, architecture-independent). `pipe` (x86_64) and `pipe2`
   (`O_CLOEXEC`, `O_NONBLOCK`; other flags `EINVAL`, `EFAULT` closing both descriptors). A pipe

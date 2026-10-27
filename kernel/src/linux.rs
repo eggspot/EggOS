@@ -220,6 +220,7 @@ pub mod number {
         pub const PIPE2: u64 = 59;
         pub const MKDIRAT: u64 = 34;
         pub const UNLINKAT: u64 = 35;
+        #[cfg(target_arch = "aarch64")]
         pub const RENAMEAT: u64 = 38;
         pub const FTRUNCATE: u64 = 46;
         pub const PWRITE64: u64 = 68;
@@ -333,6 +334,7 @@ pub mod number {
             FTRUNCATE,
             MKDIRAT,
             UNLINKAT,
+            #[cfg(not(target_arch = "riscv64"))]
             RENAMEAT,
             RENAMEAT2,
             UTIMENSAT,
@@ -809,8 +811,8 @@ fn out_of_line_call<P: Platform>(
         number::PAUSE => signals::pause(process, thread, context),
         number::READ => read::<P>(process, thread, context, Buffers::One),
         number::READV => read::<P>(process, thread, context, Buffers::Vectors),
-        number::WRITE => write_that_may_wait::<P>(process, thread, context, Buffers::One),
-        number::WRITEV => write_that_may_wait::<P>(process, thread, context, Buffers::Vectors),
+        number::WRITE => write_out_of_line::<P>(process, thread, context, Buffers::One),
+        number::WRITEV => write_out_of_line::<P>(process, thread, context, Buffers::Vectors),
         number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
@@ -920,6 +922,7 @@ fn out_of_line_result<P: Platform>(
         number::FTRUNCATE => file_changes::ftruncate::<P>(thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
+        #[cfg(not(target_arch = "riscv64"))]
         number::RENAMEAT => {
             file_changes::renameat2(process, thread, first, second, third, fourth, 0)
         }
@@ -1193,27 +1196,15 @@ fn writable_file(files: &Descriptors, fd: u64) -> Result<Arc<descriptors::OpenFi
     }
 }
 
-#[inline(never)]
-fn writev<P: Platform>(
+fn write_iovecs_to_console<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
-    fd: u64,
-    buffers: u64,
-    count: u64,
+    iovecs: &Iovecs,
 ) -> Result<u64, Errno> {
-    let file = writable_file(files, fd)?;
-    if matches!(file.kind(), FileKind::Pipe(_) | FileKind::Regular(_)) {
-        return Err(NOT_THE_CONSOLE);
-    }
-    let iovecs = Iovecs::read(process, buffers, count)?;
     let mut written = 0;
     for entry in iovecs.entries() {
         let (base, length) = iovec(entry);
         let length = length.min(MAX_RW_COUNT - written);
-        let done = match file.kind() {
-            FileKind::Console => write_to_console(process, base, length),
-            _ => return Err(Errno::EBADF),
-        };
+        let done = write_to_console(process, base, length);
         written += done;
         if done < length {
             return if written > 0 {
@@ -1232,7 +1223,7 @@ const NOT_THE_CONSOLE: Errno = Errno(u16::MAX);
 const CWD: u64 = stat::at::FDCWD as u64;
 
 #[inline(never)]
-fn write_that_may_wait<P: Platform>(
+fn write_out_of_line<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
@@ -1255,12 +1246,13 @@ fn write_that_may_wait<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
-            _ => {
-                let result = match buffers {
-                    Buffers::One => write::<P>(process, thread.files(), fd, address, count),
-                    Buffers::Vectors => writev::<P>(process, thread.files(), fd, address, count),
-                };
+            FileKind::Console => {
+                let result = write_iovecs_to_console(process, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            _ => {
+                context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
             }
         },

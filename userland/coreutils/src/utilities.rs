@@ -1,6 +1,6 @@
 use crate::cat::cat;
-use crate::changes::{cp, mkdir, mv, rm, touch};
 use crate::echo::echo;
+use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
 use crate::ls::{Listing, ls};

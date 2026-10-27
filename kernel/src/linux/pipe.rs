@@ -119,11 +119,6 @@ pub struct PipeEnd {
 }
 
 impl PipeEnd {
-    /// Whether this is the end that writes.
-    pub fn writes(&self) -> bool {
-        self.writes
-    }
-
     /// The pipe's number, as `fstat` reports it (`st_ino`).
     pub fn inode(&self) -> u64 {
         self.pipe.inode

@@ -562,7 +562,8 @@ impl FileSystem for Tmpfs {
         if moved_is_directory && state.is_ancestor(moved, to_slot) {
             return Err(Refused::InvalidArgument);
         }
-        if let Some(replaced) = state.child(to, to_name)? {
+        let replaced = state.child(to, to_name)?;
+        if let Some(replaced) = replaced {
             if replaced == moved {
                 return Ok(());
             }
@@ -578,8 +579,6 @@ impl FileSystem for Tmpfs {
                 }
                 _ => {}
             }
-            state.detach(to_slot, replaced);
-            state.free_slot(replaced, self.budget);
         }
         let old_length = state.slots[moved as usize]
             .inode
@@ -599,6 +598,10 @@ impl FileSystem for Tmpfs {
         if !room {
             self.budget.give_back(grown);
             return Err(Refused::NoSpace);
+        }
+        if let Some(replaced) = replaced {
+            state.detach(to_slot, replaced);
+            state.free_slot(replaced, self.budget);
         }
         name.extend_from_slice(to_name);
         let from_slot = slot_of(from).0 as u32;
@@ -779,6 +782,23 @@ mod tests {
                 Err(Refused::Exists)
             );
         }
+    }
+
+    #[test]
+    fn a_rename_without_room_for_its_new_name_keeps_what_it_would_replace() {
+        let fs = tmpfs(2 * NODE_COST + 2);
+        let root = fs.root();
+        fs.create(root, b"a", NodeKind::Regular, 0o644, 0).unwrap();
+        let kept = fs.create(root, b"b", NodeKind::Regular, 0o644, 0).unwrap();
+        assert_eq!(
+            fs.rename(root, b"a", root, b"b-longer", false, 0),
+            Err(Refused::NoSpace)
+        );
+        fs.create(root, b"bb", NodeKind::Regular, 0o644, 0)
+            .unwrap_err();
+        assert_eq!(fs.lookup(root, b"b"), Some(kept));
+        fs.rename(root, b"a", root, b"b", false, 0).unwrap();
+        assert_eq!(fs.budget.used(), NODE_COST + 1);
     }
 
     #[test]
