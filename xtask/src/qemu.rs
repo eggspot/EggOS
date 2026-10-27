@@ -2638,6 +2638,26 @@ mod tests {
     }
 
     #[test]
+    fn a_host_folder_is_a_vvfat_block_device_with_its_commas_doubled() {
+        for arch in crate::ARCHES {
+            let args = host_folder_args(arch, "/home/me/a,b:c");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=vvfat,node-name=host,dir=/home/me/a,,b:c,read-only=on".into(),
+                    "-device".into(),
+                    format!("{},drive=host", arch.disk_device),
+                ]
+            );
+        }
+        assert_eq!(
+            crate::ARCHES[2].disk_device,
+            "virtio-blk-pci,disable-legacy=on"
+        );
+    }
+
+    #[test]
     fn the_boot_clock_line_counts_only_whole() {
         let line = "EGGOS-BENCH: boot_to_prompt iterations=1 ticks=5 frequency=1000000000";
         assert!(!boot_clock_line(&format!("eggsh:/# \r\n{line}")));

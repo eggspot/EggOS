@@ -147,6 +147,8 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 const BOOT_SIGNATURE: [u8; 2] = [0x55, 0xaa];
 const PARTITION_TABLE: usize = 446;
 const PARTITION_ENTRY_BYTES: usize = 16;
+const FAT32_NO_MIRRORING: u16 = 0x80;
+const FAT32_ACTIVE_FAT_MASK: u16 = 0x0f;
 
 fn parse_boot_sector(sector: &[u8; SECTOR_SIZE], start: u64, disk_bytes: u64) -> Option<Layout> {
     if !matches!(sector[0], 0xeb | 0xe9) || sector[510..512] != BOOT_SIGNATURE {
@@ -215,9 +217,17 @@ fn parse_boot_sector(sector: &[u8; SECTOR_SIZE], start: u64, disk_bytes: u64) ->
             )
         }
     };
+    let mirroring_off = fat_type == FatType::Fat32 && u16_at(sector, 40) & FAT32_NO_MIRRORING != 0;
+    let active_fat = match mirroring_off {
+        true => u64::from(u16_at(sector, 40) & FAT32_ACTIVE_FAT_MASK),
+        false => 0,
+    };
+    if active_fat >= fats {
+        return None;
+    }
     let layout = Layout {
         fat_type,
-        fat_start: start + reserved * bytes_per_sector,
+        fat_start: start + (reserved + active_fat * fat_size) * bytes_per_sector,
         root,
         data_start: start + metadata * bytes_per_sector,
         cluster_bytes: sectors_per_cluster * bytes_per_sector,
@@ -370,7 +380,7 @@ struct SectorCache {
     sectors: [u64; CACHED_SECTORS],
     last_used: [u32; CACHED_SECTORS],
     clock: u32,
-    data: Box<[[u8; SECTOR_SIZE]; CACHED_SECTORS]>,
+    data: Box<[[u8; SECTOR_SIZE]]>,
 }
 
 impl SectorCache {
@@ -379,7 +389,7 @@ impl SectorCache {
             sectors: [u64::MAX; CACHED_SECTORS],
             last_used: [0; CACHED_SECTORS],
             clock: 0,
-            data: Box::new([[0; SECTOR_SIZE]; CACHED_SECTORS]),
+            data: alloc::vec![[0; SECTOR_SIZE]; CACHED_SECTORS].into_boxed_slice(),
         }
     }
 }

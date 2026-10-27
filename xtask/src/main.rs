@@ -1472,7 +1472,7 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::{arch_option, json_string_field, without_flag};
+    use super::{arch_option, host_folder, json_string_field, with_value, without_flag};
 
     #[test]
     fn a_flag_is_taken_out_wherever_it_is() {
@@ -1490,6 +1490,20 @@ mod tests {
         let (rest, found) = without_flag(&args(&["--arch", "x86_64"]), "--nographic");
         assert!(!found);
         assert_eq!(rest.len(), 2);
+    }
+
+    #[test]
+    fn an_option_s_value_is_taken_out_with_it() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        let (rest, folder) =
+            with_value(&args(&["--arch", "x86_64", "--apps", "my apps"]), "--apps").unwrap();
+        assert_eq!(rest, args(&["--arch", "x86_64"]));
+        assert_eq!(folder.as_deref(), Some("my apps"));
+        let (rest, folder) = with_value(&args(&["--arch", "x86_64"]), "--apps").unwrap();
+        assert_eq!((rest.len(), folder), (2, None));
+        assert!(with_value(&args(&["--arch", "x86_64", "--apps"]), "--apps").is_err());
+        assert!(host_folder("Cargo.toml").is_err());
+        assert!(std::path::Path::new(&host_folder("src").unwrap()).is_absolute());
     }
 
     #[test]

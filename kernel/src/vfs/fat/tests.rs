@@ -698,6 +698,31 @@ fn contiguous_clusters_are_read_in_one_request() {
 }
 
 #[test]
+fn a_fat32_volume_without_mirroring_reads_its_active_fat() {
+    let format = Format::of(FatType::Fat32);
+    let mut image = Builder::new(&format).build(&tree());
+    let fat_bytes = (70_002u64 * 4).div_ceil(512) * 512;
+    let fat_start = 32 * 512;
+    for offset in 0..fat_bytes {
+        let byte = image.get(fat_start + offset);
+        image.put(fat_start + offset, &[0]);
+        image.put(fat_start + fat_bytes + offset, &[byte]);
+    }
+    image.put(40, &(0x80u16 | 1).to_le_bytes());
+    let fat = mounted_with(image.clone(), &Probes::default());
+    check_tree(fat);
+    image.put(40, &(0x80u16 | 2).to_le_bytes());
+    let disk = Box::new(MemoryDisk {
+        image,
+        probes: Probes::default(),
+    });
+    assert!(matches!(
+        Fat::mount(disk, test_deadline, (254, 0)),
+        Err((MountError::NotFat, _))
+    ));
+}
+
+#[test]
 fn listing_positions_give_the_same_entries_in_any_order() {
     let fat = mounted(Format::of(FatType::Fat16));
     let in_order: Vec<DirectoryEntry> = (0..)

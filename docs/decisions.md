@@ -7516,6 +7516,10 @@ the license, by an explicit instruction recorded here.
   on, so a boot without `--apps` is unchanged (`boot_to_prompt` within noise). The release image
   grows by the virtio-blk driver, the block table and the FAT reader (CI's size report in the
   PR); the 64 KiB DMA region, the 8 KiB sector cache and the file system exist only with a disk.
+  Two benchmarks cover the new hot paths without QEMU's device in the measurement:
+  `virtio_blk_read_fake` (a 4 KiB read through the driver, a fake device answering at once) and
+  `fat_read_4k` (a 4 KiB read of a file on a FAT12 image in memory: the entry, the chain cursor
+  and the copy).
 - **Decided by research.** `vvfat` with its default FAT16 rather than `fat-type=32` (above);
   `-blockdev` rather than `-drive file=fat:ro:` (colons in paths); PowerShell's `-Apps` with
   `--apps` accepted through the remaining arguments; `WakeCount` (from #127's review) moves to

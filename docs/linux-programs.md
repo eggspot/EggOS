@@ -8,8 +8,8 @@ are not tested yet.
 
 ## Add a program to the image
 
-The image's only file system is the read-only initramfs built into it (D102), so programs go in
-when the image is built:
+The image's root file system is the read-only initramfs built into it (D102), so programs go
+in when the image is built (or come from a host folder, below):
 
 ```
 cargo xtask image --arch aarch64 --add path/to/hello
@@ -30,6 +30,15 @@ cargo xtask run --arch riscv64 --add path/to/hello      # build that image and b
 Then, at the prompt, type its name: `hello`, or `tool --help` with `/usr/bin` on `PATH`
 (`export PATH=$PATH:/usr/bin`). The shell reports the exit status in `$?` as on Linux, and a
 program killed by a signal as `128` plus the signal (`134` and `Aborted` for an abort).
+
+## Or run it from a folder on your computer
+
+Without building an image: put the program in a folder and boot with that folder attached
+(`sh run-eggos.sh --apps <folder>`, `.\run-eggos.ps1 -Apps <folder>` or `cargo xtask run
+--arch <arch> --apps <folder>`). EggOS shows it read-only at `/media/host` (D130), so the
+program runs by its path: `/media/host/hello`, or `cd /media/host` and `./hello`. Files on the
+host folder are all executable. A program run this way is read into memory first and must be
+smaller than 4 MiB; the folder's own limits are in [limitations](limitations.md).
 
 ## Build a program that runs
 
