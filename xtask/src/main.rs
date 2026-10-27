@@ -214,8 +214,9 @@ const SHELL_PATH: &str = "bin/eggsh";
 
 const COREUTILS_PATH: &str = "bin/coreutils";
 
-const COREUTILS: [&str; 10] = [
-    "cat", "echo", "false", "halt", "ls", "poweroff", "reboot", "sleep", "true", "uname",
+const COREUTILS: [&str; 14] = [
+    "cat", "echo", "false", "grep", "halt", "head", "ls", "poweroff", "reboot", "sleep", "tail",
+    "true", "uname", "wc",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
