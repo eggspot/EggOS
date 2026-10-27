@@ -94,19 +94,21 @@ with Alt+Tab, drag it by its title bar, resize it from its edges and corners, ma
 restore it (its green control, a double-click on the title bar, Super+Up and Super+Down), snap
 it to a half (Super+Left and Super+Right), minimise it to a chip in the bar, open its window
 menu (Alt+Space) and ask it to close (its close control, Alt+F4, Cmd+W); the pointer is drawn
-on screen, in the shape of a resize zone or of what a program asks for. Not yet:
+on screen, in the shape of a resize zone or of what a program asks for. Settings
+(`settings`, [Settings](settings.md), D132) picks the layout profile, Windows, macOS or Linux
+habits (the controls' side and the shortcuts), kept on the disk across reboots. Not yet:
 - a boot screen with the logo and progress (the plain wallpaper shows until init starts);
 - hover highlights on the bar, the pressed look of the controls, and the `Hand` and `Busy`
   pointer shapes;
 - dragging a window partly off screen;
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
-- a setting for the layout profile: the controls are on the left (macOS habits) until the
-  Settings app (item 34); the launcher's key (Super alone) and F11 come with the shell
-  (item 35);
+- the launcher's key (Super alone) and F11 come with the shell (item 35);
 - closing the terminal (its close control is disabled), a second terminal, the taskbar, dock,
-  launcher and desktop icons, and the layout profiles of other systems (item 35);
-- no programs with windows come with the image yet (the window tests' `hello-window` and
-  `win-paint.exe` are added only to their own images); Windows GUI programs open windows
+  launcher and desktop icons, so the profiles differ only in the controls' side and the
+  shortcuts (item 35); Settings is opened from the prompt with `settings` until then;
+- Settings is the one program with a window in the image (the window tests' `hello-window`
+  and `win-paint.exe` are added only to their own images); its Mouse and Components panes,
+  key repeat and 2x come later; Windows GUI programs open windows
   (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
 - 3D graphics;
 - a terminal on a display smaller than 658x458: the window does not fit, and the display then

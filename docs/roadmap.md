@@ -264,7 +264,17 @@ D16):
     power-off; a committer every 5 s; host crash tests at every write and a QEMU power cut.
     Next: a repair tool, links, a format command in EggOS with its three front-ends, several
     requests in flight.
-34. a UI toolkit and the Settings app with the profile picker.
+34. **done** — users can now open Settings, pick the Windows, macOS or Linux profile and keep
+    it across reboots (D132, docs/settings.md): `userland/toolkit`, a native toolkit with no
+    heap (a retained widget tree with layout, labels, buttons, checkboxes, radio groups, cards,
+    lists, text fields and scroll views, focus and keyboard navigation, hover and pressed
+    states, the design's tokens, damage and 2x), Egg Sans 16, Claude Fable's proportional UI
+    font (docs/ux/font-ui-16.txt), and `/bin/settings`, the window and the `settings get`,
+    `set` and `list` command; `GET_PROFILE` and `SET_PROFILE` switch the controls' side and
+    the shortcuts live, and the kernel reads the saved profile from
+    `/home/root/.config/eggos/settings` before the desktop's first frame. Next: the shell's
+    panels per profile and a launcher entry (item 35), the MCP tools, 2x, the Mouse and
+    Components panes.
 35. the desktop shell: taskbar or dock, the launcher, desktop icons.
 36. install, open and uninstall of `.exe`, `.app` and ELF programs.
 37. the Files app.

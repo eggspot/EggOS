@@ -59,7 +59,10 @@ a reboot: the script creates `eggos-<arch>-disk.img` next to the image (1 GiB, s
 EggOS formats it with [EggFS](docs/eggfs.md), its own journaled file system, the first time;
 `sync` writes changes at once, and they are written within 5 s anyway. `--disk <image>` uses
 another image, `--no-disk` none (then `/home` is in memory and nothing is kept), and
-`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Quit with Ctrl-A then X on that terminal, or close the
+`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Type
+`settings` to open [Settings](docs/settings.md) and pick the Windows, macOS or Linux layout
+profile (where the window controls are and which shortcuts work); it is kept on the disk.
+Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 
 ### Run your own Linux programs
@@ -106,7 +109,7 @@ cargo xtask run --arch aarch64 --add path/to/hello     # a thin or fat Mach-O fi
 | `kernel/` | architecture-independent kernel core and the kernel binary |
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
-| `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
+| `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md), [Settings](docs/settings.md), the GUI toolkit (`toolkit`) and the runtime they share |
 | `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)), `android-console`, a static Android console program linked against bionic ([Android programs](docs/android-programs.md)), and `macos-console`, macOS console programs linked by Apple's linker ([macOS programs](docs/macos-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
