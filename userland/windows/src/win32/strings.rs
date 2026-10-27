@@ -329,7 +329,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"lstrcmpiW" => lstrcmpi_w,
     b"CompareStringOrdinal" => compare_string_ordinal,
     b"CompareStringW" => compare_string_w,
-    b"CompareStringEx" => compare_string_ex [stack_arguments],
+    b"CompareStringEx" => compare_string_ex [two_stack_arguments],
     b"FormatMessageW" => format_message_w,
 ];
 

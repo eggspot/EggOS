@@ -33,7 +33,14 @@ pub mod code {
     pub const TOO_MANY_POSTS: u32 = 298;
     pub const INVALID_ADDRESS: u32 = 487;
     pub const NO_UNICODE_TRANSLATION: u32 = 1113;
+    pub const INVALID_WINDOW_HANDLE: u32 = 1400;
+    pub const CANNOT_FIND_WINDOW_CLASS: u32 = 1407;
+    pub const CLASS_ALREADY_EXISTS: u32 = 1410;
+    pub const CLASS_DOES_NOT_EXIST: u32 = 1411;
+    pub const CLASS_HAS_WINDOWS: u32 = 1412;
+    pub const INVALID_INDEX: u32 = 1413;
     pub const TIMEOUT: u32 = 1460;
+    pub const NOT_ENOUGH_QUOTA: u32 = 1816;
 }
 
 /// The Win32 error code for Linux error number `errno`.
@@ -101,6 +108,13 @@ pub fn message(code: u32) -> Option<&'static str> {
         }
         code::INVALID_ADDRESS => "Attempt to access invalid address.",
         code::TIMEOUT => "This operation returned because the timeout period expired.",
+        code::INVALID_WINDOW_HANDLE => "Invalid window handle.",
+        code::CANNOT_FIND_WINDOW_CLASS => "Cannot find window class.",
+        code::CLASS_ALREADY_EXISTS => "Class already exists.",
+        code::CLASS_DOES_NOT_EXIST => "Class does not exist.",
+        code::CLASS_HAS_WINDOWS => "Class still has open windows.",
+        code::INVALID_INDEX => "Invalid index.",
+        code::NOT_ENOUGH_QUOTA => "Not enough quota is available to process this command.",
         _ => return None,
     })
 }
@@ -141,6 +155,13 @@ mod tests {
             code::NOT_OWNER,
             code::TOO_MANY_POSTS,
             code::NO_UNICODE_TRANSLATION,
+            code::INVALID_WINDOW_HANDLE,
+            code::CANNOT_FIND_WINDOW_CLASS,
+            code::CLASS_ALREADY_EXISTS,
+            code::CLASS_DOES_NOT_EXIST,
+            code::CLASS_HAS_WINDOWS,
+            code::INVALID_INDEX,
+            code::NOT_ENOUGH_QUOTA,
         ] {
             let message = message(code).unwrap();
             assert!(message.ends_with('.'), "{message}");

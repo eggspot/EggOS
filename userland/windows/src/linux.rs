@@ -33,6 +33,8 @@ pub mod number {
     pub const MKDIRAT: usize = 258;
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
+    pub const PPOLL: usize = 271;
+    pub const PIPE2: usize = 293;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -44,10 +46,12 @@ pub mod number {
     pub const CHDIR: usize = 49;
     pub const OPENAT: usize = 56;
     pub const CLOSE: usize = 57;
+    pub const PIPE2: usize = 59;
     pub const GETDENTS64: usize = 61;
     pub const LSEEK: usize = 62;
     pub const READ: usize = 63;
     pub const WRITE: usize = 64;
+    pub const PPOLL: usize = 73;
     pub const NEWFSTATAT: usize = 79;
     pub const FSTAT: usize = 80;
     pub const EXIT: usize = 93;
@@ -78,6 +82,7 @@ pub const O_TRUNC: usize = 0o1000;
 pub const O_DIRECTORY: usize = 0o200_000;
 #[cfg(target_arch = "aarch64")]
 pub const O_DIRECTORY: usize = 0o40_000;
+pub const O_NONBLOCK: usize = 0o4000;
 pub const O_CLOEXEC: usize = 0o2_000_000;
 pub const AT_REMOVEDIR: usize = 0x200;
 pub const FUTEX_WAIT_PRIVATE: usize = 128;
@@ -86,6 +91,7 @@ pub const PROT_NONE: usize = 0;
 pub const PROT_READ: usize = 1;
 pub const PROT_WRITE: usize = 2;
 pub const PROT_EXEC: usize = 4;
+pub const MAP_SHARED: usize = 0x01;
 pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
@@ -202,6 +208,72 @@ pub fn file_links(words: &[u64; STAT_WORDS]) -> u32 {
 #[cfg(target_arch = "aarch64")]
 pub fn file_links(words: &[u64; STAT_WORDS]) -> u32 {
     (words[2] >> 32) as u32
+}
+
+/// Makes the device request `request` on `fd` with `argument`, whose length must be the size
+/// the request number encodes (Linux's `_IOC`): the kernel reads or writes that many bytes.
+pub fn device_control(fd: usize, request: usize, argument: &mut [u8]) -> Result<usize, Errno> {
+    if (request >> 16) & 0x3fff != argument.len() {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: the request reads and writes at most its encoded size, which is the borrowed
+    // argument's length.
+    unsafe {
+        syscall(
+            number::IOCTL,
+            [fd, request, argument.as_mut_ptr() as usize, 0, 0, 0],
+        )
+    }
+}
+
+/// Maps `length` bytes of `fd` at `offset`, shared and readable and writable.
+pub fn map_shared(fd: usize, length: usize, offset: usize) -> Result<usize, Errno> {
+    // SAFETY: a new mapping at an address the kernel chooses replaces nothing the program uses.
+    unsafe {
+        syscall(
+            number::MMAP,
+            [0, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset],
+        )
+    }
+}
+
+/// A pipe whose ends do not block and close on `execve`: its read end, then its write end.
+pub fn pipe() -> Result<(usize, usize), Errno> {
+    let mut ends = [0i32; 2];
+    // SAFETY: `pipe2` writes two descriptors into the borrowed array.
+    unsafe {
+        syscall(
+            number::PIPE2,
+            [
+                ends.as_mut_ptr() as usize,
+                O_NONBLOCK | O_CLOEXEC,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok((ends[0] as usize, ends[1] as usize))
+}
+
+const POLLIN: u16 = 1;
+
+/// Sleeps until one of `fds` can be read (a negative one is left out), a signal or an error.
+pub fn wait_readable(fds: [i32; 2]) -> Result<usize, Errno> {
+    let mut entries = [0u64; 2];
+    for (entry, fd) in entries.iter_mut().zip(fds) {
+        *entry = u64::from(fd as u32) | (u64::from(POLLIN) << 32);
+    }
+    // SAFETY: `ppoll` reads and writes two borrowed `struct pollfd`s (an `int` and two
+    // `short`s each, as each `u64` lays them out in the machine's little-endian order) and takes
+    // no time limit or signal mask.
+    unsafe {
+        syscall(
+            number::PPOLL,
+            [entries.as_mut_ptr() as usize, 2, 0, 0, 0, 0],
+        )
+    }
 }
 
 pub fn lseek(fd: usize, offset: i64, whence: usize) -> Result<usize, Errno> {

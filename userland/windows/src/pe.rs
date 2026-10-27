@@ -1,11 +1,12 @@
 //! The PE32+ executable format (Microsoft's "PE Format" specification): a checked parser of
-//! the headers and section table of an x64 or ARM64 Windows console executable. Every offset
+//! the headers and section table of an x64 or ARM64 Windows console or GUI executable. Every offset
 //! and size read from the file is checked against the file and the image before it is used, so
 //! a malformed file is refused with a reason, never a panic.
 
 pub const MACHINE_AMD64: u16 = 0x8664;
 pub const MACHINE_ARM64: u16 = 0xaa64;
 pub const OPTIONAL_HEADER_MAGIC_PE32_PLUS: u16 = 0x20b;
+pub const SUBSYSTEM_WINDOWS_GUI: u16 = 2;
 pub const SUBSYSTEM_WINDOWS_CONSOLE: u16 = 3;
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_IMAGE_SIZE: u64 = 1 << 30;
@@ -108,11 +109,19 @@ impl Machine {
     }
 }
 
-/// A checked PE32+ executable for x64 or ARM64 with the console subsystem.
+/// The subsystem a program was built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subsystem {
+    Console,
+    Gui,
+}
+
+/// A checked PE32+ executable for x64 or ARM64 with the console or GUI subsystem.
 #[derive(Debug, Clone, Copy)]
 pub struct Pe<'a> {
     pub file: &'a [u8],
     pub machine: Machine,
+    pub subsystem: Subsystem,
     pub characteristics: u16,
     pub entry: u32,
     pub image_base: u64,
@@ -169,11 +178,15 @@ impl<'a> Pe<'a> {
         let headers_size = read_u32(file, optional + 60)?;
         let subsystem = read_u16(file, optional + 68)?;
         let directory_count = read_u32(file, optional + 108)? as usize;
-        if subsystem != SUBSYSTEM_WINDOWS_CONSOLE {
-            return Err(InvalidPe(
-                "not a console program (only console programs run yet)",
-            ));
-        }
+        let subsystem = match subsystem {
+            SUBSYSTEM_WINDOWS_CONSOLE => Subsystem::Console,
+            SUBSYSTEM_WINDOWS_GUI => Subsystem::Gui,
+            _ => {
+                return Err(InvalidPe(
+                    "not a console or GUI program (drivers and other subsystems do not run)",
+                ));
+            }
+        };
         if !section_alignment.is_power_of_two() || u64::from(section_alignment) < PAGE_SIZE {
             return Err(InvalidPe(
                 "section alignment is not a power of two of at least a page",
@@ -222,6 +235,7 @@ impl<'a> Pe<'a> {
         let pe = Self {
             file,
             machine,
+            subsystem,
             characteristics,
             entry,
             image_base,
@@ -448,6 +462,7 @@ pub mod tests {
         let pe = Pe::parse(&builder.file).unwrap();
         assert_eq!(pe.image_base, TEST_IMAGE_BASE);
         assert_eq!(pe.entry, TEXT);
+        assert_eq!(pe.subsystem, Subsystem::Console);
         assert_eq!(pe.mapped_size(), 0x4000);
         let sections: Vec<Section> = pe.sections().collect();
         assert_eq!(sections.len(), 3);
@@ -457,6 +472,9 @@ pub mod tests {
         assert!(!pe.relocatable());
         let relocatable = Builder::new().directory(directory::BASE_RELOCATION, RDATA, 12);
         assert!(Pe::parse(&relocatable.file).unwrap().relocatable());
+        let gui =
+            Builder::new().with(|f| put(f, OPTIONAL + 68, &SUBSYSTEM_WINDOWS_GUI.to_le_bytes()));
+        assert_eq!(Pe::parse(&gui.file).unwrap().subsystem, Subsystem::Gui);
     }
 
     #[test]
@@ -503,7 +521,8 @@ pub mod tests {
         assert!(refused(|f| put(f, PE_OFFSET + 20, &0xffffu16.to_le_bytes())).contains("optional"));
         assert!(refused(|f| put(f, PE_OFFSET + 20, &64u16.to_le_bytes())).contains("too short"));
         assert!(refused(|f| put(f, OPTIONAL, &0x10bu16.to_le_bytes())).contains("PE32+"));
-        assert!(refused(|f| put(f, OPTIONAL + 68, &2u16.to_le_bytes())).contains("console"));
+        assert!(refused(|f| put(f, OPTIONAL + 68, &1u16.to_le_bytes())).contains("GUI"));
+        assert!(refused(|f| put(f, OPTIONAL + 68, &10u16.to_le_bytes())).contains("console"));
         assert!(refused(|f| put_u32(f, OPTIONAL + 32, 0x200)).contains("section alignment"));
         assert!(refused(|f| put_u32(f, OPTIONAL + 32, 0x3000)).contains("section alignment"));
         assert!(refused(|f| put_u32(f, OPTIONAL + 36, 0x2000)).contains("file alignment"));
