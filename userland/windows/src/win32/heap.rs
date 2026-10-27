@@ -130,14 +130,13 @@ struct Block {
     size: usize,
 }
 
-fn block_of(pointer: *mut u8) -> Option<Block> {
+unsafe fn block_of(pointer: *mut u8) -> Option<Block> {
     if pointer.is_null() || !(pointer as usize).is_multiple_of(HEADER_SIZE) {
         return None;
     }
     let start = pointer.wrapping_sub(HEADER_SIZE);
-    // SAFETY: the program passes a pointer the heap returned (the Win32 contract), so its header
-    // is the 16 bytes before it; a foreign pointer is caught by the magic in most cases, as
-    // Windows' heap checks catch some.
+    // SAFETY: the caller's duty: `pointer` came from this heap, so its header is the 16 readable
+    // bytes before it; the magic then catches a block freed already.
     let [magic, class] = unsafe { start.cast::<[u32; 2]>().read() };
     // SAFETY: as above.
     let size = unsafe { start.wrapping_add(8).cast::<usize>().read() };
@@ -173,11 +172,12 @@ extern "win64" fn heap_alloc(_heap: usize, flags: u32, size: usize) -> *mut u8 {
     allocate_with(size, flags & HEAP_ZERO_MEMORY != 0)
 }
 
-extern "win64" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) -> Bool {
+unsafe extern "win64" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) -> Bool {
     if pointer.is_null() {
         return TRUE;
     }
-    match block_of(pointer) {
+    // SAFETY: `HeapFree`'s contract: a block `HeapAlloc` or `HeapReAlloc` returned.
+    match unsafe { block_of(pointer) } {
         Some(block) => {
             release(block);
             TRUE
@@ -186,15 +186,22 @@ extern "win64" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) -> Bool
     }
 }
 
-extern "win64" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) -> usize {
-    match block_of(pointer) {
+unsafe extern "win64" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) -> usize {
+    // SAFETY: `HeapSize`'s contract: a block `HeapAlloc` or `HeapReAlloc` returned.
+    match unsafe { block_of(pointer) } {
         Some(block) => block.size,
         None => usize::MAX,
     }
 }
 
-extern "win64" fn heap_realloc(_heap: usize, flags: u32, pointer: *mut u8, size: usize) -> *mut u8 {
-    let Some(block) = block_of(pointer) else {
+unsafe extern "win64" fn heap_realloc(
+    _heap: usize,
+    flags: u32,
+    pointer: *mut u8,
+    size: usize,
+) -> *mut u8 {
+    // SAFETY: `HeapReAlloc`'s contract: a block `HeapAlloc` or `HeapReAlloc` returned.
+    let Some(block) = (unsafe { block_of(pointer) }) else {
         return fail(error::INVALID_PARAMETER, ptr::null_mut());
     };
     let zero = flags & HEAP_ZERO_MEMORY != 0;

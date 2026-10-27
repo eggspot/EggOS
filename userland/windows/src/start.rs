@@ -42,15 +42,14 @@ pub fn run(startup: &Startup) -> i32 {
 fn report(program: &[u8], failure: Failure) {
     let mut message = Message::default();
     message.push(b"windows: ");
-    if let Failure::Usage = failure {
-        message.push(b"Windows programs start by their own name, e.g. `hello.exe`\n");
-        message.write();
-        return;
+    if !matches!(failure, Failure::Usage) {
+        message.push(program);
+        message.push(b": ");
     }
-    message.push(program);
-    message.push(b": ");
     match failure {
-        Failure::Usage => {}
+        Failure::Usage => {
+            message.push(b"Windows programs start by their own name, e.g. `hello.exe`")
+        }
         Failure::Open(errno) | Failure::Read(errno) => message.push(errno.message()),
         Failure::Invalid(InvalidPe(reason)) => message.push(reason.as_bytes()),
         Failure::Unresolved(BindError::Invalid(InvalidPe(reason))) => {
