@@ -514,6 +514,11 @@ pub fn execve<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let [path, arguments, environment, ..] = context.syscall_arguments();
+    let mut name = [0u8; 24];
+    if process.read_user_memory(path, &mut name).is_ok() && name.windows(7).any(|w| w == b"android")
+    {
+        super::probe::PID.store(process.id().get(), core::sync::atomic::Ordering::Relaxed);
+    }
     let request = Request {
         dirfd: at::FDCWD as u64,
         path,
