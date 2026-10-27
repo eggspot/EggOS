@@ -21,6 +21,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-eggfs"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-eggsh"
 version = "0.2.0"
 dependencies = [
