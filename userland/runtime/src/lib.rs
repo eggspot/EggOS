@@ -8,6 +8,7 @@
 #[cfg(target_env = "musl")]
 mod entry;
 pub mod errno;
+pub mod futex;
 #[cfg(target_env = "musl")]
 mod memory;
 pub mod process;

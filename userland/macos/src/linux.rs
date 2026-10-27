@@ -354,8 +354,8 @@ pub fn futex_wait_shared(word: &core::sync::atomic::AtomicU32, expected: u32) {
     };
 }
 
-/// Wakes at most `count` threads sleeping on the 32-bit word.
-pub fn futex_wake(word: &core::sync::atomic::AtomicU32, count: u32) {
+/// Wakes one or every thread sleeping on the 32-bit word.
+pub fn futex_wake(word: &core::sync::atomic::AtomicU32, count: eggos_runtime::futex::WakeCount) {
     // SAFETY: a wake touches no memory.
     let _ = unsafe {
         syscall(
@@ -363,7 +363,7 @@ pub fn futex_wake(word: &core::sync::atomic::AtomicU32, count: u32) {
             [
                 word.as_ptr() as usize,
                 FUTEX_WAKE_PRIVATE,
-                count as usize,
+                count.count() as usize,
                 0,
                 0,
                 0,

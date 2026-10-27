@@ -17,8 +17,6 @@ mod errors;
 #[cfg(any(test, runs_windows_programs))]
 mod find;
 #[cfg(any(test, runs_windows_programs))]
-mod futex;
-#[cfg(any(test, runs_windows_programs))]
 mod gui;
 #[cfg(any(test, runs_windows_programs))]
 mod image;

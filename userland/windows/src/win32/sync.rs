@@ -7,10 +7,10 @@
 //! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
-use crate::futex::WakeCount;
 use crate::library::Export;
 use crate::linux;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use eggos_runtime::futex::WakeCount;
 
 pub const OBJECT_HANDLES: usize = 0x4000_0000;
 const MAX_OBJECTS: usize = 4096;

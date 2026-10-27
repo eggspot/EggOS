@@ -8,6 +8,7 @@ use crate::darwin::EINVAL;
 use crate::linux;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use eggos_runtime::futex::WakeCount;
 
 const FREE: u32 = 0;
 const HELD: u32 = 1;
@@ -54,7 +55,7 @@ pub fn try_lock(word: &AtomicU32) -> bool {
 /// Releases the lock in `word`, waking one waiter if there is one.
 pub fn unlock(word: &AtomicU32) {
     if word.swap(FREE, Ordering::Release) == CONTENDED {
-        linux::futex_wake(word, 1);
+        linux::futex_wake(word, WakeCount::One);
     }
 }
 
@@ -320,7 +321,7 @@ pub unsafe extern "C" fn pthread_cond_signal(condition: *mut Condition) -> c_int
     // SAFETY: the caller's promise.
     let condition = unsafe { &*condition };
     condition.sequence.fetch_add(1, Ordering::Release);
-    linux::futex_wake(&condition.sequence, 1);
+    linux::futex_wake(&condition.sequence, WakeCount::One);
     0
 }
 
@@ -330,7 +331,7 @@ pub unsafe extern "C" fn pthread_cond_broadcast(condition: *mut Condition) -> c_
     // SAFETY: the caller's promise.
     let condition = unsafe { &*condition };
     condition.sequence.fetch_add(1, Ordering::Release);
-    linux::futex_wake(&condition.sequence, i32::MAX as u32);
+    linux::futex_wake(&condition.sequence, WakeCount::All);
     0
 }
 
@@ -344,7 +345,7 @@ pub unsafe extern "C" fn pthread_once(once: *mut Once, routine: extern "C" fn())
             Ok(_) => {
                 routine();
                 state.store(ONCE_DONE, Ordering::Release);
-                linux::futex_wake(state, i32::MAX as u32);
+                linux::futex_wake(state, WakeCount::All);
                 return 0;
             }
             Err(ONCE_DONE) => return 0,
@@ -426,7 +427,7 @@ pub unsafe extern "C" fn dispatch_semaphore_signal(semaphore: *mut Semaphore) ->
     // SAFETY: the caller's promise.
     let value = unsafe { &(*semaphore).value };
     value.fetch_add(1, Ordering::Release);
-    linux::futex_wake(value, 1);
+    linux::futex_wake(value, WakeCount::One);
     0
 }
 
