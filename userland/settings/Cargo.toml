@@ -1,0 +1,18 @@
+[package]
+name = "eggos-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "settings"
+path = "src/main.rs"
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
+eggos-toolkit = { path = "../toolkit" }
+
+[lints]
+workspace = true

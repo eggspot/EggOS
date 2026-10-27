@@ -174,7 +174,13 @@ const MMIO_INPUT_ARGS: &[&str] = &[
     "virtio-mouse-device",
 ];
 
-const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers", "eggos-font"];
+const KERNEL_CRATES: &[&str] = &[
+    "eggos-kernel",
+    "eggos-hal",
+    "eggos-drivers",
+    "eggos-font",
+    "eggos-settings-file",
+];
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
@@ -182,6 +188,8 @@ const USER_CRATES: &[&str] = &[
     "eggos-eggsh",
     "eggos-coreutils",
     "eggos-hello-window",
+    "eggos-toolkit",
+    "eggos-settings",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
@@ -228,6 +236,8 @@ const INIT_PATH: &str = "init";
 const SHELL_PATH: &str = "bin/eggsh";
 
 const COREUTILS_PATH: &str = "bin/coreutils";
+
+const SETTINGS_PATH: &str = "bin/settings";
 
 const PROC_PATH: &str = "proc";
 
@@ -591,6 +601,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let kernel = build_kernel(arch, None)?;
     qemu::persistent::check(arch, &kernel)?;
+    qemu::settings::check(arch, &kernel)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -946,11 +957,13 @@ fn release_initramfs(
     let init = build_init(arch)?;
     let shell = build_shell(arch)?;
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
+    let settings = build_runtime_program(arch, "eggos-settings")?;
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
         (SHELL_PATH, initramfs::Content::Program(&shell)),
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+        (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),

@@ -13,7 +13,7 @@ use super::thread::LinuxThread;
 use super::{Errno, Iovecs, iovec};
 use crate::process::{LentFrames, Placement, Process};
 use crate::regions::RegionError;
-use crate::terminal::with_windows;
+use crate::terminal::{desktop_profile, set_desktop_profile, with_windows};
 use crate::window::{self, Connection, PixelBuffer, ServerError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -22,7 +22,7 @@ use eggos_drivers::desktop::protocol::{
     EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, create_reply,
     list_reply, put_double_word, put_word, request, set_size_reply, size,
 };
-use eggos_drivers::desktop::{Desktop, WindowId};
+use eggos_drivers::desktop::{Desktop, Profile, WindowId};
 use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
@@ -70,7 +70,7 @@ pub fn ioctl<P: Platform>(
     let length = Request::argument_size(number).ok_or(Errno::ENOTTY)?;
     let mut bytes = [0u8; size::LARGEST];
     let bytes = &mut bytes[..length];
-    if number != request::GET_WORK_AREA {
+    if number != request::GET_WORK_AREA && number != request::GET_PROFILE {
         process
             .read_user_memory(argument, bytes)
             .map_err(|_| Errno::EFAULT)?;
@@ -81,13 +81,10 @@ pub fn ioctl<P: Platform>(
         request,
         Request::ListWindow { .. } | Request::ManageWindow { .. }
     );
-    if manages
-        && !process
-            .credentials_and_limits()
-            .lock()
-            .credentials
-            .is_privileged()
-    {
+    if manages && !is_privileged(process) {
+        return Err(Errno::EPERM);
+    }
+    if matches!(request, Request::SetProfile { .. }) && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
     }
     match request {
@@ -217,8 +214,30 @@ pub fn ioctl<P: Platform>(
         } => on_windows::<P, _>(|desktop, _, damage, events| {
             desktop.manage(window, action, a, b, damage, events)
         })?,
+        Request::GetProfile => {
+            put_word(bytes, 0, desktop_profile().number());
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SetProfile { profile } => {
+            let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
+            set_desktop_profile::<P>(profile);
+        }
     }
     Ok(0)
+}
+
+fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
+    process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .is_privileged()
+}
+
+fn may_change_desktop_settings<P: Platform>(process: &Process<P>) -> bool {
+    is_privileged(process)
 }
 
 fn on_windows<P: Platform, R>(

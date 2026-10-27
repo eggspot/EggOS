@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
+eggos-settings = { path = "../userland/settings" }
+eggos-settings-file = { path = "../settings-file" }
+eggos-toolkit = { path = "../userland/toolkit" }
 eggos-windows-gui = { path = "../userland/windows-gui" }
 eggos-windows-gui-tests = { path = "../tests/windows-gui" }
 

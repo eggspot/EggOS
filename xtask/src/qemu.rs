@@ -3,6 +3,7 @@
 //! does: docs/build.md, "Developer commands".
 
 pub mod persistent;
+pub mod settings;
 mod windows_gui;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
@@ -2490,6 +2491,20 @@ fn check_desktop_frame_within(
     windows: &[(WindowId, WindowContent)],
     timeout: Duration,
 ) -> Result<(), String> {
+    check_desktop_frame_among(arch, qmp, console, output, at, desktop, &[windows], timeout)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_desktop_frame_among(
+    arch: &Arch,
+    qmp: &mut Qmp,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    at: &str,
+    desktop: &Desktop,
+    alternatives: &[&[(WindowId, WindowContent)]],
+    timeout: Duration,
+) -> Result<(), String> {
     let path = screendump_path(arch, "")?;
     let started = Instant::now();
     loop {
@@ -2503,11 +2518,18 @@ fn check_desktop_frame_within(
                 arch.name
             )
         })?;
-        let mut expected = desktop_picture(desktop, stream, windows)
-            .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?;
-        let matched = (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
-            with_uptime(desktop, &mut expected, seconds);
-            picture == expected
+        let mut candidates = Vec::new();
+        for windows in alternatives {
+            candidates.push(
+                desktop_picture(desktop, stream, windows)
+                    .ok_or_else(|| format!("{}: the desktop holds no terminal", arch.name))?,
+            );
+        }
+        let matched = candidates.iter_mut().any(|expected| {
+            (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
+                with_uptime(desktop, expected, seconds);
+                picture == *expected
+            })
         });
         if matched {
             eprintln!(
@@ -2520,7 +2542,10 @@ fn check_desktop_frame_within(
             return Ok(());
         }
         if started.elapsed() > timeout {
-            with_uptime(desktop, &mut expected, 0);
+            let Some(expected) = candidates.first_mut() else {
+                return Err(format!("{}: no expected picture at {at}", arch.name));
+            };
+            with_uptime(desktop, expected, 0);
             let expected_path = screendump_path(arch, "-expected")?;
             std::fs::write(&expected_path, expected.to_ppm())
                 .map_err(|e| format!("{}: {e}", expected_path.display()))?;

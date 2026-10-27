@@ -18,6 +18,11 @@ behaviour. A UX regression is treated like a performance regression.
   box as an EggOS dialog, the Win32 system colours inside a program's client area, and the
   `IDC_*` pointer mapping.
 - `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
+- `font-ui-16.txt`: Egg Sans 16, the proportional UI font of the toolkit, ASCII and Latin-1 as
+  pixel art with each glyph's advance width (D132).
+- `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
+  cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
+  app's first version (item 34).
 
 ## Principles
 1. **Habits just work.** A user's muscle memory from their previous OS keeps working: shortcuts,

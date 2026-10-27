@@ -63,6 +63,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-hal",
+ "eggos-settings-file",
 ]
 
 [[package]]
@@ -92,8 +93,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-settings"
+version = "0.2.0"
+dependencies = [
+ "eggos-runtime",
+ "eggos-settings-file",
+ "eggos-toolkit",
+]
+
+[[package]]
+name = "eggos-settings-file"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-std-selftest"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-toolkit"
+version = "0.2.0"
+dependencies = [
+ "eggos-font",
+ "eggos-runtime",
+]
 
 [[package]]
 name = "eggos-windows"
@@ -124,6 +146,9 @@ version = "0.2.0"
 dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-settings",
+ "eggos-settings-file",
+ "eggos-toolkit",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",
 ]

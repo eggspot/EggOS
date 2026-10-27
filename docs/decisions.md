@@ -7670,3 +7670,89 @@ the license, by an explicit instruction recorded here.
   reports its first failed commit on the console; the crate's documentation names the CRC-64;
   xtask extends an empty image as the scripts do; the PowerShell script checks `qemu-img`'s exit
   status and resolves a relative `-Disk` against the current location.
+
+## D132 Settings and the GUI toolkit: the layout profile picked in a window and kept on the disk, `userland/toolkit`, Egg Sans 16 and `GET_PROFILE`/`SET_PROFILE` (v0.3.0 item 34) — Decided by the build loop (the design is Claude Fable's, D16; the file's place and format, the reading at boot, the permission, the command and the toolkit's memory decided by research)
+- **What.** Users can now open Settings (`settings` at the prompt), pick the Windows, macOS or
+  Linux layout profile on its Appearance pane and see the desktop change at once: every
+  window's controls move to the profile's side and the profile's shortcuts apply (until the
+  shell, item 35, that is all a profile changes, as the design says). The choice survives a
+  reboot when a disk is attached and lasts for the session otherwise. `settings get`, `set` and
+  `list` are the same capability on the command line (docs/settings.md).
+- **Design (Claude Fable, D16).** Section 10 of `docs/ux/desktop-v0.3-gui.md` designed the
+  window; for this item Fable drew the UI font and wrote `docs/ux/toolkit-v0.3.md`: the widgets'
+  states (four new tokens for hovered and pressed buttons), focus and keyboard navigation, the
+  text field, the scroll view, and what Settings shows in 0.3.0. Two changes to section 10 are
+  Fable's: the minimum size is 640x360 (the three cards do not fit at 560) and Scale is a radio
+  group. One is research's: the `2x` radio is disabled with the hint `2x comes in a later
+  version` and `display.scale` is read-only, because nothing draws at 2x yet and a saved `2`
+  would be a promise the system does not keep.
+- **Egg Sans 16** (`docs/ux/font-ui-16.txt`, the `egg_sans` module of `eggos-font`): a
+  proportional 1-bit face drawn by Fable (licence-clean), ASCII and Latin-1, 191 glyphs, cell 16
+  rows with Egg Mono's baseline, capitals 10 rows so accented capitals fit, tabular digits;
+  2x by pixel doubling for headings. The design file is the only source: a `const fn` parses
+  it while the crate compiles (a malformed file is a compile error), so there is no generated
+  table to keep in step. Egg Mono stays the terminal's.
+- **The toolkit** (`userland/toolkit`, `eggos-toolkit`, no_std): a retained widget tree in a
+  fixed array (`WidgetTree<N>`, parents before children, no heap: decided by research over an
+  allocator in the runtime, D24); layout by places (left, right or centred, fixed, filling or
+  content-sized) with columns and scroll views; labels, push buttons, checkboxes, radio groups,
+  card pickers, lists and single-line text fields; hover, pressed (the pointer captured until
+  release) and focus with the 2 px ring, Tab order, arrows, Enter, Space and Esc as section 3
+  of the brief says; damage per widget, at most eight rects per commit; scale 1 or 2 applied by
+  the canvas, so every number and stroke doubles; the window connection to `/dev/window`, its
+  event records and an event loop that sleeps in `ppoll` until input or the caret's next blink.
+  The tree renders into any buffer, which the host tests and the QEMU test's expected frames
+  use. A program links it as a library; nothing of it runs without a window.
+- **The profile is a capability with two requests** (decided by research): `GET_PROFILE`
+  (`0x8004770d`, any client) and `SET_PROFILE` (`0x4004770e`, root for now, behind one named
+  check, `may_change_desktop_settings`, which becomes "the active user's session" when there
+  are sessions). Numbers 0 Windows, 1 macOS, 2 Linux, the order of the settings file's
+  `PROFILES`. The kernel keeps the profile in one byte (`.bss`, 0 meaning "the default") that
+  the key path reads instead of the old constant, and `SET_PROFILE` calls `Desktop::set_profile`
+  under the screen's lock, which redraws the title bars; windows keep their sizes and buffers.
+- **The settings file** (decided by research): `/home/root/.config/eggos/settings`, the
+  design's `/home/<user>/.config/eggos/` with `root`, the account every process runs as until
+  there are accounts, and one file for every key rather than the design's `shell` file. A
+  version line `eggos-settings 1`, then `key=value` lines with the command's keys; anything
+  else (another version, garbage, more than 4 KiB) holds nothing and every setting takes its
+  default; the last line of a key wins; unknown keys are kept on write. The format is the
+  `eggos-settings-file` crate (`settings-file/`, no_std, no heap, host-tested with random
+  bytes), shared by the kernel and the program; `drivers` could not be, since userland cannot
+  link a crate that uses `alloc`.
+- **Saved by the program, read by the kernel before the first frame** (decided by research).
+  `settings set` writes the file first (a temporary file, synced, renamed over the old one),
+  then applies it live; the file is the source of truth, and a failed write still applies the
+  change for the session. A card click applies first and saves right after the window's next
+  frame, so the card and the desktop change in the same frame, as the design asks, and the
+  disk's sync never delays them. The kernel reads the file after mounting the disks and
+  before starting the desktop, so the first frame is already in the saved profile: no flash.
+  Without a disk `/home` is in memory, so the same write lasts the session; the window says so,
+  telling a disk from memory by `/home`'s device (a major number of 0 is a memory file system).
+- **One program, every front-end** (decided by research): `/bin/settings` opens the window with
+  no arguments and is the command with them, so the window and the command share the key table
+  and the save-then-apply path. `settings list` writes `key=value` lines (the file's syntax);
+  errors are `settings: <key>: <why>` with status 1 for refusals and 2 for a bad value or
+  command, as `wm`. With no display, `set` saves and the next boot applies it. The MCP tools
+  (`settings_get`, `settings_set`, `settings_list`) wait for the MCP server (D21, D22), as `wm`'s
+  do.
+- **Lightness (D24).** `/bin/settings` adds about 110 KiB to the image on each architecture
+  (the toolkit, the font's 6.5 KiB of glyphs, the window, the command); the kernel grows by the
+  file's parser and the two requests. Nothing runs, and nothing is allocated, while Settings is
+  not open; the window's 640x440 buffer (1.1 MiB) exists only while it is. Settings becomes an
+  optional component when the component manager exists (D18).
+- **Testing.** Host: the font file's glyphs, metrics and fallback; the toolkit's layout, hit
+  tests, every widget's keys and clicks, focus order, the caret's blink, the scroll view and the
+  wheel, rendering at 1x and 2x, damage-only painting equal to a full repaint, a rendered
+  string's hash; the settings file's reading, writing, versions and 300 random files; the keys
+  and the window (layout, the cards, the search with synonyms, the disk line). QEMU on all
+  three architectures, with frames compared with the host's render: without a disk Settings
+  opens, a click on Linux moves the controls, the close control (now on the right) closes it,
+  and `settings get`/`list` and the file in `/home` show the session's choice; on a blank disk a
+  click on Windows is saved; booting that disk again starts in the Windows profile in its first
+  frame, `settings set shell.profile macos` switches back at once, and the image holds each
+  choice, read back with `eggos-eggfs`.
+- **Not yet.** The launcher and dock entries that open Settings (item 35; `settings` at the
+  prompt until then), the boot parameter `eggos.profile=` (the kernel has no command line),
+  per-user settings, 2x, the Mouse and Components panes, key repeat, the MCP tools, text
+  selection and the clipboard in the toolkit, and an `-icount` benchmark of the toolkit (its
+  code runs in user space; the benchmark harness runs kernel code).

@@ -65,6 +65,8 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `GET_WORK_AREA` | `0x8014770a` (R) | 20 | 0: x, 4: y, 8: width, 12: height, 16: scale | Where windows go (the screen below the top bar, what a maximised window fills) and the scale, 1 in 0.3.0. |
 | `LIST_WINDOW` | `0xc060770b` (RW) | 96 | 0: index (in); 0: window, 4: state, 8: x, 12: y, 16: width, 20: height (the outside rectangle on the screen), 24: client (65535 the kernel's), 28: title length, 32: title (64 bytes) (out) | The window at that index among the shown and minimised windows, oldest first; `ENOENT` past the last. Root only (`EPERM`); what `wm list` reads. |
 | `MANAGE_WINDOW` | `0x4010770c` (W) | 16 | 0: window, 4: action, 8: a, 12: b (signed) | Any client's window: 0 focus (restoring it if minimised), 1 minimise, 2 maximise, 3 restore, 4 close (sends `CloseRequest`; `EPERM` for the terminal), 5 move its outside top-left to (a, b) on the screen, 6 give it content a by b (sends `Resize`). Root only (`EPERM`); what `wm`'s other commands make. |
+| `GET_PROFILE` | `0x8004770d` (R) | 4 | 0: profile (out) | The desktop's layout profile (D132): 0 Windows habits, 1 macOS habits, 2 Linux habits. Any client. |
+| `SET_PROFILE` | `0x4004770e` (W) | 4 | 0: profile | Makes it the desktop's at once: every window's controls move to the profile's side (left for macOS, right for the others) and its shortcuts apply; windows keep their sizes and buffers, only their title bars are drawn again. The profile is not saved: Settings and `settings set` save it in the settings file, which the kernel reads at boot (D132). Root only, for now the active user's session (`EPERM`); `EINVAL` for another number. |
 
 Errors: a window that is not the client's, an unknown role, state, shape or action, unknown
 flags, a title too long or not UTF-8, more than 8 rects: `EINVAL`; a role the client may not
@@ -128,6 +130,10 @@ The terminal is one of the windows, works as before, keeps its 80x24 size (no re
 maximising) and declines closing. Other keys go to the focused window: the terminal's to the
 shell, a program's as `Key` events.
 
+The layout profile (Windows, macOS or Linux habits: the controls' side and the shortcuts) is
+chosen in Settings or with `settings set shell.profile` ([Settings](settings.md), D132), which
+use `GET_PROFILE` and `SET_PROFILE`.
+
 From the command line, `wm` (docs/coreutils.md) lists the windows and focuses, minimises,
 maximises, restores, closes, moves and sizes them; it uses `LIST_WINDOW` and `MANAGE_WINDOW`,
 so it needs root. Its MCP tools come with the MCP server: there is no capability or MCP
@@ -135,6 +141,6 @@ framework yet (D21, D22).
 
 ## Not yet
 
-Windows partly off screen, the launcher (Super alone), F11, a profile setting, the `Hand` and
+Windows partly off screen, the launcher (Super alone), F11, the `Hand` and
 `Busy` pointer shapes, `wm screenshot` and `wm`'s MCP tools, key repeat as `Key` records with
 value 2, scales other than 1, buffers over 4 MiB, the server in user space.
