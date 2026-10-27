@@ -2,11 +2,13 @@
 //! no anti-aliasing. A glyph is addressed by a `u8` glyph id: 0x20 to 0x7E are the printable
 //! ASCII characters themselves, and the box drawing, block and symbol extras take 0x80 upwards in
 //! the order of [`EXTRAS`]; every other id draws `?`. The desktop, the terminal and the
-//! Windows layer's drawing share it (D129).
+//! Windows layer's drawing share it (D129). [`egg_sans`] is the proportional UI font of the
+//! toolkit (docs/ux/font-ui-16.txt, D132).
 
 #![cfg_attr(not(test), no_std)]
 
 mod egg_mono;
+pub mod egg_sans;
 
 #[cfg(test)]
 mod tests;
