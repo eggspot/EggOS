@@ -43,12 +43,17 @@ commands:
                          build the release image with each file added to its initramfs at
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
-  run   --arch <arch> [--nographic] [--apps <folder>] [--add <file> [--as <path>]]...
+  run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
+        [--format-disk] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
-                         the host's folder read-only at /media/host; with --add, the
-                         release image with those files, as `image` builds it
+                         the host's folder read-only at /media/host; the disk image
+                         target/image/eggos-<arch>-disk.img (or --disk's), made empty and
+                         1 GiB sparse if missing, holds /home and /Applications across
+                         boots (--no-disk: none, /home in memory); --format-disk empties
+                         it first, erasing everything on it; with --add, the release image
+                         with those files, as `image` builds it
   bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -236,9 +241,11 @@ const HOST_FOLDER_PATH: &str = "media/host";
 
 const HOME_PATH: &str = "home";
 
-const COREUTILS: [&str; 23] = [
+const APPLICATIONS_PATH: &str = "Applications";
+
+const COREUTILS: [&str; 24] = [
     "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
-    "ps", "reboot", "rm", "sleep", "tail", "touch", "true", "uname", "uptime", "wc", "wm",
+    "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -349,16 +356,32 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, added) = image::added_files(&args[1..])?;
             let (options, nographic) = without_flag(&options, "--nographic");
             let (options, folder) = with_value(&options, "--apps")?;
+            let (options, no_disk) = without_flag(&options, "--no-disk");
+            let (options, format_disk) = without_flag(&options, "--format-disk");
+            let (options, disk) = with_value(&options, "--disk")?;
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
-            let folder_args = match folder {
+            let mut extra_args = match folder {
                 Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
                 None => Vec::new(),
             };
             let kernel = build_release_image(arch, &added)?;
-            qemu::run_interactive(arch, &kernel, !nographic, &folder_args)
+            let disk = match (no_disk, disk, format_disk) {
+                (true, Some(_), _) => {
+                    return Err("`--disk` and `--no-disk` exclude each other".into());
+                }
+                (true, None, true) => return Err("`--format-disk` needs a disk".into()),
+                (true, None, false) => None,
+                (false, disk, _) => Some(disk.map(std::path::PathBuf::from).unwrap_or_else(|| {
+                    kernel.with_file_name(format!("eggos-{}-disk.img", arch.name))
+                })),
+            };
+            if let Some(disk) = disk {
+                extra_args.extend(prepare_disk_image(arch, &disk, format_disk)?);
+            }
+            qemu::run_interactive(arch, &kernel, !nographic, &extra_args)
         }
         _ => Err(USAGE.into()),
     }
@@ -385,6 +408,29 @@ fn with_value(args: &[String], option: &str) -> Result<(Vec<String>, Option<Stri
         }
     }
     Ok((rest, value))
+}
+
+fn prepare_disk_image(
+    arch: &Arch,
+    disk: &std::path::Path,
+    format: bool,
+) -> Result<Vec<String>, String> {
+    if format {
+        qemu::reset_disk_image(disk, qemu::DISK_IMAGE_BYTES)?;
+        eprintln!(
+            "xtask: emptied {}: EggOS formats it at boot",
+            disk.display()
+        );
+    } else if qemu::create_disk_image(disk, qemu::DISK_IMAGE_BYTES)? {
+        eprintln!("xtask: created {} (1 GiB, sparse)", disk.display());
+    }
+    let absolute = std::path::absolute(disk).map_err(|e| format!("{}: {e}", disk.display()))?;
+    let absolute = absolute
+        .into_os_string()
+        .into_string()
+        .map_err(|_| format!("`{}` is not valid Unicode", disk.display()))?;
+    eprintln!("xtask: {absolute} holds /home and /Applications in EggOS");
+    Ok(qemu::disk_args(arch, &absolute))
 }
 
 fn host_folder(folder: &str) -> Result<String, String> {
@@ -544,6 +590,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         )?;
     }
     let kernel = build_kernel(arch, None)?;
+    qemu::persistent::check(arch, &kernel)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -908,6 +955,7 @@ fn release_initramfs(
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
         (HOME_PATH, initramfs::Content::Directory),
+        (APPLICATIONS_PATH, initramfs::Content::Directory),
         (HOST_FOLDER_PATH, initramfs::Content::Directory),
     ];
     members.extend(

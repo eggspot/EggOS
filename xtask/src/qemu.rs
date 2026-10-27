@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod persistent;
 mod windows_gui;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
@@ -272,6 +273,47 @@ pub fn host_folder_args(arch: &Arch, folder: &str) -> Vec<String> {
         "-device".into(),
         format!("{},drive=host", arch.disk_device),
     ]
+}
+
+/// The size of the disk image `cargo xtask run` and the run scripts create when there is
+/// none: 1 GiB, sparse where the host's file system allows, so it takes only what is written
+/// (D131).
+pub const DISK_IMAGE_BYTES: u64 = 1 << 30;
+
+/// QEMU's arguments that attach the raw disk image `image` (an absolute path) writable on
+/// `arch`'s virtio block device, which EggOS formats with EggFS if it is blank and mounts at
+/// `/home` and `/Applications` (D131). EggOS tells it from a host folder by what it holds, not
+/// by the order the disks come in. A guest flush reaches the host file (QEMU's default
+/// write-back cache).
+pub fn disk_args(arch: &Arch, image: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=file,node-name=eggfs-file,filename={}",
+            image.replace(',', ",,")
+        ),
+        "-blockdev".into(),
+        "driver=raw,node-name=eggfs,file=eggfs-file".into(),
+        "-device".into(),
+        format!("{},drive=eggfs", arch.disk_device),
+    ]
+}
+
+/// Creates the disk image `path`, `bytes` long and empty, unless it exists; returns whether
+/// it made one. The file is extended without writing (sparse on APFS, ext4 and most Unix
+/// file systems; on NTFS Windows reserves the space, see docs/build.md).
+pub fn create_disk_image(path: &Path, bytes: u64) -> Result<bool, String> {
+    if path.exists() {
+        return Ok(false);
+    }
+    reset_disk_image(path, bytes).map(|()| true)
+}
+
+/// Makes the disk image `path` `bytes` long and empty, whatever it held: `--format-disk`.
+pub fn reset_disk_image(path: &Path, bytes: u64) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    file.set_len(bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 const PROGRAM_WINDOW_SESSION: [&[u8]; 4] = [
@@ -848,10 +890,19 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     };
     [
         whole(&[
-            "bin", "dev", "etc", "home", "init", "media", "proc", "tmp", "usr",
+            "Applications",
+            "bin",
+            "dev",
+            "etc",
+            "home",
+            "init",
+            "media",
+            "proc",
+            "tmp",
+            "usr",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 24 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 25 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -3164,7 +3215,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 24 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 25 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
