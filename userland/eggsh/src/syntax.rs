@@ -5,15 +5,35 @@
 //! comments to the end of the line. `$NAME`, `${NAME}`, `$?`, `$$`, `$#` and `$0` to `$9`
 //! expand; unquoted, their values are split on blanks too. `~` alone or before `/` at the
 //! start of a word is `$HOME`. `NAME=value` words before the command are assignments.
-//! Commands end at `;`, a newline or the end of the text. The operators other shells have
-//! (`|`, `&&`, `||`, `&`, `<`, `>`, `>>`, `(`, `)`, `` ` ``, `$(`) are refused as not
-//! supported yet, never read as words, so adding them later changes no command that works now.
+//! Commands end at `;`, a newline, the end of the text or `|`, which pipes the command's
+//! output into the next one (D125). `< file`, `> file` and `>> file` anywhere in a command
+//! redirect its input and output; the word after the operator names the file. The operators
+//! other shells have that eggsh does not (`&&`, `||`, `&`, `<<`, `(`, `)`, `` ` ``, `$(`) are
+//! refused as not supported yet, never read as words, so adding them later changes no command
+//! that works now.
 
 /// The most bytes a command's words take, each with its terminating NUL.
 pub const WORDS_CAPACITY: usize = 8192;
 
 /// The most words a command has, assignments included.
 pub const MAX_WORDS: usize = 256;
+
+/// The most redirections a command has.
+pub const MAX_REDIRECTIONS: usize = 8;
+
+/// The most bytes a command's redirections' file names take, each with its terminating NUL.
+pub const REDIRECTIONS_CAPACITY: usize = 4096;
+
+/// Where a redirection sends a command's input or output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirection {
+    /// `< file`: standard input reads the file.
+    Input,
+    /// `> file`: standard output replaces the file's contents, creating it if needed.
+    Output,
+    /// `>> file`: standard output is added to the end of the file, creating it if needed.
+    Append,
+}
 
 /// Why a command could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +61,8 @@ pub enum Terminator {
     Newline,
     /// The end of the text.
     End,
+    /// `|`: the command's output is the next command's input.
+    Pipe,
 }
 
 /// A command read from text: how many bytes it took, its terminator included.
@@ -85,6 +107,8 @@ pub trait Sink {
     fn push(&mut self, byte: u8) -> Result<(), SyntaxError>;
     /// Ends the word being made, an assignment if `assignment`.
     fn finish(&mut self, assignment: bool) -> Result<(), SyntaxError>;
+    /// Ends the word being made as the file of `redirection`, not one of the command's words.
+    fn finish_redirection(&mut self, redirection: Redirection) -> Result<(), SyntaxError>;
     /// Forgets every word.
     fn clear(&mut self);
     /// How many words were finished.
@@ -93,7 +117,7 @@ pub trait Sink {
     fn only_assignments(&self) -> bool;
 }
 
-/// A command's words, each ended by a NUL, the assignments first.
+/// A command's words, each ended by a NUL, the assignments first, and its redirections.
 #[derive(Debug, Clone)]
 pub struct Words {
     bytes: [u8; WORDS_CAPACITY],
@@ -101,6 +125,10 @@ pub struct Words {
     ends: [u16; MAX_WORDS],
     count: usize,
     assignments: usize,
+    files: [u8; REDIRECTIONS_CAPACITY],
+    files_length: usize,
+    redirections: [(Redirection, u16, u16); MAX_REDIRECTIONS],
+    redirection_count: usize,
 }
 
 impl Default for Words {
@@ -111,6 +139,10 @@ impl Default for Words {
             ends: [0; MAX_WORDS],
             count: 0,
             assignments: 0,
+            files: [0; REDIRECTIONS_CAPACITY],
+            files_length: 0,
+            redirections: [(Redirection::Input, 0, 0); MAX_REDIRECTIONS],
+            redirection_count: 0,
         }
     }
 }
@@ -160,6 +192,25 @@ impl Words {
     pub fn assignment_count(&self) -> usize {
         self.assignments
     }
+
+    /// The command's redirections in the order written, each file name with its NUL.
+    pub fn redirections(&self) -> impl Iterator<Item = (Redirection, &[u8])> {
+        self.redirections[..self.redirection_count]
+            .iter()
+            .map(|&(redirection, start, end)| {
+                (
+                    redirection,
+                    &self.files[usize::from(start)..usize::from(end)],
+                )
+            })
+    }
+
+    fn word_start(&self) -> usize {
+        match self.count {
+            0 => 0,
+            count => usize::from(self.ends[count - 1]),
+        }
+    }
 }
 
 impl Sink for Words {
@@ -186,10 +237,29 @@ impl Sink for Words {
         Ok(())
     }
 
+    fn finish_redirection(&mut self, redirection: Redirection) -> Result<(), SyntaxError> {
+        let start = self.word_start();
+        let name = start..self.length;
+        let end = self.files_length + name.len() + 1;
+        if self.redirection_count == MAX_REDIRECTIONS || end > REDIRECTIONS_CAPACITY {
+            return Err(SyntaxError::TooLong);
+        }
+        self.files[self.files_length..end - 1].copy_from_slice(&self.bytes[name]);
+        self.files[end - 1] = 0;
+        self.redirections[self.redirection_count] =
+            (redirection, self.files_length as u16, end as u16);
+        self.redirection_count += 1;
+        self.files_length = end;
+        self.length = start;
+        Ok(())
+    }
+
     fn clear(&mut self) {
         self.length = 0;
         self.count = 0;
         self.assignments = 0;
+        self.files_length = 0;
+        self.redirection_count = 0;
     }
 
     fn count(&self) -> usize {
@@ -206,6 +276,7 @@ impl Sink for Words {
 pub struct CountedWords {
     count: usize,
     assignments: usize,
+    redirected: bool,
 }
 
 impl Sink for CountedWords {
@@ -216,6 +287,11 @@ impl Sink for CountedWords {
     fn finish(&mut self, assignment: bool) -> Result<(), SyntaxError> {
         self.count += 1;
         self.assignments += usize::from(assignment);
+        Ok(())
+    }
+
+    fn finish_redirection(&mut self, _: Redirection) -> Result<(), SyntaxError> {
+        self.redirected = true;
         Ok(())
     }
 
@@ -270,22 +346,39 @@ pub fn next_command<P: Parameters, S: Sink>(
         words,
         in_word: false,
         assignment: false,
+        redirection: None,
+        redirected: false,
     };
     lexer.command()
 }
 
 /// Checks the syntax of the first line of `input`, its commands up to a newline (or the end,
 /// if `final_input`), without expanding anything: the length of the line, its newline
-/// included.
+/// included. A `|` must be followed by a command on the same line.
 pub fn check_line(input: &[u8], final_input: bool) -> Result<usize, SyntaxError> {
     let mut at = 0;
     let mut words = CountedWords::default();
+    let mut piped = false;
     loop {
         let parsed = next_command(&input[at..], final_input, &NoParameters, &mut words)?;
         at += parsed.consumed;
-        if parsed.terminator != Terminator::Semicolon {
+        if piped && words.count() == 0 && !words.redirected {
+            return Err(SyntaxError::UnexpectedToken(terminator_token(
+                parsed.terminator,
+            )));
+        }
+        piped = parsed.terminator == Terminator::Pipe;
+        if !matches!(parsed.terminator, Terminator::Semicolon | Terminator::Pipe) {
             return Ok(at);
         }
+    }
+}
+
+fn terminator_token(terminator: Terminator) -> &'static str {
+    match terminator {
+        Terminator::Semicolon => ";",
+        Terminator::Pipe => "|",
+        Terminator::Newline | Terminator::End => "newline",
     }
 }
 
@@ -297,6 +390,8 @@ struct Lexer<'i, 'p, 'w, P, S> {
     words: &'w mut S,
     in_word: bool,
     assignment: bool,
+    redirection: Option<Redirection>,
+    redirected: bool,
 }
 
 impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
@@ -314,10 +409,30 @@ impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
 
     fn end_word(&mut self) -> Result<(), SyntaxError> {
         if self.in_word {
-            self.words.finish(self.assignment)?;
+            match self.redirection.take() {
+                Some(redirection) => {
+                    self.words.finish_redirection(redirection)?;
+                    self.redirected = true;
+                }
+                None => self.words.finish(self.assignment)?,
+            }
             self.in_word = false;
             self.assignment = false;
         }
+        Ok(())
+    }
+
+    fn redirect(
+        &mut self,
+        redirection: Redirection,
+        token: &'static str,
+    ) -> Result<(), SyntaxError> {
+        self.end_word()?;
+        if self.redirection.is_some() {
+            return Err(SyntaxError::UnexpectedToken(token));
+        }
+        self.at += token.len();
+        self.redirection = Some(redirection);
         Ok(())
     }
 
@@ -328,8 +443,12 @@ impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
 
     fn terminate(&mut self, terminator: Terminator) -> Result<Parsed, SyntaxError> {
         self.end_word()?;
-        if terminator == Terminator::Semicolon && self.words.count() == 0 {
-            return Err(SyntaxError::UnexpectedToken(";"));
+        if self.redirection.is_some() {
+            return Err(SyntaxError::UnexpectedToken(terminator_token(terminator)));
+        }
+        let empty = self.words.count() == 0 && !self.redirected;
+        if matches!(terminator, Terminator::Semicolon | Terminator::Pipe) && empty {
+            return Err(SyntaxError::UnexpectedToken(terminator_token(terminator)));
         }
         Ok(Parsed {
             consumed: self.at,
@@ -361,10 +480,16 @@ impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
                     return self.terminate(Terminator::Semicolon);
                 }
                 b'#' if !self.in_word => self.comment()?,
-                b'|' => return Err(SyntaxError::NotSupported(if doubled { "||" } else { "|" })),
+                b'|' if doubled => return Err(SyntaxError::NotSupported("||")),
+                b'|' => {
+                    self.at += 1;
+                    return self.terminate(Terminator::Pipe);
+                }
                 b'&' => return Err(SyntaxError::NotSupported(if doubled { "&&" } else { "&" })),
-                b'<' => return Err(SyntaxError::NotSupported(if doubled { "<<" } else { "<" })),
-                b'>' => return Err(SyntaxError::NotSupported(if doubled { ">>" } else { ">" })),
+                b'<' if doubled => return Err(SyntaxError::NotSupported("<<")),
+                b'<' => self.redirect(Redirection::Input, "<")?,
+                b'>' if doubled => self.redirect(Redirection::Append, ">>")?,
+                b'>' => self.redirect(Redirection::Output, ">")?,
                 b'(' => return Err(SyntaxError::NotSupported("(")),
                 b')' => return Err(SyntaxError::NotSupported(")")),
                 b'`' => return Err(SyntaxError::NotSupported("`")),
@@ -379,7 +504,11 @@ impl<P: Parameters, S: Sink> Lexer<'_, '_, '_, P, S> {
                     self.append(home, false)?;
                 }
                 _ => {
-                    if self.in_word || !self.words.only_assignments() || !self.assignment_name()? {
+                    if self.in_word
+                        || self.redirection.is_some()
+                        || !self.words.only_assignments()
+                        || !self.assignment_name()?
+                    {
                         self.push(byte)?;
                         self.at += 1;
                     }
@@ -796,13 +925,9 @@ b""#
     #[test]
     fn operators_not_supported_yet_are_refused_not_read_as_words() {
         for (input, operator) in [
-            ("a | b", "|"),
             ("a || b", "||"),
             ("a && b", "&&"),
             ("a &", "&"),
-            ("a > f", ">"),
-            ("a >> f", ">>"),
-            ("a < f", "<"),
             ("a << f", "<<"),
             ("(a)", "("),
             ("a)", ")"),
@@ -857,9 +982,77 @@ b""#
     fn checking_a_line_does_not_need_the_parameters() {
         assert_eq!(check_line(b"echo $X \"${Y}\" ~; Z=1\n", false), Ok(22));
         assert_eq!(
-            check_line(b"echo ok; echo | x\n", false),
-            Err(SyntaxError::NotSupported("|"))
+            check_line(b"echo ok; echo || x\n", false),
+            Err(SyntaxError::NotSupported("||"))
         );
+        assert_eq!(check_line(b"echo ok | grep o | wc\n", false), Ok(22));
+    }
+
+    #[test]
+    fn a_pipe_ends_a_command_and_needs_a_command_on_each_side() {
+        let mut words = Words::default();
+        let parsed = next_command(b"ls / | grep bin", true, &Fixed, &mut words).unwrap();
+        assert_eq!(parsed.terminator, Terminator::Pipe);
+        assert_eq!(parsed.consumed, 6);
+        assert_eq!(words.get(1), b"/");
+        assert_eq!(words.command_length(), 2);
+        assert_eq!(parse("| a"), Err(SyntaxError::UnexpectedToken("|")));
+        assert_eq!(
+            check_line(b"a |\n", true),
+            Err(SyntaxError::UnexpectedToken("newline"))
+        );
+        assert_eq!(
+            check_line(b"a | ; b\n", true),
+            Err(SyntaxError::UnexpectedToken(";"))
+        );
+        assert_eq!(
+            check_line(b"a | | b\n", true),
+            Err(SyntaxError::UnexpectedToken("|"))
+        );
+        assert_eq!(check_line(b"a|b|c", true), Ok(5));
+    }
+
+    #[test]
+    fn redirections_take_the_next_word_as_their_file_anywhere_in_a_command() {
+        let mut words = Words::default();
+        next_command(
+            b"X=1 <in cat >\"out file\" -n >> $HOME/log",
+            true,
+            &Fixed,
+            &mut words,
+        )
+        .unwrap();
+        assert_eq!(words.command_length(), 2);
+        assert_eq!(words.command(0), b"cat");
+        assert_eq!(words.command(1), b"-n");
+        assert_eq!(words.assignments().collect::<Vec<_>>(), [b"X=1"]);
+        let redirections: Vec<_> = words.redirections().collect();
+        assert_eq!(
+            redirections,
+            [
+                (Redirection::Input, &b"in\0"[..]),
+                (Redirection::Output, b"out file\0"),
+                (Redirection::Append, b"/home/egg/log\0"),
+            ]
+        );
+        next_command(b"echo a>f", true, &Fixed, &mut words).unwrap();
+        assert_eq!(words.command_length(), 2);
+        assert_eq!(
+            words.redirections().next(),
+            Some((Redirection::Output, &b"f\0"[..]))
+        );
+        next_command(b">f X=1", true, &Fixed, &mut words).unwrap();
+        assert_eq!(words.command_length(), 0);
+        assert_eq!(words.assignment_count(), 1);
+        assert_eq!(
+            parse("echo >"),
+            Err(SyntaxError::UnexpectedToken("newline"))
+        );
+        assert_eq!(parse("echo > | a"), Err(SyntaxError::UnexpectedToken("|")));
+        assert_eq!(parse("echo > > a"), Err(SyntaxError::UnexpectedToken(">")));
+        assert_eq!(check_line(b"> f; < g\n", true), Ok(9));
+        let many = "a >f ".repeat(MAX_REDIRECTIONS + 1);
+        assert_eq!(parse(&many), Err(SyntaxError::TooLong));
     }
 
     #[test]
