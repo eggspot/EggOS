@@ -22,6 +22,8 @@ mod sync;
 mod system;
 mod thread;
 pub mod thread_environment;
+
+pub use thread::finish as end_thread;
 mod time;
 
 use crate::library::{self, Export, Library};

@@ -179,7 +179,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // laid out, relocated and bound, and Windows calls it as a function without arguments
     // that returns the exit code.
     let entry: extern "win64" fn() -> u32 = unsafe { core::mem::transmute(entry) };
-    linux::exit(entry())
+    win32::end_thread(entry())
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {

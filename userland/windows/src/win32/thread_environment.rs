@@ -365,14 +365,16 @@ extern "win64" fn fls_alloc(callback: usize) -> u32 {
         if free >= teb::FLS_SLOT_COUNT as u32 {
             return fail(error::NOT_ENOUGH_MEMORY, FLS_OUT_OF_INDEXES);
         }
-        FLS_CALLBACKS[free as usize].store(callback, Ordering::Release);
         match FLS_SLOTS_IN_USE.compare_exchange_weak(
             used,
             used | 1 << free,
             Ordering::AcqRel,
             Ordering::Relaxed,
         ) {
-            Ok(_) => return free,
+            Ok(_) => {
+                FLS_CALLBACKS[free as usize].store(callback, Ordering::Release);
+                return free;
+            }
             Err(now) => used = now,
         }
     }

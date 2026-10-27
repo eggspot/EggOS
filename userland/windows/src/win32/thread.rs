@@ -169,7 +169,9 @@ extern "C" fn thread_main(object: usize) -> ! {
     finish(routine(start.parameter))
 }
 
-fn finish(code: u32) -> ! {
+/// Ends the calling thread with exit code `code`, as `ExitThread` does: the process ends,
+/// with that code, when it was its last thread.
+pub fn finish(code: u32) -> ! {
     thread_environment::leave();
     let object = thread_environment::thread_object() as *mut Object;
     if !object.is_null() {
@@ -186,7 +188,11 @@ extern "win64" fn exit_thread(code: u32) -> ! {
 }
 
 unsafe extern "win64" fn get_exit_code_thread(handle: usize, code: *mut u32) -> Bool {
-    let Some((exit_code, _)) = sync::thread_state(handle) else {
+    let state = match handle {
+        super::CURRENT_THREAD => Some((sync::STILL_ACTIVE, 0)),
+        handle => sync::thread_state(handle),
+    };
+    let Some((exit_code, _)) = state else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
     // SAFETY: the caller passes a writable `DWORD`.

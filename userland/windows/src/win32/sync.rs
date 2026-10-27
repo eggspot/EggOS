@@ -19,7 +19,7 @@ const WAIT_OBJECT_0: u32 = 0;
 const WAIT_TIMEOUT: u32 = 0x102;
 const WAIT_FAILED: u32 = u32::MAX;
 const MAXIMUM_WAIT_OBJECTS: usize = 64;
-const STILL_ACTIVE: u32 = 259;
+pub const STILL_ACTIVE: u32 = 259;
 
 /// A thread the layer started: its stack and TEB, which go once the kernel has cleared
 /// `id_word` (the thread no longer runs), and its end.
@@ -342,14 +342,18 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
         return fail(error::INVALID_PARAMETER, WAIT_FAILED);
     }
     let caller = thread_environment::thread_id();
-    let deadline = deadline_after(milliseconds);
+    let mut deadline = None;
     loop {
         let sequence = match check(handles, wait_all, caller) {
             Err(code) => return fail(code, WAIT_FAILED),
             Ok(Check::Done(result)) => return result,
             Ok(Check::Sleep(sequence)) => sequence,
         };
-        let left = remaining(deadline);
+        let left = match milliseconds {
+            0 => Some(0),
+            INFINITE => None,
+            _ => remaining(*deadline.get_or_insert_with(|| deadline_after(milliseconds))),
+        };
         if left != Some(0) {
             let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, left);
         }
@@ -952,7 +956,7 @@ unsafe extern "win64" fn init_once_begin_initialize(
     let (is_pending, value) = match begin_once(once, flags & INIT_ONCE_CHECK_ONLY != 0) {
         Some(Begin::Done(value)) => (FALSE, value),
         Some(Begin::Pending) => (TRUE, 0),
-        None => (TRUE, 0),
+        None => return fail(error::INVALID_PARAMETER, FALSE),
     };
     // SAFETY: the caller passes a writable `BOOL`.
     unsafe { pending.write(is_pending) };
@@ -980,6 +984,8 @@ unsafe extern "win64" fn wait_on_address(
     if !matches!(size, 1 | 2 | 4 | 8) || !address.is_multiple_of(size) {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
+    let containing = word(address & !3);
+    let guard = containing.load(Ordering::Acquire);
     let mut current = [0u8; 8];
     let mut expected = [0u8; 8];
     // SAFETY: `WaitOnAddress`' contract: `address` holds `size` readable bytes, which the
@@ -991,14 +997,21 @@ unsafe extern "win64" fn wait_on_address(
     if differs {
         return TRUE;
     }
-    let containing = word(address & !3);
-    let current = containing.load(Ordering::Acquire);
-    let timeout = (milliseconds != INFINITE).then(|| u64::from(milliseconds) * 1_000_000);
-    match linux::futex_wait(containing, current, timeout) {
+    let requested = (milliseconds != INFINITE).then(|| u64::from(milliseconds) * 1_000_000);
+    let rechecked = size == 8 && requested.is_none_or(|requested| requested > WIDE_VALUE_RECHECK);
+    let timeout = if rechecked {
+        Some(WIDE_VALUE_RECHECK)
+    } else {
+        requested
+    };
+    match linux::futex_wait(containing, guard, timeout) {
+        Err(errno) if errno.0 == 110 && rechecked => TRUE,
         Err(errno) if errno.0 == 110 => fail(error::TIMEOUT, FALSE),
         _ => TRUE,
     }
 }
+
+const WIDE_VALUE_RECHECK: u64 = 1_000_000;
 
 extern "win64" fn wake_by_address_single(address: usize) {
     linux::futex_wake(address & !3, 1);

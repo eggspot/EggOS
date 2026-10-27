@@ -1,4 +1,5 @@
-//! shell32's `CommandLineToArgvW`: the command line split as Windows splits it, in one block
+//! shell32's `CommandLineToArgvW`: the command line split as Windows splits it (an empty one is
+//! the program's path, one argument), in one block
 //! (the pointer array, then the arguments) that the caller frees with `LocalFree`.
 
 use super::{error, fail, heap};
@@ -15,9 +16,8 @@ unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i3
         false => unsafe { super::file::wide_string(line) },
     };
     let program = super::process::process().program_windows;
-    let line = if line.is_empty() { program } else { line };
     let (mut arguments, mut units) = (0usize, 0usize);
-    command_line::split(line, &mut |piece| match piece {
+    split(line, program, &mut |piece| match piece {
         Piece::Unit(_) => units += 1,
         Piece::End => {
             arguments += 1;
@@ -39,7 +39,7 @@ unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i3
     let text = block.wrapping_add(table).cast::<u16>();
     let (mut argument, mut at) = (0usize, 0usize);
     let mut start = true;
-    command_line::split(line, &mut |piece| {
+    split(line, program, &mut |piece| {
         if start {
             // SAFETY: the block holds `arguments + 1` pointers first; `argument` is below
             // `arguments`.
@@ -67,6 +67,14 @@ unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i3
     // SAFETY: the caller passes a writable `int` for the count.
     unsafe { count.write(arguments as i32) };
     pointers
+}
+
+fn split(line: &[u16], program: &[u16], out: &mut impl FnMut(Piece)) {
+    if !line.is_empty() {
+        return command_line::split(line, out);
+    }
+    program.iter().for_each(|unit| out(Piece::Unit(*unit)));
+    out(Piece::End);
 }
 
 pub(super) const EXPORTS: &[Export] = exports![

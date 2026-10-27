@@ -87,6 +87,7 @@ pub fn message(code: u32) -> Option<&'static str> {
             "An attempt was made to move the file pointer before the beginning of the file."
         }
         code::DIR_NOT_EMPTY => "The directory is not empty.",
+        code::BUSY => "The requested resource is in use.",
         code::ALREADY_EXISTS => "Cannot create a file when that file already exists.",
         code::FILENAME_EXCED_RANGE => "The filename or extension is too long.",
         code::ENVVAR_NOT_FOUND => {
