@@ -31,14 +31,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe and console change.
-- **Windows: console programs on x86_64 and aarch64 only, parts 1, 2a and 2b.** Windows
-  console programs that use the kernel32, ntdll, shell32 and user32 functions the Windows layer
+- **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
+  programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
-  `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124):
-  threads, waits, locks, directory listing and UTF-16 strings work. Programs on a C/C++
-  runtime or Rust's std, other processes, other DLLs, structured exception handling, GUI
-  programs, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do not run yet;
-  names are case-sensitive and local time is UTC.
+  `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124, D129):
+  threads, waits, locks, directory listing and UTF-16 strings work, and GUI programs open
+  windows, paint them with GDI, get the mouse and keyboard and show message boxes. Programs on
+  a C/C++ runtime or Rust's std, other processes, other DLLs, structured exception handling,
+  the system's controls (buttons, edits), menus, dialogs from resources, timers, fonts other
+  than Egg Mono and text beyond ASCII, x64 programs on Arm (and ARM64 programs on x86_64) and
+  riscv64 do not run yet; names are case-sensitive and local time is UTC.
 - **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
@@ -86,9 +88,9 @@ on screen, in the shape of a resize zone or of what a program asks for. Not yet:
   (item 35);
 - closing the terminal (its close control is disabled), a second terminal, the taskbar, dock,
   launcher and desktop icons, and the layout profiles of other systems (item 35);
-- no programs with windows come with the image yet (the window test's `hello-window` is added
-  only to its own image), and Windows, macOS and Linux GUI apps do not open windows yet
-  (items 32, 39 to 41);
+- no programs with windows come with the image yet (the window tests' `hello-window` and
+  `win-paint.exe` are added only to their own images); Windows GUI programs open windows
+  (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
 - 3D graphics;
 - a terminal on a display smaller than 658x458: the window does not fit, and the display then
   shows no terminal (the serial console still works);

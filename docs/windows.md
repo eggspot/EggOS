@@ -5,6 +5,9 @@ device (D127, D128). The design is Claude Fable's (`docs/ux/desktop-v0.3-gui.md`
 to 5, D16). In v0.3.0 the server is part of the kernel (D126); this device is the contract that stays
 when it moves to user space, so a program written against this page keeps working.
 
+Windows GUI programs reach it through the Windows layer's user32 and gdi32
+([Windows programs](windows-programs.md), D129), one connection per program.
+
 `userland/hello-window` is a complete example: it opens a window, draws a checkerboard into
 it, shows it, redraws it at each new size the user resizes or maximises it to, and waits for
 its close request.

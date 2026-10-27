@@ -1,5 +1,5 @@
 //! Starting a Windows program: the kernel runs the layer as `windows <program> <arguments>`
-//! for a file that starts with `MZ` (D118). The layer reads the file, checks it, maps the image
+//! for a file that starts with `MZ` (D118), a console or a GUI program (D129). The layer reads the file, checks it, maps the image
 //! at its preferred base (or relocates it), binds its imports to the layer's own functions,
 //! protects each section, builds the TEB and PEB, points the thread's TEB register at the TEB
 //! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
@@ -7,7 +7,7 @@
 
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
-use crate::pe::{InvalidPe, Machine, Pe};
+use crate::pe::{InvalidPe, Machine, Pe, Subsystem};
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -126,6 +126,9 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let pe = Pe::parse(file).map_err(Failure::Invalid)?;
     if let Some(refusal) = pe.machine.refusal_on(THIS_COMPUTER) {
         return Err(Failure::Invalid(refusal));
+    }
+    if pe.subsystem == Subsystem::Gui {
+        win32::set_gui_program();
     }
     let size = pe.mapped_size() as usize;
     let read_write = PROT_READ | PROT_WRITE;

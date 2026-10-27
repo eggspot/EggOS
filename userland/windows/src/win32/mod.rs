@@ -1,7 +1,7 @@
-//! The Win32 functions Windows console programs import, implemented natively on EggOS's Linux
-//! system calls: each is an `extern "efiapi"` function (Windows' calling convention on x86_64
-//! and aarch64, `abi.rs`) the program calls through its import address table, directly on
-//! x86_64 and through an entry that restores `x18` on aarch64.
+//! The Win32 functions Windows programs import, implemented natively on EggOS's Linux system
+//! calls and, for windows, the window server: each is an `extern "efiapi"` function (Windows'
+//! calling convention on x86_64 and aarch64, `abi.rs`) the program calls through its import
+//! address table, directly on x86_64 and through an entry that restores `x18` on aarch64.
 
 #[macro_use]
 mod abi;
@@ -19,9 +19,12 @@ mod console;
 mod directory;
 mod environment;
 mod file;
+mod gui;
 mod heap;
 mod memory;
+mod message_box;
 mod module;
+mod paint;
 mod process;
 mod shell;
 mod strings;
@@ -30,11 +33,14 @@ mod system;
 mod thread;
 pub mod thread_environment;
 mod time;
+mod user32;
+mod window_device;
 
 use crate::library::{self, Export, Library};
 use eggos_runtime::errno::Errno;
 
 pub use abi::call_program;
+pub use console::set_gui_program;
 pub use heap::{allocate as heap_allocate, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;
@@ -123,7 +129,14 @@ const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
 
 const SHELL32: &[&[Export]] = &[shell::EXPORTS];
 
-const USER32: &[&[Export]] = &[strings::USER32_EXPORTS];
+const USER32: &[&[Export]] = &[
+    strings::USER32_EXPORTS,
+    user32::EXPORTS,
+    paint::USER32_EXPORTS,
+    message_box::EXPORTS,
+];
+
+const GDI32: &[&[Export]] = &[paint::GDI32_EXPORTS];
 
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
@@ -131,6 +144,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Ntdll => NTDLL,
         Library::Shell32 => SHELL32,
         Library::User32 => USER32,
+        Library::Gdi32 => GDI32,
     }
 }
 

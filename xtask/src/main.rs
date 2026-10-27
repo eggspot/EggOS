@@ -161,7 +161,7 @@ const MMIO_INPUT_ARGS: &[&str] = &[
     "virtio-mouse-device",
 ];
 
-const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers"];
+const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers", "eggos-font"];
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
@@ -173,6 +173,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-std-selftest",
     "eggos-linux-static",
     "eggos-windows",
+    "eggos-windows-gui",
     "eggos-macos",
 ];
 
@@ -458,6 +459,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Absent,
         &[],
     )?;
+    let kernel = build_windows_gui_test_kernel(arch)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::WindowsGui,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
+        &[],
+    )?;
     if let Some(kernel) = build_android_programs_test_kernel(arch)? {
         qemu::boot_test(
             arch,
@@ -498,6 +508,8 @@ fn clippy_targets() -> Result<(), String> {
             target,
             "-p",
             WINDOWS_CONSOLE_PACKAGE,
+            "-p",
+            WINDOWS_GUI_PACKAGE,
             "--",
             "-D",
             "warnings",
@@ -734,17 +746,39 @@ const WINDOWS_PROGRAM_RUSTFLAGS: &[&str] = &[
     "link-arg=/ENTRY:mainCRTStartup",
 ];
 
-fn build_windows_program(program: &str, target: &str) -> Result<String, String> {
-    let rustflags = WINDOWS_PROGRAM_RUSTFLAGS.join("\x1f");
-    let target_dir = target_directory().join("windows-console");
+const WINDOWS_GUI_PROGRAM_RUSTFLAGS: &[&str] = &[
+    "-C",
+    "linker=rust-lld",
+    "-C",
+    "link-arg=/NODEFAULTLIB",
+    "-C",
+    "link-arg=/SUBSYSTEM:WINDOWS",
+    "-C",
+    "link-arg=/ENTRY:WinMainCRTStartup",
+];
+
+const WINDOWS_GUI_PACKAGE: &str = "eggos-windows-gui-tests";
+
+const WIN_PAINT: (&str, &str) = ("win-paint", "bin/win-paint.exe");
+
+struct WindowsProgram<'a> {
+    package: &'a str,
+    program: &'a str,
+    rustflags: &'a [&'a str],
+    target_directory: &'a str,
+}
+
+fn build_windows_executable(build: WindowsProgram<'_>, target: &str) -> Result<String, String> {
+    let rustflags = build.rustflags.join("\x1f");
+    let target_dir = target_directory().join(build.target_directory);
     let target_dir = target_dir.to_string_lossy();
     let path = build_executable(
         &[
             "build",
             "-p",
-            WINDOWS_CONSOLE_PACKAGE,
+            build.package,
             "--bin",
-            program,
+            build.program,
             "--target",
             target,
         ],
@@ -752,9 +786,54 @@ fn build_windows_program(program: &str, target: &str) -> Result<String, String> 
             ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
             ("CARGO_TARGET_DIR", &target_dir),
         ],
-        &format!("{program} executable for {target}"),
+        &format!("{} executable for {target}", build.program),
     )?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+fn build_windows_program(program: &str, target: &str) -> Result<String, String> {
+    build_windows_executable(
+        WindowsProgram {
+            package: WINDOWS_CONSOLE_PACKAGE,
+            program,
+            rustflags: WINDOWS_PROGRAM_RUSTFLAGS,
+            target_directory: "windows-console",
+        },
+        target,
+    )
+}
+
+fn build_windows_gui_program(program: &str, target: &str) -> Result<String, String> {
+    build_windows_executable(
+        WindowsProgram {
+            package: WINDOWS_GUI_PACKAGE,
+            program,
+            rustflags: WINDOWS_GUI_PROGRAM_RUSTFLAGS,
+            target_directory: "windows-gui",
+        },
+        target,
+    )
+}
+
+fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let (program, path) = WIN_PAINT;
+    let added = [image::AddedFile {
+        host: build_windows_gui_program(program, windows_target(arch.name))?,
+        path: path.to_owned(),
+    }];
+    let layer = windows_layer_for(arch, &added)?;
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(layer.iter().map(|layer| layer.member()));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-windows-gui-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
 }
 
 fn release_initramfs(

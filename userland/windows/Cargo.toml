@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 eggos-runtime = { path = "../runtime" }
+eggos-windows-gui = { path = "../windows-gui" }
 
 [lints]
 workspace = true

@@ -55,9 +55,10 @@ cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello
 cargo xtask image --arch all --add path/to/hello       # writes target/image/eggos-<arch>.elf
 ```
 
-### Run Windows console programs
-On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs run natively
-through EggOS's own Windows layer, threads, waits and directory listing included
+### Run Windows programs
+On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs and simple GUI
+programs run natively through EggOS's own Windows layer, threads, waits, directory listing,
+windows, GDI painting and message boxes included
 ([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
 
 ```

@@ -7,6 +7,7 @@
 //! `WaitOnAddress` are futexes on the caller's own memory and need no handle.
 
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap, thread_environment};
+use crate::futex::WakeCount;
 use crate::library::Export;
 use crate::linux;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -177,7 +178,7 @@ pub fn change<R>(handle: usize, work: impl FnOnce(&mut Kind) -> (R, bool)) -> Op
         Some((result, changed))
     })?;
     if changed && SLEEPERS.load(Ordering::Acquire) != 0 {
-        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, i32::MAX as u32);
+        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
     }
     Some(result)
 }
@@ -199,7 +200,7 @@ pub fn thread_ended(pointer: *mut Object, exit_code: u32) {
         WAKE_SEQUENCE.fetch_add(1, Ordering::Release);
     });
     if SLEEPERS.load(Ordering::Acquire) != 0 {
-        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, i32::MAX as u32);
+        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
     }
 }
 
@@ -588,7 +589,7 @@ fn lock(word: &AtomicU32, spins: u32) {
 
 fn unlock(word: &AtomicU32) {
     if word.swap(UNLOCKED, Ordering::Release) == CONTENDED {
-        linux::futex_wake(word.as_ptr() as usize, 1);
+        linux::futex_wake(word.as_ptr() as usize, WakeCount::One);
     }
 }
 
@@ -782,7 +783,7 @@ extern "efiapi" fn try_acquire_srw_lock_shared(lock: usize) -> u8 {
 
 fn srw_wake(lock: &AtomicU32, previous: u32) {
     if previous & SRW_WAITERS != 0 {
-        linux::futex_wake(lock.as_ptr() as usize, i32::MAX as u32);
+        linux::futex_wake(lock.as_ptr() as usize, WakeCount::All);
     }
 }
 
@@ -851,12 +852,12 @@ extern "efiapi" fn sleep_condition_variable_srw(
 
 extern "efiapi" fn wake_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
-    linux::futex_wake(variable, 1);
+    linux::futex_wake(variable, WakeCount::One);
 }
 
 extern "efiapi" fn wake_all_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
-    linux::futex_wake(variable, i32::MAX as u32);
+    linux::futex_wake(variable, WakeCount::All);
 }
 
 const ONCE_RUNNING: u64 = 1;
@@ -906,7 +907,7 @@ fn complete_once(once: usize, context: u64, failed: bool) {
         context & !ONCE_STATE | ONCE_DONE
     };
     once_word(once).store(new, Ordering::Release);
-    linux::futex_wake(once, i32::MAX as u32);
+    linux::futex_wake(once, WakeCount::All);
 }
 
 extern "efiapi" fn init_once_initialize(once: usize) {
@@ -1015,11 +1016,11 @@ unsafe extern "efiapi" fn wait_on_address(
 const WIDE_VALUE_RECHECK: u64 = 1_000_000;
 
 extern "efiapi" fn wake_by_address_single(address: usize) {
-    linux::futex_wake(address & !3, 1);
+    linux::futex_wake(address & !3, WakeCount::One);
 }
 
 extern "efiapi" fn wake_by_address_all(address: usize) {
-    linux::futex_wake(address & !3, i32::MAX as u32);
+    linux::futex_wake(address & !3, WakeCount::All);
 }
 
 const DUPLICATE_CLOSE_SOURCE: u32 = 1;

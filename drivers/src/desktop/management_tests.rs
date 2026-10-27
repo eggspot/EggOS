@@ -745,6 +745,27 @@ fn an_unanswered_close_request_says_not_responding_and_closes_after_2_s() {
 }
 
 #[test]
+fn a_clock_behind_a_close_request_counts_as_no_time_waited() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, 400, 300);
+    desktop.set_time(10_000);
+    tap(&mut desktop, key::F4, Modifiers::ALT, &mut DiscardEvents);
+    assert!(!desktop.tick(9_990, &mut Damage::new(), &mut DiscardEvents));
+    assert!(!desktop.is_not_responding(window));
+    assert!(desktop.window_rect(window).is_some());
+    assert!(desktop.tick(12_000, &mut Damage::new(), &mut DiscardEvents));
+
+    let wrapping = shown(&mut desktop, 400, 300);
+    desktop.set_time(u32::MAX - 100);
+    tap(&mut desktop, key::F4, Modifiers::ALT, &mut DiscardEvents);
+    assert!(!desktop.tick(400, &mut Damage::new(), &mut DiscardEvents));
+    assert!(
+        desktop.is_not_responding(wrapping),
+        "the clock wraps through 0"
+    );
+}
+
+#[test]
 fn the_terminal_declines_close_requests_from_every_key() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     tap(&mut desktop, key::F4, Modifiers::ALT, &mut DiscardEvents);

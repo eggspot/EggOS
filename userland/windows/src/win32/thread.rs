@@ -5,6 +5,7 @@
 
 use super::sync::{self, Kind, Object, Thread};
 use super::{Bool, FALSE, TRUE, error, fail, thread_environment};
+use crate::futex::WakeCount;
 use crate::library::Export;
 use crate::linux::{self, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -223,7 +224,7 @@ extern "efiapi" fn resume_thread(handle: usize) -> u32 {
     match word.swap(RUN, Ordering::AcqRel) {
         RUN => 0,
         _ => {
-            linux::futex_wake(run, 1);
+            linux::futex_wake(run, WakeCount::One);
             1
         }
     }

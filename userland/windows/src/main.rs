@@ -1,10 +1,12 @@
 //! The Windows layer (D118), at `/usr/lib/eggos/windows`: the kernel starts it for a file that
-//! starts with `MZ`, and it runs that Windows console program natively on x86_64 (x64 programs)
-//! and aarch64 (ARM64 programs, D124). The PE format, the image's layout, relocations and
-//! imports, UTF-16 text and the command line are pure logic with host tests; `start.rs` loads
-//! the program and `win32/` implements the Win32 functions it imports.
+//! starts with `MZ`, and it runs that Windows console or GUI program (D129) natively on x86_64
+//! (x64 programs) and aarch64 (ARM64 programs, D124). The PE format, the image's layout,
+//! relocations and imports, UTF-16 text, the command line and the GUI's tables (`gui/`) are pure
+//! logic with host tests; `start.rs` loads the program and `win32/` implements the Win32
+//! functions it imports.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
+#![cfg_attr(test, allow(dead_code))]
 
 #[cfg(any(test, runs_windows_programs))]
 mod calendar;
@@ -14,6 +16,10 @@ mod command_line;
 mod errors;
 #[cfg(any(test, runs_windows_programs))]
 mod find;
+#[cfg(any(test, runs_windows_programs))]
+mod futex;
+#[cfg(any(test, runs_windows_programs))]
+mod gui;
 #[cfg(any(test, runs_windows_programs))]
 mod image;
 #[cfg(any(test, runs_windows_programs))]

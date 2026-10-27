@@ -11,7 +11,7 @@ extern crate alloc;
 pub mod desktop;
 pub mod display;
 pub mod dma;
-pub mod font;
+pub use eggos_font as font;
 pub mod input;
 pub mod interrupt;
 pub mod io;

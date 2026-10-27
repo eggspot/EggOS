@@ -2,6 +2,8 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+mod windows_gui;
+
 use crate::qmp::{self, InputEvent, Picture, Qmp};
 use crate::{Arch, elf};
 use std::io::{Read, Write};
@@ -157,6 +159,16 @@ pub enum Expect {
     /// order (`shown`, its resizes and states, `close request`), and `wm list` lists the
     /// terminal once they are gone.
     ProgramWindows,
+    /// The release kernel with `win-paint.exe`, a Windows GUI program built from our own source
+    /// for this CPU's Windows target (x64's on riscv64), added with the Windows layer as
+    /// `cargo xtask image --add` adds it, boots to the shell's prompt; the test runs it with its
+    /// standard output redirected to a file and, on x86_64 and aarch64, checks the display
+    /// against the host's render as the window appears painted, a click recolours its ellipse,
+    /// a key adds a letter, Space opens a message box, Enter closes it with OK, F2 has a second
+    /// thread open a message box while the first runs its loop, Enter closes that one too, and
+    /// the close control closes the window (D129); then the program's lines in the file, its
+    /// status 0, and on riscv64 `ENOEXEC`.
+    WindowsGui,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -230,6 +242,54 @@ fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
         ],
         vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
     ]
+}
+
+const WINDOWS_GUI_SESSION: [&[u8]; 3] = [
+    b"win-paint.exe > /tmp/win-paint.log; echo WIN-PAINT status $?\r",
+    b"cat /tmp/win-paint.log\r",
+    b"exit 7\r",
+];
+
+const WIN_PAINT_LINES: [&str; 14] = [
+    "WIN-PAINT class registered",
+    "WIN-PAINT created",
+    "WIN-PAINT window 400x300 caption 28",
+    "WIN-PAINT extra 4660",
+    "WIN-PAINT sent 42",
+    "WIN-PAINT posted 7 waiting",
+    "WIN-PAINT posted 7 dispatched",
+    "WIN-PAINT clicked 296 124",
+    "WIN-PAINT typed a",
+    "WIN-PAINT message box 1",
+    "WIN-PAINT thread started",
+    "WIN-PAINT thread message box 1",
+    "WIN-PAINT destroyed",
+    "WIN-PAINT quit 0",
+];
+
+fn runs_windows_programs(arch: &str) -> bool {
+    matches!(arch, "x86_64" | "aarch64")
+}
+
+fn windows_gui_output(arch: &str) -> [Vec<Line>; WINDOWS_GUI_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
+    match runs_windows_programs(arch) {
+        true => [whole(&["WIN-PAINT status 0"]), whole(&WIN_PAINT_LINES), end],
+        false => [
+            whole(&[
+                "eggsh: win-paint.exe: Exec format error",
+                "WIN-PAINT status 126",
+            ]),
+            Vec::new(),
+            end,
+        ],
+    }
 }
 
 const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
@@ -1018,6 +1078,26 @@ fn boot(
                 &WINDOWS_PROGRAM_SESSION,
                 &mut shell_typed,
             ),
+            Expect::WindowsGui => {
+                if let Some(port) = qmp_port
+                    && shell_typed.lines >= 1
+                    && terminal_frames.is_empty()
+                    && runs_windows_programs(arch.name)
+                {
+                    let checked = windows_gui::check(arch, port, &mut console, &rx);
+                    if let Err(error) = checked {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    terminal_frames.push(Ok(()));
+                }
+                shell_scripts_to_type(
+                    &String::from_utf8_lossy(&console),
+                    &WINDOWS_GUI_SESSION,
+                    &mut shell_typed,
+                )
+            }
             Expect::AndroidPrograms => shell_scripts_to_type(
                 &String::from_utf8_lossy(&console),
                 &ANDROID_PROGRAM_SESSION,
@@ -1306,6 +1386,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 "Windows programs",
             );
         }
+        Expect::WindowsGui => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &WINDOWS_GUI_SESSION,
+                windows_gui_output(arch),
+                "Windows GUI",
+            );
+        }
         Expect::AndroidPrograms => {
             return session_verdict(
                 arch,
@@ -1564,10 +1654,19 @@ fn terminal_stream(console: &[u8]) -> Option<&[u8]> {
     Some(&console[end + 1..])
 }
 
+/// What a program's window shows in the host's render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowContent {
+    /// `hello-window`'s checkerboard of 16 px cells in two colours.
+    Checkerboard([u32; 2]),
+    /// The pixels of a content `width` wide.
+    Pixels { width: u32, pixels: Vec<u32> },
+}
+
 struct HostContents<'a> {
     terminal: WindowId,
     grid: &'a [u32],
-    windows: &'a [(WindowId, [u32; 2])],
+    windows: &'a [(WindowId, WindowContent)],
 }
 
 impl Contents for HostContents<'_> {
@@ -1579,15 +1678,20 @@ impl Contents for HostContents<'_> {
             }
             return;
         }
-        let colours = self
+        let content = self
             .windows
             .iter()
             .find(|(id, _)| *id == window)
-            .map(|&(_, colours)| colours);
+            .map(|(_, content)| content);
         for (index, pixel) in out.iter_mut().enumerate() {
-            *pixel = match colours {
-                Some(colours) => window_pattern(colours, x + index as u32, y),
-                None => colour::WINDOW_BACKGROUND,
+            let column = x + index as u32;
+            *pixel = match content {
+                Some(WindowContent::Checkerboard(colours)) => window_pattern(*colours, column, y),
+                Some(WindowContent::Pixels { width, pixels }) if column < *width => pixels
+                    .get(y as usize * *width as usize + column as usize)
+                    .copied()
+                    .unwrap_or(colour::WINDOW_BACKGROUND),
+                _ => colour::WINDOW_BACKGROUND,
             };
         }
     }
@@ -1607,11 +1711,11 @@ fn window_pattern(colours: [u32; 2], x: u32, y: u32) -> u32 {
 /// What a `width` by `height` display shows once the release kernel's desktop is in
 /// `desktop`'s state with its clock at `up 0:00` and its terminal was fed `stream`, rendered
 /// by the same desktop and terminal engine on the host; `windows` are the programs' windows
-/// and their checkerboards' colours.
+/// and what each shows.
 pub fn desktop_picture(
     desktop: &Desktop,
     stream: &[u8],
-    windows: &[(WindowId, [u32; 2])],
+    windows: &[(WindowId, WindowContent)],
 ) -> Option<Picture> {
     let screen = desktop.screen();
     let (width, height) = (screen.width, screen.height);
@@ -1824,9 +1928,12 @@ fn check_program_windows(
         desktop
             .commit(client, id, &[], &mut Damage::new(), &mut DiscardEvents)
             .map_err(refused)?;
-        windows.push((created.window, window_colours(title)));
+        windows.push((
+            created.window,
+            WindowContent::Checkerboard(window_colours(title)),
+        ));
     }
-    let [(first, _), (second, _)] = [windows[0], windows[1]];
+    let (first, second) = (windows[0].0, windows[1].0);
     let screen = (width, height);
     let check = |qmp: &mut Qmp, desktop: &Desktop, console: &mut Vec<u8>, at: &str| {
         check_desktop_frame(arch, qmp, console, output, at, desktop, &windows)
@@ -1904,7 +2011,7 @@ struct WindowSteps<'a> {
     desktop: &'a mut Desktop,
     console: &'a mut Vec<u8>,
     output: &'a mpsc::Receiver<Vec<u8>>,
-    windows: &'a [(WindowId, [u32; 2])],
+    windows: &'a [(WindowId, WindowContent)],
     screen: (u32, u32),
     now_ms: u32,
     held: Modifiers,
@@ -2219,7 +2326,30 @@ fn check_desktop_frame(
     output: &mpsc::Receiver<Vec<u8>>,
     at: &str,
     desktop: &Desktop,
-    windows: &[(WindowId, [u32; 2])],
+    windows: &[(WindowId, WindowContent)],
+) -> Result<(), String> {
+    check_desktop_frame_within(
+        arch,
+        qmp,
+        console,
+        output,
+        at,
+        desktop,
+        windows,
+        TERMINAL_FRAME_TIMEOUT,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_desktop_frame_within(
+    arch: &Arch,
+    qmp: &mut Qmp,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    at: &str,
+    desktop: &Desktop,
+    windows: &[(WindowId, WindowContent)],
+    timeout: Duration,
 ) -> Result<(), String> {
     let path = screendump_path(arch, "")?;
     let started = Instant::now();
@@ -2250,7 +2380,7 @@ fn check_desktop_frame(
             );
             return Ok(());
         }
-        if started.elapsed() > TERMINAL_FRAME_TIMEOUT {
+        if started.elapsed() > timeout {
             with_uptime(desktop, &mut expected, 0);
             let expected_path = screendump_path(arch, "-expected")?;
             std::fs::write(&expected_path, expected.to_ppm())
@@ -2625,6 +2755,40 @@ mod tests {
         let arm = windows_programs_console("aarch64");
         assert!(arm.contains("system arch 12 "));
         assert!(arm.contains("other-cpu.exe: an x64 program"));
+    }
+
+    fn windows_gui_console(arch: &str) -> String {
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n");
+        for (typed, output) in WINDOWS_GUI_SESSION.iter().zip(windows_gui_output(arch)) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                if let Line::Whole(whole) = line {
+                    console.push_str(&format!("{whole}\r\n"));
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_windows_gui_session_checks_the_programs_lines_where_the_layer_runs() {
+        for arch in ["x86_64", "aarch64", "riscv64"] {
+            let ok = windows_gui_console(arch);
+            assert!(
+                verdict(arch, Expect::WindowsGui, true, &ok).is_ok(),
+                "{arch}"
+            );
+            assert!(verdict(arch, Expect::WindowsGui, false, &ok).is_err());
+        }
+        let x86 = windows_gui_console("x86_64");
+        let unanswered = x86.replace("WIN-PAINT message box 1\r\n", "");
+        assert!(verdict("x86_64", Expect::WindowsGui, true, &unanswered).is_err());
+        let failed = x86.replace("WIN-PAINT status 0", "WIN-PAINT status 1");
+        assert!(verdict("x86_64", Expect::WindowsGui, true, &failed).is_err());
+        let refused = windows_gui_console("riscv64");
+        assert!(verdict("aarch64", Expect::WindowsGui, true, &refused).is_err());
+        assert!(verdict("riscv64", Expect::WindowsGui, true, &x86).is_err());
     }
 
     fn linux_programs_console() -> String {

@@ -241,8 +241,14 @@ D16):
     show desktop, the 2 s rule for a program that does not answer a close request, and the
     `wm` command. Next: windows partly off screen, a profile setting (item 34), `wm`'s MCP
     tools (with the MCP server).
-32. Windows GUI apps, part 1: a Windows program's windows on the desktop (user32 and gdi32 over
-    `/dev/window`).
+32. **done** — users can now run Windows GUI programs from `eggsh` and see their windows on
+    the desktop (D129, docs/windows-programs.md): x64 on x86_64 and ARM64 on aarch64, the
+    layer's own user32 and gdi32 over `/dev/window`: window classes, windows with EggOS's
+    chrome, the message loop with the mouse and keyboard as Win32 messages, painting with GDI's
+    brushes, pens, shapes and Egg Mono text, and `MessageBoxW` as a modal dialog in Claude
+    Fable's design (docs/ux/windows-gui-v0.3.md); a QEMU test drives `win-paint.exe` and
+    compares every frame with the host's render. Next: controls, menus and dialogs (item 42),
+    the C runtime (item 43), fonts and text beyond ASCII, timers.
 33. a host apps folder: a virtio-blk driver and a FAT32 reader, so `cargo xtask run --apps
     <dir>` shows a host folder (QEMU's `fat:ro:`) in EggOS.
 25. files that survive a reboot: a persistent disk.
@@ -565,13 +571,16 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 
 ## Toward "better than macOS, Windows and Linux"
 
-Rough estimate: **~1%**. The kernel boots and prints on three architectures (x86_64, aarch64, riscv64); nothing a user can run yet.
+Rough estimate: **~3%**. The kernel boots on three architectures (x86_64, aarch64, riscv64) to
+a desktop with windows; static Linux programs, Windows console and GUI programs (part 1), and
+Android and macOS console programs run natively; no disk, network or real hardware yet.
 
 | Area | Missing |
 |------|---------|
 | Kernel | per-CPU scheduler locks, the Linux syscalls (processes run their programs in user mode on every CPU, preempted on return to user mode, and make system calls; user address spaces exist; CPU exceptions are caught and reported; timer interrupts work; physical frames are allocated; the kernel runs on its own page tables in the top 2 GiB with W^X, a direct map and an empty low half; it has a heap and contiguous frame allocation; kernel threads switch on yield and, with time slices, at preemption points; they sleep and wait in wait queues, and an idle CPU takes no tick; every CPU starts, has its per-CPU block, takes its own timer and wake-up interrupts and runs threads, and idle CPUs take threads from busy ones) |
 | Hardware | the other architectures; every driver beyond the early UARTs and the polled virtio core with virtio-rng (D111), virtio-gpu 2D (D112) and virtio-input (D113); device interrupts for drivers |
-| Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write`, `writev`, `exit`, `brk`, `mmap`, `munmap`, `mprotect`, `getpid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`, `getrandom`, `sched_yield`, `arch_prctl`, the resource limits and the signal state's calls, `poll`, `ppoll` and the console's `ioctl`s work, with `AT_RANDOM` from the kernel's generator; pages are mapped on first touch and the stack grows on demand; each thread keeps its own thread pointer; signals are sent and delivered to handlers on Linux's frames, faults included, real-time signals are queued with their `siginfo_t`, and `rt_sigsuspend` and `pause` wait for a handler; the clocks read and programs sleep; the console's status is a character device and it cannot seek; `futex` waits and wakes; `clone` starts threads, Rust's `std::thread` runs, each on its process's one CPU until TLB shootdown; FP state per thread; signals between a process's threads and to the process sent and delivered, interrupted futex waits and sleeps still missing; new processes and files still missing), Android, Windows, macOS and iOS layers |
+| Compatibility | Linux ABI (static ELF programs load and start with Linux's stack; `write`, `writev`, `exit`, `brk`, `mmap`, `munmap`, `mprotect`, `getpid`, `gettid`, `uname`, `set_tid_address`, `set_robust_list`, `getrandom`, `sched_yield`, `arch_prctl`, the resource limits and the signal state's calls, `poll`, `ppoll` and the console's `ioctl`s work, with `AT_RANDOM` from the kernel's generator; pages are mapped on first touch and the stack grows on demand; each thread keeps its own thread pointer; signals are sent and delivered to handlers on Linux's frames, faults included, real-time signals are queued with their `siginfo_t`, and `rt_sigsuspend` and `pause` wait for a handler; the clocks read and programs sleep; the console's status is a character device and it cannot seek; `futex` waits and wakes; `clone` starts threads, Rust's `std::thread` runs, each on its process's one CPU until TLB shootdown; FP state per thread; signals between a process's threads and to the process sent and delivered, interrupted futex waits and sleeps still missing; new processes and files still missing), Android, Windows (console programs, and GUI programs' windows, painting, input and message
+boxes, part 1, D129; controls, menus and the C runtime missing), macOS and iOS layers |
 | Desktop / UX | compositor, apps, maximise, pointer, boot screen (the minimal desktop works: wallpaper, top bar with clock and power menu, the shell's terminal in a window moved, focused and minimised with the mouse, D115); design in `docs/ux/` |
 | AI-native | built-in MCP server, app capability registry, agent permissions |
 | Editions | component manager; packaging and policy per edition |

@@ -11,6 +11,7 @@ static KERNEL32_MODULE: u64 = 1;
 static NTDLL_MODULE: u64 = 2;
 static SHELL32_MODULE: u64 = 3;
 static USER32_MODULE: u64 = 4;
+static GDI32_MODULE: u64 = 5;
 
 fn module_handle(library: Library) -> usize {
     match library {
@@ -18,6 +19,7 @@ fn module_handle(library: Library) -> usize {
         Library::Ntdll => &raw const NTDLL_MODULE as usize,
         Library::Shell32 => &raw const SHELL32_MODULE as usize,
         Library::User32 => &raw const USER32_MODULE as usize,
+        Library::Gdi32 => &raw const GDI32_MODULE as usize,
     }
 }
 
@@ -27,6 +29,7 @@ fn library_of(module: usize) -> Option<Library> {
         Library::Ntdll,
         Library::Shell32,
         Library::User32,
+        Library::Gdi32,
     ]
     .into_iter()
     .find(|library| module_handle(*library) == module)
@@ -118,6 +121,7 @@ unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> us
         Library::Ntdll => b"ntdll",
         Library::Shell32 => b"shell32",
         Library::User32 => b"user32",
+        Library::Gdi32 => b"gdi32",
     };
     match super::resolve(name_of(library), name) {
         Some(address) => address as usize,

@@ -1,7 +1,10 @@
 //! Egg Mono 8x16, the system font (docs/ux/font-8x16.txt, D109): one bitmap face of 8x16 cells,
 //! no anti-aliasing. A glyph is addressed by a `u8` glyph id: 0x20 to 0x7E are the printable
 //! ASCII characters themselves, and the box drawing, block and symbol extras take 0x80 upwards in
-//! the order of [`EXTRAS`]; every other id draws `?`.
+//! the order of [`EXTRAS`]; every other id draws `?`. The desktop, the terminal and the
+//! Windows layer's drawing share it (D129).
+
+#![cfg_attr(not(test), no_std)]
 
 mod egg_mono;
 

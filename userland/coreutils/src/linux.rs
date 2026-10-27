@@ -170,6 +170,9 @@ impl System for Linux {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno> {
+        if (request >> 16) & 0x3fff != argument.len() as u32 {
+            return Err(Errno::EINVAL);
+        }
         let pointer = argument.as_mut_ptr() as usize;
         call(
             number::IOCTL,

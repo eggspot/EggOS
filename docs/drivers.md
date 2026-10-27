@@ -7,7 +7,7 @@ D111), the display (D112), input (D113), and how to add a driver.
 
 | Where | What |
 |---|---|
-| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `font` (Egg Mono 8x16, glyph ids, `draw_glyph`), `terminal` (the terminal emulator: cells, scrollback, the ANSI subset, rendering of damaged cells), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
+| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `font` (Egg Mono 8x16, glyph ids, `draw_glyph`: the `eggos-font` crate in `font/`, re-exported, D129), `terminal` (the terminal emulator: cells, scrollback, the ANSI subset, rendering of damaged cells), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
 | `hal/src/fdt/nodes.rs` | `Fdt::nodes`: every device-tree node with what a bus needs, allocating nothing |
 | `hal/src/lib.rs` | What the firmware gives: `Platform::device_tree`, `acpi_table`, `device_apertures`, the device-tree DMA default, and `make_kernel_mappings_visible` |
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
