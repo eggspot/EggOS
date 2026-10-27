@@ -233,6 +233,10 @@ impl Desktop {
                 self.close_icon_menu(damage, events);
                 Some(self.launch(app, damage, events))
             }
+            MenuChoice::Uninstall(app) => {
+                self.close_icon_menu(damage, events);
+                Some(self.uninstall(app))
+            }
             MenuChoice::Nothing => Some(Action::None),
             MenuChoice::Outside => {
                 self.close_icon_menu(damage, events);
@@ -267,16 +271,21 @@ impl Desktop {
         match code {
             key::ESC => self.close_icon_menu(damage, events),
             key::UP | key::DOWN => {
-                menu.step();
+                menu.step(code == key::UP);
                 self.icons.menu = Some(menu);
                 damage.add(self.icon_menu_rect(&menu));
             }
-            key::ENTER | key::KEYPAD_ENTER => {
-                if let MenuChoice::Open(app) = menu.enter() {
+            key::ENTER | key::KEYPAD_ENTER => match menu.enter() {
+                MenuChoice::Open(app) => {
                     self.close_icon_menu(damage, events);
                     return self.launch(app, damage, events);
                 }
-            }
+                MenuChoice::Uninstall(app) => {
+                    self.close_icon_menu(damage, events);
+                    return self.uninstall(app);
+                }
+                MenuChoice::Nothing | MenuChoice::Outside => {}
+            },
             _ => {}
         }
         Action::None

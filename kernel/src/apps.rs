@@ -1,7 +1,7 @@
-//! The desktop shell's side in the kernel (D133): the app catalogue read from the file
+//! The desktop shell's side in the kernel (D133, D134): the app catalogue read from the file
 //! systems, and the programs the launcher starts. The catalogue is read when the desktop
-//! starts and each time the launcher opens, never otherwise; an app starts as a process of its
-//! own, beside init, as the user's.
+//! starts, each time the launcher opens and when the installer says the apps changed, never
+//! otherwise; an app starts as a process of its own, beside init, as the user's.
 
 use crate::linux::exec::{self, ProgramBytes};
 use crate::linux::{self, process_table};
@@ -68,9 +68,20 @@ pub fn catalogue() -> Catalogue {
     catalogue
 }
 
-/// Starts the program at `path` as a process of its own, as init's sibling started by the
-/// kernel, with its address space made beside `beside`'s.
-pub fn start<P: Platform>(beside: &Process<P>, path: &[u8]) -> Result<(), &'static str> {
+const MAX_ARGUMENTS: usize = 8;
+
+/// Starts the program `command` names (its path, then its arguments, separated by
+/// [`eggos_drivers::desktop::ARGUMENT_SEPARATOR`]) as a process of its own, as init's sibling
+/// started by the kernel, with its address space made beside `beside`'s.
+pub fn start<P: Platform>(beside: &Process<P>, command: &[u8]) -> Result<(), &'static str> {
+    let mut arguments: [&[u8]; MAX_ARGUMENTS] = [&[]; MAX_ARGUMENTS];
+    let mut count = 0;
+    for word in command.split(|&byte| byte == eggos_drivers::desktop::ARGUMENT_SEPARATOR) {
+        *arguments.get_mut(count).ok_or("too many arguments")? = word;
+        count += 1;
+    }
+    let arguments = &arguments[..count];
+    let path = arguments[0];
     let root = vfs::root();
     let node = vfs::resolve(root, root, path).map_err(|_| "no such program")?;
     let attributes = node.attributes();
@@ -79,7 +90,7 @@ pub fn start<P: Platform>(beside: &Process<P>, path: &[u8]) -> Result<(), &'stat
     }
     let image = ProgramBytes::read(node, attributes.size, u64::MAX).map_err(|_| "unreadable")?;
     let mut process = beside.new_beside()?;
-    let context = exec::load(&mut process, image.bytes(), path, &[path], &ENVIRONMENT)
+    let context = exec::load(&mut process, image.bytes(), path, arguments, &ENVIRONMENT)
         .map_err(|_| "not a program this machine runs")?;
     let process = Arc::new(process);
     let file_name = path.rsplit(|&byte| byte == b'/').next().unwrap_or(path);
@@ -103,12 +114,12 @@ pub fn set_starter(starter: Starter) {
     *STARTER.lock() = Some(starter);
 }
 
-/// Starts the program at `path` through the starter init registered; an error when there is
-/// none yet or the program cannot start.
-pub fn start_program(path: &[u8]) -> Result<(), &'static str> {
+/// Starts the program `command` names ([`start`]) through the starter init registered; an
+/// error when there is none yet or the program cannot start.
+pub fn start_program(command: &[u8]) -> Result<(), &'static str> {
     let starter = STARTER
         .lock()
         .clone()
         .ok_or("nothing starts programs yet")?;
-    starter(path)
+    starter(command)
 }

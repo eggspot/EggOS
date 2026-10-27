@@ -44,6 +44,8 @@ pub mod size {
     pub const MANAGE_WINDOW: usize = 16;
     pub const GET_PROFILE: usize = 4;
     pub const SET_PROFILE: usize = 4;
+    pub const APPS_CHANGED: usize = 0;
+    pub const OPEN_APP: usize = 68;
     /// The largest argument.
     pub const LARGEST: usize = COMMIT;
 }
@@ -67,7 +69,12 @@ pub mod request {
     pub const MANAGE_WINDOW: u32 = encode(WRITE, 12, size::MANAGE_WINDOW);
     pub const GET_PROFILE: u32 = encode(READ, 13, size::GET_PROFILE);
     pub const SET_PROFILE: u32 = encode(WRITE, 14, size::SET_PROFILE);
+    pub const APPS_CHANGED: u32 = encode(0, 15, size::APPS_CHANGED);
+    pub const OPEN_APP: u32 = encode(WRITE, 16, size::OPEN_APP);
 }
+
+/// The longest app name `OpenApp` carries, in bytes.
+pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
 
 /// The flags `Create` takes.
 pub mod flags {
@@ -256,6 +263,11 @@ pub enum Request {
     SetProfile {
         profile: u32,
     },
+    AppsChanged,
+    OpenApp {
+        length: u32,
+        name: [u8; APP_NAME_CAPACITY],
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -292,6 +304,8 @@ impl Request {
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
             request::SET_PROFILE => size::SET_PROFILE,
+            request::APPS_CHANGED => size::APPS_CHANGED,
+            request::OPEN_APP => size::OPEN_APP,
             _ => return None,
         })
     }
@@ -366,6 +380,15 @@ impl Request {
             },
             request::GET_PROFILE => Self::GetProfile,
             request::SET_PROFILE => Self::SetProfile { profile: at(0) },
+            request::APPS_CHANGED => Self::AppsChanged,
+            request::OPEN_APP => {
+                let mut name = [0; APP_NAME_CAPACITY];
+                name.copy_from_slice(&bytes[4..4 + APP_NAME_CAPACITY]);
+                Self::OpenApp {
+                    length: at(0),
+                    name,
+                }
+            }
             _ => Self::GetWorkArea,
         })
     }

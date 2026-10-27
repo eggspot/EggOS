@@ -17,7 +17,7 @@ fn catalogue() -> Catalogue {
 fn desktop(profile: Profile) -> Desktop {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
-    desktop.set_catalogue(catalogue(), &mut damage);
+    desktop.set_catalogue(catalogue(), &mut damage, &mut DiscardEvents);
     desktop.set_profile(profile, &mut damage, &mut DiscardEvents);
     desktop
 }
@@ -314,16 +314,108 @@ fn a_right_click_on_an_icon_opens_its_menu_whose_open_launches_it() {
     let menu = desktop.icon_menu_area().unwrap();
     assert_eq!(menu.height, 2 * 32 + 2, "Open and Uninstall...");
     assert_eq!(
-        press(&mut desktop, menu.x + 20, menu.y + 40),
-        Action::None,
-        "Uninstall... waits for item 36"
-    );
-    assert!(desktop.icon_menu_area().is_some());
-    assert_eq!(
         press(&mut desktop, menu.x + 20, menu.y + 10),
         Action::Type(paint)
     );
     assert!(desktop.icon_menu_area().is_none());
+}
+
+#[test]
+fn uninstall_in_an_installed_app_s_menu_asks_the_kernel_for_the_installer() {
+    let mut desktop = desktop(Profile::Linux);
+    let paint = desktop.catalogue().installed_named("Paint").unwrap();
+    let cell = desktop.desktop_icon(paint).unwrap();
+    let mut damage = Damage::new();
+    desktop.pointer_moved(cell.x + 40, cell.y + 40, &mut damage, &mut DiscardEvents);
+    desktop.button(button::RIGHT, true, &mut damage, &mut DiscardEvents);
+    desktop.button(button::RIGHT, false, &mut damage, &mut DiscardEvents);
+    let menu = desktop.icon_menu_area().unwrap();
+    assert_eq!(
+        press(&mut desktop, menu.x + 20, menu.y + 40),
+        Action::Uninstall(paint)
+    );
+    assert!(desktop.icon_menu_area().is_none());
+    let command = desktop.uninstall_command(paint).unwrap();
+    assert_eq!(
+        command.as_bytes(),
+        b"/usr/libexec/app-window\0uninstall\0Paint"
+    );
+
+    desktop.button(button::RIGHT, true, &mut damage, &mut DiscardEvents);
+    desktop.button(button::RIGHT, false, &mut damage, &mut DiscardEvents);
+    assert!(desktop.icon_menu_area().is_some());
+    tap(&mut desktop, key::DOWN, Modifiers::from_bits(0));
+    tap(&mut desktop, key::DOWN, Modifiers::from_bits(0));
+    tap(&mut desktop, key::UP, Modifiers::from_bits(0));
+    assert_eq!(
+        tap(&mut desktop, key::ENTER, Modifiers::from_bits(0)),
+        Action::Type(paint)
+    );
+}
+
+#[test]
+fn an_icon_menu_whose_app_was_uninstalled_closes() {
+    let mut desktop = desktop(Profile::Linux);
+    let paint = desktop.catalogue().installed_named("Paint").unwrap();
+    let cell = desktop.desktop_icon(paint).unwrap();
+    let mut damage = Damage::new();
+    desktop.pointer_moved(cell.x + 40, cell.y + 40, &mut damage, &mut DiscardEvents);
+    desktop.button(button::RIGHT, true, &mut damage, &mut DiscardEvents);
+    desktop.button(button::RIGHT, false, &mut damage, &mut DiscardEvents);
+    assert!(desktop.icon_menu_area().is_some());
+    let mut without_paint = Catalogue::new();
+    assert!(without_paint.add_installed(b"Hello", HELLO));
+    desktop.set_catalogue(without_paint, &mut damage, &mut DiscardEvents);
+    assert!(desktop.icon_menu_area().is_none());
+    assert!(!desktop.popup_open());
+}
+
+#[test]
+fn a_failed_start_clears_the_starting_guard_with_its_notice() {
+    let mut desktop = desktop(Profile::Macos);
+    let settings = desktop.dock_icon(AppId::Settings).unwrap();
+    assert_eq!(
+        click_in(&mut desktop, settings),
+        Action::Start(AppId::Settings)
+    );
+    assert_eq!(click_in(&mut desktop, settings), Action::None);
+    desktop.launch_failed(&mut Damage::new());
+    assert_eq!(desktop.notice_text(), Some(LAUNCH_FAILED));
+    tap(&mut desktop, key::ESC, Modifiers::from_bits(0));
+    assert_eq!(
+        click_in(&mut desktop, settings),
+        Action::Start(AppId::Settings)
+    );
+}
+
+#[test]
+fn the_launcher_offers_install_from_host_share_while_the_share_is_mounted() {
+    let mut desktop = desktop(Profile::Macos);
+    let mut catalogue = catalogue();
+    catalogue.set_host_share(true);
+    desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
+    assert!(
+        desktop
+            .catalogue()
+            .launcher_apps()
+            .any(|app| app == AppId::InstallFromHostShare)
+    );
+    assert_eq!(
+        desktop.launch(
+            AppId::InstallFromHostShare,
+            &mut Damage::new(),
+            &mut DiscardEvents
+        ),
+        Action::Start(AppId::InstallFromHostShare)
+    );
+    assert_eq!(
+        desktop.launch(
+            AppId::InstallFromHostShare,
+            &mut Damage::new(),
+            &mut DiscardEvents
+        ),
+        Action::None
+    );
 }
 
 #[test]
@@ -336,7 +428,7 @@ fn files_says_it_is_not_in_the_build_until_it_is() {
     assert_eq!(desktop.notice_text(), None);
     let mut catalogue = catalogue();
     catalogue.set_files_present(true);
-    desktop.set_catalogue(catalogue, &mut Damage::new());
+    desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
     assert_eq!(click_in(&mut desktop, files), Action::Start(AppId::Files));
 }
 
@@ -562,7 +654,7 @@ fn what_the_shell_damages_is_all_that_changes_on_screen() {
     screen.key("Cmd+Space", key::SPACE, Modifiers::SUPER);
     screen.key("a letter", 25, Modifiers::from_bits(0));
     screen.step("the catalogue read again", |desktop, damage| {
-        desktop.set_catalogue(catalogue(), damage);
+        desktop.set_catalogue(catalogue(), damage, &mut DiscardEvents);
     });
     screen.key("Down", key::DOWN, Modifiers::from_bits(0));
     screen.key("Esc", key::ESC, Modifiers::from_bits(0));

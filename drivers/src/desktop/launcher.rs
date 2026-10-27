@@ -58,7 +58,7 @@ const MINIMISED_MAX_ROWS: usize = 7;
 const CHIP_GAP: u32 = 8;
 const PLACEHOLDER: &str = "Search apps";
 const NO_MATCH: &str = "No apps match";
-const MATCH_CAPACITY: usize = 3 + MAX_INSTALLED;
+const MATCH_CAPACITY: usize = 4 + MAX_INSTALLED;
 const MENU_OPEN: &str = "Open";
 const MENU_UNINSTALL: &str = "Uninstall...";
 const MENU_MARGIN: u32 = 8;
@@ -120,13 +120,21 @@ impl AppMenu {
         (item < self.items().len()).then_some(item)
     }
 
-    fn enabled(item: usize) -> bool {
-        item == 0
+    fn choice(&self, item: usize) -> MenuChoice {
+        match item {
+            0 => MenuChoice::Open(self.app),
+            _ => MenuChoice::Uninstall(self.app),
+        }
     }
 
-    /// Up or Down: the item that applies above or below, or the first.
-    pub fn step(&mut self) {
-        self.hover = Some(0);
+    /// Up or Down: the item above or below, wrapping, or the first.
+    pub fn step(&mut self, back: bool) {
+        let count = self.items().len();
+        self.hover = Some(match (self.hover, back) {
+            (None, _) => 0,
+            (Some(item), false) => (item + 1) % count,
+            (Some(item), true) => (item + count - 1) % count,
+        });
     }
 
     pub fn draw(&self, canvas: &mut Canvas<'_>, rect: Rect) {
@@ -139,15 +147,11 @@ impl AppMenu {
                     colour::MENU_HOVER,
                 );
             }
-            let ink = match Self::enabled(index) {
-                true => colour::TEXT,
-                false => colour::TEXT_DIM,
-            };
             canvas.text(
                 rect.x + MENU_TEXT_X,
                 top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2,
                 label,
-                ink,
+                colour::TEXT,
             );
         }
     }
@@ -157,6 +161,7 @@ impl AppMenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MenuChoice {
     Open(AppId),
+    Uninstall(AppId),
     Nothing,
     Outside,
 }
@@ -165,8 +170,7 @@ impl AppMenu {
     /// A press at (`x`, `y`) on the menu drawn at `rect`.
     pub fn press(&self, rect: Rect, x: u32, y: u32) -> MenuChoice {
         match self.item_at(rect, x, y) {
-            Some(item) if Self::enabled(item) => MenuChoice::Open(self.app),
-            Some(_) => MenuChoice::Nothing,
+            Some(item) => self.choice(item),
             None => MenuChoice::Outside,
         }
     }
@@ -174,8 +178,8 @@ impl AppMenu {
     /// The hovered item chosen by Enter.
     pub fn enter(&self) -> MenuChoice {
         match self.hover {
-            Some(item) if Self::enabled(item) => MenuChoice::Open(self.app),
-            _ => MenuChoice::Nothing,
+            Some(item) => self.choice(item),
+            None => MenuChoice::Nothing,
         }
     }
 
@@ -438,6 +442,14 @@ impl Desktop {
         }
     }
 
+    /// Asks to uninstall installed app `app`: the installer's window confirms first (D134).
+    pub fn uninstall(&self, app: AppId) -> Action {
+        match self.catalogue.uninstall(app) {
+            Some(_) => Action::Uninstall(app),
+            None => Action::None,
+        }
+    }
+
     fn launch_from_launcher(
         &mut self,
         app: AppId,
@@ -500,14 +512,17 @@ impl Desktop {
             match code {
                 key::ESC => launcher.menu = None,
                 key::UP | key::DOWN => {
-                    menu.step();
+                    menu.step(code == key::UP);
                     launcher.menu = Some(menu);
                 }
-                key::ENTER | key::KEYPAD_ENTER => {
-                    if let MenuChoice::Open(app) = menu.enter() {
-                        return self.launch_from_launcher(app, damage, events);
+                key::ENTER | key::KEYPAD_ENTER => match menu.enter() {
+                    MenuChoice::Open(app) => return self.launch_from_launcher(app, damage, events),
+                    MenuChoice::Uninstall(app) => {
+                        self.close_launcher(damage, events);
+                        return self.uninstall(app);
                     }
-                }
+                    MenuChoice::Nothing | MenuChoice::Outside => {}
+                },
                 _ => {}
             }
             self.set_launcher(launcher, damage);
@@ -587,6 +602,10 @@ impl Desktop {
             match menu.press(menu_rect, x, y) {
                 MenuChoice::Open(app) => {
                     return Some(self.launch_from_launcher(app, damage, events));
+                }
+                MenuChoice::Uninstall(app) => {
+                    self.close_launcher(damage, events);
+                    return Some(self.uninstall(app));
                 }
                 MenuChoice::Nothing => return Some(Action::None),
                 MenuChoice::Outside => {

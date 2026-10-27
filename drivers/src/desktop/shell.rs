@@ -508,8 +508,9 @@ impl Desktop {
 
     /// Launches `app` (docs/ux/desktop-v0.3-gui.md, section 6.2): Terminal focuses the
     /// terminal's window; Settings and Files focus their window if they have one, else ask the
-    /// kernel to start them (Files says it is not in the build when it is not); the host share
-    /// and installed apps focus the terminal and ask the kernel to type their command in it.
+    /// kernel to start them (Files says it is not in the build when it is not), as
+    /// `Install from host share...` asks to start the installer; the host share and installed
+    /// apps focus the terminal and ask the kernel to type their command in it.
     pub fn launch(
         &mut self,
         app: AppId,
@@ -540,7 +541,7 @@ impl Desktop {
                 self.show_notice(super::launcher::FILES_MISSING, damage);
                 Action::None
             }
-            AppId::Files | AppId::Settings => {
+            AppId::Files | AppId::Settings | AppId::InstallFromHostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
                     pending == app && self.now_ms.wrapping_sub(at) < STARTING_MS
                 });
@@ -638,6 +639,13 @@ impl Desktop {
                 self.panels.tooltip_spent = true;
             }
         }
+    }
+
+    /// The kernel could not start the app a launch asked for: the notice says so, and the app
+    /// may be launched again at once.
+    pub fn launch_failed(&mut self, damage: &mut Damage) {
+        self.panels.starting = None;
+        self.show_notice(super::launcher::LAUNCH_FAILED, damage);
     }
 
     /// Window `slot` showed: the app it belongs to has started.

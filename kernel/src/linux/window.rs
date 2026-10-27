@@ -13,7 +13,9 @@ use super::thread::LinuxThread;
 use super::{Errno, Iovecs, iovec};
 use crate::process::{LentFrames, Placement, Process};
 use crate::regions::RegionError;
-use crate::terminal::{desktop_profile, set_desktop_profile, with_windows};
+use crate::terminal::{
+    desktop_profile, open_app, reload_catalogue, set_desktop_profile, with_windows,
+};
 use crate::window::{self, Connection, PixelBuffer, ServerError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
@@ -70,7 +72,10 @@ pub fn ioctl<P: Platform>(
     let length = Request::argument_size(number).ok_or(Errno::ENOTTY)?;
     let mut bytes = [0u8; size::LARGEST];
     let bytes = &mut bytes[..length];
-    if number != request::GET_WORK_AREA && number != request::GET_PROFILE {
+    if number != request::GET_WORK_AREA
+        && number != request::GET_PROFILE
+        && number != request::APPS_CHANGED
+    {
         process
             .read_user_memory(argument, bytes)
             .map_err(|_| Errno::EFAULT)?;
@@ -85,6 +90,9 @@ pub fn ioctl<P: Platform>(
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::SetProfile { .. }) && !may_change_desktop_settings(process) {
+        return Err(Errno::EPERM);
+    }
+    if matches!(request, Request::OpenApp { .. }) && !may_open_apps(process) {
         return Err(Errno::EPERM);
     }
     match request {
@@ -224,6 +232,13 @@ pub fn ioctl<P: Platform>(
             let profile = Profile::from_number(profile).ok_or(Errno::EINVAL)?;
             set_desktop_profile::<P>(profile);
         }
+        Request::AppsChanged => reload_catalogue::<P>(),
+        Request::OpenApp { length, name } => {
+            let name = name.get(..length as usize).ok_or(Errno::EINVAL)?;
+            if !open_app::<P>(name) {
+                return Err(Errno::ENOENT);
+            }
+        }
     }
     Ok(0)
 }
@@ -237,6 +252,10 @@ fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
 }
 
 fn may_change_desktop_settings<P: Platform>(process: &Process<P>) -> bool {
+    is_privileged(process)
+}
+
+fn may_open_apps<P: Platform>(process: &Process<P>) -> bool {
     is_privileged(process)
 }
 
