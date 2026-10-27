@@ -6626,7 +6626,9 @@ the license, by an explicit instruction recorded here.
   writes its id there, runs the TLS callbacks with `DLL_THREAD_ATTACH` and calls the start
   routine; on return or `ExitThread` it runs its FLS callbacks and `DLL_THREAD_DETACH`, records
   its exit code, wakes its waiters and ends with `exit`. The process ends, with the last
-  thread's code, when its last thread ends, as on Windows (`exit_group` from the last one).
+  thread's code, when its last thread ends, as on Windows (`exit_group` from the last one);
+  the program's entry point returning ends only the first thread, through the same path as
+  `ExitThread` (`ExitProcess` still ends them all).
   A thread's stack, TEB and TLS copy go back once the kernel has cleared its id word (it no
   longer runs), the next time a thread is created or a handle closed. `CREATE_SUSPENDED`
   holds the thread on a futex until `ResumeThread`. The kernel needed no change.
@@ -6646,8 +6648,13 @@ the license, by an explicit instruction recorded here.
   recursion in their fields, the spin count honoured up to 4,000), SRW locks (one word: a
   writer bit, a waiters bit, the reader count), condition variables (a sequence word),
   `InitOnce` (the state in the value's two low bits, the context above them, as Microsoft
-  documents `INIT_ONCE_CTX_RESERVED_BITS`) and `WaitOnAddress` (the futex on the aligned word
-  holding the address) need no handle and no system call when uncontended. Interlocked
+  documents `INIT_ONCE_CTX_RESERVED_BITS`; `INIT_ONCE_CHECK_ONLY` before completion returns
+  `FALSE`) and `WaitOnAddress` need no handle and no system call when uncontended.
+  `WaitOnAddress` loads the aligned 32-bit word holding the address first, then compares the
+  program's bytes, then sleeps on the word with the value it loaded, so a change and wake
+  between the compare and the sleep cannot be lost; an 8-byte value whose upper half alone
+  changes is rechecked every millisecond (a spurious wake, which Microsoft allows). A wait
+  with a timeout reads the clock only once its first check says it must sleep. Interlocked
   operations are compiler intrinsics on x64 and run as the CPU's own instructions.
 - **Error codes.** Linux error numbers map to Win32 codes in one host-tested table
   (`ENOENT` 2, `ENOTDIR` 3, `EACCES`/`EPERM`/`EISDIR`/`EROFS` 5, `EBADF` 6, `EEXIST` 80,
@@ -6694,9 +6701,13 @@ the license, by an explicit instruction recorded here.
   an interlocked add, a critical section, a mutex and an SRW lock; a manual-reset start event;
   a semaphore; `InitOnceExecuteOnce` run once; TLS, FLS (with cleanup callbacks) and the last
   error per thread; a suspended thread resumed and ended with `ExitThread(77)`; fifteen error
-  codes; `FormatMessageW`; UTF-8 round trips with German, Greek and an emoji; ordinal
+  codes; `WaitOnAddress` with a timeout and a wake, a condition variable with a critical
+  section, an SRW lock held shared by two threads; `INIT_ONCE_CHECK_ONLY`;
+  `GetExitCodeThread(GetCurrentThread())`; `FormatMessageW`; UTF-8 round trips with German, Greek and an emoji; ordinal
   comparison ignoring case; the system, version, clock, working directory, full path,
-  relative open and environment functions). On aarch64 and riscv64 each is refused with
+  relative open and environment functions), and `detach`, whose entry point returns while
+  a second thread still runs: that thread's line comes after, and the status is its code (5).
+  On aarch64 and riscv64 each is refused with
   `Exec format error` and status 126.
 - **Verified where.** The macOS development host (aarch64): host tests, clippy for every
   target, `cargo xtask qemu --arch all` (x86_64 runs the tools; aarch64 and riscv64 refuse
@@ -6704,7 +6715,9 @@ the license, by an explicit instruction recorded here.
 - **Cost.** Only the layer grows (it is in images only with a Windows program, D18); the kernel
   is unchanged, so no benchmark or image-size line moves. Uncontended locks and waits on an
   already-signaled object make no system call; a signal makes one only when a thread sleeps.
-- **Not yet.** ARM64 programs (item 19b: a per-architecture ABI for the exported functions,
+- **Not yet.** The DOS wildcard special cases (`a?` matching `a`, `*.` matching names without
+  an extension), locale-aware `lstrcmpW`/`lstrcmpiW` (they compare ordinally),
+  `DuplicateHandle` of `GetCurrentThread()`'s pseudo-handle. ARM64 programs (item 19b: a per-architecture ABI for the exported functions,
   `x18` reserved in the layer's build and set per thread to the TEB, an aarch64 thread start),
   other processes and pipes, abandoned mutexes, `SuspendThread`, `TerminateThread`, named
   objects, alertable waits and APCs, `TlsFree` and `FlsFree` clearing other threads' slots,
