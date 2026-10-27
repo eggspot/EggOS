@@ -537,13 +537,13 @@ pub fn futex_wait(
     }
 }
 
-/// Wakes at most `count` threads sleeping on the 32-bit word at `address`.
-pub fn futex_wake(address: usize, count: u32) {
+/// Wakes one or every thread sleeping on the 32-bit word at `address`.
+pub fn futex_wake(address: usize, count: crate::futex::WakeCount) {
     // SAFETY: a wake touches no memory.
     let _ = unsafe {
         syscall(
             number::FUTEX,
-            [address, FUTEX_WAKE_PRIVATE, count as usize, 0, 0, 0],
+            [address, FUTEX_WAKE_PRIVATE, count.count() as usize, 0, 0, 0],
         )
     };
 }

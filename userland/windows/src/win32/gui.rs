@@ -13,6 +13,7 @@
 
 use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
+use crate::futex::WakeCount;
 use crate::gui::classes::ClassTable;
 use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
@@ -171,7 +172,7 @@ pub fn device() -> Result<Device, u32> {
 pub fn wake() {
     WAKE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     if FUTEX_WAITERS.load(Ordering::SeqCst) > 0 {
-        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, u32::MAX);
+        linux::futex_wake(WAKE_SEQUENCE.as_ptr() as usize, WakeCount::All);
     }
     if POLLING.load(Ordering::SeqCst) {
         let fd = WAKE_WRITE.load(Ordering::SeqCst);
