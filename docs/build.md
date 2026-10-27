@@ -52,7 +52,10 @@ holds what used to be written in them.
   written once as `EGGOS-BENCH: boot_to_prompt ...`, which `cargo xtask bench` reads (D116).
 
 ## Developer commands (`xtask/`)
-- **`cargo xtask ci`** runs CI's checks in CI's order, cheapest first. **`clippy-targets`**
+- **`cargo xtask ci`** runs CI's checks in CI's order, cheapest first. **`lint`** fails on a
+  comment the repository's rules disallow in a tracked `.rs`, `.toml` or `.yml` file, beyond the
+  per-file counts in `xtask/lint-legacy-files.txt` (the files cleanup PRs have not reached yet:
+  the list only shrinks, `lint --shrink` lowers it after a cleanup). **`clippy-targets`**
   lints the user crates as compiled for each architecture's Linux target and the kernel crates
   for each bare-metal target (where the architecture modules a host build cannot see are
   compiled), without features and with each test feature, since they change code paths; the
@@ -95,7 +98,7 @@ holds what used to be written in them.
   appear in order. The NDK comes from `ANDROID_NDK_HOME`, `ANDROID_NDK_LATEST_HOME`,
   `ANDROID_NDK_ROOT` or the newest version under `$ANDROID_HOME/ndk` (or `ANDROID_SDK_ROOT`);
   without one the test is skipped with a message, but fails when `CI` is set. CI mounts the
-  runner's NDKs into the check job's container and sets `ANDROID_HOME` (D119).
+  runner's NDKs into the `qemu` jobs' container and sets `ANDROID_HOME` (D119).
 - **The macOS programs boot test** adds `tests/macos-console`'s programs, linked by Apple's
   linker for `aarch64-apple-darwin` and `x86_64-apple-darwin` (`MACOSX_DEPLOYMENT_TARGET=13.0`,
   chained fixups), as `/bin/macos-console` (this CPU's), `/bin/macos-unsupported` (links
@@ -106,7 +109,7 @@ holds what used to be written in them.
   `Exec format error` and 126. The programs come from `EGGOS_MACOS_PROGRAMS` (a folder of
   `<program>-<cpu>` files) or, on a macOS host, `cargo xtask macos-programs` builds them;
   otherwise the test is skipped with a message, but fails when `CI` is set. CI builds them in
-  its `macos-programs` job, and the check job waits for that artifact before its QEMU step
+  its `macos-programs` job, and the `qemu` jobs wait for that artifact before their boot tests
   (D120).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
@@ -207,25 +210,40 @@ holds what used to be written in them.
 - **JSON.** xtask reads the path of each executable cargo built from cargo's JSON messages with
   just enough JSON for them (string escapes such as Windows paths' `\\`).
 
-## CI (`.github/workflows/ci.yml`, D8, D36)
-- **One cheap Linux job (`check`)**, its steps ordered cheapest first so a typo fails in
-  seconds: format, clippy (host, then the kernel targets), docs, host tests, QEMU boot tests and
-  benchmarks on every architecture.
-- **`check` is a required status check on `main`**, so the workflow always runs: a workflow
-  skipped by a `paths` filter never reports, and would leave docs PRs pending for ever. Its first
-  step detects a docs-only change (Markdown, `docs/`, `LICENSE-MIT`, `LICENSE-APACHE`, `.github/FUNDING.yml`) and
-  skips every later step, which still reports success in a few seconds. The job reads the PR's
-  changed files, hence `pull-requests: read`; it pulls the CI image, hence `packages: read`.
-- **It runs in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain
-  preinstalled. CI always runs in `main`'s image, so a change that needs something new in the
-  image lands in its own PR first. The toolchain step installs the pinned toolchain only when a
-  change moved the pin and the image has not been rebuilt yet.
-- **Cache.** Every run restores the newest `target/` cache; only pushes to `main` save one, so
-  PR commits do not each upload their own. There are no dependencies, so only `target/` is worth
+## CI (`.github/workflows/ci.yml`, D8, D36, D122)
+- **Parallel jobs, a final `check`.** `changes` detects a docs-only change; then, at the same time:
+  `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
+  tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
+  architecture), `macos-programs` (the Mach-O test programs) and, on PRs, `hosts` (macOS and
+  Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  takes as long as its slowest job.
+- **`check` is the only required status check on `main`.** It is the last job (`needs` every other
+  job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
+  workflow always runs: a workflow skipped by a `paths` filter never reports, and would leave docs
+  PRs pending for ever. `changes` reads the PR's changed files (Markdown, `docs/`, `LICENSE-MIT`,
+  `LICENSE-APACHE`, `.github/FUNDING.yml` do not count as code, hence `pull-requests: read`); on a
+  docs-only change every other job is skipped and `check` reports success in seconds.
+- **Jobs run in the CI image** (below), with QEMU, OpenSBI and the pinned toolchain preinstalled
+  (`packages: read` to pull it). CI always runs in `main`'s image, so a change that needs something
+  new in the image lands in its own PR first. The `qemu` jobs mount the runner's Android NDKs for
+  the Android programs boot test (D119) and, on PRs, wait for the `macos-programs` artifact before
+  their boot tests (D120).
+- **Benchmarks are report-only (D122).** Each `bench` job runs `cargo xtask bench --arch <arch>
+  --report-only`: every result is compared with `benchmarks/baseline.txt` and written to the job
+  summary and to `target/bench/report.json` and `report.md`; the job fails only for a result more
+  than 2x slower than its baseline. The two files are uploaded as the artifact
+  `bench-pr-<number>-<head sha>-<arch>` (`bench-main-<sha>-<arch>` on pushes to `main`) and kept
+  for 90 days, so a regression found by the weekly performance pass can be traced to its PR. The
+  exact gate stays the default of `cargo xtask bench` and `cargo xtask ci`. Image sizes measured
+  on Linux differ from a Mac's by a few hundred bytes: they are reported, and only the 2x rule
+  blocks.
+- **Cache.** Each job restores the newest `target/` cache of its own kind (`fast`, `qemu-<arch>`,
+  `bench-<arch>`), falling back to the older shared cache; only pushes to `main` save one, so PR
+  commits do not each upload their own. There are no dependencies, so only `target/` is worth
   caching.
-- **Hosts.** Development hosts are macOS and Windows, so on PRs into `main`, after `check`
-  passed and only when code changed, a small job on each builds, lints and tests the workspace
-  and builds the kernel for every architecture.
+- **Hosts.** Development hosts are macOS and Windows, so on PRs into `main`, when code changed, a
+  small job on each builds, lints and tests the workspace and builds the kernel for every
+  architecture.
 - **Billing**: the global rules in `~/.claude/CLAUDE.md` (CI section) and D8: concurrency
   cancels superseded PR runs only, every job has a timeout, checkouts are shallow.
 

@@ -1,9 +1,9 @@
 # EggOS boot-time benchmark baseline, written by `cargo xtask bench --arch all --update-baseline`.
 # One line per result: <arch> <benchmark> <ns per iteration>. The kernel runs under QEMU
 # `-icount shift=0` (1 ns per instruction), so each number is instructions per iteration.
-# `cargo xtask bench` (and CI) fails when a result is slower than its line here by more than
-# 1% + 0.5 ns. Update it in the PR that makes a change faster, or that the owner accepted as
-# slower, and say why in the PR (CLAUDE.md, "Never merge a performance regression").
+# `cargo xtask bench` fails when a result is slower than its line here by more than 1% + 0.5 ns;
+# CI runs it with `--report-only`, which only reports changes and fails a result more than twice
+# as slow. The weekly performance pass settles the differences and updates this file (D122).
 # `<arch> firmware <version>` names the firmware the results were recorded with: benchmarks
 # that run inside it are gated only on the same firmware, and `<arch> qemu <version>` names
 # the QEMU that QEMU-dependent results (boot_to_prompt) were recorded with, likewise. Record

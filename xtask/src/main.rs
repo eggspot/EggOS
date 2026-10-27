@@ -9,6 +9,7 @@ mod bench;
 mod elf;
 mod image;
 mod initramfs;
+mod lint;
 mod macos;
 mod png;
 mod qemu;
@@ -22,9 +23,13 @@ const USAGE: &str = "\
 usage: cargo xtask <command> [options]
 
 commands:
-  ci                     every check CI runs, cheapest first: fmt, clippy (host and kernel
-                         targets), docs, host tests, QEMU boot tests and benchmarks on
-                         every architecture
+  ci                     every check CI runs, cheapest first: fmt, lint, clippy (host and
+                         kernel targets), docs, host tests, QEMU boot tests and benchmarks
+                         on every architecture
+  lint [--shrink]        fail on comments the repository rules disallow in tracked .rs, .toml
+                         and .yml files, beyond the counts listed in
+                         xtask/lint-legacy-files.txt; with --shrink, lower that list to match
+                         the files' current counts
   clippy-targets         clippy -D warnings on the user crates for their Linux targets
                          and the kernel crates for every kernel target, with the user
                          programs built for the test kernels
@@ -43,10 +48,13 @@ commands:
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --add,
                          the release image with those files, as `image` builds it
-  bench --arch <arch> [--update-baseline]
+  bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
-                         --update-baseline, record the results there instead
+                         --update-baseline, record the results there instead; with
+                         --report-only (CI's mode for pull requests), report every change
+                         and fail only a result more than 2x slower; either way the report
+                         is written to target/bench/report.md and report.json
   release                build and boot the release image of every architecture, then write
                          eggos-<version>-<arch>.elf, SHA256SUMS, run-eggos.sh, run-eggos.ps1
                          and RELEASE-NOTES.md to target/release-dist/
@@ -263,6 +271,11 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("ci") => ci(),
         Some("clippy-targets") => clippy_targets(),
         Some("docs") => docs(),
+        Some("lint") => match &args[1..] {
+            [] => lint::run(false),
+            [flag] if flag == "--shrink" => lint::run(true),
+            _ => Err(USAGE.into()),
+        },
         Some("build") => {
             for arch in arch()? {
                 build_kernel(arch, None)?;
@@ -276,11 +289,15 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("bench") => {
-            let (options, update) = match &args[1..] {
-                [options @ .., last] if last == "--update-baseline" => (options, true),
-                options => (options, false),
+            let (options, update) = without_flag(&args[1..], "--update-baseline");
+            let (options, report_only) = without_flag(&options, "--report-only");
+            let mode = match (update, report_only) {
+                (true, true) => return Err(USAGE.into()),
+                (true, false) => bench::Mode::UpdateBaseline,
+                (false, true) => bench::Mode::ReportOnly,
+                (false, false) => bench::Mode::Gate,
             };
-            bench::run(&arch_option(options)?, update)
+            bench::run(&arch_option(&options)?, mode)
         }
         Some("macos-programs") if args.len() == 1 => {
             let programs = macos::find_or_build_programs(&target_directory())?.ok_or(
@@ -344,6 +361,7 @@ fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
 
 fn ci() -> Result<(), String> {
     cargo(&["fmt", "--all", "--check"])?;
+    lint::run(false)?;
     cargo(&[
         "clippy",
         "--workspace",
@@ -358,7 +376,7 @@ fn ci() -> Result<(), String> {
     for arch in ARCHES {
         boot_tests(arch)?;
     }
-    bench::run(&ARCHES.iter().collect::<Vec<_>>(), false)
+    bench::run(&ARCHES.iter().collect::<Vec<_>>(), bench::Mode::Gate)
 }
 
 fn boot_tests(arch: &Arch) -> Result<(), String> {
