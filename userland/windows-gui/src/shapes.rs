@@ -2,6 +2,8 @@
 //! excludes its right and bottom edges; with no pen (`NULL_PEN`) a rectangle or an ellipse is
 //! one pixel smaller each way; the pen outlines inside the bounding rectangle, `width` pixels
 //! thick, and the brush fills what is inside the outline; a line leaves out its end point.
+//! Arithmetic on the program's coordinates saturates, and a line costs no more than the
+//! stretch of it that can reach the surface.
 
 use crate::surface::{Rect, Surface};
 
@@ -24,7 +26,12 @@ pub fn rectangle(surface: &mut Surface<'_>, rect: Rect, pen: Option<Pen>, brush:
     let Some(pen) = pen else {
         if let Some(brush) = brush {
             surface.fill(
-                Rect::new(rect.left, rect.top, rect.right - 1, rect.bottom - 1),
+                Rect::new(
+                    rect.left,
+                    rect.top,
+                    rect.right.saturating_sub(1),
+                    rect.bottom.saturating_sub(1),
+                ),
                 brush,
             );
         }
@@ -53,7 +60,12 @@ pub fn ellipse(surface: &mut Surface<'_>, rect: Rect, pen: Option<Pen>, brush: O
     let rect = rect.normalised();
     let outer = match pen {
         Some(_) => rect,
-        None => Rect::new(rect.left, rect.top, rect.right - 1, rect.bottom - 1),
+        None => Rect::new(
+            rect.left,
+            rect.top,
+            rect.right.saturating_sub(1),
+            rect.bottom.saturating_sub(1),
+        ),
     };
     if outer.is_empty() {
         return;
@@ -119,37 +131,96 @@ pub fn ellipse_span(rect: Rect, y: i32) -> Option<(i32, i32)> {
     ))
 }
 
-/// `LineTo` from `from` to `to`: Bresenham's line without its end point, each point a square
-/// of the pen's width.
+/// `LineTo` from `from` to `to`, without its end point: along the longer axis one point per
+/// pixel, the other coordinate the nearest to the exact line (halves rounded up), each point a
+/// square of the pen's width. Only the points whose square can reach the surface's clip are
+/// computed.
 pub fn line(surface: &mut Surface<'_>, from: (i32, i32), to: (i32, i32), pen: Pen) {
-    let (mut x, mut y) = (i64::from(from.0), i64::from(from.1));
-    let (end_x, end_y) = (i64::from(to.0), i64::from(to.1));
-    let across = (end_x - x).abs();
-    let down = -(end_y - y).abs();
-    let step_x = if x < end_x { 1 } else { -1 };
-    let step_y = if y < end_y { 1 } else { -1 };
-    let mut error = across + down;
-    let thickness = pen.thickness();
+    let across = i64::from(to.0) - i64::from(from.0);
+    let down = i64::from(to.1) - i64::from(from.1);
+    let steps = across.unsigned_abs().max(down.unsigned_abs());
+    if steps == 0 {
+        return;
+    }
+    let thickness = i64::from(pen.thickness());
     let back = (thickness - 1) / 2;
-    while (x, y) != (end_x, end_y) {
-        let (px, py) = (x as i32, y as i32);
+    let clip = surface.clip();
+    let along_x = across.unsigned_abs() >= down.unsigned_abs();
+    let (major, major_step, minor, minor_step, run, low, high) = match along_x {
+        true => (
+            i64::from(from.0),
+            across.signum(),
+            i64::from(from.1),
+            down.signum(),
+            down.unsigned_abs(),
+            clip.left,
+            clip.right,
+        ),
+        false => (
+            i64::from(from.1),
+            down.signum(),
+            i64::from(from.0),
+            across.signum(),
+            across.unsigned_abs(),
+            clip.top,
+            clip.bottom,
+        ),
+    };
+    let first_reaching = i64::from(low) - (thickness - 1 - back);
+    let last_reaching = i64::from(high) - 1 + back;
+    let (from_step, to_step) = match major_step > 0 {
+        true => (first_reaching - major, last_reaching - major),
+        false => (major - last_reaching, major - first_reaching),
+    };
+    let last_step = steps as i64 - 1;
+    if to_step < 0 || from_step > last_step {
+        return;
+    }
+    let (first, last) = (from_step.max(0) as u64, to_step.min(last_step) as u64);
+    let divisor = 2 * steps;
+    let numerator = 2 * u128::from(first) * u128::from(run) + u128::from(steps);
+    let (quotient, mut remainder) = divide(numerator, divisor);
+    let mut offset = quotient as i64;
+    for step in first..=last {
+        let major_at = major + major_step * step as i64;
+        let minor_at = minor + minor_step * offset;
+        let (x, y) = match along_x {
+            true => (clamp(major_at), clamp(minor_at)),
+            false => (clamp(minor_at), clamp(major_at)),
+        };
         match thickness {
-            1 => surface.pixel(px, py, pen.colour),
+            1 => surface.pixel(x, y, pen.colour),
             _ => surface.fill(
-                Rect::sized(px - back, py - back, thickness, thickness),
+                Rect::sized(
+                    x.saturating_sub(back as i32),
+                    y.saturating_sub(back as i32),
+                    thickness as i32,
+                    thickness as i32,
+                ),
                 pen.colour,
             ),
         }
-        let twice = 2 * error;
-        if twice >= down {
-            error += down;
-            x += step_x;
-        }
-        if twice <= across {
-            error += across;
-            y += step_y;
+        remainder += 2 * run;
+        if remainder >= divisor {
+            remainder -= divisor;
+            offset += 1;
         }
     }
+}
+
+fn clamp(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn divide(numerator: u128, divisor: u64) -> (u128, u64) {
+    let mut quotient = 0u128;
+    let mut remainder = 0u64;
+    for digit in (0..8).rev() {
+        let part = (remainder << 16) | ((numerator >> (16 * digit)) & 0xffff) as u64;
+        quotient = (quotient << 16) | u128::from(part / divisor);
+        remainder = part % divisor;
+    }
+    (quotient, remainder)
 }
 
 #[cfg(test)]
@@ -242,6 +313,75 @@ mod tests {
             ellipse_span(Rect::new(-40_000, -40_000, 40_000, 40_000), 0),
             Some((-40_000, 40_000))
         );
+    }
+
+    #[test]
+    fn long_division_in_16_bit_digits_matches_division() {
+        for (numerator, divisor) in [
+            (0u128, 1u64),
+            (7, 2),
+            (1 << 65, 3),
+            ((1 << 66) - 1, (1 << 34) - 1),
+            (u128::from(u64::MAX) * 5 + 4, 1 << 40),
+        ] {
+            assert_eq!(
+                divide(numerator, divisor),
+                (
+                    numerator / u128::from(divisor),
+                    (numerator % u128::from(divisor)) as u64
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_huge_line_costs_only_its_visible_part_and_matches_its_short_piece() {
+        let pen = Pen {
+            colour: 1,
+            width: 1,
+        };
+        let far = picture(|s| line(s, (i32::MIN, 5), (i32::MAX, 5), pen));
+        assert_eq!(far[5], "PPPPPPPPPPPP");
+        assert_eq!(far[4], "............");
+        let diagonal = picture(|s| {
+            line(
+                s,
+                (-1_000_000_000, -1_000_000_000),
+                (i32::MAX, i32::MAX),
+                pen,
+            )
+        });
+        let short = picture(|s| line(s, (-5, -5), (20, 20), pen));
+        assert_eq!(diagonal, short);
+        let away = picture(|s| line(s, (-100, -100), (-50, 3), pen));
+        assert!(away.iter().all(|row| !row.contains('P')));
+        let shallow = picture(|s| line(s, (-1_000_000, 0), (1_000_000, 1), pen));
+        assert_eq!(shallow[1], "PPPPPPPPPPPP");
+        assert_eq!(shallow[0], "............");
+    }
+
+    #[test]
+    fn shapes_take_extreme_coordinates_without_overflow() {
+        let pen = Some(Pen {
+            colour: 1,
+            width: 1,
+        });
+        let extreme = Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+        let rows = picture(|s| {
+            rectangle(s, extreme, None, Some(2));
+            ellipse(s, extreme, None, Some(2));
+            rectangle(s, extreme, pen, None);
+            line(
+                s,
+                (0, 0),
+                (3, 3),
+                Pen {
+                    colour: 1,
+                    width: i32::MAX as u32,
+                },
+            );
+        });
+        assert_eq!(rows.len(), 12);
     }
 
     #[test]

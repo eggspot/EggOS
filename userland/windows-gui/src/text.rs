@@ -199,7 +199,11 @@ pub fn glyph(
         };
         for column in 0..CELL_WIDTH {
             if bits & (0x80 >> column) != 0 {
-                surface.pixel(x + column, y + row as i32, foreground);
+                surface.pixel(
+                    x.saturating_add(column),
+                    y.saturating_add(row as i32),
+                    foreground,
+                );
             }
         }
     }
@@ -224,7 +228,12 @@ pub fn glyph_2x(
         for column in 0..CELL_WIDTH {
             if bits & (0x80 >> column) != 0 {
                 surface.fill(
-                    Rect::sized(x + 2 * column, y + 2 * row as i32, 2, 2),
+                    Rect::sized(
+                        x.saturating_add(2 * column),
+                        y.saturating_add(2 * row as i32),
+                        2,
+                        2,
+                    ),
                     foreground,
                 );
             }
@@ -266,7 +275,7 @@ pub fn text_out(
         glyph(surface, at, y, id, false, foreground, background);
         at = at.saturating_add(CELL_WIDTH);
     }
-    at - x
+    at.saturating_sub(x)
 }
 
 /// The width and height of the UTF-16 `units` drawn on one line.
@@ -321,6 +330,11 @@ pub fn measure(cells: &[Cell], rect: Rect, flags: u32) -> Rect {
     )
 }
 
+fn centred(start: i32, room: i32, size: i32) -> i32 {
+    let at = i64::from(start) + (i64::from(room) - i64::from(size)) / 2;
+    at.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 const ELLIPSIS: [Cell; 3] = [Cell::Glyph {
     id: b'.',
     underline: false,
@@ -342,9 +356,9 @@ pub fn draw_text(
     let single_line = flags & format::SINGLELINE != 0;
     let top = match () {
         () if single_line && flags & format::VCENTER != 0 => {
-            rect.top + (rect.height() - CELL_HEIGHT) / 2
+            centred(rect.top, rect.height(), CELL_HEIGHT)
         }
-        () if single_line && flags & format::BOTTOM != 0 => rect.bottom - CELL_HEIGHT,
+        () if single_line && flags & format::BOTTOM != 0 => rect.bottom.saturating_sub(CELL_HEIGHT),
         () => rect.top,
     };
     let saved = surface.clip();
@@ -363,21 +377,21 @@ pub fn draw_text(
         let cells_wide = shown.len() + if cut { ELLIPSIS.len() } else { 0 };
         let width = (cells_wide as i32).saturating_mul(CELL_WIDTH);
         let x = match () {
-            () if flags & format::CENTER != 0 => rect.left + (rect.width() - width) / 2,
-            () if flags & format::RIGHT != 0 => rect.right - width,
+            () if flags & format::CENTER != 0 => centred(rect.left, rect.width(), width),
+            () if flags & format::RIGHT != 0 => rect.right.saturating_sub(width),
             () => rect.left,
         };
         draw_cells(surface, x, y, shown, foreground, background);
         if cut {
-            let after = x + (shown.len() as i32) * CELL_WIDTH;
+            let after = x.saturating_add((shown.len() as i32).saturating_mul(CELL_WIDTH));
             draw_cells(surface, after, y, &ELLIPSIS, foreground, background);
         }
         y = y.saturating_add(CELL_HEIGHT);
     }
     surface.set_clip(saved);
     match single_line && flags & (format::VCENTER | format::BOTTOM) != 0 {
-        true => top - rect.top + CELL_HEIGHT,
-        false => y - top,
+        true => top.saturating_sub(rect.top).saturating_add(CELL_HEIGHT),
+        false => y.saturating_sub(top),
     }
 }
 
