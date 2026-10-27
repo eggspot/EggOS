@@ -101,10 +101,13 @@ impl Window {
         self.erase |= erase;
     }
 
-    /// Whether a `WM_PAINT` waits for it: it is shown, not being destroyed, and has a region
-    /// to paint.
+    /// Whether a `WM_PAINT` waits for it: it is the program's, shown, not being destroyed,
+    /// and has a region to paint (the layer paints its message boxes itself).
     pub fn needs_paint(&self) -> bool {
-        self.shown && !self.update.is_empty() && !self.destroying
+        matches!(self.procedure, Procedure::Program(_))
+            && self.shown
+            && !self.update.is_empty()
+            && !self.destroying
     }
 
     /// The value at `index`: one of [`index`]'s, or `size` bytes of the extra bytes at that
@@ -252,5 +255,10 @@ mod tests {
         let hidden = table.insert(hidden).unwrap();
         assert_eq!(needing_paint(&table, hidden), None);
         assert_eq!(needing_paint(&table, usize::MAX), None);
+        let mut message_box = window();
+        message_box.procedure = Procedure::MessageBox(0x1000);
+        message_box.invalidate(None, true);
+        let message_box = table.insert(message_box).unwrap();
+        assert_eq!(needing_paint(&table, message_box), None);
     }
 }

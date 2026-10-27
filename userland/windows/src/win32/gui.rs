@@ -15,7 +15,7 @@ use crate::gui::objects::{self, ContextTable, ObjectTable};
 use crate::gui::queue::{Filter, Message, Queue};
 use crate::gui::windows::{self, Procedure, WindowTable};
 use crate::linux;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use eggos_windows_gui::surface::Rect;
 
 const PENDING_CHARACTERS: usize = 8;
@@ -103,7 +103,7 @@ impl Gui {
 }
 
 static GUI: AtomicPtr<SpinLock<Gui>> = AtomicPtr::new(core::ptr::null_mut());
-static WAITING: AtomicBool = AtomicBool::new(false);
+static SLEEPERS: AtomicUsize = AtomicUsize::new(0);
 static WAKE_WRITE: AtomicUsize = AtomicUsize::new(NO_DESCRIPTOR);
 
 fn state() -> Option<&'static SpinLock<Gui>> {
@@ -161,7 +161,7 @@ pub fn device() -> Result<Device, u32> {
 
 /// Wakes a thread sleeping for a message, after something it could read was added.
 pub fn wake() {
-    if WAITING.load(Ordering::SeqCst) {
+    if SLEEPERS.load(Ordering::SeqCst) > 0 {
         let fd = WAKE_WRITE.load(Ordering::SeqCst);
         if fd != NO_DESCRIPTOR {
             let _ = linux::write(fd, &[1]);
@@ -348,12 +348,12 @@ fn sleep(filter: &Filter) {
         linux::yield_now();
         return;
     };
-    WAITING.store(true, Ordering::SeqCst);
+    SLEEPERS.fetch_add(1, Ordering::SeqCst);
     let nothing_yet = with(|gui| find(gui, filter, false).is_none()).unwrap_or(false);
     if nothing_yet {
         let _ = linux::wait_readable(descriptors);
     }
-    WAITING.store(false, Ordering::SeqCst);
+    SLEEPERS.fetch_sub(1, Ordering::SeqCst);
     let mut drained = [0u8; 64];
     while matches!(linux::read(descriptors[1] as usize, &mut drained), Ok(1..)) {}
 }

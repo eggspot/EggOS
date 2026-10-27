@@ -248,6 +248,9 @@ unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const WindowRect, brush: 
 }
 
 unsafe fn units<'a>(text: *const u16, count: i32) -> &'a [u16] {
+    if text.is_null() || count == 0 {
+        return &[];
+    }
     match count {
         // SAFETY: the caller's duty: with a negative count, a NUL-terminated string.
         ..0 => unsafe { super::file::wide_string(text) },
@@ -480,16 +483,17 @@ unsafe extern "efiapi" fn get_text_extent_point_32_w(
     count: i32,
     size: *mut Size,
 ) -> Bool {
-    if count < 0
-        || try_with(|gui| {
-            gui.contexts
-                .get(hdc)
-                .map(|_| ())
-                .ok_or(error::INVALID_HANDLE)
-        })
-        .is_err()
-    {
+    if count < 0 {
         return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let known = try_with(|gui| {
+        gui.contexts
+            .get(hdc)
+            .map(|_| ())
+            .ok_or(error::INVALID_HANDLE)
+    });
+    if let Err(code) = known {
+        return fail(code, FALSE);
     }
     // SAFETY: the caller passes `count` readable UTF-16 units.
     let (width, height) = text::extent(unsafe { units(text, count) });

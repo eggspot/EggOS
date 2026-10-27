@@ -23,6 +23,7 @@ const DEFAULT_CAPTION: &str = "Error";
 const TITLE_BYTES: usize = 256;
 const HELP_FOR_WINDOW: i32 = 1;
 const CHROME: (i32, i32) = (2, 30);
+const RESTORED: u32 = 0;
 
 struct BoxState {
     controller: Controller,
@@ -76,9 +77,15 @@ unsafe extern "efiapi" fn message_box_w(
     let parent = with(|gui| {
         let window = gui.windows.get(owner)?;
         let shown = window.committed && matches!(window.procedure, Procedure::Program(_));
-        shown.then_some(window.server)
+        shown.then_some((window.server, window.size_kind == message::SIZE_MINIMIZED))
     })
-    .flatten();
+    .flatten()
+    .map(|(server, minimised)| {
+        if minimised {
+            let _ = device.set_state(server, RESTORED);
+        }
+        server
+    });
     let (role, parent_server, flags) = match parent {
         Some(server) => (ROLE_DIALOG, server, 0),
         None => (ROLE_NORMAL, 0, FIXED_SIZE),
