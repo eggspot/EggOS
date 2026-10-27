@@ -16,6 +16,9 @@ dependencies = [
 [[package]]
 name = "eggos-drivers"
 version = "0.2.0"
+dependencies = [
+ "eggos-font",
+]
 
 [[package]]
 name = "eggos-eggsh"
@@ -23,6 +26,10 @@ version = "0.2.0"
 dependencies = [
  "eggos-runtime",
 ]
+
+[[package]]
+name = "eggos-font"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-hal"
@@ -88,11 +95,19 @@ name = "eggos-windows"
 version = "0.2.0"
 dependencies = [
  "eggos-runtime",
+ "eggos-windows-gui",
 ]
 
 [[package]]
 name = "eggos-windows-console"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-windows-gui"
+version = "0.2.0"
+dependencies = [
+ "eggos-font",
+]
 
 [[package]]
 name = "xtask"

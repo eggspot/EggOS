@@ -1,7 +1,7 @@
 use super::*;
 use std::fmt::Write;
 
-const DESIGN_FILE: &str = include_str!("../../../docs/ux/font-8x16.txt");
+const DESIGN_FILE: &str = include_str!("../../docs/ux/font-8x16.txt");
 
 fn design_glyphs() -> Vec<(u32, GlyphRows)> {
     let mut glyphs = Vec::new();
