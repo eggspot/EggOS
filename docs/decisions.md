@@ -7317,15 +7317,22 @@ the license, by an explicit instruction recorded here.
   `ShowWindow` invalidates it, and its first commit is the end of its first paint
   (`EndPaint`, or `DefWindowProcW`'s `WM_PAINT`, which erases with the class brush); after that
   each `EndPaint` commits its region and each `ReleaseDC` what the context drew. The region to
-  paint is one bounding rectangle. Messages: one queue per process, posted messages before the
-  server's input before `WM_QUIT` before `WM_PAINT`, as Windows orders them; mouse moves
-  coalesce; the server's close request is `WM_SYSCOMMAND`/`SC_CLOSE` (so `DefWindowProcW` sends
-  `WM_CLOSE` and then destroys), `Resize` a new buffer and `WM_SIZE`, focus `WM_SETFOCUS` and
-  `WM_KILLFOCUS`, all sent to the window procedure during `GetMessageW` as Windows sends them;
-  keys are `WM_KEYDOWN`/`UP` (`WM_SYSKEYDOWN`/`UP` with Alt) with Windows' virtual keys and
-  `lParam` bits, and `TranslateMessage` posts the character the server gave with the press.
-  `GetMessageW` reads the server's records without blocking and sleeps in `ppoll` on the device
-  and a pipe that a post from another thread writes to only when a thread sleeps. GDI follows
+  paint is one bounding rectangle. Messages: one queue per process in which every message
+  belongs to a thread (its window's, or the poster's for a thread message, and `WM_QUIT` the
+  thread's that asked), and each thread reads only its own, as each Windows thread reads its
+  own queue; posted messages come before the server's input before `WM_QUIT` before `WM_PAINT`,
+  as Windows orders them; mouse moves coalesce; the server's close request is
+  `WM_SYSCOMMAND`/`SC_CLOSE` (so `DefWindowProcW` sends `WM_CLOSE` and then destroys), `Resize` a
+  new buffer and `WM_SIZE`, focus `WM_SETFOCUS` and `WM_KILLFOCUS`, sent to the window procedure
+  during `GetMessageW` when the window is the reading thread's and posted to its thread
+  otherwise; keys are `WM_KEYDOWN`/`UP` (`WM_SYSKEYDOWN`/`UP` with Alt) with Windows' virtual
+  keys and `lParam` bits, and `TranslateMessage` posts the character the server gave with the
+  press. One thread at a time reads the server's records (without blocking) and acts on them,
+  calling into the program only after letting go. A thread with nothing to read sleeps: one in
+  `ppoll` on the device and a wake-up pipe, the others on a futex word every change bumps, and
+  the one in `ppoll` wakes them when it returns, so whichever thread is asleep where, none misses
+  a wake-up. A resize maps the new buffer, swaps it into the window's entry under the lock and
+  only then unmaps the old one, so the table never holds an unmapped buffer. GDI follows
   Win32's documented pixel rules (right and bottom edges excluded, a null pen one pixel smaller,
   `LineTo` without its end point, an ellipse's pixels by their centres); the outline of a wide
   pen is inside the shape. Every font is Egg Mono 8x16. Win32's system colours are Windows'
@@ -7338,9 +7345,11 @@ the license, by an explicit instruction recorded here.
 - **Message box.** A window of the layer's own (its procedure is the layer's), a `Dialog` of the
   owner's window or a `FIXED_SIZE` normal window at the work area's centre without one, painted
   with `eggos_windows_gui::message_box` exactly as Fable's brief lays it out, run by a modal
-  loop that dispatches the program's other messages meanwhile; a button's answer posts
-  `WM_NULL` to wake the loop; `WM_QUIT` during the loop is posted again and the box answers as
-  Esc would.
+  loop that dispatches the calling thread's other messages meanwhile. The box's state is a heap
+  block its window's entry points to, reached only under the lock, so whichever thread reads the
+  box's records acts on them; an answer (or `Help`) wakes the loop, which waits for a message or
+  for that; the call frees the state after taking the window out of the table. `WM_QUIT` during
+  the loop is posted again and the box answers as Esc would.
 - **Decided by research.** The font as its own crate (`eggos-font`, top-level), not the layer
   depending on the drivers with an allocator. The shared drawing as its own crate
   (`eggos-windows-gui`) that xtask also uses, and the test program's scene as data both sides
@@ -7358,10 +7367,18 @@ the license, by an explicit instruction recorded here.
   instead of passing 0..3000 as slots; `wm`'s `device_control` refuses an argument whose length
   is not the size the request encodes; the 2 s rule compares the time since a close request as a
   signed difference, so a clock behind the request is no time waited.
-- **Cost.** Nothing for console programs but four words of static data (no state, no
-  connection). A Win32 call is a
-  function call; the message path makes no system call when a message waits, one `read` per
-  batch of 16 server records, and `ppoll` only to sleep; a paint is one `COMMIT` of its region.
+- **Review fixes (from #127's review).** A resize no longer unmaps the old buffer before the
+  window's entry holds the new one (another thread drawing through `GetDC` could write to
+  unmapped memory); a message box's state is no longer on the calling thread's stack, where
+  another thread reading the box's records raced with it and could outlive it; program
+  coordinates no longer overflow (saturating arithmetic in `CreateWindowExW`,
+  `AdjustWindowRectEx`, the shapes and text); a line computes only the points that can reach the
+  surface (a `LineTo` toward `i32::MAX` used to take 2^31 steps under the lock). The thread
+  affinity of messages and the futex-and-poller sleep came with the second fix.
+- **Cost.** Nothing for console programs but a few words of static data (no state, no
+  connection). A Win32 call is a function call; reading a message makes one non-blocking `read`
+  of the server's descriptor first (`EAGAIN` when no record waits), one more per batch of 16
+  records, and `ppoll` or a futex wait only to sleep; a paint is one `COMMIT` of its region.
   The shapes and text clip per row and write rows with slice fills. The layer's image grows by
   user32, gdi32 and the drawing crate; CI's size report and benchmark deltas are in the PR.
 - **Testing.** Host tests: the shapes' pixels (rectangle edges, the null pen, wide pens,
@@ -7376,12 +7393,17 @@ the license, by an explicit instruction recorded here.
   it with OK and the close control ends the program; the program's lines (class, creation, the
   client size and caption height, extra bytes, `SendMessageW`, `PostMessageW` and
   `PeekMessageW`, the click, the key, the box's answer, `WM_DESTROY`, `WM_QUIT`) and its status
-  0 follow; riscv64 refuses it with `ENOEXEC`.
+  0 follow; F2 has a second thread show a message box owned by the window while the first
+  thread runs its loop and reads the box's records, and Enter answers it; riscv64 refuses it
+  with `ENOEXEC`. Host tests also pin the buffer swap's ordering, the per-thread queue and
+  `WM_QUIT`, the clipped line against its short piece, and extreme coordinates.
 - **Not yet.** Child windows and the system's controls (buttons, edits; item 42), menus, dialogs
   from resources, timers, `CreateFontW`, `GetTextMetricsW` and every font but Egg Mono, text beyond ASCII and the
   font's extras (drawn as `?`), double-click messages, `WM_MOUSEWHEEL` and `MSG.pt` in screen
   coordinates (client ones today), `TrackMouseEvent`, `SetCursor`, `GetWindowRect` and window
   moves from the program (`MoveWindow`, `SetWindowPos`), `SW_HIDE`, regions and clipping beyond
-  one rectangle, dashed pens, raster operations, bitmaps and `BitBlt`, a message queue per
-  thread (`SendMessageW` from another thread calls the procedure on the caller's thread), and
-  the C runtime's GUI start-up (item 43).
+  one rectangle, dashed pens, raster operations, bitmaps and `BitBlt`, and the C runtime's GUI
+  start-up (item 43). Follow-ups: `SendMessageW` to another thread's window calls the procedure
+  on the caller's thread; destroying a window that owns an open message box leaves the box's
+  loop waiting (the server destroys the dialog with its parent); `WM_CREATE` answered with -1
+  removes the window without `WM_DESTROY` and `WM_NCDESTROY`.

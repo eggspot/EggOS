@@ -102,8 +102,8 @@ holds what used to be written in them.
   Windows layer, boots with the display and runs it with its output redirected to
   `/tmp/win-paint.log`. On x86_64 and aarch64 it compares the display with the host's render
   (the desktop, and the program's scene and the message box painted by `eggos-windows-gui`)
-  as the window appears, after a click on its ellipse, a key, Space (the message box), Enter
-  and a click on the close control, then checks `WIN-PAINT status 0` and the program's lines
+  as the window appears, after a click on its ellipse, a key, Space (the message box), Enter,
+  F2 (a second thread's message box), Enter and a click on the close control, then checks `WIN-PAINT status 0` and the program's lines
   in the file; on riscv64, `Exec format error` and 126 (D129).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or

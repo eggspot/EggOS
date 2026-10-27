@@ -78,8 +78,8 @@ FLS slots and the last error per thread, a suspended thread and `ExitThread`, th
 UTF-8 round trips with non-ASCII text, the system, version, clock, path and environment
 functions. `win-paint.exe` (`tests/windows-gui`) is a GUI program: it registers a class,
 creates a window, paints a scene of GDI shapes and text, recolours its ellipse on a click
-through `GetDC`, adds a typed letter, opens a message box on Space and ends when its window is
-closed; the Windows GUI boot test drives it through QEMU's input and compares every frame with
+through `GetDC`, adds a typed letter, opens a message box on Space, has a second thread open one on F2 and ends when its
+window is closed; the Windows GUI boot test drives it through QEMU's input and compares every frame with
 the host's render of the same scene (D129).
 
 ## GUI programs
@@ -103,8 +103,8 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
   `LineTo` leaves out its end point); a wide pen's outline is inside the shape. Every font is
   Egg Mono 8x16 (`GetTextExtentPoint32W` gives 8 by 16 a character). The system colours are
   Windows' light defaults (`docs/ux/windows-gui-v0.3.md` section 2).
-- **Messages.** One queue per process: posted messages, then the mouse and keyboard, then
-  `WM_QUIT`, then `WM_PAINT`. The close control, Alt+F4 and the window menu's `Close` send
+- **Messages.** Each thread reads its own windows' messages, those posted to it and its own
+  `WM_QUIT`: posted messages, then the mouse and keyboard, then `WM_QUIT`, then `WM_PAINT`. The close control, Alt+F4 and the window menu's `Close` send
   `WM_SYSCOMMAND` with `SC_CLOSE`, a resize `WM_SIZE`, focus `WM_SETFOCUS` and `WM_KILLFOCUS`;
   keys have Windows' virtual-key codes, and `TranslateMessage` posts `WM_CHAR` with the
   character of the US layout.
@@ -187,8 +187,10 @@ size needed, as each function documents.
   beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
   `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows
   from the program, `SW_HIDE`, bitmaps and `BitBlt`, dashed pens, raster operations and
-  clipping beyond one rectangle, a message queue per thread. 32-bit programs (x86 and 32-bit
-  Arm).
+  clipping beyond one rectangle. Follow-ups: `SendMessageW` to another thread's window calls
+  the procedure on the caller's thread; destroying a window that owns an open message box leaves
+  the box waiting; `WM_CREATE` answered with -1 removes the window without `WM_DESTROY`. 32-bit
+  programs (x86 and 32-bit Arm).
 - **Writing files**: the file system is read-only, so `CreateFileW` for writing fails with
   `ERROR_ACCESS_DENIED`.
 - **Exit codes** above 255 reach the shell as their low 8 bits.
