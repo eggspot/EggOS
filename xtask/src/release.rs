@@ -16,7 +16,6 @@ const POWERSHELL_SCRIPT: &str = "run-eggos.ps1";
 const NOTES_FILE: &str = "RELEASE-NOTES.md";
 const SCREENSHOT_PATH: &str = "docs/images/desktop.png";
 
-/// One architecture's image in a release.
 #[derive(Debug)]
 struct Image {
     arch: &'static Arch,
@@ -121,8 +120,6 @@ fn sums(images: &[Image]) -> String {
     })
 }
 
-/// What a run script needs of an architecture: its name, QEMU, QEMU's arguments for a window
-/// and for the serial console alone, and those that attach a host folder.
 #[derive(Debug)]
 struct ScriptArch {
     name: &'static str,
