@@ -1882,6 +1882,7 @@ pub fn desktop_picture(
 
 fn with_uptime(desktop: &Desktop, picture: &mut Picture, seconds: u64) {
     let mut desktop_then = Desktop::new(picture.width, picture.height).expect("the desktop fits");
+    desktop_then.set_profile(desktop.profile(), &mut Damage::new(), &mut DiscardEvents);
     desktop_then.set_uptime(seconds, &mut Damage::new());
     let clock = desktop.clock_rect();
     let contents = HostContents {
@@ -1913,20 +1914,22 @@ struct PointerStep {
 
 fn pointer_steps(desktop: &Desktop) -> Vec<(&'static str, Vec<PointerStep>)> {
     let minimise = desktop.minimise_control();
-    let chip = desktop.chip();
+    let chip = desktop
+        .window_entry(desktop.terminal_window())
+        .unwrap_or(desktop.chip());
     let title = desktop.title_bar();
     let step = |x, y, button| PointerStep { x, y, button };
     let (grab_x, grab_y) = (title.x + title.width / 2, title.y + title.height / 2);
     vec![
         (
-            "the window minimised to its chip",
+            "the window minimised to the window list",
             vec![
                 step(minimise.x + 10, minimise.y + 14, Some(true)),
                 step(minimise.x + 10, minimise.y + 14, Some(false)),
             ],
         ),
         (
-            "the window restored from its chip",
+            "the window restored from the window list",
             vec![
                 step(chip.x + 10, chip.y + 10, Some(true)),
                 step(chip.x + 10, chip.y + 10, Some(false)),

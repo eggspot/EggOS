@@ -12,7 +12,9 @@ use eggos_settings::keys::{self, Change, Key, PROFILE_CHOICES, Refusal};
 use eggos_settings::settings_window::{
     CAPACITY, DEFAULT_SIZE, MINIMUM_SIZE, Request, SettingsWindow, TITLE,
 };
-use eggos_settings_file::{self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH};
+use eggos_settings_file::{
+    self as settings_file, DIRECTORIES, LARGEST, PATH, TEMPORARY_PATH_CAPACITY,
+};
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetTree};
@@ -148,8 +150,11 @@ fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     let mut new = [0u8; LARGEST];
     let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
         .map_err(|_| Errno::E2BIG)?;
-    write_file(TEMPORARY_PATH, &new[..new_length])?;
-    let (from, to) = (CPath::new(TEMPORARY_PATH), CPath::new(PATH));
+    let process_id = syscall(number::GETPID, [0; 6])? as u32;
+    let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
+    let temporary = settings_file::temporary_path(process_id, &mut temporary);
+    write_file(temporary, &new[..new_length])?;
+    let (from, to) = (CPath::new(temporary), CPath::new(PATH));
     syscall(
         number::RENAMEAT2,
         [AT_FDCWD, from.pointer(), AT_FDCWD, to.pointer(), 0, 0],
@@ -366,6 +371,7 @@ fn command(arguments: &[&str]) -> i32 {
 
 struct Settings {
     window: SettingsWindow,
+    server: Option<WindowServer>,
     uptime_from_ms: u32,
     uptime_at_start: u64,
     unsaved_profile: Option<usize>,
@@ -382,7 +388,7 @@ impl Application<CAPACITY> for Settings {
     fn respond(&mut self, response: Response, now_ms: u32) {
         match self.window.respond(response, now_ms) {
             Some(Request::SetProfile(index)) => {
-                apply_profile(index, None);
+                apply_profile(index, self.server.as_ref());
                 self.unsaved_profile = Some(index);
             }
             None => {
@@ -405,16 +411,35 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn tick(&mut self, now_ms: u32) {
-        if let Some(index) = self.unsaved_profile.take() {
-            save_profile(index);
-        }
+        self.save_unsaved();
         if self.window.pane() == ABOUT_PANE {
             self.show_uptime(now_ms);
+        }
+    }
+
+    fn focused(&mut self, _now_ms: u32) {
+        if self.unsaved_profile.is_some() {
+            return;
+        }
+        let current = self
+            .server
+            .as_ref()
+            .and_then(|server| server.desktop_profile().ok())
+            .map(|profile| profile as usize)
+            .filter(|&profile| profile < settings_file::PROFILES.len());
+        if let Some(profile) = current.filter(|&profile| profile != self.window.facts().profile) {
+            self.window.show_profile(profile);
         }
     }
 }
 
 impl Settings {
+    fn save_unsaved(&mut self) {
+        if let Some(index) = self.unsaved_profile.take() {
+            save_profile(index);
+        }
+    }
+
     fn show_uptime(&mut self, now_ms: u32) {
         let elapsed = u64::from(now_ms.wrapping_sub(self.uptime_from_ms) / SECOND_MS);
         self.window.show_uptime(self.uptime_at_start + elapsed);
@@ -433,11 +458,14 @@ fn open_window() -> i32 {
     let facts = facts(Some(window.server()));
     let mut settings = Settings {
         window: SettingsWindow::new(facts),
+        server: WindowServer::open().ok(),
         uptime_from_ms: now_ms(),
         uptime_at_start: facts.uptime_s,
         unsaved_profile: None,
     };
-    match application::run(&mut window, &mut settings) {
+    let served = application::run(&mut window, &mut settings);
+    settings.save_unsaved();
+    match served {
         Ok(()) => 0,
         Err(error) => {
             say_error(&[b"its window: ", error.message()]);

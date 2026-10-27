@@ -10,6 +10,7 @@ eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-hal = { path = "../hal" }
 eggos-settings-file = { path = "../settings-file" }
+eggos-app-manifest = { path = "../app-manifest" }
 
 [lints]
 workspace = true

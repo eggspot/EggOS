@@ -1,0 +1,110 @@
+//! The desktop shell's side in the kernel (D133): the app catalogue read from the file
+//! systems, and the programs the launcher starts. The catalogue is read when the desktop
+//! starts and each time the launcher opens, never otherwise; an app starts as a process of its
+//! own, beside init, as the user's.
+
+use crate::linux::exec::{self, ProgramBytes};
+use crate::linux::{self, process_table};
+use crate::process::Process;
+use crate::sync::SpinLock;
+use crate::vfs::{self, NodeKind};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use eggos_app_manifest as manifest;
+use eggos_drivers::desktop::Catalogue;
+use eggos_hal::Platform;
+
+/// Where the host's shared folder is mounted (D130).
+pub const HOST_SHARE: &[u8] = b"/media/host";
+/// The Files app's program, when the build has it.
+pub const FILES_PROGRAM: &[u8] = b"/bin/files";
+
+const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
+
+type Starter = Arc<dyn Fn(&[u8]) -> Result<(), &'static str> + Send + Sync>;
+
+static STARTER: SpinLock<Option<Starter>> = SpinLock::new(None);
+
+fn read_small_file(node: vfs::Node, largest: usize) -> Option<Vec<u8>> {
+    let size = node.attributes().size;
+    if node.kind() != NodeKind::Regular || size > largest as u64 {
+        return None;
+    }
+    let bytes = ProgramBytes::read(node, size, size).ok()?;
+    Some(bytes.bytes().to_vec())
+}
+
+/// The catalogue as the file systems hold it now: every app under `/Applications` whose
+/// manifest is valid, whether the host share is mounted and whether the build has Files.
+pub fn catalogue() -> Catalogue {
+    let mut catalogue = Catalogue::new();
+    let root = vfs::root();
+    catalogue.set_host_share(vfs::is_mount_point(HOST_SHARE));
+    catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
+    let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
+        return catalogue;
+    };
+    if !directory.is_directory() {
+        return catalogue;
+    }
+    let mut position = 0;
+    while let Some((name, node, kind)) = directory.entry(position) {
+        position += 1;
+        if kind != NodeKind::Directory || matches!(name.as_bytes(), b"." | b"..") {
+            continue;
+        }
+        let Some(file) = node
+            .lookup(manifest::FILE_NAME.as_bytes())
+            .ok()
+            .and_then(|file| read_small_file(file, manifest::LARGEST))
+        else {
+            continue;
+        };
+        catalogue.add_installed(name.as_bytes(), &file);
+        if catalogue.installed_count() == eggos_drivers::desktop::MAX_INSTALLED {
+            break;
+        }
+    }
+    catalogue
+}
+
+/// Starts the program at `path` as a process of its own, as init's sibling started by the
+/// kernel, with its address space made beside `beside`'s.
+pub fn start<P: Platform>(beside: &Process<P>, path: &[u8]) -> Result<(), &'static str> {
+    let root = vfs::root();
+    let node = vfs::resolve(root, root, path).map_err(|_| "no such program")?;
+    let attributes = node.attributes();
+    if attributes.kind != NodeKind::Regular {
+        return Err("not a program");
+    }
+    let image = ProgramBytes::read(node, attributes.size, u64::MAX).map_err(|_| "unreadable")?;
+    let mut process = beside.new_beside()?;
+    let context = exec::load(&mut process, image.bytes(), path, &[path], &ENVIRONMENT)
+        .map_err(|_| "not a program this machine runs")?;
+    let process = Arc::new(process);
+    let file_name = path.rsplit(|&byte| byte == b'/').next().unwrap_or(path);
+    {
+        let mut table = process_table::TABLE.lock();
+        table
+            .add_if_missing(process.id().get())
+            .map_err(|_| "no room in the process table")?;
+        table.set_name(process.id().get(), process_table::name_of(file_name));
+    }
+    linux::spawn::<P>(process, context).map_err(|_| "could not start its thread")?;
+    Ok(())
+}
+
+/// Makes `starter` what [`start_program`] calls: init's starting of programs beside itself.
+pub fn set_starter(starter: Starter) {
+    *STARTER.lock() = Some(starter);
+}
+
+/// Starts the program at `path` through the starter init registered; an error when there is
+/// none yet or the program cannot start.
+pub fn start_program(path: &[u8]) -> Result<(), &'static str> {
+    let starter = STARTER
+        .lock()
+        .clone()
+        .ok_or("nothing starts programs yet")?;
+    starter(path)
+}

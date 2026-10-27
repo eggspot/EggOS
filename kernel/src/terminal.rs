@@ -28,9 +28,10 @@ use crate::window::{self, Buffers, Clients, Queues};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
-use eggos_drivers::desktop::protocol::EventSink;
+use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink};
 use eggos_drivers::desktop::{
-    Action, Contents, Desktop, GRID_SIZE, Profile, WindowId, colour, shortcut,
+    Action, AppId, COMMAND_CAPACITY, Contents, Desktop, GRID_SIZE, LAUNCH_FAILED, Launch, Profile,
+    WindowId, colour, shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -163,9 +164,9 @@ fn remember_profile(profile: Profile) {
 /// window's controls move to the profile's side and its shortcuts apply. Windows keep their
 /// sizes and buffers; only their title bars are drawn again.
 pub fn set_desktop_profile<P: Platform>(profile: Profile) {
-    let shown = with_windows::<P, _>(|desktop, _, damage, _| {
+    let shown = with_windows::<P, _>(|desktop, _, damage, events| {
         remember_profile(profile);
-        desktop.set_profile(profile, damage);
+        desktop.set_profile(profile, damage, events);
     });
     if shown.is_none() {
         remember_profile(profile);
@@ -215,7 +216,10 @@ pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
 pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mode = display::mode()?;
     let mut desktop = Desktop::new(mode.width, mode.height)?;
-    desktop.set_profile(desktop_profile(), &mut Damage::new());
+    desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
+    if session == Session::Interactive {
+        desktop.set_catalogue(crate::apps::catalogue(), &mut Damage::new());
+    }
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
@@ -364,7 +368,16 @@ fn request_render<P: Platform>() {
     }
 }
 
-fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> (Action, bool) {
+/// What the drawing thread does once it has let go of the screen: the action the desktop
+/// asked for, whether programs got events, and whether the catalogue is to be read again.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    action: Action,
+    sent: bool,
+    catalogue: bool,
+}
+
+fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     let mut action = Action::None;
     let Screen {
         desktop,
@@ -414,17 +427,25 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> (Action
     SHOWN_SECOND.store(second, Ordering::Relaxed);
     desktop.set_uptime(second, damage);
     KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
-    (action, sent)
+    Asked {
+        action,
+        sent,
+        catalogue: desktop.take_catalogue_request(),
+    }
 }
 
 fn draw_screen<P: Platform>(
     screen: &mut Screen,
     framebuffer: &mut display::Framebuffer<'_>,
-) -> (Action, bool) {
+) -> Asked {
     let mut damage = Damage::new();
-    let (action, sent) = match screen.session {
+    let asked = match screen.session {
         Session::Interactive => take_events::<P>(screen, &mut damage),
-        Session::SelfTest => (Action::None, false),
+        Session::SelfTest => Asked {
+            action: Action::None,
+            sent: false,
+            catalogue: false,
+        },
     };
     let mut drawn = Damage::new();
     screen.terminal.render(
@@ -452,7 +473,43 @@ fn draw_screen<P: Platform>(
         framebuffer,
         &damage,
     );
-    (action, sent)
+    asked
+}
+
+fn launch_command(app: AppId) -> Option<Launch> {
+    SCREEN
+        .lock()
+        .as_ref()
+        .and_then(|screen| screen.desktop.launch_command(app))
+}
+
+fn run_launch<P: Platform>(action: Action) {
+    let launch = match action {
+        Action::Start(app) | Action::Type(app) => launch_command(app),
+        _ => None,
+    };
+    match launch {
+        Some(Launch::Start(path)) => {
+            let mut program = [0u8; COMMAND_CAPACITY];
+            let length = path.as_bytes().len();
+            program[..length].copy_from_slice(path.as_bytes());
+            if crate::apps::start_program(&program[..length]).is_err() {
+                with_windows::<P, _>(|desktop, _, damage, _| {
+                    desktop.show_notice(LAUNCH_FAILED, damage)
+                });
+            }
+        }
+        Some(Launch::Type(line)) => {
+            move_view::<P>(ViewMove::Live);
+            console::receive_from_keyboard::<P>(line.as_bytes());
+        }
+        None => {}
+    }
+}
+
+fn read_catalogue_again<P: Platform>() {
+    let catalogue = crate::apps::catalogue();
+    with_windows::<P, _>(|desktop, _, damage, _| desktop.set_catalogue(catalogue, damage));
 }
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed
@@ -464,17 +521,20 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         SCREEN
             .lock()
             .as_mut()
-            .map_or((Action::None, false), |screen| {
-                draw_screen::<P>(screen, framebuffer)
-            })
-    });
-    if drawn.is_some_and(|(_, sent)| sent) {
+            .map(|screen| draw_screen::<P>(screen, framebuffer))
+    })
+    .flatten();
+    if drawn.is_some_and(|asked| asked.sent) {
         console::wake_input_waiters::<P>();
     }
-    match drawn.map(|(action, _)| action) {
+    match drawn.map(|asked| asked.action) {
         Some(Action::PowerOff) => take_machine_down::<P>(reboot::Action::PowerOff),
         Some(Action::Restart) => take_machine_down::<P>(reboot::Action::Restart),
+        Some(action @ (Action::Start(_) | Action::Type(_))) => run_launch::<P>(action),
         Some(Action::None) | None => {}
+    }
+    if drawn.is_some_and(|asked| asked.catalogue) {
+        read_catalogue_again::<P>();
     }
     let shown = display::flush::<P>();
     let mut replies = [0u8; REPLY_CAPACITY];
@@ -519,7 +579,7 @@ pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32
 
 /// The [`display::pixel_hash`] of a 1280x800 display after the desktop's terminal showed
 /// [`TEST_SCREEN`] in a [`Session::SelfTest`].
-pub const TEST_SCREEN_HASH_1280X800: u64 = 0x3d75_5962_33a8_0c57;
+pub const TEST_SCREEN_HASH_1280X800: u64 = 0xcc62_008e_3c66_4155;
 
 #[cfg(test)]
 mod tests {

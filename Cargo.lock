@@ -65,6 +65,7 @@ dependencies = [
 name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
+ "eggos-app-manifest",
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-hal",

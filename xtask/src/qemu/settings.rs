@@ -225,7 +225,7 @@ impl Screen {
                 boot.arch.name, size.0, size.1
             )
         })?;
-        desktop.set_profile(profile, &mut Damage::new());
+        desktop.set_profile(profile, &mut Damage::new(), &mut DiscardEvents);
         Ok(Self {
             qmp,
             desktop,
@@ -350,7 +350,8 @@ impl Screen {
         };
         let profile = Profile::from_number(profile as u32)
             .ok_or_else(|| format!("{arch}: no profile {profile}"))?;
-        self.desktop.set_profile(profile, &mut Damage::new());
+        self.desktop
+            .set_profile(profile, &mut Damage::new(), &mut DiscardEvents);
         Ok(())
     }
 
@@ -512,7 +513,7 @@ fn after_the_reboot(
     boot.wait_for_prompts(3)?;
     screen
         .desktop
-        .set_profile(Profile::Macos, &mut Damage::new());
+        .set_profile(Profile::Macos, &mut Damage::new(), &mut DiscardEvents);
     screen.check(
         &mut boot,
         "the macOS profile set by `settings set`",

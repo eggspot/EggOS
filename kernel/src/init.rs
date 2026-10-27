@@ -5,7 +5,7 @@
 use crate::linux::{self, exec, process_table};
 use crate::memory::Memory;
 use crate::process::{Process, ProcessExit};
-use crate::{cpu, input, terminal, thread, vfs};
+use crate::{apps, cpu, input, terminal, thread, vfs};
 use alloc::sync::Arc;
 use core::fmt::Write;
 use eggos_hal::Platform;
@@ -115,6 +115,8 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
         return Outcome::NotStarted("/init is not a program this machine runs");
     };
     let process = Arc::new(process);
+    let beside = Arc::clone(&process);
+    apps::set_starter(Arc::new(move |path: &[u8]| apps::start::<P>(&beside, path)));
     {
         let mut table = process_table::TABLE.lock();
         table.set_init(process.id().get());
