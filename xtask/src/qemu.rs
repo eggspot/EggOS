@@ -1660,8 +1660,6 @@ fn tablet_value(pixel: u32, size: u32) -> i32 {
     ((u64::from(pixel) * span + u64::from(size) / 2) / u64::from(size)) as i32
 }
 
-/// A pointer step the boot-to-prompt test takes on the desktop through QMP: the tablet moved
-/// to (`x`, `y`), then the left button pressed or released, if `button` says so.
 #[derive(Debug, Clone, Copy)]
 struct PointerStep {
     x: u32,
