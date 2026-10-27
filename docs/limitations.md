@@ -28,7 +28,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
   dynamic linking, only a minimal `/proc` (`meminfo`, `uptime` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), no `/dev`, no `mmap` of files, no copy-on-write `fork`
+  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe and console change.
 - **Windows: console programs on x86_64 and aarch64 only, parts 1, 2a and 2b.** Windows
@@ -67,15 +67,23 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - The keyboard layout is US only (D113).
 
 ## The desktop
-The desktop is minimal (D115): wallpaper, a top bar with the uptime and a power menu, and the
-shell in an 80x24 terminal window you can focus, drag by its title bar and minimise to a chip
-in the bar. Not yet:
+The desktop is minimal (D115, D127): wallpaper, a top bar with the uptime and a power menu, the
+shell in an 80x24 terminal window, and the windows programs open through `/dev/window`
+([windows from programs](windows.md)). You can focus any window by clicking it, drag it by its
+title bar and minimise it to a chip in the bar; a program's close control asks it to close.
+Not yet:
 - a boot screen with the logo and progress (the plain wallpaper shows until init starts);
 - a pointer drawn on screen (the host's cursor is the only one in the QEMU window);
-- maximising the window (double-click on the title bar) and closing it (the close control is
-  disabled), hover highlights on the bar and the controls;
-- dragging the window partly off screen;
-- more windows or apps, a compositor, 3D graphics;
+- resizing windows from their edges, maximising (double-click on the title bar), snapping,
+  Alt+Tab, Alt+F4 and the other window keys, the window menu, and opening the power menu from
+  the keyboard (item 31); hover highlights on the bar and the controls;
+- dragging a window partly off screen;
+- closing the terminal (its close control is disabled), a second terminal, the taskbar, dock,
+  launcher and desktop icons, and the layout profiles of other systems (item 35);
+- no programs with windows come with the image yet (the window test's `hello-window` is added
+  only to its own image), and Windows, macOS and Linux GUI apps do not open windows yet
+  (items 32, 39 to 41);
+- 3D graphics;
 - a terminal on a display smaller than 658x458: the window does not fit, and the display then
   shows no terminal (the serial console still works);
 - copy and paste, and scaling for high-density displays.
