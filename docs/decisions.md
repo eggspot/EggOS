@@ -6333,3 +6333,92 @@ the license, by an explicit instruction recorded here.
   same fence on affected CPUs and keeps its `binfmt_misc` handler table in every kernel; no
   smaller form keeps the hook generic for the later Mach-O and APK interpreters. The system-call
   round trip is unchanged (the GS base shares the FS base's check).
+
+## D119 Android via the Linux layer: static NDK console programs from `eggsh`, owner's exception to the D17/D34 order for v0.3.0 (owner, 2026-10-26) — Decided by the build loop (the property area and the `/system` paths decided by research)
+- **What.** v0.3.0 item 17: a static Android console program, built with the Android NDK and
+  linked against bionic's own static C library and start-up code (`crtbegin_static.o`,
+  `libc.a`), runs from `eggsh` on aarch64 and x86_64, natively (D17): an Android program is a
+  Linux ELF program to the kernel, so it runs through the Linux system-call layer (D84, D117)
+  with nothing translated. Guide and the exact list of what is checked:
+  docs/android-programs.md.
+- **Order.** The owner's exception to the D17/D34 compatibility order for v0.3.0 (owner,
+  2026-10-26), like D118's for Windows: Android console programs come in v0.3.0, before macOS's
+  layer starts (item 20).
+- **Clean room.** From the Android NDK's documentation (developer.android.com: the NDK's
+  build-system and ABI guides), the Linux man pages for the system calls and the auxiliary
+  vector, the ELF specification and the NDK's published description of its ident note, and the
+  observed behaviour of programs we built ourselves from our own source with the NDK. Bionic's
+  source (Apache/BSD) is not copied: our code calls bionic's public functions and the kernel
+  serves the system calls bionic makes. The research step behind the two decisions below
+  looked at public bionic pages only for behaviour (that start-up goes on without the property
+  area, which shell `system()` runs) and wrote down no code.
+- **What bionic needed.** Most of bionic's static start-up (TLS, the auxiliary vector's
+  `AT_PHDR`, `AT_RANDOM`, `AT_HWCAP` and `AT_PAGESZ`, `set_tid_address`, signal masks and
+  actions, alternate signal stacks, anonymous `mmap` with guard pages and its allocator's
+  8.25 GiB `PROT_NONE` reservation, `mprotect`, `madvise`, `getrandom`, `clone`) uses calls the
+  Linux layer already had. Traced from our kernel in CI (a temporary probe, not merged), four
+  things were missing:
+  - `sched_getscheduler` and `sched_getparam`: bionic reads the thread's policy when it sets up
+    a thread, the main one included, and stopped with "pthread_create sched_getscheduler
+    failed" before `main`. Both now report `SCHED_OTHER`, priority 0, for the caller (pid 0,
+    its thread or its process), with Linux's `EINVAL`, `ESRCH` and `EFAULT`.
+  - AArch64's top-byte ignore for user addresses (`TCR_EL1.TBI0`), which Linux's arm64 ABI
+    always gives programs (its public tagged-pointers documentation): bionic's allocator wrote
+    through a pointer with a tag in its top byte and took a translation fault. User addresses'
+    top byte is now ignored, and a fault's address loses the tag before the page fault is
+    resolved or reported (`si_addr` untagged, as Linux reports it without
+    `SA_EXPOSE_TAGBITS`). `prctl(PR_SET_TAGGED_ADDR_CTRL)` still fails with `EINVAL`, so
+    bionic passes no tagged pointer to system calls, as on a Linux without the tagged-address
+    ABI.
+  - x86_64 CPU features: the NDK's x86_64 ABI requires SSSE3, SSE4.1, SSE4.2 and POPCNT, and
+    bionic's `arc4random` (ChaCha) used them, an invalid opcode on QEMU's `qemu64`. QEMU's
+    x86_64 machine now adds `+ssse3,+sse4.1,+sse4.2,+popcnt` (every x86_64 CPU since 2008
+    has them); the kernel itself does not use them.
+  - `sh -c -- command`: bionic's `system()` ends the shell's options with `--`; `eggsh -c` now
+    accepts it, as POSIX's `sh -c [--]` does.
+  `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)`, with which bionic names its mappings, keeps
+  failing with `EINVAL`, as on a Linux built without anonymous mapping names; bionic ignores
+  the error.
+- **System properties (decided by research).** No property area: `/dev/__properties__` does
+  not exist, every property reads as unset (`__system_property_get` returns 0 and an empty
+  value), and bionic starts as it does when the area is missing. A generated area was
+  rejected: its format is described only in bionic's source (the clean-room rule), reading it
+  needs a shared file mapping the kernel does not have yet, and it would put bytes in images.
+  A property service comes when a program needs one.
+- **`/system` (decided by research).** An image gets `/system/bin/sh`, another name for
+  `eggsh` (a hard link in the initramfs), only when an added file is an Android program: the
+  shell bionic's `system()` and `popen()` run. Nothing else: static programs load no
+  libraries, so no `/system/lib64` or linker configuration. An Android program is a 64-bit
+  ELF file with a `PT_NOTE` segment holding the note owned by `Android` of type 1 whose
+  descriptor starts with the API level (`.note.android.ident`, which the NDK's start-up
+  objects add); `cargo xtask image` reads it (host tests cover the note's parsing). Default
+  images get nothing Android-specific (D18); only the kernel grows, by the two calls and the
+  fault address's untagging (see "Cost").
+- **The boot test.** `tests/android-console` is a `no_std` Rust static library for the
+  official `aarch64-linux-android` and `x86_64-linux-android` targets (pinned in
+  `rust-toolchain.toml`) defining `main` and calling bionic; `cargo xtask qemu` links it with
+  the NDK's clang (`--target=<triple>29 -static`), so the program is bionic's own start-up and
+  library around our code, and runs it from `eggsh` by name and path: arguments, environment,
+  stdio, a file, a directory, the heap, clocks, threads, a property, `getauxval`,
+  `arc4random_buf`, `system()` through `/system/bin/sh`, `exit` and `abort`. The NDK is found
+  through `ANDROID_NDK_HOME`, `ANDROID_NDK_LATEST_HOME`, `ANDROID_NDK_ROOT` or the newest
+  version in the SDK's `ndk/` (`ANDROID_HOME`, `ANDROID_SDK_ROOT`). Without one the test is
+  skipped with a message, except in CI (`CI` set), where it fails: CI mounts the GitHub
+  runner's preinstalled NDKs into the check job's container (no new job, no download).
+  riscv64 has no Rust Android target with a prebuilt library, so no Android test there.
+- **Verified where.** The note parsing, NDK lookup, link arguments, the scheduling calls and
+  the session's verdict: host tests on every host. The programs themselves: only in CI (the
+  development Mac has no NDK), on aarch64 and x86_64, with NDK 30.
+- **Cost (accepted by research, D78).** CI's `release_image_bytes` grows by 200 bytes on
+  aarch64 (700,592), 344 on riscv64 (798,392) and 176 on x86_64 (603,904): the two calls'
+  dispatch and code (they share the caller check with `sched_getaffinity`) and, on aarch64,
+  the fault address's untagging; every other benchmark line passes unchanged. Linux has both
+  calls in every kernel and always ignores the top byte on arm64; gating the calls by
+  architecture would save a few hundred bytes at the cost of D23's one codebase (bionic needs
+  them everywhere, riscv64 Android included), and D117 accepted `sched_getaffinity` at the
+  same size. Those three baseline lines are updated. CI's check job gains about 30 seconds
+  (two links and two boots of about 15 seconds each) and the toolchain step 2 seconds for the
+  two Android targets until the CI image is rebuilt.
+- **Not yet.** Android apps (`.apk`, ART, the framework), dynamically linked programs
+  (`linker64`), system properties, `logd`, binder, `/dev`, `/proc` and `/sys`, pipes (so
+  `popen`), app user ids (processes run as root), riscv64, Rust std programs for Android.

@@ -86,13 +86,25 @@ holds what used to be written in them.
   on x86_64 each `WINDOWS-CONSOLE` line, the exit codes 0 and 44 (`ExitProcess(300)`) and the
   refusal of the unsupported import with status 126 must appear in order; on aarch64 and
   riscv64, `Exec format error` and 126 (D118).
+- **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
+  `no_std` static library defining `main`, for `aarch64-linux-android` or
+  `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,
+  bionic's `crtbegin_static.o` and `libc.a`), adds it as `/bin/android-console` with
+  `/system/bin/sh`, and types three commands: each `ANDROID-CONSOLE` line (including the line
+  `system()` runs through `/system/bin/sh`), the statuses 0 and 42, `Aborted` and 134 must
+  appear in order. The NDK comes from `ANDROID_NDK_HOME`, `ANDROID_NDK_LATEST_HOME`,
+  `ANDROID_NDK_ROOT` or the newest version under `$ANDROID_HOME/ndk` (or `ANDROID_SDK_ROOT`);
+  without one the test is skipped with a message, but fails when `CI` is set. CI mounts the
+  runner's NDKs into the check job's container and sets `ANDROID_HOME` (D119).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
   refused) and writes `target/image/eggos-<arch>.elf`; `cargo xtask run` takes the same options
   ([Linux programs](linux-programs.md), D117). Adding a Windows program (a file that starts with
   `MZ`) to an x86_64 image installs the Windows layer at `/usr/lib/eggos/windows` with it
-  ([Windows programs](windows-programs.md), D118).
+  ([Windows programs](windows-programs.md), D118). Adding an Android program (an ELF file with
+  the `.note.android.ident` note) adds `/system/bin/sh`, another name for `eggsh`
+  ([Android programs](android-programs.md), D119).
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
