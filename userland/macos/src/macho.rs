@@ -444,7 +444,12 @@ impl<'a> MachO<'a> {
         Ok(())
     }
 
-    fn add_thread_locals(&mut self, address: u64, size: u64, shift: u32) -> Result<(), InvalidMachO> {
+    fn add_thread_locals(
+        &mut self,
+        address: u64,
+        size: u64,
+        shift: u32,
+    ) -> Result<(), InvalidMachO> {
         let invalid = InvalidMachO("a thread-local section is too large or misaligned");
         if shift > MAX_THREAD_LOCAL_ALIGNMENT_SHIFT {
             return Err(invalid);
@@ -520,7 +525,9 @@ impl<'a> MachO<'a> {
                     && segment.initprot & VM_PROT_READ != 0
             });
             if !inside {
-                return Err(invalid("the thread-local template is outside every segment"));
+                return Err(invalid(
+                    "the thread-local template is outside every segment",
+                ));
             }
         }
         if let Some(range) = self.chained_fixups {

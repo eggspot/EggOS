@@ -138,8 +138,6 @@ pub extern "C" fn getauxval(_: core::ffi::c_ulong) -> core::ffi::c_ulong {
     0
 }
 
-/// # Safety
-/// `buffer` must be writable for `length` bytes.
 unsafe extern "C" fn strerror_r(errno: c_int, buffer: *mut c_char, length: usize) -> c_int {
     let message = error_message(errno);
     if length <= message.len() {

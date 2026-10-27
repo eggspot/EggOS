@@ -51,7 +51,6 @@ pub unsafe extern "C" fn setlocale(category: c_int, locale: *const c_char) -> *c
     }
 }
 
-/// The C locale's answer to `nl_langinfo` for Darwin's item numbers.
 fn item(item: usize) -> &'static core::ffi::CStr {
     const DAYS: [&core::ffi::CStr; 7] = [
         c"Sunday",

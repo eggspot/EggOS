@@ -60,7 +60,7 @@ unsafe fn parse(
     let word = |index: usize| {
         (index < count).then(|| {
             // SAFETY: the caller's promise: `count` NUL-terminated words.
-            let pointer = unsafe { arguments.add(index).read() };
+            let pointer = unsafe { arguments.wrapping_add(index).read() };
             // SAFETY: as above.
             unsafe { c_string(pointer) }
         })
@@ -69,18 +69,26 @@ unsafe fn parse(
         0
     } else {
         // SAFETY: the caller's promise: an array ended by an entry with a null name.
-        (0..).take_while(|&index| !unsafe { (*long.add(index)).name }.is_null()).count()
+        (0..)
+            .take_while(|&index| !unsafe { (*long.wrapping_add(index)).name }.is_null())
+            .count()
     };
     let longs = (0..long_count).map(|index| {
         // SAFETY: as above.
-        let option = unsafe { &*long.add(index) };
+        let option = unsafe { &*long.wrapping_add(index) };
         // SAFETY: as above.
-        (unsafe { c_string(option.name) }, Takes::from_c(option.has_arg))
+        (
+            unsafe { c_string(option.name) },
+            Takes::from_c(option.has_arg),
+        )
     });
     // SAFETY: the program's options state, which a program parses from one thread.
-    let (index, reset) = unsafe { (OPTIND, OPTRESET) };
+    let index = unsafe { OPTIND };
     // SAFETY: as above.
-    let cursor = unsafe { &mut *&raw mut CURSOR };
+    let reset = unsafe { OPTRESET };
+    let cursor = &raw mut CURSOR;
+    // SAFETY: as above.
+    let cursor = unsafe { &mut *cursor };
     if reset != 0 || index <= 0 || index as usize != cursor.index {
         *cursor = Cursor {
             index: index.max(1) as usize,
@@ -93,8 +101,11 @@ unsafe fn parse(
     // SAFETY: as above.
     unsafe { OPTIND = cursor.index as c_int };
     let value_pointer = |value: getopt::Value| match value {
-        // SAFETY: the word index is below `count`, and the offset inside the word.
-        Some((index, offset)) => unsafe { arguments.add(index).read().add(offset) },
+        Some((index, offset)) => {
+            // SAFETY: the word index is below `count`.
+            let word = unsafe { arguments.wrapping_add(index).read() };
+            word.wrapping_add(offset)
+        }
         None => ptr::null_mut(),
     };
     let quiet = getopt::quiet(spec);
@@ -120,7 +131,7 @@ unsafe fn parse(
                 unsafe { long_index.write(which as c_int) };
             }
             // SAFETY: `which` is below `long_count`.
-            let option = unsafe { &*long.add(which) };
+            let option = unsafe { &*long.wrapping_add(which) };
             if option.flag.is_null() {
                 option.value
             } else {
@@ -159,8 +170,12 @@ unsafe fn parse(
         }
         Found::MissingLong(which) | Found::UnexpectedLong(which) => {
             // SAFETY: `which` is below `long_count`.
-            let option = unsafe { &*long.add(which) };
-            set_error(if option.flag.is_null() { option.value } else { 0 });
+            let option = unsafe { &*long.wrapping_add(which) };
+            set_error(if option.flag.is_null() {
+                option.value
+            } else {
+                0
+            });
             if report {
                 // SAFETY: as above.
                 let name = unsafe { c_string(option.name) };

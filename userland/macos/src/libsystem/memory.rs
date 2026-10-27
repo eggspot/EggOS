@@ -51,7 +51,8 @@ pub unsafe extern "C" fn mmap(
 /// The range must hold nothing the program still uses.
 pub unsafe extern "C" fn munmap(address: *mut c_void, length: usize) -> c_int {
     // SAFETY: the caller's promise.
-    unsafe { linux::unmap(address as usize, length) }.map_or_else(|errno| errno_from(errno, -1), |_| 0)
+    unsafe { linux::unmap(address as usize, length) }
+        .map_or_else(|errno| errno_from(errno, -1), |_| 0)
 }
 
 /// # Safety

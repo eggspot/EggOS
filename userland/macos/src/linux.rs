@@ -96,6 +96,7 @@ pub const PROT_EXEC: usize = 4;
 pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
+pub const FUTEX_WAIT: usize = 0;
 pub const FUTEX_WAIT_PRIVATE: usize = 128;
 pub const FUTEX_WAKE_PRIVATE: usize = 129;
 pub const ETIMEDOUT: Errno = Errno(110);
@@ -293,7 +294,11 @@ pub fn cpu_count() -> u32 {
         )
     };
     match result {
-        Ok(_) => mask.iter().map(|word| word.count_ones()).sum::<u32>().max(1),
+        Ok(_) => mask
+            .iter()
+            .map(|word| word.count_ones())
+            .sum::<u32>()
+            .max(1),
         Err(_) => 1,
     }
 }
@@ -328,6 +333,25 @@ pub fn futex_wait(
             ],
         )
     }
+}
+
+/// Sleeps while the 32-bit word holds `expected`, as a shared futex: the kind the kernel wakes
+/// when it clears a thread's `CLONE_CHILD_CLEARTID` word.
+pub fn futex_wait_shared(word: &core::sync::atomic::AtomicU32, expected: u32) {
+    // SAFETY: `futex` reads the borrowed word.
+    let _ = unsafe {
+        syscall(
+            number::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAIT,
+                expected as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
 }
 
 /// Wakes at most `count` threads sleeping on the 32-bit word.

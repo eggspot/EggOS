@@ -48,18 +48,31 @@ pub enum Found {
 }
 
 fn short_spec(spec: &[u8]) -> &[u8] {
-    let spec = spec.strip_prefix(b"+").or(spec.strip_prefix(b"-")).unwrap_or(spec);
+    let spec = spec
+        .strip_prefix(b"+")
+        .or(spec.strip_prefix(b"-"))
+        .unwrap_or(spec);
     spec.strip_prefix(b":").unwrap_or(spec)
 }
 
 /// Whether `spec` asks for `:` rather than `?` for a missing argument (and no messages).
 pub fn quiet(spec: &[u8]) -> bool {
-    let spec = spec.strip_prefix(b"+").or(spec.strip_prefix(b"-")).unwrap_or(spec);
+    let spec = spec
+        .strip_prefix(b"+")
+        .or(spec.strip_prefix(b"-"))
+        .unwrap_or(spec);
     spec.starts_with(b":")
 }
 
-fn find_long<'a>(names: impl Iterator<Item = (&'a [u8], Takes)> + Clone, name: &[u8]) -> Result<(usize, Takes), bool> {
-    if let Some((index, (_, takes))) = names.clone().enumerate().find(|(_, (long, _))| *long == name) {
+fn find_long<'a>(
+    names: impl Iterator<Item = (&'a [u8], Takes)> + Clone,
+    name: &[u8],
+) -> Result<(usize, Takes), bool> {
+    if let Some((index, (_, takes))) = names
+        .clone()
+        .enumerate()
+        .find(|(_, (long, _))| *long == name)
+    {
         return Ok((index, takes));
     }
     let mut matches = names
@@ -136,7 +149,11 @@ pub fn next<'a, 'b>(
         cursor.offset = 0;
     };
     let spec = short_spec(spec);
-    let Some(position) = spec.iter().position(|&b| b == option).filter(|_| option != b':') else {
+    let Some(position) = spec
+        .iter()
+        .position(|&b| b == option)
+        .filter(|_| option != b':')
+    else {
         if at_end {
             finish_word(cursor);
         }

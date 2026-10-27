@@ -59,6 +59,7 @@ pub struct Thread {
 }
 
 impl Thread {
+    #[allow(clippy::declare_interior_mutable_const)]
     const EMPTY: Self = Self {
         thread_locals: 0,
         this: 0,
@@ -232,7 +233,8 @@ fn run_exit_handlers(thread: *mut Thread) {
             break;
         }
         block.exit_handler_count -= 1;
-        let slot = (block.exit_handlers as *const [usize; 2]).wrapping_add(block.exit_handler_count);
+        let slot =
+            (block.exit_handlers as *const [usize; 2]).wrapping_add(block.exit_handler_count);
         // SAFETY: a pair `tlv_atexit` stored.
         let [destructor, object] = unsafe { slot.read() };
         // SAFETY: `tlv_atexit`'s contract.
@@ -241,15 +243,14 @@ fn run_exit_handlers(thread: *mut Thread) {
     }
     for round in 0..KEY_DESTRUCTOR_ROUNDS {
         let mut ran = false;
-        for key in 0..KEYS {
-            let destructor = KEY_DESTRUCTORS[key].load(Ordering::Acquire);
+        for (key, destructor) in KEY_DESTRUCTORS.iter().enumerate() {
+            let destructor = destructor.load(Ordering::Acquire);
             // SAFETY: as above.
             let value = unsafe { &mut (*thread).values[key] };
             if destructor != 0 && *value != 0 {
                 let argument = core::mem::take(value);
                 // SAFETY: `pthread_key_create`'s contract: a function that takes the value.
-                let destructor: extern "C" fn(usize) =
-                    unsafe { core::mem::transmute(destructor) };
+                let destructor: extern "C" fn(usize) = unsafe { core::mem::transmute(destructor) };
                 destructor(argument);
                 ran = true;
             }
@@ -351,7 +352,10 @@ pub unsafe extern "C" fn pthread_attr_destroy(attributes: *mut Attributes) -> c_
 
 /// # Safety
 /// As [`pthread_attr_init`].
-pub unsafe extern "C" fn pthread_attr_setstacksize(attributes: *mut Attributes, size: usize) -> c_int {
+pub unsafe extern "C" fn pthread_attr_setstacksize(
+    attributes: *mut Attributes,
+    size: usize,
+) -> c_int {
     if !(MINIMUM_STACK..=MAXIMUM_STACK).contains(&size) {
         return EINVAL;
     }
@@ -447,13 +451,22 @@ pub unsafe extern "C" fn pthread_create(
     block.start = start;
     block.argument = argument;
     let detached = detach_state == CREATE_DETACHED;
-    block
-        .state
-        .store(if detached { DETACHED } else { JOINABLE }, Ordering::Relaxed);
+    block.state.store(
+        if detached { DETACHED } else { JOINABLE },
+        Ordering::Relaxed,
+    );
     let id_word = block.id_word.as_ptr();
     // SAFETY: the stack's top is page-aligned and only the new thread uses the stack until the
     // kernel clears `id_word`, which lives in the mapping that is unmapped only after that.
-    match unsafe { linux::spawn_thread(stack_top, thread as usize, id_word, thread_main, thread as usize) } {
+    match unsafe {
+        linux::spawn_thread(
+            stack_top,
+            thread as usize,
+            id_word,
+            thread_main,
+            thread as usize,
+        )
+    } {
         Ok(id) => {
             // SAFETY: the block stays mapped until the thread is joined or reaped.
             unsafe { &(*thread).id }.store(id as u32, Ordering::Relaxed);
@@ -492,7 +505,7 @@ pub unsafe extern "C" fn pthread_join(thread: *mut Thread, result: *mut usize) -
         if id == 0 {
             break;
         }
-        let _ = linux::futex_wait(&block.id_word, id, None);
+        linux::futex_wait_shared(&block.id_word, id);
     }
     if !result.is_null() {
         // SAFETY: the caller's promise.

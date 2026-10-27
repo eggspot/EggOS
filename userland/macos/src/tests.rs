@@ -357,21 +357,35 @@ fn calendar_breaks_down_and_rebuilds_utc_times() {
     );
     let later = from_seconds(1_700_000_000).unwrap();
     assert_eq!(
-        (later.year, later.month, later.day, later.hour, later.minute, later.second),
+        (
+            later.year,
+            later.month,
+            later.day,
+            later.hour,
+            later.minute,
+            later.second
+        ),
         (123, 10, 14, 22, 13, 20)
     );
     assert_eq!((later.weekday, later.year_day), (2, 317));
     let leap_day = from_seconds(951_782_400).unwrap();
     assert_eq!((leap_day.year, leap_day.month, leap_day.day), (100, 1, 29));
     let before = from_seconds(-1).unwrap();
-    assert_eq!((before.year, before.month, before.day, before.hour), (69, 11, 31, 23));
-    for seconds in [0, 1_700_000_000, 951_782_400, -1, -86_400 * 365 * 400, 4_102_444_800] {
+    assert_eq!(
+        (before.year, before.month, before.day, before.hour),
+        (69, 11, 31, 23)
+    );
+    for seconds in [
+        0,
+        1_700_000_000,
+        951_782_400,
+        -1,
+        -86_400 * 365 * 400,
+        4_102_444_800,
+    ] {
         assert_eq!(to_seconds(&from_seconds(seconds).unwrap()), seconds);
     }
-    let overflowing = BrokenDown {
-        month: 13,
-        ..later
-    };
+    let overflowing = BrokenDown { month: 13, ..later };
     assert_eq!(to_seconds(&overflowing), 1_700_000_000 + 92 * 86_400);
     assert_eq!(from_seconds(i64::MAX), None);
 }
@@ -386,9 +400,18 @@ fn strftime_formats_the_c_locale_and_refuses_what_does_not_fit() {
         String::from_utf8(buffer[..length].to_vec()).unwrap()
     };
     assert_eq!(expand(b"%Y-%m-%d %H:%M:%S"), "2023-11-14 22:13:20");
-    assert_eq!(expand(b"%a %A %b %B %h %j %u %w"), "Tue Tuesday Nov November Nov 318 2 2");
-    assert_eq!(expand(b"%c|%x|%X|%D|%F|%T|%R"), "Tue Nov 14 22:13:20 2023|11/14/23|22:13:20|11/14/23|2023-11-14|22:13:20|22:13");
-    assert_eq!(expand(b"%I %l %p %r %e %C %y %s"), "10 10 PM 10:13:20 PM 14 20 23 1700000000");
+    assert_eq!(
+        expand(b"%a %A %b %B %h %j %u %w"),
+        "Tue Tuesday Nov November Nov 318 2 2"
+    );
+    assert_eq!(
+        expand(b"%c|%x|%X|%D|%F|%T|%R"),
+        "Tue Nov 14 22:13:20 2023|11/14/23|22:13:20|11/14/23|2023-11-14|22:13:20|22:13"
+    );
+    assert_eq!(
+        expand(b"%I %l %p %r %e %C %y %s"),
+        "10 10 PM 10:13:20 PM 14 20 23 1700000000"
+    );
     assert_eq!(expand(b"%Z %z %% %n%t %Ey %q"), "UTC +0000 % \n\t 23 %q");
     let mut small = [0u8; 4];
     assert_eq!(format(b"%Y", &time, &mut small), None);
@@ -399,8 +422,22 @@ fn strftime_formats_the_c_locale_and_refuses_what_does_not_fit() {
 fn getopt_parses_short_and_long_options_like_bsd() {
     use crate::getopt::{Cursor, Found, Takes, next, quiet};
     let words: &[&[u8]] = &[
-        b"tool", b"-vn3", b"-n", b"4", b"-x", b"-o", b"-ofile", b"--list", b"/bin", b"--name=a",
-        b"--ver", b"--na", b"--bogus", b"--verbose=1", b"--", b"-v",
+        b"tool",
+        b"-vn3",
+        b"-n",
+        b"4",
+        b"-x",
+        b"-o",
+        b"-ofile",
+        b"--list",
+        b"/bin",
+        b"--name=a",
+        b"--ver",
+        b"--na",
+        b"--bogus",
+        b"--verbose=1",
+        b"--",
+        b"-v",
     ];
     let longs: [(&[u8], Takes); 4] = [
         (b"list", Takes::Required),
@@ -446,7 +483,10 @@ fn getopt_parses_short_and_long_options_like_bsd() {
     };
     let operands: &[&[u8]] = &[b"tool", b"file", b"-v"];
     let operand = |index: usize| operands.get(index).copied();
-    assert_eq!(next(operand, b"v", [].into_iter(), false, &mut at_operand), Found::Done);
+    assert_eq!(
+        next(operand, b"v", [].into_iter(), false, &mut at_operand),
+        Found::Done
+    );
     assert_eq!(at_operand.index, 1);
     let missing: &[&[u8]] = &[b"tool", b"-n"];
     let mut at_missing = Cursor {
@@ -480,6 +520,9 @@ fn darwin_mmap_and_status_flags_translate_to_linux() {
     assert_eq!(linux_map_flags(0x1000), None);
     assert_eq!(linux_map_flags(0x1003), None);
     assert_eq!(linux_map_flags(0x2_0002), None);
-    assert_eq!(darwin_status_flags(0o2 | 0o4000 | 0o2000 | 0o100000), 2 | 4 | 8);
+    assert_eq!(
+        darwin_status_flags(0o2 | 0o4000 | 0o2000 | 0o100000),
+        2 | 4 | 8
+    );
     assert_eq!(linux_status_flags(4 | 8 | 1), 0o6000);
 }

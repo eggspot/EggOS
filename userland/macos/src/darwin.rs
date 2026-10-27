@@ -110,14 +110,25 @@ pub fn linux_map_flags(flags: u32) -> Option<usize> {
 /// `O_APPEND`.
 pub fn darwin_status_flags(linux: usize) -> u32 {
     (linux as u32 & open::ACCESS_MODE)
-        | if linux & 0o4000 != 0 { open::NONBLOCK } else { 0 }
+        | if linux & 0o4000 != 0 {
+            open::NONBLOCK
+        } else {
+            0
+        }
         | if linux & 0o2000 != 0 { open::APPEND } else { 0 }
 }
 
 /// Linux's file status flags (`F_SETFL`) for Darwin's `O_NONBLOCK` and `O_APPEND`.
 pub fn linux_status_flags(darwin: u32) -> usize {
-    (if darwin & open::NONBLOCK != 0 { 0o4000 } else { 0 })
-        | if darwin & open::APPEND != 0 { 0o2000 } else { 0 }
+    (if darwin & open::NONBLOCK != 0 {
+        0o4000
+    } else {
+        0
+    }) | if darwin & open::APPEND != 0 {
+        0o2000
+    } else {
+        0
+    }
 }
 
 pub const ENOSYS: i32 = 78;

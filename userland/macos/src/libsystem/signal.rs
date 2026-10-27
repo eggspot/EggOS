@@ -76,7 +76,11 @@ fn change(signal: c_int, new: Option<Action>) -> Option<Action> {
 
 /// # Safety
 /// `action` must be null or readable and `old` null or writable.
-pub unsafe extern "C" fn sigaction(signal: c_int, action: *const Action, old: *mut Action) -> c_int {
+pub unsafe extern "C" fn sigaction(
+    signal: c_int,
+    action: *const Action,
+    old: *mut Action,
+) -> c_int {
     let new = if action.is_null() {
         None
     } else {

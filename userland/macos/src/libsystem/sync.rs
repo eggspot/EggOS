@@ -297,9 +297,8 @@ pub unsafe extern "C" fn pthread_cond_timedwait(
         return EINVAL;
     }
     let [now_seconds, now_nanoseconds] = linux::clock_time(0).unwrap_or([0, 0]);
-    let total = |seconds: i64, nanoseconds: i64| {
-        (seconds as i128) * 1_000_000_000 + nanoseconds as i128
-    };
+    let total =
+        |seconds: i64, nanoseconds: i64| (seconds as i128) * 1_000_000_000 + nanoseconds as i128;
     let remaining = total(seconds, nanoseconds) - total(now_seconds, now_nanoseconds);
     if remaining <= 0 {
         return ETIMEDOUT;
@@ -308,7 +307,11 @@ pub unsafe extern "C" fn pthread_cond_timedwait(
     let condition = unsafe { &*condition };
     // SAFETY: as above.
     let mutex = unsafe { &*mutex };
-    wait(condition, mutex, Some(remaining.min(u64::MAX as i128) as u64))
+    wait(
+        condition,
+        mutex,
+        Some(remaining.min(u64::MAX as i128) as u64),
+    )
 }
 
 /// # Safety
@@ -377,8 +380,6 @@ pub extern "C" fn dispatch_semaphore_create(value: isize) -> *mut Semaphore {
     semaphore
 }
 
-/// Nanoseconds on the monotonic clock, the unit of `mach_absolute_time` and so of
-/// `dispatch_time_t`.
 fn now() -> u64 {
     super::process::mach_absolute_time()
 }

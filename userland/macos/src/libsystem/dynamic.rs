@@ -60,8 +60,10 @@ pub extern "C" fn image_name(index: u32) -> *const c_char {
 /// # Safety
 /// `buffer` must be writable for `*size` bytes and `size` readable and writable.
 pub unsafe extern "C" fn ns_get_executable_path(buffer: *mut c_char, size: *mut u32) -> c_int {
-    // SAFETY: written once before the program runs, NUL-terminated.
-    let path = unsafe { c_string_with_nul(EXECUTABLE_PATH) };
+    // SAFETY: written once before the program runs.
+    let path = unsafe { EXECUTABLE_PATH };
+    // SAFETY: a NUL-terminated string that lasts as long as the program.
+    let path = unsafe { c_string_with_nul(path) };
     // SAFETY: the caller's promise.
     let room = unsafe { size.read() } as usize;
     if room < path.len() {

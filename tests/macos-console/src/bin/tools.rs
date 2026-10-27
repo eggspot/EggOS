@@ -95,7 +95,12 @@ mod program {
         fn gmtime_r(seconds: *const i64, out: *mut Tm) -> *mut Tm;
         fn localtime_r(seconds: *const i64, out: *mut Tm) -> *mut Tm;
         fn timegm(time: *mut Tm) -> i64;
-        fn strftime(buffer: *mut c_char, size: usize, format: *const c_char, time: *const Tm) -> usize;
+        fn strftime(
+            buffer: *mut c_char,
+            size: usize,
+            format: *const c_char,
+            time: *const Tm,
+        ) -> usize;
         fn time(out: *mut i64) -> i64;
         fn gettimeofday(time: *mut Timeval, zone: *mut c_void) -> c_int;
         fn clock_gettime(clock: c_int, time: *mut Timespec) -> c_int;
@@ -153,7 +158,14 @@ mod program {
         // SAFETY: the directory `opendir` opened.
         unsafe { closedir(directory) };
         // SAFETY: `names` holds `count` string pointers.
-        unsafe { qsort(names.as_mut_ptr().cast(), count, size_of::<*mut c_char>(), by_name) };
+        unsafe {
+            qsort(
+                names.as_mut_ptr().cast(),
+                count,
+                size_of::<*mut c_char>(),
+                by_name,
+            )
+        };
         // SAFETY: a format and a NUL-terminated path.
         unsafe { printf(c"MACOS-TOOLS dir %s:".as_ptr(), path) };
         for name in &names[..count] {
@@ -205,7 +217,8 @@ mod program {
         unsafe { clock_gettime(CLOCK_MONOTONIC, &mut after) };
         // SAFETY: a writable `struct timeval`.
         unsafe { gettimeofday(&mut day, core::ptr::null_mut()) };
-        let elapsed = (after.seconds - before.seconds) * 1_000_000_000 + (after.nanoseconds - before.nanoseconds);
+        let elapsed = (after.seconds - before.seconds) * 1_000_000_000
+            + (after.nanoseconds - before.nanoseconds);
         // SAFETY: `time` accepts a null pointer.
         let now = unsafe { time(core::ptr::null_mut()) };
         let checks = [
@@ -246,7 +259,11 @@ mod program {
         let decimal_point = unsafe { *conventions };
         // SAFETY: `nl_langinfo` takes any item.
         let codeset = unsafe { nl_langinfo(CODESET) };
-        let refused = if other.is_null() { c"refused" } else { c"accepted" };
+        let refused = if other.is_null() {
+            c"refused"
+        } else {
+            c"accepted"
+        };
         // SAFETY: a format and NUL-terminated strings.
         unsafe {
             printf(
@@ -293,7 +310,15 @@ mod program {
         let mut name: *const c_char = c"-".as_ptr();
         loop {
             // SAFETY: the program's arguments, a NUL-terminated spec and a terminated table.
-            let option = unsafe { getopt_long(count, arguments, c"vn:".as_ptr(), long.as_ptr(), core::ptr::null_mut()) };
+            let option = unsafe {
+                getopt_long(
+                    count,
+                    arguments,
+                    c"vn:".as_ptr(),
+                    long.as_ptr(),
+                    core::ptr::null_mut(),
+                )
+            };
             // SAFETY: `getopt_long` set `optarg` for options that take an argument.
             let value = unsafe { optarg };
             match option {
@@ -309,7 +334,9 @@ mod program {
         let first = unsafe { optind };
         let rest = if first < count {
             // SAFETY: an index below `count`.
-            unsafe { *arguments.add(first as usize) }
+            let slot = unsafe { arguments.add(first as usize) };
+            // SAFETY: the loader's argument vector holds `count` pointers.
+            unsafe { *slot }
         } else {
             c"-".as_ptr().cast_mut()
         };
