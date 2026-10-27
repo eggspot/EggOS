@@ -129,6 +129,10 @@ impl System for Linux {
         }
     }
 
+    fn sync(&mut self) {
+        let _ = call(number::SYNC, [0; 6]);
+    }
+
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         call(
             number::REBOOT,

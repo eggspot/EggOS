@@ -42,6 +42,7 @@ pub struct Fake {
     pub name: SystemName,
     pub slept: Vec<Duration>,
     pub rebooted: Vec<u32>,
+    pub synced: usize,
     pub reboot_error: Option<Errno>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
@@ -78,6 +79,7 @@ impl Default for Fake {
             name: SystemName(name),
             slept: Vec::new(),
             rebooted: Vec::new(),
+            synced: 0,
             reboot_error: Some(Errno::EPERM),
             cross_device: Vec::new(),
             now: 1_700_000_000,
@@ -309,7 +311,15 @@ impl System for Fake {
         Ok(())
     }
 
+    fn sync(&mut self) {
+        self.synced += 1;
+    }
+
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
+        assert!(
+            self.synced > 0,
+            "changes are synced before the machine goes down"
+        );
         self.rebooted.push(command);
         self.reboot_error.map_or(Ok(()), Err)
     }
