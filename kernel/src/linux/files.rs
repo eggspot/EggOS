@@ -254,8 +254,12 @@ pub fn openat<P: Platform>(
     let file = Arc::new(OpenFile::new(kind, status));
     let limit = open_file_limit(process);
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
-    let fd = thread.files().lock().open(file, close_on_exec, limit)?;
-    Ok(u64::from(fd))
+    let opened = thread
+        .files()
+        .lock()
+        .open(Arc::clone(&file), close_on_exec, limit);
+    drop(file);
+    Ok(u64::from(opened?))
 }
 
 fn open_device<P: Platform>(device: (u32, u32)) -> Result<FileKind, Errno> {

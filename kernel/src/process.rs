@@ -296,6 +296,9 @@ impl<P: Platform> Memory<P> {
                 index += 1;
                 continue;
             }
+            if lent.try_reserve(1).is_err() {
+                return Err(RegionError::OutOfMemory);
+            }
             self.space
                 .unmap_pages(from, to - from, |_| ())
                 .map_err(|_| RegionError::Invalid)?;
@@ -1160,6 +1163,10 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         let mut regions = memory.regions.lock();
+        let lent_refused = attributes.is_none_or(|attributes| attributes.executable);
+        if lent_refused && memory.lends_in(start, end) {
+            return Err(RegionError::Invalid);
+        }
         let mut changed_end = start;
         let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
         if changed_end > start {

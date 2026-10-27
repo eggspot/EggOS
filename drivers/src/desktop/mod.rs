@@ -1,8 +1,9 @@
-//! The desktop and its window server's state (D115, D127): the procedural wallpaper, the top
-//! bar with the system item, the clock, the chips of minimised windows and the power button
+//! The desktop and its window server's state (D115, D127, D128): the procedural wallpaper, the
+//! top bar with the system item, the clock, the chips of minimised windows and the power button
 //! and its menu, and the windows: the terminal's and those programs open through
-//! `/dev/window` (docs/windows.md), with their stacking, focus, chrome, dragging, minimising
-//! and close requests (docs/ux/desktop-v0.3-gui.md, sections 3 and 4).
+//! `/dev/window` (docs/windows.md), with their stacking, focus, chrome, dragging, resizing,
+//! maximising, minimising, close requests, the switcher, the window menu, the server's
+//! shortcuts and the pointer (docs/ux/desktop-v0.3-gui.md, sections 2 to 5).
 //!
 //! [`Desktop`] is pure state and drawing, no device: the kernel feeds it pointer and key
 //! events and its clients' requests, it records the rectangles they change in a [`Damage`] and
@@ -12,19 +13,30 @@
 //! after [`Desktop::new`].
 
 mod events;
+mod management;
 mod paint;
+mod pointer;
+mod popups;
 pub mod protocol;
+pub mod shortcuts;
 mod windows;
 
+#[cfg(test)]
+mod management_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod window_tests;
 
 pub use events::EventQueue;
+pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, NOT_RESPONDING_AFTER_MS};
+pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
+pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use windows::{
-    CASCADE_STEP, CHROME, DEFAULT_MARGIN, KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, WindowId,
-    clamp_content_size, slot_of,
+    CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
+    KERNEL_CLIENT, MINIMUM_OUTSIDE, Part, RESTORE_DRAG_DISTANCE, WindowId, clamp_content_size,
+    clamp_resized_content, edge, is_double_click, minimum_outside, resize_edges, resize_pointer,
+    resized, slot_of,
 };
 
 use crate::display::{Damage, Rect};
@@ -34,7 +46,9 @@ use crate::input::{button, key};
 use crate::terminal::{PADDING, TERM_BACKGROUND, TextArea};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use management::Resize;
 use paint::{Canvas, egg_half_width, isqrt};
+use popups::{Switcher, WindowMenu};
 use protocol::{
     EventRecord, EventSink, MAX_WINDOWS, MAX_WINDOWS_PER_CLIENT, PointerShape, Role,
     TITLE_CAPACITY, WindowError, WindowState, event, flags, modifier,
@@ -63,6 +77,11 @@ pub mod colour {
     pub const BORDER_INACTIVE: u32 = 0x002a_3340;
     pub const BUTTON_CLOSE: u32 = 0x00e5_534b;
     pub const BUTTON_MINIMISE: u32 = 0x00e8_b33c;
+    pub const BUTTON_MAXIMISE: u32 = 0x003d_be5c;
+    pub const GLYPH: u32 = 0x0000_0000;
+    pub const FOCUS_RING: u32 = 0x00f2_b33d;
+    pub const SELECTION: u32 = 0x002e_4a6b;
+    pub const DOCK: u32 = 0x001c_2430;
     pub const BUTTON_INACTIVE: u32 = 0x004a_5466;
     pub const WINDOW_BACKGROUND: u32 = 0x0012_161d;
 }
@@ -125,7 +144,7 @@ const CHIP_GAP: u32 = 8;
 const CHIP_GLYPHS: usize = 16;
 const CHIPS_CLEAR_OF_CLOCK: u32 = 16;
 const MENU_GAP: u32 = 4;
-const MENU_TEXT_X: u32 = 12;
+pub(crate) const MENU_TEXT_X: u32 = 12;
 const MENU_ITEMS: [(&str, Action); 2] = [
     ("Power off", Action::PowerOff),
     ("Restart", Action::Restart),
@@ -174,7 +193,16 @@ struct Drag {
     window: usize,
     from_pointer_x: i64,
     from_pointer_y: i64,
+    pressed_at: (u32, u32),
 }
+
+const NOT_RESPONDING: &str = " (not responding)";
+const CONTROL_GLYPH_SIZE: u32 = 5;
+const CONTROL_GLYPH_OFFSET: u32 = 4;
+const CLOSE_GLYPH: [u8; 5] = [0b10001, 0b01010, 0b00100, 0b01010, 0b10001];
+const MINIMISE_GLYPH: [u8; 5] = [0, 0, 0b11111, 0, 0];
+const MAXIMISE_GLYPH: [u8; 5] = [0b11111, 0b10001, 0b10001, 0b10001, 0b11111];
+const RESTORE_GLYPH: [u8; 5] = [0b01111, 0b01001, 0b11111, 0b10011, 0b11110];
 
 /// The desktop on a screen of one size, with its windows.
 #[derive(Debug)]
@@ -195,9 +223,19 @@ pub struct Desktop {
     grab: Option<usize>,
     buttons: u8,
     drag: Option<Drag>,
+    resize: Option<Resize>,
+    last_title_press: Option<(usize, u32, u32, u32)>,
+    control_hover: Option<(usize, Part)>,
     menu_open: bool,
     menu_hover: Option<usize>,
+    switcher: Option<Switcher>,
+    window_menu: Option<WindowMenu>,
     pointer: (u32, u32),
+    pointer_visible: bool,
+    pointer_drawn: Option<(u32, u32, PointerShape)>,
+    profile: Profile,
+    now_ms: u32,
+    focus_serial: u32,
     clock: [u8; CLOCK_GLYPHS],
 }
 
@@ -243,9 +281,19 @@ impl Desktop {
             grab: None,
             buttons: 0,
             drag: None,
+            resize: None,
+            last_title_press: None,
+            control_hover: None,
             menu_open: false,
             menu_hover: None,
+            switcher: None,
+            window_menu: None,
             pointer: (0, 0),
+            pointer_visible: false,
+            pointer_drawn: None,
+            profile: Profile::default(),
+            now_ms: 0,
+            focus_serial: 0,
             clock: [b' '; CLOCK_GLYPHS],
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
@@ -257,6 +305,7 @@ impl Desktop {
             TERM_BACKGROUND,
         );
         terminal.set_title(WINDOW_TITLE);
+        terminal.flags = flags::FIXED_SIZE | flags::TAKES_CTRL_KEYS;
         terminal.closable = false;
         terminal.ready = true;
         terminal.buffer = Rect::new(PADDING, PADDING, GRID_SIZE.0, GRID_SIZE.1);
@@ -321,9 +370,13 @@ impl Desktop {
         self.is_visible(TERMINAL_SLOT)
     }
 
-    /// Whether keys go to the terminal: its window is focused and shown, and no menu is open.
+    /// Whether keys go to the terminal: its window is focused and shown, and no menu or other
+    /// popup is open.
     pub fn keys_go_to_terminal(&self) -> bool {
-        self.focus == Some(TERMINAL_SLOT) && self.is_visible(TERMINAL_SLOT) && !self.menu_open
+        self.focus == Some(TERMINAL_SLOT)
+            && self.is_visible(TERMINAL_SLOT)
+            && !self.menu_open
+            && !self.popup_open()
     }
 
     /// Whether the terminal's window is focused.
@@ -368,8 +421,20 @@ impl Desktop {
 
     /// Window `id`'s close control's hit target, if it exists.
     pub fn close_control(&self, id: WindowId) -> Option<Rect> {
-        self.find(id)
-            .map(|slot| self.window_at(slot).close_control())
+        self.control_of(id, Part::Close)
+    }
+
+    /// The hit target of window `id`'s control `part`, if the window exists and has it.
+    pub fn control_of(&self, id: WindowId, part: Part) -> Option<Rect> {
+        self.find(id).and_then(|slot| {
+            self.window_at(slot)
+                .control(part, self.profile.control_side())
+        })
+    }
+
+    /// Window `id`'s title bar, its border's top row included, if it exists.
+    pub fn title_bar_of(&self, id: WindowId) -> Option<Rect> {
+        self.find(id).map(|slot| self.window_at(slot).title_bar())
     }
 
     /// Whether window `id` exists and is on screen.
@@ -396,12 +461,17 @@ impl Desktop {
             return Err(WindowError::Invalid);
         }
         let (minimum_width, minimum_height) = self.window_at(slot).minimum;
-        Ok(clamp_content_size(
+        Ok(clamp_resized_content(
             self.width,
             self.height,
             width.max(minimum_width),
             height.max(minimum_height),
         ))
+    }
+
+    /// The content size [`Self::create`] gives a window asking for `width` by `height`.
+    pub fn created_size(&self, width: u32, height: u32) -> (u32, u32) {
+        clamp_content_size(self.width, self.height, width, height)
     }
 
     /// How many windows `client` has.
@@ -452,7 +522,7 @@ impl Desktop {
     /// The terminal window's minimise control's hit target.
     pub fn minimise_control(&self) -> Rect {
         self.terminal()
-            .minimise_control()
+            .control(Part::Minimise, self.profile.control_side())
             .expect("the terminal's window is a normal one")
     }
 
@@ -680,10 +750,12 @@ impl Desktop {
         Ok(())
     }
 
-    /// Resizes `client`'s window `id`'s content to `width` by `height`, clamped as
-    /// [`Self::create`] clamps, keeping its top-left corner unless the screen's edge moves it;
-    /// returns the size it got. Its content shows [`colour::WINDOW_BACKGROUND`] until the next
-    /// commit.
+    /// Gives `client`'s window `id` a buffer of `width` by `height`, clamped to its minimum
+    /// and the work area ([`Self::size_for`]), and returns the size it got; its content shows
+    /// [`colour::WINDOW_BACKGROUND`] until the next commit. While a `Resize` the server sent
+    /// waits for this answer, the window keeps the size the server gave it (the buffer is shown
+    /// clipped to it); otherwise the window takes the new size, keeping its top-left corner
+    /// unless the work area's edge moves it, and a maximised window becomes a normal one.
     pub fn set_size(
         &mut self,
         client: u16,
@@ -691,23 +763,48 @@ impl Desktop {
         width: u32,
         height: u32,
         damage: &mut Damage,
+        events: &mut dyn EventSink,
     ) -> Result<(u32, u32), WindowError> {
         let (width, height) = self.size_for(client, id, width, height)?;
         let slot = self.owned(client, id)?;
+        let window = *self.window_at(slot);
         let visible = self.is_visible(slot);
         if visible {
-            damage.add(self.window_at(slot).with_shadow());
+            damage.add(window.content());
         }
-        let window = self.window_mut(slot);
-        window.content_width = width;
-        window.content_height = height;
-        window.buffer = Rect::new(0, 0, width, height);
-        window.ready = false;
-        let (x, y) = (window.x, window.y);
-        self.move_window(slot, i64::from(x), i64::from(y), damage);
+        let resized = self.window_mut(slot);
+        resized.buffer = Rect::new(0, 0, width, height);
+        resized.ready = false;
+        if resized.pending_resize == Some((width, height)) {
+            resized.pending_resize = None;
+        }
+        let own_size = (window.content_width, window.content_height) == (width, height);
+        if window.pending_resize.is_some() || own_size {
+            return Ok((width, height));
+        }
+        if visible {
+            damage.add(window.with_shadow());
+        }
+        let resized = self.window_mut(slot);
+        resized.content_width = width;
+        resized.content_height = height;
+        resized.maximised = false;
+        resized.before_maximised = None;
+        resized.square_corners = false;
+        self.end_resize_of(slot);
+        self.move_window(slot, i64::from(window.x), i64::from(window.y), damage);
         if visible {
             damage.add(self.window_at(slot).with_shadow());
         }
+        if window.maximised {
+            let state = WindowState::Normal.value();
+            self.send(
+                slot,
+                EventRecord::new(event::STATE_CHANGED, 0, state as i32, 0, 0, 0),
+                events,
+            );
+        }
+        self.update_pointer(damage);
         Ok((width, height))
     }
 
@@ -751,8 +848,8 @@ impl Desktop {
         Ok(())
     }
 
-    /// Minimises or restores `client`'s window `id`, as its controls and chip do; maximising
-    /// comes with item 31.
+    /// Minimises, maximises or restores `client`'s window `id`, as its controls and chip do.
+    /// Only a normal window that is not fixed-size maximises; dialogs do not minimise.
     pub fn set_state(
         &mut self,
         client: u16,
@@ -763,7 +860,10 @@ impl Desktop {
     ) -> Result<(), WindowError> {
         let slot = self.owned(client, id)?;
         match WindowState::from_value(state).ok_or(WindowError::Invalid)? {
-            WindowState::Maximised => return Err(WindowError::Unsupported),
+            WindowState::Maximised if !self.window_at(slot).can_maximise() => {
+                return Err(WindowError::Invalid);
+            }
+            WindowState::Maximised => self.maximise(slot, damage, events),
             WindowState::Minimised if self.window_at(slot).role != Role::Normal => {
                 return Err(WindowError::Invalid);
             }
@@ -771,18 +871,30 @@ impl Desktop {
                 self.minimise(slot, damage, events)
             }
             WindowState::Minimised => self.window_mut(slot).minimised = true,
-            WindowState::Normal if self.window_at(slot).shown => self.restore(slot, damage, events),
-            WindowState::Normal => self.window_mut(slot).minimised = false,
+            WindowState::Normal => {
+                self.unmaximise(slot, damage, events);
+                match self.window_at(slot).shown {
+                    true => self.restore(slot, damage, events),
+                    false => self.window_mut(slot).minimised = false,
+                }
+            }
         }
+        self.update_pointer(damage);
         Ok(())
     }
 
-    /// Records the pointer shape `client`'s window `id` asks for over its content (shown from
-    /// item 31).
-    pub fn set_pointer(&mut self, client: u16, id: u32, shape: u32) -> Result<(), WindowError> {
+    /// Records the pointer shape `client`'s window `id` asks for over its content.
+    pub fn set_pointer(
+        &mut self,
+        client: u16,
+        id: u32,
+        shape: u32,
+        damage: &mut Damage,
+    ) -> Result<(), WindowError> {
         let slot = self.owned(client, id)?;
         self.window_mut(slot).pointer_shape =
             PointerShape::from_value(shape).ok_or(WindowError::Invalid)?;
+        self.update_pointer(damage);
         Ok(())
     }
 
@@ -838,6 +950,7 @@ impl Desktop {
             return Err(WindowError::Invalid);
         }
         self.destroy_slot(slot, damage, events);
+        self.update_pointer(damage);
         Ok(())
     }
 
@@ -851,6 +964,7 @@ impl Desktop {
                 self.destroy_slot(slot, damage, events);
             }
         }
+        self.update_pointer(damage);
     }
 
     fn destroy_slot(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -875,6 +989,14 @@ impl Desktop {
         if self.hover == Some(slot) {
             self.hover = None;
         }
+        self.end_resize_of(slot);
+        if self.last_title_press.is_some_and(|press| press.0 == slot) {
+            self.last_title_press = None;
+        }
+        if self.control_hover.is_some_and(|hover| hover.0 == slot) {
+            self.control_hover = None;
+        }
+        self.forget_in_popups(slot, damage, events);
         if focused {
             self.focus = None;
         }
@@ -899,13 +1021,21 @@ impl Desktop {
             damage.add(self.chips_area());
             return;
         }
+        if !self.is_visible(slot) {
+            return;
+        }
         self.raise(slot, damage);
         damage.add(self.window_at(slot).with_shadow());
-        self.set_focus(Some(slot), damage, events);
+        let focus = self.top_dialog(slot).unwrap_or(slot);
+        self.set_focus(Some(focus), damage, events);
+        self.update_pointer(damage);
     }
 
     fn place(&mut self, slot: usize) {
         let window = *self.window_at(slot);
+        if window.maximised {
+            return;
+        }
         let outside = window.outside();
         let work = self.work_area();
         let (x, y) = if let Some((x, y)) = window.requested_position {
@@ -983,6 +1113,7 @@ impl Desktop {
         let window = self.window_mut(slot);
         window.x = x;
         window.y = y;
+        window.square_corners = false;
         if visible {
             damage.add(self.window_at(slot).with_shadow());
         }
@@ -1049,6 +1180,10 @@ impl Desktop {
         }
         self.focus = focus;
         if let Some(new) = focus {
+            self.focus_serial = self.focus_serial.wrapping_add(1);
+            let top = self.window_at(new).parent.map_or(new, usize::from);
+            let serial = self.focus_serial;
+            self.window_mut(top).focus_serial = serial;
             damage.add(self.window_at(new).outside());
             self.send(
                 new,
@@ -1102,14 +1237,18 @@ impl Desktop {
         if self.grab.is_some_and(|grab| group(self, grab)) {
             self.grab = None;
         }
+        if self.resize.is_some_and(|resize| group(self, resize.window)) {
+            self.resize = None;
+        }
+        if self
+            .window_menu
+            .is_some_and(|menu| group(self, menu.window))
+        {
+            self.close_popups(damage, events);
+        }
         self.window_mut(slot).minimised = true;
         damage.add(self.chips_area());
-        let state = WindowState::Minimised.value();
-        self.send(
-            slot,
-            EventRecord::new(event::STATE_CHANGED, 0, state as i32, 0, 0, 0),
-            events,
-        );
+        self.send_state(slot, events);
         if self.focus.is_some_and(|focus| group(self, focus)) {
             self.focus_top(damage, events);
         }
@@ -1123,12 +1262,7 @@ impl Desktop {
         damage.add(self.chips_area());
         self.raise(slot, damage);
         damage.add(self.window_at(slot).with_shadow());
-        let state = WindowState::Normal.value();
-        self.send(
-            slot,
-            EventRecord::new(event::STATE_CHANGED, 0, state as i32, 0, 0, 0),
-            events,
-        );
+        self.send_state(slot, events);
         let focus = self.top_dialog(slot).unwrap_or(slot);
         self.set_focus(Some(focus), damage, events);
     }
@@ -1145,11 +1279,14 @@ impl Desktop {
     }
 
     fn content_window_at(&self, x: u32, y: u32) -> Option<usize> {
-        if self.menu_open && contains(self.menu(), x, y) {
+        if self.popup_at(x, y) {
             return None;
         }
         let slot = self.top_window_at(x, y)?;
-        (self.window_at(slot).part_at(x, y) == Some(Part::Content)
+        (self
+            .window_at(slot)
+            .part_at(x, y, self.profile.control_side())
+            == Some(Part::Content)
             && self.top_dialog(slot).is_none())
         .then_some(slot)
     }
@@ -1163,8 +1300,9 @@ impl Desktop {
         )
     }
 
-    /// The pointer moved to (`x`, `y`): drags the window while a drag is on, moves the menu's
-    /// hover, and tells the window under the pointer (or the one holding it) where it is.
+    /// The pointer moved to (`x`, `y`): drags or resizes the window while a drag or resize is
+    /// on, moves the menus' hover, tells the window under the pointer (or the one holding it)
+    /// where it is, and draws the pointer there in the shape the place asks for.
     pub fn pointer_moved(
         &mut self,
         x: u32,
@@ -1173,10 +1311,12 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) {
         self.pointer = (x, y);
+        self.pointer_visible = true;
+        if let Some(resize) = self.resize {
+            self.resize_to(resize, x, y, damage, events);
+        }
         if let Some(drag) = self.drag {
-            let x = i64::from(x) - drag.from_pointer_x;
-            let y = i64::from(y) - drag.from_pointer_y;
-            self.move_window(drag.window, x, y, damage);
+            self.drag_to(drag, x, y, damage, events);
         }
         if self.menu_open {
             let hover = self.menu_item_at(x, y);
@@ -1185,10 +1325,11 @@ impl Desktop {
                 damage.add(self.menu());
             }
         }
-        let under = match (self.grab, self.drag) {
+        self.window_menu_hover(x, y, damage);
+        let under = match (self.grab, self.drag.is_some() || self.resize.is_some()) {
             (Some(grab), _) => Some(grab),
-            (None, Some(_)) => None,
-            (None, None) => self.content_window_at(x, y),
+            (None, true) => None,
+            (None, false) => self.content_window_at(x, y),
         };
         if under != self.hover {
             if let Some(old) = self.hover {
@@ -1217,6 +1358,40 @@ impl Desktop {
                 events,
             );
         }
+        self.update_control_hover(damage);
+        self.update_pointer(damage);
+    }
+
+    fn drag_to(
+        &mut self,
+        mut drag: Drag,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        let window = *self.window_at(drag.window);
+        if window.maximised {
+            let moved = x
+                .abs_diff(drag.pressed_at.0)
+                .max(y.abs_diff(drag.pressed_at.1));
+            if moved <= RESTORE_DRAG_DISTANCE {
+                return;
+            }
+            let width = window.outside().width.max(1);
+            let restored = window
+                .before_maximised
+                .map_or(width, |before| before.content_width + CHROME.0);
+            drag.from_pointer_x = drag.from_pointer_x * i64::from(restored) / i64::from(width);
+            self.unmaximise(drag.window, damage, events);
+            self.drag = Some(drag);
+        }
+        self.move_window(
+            drag.window,
+            i64::from(x) - drag.from_pointer_x,
+            i64::from(y) - drag.from_pointer_y,
+            damage,
+        );
     }
 
     fn menu_item_at(&self, x: u32, y: u32) -> Option<usize> {
@@ -1239,10 +1414,24 @@ impl Desktop {
     }
 
     /// Pointer button `code` (`BTN_LEFT`, `BTN_RIGHT` or `BTN_MIDDLE`) went down (`pressed`) or
-    /// up at the pointer: the bar's items, the power menu, a window's controls and title bar,
-    /// or its content, which raises and focuses it and holds the pointer for it until the
-    /// buttons are up.
+    /// up at the pointer: the popups, the bar's items, the power menu, a window's resize zones,
+    /// controls and title bar (a double-click maximises or restores, a right-click opens the
+    /// window menu), or its content, which raises and focuses it and holds the pointer for it
+    /// until the buttons are up.
     pub fn button(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        let action = self.button_change(code, pressed, damage, events);
+        self.update_control_hover(damage);
+        self.update_pointer(damage);
+        action
+    }
+
+    fn button_change(
         &mut self,
         code: u16,
         pressed: bool,
@@ -1257,6 +1446,7 @@ impl Desktop {
             self.buttons &= !bit;
             if code == button::LEFT {
                 self.drag = None;
+                self.resize = None;
             }
             if let Some(grab) = self.grab {
                 let (cx, cy) = self.content_point(grab);
@@ -1283,10 +1473,15 @@ impl Desktop {
             );
             return Action::None;
         }
+        let (x, y) = self.pointer;
+        if self.switcher_press(x, y, damage, events) || self.window_menu_press(x, y, damage, events)
+        {
+            return Action::None;
+        }
+        let last_title_press = self.last_title_press.take();
         if code != button::LEFT {
             return self.other_button_down(code, damage, events);
         }
-        let (x, y) = self.pointer;
         if self.menu_open {
             let item = self.menu_item_at(x, y);
             self.close_menu(damage);
@@ -1308,6 +1503,12 @@ impl Desktop {
         if y < BAR_HEIGHT {
             return Action::None;
         }
+        if let Some((slot, edges)) = self.resize_target(x, y) {
+            self.raise(slot, damage);
+            self.set_focus(Some(slot), damage, events);
+            self.start_resize(slot, edges);
+            return Action::None;
+        }
         let Some(slot) = self.top_window_at(x, y) else {
             self.set_focus(None, damage, events);
             return Action::None;
@@ -1319,22 +1520,31 @@ impl Desktop {
         }
         self.set_focus(Some(slot), damage, events);
         let window = *self.window_at(slot);
-        match window.part_at(x, y) {
+        match window.part_at(x, y, self.profile.control_side()) {
             Some(Part::Minimise) => self.minimise(slot, damage, events),
-            Some(Part::Close) if window.closable => self.send(
-                slot,
-                EventRecord::new(event::CLOSE_REQUEST, 0, 0, 0, 0, 0),
-                events,
-            ),
+            Some(Part::Maximise) if window.can_maximise() => {
+                self.toggle_maximise(slot, damage, events)
+            }
+            Some(Part::Close) => self.request_close(slot, events),
             Some(Part::TitleBar) => {
-                self.drag = Some(Drag {
-                    window: slot,
-                    from_pointer_x: i64::from(x) - i64::from(window.x),
-                    from_pointer_y: i64::from(y) - i64::from(window.y),
-                })
+                let press = (x, y, self.now_ms);
+                let double = last_title_press.is_some_and(|(previous, px, py, at)| {
+                    previous == slot && is_double_click((px, py, at), press)
+                });
+                if double && window.can_maximise() {
+                    self.toggle_maximise(slot, damage, events);
+                } else {
+                    self.last_title_press = Some((slot, x, y, self.now_ms));
+                    self.drag = Some(Drag {
+                        window: slot,
+                        from_pointer_x: i64::from(x) - i64::from(window.x),
+                        from_pointer_y: i64::from(y) - i64::from(window.y),
+                        pressed_at: (x, y),
+                    });
+                }
             }
             Some(Part::Content) => self.press_in_content(slot, code, events),
-            Some(Part::Close | Part::Border) | None => {}
+            Some(Part::Maximise | Part::Border) | None => {}
         }
         Action::None
     }
@@ -1358,8 +1568,15 @@ impl Desktop {
             return Action::None;
         }
         self.set_focus(Some(slot), damage, events);
-        if self.window_at(slot).part_at(x, y) == Some(Part::Content) {
-            self.press_in_content(slot, code, events);
+        match self
+            .window_at(slot)
+            .part_at(x, y, self.profile.control_side())
+        {
+            Some(Part::Content) => self.press_in_content(slot, code, events),
+            Some(Part::TitleBar) if code == button::RIGHT => {
+                self.open_window_menu(slot, Some((x, y)), damage, events)
+            }
+            _ => {}
         }
         Action::None
     }
@@ -1397,8 +1614,9 @@ impl Desktop {
         }
     }
 
-    /// Key `code` went down (`pressed`) or up with `modifiers` in effect: the open menu's Up,
-    /// Down, Enter and Esc, or a `Key` event for the focused window's client.
+    /// Key `code` went down (`pressed`) or up with `modifiers` in effect: the open popup's
+    /// keys, the server's shortcuts, the power menu's Up, Down, Enter and Esc, or a `Key` event
+    /// for the focused window's client.
     pub fn key(
         &mut self,
         code: u16,
@@ -1407,7 +1625,39 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        let action = self.key_change(code, pressed, modifiers, damage, events);
+        self.update_control_hover(damage);
+        self.update_pointer(damage);
+        action
+    }
+
+    fn key_change(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        if self.switcher.is_some() {
+            self.switcher_key(code, pressed, modifiers, damage, events);
+            return Action::None;
+        }
+        if self.window_menu.is_some() {
+            self.window_menu_key(code, pressed, damage, events);
+            return Action::None;
+        }
         if !self.menu_open {
+            if pressed
+                && let Some(shortcut) = shortcut(
+                    code,
+                    modifiers,
+                    self.profile,
+                    self.focused_takes_ctrl_keys(),
+                )
+            {
+                return self.run_shortcut(shortcut, damage, events);
+            }
             if let Some(slot) = self.focus.filter(|&slot| self.is_visible(slot)) {
                 let record = EventRecord::new(
                     event::KEY,
@@ -1467,9 +1717,9 @@ impl Desktop {
 
     /// Paints the part of the desktop inside `clip` into `pixels`, rows `stride` pixels apart,
     /// from scratch: the wallpaper, the windows bottom to top with their shadows and their
-    /// content from `contents`, the bar and the menu. A rectangle inside the content of the
-    /// top window there is only copied from that window's buffer. Paints nothing outside the
-    /// screen or `pixels`.
+    /// content from `contents`, the bar, the menus and the switcher, then the pointer. A
+    /// rectangle inside the content of the top window there is only copied from that window's
+    /// buffer, under the pointer. Paints nothing outside the screen or `pixels`.
     pub fn draw(&self, pixels: &mut [u32], stride: usize, clip: Rect, contents: &dyn Contents) {
         let clip = clip.clipped(self.width, self.height);
         let Some(mut canvas) = Canvas::new(pixels, stride, clip) else {
@@ -1477,13 +1727,17 @@ impl Desktop {
         };
         if let Some(slot) = self.content_holding(clip) {
             self.draw_content(&mut canvas, self.window_at(slot), contents);
+            self.draw_pointer(&mut canvas);
             return;
         }
         self.draw_wallpaper(&mut canvas);
         for &slot in &self.stack[..self.stack_length] {
             let slot = usize::from(slot);
-            if self.is_visible(slot) && self.window_at(slot).with_shadow().overlaps(&clip) {
-                canvas.shadow(self.window_at(slot).outside());
+            let window = self.window_at(slot);
+            if self.is_visible(slot) && window.with_shadow().overlaps(&clip) {
+                if window.has_shadow() {
+                    canvas.shadow(window.outside());
+                }
                 self.draw_window(&mut canvas, slot, contents);
             }
         }
@@ -1492,10 +1746,31 @@ impl Desktop {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);
         }
+        self.draw_popups(&mut canvas);
+        self.draw_pointer(&mut canvas);
+    }
+
+    fn draw_pointer(&self, canvas: &mut Canvas<'_>) {
+        let Some((x, y, shape)) = self.pointer_drawn else {
+            return;
+        };
+        let area = pointer::area(shape, x, y);
+        let clip = canvas.clip();
+        if !area.overlaps(&clip) {
+            return;
+        }
+        for row in area.y.max(clip.y)..area.bottom().min(clip.bottom()) {
+            for column in area.x.max(clip.x)..area.right().min(clip.right()) {
+                if let Some(pixel) = pointer::pixel_at(shape, (x, y), column, row) {
+                    canvas.pixel(column, row, pixel);
+                }
+            }
+        }
     }
 
     fn content_holding(&self, clip: Rect) -> Option<usize> {
-        if self.menu_open && self.menu_with_shadow().overlaps(&clip) {
+        if (self.menu_open && self.menu_with_shadow().overlaps(&clip)) || self.popups_overlap(clip)
+        {
             return None;
         }
         let slot = self.stack[..self.stack_length]
@@ -1548,7 +1823,11 @@ impl Desktop {
                 colour::TEXT_DIM,
             )
         };
-        canvas.rounded(outside, &paint::INSET_R6, true, true, border);
+        let (corners, inside_corners): (&[u32], &[u32]) = match window.has_square_corners() {
+            true => (&[], &[]),
+            false => (&paint::INSET_R6, &paint::INSET_INSIDE_R6),
+        };
+        canvas.rounded(outside, corners, true, true, border);
         canvas.rounded(
             Rect::new(
                 outside.x + 1,
@@ -1556,48 +1835,61 @@ impl Desktop {
                 outside.width - 2,
                 TITLE_HEIGHT,
             ),
-            &paint::INSET_INSIDE_R6,
+            inside_corners,
             true,
             false,
             title,
         );
         self.draw_content(canvas, window, contents);
-        let close = match focused && window.closable {
-            true => colour::BUTTON_CLOSE,
-            false => colour::BUTTON_INACTIVE,
-        };
-        let minimise = match focused {
-            true => colour::BUTTON_MINIMISE,
-            false => colour::BUTTON_INACTIVE,
-        };
-        let mut controls = [(windows::CLOSE_X, close), (windows::MINIMISE_X, minimise)];
-        let shown = match window.role {
-            Role::Normal => &mut controls[..],
-            _ => &mut controls[..1],
-        };
-        for &mut (x, colour) in shown {
-            canvas.rounded(
-                Rect::new(
-                    outside.x + x,
-                    outside.y + windows::CONTROL_TOP,
-                    windows::CONTROL_SIZE,
-                    windows::CONTROL_SIZE,
-                ),
-                &paint::INSET_R6,
-                true,
-                true,
-                colour,
-            );
+        let side = self.profile.control_side();
+        for &part in window.drawn_controls() {
+            let Some(circle) = window.control_circle(part, side) else {
+                continue;
+            };
+            let (active, colour) = match part {
+                Part::Close => (window.closable, colour::BUTTON_CLOSE),
+                Part::Minimise => (true, colour::BUTTON_MINIMISE),
+                _ => (window.can_maximise(), colour::BUTTON_MAXIMISE),
+            };
+            let fill = match focused && active {
+                true => colour,
+                false => colour::BUTTON_INACTIVE,
+            };
+            canvas.rounded(circle, &paint::INSET_R6, true, true, fill);
+            if active && self.control_hover == Some((slot, part)) {
+                let glyph = match part {
+                    Part::Close => &CLOSE_GLYPH,
+                    Part::Minimise => &MINIMISE_GLYPH,
+                    _ if window.maximised => &RESTORE_GLYPH,
+                    _ => &MAXIMISE_GLYPH,
+                };
+                for (row, bits) in (0..).zip(glyph) {
+                    for column in 0..CONTROL_GLYPH_SIZE {
+                        if bits & (1 << (CONTROL_GLYPH_SIZE - 1 - column)) != 0 {
+                            canvas.pixel(
+                                circle.x + CONTROL_GLYPH_OFFSET + column,
+                                circle.y + CONTROL_GLYPH_OFFSET + row,
+                                colour::GLYPH,
+                            );
+                        }
+                    }
+                }
+            }
         }
-        let (text, cut) = windows::cut_title(window.title(), windows::title_room(outside.width));
-        let glyphs = text.chars().count() + if cut { windows::ellipsis().len() } else { 0 };
+        let suffix = match window.not_responding {
+            true => NOT_RESPONDING,
+            false => "",
+        };
+        let room = windows::title_room(outside.width).saturating_sub(suffix.len());
+        let (text, cut) = windows::cut_title(window.title(), room);
+        let ellipsis = if cut { windows::ellipsis() } else { "" };
+        let glyphs = text.chars().count() + ellipsis.len() + suffix.len();
         let width = glyphs as u32 * GLYPH_WIDTH as u32;
-        let x = outside.x + outside.width.saturating_sub(width) / 2;
+        let mut x = outside.x + outside.width.saturating_sub(width) / 2;
         let y = outside.y + 1 + (TITLE_HEIGHT - GLYPH_HEIGHT as u32) / 2;
-        canvas.text(x, y, text, title_text);
-        if cut {
-            let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-            canvas.text(after, y, windows::ellipsis(), title_text);
+        for part in [text, ellipsis, suffix] {
+            canvas.text(x, y, part, title_text);
+            x += part.chars().count() as u32 * GLYPH_WIDTH as u32;
         }
     }
 
@@ -1616,12 +1908,13 @@ impl Desktop {
         };
         let top = content.y.max(clip.y);
         let bottom = content.bottom().min(clip.bottom());
+        let corners: &[u32] = match window.has_square_corners() {
+            true => &[],
+            false => &paint::INSET_INSIDE_R6,
+        };
         for row in top..bottom {
             let from_bottom = content.bottom() - 1 - row;
-            let inset = paint::INSET_INSIDE_R6
-                .get(from_bottom as usize)
-                .copied()
-                .unwrap_or(0);
+            let inset = corners.get(from_bottom as usize).copied().unwrap_or(0);
             let left = (content.x + inset).max(clip.x);
             let right = content.right().saturating_sub(inset).min(clip.right());
             if left >= right {

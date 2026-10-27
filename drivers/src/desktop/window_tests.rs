@@ -486,14 +486,14 @@ fn requests_check_the_window_s_owner_role_flags_and_the_limits() {
         Err(WindowError::Invalid)
     );
     assert_eq!(
-        desktop.set_state(CLIENT, window, 2, &mut damage, &mut DiscardEvents),
-        Err(WindowError::Unsupported)
-    );
-    assert_eq!(
-        desktop.set_pointer(CLIENT, window, 6),
+        desktop.set_state(CLIENT, window, 3, &mut damage, &mut DiscardEvents),
         Err(WindowError::Invalid)
     );
-    assert_eq!(desktop.set_pointer(CLIENT, window, 1), Ok(()));
+    assert_eq!(
+        desktop.set_pointer(CLIENT, window, 6, &mut damage),
+        Err(WindowError::Invalid)
+    );
+    assert_eq!(desktop.set_pointer(CLIENT, window, 1, &mut damage), Ok(()));
     assert_eq!(
         desktop.commit(OTHER, window, &[], &mut damage, &mut DiscardEvents),
         Err(WindowError::Invalid)
@@ -529,7 +529,14 @@ fn a_commit_damages_only_its_rects_on_screen_and_a_resize_waits_for_the_next() {
     );
     let mut damage = Damage::new();
     let size = desktop
-        .set_size(CLIENT, u32::from(window), 500, 200, &mut damage)
+        .set_size(
+            CLIENT,
+            u32::from(window),
+            500,
+            200,
+            &mut damage,
+            &mut DiscardEvents,
+        )
         .unwrap();
     assert_eq!(size, (500, 200));
     assert_eq!(
@@ -613,12 +620,6 @@ fn painting_in_many_rects_equals_painting_the_whole_screen_with_three_windows() 
         &BlankTerminal,
     );
     assert!(fast == whole);
-}
-
-#[test]
-fn the_terminal_behind_the_contract_draws_the_same_desktop_as_before() {
-    let desktop = Desktop::new(1280, 800).unwrap();
-    assert_eq!(fnv(&painted(&desktop)), 0xdb10_a868_0234_3949);
 }
 
 #[test]

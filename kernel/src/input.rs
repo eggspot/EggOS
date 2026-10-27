@@ -438,7 +438,10 @@ impl InputState {
         };
         let modifiers = self.keyboard.modifiers();
         let pressed = change == KeyChange::Pressed;
-        if pressed {
+        if pressed && terminal::takes_from_terminal(event.code, modifiers) {
+            self.repeat
+                .pressed(event.code, false, timing.now, timing.repeat_delay);
+        } else if pressed {
             let bytes = match self.cursor_keys {
                 CursorKeys::Normal => keymap::encode(event.code, modifiers, CursorKeys::Normal),
                 CursorKeys::Application => {
