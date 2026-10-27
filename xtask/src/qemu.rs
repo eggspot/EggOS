@@ -136,6 +136,13 @@ pub enum Expect {
     /// command must write its lines in order before the next prompt: the program's checks
     /// (including `system`, which runs `/system/bin/sh`), an exit status and an abort (D119).
     AndroidPrograms,
+    /// The release kernel with macOS console programs built by Apple's linker added as
+    /// `cargo xtask image --add` adds them (with the macOS layer on aarch64 and x86_64): this
+    /// CPU's program, one that links a library EggOS lacks, the other CPU's program and a fat
+    /// file of both. The test types a line at each prompt that runs one, and each command must
+    /// write its lines in order before the next prompt: the program's checks, exit statuses,
+    /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120).
+    MacosPrograms,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -187,6 +194,101 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"android-console abort; echo ANDROID-CONSOLE status $?\r",
     b"exit 7\r",
 ];
+
+const MACOS_PROGRAM_SESSION: [&[u8]; 8] = [
+    b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
+    b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
+    b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
+    b"macos-console abort; echo MACOS-CONSOLE status $?\r",
+    b"macos-console unimplemented; echo MACOS-CONSOLE status $?\r",
+    b"macos-unsupported; echo MACOS-CONSOLE status $?\r",
+    b"macos-other; echo MACOS-CONSOLE status $?\r",
+    b"exit 7\r",
+];
+
+fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
+    let status = |code: u8| Line::Whole(format!("MACOS-CONSOLE status {code}"));
+    if arch == "riscv64" {
+        let refused = |name: &str| {
+            vec![
+                Line::Whole(format!("eggsh: {name}: Exec format error")),
+                status(126),
+            ]
+        };
+        return [
+            refused("macos-console"),
+            refused("/bin/macos-console"),
+            refused("macos-fat"),
+            refused("macos-console"),
+            refused("macos-console"),
+            refused("macos-unsupported"),
+            refused("macos-other"),
+            end,
+        ];
+    }
+    let own = if arch == "x86_64" { "x86_64" } else { "arm64" };
+    [
+        whole(&[
+            "MACOS-CONSOLE macos-console args a|b c",
+            "MACOS-CONSOLE apple executable_path",
+            "MACOS-CONSOLE env GREETING=hi envp setenv",
+            "MACOS-CONSOLE printf",
+            "MACOS-CONSOLE ints -42 7 3000000000 -1234567890123 9000000000000000000 12 beef BEEF \
+             10 Z %",
+            "MACOS-CONSOLE widths [   42] [42   ] [00042] [+42] [abc] [   right] [left    ] \
+             [0xff] [   7]",
+            "MACOS-CONSOLE floats 3.25 -0.500000 2 1.234568e+04 0.0001",
+            "MACOS-CONSOLE snprintf 15 truncat",
+            "MACOS-CONSOLE puts",
+            "MACOS-CONSOLE strings strlen strcmp strchr strstr strdup memcmp",
+            "MACOS-CONSOLE numbers qsort strtol atoi",
+            "MACOS-CONSOLE file eggos",
+            "MACOS-CONSOLE missing ENOENT, read-only, open read close",
+            "MACOS-CONSOLE stat regular 6 bytes, directory",
+            "MACOS-CONSOLE dir about",
+            "MACOS-CONSOLE cwd chdir getcwd relative",
+            "MACOS-CONSOLE malloc small large realloc",
+            "MACOS-CONSOLE time monotonic realtime mach gettimeofday",
+            "MACOS-CONSOLE pid positive",
+            "MACOS-CONSOLE stderr",
+            "MACOS-CONSOLE atexit",
+            "MACOS-CONSOLE status 0",
+        ]),
+        vec![status(42)],
+        vec![status(3)],
+        whole(&["Aborted", "MACOS-CONSOLE status 134"]),
+        whole(&[
+            "eggos-macos: unimplemented libSystem function posix_spawn",
+            "MACOS-CONSOLE status 127",
+        ]),
+        vec![
+            Line::Around(
+                "macos: ",
+                "macos-unsupported: needs /usr/lib/libz.1.dylib, which EggOS does not provide yet",
+            ),
+            status(126),
+        ],
+        vec![
+            Line::Around(
+                "macos: ",
+                if own == "x86_64" {
+                    "macos-other: has code only for arm64, not for this x86_64 machine"
+                } else {
+                    "macos-other: has code only for x86_64, not for this arm64 machine"
+                },
+            ),
+            status(126),
+        ],
+        end,
+    ]
+}
 
 fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
     let whole = |lines: &[&str]| -> Vec<Line> {
@@ -646,6 +748,11 @@ fn boot(
                 &ANDROID_PROGRAM_SESSION,
                 &mut shell_typed,
             ),
+            Expect::MacosPrograms => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &MACOS_PROGRAM_SESSION,
+                &mut shell_typed,
+            ),
             Expect::BootToPrompt => {
                 let prompts = String::from_utf8_lossy(&console)
                     .matches(SHELL_PROMPT)
@@ -910,6 +1017,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 &ANDROID_PROGRAM_SESSION,
                 android_program_output(),
                 "Android programs",
+            );
+        }
+        Expect::MacosPrograms => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &MACOS_PROGRAM_SESSION,
+                macos_program_output(arch),
+                "macOS programs",
             );
         }
         Expect::BootClock => return boot_clock_verdict(arch, console),
@@ -1616,6 +1733,50 @@ mod tests {
             }
         }
         console
+    }
+
+    fn macos_programs_console(arch: &str) -> String {
+        let mut console = format!("EggOS 0.2.0 ({arch})\r\n");
+        for (typed, output) in MACOS_PROGRAM_SESSION.iter().zip(macos_program_output(arch)) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                match line {
+                    Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
+                    Line::Around(start, end) => console.push_str(&format!("{start}/bin/{end}\r\n")),
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_macos_programs_session_passes_only_with_each_command_s_lines_in_order() {
+        for arch in ["aarch64", "x86_64", "riscv64"] {
+            let ok = macos_programs_console(arch);
+            assert!(
+                verdict(arch, Expect::MacosPrograms, true, &ok).is_ok(),
+                "{arch}"
+            );
+            assert!(verdict(arch, Expect::MacosPrograms, false, &ok).is_err());
+            let without = ok.replacen("MACOS-CONSOLE status 126\r\n", "", 1);
+            assert!(verdict(arch, Expect::MacosPrograms, true, &without).is_err());
+        }
+        let ok = macos_programs_console("aarch64");
+        for missing in [
+            "MACOS-CONSOLE atexit",
+            "MACOS-CONSOLE status 3",
+            "Aborted",
+            "MACOS-CONSOLE dir about",
+        ] {
+            let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
+            assert!(
+                verdict("aarch64", Expect::MacosPrograms, true, &without).is_err(),
+                "{missing}"
+            );
+        }
+        let elsewhere = macos_programs_console("x86_64");
+        assert!(verdict("aarch64", Expect::MacosPrograms, true, &elsewhere).is_err());
     }
 
     #[test]

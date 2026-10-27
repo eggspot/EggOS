@@ -162,12 +162,30 @@ Must-have, in order:
     PEB through GS (`arch_prctl(ARCH_SET_GS)`, behind the SWAPGS fence D49 asked for) and runs
     the entry point; a missing import is refused by name with status 126. A QEMU test on all
     three boots two programs built from our own source for `x86_64-pc-windows-msvc`. Next, as
-    user capabilities (item 19): users can run programs with threads and waits, list
-    directories, and run programs built on Rust's std or a C runtime; then structured exception
-    handling, other DLLs, ARM64 programs and x86_64 programs on Arm through ahead-of-time
-    translation.
+    user capabilities: item 19; then structured exception handling, other DLLs, ARM64 programs
+    and x86_64 programs on Arm through ahead-of-time translation.
+19. **next** — Windows, part 2: users can run Windows console programs that use threads and
+    waits, list directories and start other programs, and programs built on Rust's std or a
+    C runtime (MSVC's, MinGW's) (D118's "Not yet").
+20. **done** — macOS, part 1: users can now run macOS console programs from `eggsh` on aarch64
+    (arm64 programs) and x86_64 (x86_64 programs), thin or fat (D120,
+    docs/macos-programs.md): an optional macOS layer at `/usr/lib/eggos/macos`, which
+    `cargo xtask image --add` installs with the first Mach-O file, stands in for dyld: it picks
+    the slice for the CPU, maps the segments with the slide, binds the imports to our own
+    libSystem subset (stdio and `printf`, strings and memory, the heap, numbers, files and
+    directories with Darwin's layouts, the environment, clocks and `mach_absolute_time`,
+    `exit`, `atexit`, `abort`) through the chained fixups and calls `main`; an unimplemented
+    import stops the program only when called (status 127), another library refuses it by
+    name (126). The kernel's `execve` starts the layer for Mach-O and fat files (not Java
+    class files) on aarch64 and x86_64; riscv64 refuses them with `ENOEXEC`. A QEMU test on all
+    three boots programs built from our own source by Apple's linker (on CI's macOS runner).
+21. **next** — macOS, part 2: users can run macOS programs built on Rust's std and C programs
+    with threads: thread-local variables, pthread, signals, `mmap`, libdispatch semaphores and
+    the unwinder; then programs without chained fixups (`LC_DYLD_INFO`), other dylibs and
+    frameworks, and x86_64 programs on Arm through ahead-of-time translation (D120's
+    "Not yet").
 
-Next in the plan: item 20, macOS, part 1.
+Next in the plan: item 19 or 21, whichever the build loop picks first.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
@@ -195,7 +213,7 @@ architecture as "boots, no shell". The graphical terminal is the owner's priorit
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
 | M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
-| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, part 1: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119) |
+| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, part 1: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119); macOS console programs on aarch64 and x86_64, part 1: a Mach-O loader (thin and fat, chained fixups) and a libSystem subset as an optional user-mode layer (D120) |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
 Timer follow-ups (D26): on x86_64, read the TSC/APIC frequencies from CPUID 0x15 and hypervisor
