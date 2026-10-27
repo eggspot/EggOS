@@ -81,8 +81,13 @@ holds what used to be written in them.
   relocation-model=pie`: a static PIE on x86_64), each with `-C link-self-contained=yes -C
   target-feature=+crt-static` in a target directory of its own, and types commands at the prompt
   that run them, by name or by path; each command's `LINUX-STATIC` lines, the panic's message,
-  `Aborted` and the exit statuses must appear in order before the next prompt (D117). A boot that
-  has not powered off within 30 seconds (90 for the benchmarks) has hung.
+  `Aborted` and the exit statuses must appear in order before the next prompt (D117). Then the
+  program windows test boots the release image with `userland/hello-window` added as
+  `/usr/libexec/hello-window`, with its display, types `ls /dev` and a pipeline of two of them,
+  and through QMP clicks the first window to raise it, drags it by its title bar and closes both
+  with their close controls, comparing the display with the host's render of the same desktop
+  after each step (D127). A boot that has not powered off within 30 seconds (90 for the
+  benchmarks) has hung.
 - **The Windows programs boot test** adds `tests/windows-console`'s two programs, built for
   `x86_64-pc-windows-msvc` with `rust-lld`, as `/bin/windows-console.exe` and
   `/bin/windows-unsupported.exe` (with the Windows layer on x86_64) and types three commands:

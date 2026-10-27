@@ -118,8 +118,8 @@ pub mod request {
     pub const FIOASYNC: u32 = 0x5452;
 }
 
-/// What an open file description names: the console, a node of the file system (D102), or an
-/// end of a pipe (D125).
+/// What an open file description names: the console, a node of the file system (D102), an
+/// end of a pipe (D125), or a client of the window server (D127).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
@@ -134,6 +134,8 @@ pub enum FileKind {
     Pipe(PipeEnd),
     /// A regular file whose contents were made when it was opened (`/proc`, D125).
     Snapshot(Snapshot),
+    /// A client of the window server (`/dev/window`, D127).
+    Window(crate::window::Connection),
 }
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
@@ -149,7 +151,7 @@ impl FileKind {
     /// The node it names, if it names one.
     pub fn node(&self) -> Option<Node> {
         match self {
-            Self::Console | Self::Pipe(_) => None,
+            Self::Console | Self::Pipe(_) | Self::Window(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }

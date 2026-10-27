@@ -290,6 +290,16 @@ impl<P: Platform> AddressSpace<P> {
         self.drop_old_translations(virt, length, true);
     }
 
+    /// Unmaps every 4 KiB page of user `virt..virt + length` without handing its frame to
+    /// anyone: for frames the address space maps but does not own (lent frames, D127), before it
+    /// is dropped. `&mut self` means no CPU uses the address space, so none caches the pages.
+    pub fn forget_user_pages(&mut self, virt: u64, length: u64) {
+        let _ =
+            self.tables
+                .get_mut()
+                .change_user_pages(virt, length, |_, _| PageChange::Unmap, |_| ());
+    }
+
     /// Moves every page of user `from..from + length` that is mapped or kept to the same
     /// offset from `to`, frames and contents with them, as [`PageTables::move_user_pages`]
     /// (nothing there may be mapped yet; on an error nothing has moved), then makes sure no CPU

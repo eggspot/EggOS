@@ -1,8 +1,10 @@
 //! Linux's memory calls (M6, D53): `brk`, `mmap`, `munmap` and `mprotect`, on the process's
 //! regions ([`crate::regions`]).
 //!
-//! Anonymous mappings only until there are files (M7): a mapping is a region whose pages are
-//! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory behaves
+//! Anonymous mappings, and `MAP_SHARED` mappings of a window's pixels on `/dev/window` (D127),
+//! whose pages map the window server's frames at once and are never the process's; mappings of
+//! files come later (M7). An anonymous mapping is a region whose pages are mapped, zeroed, as
+//! the program first touches them. `MAP_SHARED` anonymous memory behaves
 //! as private within one memory, which `CLONE_VM` children share; it marks the memory, and a
 //! `fork` that would copy it is refused with `ENOSYS` until copy-on-write (D104). Placement is top-down
 //! from below the stack's guard gap, as Linux places mappings; the break starts at the end of
@@ -14,9 +16,11 @@
 //! Linux's error numbers, so a program sees the same error for the same mistake.
 
 use super::Errno;
+use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::exec::{MINIMUM_ADDRESS, STACK_GUARD_GAP, STACK_RESERVE};
 use crate::process::{Coverage, Placement, PopulateError, Process, Remap};
 use crate::regions::{Access, RegionError};
+use alloc::sync::Arc;
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format};
@@ -162,6 +166,15 @@ fn page_aligned(length: u64) -> Option<u64> {
     length.checked_next_multiple_of(FRAME_SIZE)
 }
 
+fn window_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
+    let file = file.ok_or(Errno::EBADF)?;
+    let open = file.files.file(file.fd)?;
+    match open.kind() {
+        FileKind::Window(_) => Ok(open),
+        _ => Err(Errno::EBADF),
+    }
+}
+
 /// `brk(address)`: moves the program break to `address` and returns where it is then, as the
 /// raw system call does: the new break, or the current one if the move is refused (`brk(0)`
 /// asks for it). Never an error number.
@@ -169,14 +182,50 @@ pub fn brk<P: Platform>(process: &Process<P>, address: u64) -> u64 {
     process.move_program_break(address, mmap_top::<P>())
 }
 
-/// `mmap(address, length, prot, flags, fd, offset)`, anonymous mappings only: returns the
-/// mapping's start.
+/// The descriptor a mapping of a file maps, in its process's table.
+#[derive(Debug, Clone, Copy)]
+pub struct MappedFile<'a> {
+    pub files: &'a Descriptors,
+    pub fd: u64,
+}
+
+/// `mmap(address, length, prot, flags, -1, offset)`, an anonymous mapping: returns the
+/// mapping's start (any other is `EBADF`).
 pub fn mmap<P: Platform>(
     process: &Process<P>,
     address: u64,
     length: u64,
     prot: u64,
     flags: u64,
+    offset: u64,
+) -> Result<u64, Errno> {
+    map_memory(process, address, length, prot, flags, None, offset)
+}
+
+/// `mmap(address, length, prot, flags, fd, offset)`: anonymous mappings, and `MAP_SHARED`
+/// mappings of a window's pixels on `/dev/window` (D127; `EACCES` with `MAP_PRIVATE`,
+/// `EPERM` executable or inaccessible); any other file is `EBADF`. Returns the mapping's
+/// start.
+pub fn mmap_file<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u64,
+    file: MappedFile<'_>,
+    offset: u64,
+) -> Result<u64, Errno> {
+    map_memory(process, address, length, prot, flags, Some(file), offset)
+}
+
+#[inline(always)]
+fn map_memory<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u64,
+    file: Option<MappedFile<'_>>,
     offset: u64,
 ) -> Result<u64, Errno> {
     if !offset.is_multiple_of(FRAME_SIZE) {
@@ -193,13 +242,20 @@ pub fn mmap<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let length = page_aligned(length).ok_or(Errno::ENOMEM)?;
-    if flags & map::ANONYMOUS == 0 {
-        return Err(Errno::EBADF);
-    }
+    let window = match flags & map::ANONYMOUS {
+        0 => Some(window_file(file)?),
+        _ => None,
+    };
     if flags & map::HUGETLB != 0 {
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
+    if window.is_some() && kind == map::PRIVATE {
+        return Err(Errno::EACCES);
+    }
+    if window.is_some() && attributes.is_none_or(|attributes| attributes.executable) {
+        return Err(Errno::EPERM);
+    }
     if kind != map::PRIVATE {
         process.mark_shared_anonymous();
     }
@@ -235,6 +291,12 @@ pub fn mmap<P: Platform>(
             top: mmap_top::<P>(),
         }
     };
+    if let (Some(window), Some(attributes)) = (window, attributes) {
+        let FileKind::Window(connection) = window.kind() else {
+            return Err(Errno::EBADF);
+        };
+        return super::window::map(process, connection, placement, length, attributes, offset);
+    }
     process
         .map_region(placement, length, attributes)
         .map_err(|error| match error {

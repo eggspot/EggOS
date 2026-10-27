@@ -11,6 +11,9 @@ behaviour. A UX regression is treated like a performance regression.
   window, minimise, accessibility, rendering plan, implementation order for items 11-14).
 - `terminal-v0.3.md`: the v0.3.0 terminal emulator (text area, ANSI subset, keyboard map,
   pointer).
+- `desktop-v0.3-gui.md`: the v0.3.0 multi-window desktop (D126): the window server's
+  `/dev/window` contract, window roles, stacking, chrome, move, resize, the switcher and
+  keyboard operation (items 30-31), and later the shell, the installer, Files and Settings.
 - `font-8x16.txt`: Egg Mono 8x16, the system font, every printable ASCII glyph as pixel art.
 
 ## Principles

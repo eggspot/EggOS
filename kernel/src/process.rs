@@ -41,6 +41,7 @@ use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
 use crate::sync::SpinLock;
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
@@ -203,6 +204,23 @@ struct Memory<P: Platform> {
     frame_offset: usize,
     futex_space: u32,
     shared_anonymous: AtomicBool,
+    lent: SpinLock<Vec<LentRange>>,
+    has_lent: AtomicBool,
+}
+
+/// Frames a device lends to user space ([`Process::map_lent_frames`]): physically contiguous,
+/// owned by the device, and kept by every process that maps them for as long as it does.
+pub trait LentFrames: Send + Sync {
+    /// The physical address of the first frame.
+    fn physical(&self) -> u64;
+    /// How many bytes, whole frames, may be mapped.
+    fn length(&self) -> u64;
+}
+
+struct LentRange {
+    start: u64,
+    end: u64,
+    frames: Arc<dyn LentFrames>,
 }
 
 enum CopyError {
@@ -219,6 +237,8 @@ impl<P: Platform> Memory<P> {
             frame_offset,
             futex_space,
             shared_anonymous: AtomicBool::new(false),
+            lent: SpinLock::new(Vec::new()),
+            has_lent: AtomicBool::new(false),
         }
     }
 
@@ -259,7 +279,61 @@ impl<P: Platform> Memory<P> {
             frame_offset,
             futex_space,
             shared_anonymous: AtomicBool::new(false),
+            lent: SpinLock::new(Vec::new()),
+            has_lent: AtomicBool::new(false),
         })
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unmap_lent(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        let mut lent = self.lent.lock();
+        let mut index = 0;
+        while index < lent.len() {
+            let range = &lent[index];
+            let (from, to) = (range.start.max(start), range.end.min(end));
+            if from >= to {
+                index += 1;
+                continue;
+            }
+            self.space
+                .unmap_pages(from, to - from, |_| ())
+                .map_err(|_| RegionError::Invalid)?;
+            let range = lent.swap_remove(index);
+            if range.start < from {
+                lent.push(LentRange {
+                    start: range.start,
+                    end: from,
+                    frames: Arc::clone(&range.frames),
+                });
+            }
+            if to < range.end {
+                lent.push(LentRange {
+                    start: to,
+                    end: range.end,
+                    frames: range.frames,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn lends_in(&self, start: u64, end: u64) -> bool {
+        self.has_lent.load(Ordering::Relaxed)
+            && self
+                .lent
+                .lock()
+                .iter()
+                .any(|range| range.start < end && start < range.end)
+    }
+}
+
+impl<P: Platform> Drop for Memory<P> {
+    fn drop(&mut self) {
+        for range in self.lent.get_mut().drain(..) {
+            self.space
+                .forget_user_pages(range.start, range.end - range.start);
+        }
     }
 }
 
@@ -685,6 +759,19 @@ impl<P: Platform> Process<P> {
         attributes: Option<Attributes>,
     ) -> Result<u64, RegionError> {
         let memory = &*self.memory;
+        let mut regions = memory.regions.lock();
+        let start = Self::place_locked(memory, &mut regions, placement, length)?;
+        regions.insert(start, start + length, attributes)?;
+        Ok(start)
+    }
+
+    #[inline(always)]
+    fn place_locked(
+        memory: &Memory<P>,
+        regions: &mut Regions,
+        placement: Placement,
+        length: u64,
+    ) -> Result<u64, RegionError> {
         let user_end = <P::PageTableFormat as Format>::USER_END;
         if length == 0 || !length.is_multiple_of(FRAME_SIZE) {
             return Err(RegionError::Invalid);
@@ -692,22 +779,68 @@ impl<P: Platform> Process<P> {
         let within = |start: u64, floor: u64, top: u64| {
             start >= floor && start.checked_add(length).is_some_and(|end| end <= top)
         };
-        let mut regions = memory.regions.lock();
-        let start = match placement {
+        Ok(match placement {
             Placement::Replace(start) | Placement::Exactly(start) => {
                 if !within(start, 0, user_end) {
                     return Err(RegionError::Invalid);
                 }
                 if let Placement::Replace(_) = placement {
-                    Self::unmap_locked(memory, &mut regions, start, start + length)?;
+                    Self::unmap_locked(memory, regions, start, start + length)?;
                 }
                 start
             }
             Placement::Anywhere { hint, floor, top } => {
-                free_range(&regions, hint, floor, top.min(user_end), length)?
+                free_range(regions, hint, floor, top.min(user_end), length)?
             }
-        };
-        regions.insert(start, start + length, attributes)?;
+        })
+    }
+
+    /// Adds a region of `length` bytes with `attributes` where `placement` says, as
+    /// [`Self::map_region`], and maps it at once to `frames`, from their first: memory a device
+    /// shares with the program (`MAP_SHARED` of a device, D127). The frames stay the device's:
+    /// unmapping the range, or the process's end, never frees them, and the process keeps
+    /// `frames` until then. Such a range cannot be moved (`mremap`) or discarded (`madvise`),
+    /// and a process that has one is not copied by `fork` ([`Self::mark_shared_anonymous`]).
+    pub fn map_lent_frames(
+        &self,
+        placement: Placement,
+        length: u64,
+        attributes: Attributes,
+        frames: Arc<dyn LentFrames>,
+    ) -> Result<u64, RegionError> {
+        let memory = &*self.memory;
+        if length > frames.length() {
+            return Err(RegionError::Invalid);
+        }
+        self.mark_shared_anonymous();
+        let mut regions = memory.regions.lock();
+        let start = Self::place_locked(memory, &mut regions, placement, length)?;
+        regions.insert(start, start + length, Some(attributes))?;
+        let physical = frames.physical();
+        let mut lent = memory.lent.lock();
+        if lent.try_reserve(1).is_err() {
+            drop(lent);
+            regions.remove(start, start + length, |_| ())?;
+            return Err(RegionError::OutOfMemory);
+        }
+        lent.push(LentRange {
+            start,
+            end: start + length,
+            frames,
+        });
+        memory.has_lent.store(true, Ordering::Relaxed);
+        drop(lent);
+        for offset in (0..length).step_by(FRAME_SIZE as usize) {
+            if memory
+                .space
+                .map(start + offset, physical + offset, FRAME_SIZE, attributes)
+                .is_err()
+            {
+                let _ = Self::unmap_locked(memory, &mut regions, start, start + length);
+                return Err(RegionError::OutOfMemory);
+            }
+        }
+        P::drop_user_translations(start, length);
         Ok(start)
     }
 
@@ -762,6 +895,9 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         regions.remove(start, end, |_| ())?;
+        if memory.has_lent.load(Ordering::Relaxed) {
+            memory.unmap_lent(start, end)?;
+        }
         Self::free_pages(memory, start, end).map_err(|_| RegionError::Invalid)
     }
 
@@ -805,6 +941,9 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         let regions = memory.regions.lock();
+        if memory.lends_in(start, end) {
+            return Err(RegionError::Invalid);
+        }
         let free_run = |(run_start, run_end)| {
             Self::free_pages(memory, run_start, run_end).map_err(|_| RegionError::Invalid)
         };
@@ -950,6 +1089,9 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         let mut regions = memory.regions.lock();
+        if memory.lends_in(start, old_end) {
+            return Err(RegionError::Invalid);
+        }
         let region = regions
             .find(start)
             .copied()

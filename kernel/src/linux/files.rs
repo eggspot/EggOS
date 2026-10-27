@@ -164,6 +164,7 @@ pub fn lookup<P: Platform>(
 /// else with `O_DIRECTORY`; `EROFS` for a regular file opened for writing or with `O_TRUNC`;
 /// `EMFILE` when every descriptor below the open-file limit is taken. `O_PATH` opens a
 /// location only, ignoring the other flags but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`.
+/// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it.
 /// With no symbolic links yet, `O_NOFOLLOW` changes nothing; `O_NONBLOCK` and `O_APPEND` are
 /// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
 /// ignored. `mode` matters only to a file created, which none is.
@@ -233,13 +234,17 @@ pub fn openat<P: Platform>(
         if flags & open_flag::DIRECTORY != 0 && !directory {
             return Err(Errno::ENOTDIR);
         }
-        if !directory && (writes || flags & open_flag::TRUNC != 0) {
-            super::file_changes::truncate_on_open::<P>(node, flags)?;
-        }
-        match (directory, node.generate()) {
-            (true, _) => FileKind::Directory(node),
-            (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),
-            (false, None) => FileKind::Regular(node),
+        if let Some(device) = node.character_device() {
+            open_device::<P>(device)?
+        } else {
+            if !directory && (writes || flags & open_flag::TRUNC != 0) {
+                super::file_changes::truncate_on_open::<P>(node, flags)?;
+            }
+            match (directory, node.generate()) {
+                (true, _) => FileKind::Directory(node),
+                (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),
+                (false, None) => FileKind::Regular(node),
+            }
         }
     };
     let status = match only_path {
@@ -251,6 +256,13 @@ pub fn openat<P: Platform>(
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let fd = thread.files().lock().open(file, close_on_exec, limit)?;
     Ok(u64::from(fd))
+}
+
+fn open_device<P: Platform>(device: (u32, u32)) -> Result<FileKind, Errno> {
+    match device {
+        crate::vfs::devfs::WINDOW_DEVICE => super::window::open::<P>(),
+        _ => Err(Errno::ENXIO),
+    }
 }
 
 #[cold]
@@ -497,6 +509,8 @@ pub fn lseek_node(file: &OpenFile, offset: u64, whence: u64) -> Result<u64, Errn
     }
 }
 
+/// A directory entry's type (`d_type`): a character device.
+pub const DT_CHR: u8 = 2;
 /// A directory entry's type (`d_type`): a directory.
 pub const DT_DIR: u8 = 4;
 /// A directory entry's type (`d_type`): a regular file.
@@ -542,6 +556,7 @@ fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, vfs::Name
             let kind = match kind {
                 NodeKind::Directory => DT_DIR,
                 NodeKind::Regular => DT_REG,
+                NodeKind::CharacterDevice => DT_CHR,
             };
             Some((node.attributes().file_id, kind, name))
         }

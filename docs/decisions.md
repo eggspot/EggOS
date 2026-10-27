@@ -7071,3 +7071,125 @@ the license, by an explicit instruction recorded here.
 - **Not yet (follow-ups).** Per-pipe wait queues; files kept until their last close; programs
   run from tmpfs; `/proc/self`, `/proc/<pid>`; `umask`; access times; `2>` and `2>&1`; cursor
   movement and a history file; `cp -r`; the GUI and MCP front-ends of the utilities (M14).
+
+## D126 v0.3.0 becomes GUI-ready: apps from Windows, macOS and Linux open in windows (owner, 2026-10-27) — Decided (owner); the order of the items decided by the owner, their split by the build loop
+- **The owner's decision (2026-10-27).** v0.3.0 must let a user install and open Windows, macOS
+  and Linux apps in windows on the EggOS desktop. Console programs from those systems (D117 to
+  D125) are not enough for the release: a switcher expects their apps to open as windows.
+- **What it means for the plan** (`docs/roadmap.md`, v0.3.0): after items 22 and 23 (done),
+  in this order: 30 several windows from programs (the window server, D127); 31 window
+  management (edge resize, maximise and restore, pointer shapes, the switcher, Alt+F4 and
+  Cmd+W, the window menu, snap, `wm`); 32 Windows GUI apps, part 1; 33 a host apps folder
+  (virtio-blk and a FAT32 reader, `cargo xtask run --apps <dir>` as QEMU's `fat:ro:`); 25 files
+  that survive a reboot; 34 a UI toolkit and the Settings app; 35 the desktop shell (taskbar or
+  dock, launcher, icons); 36 install, open and uninstall of `.exe`, `.app` and ELF programs; 37
+  the Files app; 38 `AF_UNIX`, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files;
+  39 a Wayland server, `eggway`; 40 the macOS Objective-C runtime and Foundation core; 41 macOS
+  GUI apps, part 1. Extras after those, in order: 42 Windows controls, menus and dialogs; 43
+  Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a
+  Text Editor; 29 an RTC driver. Moved after the release: networking, the MCP server (D21) and
+  the terminal's `edit`. The earlier nice-to-haves and cut order of D99 are replaced by this
+  list.
+- **The design** is Claude Fable's (D16): `docs/ux/desktop-v0.3-gui.md` designs items 30 and
+  31 now and items 34 to 37 for later, on top of `desktop-v0.3.md` (D109). Its default layout
+  profile for 0.3.0 is macOS habits (controls on the left, the top bar), the layout already
+  built; the owner can overrule it.
+- **The window server is in the kernel for v0.3.0**, an exception like D109's in-kernel desktop
+  and D115's in-kernel terminal: it extends the desktop the kernel already draws, so the
+  terminal moves behind the same contract with no visible change, and nothing in user space
+  has to exist first. The contract that stays when the server moves to user space (with the
+  userland terminal and the component manager, D18) is `/dev/window`: a character device whose
+  `ioctl`s create and change windows, whose `mmap` maps a window's pixels, and whose `read`
+  and `poll` deliver input events (D127, docs/windows.md). Programs written against it keep
+  working when the server moves.
+
+## D127 The window server: programs open windows through `/dev/window`, in the kernel for v0.3.0 (v0.3.0 item 30) — Decided by the build loop (the design is Claude Fable's, D16; the ambiguities decided by research)
+- **What.** Users can now run programs that open their own windows on the EggOS desktop: a
+  program opens `/dev/window`, creates a window, maps its pixels, draws and commits, and reads
+  its input events; the user raises and focuses windows by clicking them, moves them by their
+  title bars, minimises them to chips in the top bar, and the close control asks the program
+  to close. The terminal is one window among them and works exactly as before (no visible
+  change: the default desktop's and the terminal self-test's pixel hashes are unchanged). The
+  design is `docs/ux/desktop-v0.3-gui.md` (sections 3, 4 and 13); the contract is
+  docs/windows.md.
+- **Placement.** The server's logic is pure state in the drawing crate,
+  `eggos_drivers::desktop` (`windows.rs` the window's geometry and chrome, `protocol.rs` the
+  contract's numbers and layouts, `events.rs` the event queue), with host tests; the kernel
+  holds the device (`kernel/src/window.rs`: buffers, clients, queues), its Linux face
+  (`kernel/src/linux/window.rs`: `open`, `ioctl`, `read`, `poll`, `mmap`, `fstat`) and the
+  device files' file system on `/dev` (`kernel/src/vfs/devfs.rs`, a new `NodeKind::
+  CharacterDevice`). In the kernel for v0.3.0 (D126); `/dev/window` is the contract that stays.
+- **Contract.** `ioctl` requests in Linux's `_IOC` encoding with type `'w'`: `CREATE` 1,
+  `SET_TITLE` 2, `SET_SIZE` 3, `SET_MINIMUM_SIZE` 4, `SET_POSITION` 5, `SET_STATE` 6,
+  `SET_POINTER` 7, `COMMIT` 8, `DESTROY` 9, `GET_WORK_AREA` 10 (numbers, sizes and layouts in
+  docs/windows.md, pinned by host tests); `CREATE` and `SET_SIZE` write back the content size
+  they clamped to and the buffer's offset, which the design left to the engineer. A window's
+  pixels are a buffer the server allocates (physically contiguous frames, zeroed), which the
+  client maps `MAP_SHARED` at that offset: the process maps the device's frames without owning
+  them (`Process::map_lent_frames`; `munmap`, `MAP_FIXED` over them and the process's end
+  unmap them without freeing; `mremap` and `madvise`'s discards refuse them; `fork` is refused
+  as for shared anonymous memory, D104), and the buffer lives until the window and every
+  mapping let go. `COMMIT` composes its rectangles into the framebuffer during the call. Events
+  are 32-byte records read from the descriptor, `POLLIN` when one waits; waiters wait on the
+  console's input key, as pipes' do (D125). `/dev/window` is the character device 240:0
+  (Linux's range for local use) on the device files' file system 0:5, mounted on `/dev` when
+  the root has that directory (the release initramfs now does).
+- **Limits.** 16 windows per client, 64 in all with the terminal's, 64 clients, 256 records
+  per queue, 8 rectangles per commit, titles of 64 bytes, buffers of at most 4 MiB (the frame
+  allocator's largest block). Every table is fixed: no allocation on a per-event, per-request
+  or per-frame path; the allocations are a window's buffer, a client's queue (8 KiB) and the
+  terminal's grid buffer.
+- **Event set.** `PointerEnter`, `PointerMove`, `PointerLeave`, `Button`, `Wheel`, `Key`,
+  `FocusIn`, `FocusOut`, `CloseRequest`, `StateChanged` and `Overflow` are sent; `Resize` and
+  `Scale` are numbered and come with item 31 and scaling. A full queue merges a motion into the
+  newest record when that is a motion of the same window, else drops the oldest and reports
+  `Overflow` with the count.
+- **Stacking and focus.** Windows stack bottom to top in one fixed list; a button press on a
+  window raises it, with its dialogs above it, and focuses it (its top dialog, if it has one,
+  which also takes the parent's input); a new window goes on top, focused, at its first commit;
+  when the focused window is minimised or destroyed, the top shown window takes focus. Clicking
+  the wallpaper unfocuses, as before. A press in the content holds the pointer for that window
+  until every button is up.
+- **Composition.** Each damaged rectangle is composed from scratch: wallpaper, then every shown
+  window bottom to top (shadow, border, title bar, controls, title, content from its buffer, the
+  window background before its first commit at the current size), the bar, the menu. A
+  rectangle inside the content of the top window there (clear of the rounded corners) is only
+  copied from that window's buffer. The terminal now renders its grid into its own buffer (the
+  grid's 640x384 pixels; its padding is drawn by the compositor), so windows over it, and later
+  a terminal partly off screen, clip it correctly; its pixels are unchanged.
+- **Decided by research.** The title stays centred on the whole window, cut to keep 68 px clear
+  on both sides, rather than centred between the controls and the far margin, so the terminal
+  does not move (item 30's "no visible change"). Item 30 draws two controls (close, minimise)
+  as today; the maximise control comes with maximising in item 31. The move clamp keeps the
+  whole window in the work area, as today; hanging a window off the edges is item 31's.
+  Controls act on press, as the minimise control already did. A window minimised before its
+  first commit is shown as a chip at it. Chips are in creation order. The close-request 2 s
+  rule is left for later.
+- **Cost.** The terminal's grid buffer is 1 MiB of idle memory (983,040 bytes in an order-8
+  block), the window table about 9 KiB, the kernel's code for the server and the device;
+  `hello-window` is a test program only, not in the release image. Each window costs its buffer
+  (480,000 bytes, a 512 KiB block, for 400x300) and its client's queue. The console write path
+  and the drawing thread do the same work as before plus the copy from the terminal's buffer;
+  the poll path checks windows with pipes. New benchmarks (docs/benchmarks.md):
+  `gfx_compose_four_windows` (a 64x64 rectangle where four windows overlap, composed from
+  scratch), `window_commit_line` (a 656x16 commit to the framebuffer) and `window_hit_test`
+  (pointer motion over eight windows); a whole 656x400 commit per iteration, the design's
+  `window_commit_content`, would take the benchmark kernel minutes at 10,000 iterations. Their
+  baselines and the other benchmarks' and image sizes' changes are CI's (the PR lists them).
+- **Testing.** Host tests: placement and cascading at 1280x800 and 1024x768, clamping,
+  stacking and focus after clicks, creates, destroys and minimises, the close request, title
+  bar dragging, the implicit grab, keys and the wheel, codepoints, chips, dialogs, ownership,
+  roles, flags and limits, commit damage, painting in many rects equal to the whole screen with
+  three windows and the fast path, the unchanged default desktop hash, the request numbers and
+  layouts, the event records' layout, the queue's order, merging and `Overflow`, the device
+  files. QEMU, on aarch64, riscv64 and x86_64: `ls /dev`, then two `hello-window`s in a
+  pipeline each open a window (checking `GET_WORK_AREA`, the refused `MAP_PRIVATE` and the
+  refused short read), and through QMP the test clicks one to raise it, drags the other by its
+  title bar and closes both with their close controls (each program writes `close request`
+  and exits), comparing the display with the host's render of the same desktop after each
+  step; the boot-to-prompt test's desktop and pointer steps pass unchanged.
+- **Not yet (item 31 and later).** Edge resize, maximise and restore, snap, the switcher,
+  Alt+F4 and Cmd+W, the window menu, pointer shapes, keyboard operation, windows partly off
+  screen, the `wm` command and its MCP tools (D22: the CLI and MCP front-ends of the window
+  capability ship with item 31; this item's front-end is the GUI), the 2 s rule, key repeat
+  records, scales, buffers over 4 MiB, the server in user space.

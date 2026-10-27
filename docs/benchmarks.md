@@ -96,6 +96,15 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `term_scroll_line`: a line feed at the bottom of an 80x24 terminal and its render (D114): the
   grid moved up a line into the scrollback, the pixels of 23 lines moved up instead of drawn
   again, the new line and the cursor drawn.
+- `gfx_compose_four_windows`: a 64x64 rectangle of a 1280x800 desktop where the terminal and
+  four cascaded 658x430 windows overlap, composed from scratch (D127): the wallpaper, each
+  window's shadow, chrome and content, the bar. The design's full-screen budget (four windows,
+  10 ms) is about 250 of these.
+- `window_commit_line`: a commit of one 656x16 band of the top window's content (D127): the
+  damage it makes and the band copied from the window's buffer to the framebuffer, through the
+  compositor's fast path.
+- `window_hit_test`: the pointer moving between two points over eight overlapping windows
+  (D127): the top window under it found, and its enter, leave and motion events made.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties
