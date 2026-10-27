@@ -89,18 +89,25 @@ unsafe extern "win64" fn create_thread(
         abandon(handle);
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
-    // SAFETY: the object lives while its handle and the thread's reference do; nothing else
-    // reads these fields before the thread starts.
-    let state = unsafe { thread_of(object) };
-    state.teb = teb;
+    let id_word = {
+        // SAFETY: the object lives while its handle and the thread's reference do, and no
+        // other thread reaches it before the thread starts.
+        let state = unsafe { thread_of(object) };
+        state.teb = teb;
+        state.id_word.as_ptr()
+    };
     LIVE_THREADS.fetch_add(1, Ordering::AcqRel);
     // SAFETY: the stack's top is 16-byte aligned and only the new thread uses the stack until
     // the kernel clears `id_word`, which lives in the object the thread holds a reference to.
-    let started =
-        unsafe { linux::spawn_thread(top, state.id_word.as_ptr(), thread_main, object as usize) };
+    let started = unsafe { linux::spawn_thread(top, id_word, thread_main, object as usize) };
     match started {
         Ok(id) => {
-            state.id.store(id as u32, Ordering::Release);
+            sync::change(handle, |kind| {
+                if let Kind::Thread(thread) = kind {
+                    thread.id.store(id as u32, Ordering::Release);
+                }
+                ((), false)
+            });
             if !thread_id.is_null() {
                 // SAFETY: the caller passes a writable `DWORD` for the id.
                 unsafe { thread_id.write(id as u32) };
