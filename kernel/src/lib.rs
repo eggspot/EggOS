@@ -98,9 +98,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 if let Some(report) = vfs::mount_embedded_initramfs() {
                     report_root(console, report)?;
                 }
-                let proc: &'static linux::proc::Proc<P> =
-                    alloc::boxed::Box::leak(alloc::boxed::Box::new(linux::proc::Proc::new()));
-                let _ = vfs::mount(b"/proc", proc);
+                mount_system_file_systems::<P>();
                 if BOOT_MODE == BootMode::Init {
                     init::run(console, &mut memory)?;
                     return Ok(false);
@@ -122,6 +120,33 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     match report {
         Ok(true) => ExitStatus::Success,
         Ok(false) | Err(_) => ExitStatus::Failure,
+    }
+}
+
+/// The anonymous devices the memory file systems on `/tmp` and `/home` report.
+const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 2] = [(b"/tmp", (0, 30)), (b"/home", (0, 31))];
+
+fn mount_system_file_systems<P: Platform>() {
+    use alloc::boxed::Box;
+    let root = vfs::root();
+    let exists = |path: &[u8]| vfs::resolve(root, root, path).is_ok_and(|node| node.is_directory());
+    if exists(b"/proc") {
+        let proc: &'static linux::proc::Proc<P> = Box::leak(Box::new(linux::proc::Proc::new()));
+        let _ = vfs::mount(b"/proc", proc);
+    }
+    if !MEMORY_FILE_SYSTEMS.iter().any(|(path, _)| exists(path)) {
+        return;
+    }
+    let limit = memory::total_frames() as usize * eggos_hal::memory::FRAME_SIZE as usize / 2;
+    let budget: &'static vfs::tmpfs::Budget = Box::leak(Box::new(vfs::tmpfs::Budget::new(limit)));
+    for (path, device) in MEMORY_FILE_SYSTEMS {
+        if !exists(path) {
+            continue;
+        }
+        let permissions = if path == b"/tmp" { 0o1777 } else { 0o755 };
+        if let Some(file_system) = vfs::tmpfs::Tmpfs::new(budget, device, permissions) {
+            let _ = vfs::mount(path, Box::leak(Box::new(file_system)));
+        }
     }
 }
 

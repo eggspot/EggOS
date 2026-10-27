@@ -48,6 +48,10 @@ pub mod number {
     pub const STATX: usize = 332;
     pub const DUP3: usize = 292;
     pub const PIPE2: usize = 293;
+    pub const MKDIRAT: usize = 258;
+    pub const UNLINKAT: usize = 263;
+    pub const UTIMENSAT: usize = 280;
+    pub const RENAMEAT2: usize = 316;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -95,6 +99,10 @@ pub mod number {
     pub const STATX: usize = 291;
     pub const DUP3: usize = 24;
     pub const PIPE2: usize = 59;
+    pub const MKDIRAT: usize = 34;
+    pub const UNLINKAT: usize = 35;
+    pub const UTIMENSAT: usize = 88;
+    pub const RENAMEAT2: usize = 276;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

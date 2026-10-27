@@ -34,6 +34,8 @@ pub struct Fake {
     pub slept: Vec<Duration>,
     pub rebooted: Vec<u32>,
     pub reboot_error: Option<Errno>,
+    pub cross_device: Vec<Vec<u8>>,
+    pub now: i64,
     open: Vec<Option<OpenFile>>,
 }
 
@@ -65,6 +67,8 @@ impl Default for Fake {
             slept: Vec::new(),
             rebooted: Vec::new(),
             reboot_error: Some(Errno::EPERM),
+            cross_device: Vec::new(),
+            now: 1_700_000_000,
             open: Vec::new(),
         }
     }
@@ -165,7 +169,20 @@ impl System for Fake {
                 self.standard_error.extend_from_slice(bytes);
                 Ok(())
             }
-            _ => Err(Errno(9)),
+            _ => {
+                let file = self.file(descriptor)?.clone();
+                let Some((Node::File(content), status)) = self.nodes.get_mut(&file.path) else {
+                    return Err(Errno(9));
+                };
+                let end = file.position + bytes.len();
+                if content.len() < end {
+                    content.resize(end, 0);
+                }
+                content[file.position..end].copy_from_slice(bytes);
+                status.size = content.len() as u64;
+                self.file(descriptor)?.position = end;
+                Ok(())
+            }
         }
     }
 
@@ -276,5 +293,98 @@ impl System for Fake {
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         self.rebooted.push(command);
         self.reboot_error.map_or(Ok(()), Err)
+    }
+
+    fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
+        let bytes = path.to_bytes().to_vec();
+        match self.nodes.get_mut(&bytes) {
+            Some((Node::Directory, _)) => return Err(Errno::EISDIR),
+            Some((Node::File(content), status)) => {
+                if truncate {
+                    content.clear();
+                    status.size = 0;
+                }
+            }
+            None => {
+                self.parent_directory(&bytes)?;
+                let text = String::from_utf8(bytes.clone()).unwrap();
+                *self = std::mem::take(self).with_file(&text, mode & 0o7777, b"", 0);
+            }
+        }
+        self.open.push(Some(OpenFile {
+            path: bytes,
+            position: 0,
+        }));
+        Ok(self.open.len() - 1 + FIRST_FILE_DESCRIPTOR)
+    }
+
+    fn make_directory(&mut self, path: &CStr, _mode: u32) -> Result<(), Errno> {
+        let bytes = path.to_bytes().to_vec();
+        if self.nodes.contains_key(&bytes) {
+            return Err(Errno::EEXIST);
+        }
+        self.parent_directory(&bytes)?;
+        let text = String::from_utf8(bytes).unwrap();
+        *self = std::mem::take(self).with_directory(&text, 0);
+        Ok(())
+    }
+
+    fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno> {
+        let bytes = path.to_bytes().to_vec();
+        match (self.nodes.get(&bytes), directory) {
+            (None, _) => Err(Errno::ENOENT),
+            (Some((Node::Directory, _)), false) => Err(Errno::EISDIR),
+            (Some((Node::File(_), _)), true) => Err(Errno::ENOTDIR),
+            (Some((Node::Directory, _)), true) if self.children(&bytes).len() > 2 => {
+                Err(Errno::ENOTEMPTY)
+            }
+            _ => {
+                self.nodes.remove(&bytes);
+                Ok(())
+            }
+        }
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        let (from, to) = (from.to_bytes().to_vec(), to.to_bytes().to_vec());
+        if self
+            .cross_device
+            .iter()
+            .any(|device| to.starts_with(device) != from.starts_with(device))
+        {
+            return Err(Errno::EXDEV);
+        }
+        let node = self.nodes.remove(&from).ok_or(Errno::ENOENT)?;
+        let moved: Vec<(Vec<u8>, (Node, Status))> = self
+            .nodes
+            .iter()
+            .filter(|(path, _)| path.starts_with(&from) && path.get(from.len()) == Some(&b'/'))
+            .map(|(path, node)| (path.clone(), node.clone()))
+            .collect();
+        for (path, inner) in moved {
+            self.nodes.remove(&path);
+            self.nodes
+                .insert([&to[..], &path[from.len()..]].concat(), inner);
+        }
+        self.nodes.insert(to, node);
+        Ok(())
+    }
+
+    fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
+        let (_, status) = self.nodes.get_mut(path.to_bytes()).ok_or(Errno::ENOENT)?;
+        status.modified = self.now;
+        Ok(())
+    }
+}
+
+impl Fake {
+    fn parent_directory(&self, path: &[u8]) -> Result<(), Errno> {
+        let (directory, _) = split_last_component(path);
+        match self.nodes.get(directory) {
+            Some((Node::Directory, _)) => Ok(()),
+            Some(_) => Err(Errno::ENOTDIR),
+            None if directory == b"." => Ok(()),
+            None => Err(Errno::ENOENT),
+        }
     }
 }

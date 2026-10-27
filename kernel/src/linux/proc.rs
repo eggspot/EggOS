@@ -12,7 +12,7 @@
 
 use super::process_table::{NAME_LENGTH, TABLE};
 use crate::memory;
-use crate::vfs::{Attributes, DirectoryEntry, FileSystem, NodeKind};
+use crate::vfs::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind};
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::marker::PhantomData;
@@ -165,11 +165,13 @@ impl<P: Platform> FileSystem for Proc<P> {
         ROOT
     }
 
-    fn name(&self, node: u64) -> &[u8] {
-        FILES
-            .iter()
-            .find(|&&(_, file)| file == node)
-            .map_or(&[][..], |(name, _)| name)
+    fn name(&self, node: u64) -> Name {
+        Name::new(
+            FILES
+                .iter()
+                .find(|&&(_, file)| file == node)
+                .map_or(&[][..], |(name, _)| name),
+        )
     }
 
     fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
@@ -191,13 +193,13 @@ impl<P: Platform> FileSystem for Proc<P> {
         }
     }
 
-    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry<'_>> {
+    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         if directory != ROOT {
             return None;
         }
         let &(name, node) = FILES.get(usize::try_from(position).ok()?)?;
         Some(DirectoryEntry {
-            name,
+            name: Name::new(name),
             node,
             kind: NodeKind::Regular,
         })
@@ -227,14 +229,14 @@ mod tests {
     #[test]
     fn the_root_lists_and_finds_its_three_files() {
         let proc = Proc::<crate::tests::TestPlatform>::new();
-        let names: Vec<&[u8]> = (0..)
+        let names: Vec<Vec<u8>> = (0..)
             .map_while(|position| proc.entry(ROOT, position))
-            .map(|entry| entry.name)
+            .map(|entry| entry.name.as_bytes().to_vec())
             .collect();
         assert_eq!(names, [&b"meminfo"[..], b"ps", b"uptime"]);
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
         assert_eq!(proc.lookup(ROOT, b"self"), None);
-        assert_eq!(proc.name(UPTIME), b"uptime");
+        assert_eq!(proc.name(UPTIME).as_bytes(), b"uptime");
         assert_eq!(proc.attributes(MEMINFO).permissions, 0o444);
         assert_eq!(proc.kind(ROOT), NodeKind::Directory);
     }

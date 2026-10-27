@@ -16,18 +16,21 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   no real-time clock (D110-D113).
 
 ## What the system can do
-- **No disk and no network.** The only file system is the read-only initramfs inside the
+- **No disk and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`.
-  Nothing can be written, and nothing you do survives a reboot (D102).
+  `/usr/share/eggos/about`. `/tmp` and `/home` are writable file systems in memory, together
+  at most half of the memory, and `/proc` has `meminfo`, `uptime` and `ps` (D125). Nothing you
+  do survives a reboot (D102, D125). A file removed while a program has it open is gone at
+  once, and programs cannot be run from `/tmp` or `/home` yet.
 - **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
   desktop's clock shows the uptime (D73, D115).
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
-  dynamic linking, no `/proc`, `/dev` or `/tmp`, no pipes (so a program cannot start another
-  through `std::process::Command`, `posix_spawn`, `system` or `popen`), no `mmap` of files, no
-  copy-on-write `fork` (memory is copied at once, D104).
+  dynamic linking, only a minimal `/proc` (`meminfo`, `uptime` and EggOS's own `ps`, no
+  `/proc/self` or `/proc/<pid>`), no `/dev`, no `mmap` of files, no copy-on-write `fork`
+  (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
+  with every pipe and console change.
 - **Windows: console programs on x86_64 and aarch64 only, parts 1, 2a and 2b.** Windows
   console programs that use the kernel32, ntdll, shell32 and user32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
@@ -53,12 +56,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   (D75).
 
 ## The shell and the core utilities
-- `eggsh` runs commands with arguments, quoting, variables, `cd`, `exit`, `.` and scripts, but
-  refuses pipes, redirections, `&&`, `||`, background jobs, subshells and command substitution,
-  and has no wildcards, `if`, `while`, `for`, `case`, functions, line editing or history
-  ([shell](shell.md)).
-- The core utilities are `cat`, `echo`, `false`, `halt`, `ls`, `poweroff`, `reboot`, `sleep`,
-  `true` and `uname` ([core utilities](coreutils.md)).
+- `eggsh` runs commands with arguments, quoting, variables, `cd`, `exit`, `.` and scripts,
+  pipelines and the `<`, `>` and `>>` redirections, with a history of recent lines on the
+  arrows, but refuses `&&`, `||`, background jobs, subshells and command substitution, and has
+  no wildcards, `if`, `while`, `for`, `case`, functions or `2>` ([shell](shell.md)).
+- The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
+  `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `true`, `uname`,
+  `uptime` and `wc`, each with the common options only ([core utilities](coreutils.md)); they
+  are command-line only, with no GUI or MCP front-end yet.
 - The keyboard layout is US only (D113).
 
 ## The desktop

@@ -18,7 +18,7 @@
 //! twice: an archive that breaks these rules is refused as a whole.
 
 use super::cpio::{self, Members};
-use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, NodeKind, PATH_MAX};
+use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, PATH_MAX};
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
@@ -364,8 +364,8 @@ impl FileSystem for Initramfs {
         u64::from(self.entry_at(node).parent)
     }
 
-    fn name(&self, node: u64) -> &[u8] {
-        self.entry_name(self.entry_at(node))
+    fn name(&self, node: u64) -> Name {
+        Name::new(self.entry_name(self.entry_at(node)))
     }
 
     #[inline]
@@ -380,7 +380,7 @@ impl FileSystem for Initramfs {
         &self.archive[start..start + length]
     }
 
-    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry<'_>> {
+    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let parent = self.entry_at(directory);
         let index = u64::from(parent.first_child).checked_add(position)?;
         if index >= u64::from(parent.end_of_children) {
@@ -449,10 +449,10 @@ pub mod tests {
         Initramfs::parse(bytes)
     }
 
-    fn names(file_system: &Initramfs, directory: u64) -> alloc::vec::Vec<&[u8]> {
+    fn names(file_system: &Initramfs, directory: u64) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         (0..)
             .map_while(|position| file_system.entry(directory, position))
-            .map(|entry| entry.name)
+            .map(|entry| entry.name.as_bytes().to_vec())
             .collect()
     }
 
@@ -489,7 +489,7 @@ pub mod tests {
         assert_eq!(file_system.lookup(root, b"link"), None);
         assert_eq!(file_system.lookup(etc, b"zz"), None);
         let sub = file_system.lookup(etc, b"sub").unwrap();
-        assert_eq!(file_system.name(sub), b"sub");
+        assert_eq!(file_system.name(sub).as_bytes(), b"sub");
         assert!(file_system.lookup(sub, b"c").is_some());
         assert_eq!(file_system.entry(sub, 1), None);
         assert_eq!(file_system.entry(sub, u64::MAX), None);

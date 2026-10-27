@@ -173,6 +173,7 @@ pub fn openat<P: Platform>(
     dirfd: u64,
     path: u64,
     flags: u64,
+    mode: u64,
 ) -> Result<u64, Errno> {
     let flags = flags as u32;
     let only_path = flags & open_flag::PATH != 0;
@@ -194,10 +195,18 @@ pub fn openat<P: Platform>(
         return Err(Errno::ENOENT);
     }
     let (root, start) = starting_points(thread, dirfd, path)?;
+    let mut created = false;
     let node = match vfs::resolve(root, start, path) {
         Ok(node) => node,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
-            return Err(creation_error(root, start, path));
+            match super::file_changes::create_file::<P>(root, start, path, mode) {
+                Ok(node) => {
+                    created = true;
+                    node
+                }
+                Err(Errno::EROFS) => return Err(creation_error(root, start, path)),
+                Err(error) => return Err(error),
+            }
         }
         Err(error) => return Err(walk_error(error)),
     };
@@ -213,7 +222,7 @@ pub fn openat<P: Platform>(
             false => Errno::ENOTDIR,
         });
     } else {
-        if flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
+        if !created && flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
             return Err(Errno::EEXIST);
         }
         if directory && (flags & (open_flag::CREAT | open_flag::TRUNC) != 0 || writes) {
@@ -223,7 +232,7 @@ pub fn openat<P: Platform>(
             return Err(Errno::ENOTDIR);
         }
         if !directory && (writes || flags & open_flag::TRUNC != 0) {
-            return Err(Errno::EROFS);
+            super::file_changes::truncate_on_open::<P>(node, flags)?;
         }
         match (directory, node.generate()) {
             (true, _) => FileKind::Directory(node),
@@ -312,6 +321,11 @@ pub fn copy_out<P: Platform>(
     count: u64,
 ) -> Result<u64, Errno> {
     let count = count.min(MAX_RW_COUNT);
+    if let Contents::Node(node) = contents
+        && node.file_system().copies_contents()
+    {
+        return copy_out_through_buffer(process, node, offset, address, count);
+    }
     let mut copied = 0;
     while copied < count {
         let at = address + copied;
@@ -327,6 +341,36 @@ pub fn copy_out<P: Platform>(
             };
         }
         copied += bytes.len() as u64;
+    }
+    Ok(copied)
+}
+
+#[inline(never)]
+fn copy_out_through_buffer<P: Platform>(
+    process: &Process<P>,
+    node: Node,
+    offset: u64,
+    address: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    let mut chunk = [0u8; FRAME_SIZE as usize];
+    let mut copied = 0;
+    while copied < count {
+        let at = address + copied;
+        let wanted = (count - copied).min(FRAME_SIZE - at % FRAME_SIZE) as usize;
+        let length = node
+            .file_system()
+            .read_into(node.id(), offset + copied, &mut chunk[..wanted]);
+        if length == 0 {
+            break;
+        }
+        if process.write_user_memory(at, &chunk[..length]).is_err() {
+            return match copied {
+                0 => Err(Errno::EFAULT),
+                _ => Ok(copied),
+            };
+        }
+        copied += length as u64;
     }
     Ok(copied)
 }
@@ -483,10 +527,14 @@ pub fn pack_dirent(
 
 const DIRENT_CHUNK: usize = 512;
 
-fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, &'static [u8])> {
+fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, vfs::Name)> {
     match position {
-        0 => Some((directory.attributes().file_id, DT_DIR, b".")),
-        1 => Some((directory.parent().attributes().file_id, DT_DIR, b"..")),
+        0 => Some((directory.attributes().file_id, DT_DIR, vfs::Name::new(b"."))),
+        1 => Some((
+            directory.parent().attributes().file_id,
+            DT_DIR,
+            vfs::Name::new(b".."),
+        )),
         _ => {
             let (name, node, kind) = directory.entry(position - 2)?;
             let kind = match kind {
@@ -528,6 +576,7 @@ pub fn getdents64<P: Platform>(
     let mut gathered = 0;
     let mut failed = false;
     while let Some((inode, kind, name)) = directory_entry(directory, position) {
+        let name = name.as_bytes();
         let length = dirent_length(name);
         if written + (gathered + length) as u64 > count {
             break;

@@ -610,7 +610,7 @@ fn prepare<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let node = find(thread, request.dirfd, path)?;
-    let process_name = process_table::name_of(node.file_system().name(node.id()));
+    let process_name = process_table::name_of(node.file_system().name(node.id()).as_bytes());
     let attributes = node.attributes();
     let may_execute = {
         let credentials = process.credentials_and_limits().lock();

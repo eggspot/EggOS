@@ -25,6 +25,14 @@ impl Errno {
     pub const EINVAL: Self = Self(22);
     /// `ENAMETOOLONG`.
     pub const ENAMETOOLONG: Self = Self(36);
+    /// `EEXIST`.
+    pub const EEXIST: Self = Self(17);
+    /// `EXDEV`.
+    pub const EXDEV: Self = Self(18);
+    /// `EROFS`.
+    pub const EROFS: Self = Self(30);
+    /// `ENOTEMPTY`.
+    pub const ENOTEMPTY: Self = Self(39);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.
@@ -53,6 +61,7 @@ impl Errno {
             14 => b"Bad address",
             16 => b"Device or resource busy",
             17 => b"File exists",
+            18 => b"Invalid cross-device link",
             20 => b"Not a directory",
             21 => b"Is a directory",
             22 => b"Invalid argument",

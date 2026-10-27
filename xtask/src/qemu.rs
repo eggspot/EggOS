@@ -523,7 +523,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 22] = [
+const PROMPT_SESSION: [&[u8]; 26] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -542,6 +542,10 @@ const PROMPT_SESSION: [&[u8]; 22] = [
     b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
     b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
+    b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
+    b"mkdir /home/u; touch /home/u/f; cp /tmp/x /home/u/y; mv /home/u/y /home/u/z; ls /home/u\r",
+    b"rm /home/u/z; ls /home/u; echo x > /etc/motd; echo EGGOS-FILES read-only $?\r",
+    b"mkdir -p /tmp/a/b; mv /tmp/x /home; rm -r /home/u /tmp/a; ls /tmp /home; wc -c < /home/x\r",
     b"echo EGGOS-HISTORY recalled\r",
     b"echo EGGOS-HISTORY newest\r",
     RECALL_THE_LINE_BEFORE_LAST,
@@ -667,9 +671,9 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&["bin", "etc", "init", "proc", "usr"]),
+        whole(&["bin", "etc", "home", "init", "proc", "tmp", "usr"]),
         vec![
-            Line::Around("-rwxr-xr-x 18 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 23 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -700,6 +704,14 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "1",
             "1",
         ]),
+        whole(&["a", "b", "a", "b"]),
+        whole(&["f", "z"]),
+        whole(&[
+            "f",
+            "eggsh: /etc/motd: Read-only file system",
+            "EGGOS-FILES read-only 1",
+        ]),
+        whole(&["/home:", "x", "", "/tmp:", "4"]),
         whole(&["EGGOS-HISTORY recalled"]),
         whole(&["EGGOS-HISTORY newest"]),
         whole(&["EGGOS-HISTORY recalled"]),
@@ -2284,7 +2296,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 18 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 23 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

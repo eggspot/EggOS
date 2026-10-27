@@ -1,4 +1,5 @@
 use crate::cat::cat;
+use crate::changes::{cp, mkdir, mv, rm, touch};
 use crate::echo::echo;
 use crate::grep::grep;
 use crate::head::{head, tail};
@@ -21,6 +22,7 @@ const UTILITY_NOT_FOUND: i32 = 127;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Utility {
     Cat,
+    Cp,
     Echo,
     False,
     Free,
@@ -28,11 +30,15 @@ pub enum Utility {
     Halt,
     Head,
     Ls,
+    Mkdir,
+    Mv,
     Poweroff,
     Ps,
     Reboot,
+    Rm,
     Sleep,
     Tail,
+    Touch,
     True,
     Uname,
     Uptime,
@@ -40,8 +46,9 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 22] = [
         Self::Cat,
+        Self::Cp,
         Self::Echo,
         Self::False,
         Self::Free,
@@ -49,11 +56,15 @@ impl Utility {
         Self::Halt,
         Self::Head,
         Self::Ls,
+        Self::Mkdir,
+        Self::Mv,
         Self::Poweroff,
         Self::Ps,
         Self::Reboot,
+        Self::Rm,
         Self::Sleep,
         Self::Tail,
+        Self::Touch,
         Self::True,
         Self::Uname,
         Self::Uptime,
@@ -63,6 +74,7 @@ impl Utility {
     pub fn name(self) -> &'static [u8] {
         match self {
             Self::Cat => b"cat",
+            Self::Cp => b"cp",
             Self::Echo => b"echo",
             Self::False => b"false",
             Self::Free => b"free",
@@ -70,11 +82,15 @@ impl Utility {
             Self::Halt => b"halt",
             Self::Head => b"head",
             Self::Ls => b"ls",
+            Self::Mkdir => b"mkdir",
+            Self::Mv => b"mv",
             Self::Poweroff => b"poweroff",
             Self::Ps => b"ps",
             Self::Reboot => b"reboot",
+            Self::Rm => b"rm",
             Self::Sleep => b"sleep",
             Self::Tail => b"tail",
+            Self::Touch => b"touch",
             Self::True => b"true",
             Self::Uname => b"uname",
             Self::Uptime => b"uptime",
@@ -89,6 +105,7 @@ impl Utility {
     fn run<S: System>(self, output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match self {
             Self::Cat => cat(output, arguments),
+            Self::Cp => cp(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
             Self::Free => free(output, arguments),
@@ -96,11 +113,15 @@ impl Utility {
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
+            Self::Mkdir => mkdir(output, arguments),
+            Self::Mv => mv(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
             Self::Ps => ps(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
+            Self::Rm => rm(output, arguments),
             Self::Sleep => sleep(output, arguments),
             Self::Tail => tail(output, arguments),
+            Self::Touch => touch(output, arguments),
             Self::True => 0,
             Self::Uname => uname(output, arguments),
             Self::Uptime => uptime(output, arguments),
