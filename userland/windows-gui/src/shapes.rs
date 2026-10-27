@@ -2,8 +2,9 @@
 //! excludes its right and bottom edges; with no pen (`NULL_PEN`) a rectangle or an ellipse is
 //! one pixel smaller each way; the pen outlines inside the bounding rectangle, `width` pixels
 //! thick, and the brush fills what is inside the outline; a line leaves out its end point.
-//! Arithmetic on the program's coordinates saturates, and a line costs no more than the
-//! stretch of it that can reach the surface.
+//! Arithmetic on the program's coordinates saturates, a pen is at most as wide as the surface's
+//! width and height together, and a line costs no more than the stretch of it that can reach
+//! the surface.
 
 use crate::surface::{Rect, Surface};
 
@@ -15,8 +16,9 @@ pub struct Pen {
 }
 
 impl Pen {
-    fn thickness(&self) -> i32 {
-        self.width.clamp(1, i32::MAX as u32) as i32
+    fn thickness(&self, surface: &Surface<'_>) -> i32 {
+        let widest = surface.width().saturating_add(surface.height()).max(1);
+        self.width.clamp(1, widest.min(i32::MAX as u32)) as i32
     }
 }
 
@@ -37,7 +39,7 @@ pub fn rectangle(surface: &mut Surface<'_>, rect: Rect, pen: Option<Pen>, brush:
         }
         return;
     };
-    let thickness = pen.thickness();
+    let thickness = pen.thickness(surface);
     if let Some(brush) = brush {
         surface.fill(rect.inset(thickness), brush);
     }
@@ -70,7 +72,7 @@ pub fn ellipse(surface: &mut Surface<'_>, rect: Rect, pen: Option<Pen>, brush: O
     if outer.is_empty() {
         return;
     }
-    let inner = outer.inset(pen.map_or(0, |pen| pen.thickness()));
+    let inner = outer.inset(pen.map_or(0, |pen| pen.thickness(surface)));
     let clip = surface.clip();
     for y in outer.top.max(clip.top)..outer.bottom.min(clip.bottom) {
         let Some((left, right)) = ellipse_span(outer, y) else {
@@ -142,7 +144,7 @@ pub fn line(surface: &mut Surface<'_>, from: (i32, i32), to: (i32, i32), pen: Pe
     if steps == 0 {
         return;
     }
-    let thickness = i64::from(pen.thickness());
+    let thickness = i64::from(pen.thickness(surface));
     let back = (thickness - 1) / 2;
     let clip = surface.clip();
     let along_x = across.unsigned_abs() >= down.unsigned_abs();
@@ -358,6 +360,27 @@ mod tests {
         let shallow = picture(|s| line(s, (-1_000_000, 0), (1_000_000, 1), pen));
         assert_eq!(shallow[1], "PPPPPPPPPPPP");
         assert_eq!(shallow[0], "............");
+    }
+
+    #[test]
+    fn a_pen_wider_than_the_surface_draws_no_wider_and_ends() {
+        let huge = Pen {
+            colour: 1,
+            width: u32::MAX,
+        };
+        let surface_wide = Pen {
+            colour: 1,
+            width: 2 * WIDTH,
+        };
+        let far = (-1_000_000, 3);
+        let lines = picture(|s| line(s, far, (1_000_000, 3), huge));
+        assert_eq!(
+            lines,
+            picture(|s| line(s, far, (1_000_000, 3), surface_wide))
+        );
+        assert!(lines.iter().all(|row| row == "PPPPPPPPPPPP"));
+        let ring = picture(|s| ellipse(s, Rect::new(0, 0, 12, 12), Some(huge), Some(2)));
+        assert!(ring.iter().all(|row| !row.contains('B')));
     }
 
     #[test]
