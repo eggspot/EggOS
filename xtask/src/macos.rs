@@ -11,7 +11,12 @@ pub const LAYER_PATH: &str = "usr/lib/eggos/macos";
 pub const CONSOLE_PACKAGE: &str = "eggos-macos-console";
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_MACOS_PROGRAMS";
 pub const DEPLOYMENT_TARGET: &str = "13.0";
-pub const PROGRAMS: [&str; 4] = ["macos-console", "macos-unsupported", "macos-tools", "macos-std"];
+pub const PROGRAMS: [&str; 4] = [
+    "macos-console",
+    "macos-unsupported",
+    "macos-tools",
+    "macos-std",
+];
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;

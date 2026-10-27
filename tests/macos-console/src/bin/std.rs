@@ -80,7 +80,10 @@ fn main() {
         std::env::var("GREETING").unwrap_or_default()
     );
     let about = std::fs::read_to_string("/usr/share/eggos/about").unwrap_or_default();
-    println!("{PREFIX} file {}", about.split_whitespace().next().unwrap_or("?"));
+    println!(
+        "{PREFIX} file {}",
+        about.split_whitespace().next().unwrap_or("?")
+    );
     let mut names: Vec<String> = std::fs::read_dir("/bin")
         .map(|entries| {
             entries
@@ -95,7 +98,8 @@ fn main() {
         listed(&names, "eggsh"),
         listed(&names, "macos-std")
     );
-    let missing = std::fs::read("/no/such/file").map_or_else(|e| format!("{:?}", e.kind()), |_| "found".to_owned());
+    let missing = std::fs::read("/no/such/file")
+        .map_or_else(|e| format!("{:?}", e.kind()), |_| "found".to_owned());
     println!("{PREFIX} missing {missing}");
     println!("{PREFIX} threads {}", threads());
 }
