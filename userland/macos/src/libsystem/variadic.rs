@@ -64,7 +64,7 @@ impl Arguments for VaList {
                 let value = unsafe {
                     state
                         .saved
-                        .add(state.general_offset as usize)
+                        .wrapping_add(state.general_offset as usize)
                         .cast::<u64>()
                         .read_unaligned()
                 };
@@ -93,7 +93,7 @@ impl Arguments for VaList {
                 let value = unsafe {
                     state
                         .saved
-                        .add(state.vector_offset as usize)
+                        .wrapping_add(state.vector_offset as usize)
                         .cast::<f64>()
                         .read_unaligned()
                 };
@@ -109,8 +109,6 @@ impl Arguments for VaList {
     }
 }
 
-/// Defines `$entry`, the variadic function whose `$named` fixed arguments are followed by a
-/// `va_list` in `$target`'s next parameter (`$arm64` and `$x86_64` name that register).
 macro_rules! variadic {
     ($entry:ident => $target:path, $named:literal, $arm64:literal, $x86_64:literal) => {
         #[cfg(target_arch = "aarch64")]

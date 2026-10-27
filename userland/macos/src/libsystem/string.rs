@@ -18,7 +18,7 @@ pub unsafe extern "C" fn strlen(text: *const c_char) -> usize {
 pub unsafe extern "C" fn strnlen(text: *const c_char, limit: usize) -> usize {
     let mut length = 0;
     // SAFETY: the caller's promise.
-    while length < limit && unsafe { text.add(length).read() } != 0 {
+    while length < limit && unsafe { text.wrapping_add(length).read() } != 0 {
         length += 1;
     }
     length
@@ -36,7 +36,9 @@ pub unsafe extern "C" fn strcmp(left: *const c_char, right: *const c_char) -> c_
 pub unsafe extern "C" fn strncmp(left: *const c_char, right: *const c_char, count: usize) -> c_int {
     for index in 0..count {
         // SAFETY: the caller's promise.
-        let (a, b) = unsafe { (left.add(index).read() as u8, right.add(index).read() as u8) };
+        let a = unsafe { left.cast::<u8>().wrapping_add(index).read() };
+        // SAFETY: as above.
+        let b = unsafe { right.cast::<u8>().wrapping_add(index).read() };
         if a != b || a == 0 {
             return c_int::from(a) - c_int::from(b);
         }
@@ -60,7 +62,9 @@ pub unsafe extern "C" fn strncasecmp(
 ) -> c_int {
     for index in 0..count {
         // SAFETY: the caller's promise.
-        let (a, b) = unsafe { (left.add(index).read() as u8, right.add(index).read() as u8) };
+        let a = unsafe { left.cast::<u8>().wrapping_add(index).read() };
+        // SAFETY: as above.
+        let b = unsafe { right.cast::<u8>().wrapping_add(index).read() };
         let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
         if a != b || a == 0 {
             return c_int::from(a) - c_int::from(b);
@@ -91,7 +95,11 @@ pub unsafe extern "C" fn strncpy(
     // SAFETY: as above.
     unsafe { destination.copy_from_nonoverlapping(source, length) };
     // SAFETY: as above.
-    unsafe { destination.add(length).write_bytes(0, count - length) };
+    unsafe {
+        destination
+            .wrapping_add(length)
+            .write_bytes(0, count - length)
+    };
     destination
 }
 
@@ -99,7 +107,9 @@ pub unsafe extern "C" fn strncpy(
 /// `destination` must be a NUL-terminated string with room for `source` after it.
 pub unsafe extern "C" fn strcat(destination: *mut c_char, source: *const c_char) -> *mut c_char {
     // SAFETY: the caller's promise.
-    unsafe { strcpy(destination.add(strlen(destination)), source) };
+    let length = unsafe { strlen(destination) };
+    // SAFETY: as above.
+    unsafe { strcpy(destination.wrapping_add(length), source) };
     destination
 }
 
@@ -111,13 +121,13 @@ pub unsafe extern "C" fn strncat(
     count: usize,
 ) -> *mut c_char {
     // SAFETY: the caller's promise.
-    let end = unsafe { destination.add(strlen(destination)) };
+    let end = destination.wrapping_add(unsafe { strlen(destination) });
     // SAFETY: as above.
     let length = unsafe { strnlen(source, count) };
     // SAFETY: as above.
     unsafe { end.copy_from_nonoverlapping(source, length) };
     // SAFETY: as above.
-    unsafe { end.add(length).write(0) };
+    unsafe { end.wrapping_add(length).write(0) };
     destination
 }
 
@@ -135,7 +145,7 @@ pub unsafe extern "C" fn strlcpy(
         // SAFETY: as above.
         unsafe { destination.copy_from_nonoverlapping(source, copied) };
         // SAFETY: as above.
-        unsafe { destination.add(copied).write(0) };
+        unsafe { destination.wrapping_add(copied).write(0) };
     }
     length
 }
@@ -147,7 +157,7 @@ pub unsafe extern "C" fn strchr(text: *const c_char, character: c_int) -> *mut c
     let mut at = text;
     loop {
         // SAFETY: the caller's promise; the walk stops at the NUL.
-        let byte = unsafe { at.read() } as u8;
+        let byte = unsafe { at.cast::<u8>().read() };
         if byte == wanted {
             return at.cast_mut();
         }
@@ -179,7 +189,9 @@ pub unsafe extern "C" fn strrchr(text: *const c_char, character: c_int) -> *mut 
 /// Both must be NUL-terminated strings.
 pub unsafe extern "C" fn strstr(text: *const c_char, needle: *const c_char) -> *mut c_char {
     // SAFETY: the caller's promise.
-    let (haystack, needle) = unsafe { (c_string(text), c_string(needle)) };
+    let haystack = unsafe { c_string(text) };
+    // SAFETY: as above.
+    let needle = unsafe { c_string(needle) };
     if needle.is_empty() {
         return text.cast_mut();
     }
@@ -208,7 +220,7 @@ pub unsafe extern "C" fn strndup(text: *const c_char, limit: usize) -> *mut c_ch
         // SAFETY: `copy` holds `length + 1` bytes.
         unsafe { copy.copy_from_nonoverlapping(text, length) };
         // SAFETY: as above.
-        unsafe { copy.add(length).write(0) };
+        unsafe { copy.wrapping_add(length).write(0) };
     }
     copy
 }
@@ -234,12 +246,9 @@ pub unsafe extern "C" fn memchr(
 /// Both must be readable for `count` bytes.
 pub unsafe extern "C" fn memcmp(left: *const c_void, right: *const c_void, count: usize) -> c_int {
     // SAFETY: the caller's promise.
-    let (a, b) = unsafe {
-        (
-            core::slice::from_raw_parts(left.cast::<u8>(), count),
-            core::slice::from_raw_parts(right.cast::<u8>(), count),
-        )
-    };
+    let a = unsafe { core::slice::from_raw_parts(left.cast::<u8>(), count) };
+    // SAFETY: as above.
+    let b = unsafe { core::slice::from_raw_parts(right.cast::<u8>(), count) };
     a.iter()
         .zip(b)
         .find(|(x, y)| x != y)
@@ -380,7 +389,7 @@ pub unsafe extern "C" fn strcat_chk(
     size: usize,
 ) -> *mut c_char {
     // SAFETY: the caller's promise.
-    if size != UNKNOWN_SIZE && unsafe { strlen(destination) + strlen(source) } >= size {
+    if size != UNKNOWN_SIZE && unsafe { strlen(destination) } + unsafe { strlen(source) } >= size {
         overflow();
     }
     // SAFETY: as above.

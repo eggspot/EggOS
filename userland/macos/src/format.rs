@@ -150,8 +150,6 @@ impl Spec {
         (spec, (at + 1).min(format.len()))
     }
 
-    /// # Safety
-    /// As [`format`].
     unsafe fn convert<O: Output>(&self, arguments: &mut impl Arguments, out: &mut Counting<'_, O>) {
         match self.conversion {
             b'd' | b'i' => {
@@ -581,12 +579,13 @@ fn radix(mut value: u64, base: u64, upper: bool, digits: &mut [u8; 24]) -> &[u8]
     }
 }
 
-/// # Safety
-/// `pointer` must point to a NUL-terminated string, or to at least `limit` readable bytes.
 unsafe fn c_string<'a>(pointer: *const u8, limit: Option<usize>) -> &'a [u8] {
     let mut length = 0;
-    // SAFETY: the caller's promise: every byte up to the NUL (or the limit) is readable.
-    while limit.is_none_or(|limit| length < limit) && unsafe { pointer.add(length).read() } != 0 {
+    while limit.is_none_or(|limit| length < limit) {
+        // SAFETY: the caller's promise: every byte up to the NUL (or the limit) is readable.
+        if unsafe { pointer.wrapping_add(length).read() } == 0 {
+            break;
+        }
         length += 1;
     }
     // SAFETY: the `length` bytes just read.
@@ -720,14 +719,14 @@ mod tests {
                     Float(1000000.0),
                     Float(0.00001),
                     Float(1e-10),
-                    Float(3.14159),
+                    Float(1.23456),
                     Float(1.0),
-                    Float(3.14159),
+                    Float(1.23456),
                     Float(2.0),
                     Float(-1.5)
                 ]
             ),
-            "100000 1e+06 1e-05 1E-10 3.14 1.00000     3.14|2.0     |-0001.50"
+            "100000 1e+06 1e-05 1E-10 1.23 1.00000     1.23|2.0     |-0001.50"
         );
         assert_eq!(
             formatted(

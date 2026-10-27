@@ -321,7 +321,7 @@ impl<'a> MachO<'a> {
             let size = u32_at(bytes, at + 4).ok_or(invalid("truncated load command"))? as usize;
             let end = at
                 .checked_add(size)
-                .filter(|&end| size >= 8 && size % 8 == 0 && end <= commands_end)
+                .filter(|&end| size >= 8 && size.is_multiple_of(8) && end <= commands_end)
                 .ok_or(invalid("a load command runs past the others"))?;
             let command = &bytes[at..end];
             match kind {

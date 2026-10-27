@@ -27,8 +27,10 @@ mod program {
 
     #[unsafe(no_mangle)]
     extern "C" fn main() -> c_int {
-        // SAFETY: `zlibVersion` takes no arguments and returns a NUL-terminated string.
-        unsafe { puts(zlibVersion()) };
+        // SAFETY: `zlibVersion` takes no arguments.
+        let version = unsafe { zlibVersion() };
+        // SAFETY: it returns a NUL-terminated string.
+        unsafe { puts(version) };
         0
     }
 }

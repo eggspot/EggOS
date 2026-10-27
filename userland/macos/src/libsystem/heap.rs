@@ -67,15 +67,15 @@ fn write_header(block: usize, class: u32, size: usize) -> *mut u8 {
         header.write(MAGIC);
     }
     // SAFETY: as above.
-    unsafe { header.add(1).write(class) };
+    unsafe { header.wrapping_add(1).write(class) };
     // SAFETY: as above.
-    unsafe { header.add(2).cast::<u64>().write(size as u64) };
+    unsafe { header.wrapping_add(2).cast::<u64>().write(size as u64) };
     (block + HEADER_SIZE) as *mut u8
 }
 
 fn header_of(pointer: *mut u8) -> Option<(usize, u32, usize)> {
     let block = (pointer as usize).checked_sub(HEADER_SIZE)?;
-    if pointer as usize % 16 != 0 {
+    if !(pointer as usize).is_multiple_of(16) {
         return None;
     }
     let header = block as *const u32;
@@ -85,17 +85,15 @@ fn header_of(pointer: *mut u8) -> Option<(usize, u32, usize)> {
         return None;
     }
     // SAFETY: as above.
-    let class = unsafe { header.add(1).read() };
+    let class = unsafe { header.wrapping_add(1).read() };
     // SAFETY: as above.
-    let size = unsafe { header.add(2).cast::<u64>().read() } as usize;
+    let size = unsafe { header.wrapping_add(2).cast::<u64>().read() } as usize;
     Some((block, class, size))
 }
 
 fn large_length(size: usize) -> Option<usize> {
-    Some(
-        size.checked_add(HEADER_SIZE)?
-            .checked_next_multiple_of(linux::PAGE_SIZE)?,
-    )
+    size.checked_add(HEADER_SIZE)?
+        .checked_next_multiple_of(linux::PAGE_SIZE)
 }
 
 /// Allocates `size` bytes; null (with `ENOMEM`) if there is no memory.

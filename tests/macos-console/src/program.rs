@@ -203,8 +203,10 @@ fn text<'a>(pointer: *const c_char) -> &'a str {
 }
 
 fn errno() -> c_int {
-    // SAFETY: `__error` returns the calling thread's `errno`.
-    unsafe { *__error() }
+    // SAFETY: `__error` takes no arguments.
+    let location = unsafe { __error() };
+    // SAFETY: it returns the calling thread's `errno`.
+    unsafe { *location }
 }
 
 extern "C" fn goodbye() {
@@ -338,7 +340,10 @@ fn formats() {
             0xbeef as c_int,
             8 as c_int,
             b'Z' as c_int,
-        );
+        )
+    };
+    // SAFETY: as above.
+    unsafe {
         printf(
             c"%s widths [%5d] [%-5d] [%05d] [%+d] [%.3s] [%8s] [%-8s] [%#x] [%*d]\n".as_ptr(),
             c"MACOS-CONSOLE".as_ptr(),
@@ -352,7 +357,10 @@ fn formats() {
             255 as c_int,
             4 as c_int,
             7 as c_int,
-        );
+        )
+    };
+    // SAFETY: as above.
+    unsafe {
         printf(
             c"%s floats %.2f %f %.0f %e %g\n".as_ptr(),
             c"MACOS-CONSOLE".as_ptr(),
@@ -361,8 +369,8 @@ fn formats() {
             2.5f64,
             12345.678f64,
             0.0001f64,
-        );
-    }
+        )
+    };
     let mut buffer = [0 as c_char; 8];
     // SAFETY: `buffer` holds the 8 bytes `snprintf` may write.
     let length = unsafe {
@@ -381,32 +389,42 @@ fn formats() {
 
 fn strings() -> &'static str {
     let hello = c"hello, macos".as_ptr();
-    // SAFETY: every pointer is a NUL-terminated literal or a copy `strdup` made of one.
-    unsafe {
-        let copy = strdup(hello);
-        let checks = [
-            strlen(hello) == 12,
-            strcmp(hello, copy) == 0,
-            strcmp(c"abc".as_ptr(), c"abd".as_ptr()) < 0,
-            strncmp(c"abcx".as_ptr(), c"abcy".as_ptr(), 3) == 0,
-            text(strchr(hello, b'o' as c_int)) == "o, macos",
-            text(strrchr(hello, b'o' as c_int)) == "os",
-            text(strstr(hello, c"mac".as_ptr())) == "macos",
-            strstr(hello, c"linux".as_ptr()).is_null(),
-            memcmp(hello.cast(), copy.cast(), 13) == 0,
-        ];
-        free(copy.cast());
-        if checks.iter().all(|&check| check) {
-            "strlen strcmp strchr strstr strdup memcmp"
-        } else {
-            "a string function failed"
-        }
+    // SAFETY: every pointer below is a NUL-terminated literal or the copy `strdup` made of one.
+    let copy = unsafe { strdup(hello) };
+    let checks = [
+        // SAFETY: as above.
+        unsafe { strlen(hello) } == 12,
+        // SAFETY: as above.
+        unsafe { strcmp(hello, copy) } == 0,
+        // SAFETY: as above.
+        unsafe { strcmp(c"abc".as_ptr(), c"abd".as_ptr()) } < 0,
+        // SAFETY: as above.
+        unsafe { strncmp(c"abcx".as_ptr(), c"abcy".as_ptr(), 3) } == 0,
+        // SAFETY: as above.
+        text(unsafe { strchr(hello, b'o' as c_int) }) == "o, macos",
+        // SAFETY: as above.
+        text(unsafe { strrchr(hello, b'o' as c_int) }) == "os",
+        // SAFETY: as above.
+        text(unsafe { strstr(hello, c"mac".as_ptr()) }) == "macos",
+        // SAFETY: as above.
+        unsafe { strstr(hello, c"linux".as_ptr()) }.is_null(),
+        // SAFETY: both hold 13 bytes with their NULs.
+        unsafe { memcmp(hello.cast(), copy.cast(), 13) } == 0,
+    ];
+    // SAFETY: `copy` came from `strdup`.
+    unsafe { free(copy.cast()) };
+    if checks.iter().all(|&check| check) {
+        "strlen strcmp strchr strstr strdup memcmp"
+    } else {
+        "a string function failed"
     }
 }
 
 extern "C" fn compare(left: *const c_void, right: *const c_void) -> c_int {
     // SAFETY: `qsort` passes pointers to two of the array's `i32` elements.
-    let (left, right) = unsafe { (*left.cast::<i32>(), *right.cast::<i32>()) };
+    let left = unsafe { *left.cast::<i32>() };
+    // SAFETY: as above.
+    let right = unsafe { *right.cast::<i32>() };
     left.cmp(&right) as c_int
 }
 
@@ -470,13 +488,12 @@ fn stat_check() -> &'static str {
     let mut file: Stat = unsafe { core::mem::zeroed() };
     // SAFETY: as above.
     let mut directory: Stat = unsafe { core::mem::zeroed() };
-    // SAFETY: the paths are NUL-terminated and each `Stat` a local one.
-    let results = unsafe {
-        [
-            stat(c"/etc/hostname".as_ptr(), &mut file),
-            stat(c"/usr/share/eggos".as_ptr(), &mut directory),
-        ]
-    };
+    let results = [
+        // SAFETY: the path is NUL-terminated and `file` a local `stat`.
+        unsafe { stat(c"/etc/hostname".as_ptr(), &mut file) },
+        // SAFETY: as above, with `directory`.
+        unsafe { stat(c"/usr/share/eggos".as_ptr(), &mut directory) },
+    ];
     let file_ok = file.mode & S_IFMT == S_IFREG && file.size == 6 && file.links >= 1;
     let directory_ok = directory.mode & S_IFMT == S_IFDIR;
     match (results, file_ok, directory_ok) {
@@ -555,7 +572,7 @@ fn heap() -> &'static str {
     for (index, block) in blocks.iter_mut().enumerate() {
         // SAFETY: `malloc` takes a size.
         *block = unsafe { malloc(16 + index * 8) };
-        if block.is_null() || *block as usize % 16 != 0 {
+        if block.is_null() || !(*block as usize).is_multiple_of(16) {
             return "small blocks failed";
         }
         // SAFETY: the block holds at least 16 bytes.

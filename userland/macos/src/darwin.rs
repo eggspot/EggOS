@@ -223,7 +223,7 @@ impl Status {
     /// Darwin's `struct stat` (64-bit inodes, the only layout on arm64 and `stat$INODE64` on
     /// x86_64): the access, modification and change times, then the birth time, which Linux's
     /// `stat` lacks and which gets the change time.
-    pub fn to_darwin(&self) -> [u8; DARWIN_STAT_SIZE] {
+    pub fn to_darwin(self) -> [u8; DARWIN_STAT_SIZE] {
         let mut out = [0u8; DARWIN_STAT_SIZE];
         let mut put = |offset: usize, bytes: &[u8]| {
             out[offset..offset + bytes.len()].copy_from_slice(bytes);

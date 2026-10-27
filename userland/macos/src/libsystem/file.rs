@@ -64,9 +64,6 @@ pub unsafe extern "C" fn read(fd: c_int, buffer: *mut c_void, count: usize) -> i
 /// # Safety
 /// `bytes` must be readable for `count` bytes.
 pub unsafe extern "C" fn write(fd: c_int, bytes: *const c_void, count: usize) -> isize {
-    if fd == 1 || fd == 2 {
-        super::stdio::flush_all();
-    }
     // SAFETY: `write` reads at most `count` bytes of the caller's buffer.
     match unsafe {
         linux::syscall(
@@ -234,8 +231,6 @@ pub unsafe extern "C" fn mkdir(path: *const c_char, mode: u16) -> c_int {
     )
 }
 
-/// A `DIR`: the directory's descriptor, a buffer of Linux `getdents64` entries and the Darwin
-/// `struct dirent` `readdir` last returned.
 struct Directory {
     fd: c_int,
     at: usize,
@@ -253,17 +248,13 @@ pub unsafe extern "C" fn opendir(path: *const c_char) -> *mut c_void {
     if fd < 0 {
         return ptr::null_mut();
     }
-    let directory = heap::allocate(size_of::<Directory>(), false).cast::<Directory>();
-    if directory.is_null() {
+    let directory = heap::allocate(size_of::<Directory>(), true).cast::<Directory>();
+    // SAFETY: a fresh zeroed block of a `Directory`'s size, which all zeros is.
+    let Some(open) = (unsafe { directory.as_mut() }) else {
         let _ = linux::close(fd as usize);
         return ptr::null_mut();
-    }
-    // SAFETY: a fresh block of the right size.
-    unsafe {
-        (&raw mut (*directory).fd).write(fd);
-        (&raw mut (*directory).at).write(0);
-        (&raw mut (*directory).end).write(0);
-    }
+    };
+    open.fd = fd;
     directory.cast()
 }
 

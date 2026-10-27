@@ -78,33 +78,58 @@ pub static mut STDERR_POINTER: *mut Stream = ptr::null_mut();
 /// # Safety
 /// Called once, before the program runs.
 pub unsafe fn set_up() {
-    // SAFETY: the program has not started, so nothing else uses the streams yet.
-    unsafe {
-        STDIN.buffer = (&raw mut STDIN_BUFFER).cast();
-        STDIN.capacity = BUFFER_SIZE;
-        STDOUT.buffer = (&raw mut STDOUT_BUFFER).cast();
-        STDOUT.capacity = BUFFER_SIZE;
-        if linux::is_terminal(1) {
-            STDOUT.buffering = Buffering::Line;
-        }
-        STDIN_POINTER = &raw mut STDIN;
-        STDOUT_POINTER = &raw mut STDOUT;
-        STDERR_POINTER = &raw mut STDERR;
+    let input = standard(&raw mut STDIN);
+    input.buffer = (&raw mut STDIN_BUFFER).cast();
+    input.capacity = BUFFER_SIZE;
+    let output = standard(&raw mut STDOUT);
+    output.buffer = (&raw mut STDOUT_BUFFER).cast();
+    output.capacity = BUFFER_SIZE;
+    if linux::is_terminal(1) {
+        output.buffering = Buffering::Line;
     }
+    // SAFETY: the program has not started, so nothing else uses the pointers yet.
+    unsafe { STDIN_POINTER = &raw mut STDIN };
+    // SAFETY: as above.
+    unsafe { STDOUT_POINTER = &raw mut STDOUT };
+    // SAFETY: as above.
+    unsafe { STDERR_POINTER = &raw mut STDERR };
+}
+
+fn standard(stream: *mut Stream) -> &'static mut Stream {
+    // SAFETY: one of the three standard streams, used by the program's only thread, one call
+    // at a time.
+    unsafe { &mut *stream }
+}
+
+fn standard_output() -> *mut Stream {
+    // SAFETY: the program's only thread reads the pointer it may have changed.
+    unsafe { STDOUT_POINTER }
+}
+
+fn standard_input() -> *mut Stream {
+    // SAFETY: as above.
+    unsafe { STDIN_POINTER }
+}
+
+fn standard_error() -> *mut Stream {
+    // SAFETY: as above.
+    unsafe { STDERR_POINTER }
+}
+
+fn open_streams() -> *mut *mut Stream {
+    &raw mut OPEN_STREAMS
 }
 
 /// Flushes every stream's buffered output: at `exit`, and for `fflush(NULL)`.
 pub fn flush_all() {
-    // SAFETY: the standard streams and the open-stream list are the layer's, used by one
-    // thread.
-    unsafe {
-        flush(&mut *(&raw mut STDOUT));
-        flush(&mut *(&raw mut STDERR));
-        let mut stream = OPEN_STREAMS;
-        while !stream.is_null() {
-            flush(&mut *stream);
-            stream = (*stream).next;
-        }
+    flush(standard(&raw mut STDOUT));
+    flush(standard(&raw mut STDERR));
+    // SAFETY: the open-stream list is the layer's, used by the program's only thread.
+    let mut stream = unsafe { open_streams().read() };
+    // SAFETY: each stream on the list is a live one `new_stream` made.
+    while let Some(open) = unsafe { stream.as_mut() } {
+        flush(open);
+        stream = open.next;
     }
 }
 
@@ -151,7 +176,7 @@ fn write_bytes(stream: &mut Stream, bytes: &[u8]) -> bool {
         unsafe {
             stream
                 .buffer
-                .add(stream.written)
+                .wrapping_add(stream.written)
                 .copy_from_nonoverlapping(rest.as_ptr(), taken)
         };
         stream.written += taken;
@@ -172,8 +197,7 @@ fn fill(stream: &mut Stream) -> bool {
         return false;
     }
     if stream.fd == 0 {
-        // SAFETY: standard output is the layer's.
-        unsafe { flush(&mut *(&raw mut STDOUT)) };
+        flush(standard(&raw mut STDOUT));
     }
     // SAFETY: the buffer holds `capacity` bytes.
     let buffer = unsafe { core::slice::from_raw_parts_mut(stream.buffer, stream.capacity) };
@@ -205,13 +229,11 @@ fn read_byte(stream: &mut Stream) -> Option<u8> {
         return None;
     }
     // SAFETY: `fill` left at least one unread byte in the buffer.
-    let byte = unsafe { stream.buffer.add(stream.read_at).read() };
+    let byte = unsafe { stream.buffer.wrapping_add(stream.read_at).read() };
     stream.read_at += 1;
     Some(byte)
 }
 
-/// # Safety
-/// `stream` must be null or a stream from this module.
 unsafe fn stream<'a>(stream: *mut Stream) -> Option<&'a mut Stream> {
     // SAFETY: the caller's promise.
     unsafe { stream.as_mut() }
@@ -238,7 +260,7 @@ impl Output for BufferOutput {
             // SAFETY: the buffer holds `room` bytes; this keeps one for the NUL.
             unsafe {
                 self.buffer
-                    .add(self.written)
+                    .wrapping_add(self.written)
                     .copy_from_nonoverlapping(bytes.as_ptr(), taken)
             };
             self.written += taken;
@@ -266,17 +288,24 @@ pub unsafe extern "C" fn vfprintf(
         return -1;
     };
     let mut output = StreamOutput(stream, true);
-    // SAFETY: the caller's promise.
-    let count =
-        unsafe { format::format(c_string(format), &mut VaList::new(arguments), &mut output) };
+    let count = formatted(format, arguments, &mut output);
     if output.1 { count_result(count) } else { -1 }
+}
+
+fn formatted(format: *const c_char, arguments: RawVaList, output: &mut impl Output) -> usize {
+    // SAFETY: the public callers' callers promise a NUL-terminated format.
+    let format = unsafe { c_string(format) };
+    // SAFETY: and the `va_list` for its arguments.
+    let mut arguments = unsafe { VaList::new(arguments) };
+    // SAFETY: as above: `%s` arguments are the strings the format says.
+    unsafe { format::format(format, &mut arguments, output) }
 }
 
 /// # Safety
 /// As `vfprintf`, to standard output.
 pub unsafe extern "C" fn vprintf(format: *const c_char, arguments: RawVaList) -> c_int {
     // SAFETY: the caller's promise.
-    unsafe { vfprintf(STDOUT_POINTER, format, arguments) }
+    unsafe { vfprintf(standard_output(), format, arguments) }
 }
 
 /// # Safety
@@ -293,12 +322,10 @@ pub unsafe extern "C" fn vsnprintf(
         room: if buffer.is_null() { 0 } else { size },
         written: 0,
     };
-    // SAFETY: the caller's promise.
-    let count =
-        unsafe { format::format(c_string(format), &mut VaList::new(arguments), &mut output) };
+    let count = formatted(format, arguments, &mut output);
     if output.room > 0 {
         // SAFETY: `written` is below `room`, so the NUL fits.
-        unsafe { output.buffer.add(output.written).write(0) };
+        unsafe { output.buffer.wrapping_add(output.written).write(0) };
     }
     count_result(count)
 }
@@ -320,9 +347,7 @@ pub unsafe extern "C" fn vdprintf(fd: c_int, format: *const c_char, arguments: R
     let mut stream = Stream::standard(fd, Buffering::None);
     stream.writable = true;
     let mut output = StreamOutput(&mut stream, true);
-    // SAFETY: the caller's promise.
-    let count =
-        unsafe { format::format(c_string(format), &mut VaList::new(arguments), &mut output) };
+    let count = formatted(format, arguments, &mut output);
     if output.1 { count_result(count) } else { -1 }
 }
 
@@ -513,9 +538,11 @@ pub unsafe extern "C" fn fputs(text: *const c_char, file: *mut Stream) -> c_int 
 /// # Safety
 /// `text` must be a NUL-terminated string.
 pub unsafe extern "C" fn puts(text: *const c_char) -> c_int {
-    // SAFETY: standard output is set up, and the caller's promise about `text`.
-    let stream = unsafe { &mut *STDOUT_POINTER };
-    // SAFETY: as above.
+    // SAFETY: the program keeps `__stdoutp` a stream.
+    let Some(stream) = (unsafe { stream(standard_output()) }) else {
+        return EOF;
+    };
+    // SAFETY: the caller's promise.
     if write_bytes(stream, unsafe { c_string(text) }) && write_bytes(stream, b"\n") {
         0
     } else {
@@ -539,7 +566,7 @@ pub unsafe extern "C" fn fputc(character: c_int, file: *mut Stream) -> c_int {
 
 pub extern "C" fn putchar(character: c_int) -> c_int {
     // SAFETY: standard output is a stream.
-    unsafe { fputc(character, STDOUT_POINTER) }
+    unsafe { fputc(character, standard_output()) }
 }
 
 /// # Safety
@@ -582,7 +609,7 @@ pub unsafe extern "C" fn fread(
     while filled < total {
         if let Some(byte) = stream.unread.take() {
             // SAFETY: `filled` is below the caller's `total` bytes.
-            unsafe { out.add(filled).write(byte) };
+            unsafe { out.wrapping_add(filled).write(byte) };
             filled += 1;
             continue;
         }
@@ -595,8 +622,8 @@ pub unsafe extern "C" fn fread(
         let taken = (stream.read_end - stream.read_at).min(total - filled);
         // SAFETY: `taken` buffered bytes into the rest of the caller's buffer.
         unsafe {
-            out.add(filled)
-                .copy_from_nonoverlapping(stream.buffer.add(stream.read_at), taken)
+            out.wrapping_add(filled)
+                .copy_from_nonoverlapping(stream.buffer.wrapping_add(stream.read_at), taken)
         };
         stream.read_at += taken;
         filled += taken;
@@ -615,7 +642,7 @@ pub unsafe extern "C" fn fgetc(file: *mut Stream) -> c_int {
 
 pub extern "C" fn getchar() -> c_int {
     // SAFETY: standard input is a stream.
-    unsafe { fgetc(STDIN_POINTER) }
+    unsafe { fgetc(standard_input()) }
 }
 
 /// # Safety
@@ -646,7 +673,7 @@ pub unsafe extern "C" fn fgets(buffer: *mut c_char, size: c_int, file: *mut Stre
     while length + 1 < size as usize {
         let Some(byte) = read_byte(stream) else { break };
         // SAFETY: `length` is below `size - 1`.
-        unsafe { buffer.add(length).write(byte as c_char) };
+        unsafe { buffer.wrapping_add(length).write(byte as c_char) };
         length += 1;
         if byte == b'\n' {
             break;
@@ -656,7 +683,7 @@ pub unsafe extern "C" fn fgets(buffer: *mut c_char, size: c_int, file: *mut Stre
         return ptr::null_mut();
     }
     // SAFETY: `length` is below `size`.
-    unsafe { buffer.add(length).write(0) };
+    unsafe { buffer.wrapping_add(length).write(0) };
     buffer
 }
 
@@ -715,12 +742,12 @@ fn new_stream(fd: c_int, readable: bool, writable: bool) -> *mut Stream {
     value.readable = readable;
     value.writable = writable;
     value.owned = true;
-    // SAFETY: the open-stream list is the layer's, used by one thread.
-    unsafe {
-        value.next = OPEN_STREAMS;
-        stream.write(value);
-        OPEN_STREAMS = stream;
-    }
+    // SAFETY: the open-stream list is the layer's, used by the program's only thread.
+    value.next = unsafe { open_streams().read() };
+    // SAFETY: a fresh block of a stream's size.
+    unsafe { stream.write(value) };
+    // SAFETY: as above.
+    unsafe { open_streams().write(stream) };
     stream
 }
 
@@ -765,16 +792,21 @@ pub unsafe extern "C" fn fclose(file: *mut Stream) -> c_int {
     let flushed = flush(stream);
     let closed = linux::close(stream.fd as usize).is_ok();
     if stream.owned {
-        // SAFETY: the open-stream list is the layer's; `file` leaves it before it is freed.
-        unsafe {
-            let mut link = &raw mut OPEN_STREAMS;
-            while !(*link).is_null() {
-                if *link == file {
-                    *link = stream.next;
-                    break;
-                }
-                link = &raw mut (**link).next;
+        let mut link = open_streams();
+        loop {
+            // SAFETY: `link` is the list's head or a live stream's `next`; `file` leaves the
+            // list before it is freed.
+            let current = unsafe { link.read() };
+            if current.is_null() {
+                break;
             }
+            if current == file {
+                // SAFETY: as above.
+                unsafe { link.write(stream.next) };
+                break;
+            }
+            // SAFETY: `current` is a live stream on the list.
+            link = unsafe { &raw mut (*current).next };
         }
         heap::release(stream.buffer);
         heap::release(file.cast());
@@ -907,8 +939,10 @@ pub unsafe extern "C" fn setvbuf(
 /// # Safety
 /// `text` must be null or a NUL-terminated string.
 pub unsafe extern "C" fn perror(text: *const c_char) {
-    // SAFETY: the caller's promise.
-    let stream = unsafe { &mut *STDERR_POINTER };
+    // SAFETY: the program keeps `__stderrp` a stream.
+    let Some(stream) = (unsafe { stream(standard_error()) }) else {
+        return;
+    };
     if !text.is_null() {
         // SAFETY: as above.
         let prefix = unsafe { c_string(text) };

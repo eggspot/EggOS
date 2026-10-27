@@ -33,13 +33,13 @@ pub unsafe fn set_process(
     environment: *mut *mut c_char,
 ) {
     // SAFETY: the caller's promise: nothing else uses these yet.
-    unsafe {
-        ARGUMENT_COUNT = count as c_int;
-        ARGUMENTS = arguments;
-        ENVIRON = environment;
-    }
-    // SAFETY: `arguments` holds `count` strings.
+    unsafe { ARGUMENT_COUNT = count as c_int };
+    // SAFETY: as above.
+    unsafe { ARGUMENTS = arguments };
+    // SAFETY: as above.
+    unsafe { ENVIRON = environment };
     let program = if count > 0 {
+        // SAFETY: `arguments` holds `count` strings.
         unsafe { arguments.read() }
     } else {
         ptr::null_mut()
@@ -52,7 +52,7 @@ pub unsafe fn set_process(
             .rposition(|&b| b == b'/')
             .map_or(0, |slash| slash + 1);
         // SAFETY: as above.
-        unsafe { PROGRAM_NAME = program.add(start) };
+        unsafe { PROGRAM_NAME = program.wrapping_add(start) };
     }
     let mut guard = [0u8; 8];
     // SAFETY: `getrandom` writes 8 bytes into the borrowed buffer.
@@ -115,7 +115,6 @@ pub extern "C" fn exit_now(status: c_int) -> ! {
 }
 
 pub extern "C" fn abort() -> ! {
-    stdio::flush_all();
     let _ = kill_self(linux::SIGABRT);
     linux::exit(134)
 }
@@ -146,7 +145,6 @@ pub extern "C" fn raise(signal: c_int) -> c_int {
         set_errno(EINVAL);
         return -1;
     };
-    stdio::flush_all();
     kill_self(linux_signal).map_or_else(|errno| errno_from(errno, -1), |_| 0)
 }
 
@@ -188,7 +186,7 @@ fn find_variable(name: &[u8]) -> Option<(usize, *mut c_char)> {
     let mut index = 0;
     loop {
         // SAFETY: as above; the walk stops at the null entry.
-        let entry = unsafe { environment.add(index).read() };
+        let entry = unsafe { environment.wrapping_add(index).read() };
         if entry.is_null() {
             return None;
         }
@@ -216,16 +214,18 @@ fn environment_length() -> usize {
     let environment = unsafe { ENVIRON };
     let mut length = 0;
     // SAFETY: as above.
-    while !environment.is_null() && !unsafe { environment.add(length).read() }.is_null() {
+    while !environment.is_null() && !unsafe { environment.wrapping_add(length).read() }.is_null() {
         length += 1;
     }
     length
 }
 
 fn put_variable(entry: *mut c_char, name: &[u8]) -> c_int {
+    // SAFETY: the program's only thread owns `environ`.
+    let environment = unsafe { ENVIRON };
     if let Some((index, _)) = find_variable(name) {
         // SAFETY: `index` is inside the array.
-        unsafe { ENVIRON.add(index).write(entry) };
+        unsafe { environment.wrapping_add(index).write(entry) };
         return 0;
     }
     let length = environment_length();
@@ -236,27 +236,24 @@ fn put_variable(entry: *mut c_char, name: &[u8]) -> c_int {
         if array.is_null() {
             return -1;
         }
-        // SAFETY: the old array holds `length` entries, the new one `grown`.
-        unsafe {
-            if !ENVIRON.is_null() {
-                array.copy_from_nonoverlapping(ENVIRON, length);
-            }
+        if !environment.is_null() {
+            // SAFETY: the old array holds `length` entries, the new one `grown`.
+            unsafe { array.copy_from_nonoverlapping(environment, length) };
         }
         if capacity != 0 {
-            // SAFETY: an array this function allocated earlier, which nothing else keeps.
-            heap::release(unsafe { ENVIRON }.cast());
+            heap::release(environment.cast());
         }
-        // SAFETY: the new array replaces the old one.
+        // SAFETY: the new array replaces the old one, which nothing else keeps.
         unsafe { ENVIRON = array };
         capacity = grown;
         ENVIRONMENT_CAPACITY.with(|stored| *stored = capacity);
     }
-    // SAFETY: the array has room for the entry and the null after it.
-    unsafe {
-        ENVIRON.add(length).write(entry);
-    }
     // SAFETY: as above.
-    unsafe { ENVIRON.add(length + 1).write(ptr::null_mut()) };
+    let environment = unsafe { ENVIRON };
+    // SAFETY: the array has room for the entry and the null after it.
+    unsafe { environment.wrapping_add(length).write(entry) };
+    // SAFETY: as above.
+    unsafe { environment.wrapping_add(length + 1).write(ptr::null_mut()) };
     0
 }
 
@@ -272,7 +269,9 @@ pub unsafe extern "C" fn setenv(
     overwrite: c_int,
 ) -> c_int {
     // SAFETY: the caller's promise.
-    let (name, value) = unsafe { (c_string(name), c_string(value)) };
+    let name = unsafe { c_string(name) };
+    // SAFETY: as above.
+    let value = unsafe { c_string(value) };
     if !valid_name(name) {
         set_errno(EINVAL);
         return -1;
@@ -285,14 +284,11 @@ pub unsafe extern "C" fn setenv(
         return -1;
     }
     // SAFETY: `entry` holds the name, `=`, the value and the NUL.
-    unsafe {
-        entry.copy_from_nonoverlapping(name.as_ptr(), name.len());
-        entry.add(name.len()).write(b'=');
-        entry
-            .add(name.len() + 1)
-            .copy_from_nonoverlapping(value.as_ptr(), value.len());
-        entry.add(name.len() + 1 + value.len()).write(0);
-    }
+    let text = unsafe { core::slice::from_raw_parts_mut(entry, name.len() + value.len() + 2) };
+    text[..name.len()].copy_from_slice(name);
+    text[name.len()] = b'=';
+    text[name.len() + 1..name.len() + 1 + value.len()].copy_from_slice(value);
+    text[name.len() + 1 + value.len()] = 0;
     put_variable(entry.cast(), name)
 }
 
@@ -319,11 +315,13 @@ pub unsafe extern "C" fn unsetenv(name: *const c_char) -> c_int {
     }
     while let Some((index, _)) = find_variable(name) {
         let length = environment_length();
+        // SAFETY: the program's only thread owns `environ`.
+        let environment = unsafe { ENVIRON };
         // SAFETY: the entries after `index`, and the null, move down one.
         unsafe {
-            ENVIRON
-                .add(index)
-                .copy_from(ENVIRON.add(index + 1), length - index)
+            environment
+                .wrapping_add(index)
+                .copy_from(environment.wrapping_add(index + 1), length - index)
         };
     }
     0
@@ -467,11 +465,6 @@ fn digit_value(byte: u8) -> Option<u32> {
     }
 }
 
-/// `strtoull`'s parsing: the value's magnitude, its sign, whether it overflowed and where the
-/// number ended.
-///
-/// # Safety
-/// `text` must be a NUL-terminated string.
 unsafe fn parse_integer(text: *const c_char, base: c_int) -> (u64, bool, bool, *const c_char) {
     // SAFETY: the caller's promise.
     let bytes = unsafe { c_string(text) };
@@ -677,25 +670,36 @@ type Compare = unsafe extern "C" fn(*const c_void, *const c_void) -> c_int;
 /// # Safety
 /// `base` must hold `count` elements of `size` bytes, and `compare` must compare two of them.
 pub unsafe extern "C" fn qsort(base: *mut c_void, count: usize, size: usize, compare: Compare) {
-    if size == 0 {
+    if size == 0 || count < 2 {
         return;
     }
-    let base = base.cast::<u8>();
-    for sorted in 1..count {
-        let mut at = sorted;
-        while at > 0 {
-            let (left, right) = (
-                base.wrapping_add((at - 1) * size),
-                base.wrapping_add(at * size),
-            );
-            // SAFETY: both are elements of the caller's array.
-            if unsafe { compare(left.cast(), right.cast()) } <= 0 {
-                break;
-            }
-            // SAFETY: two distinct elements of the array, swapped in place.
-            unsafe { ptr::swap_nonoverlapping(left, right, size) };
-            at -= 1;
+    let element = |index: usize| base.cast::<u8>().wrapping_add(index * size);
+    let sift_down = |mut root: usize, end: usize| loop {
+        let mut child = 2 * root + 1;
+        if child >= end {
+            return;
         }
+        if child + 1 < end
+            // SAFETY: both are elements of the caller's array.
+            && unsafe { compare(element(child).cast(), element(child + 1).cast()) } < 0
+        {
+            child += 1;
+        }
+        // SAFETY: as above.
+        if unsafe { compare(element(root).cast(), element(child).cast()) } >= 0 {
+            return;
+        }
+        // SAFETY: two distinct elements of the array, swapped in place.
+        unsafe { ptr::swap_nonoverlapping(element(root), element(child), size) };
+        root = child;
+    };
+    for root in (0..count / 2).rev() {
+        sift_down(root, count);
+    }
+    for end in (1..count).rev() {
+        // SAFETY: two distinct elements of the array, swapped in place.
+        unsafe { ptr::swap_nonoverlapping(element(0), element(end), size) };
+        sift_down(0, end);
     }
 }
 

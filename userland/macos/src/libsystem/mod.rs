@@ -107,12 +107,10 @@ extern "C" fn strerror(errno: c_int) -> *const c_char {
     static mut BUFFER: [u8; 64] = [0; 64];
     let length = message.len().min(63);
     // SAFETY: the program's only thread owns the buffer, which `strerror` may overwrite.
-    unsafe {
-        let buffer = &mut *(&raw mut BUFFER);
-        buffer[..length].copy_from_slice(&message[..length]);
-        buffer[length] = 0;
-        buffer.as_ptr().cast()
-    }
+    let buffer = unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), 64) };
+    buffer[..length].copy_from_slice(&message[..length]);
+    buffer[length] = 0;
+    buffer.as_ptr().cast()
 }
 
 /// The bytes of the NUL-terminated `text`, without the NUL.
@@ -234,10 +232,9 @@ static mut IMAGE_SLIDE: isize = 0;
 /// Called once, before the program runs.
 pub unsafe fn set_image(header: usize, slide: isize) {
     // SAFETY: the caller's promise.
-    unsafe {
-        IMAGE_HEADER = header;
-        IMAGE_SLIDE = slide;
-    }
+    unsafe { IMAGE_HEADER = header };
+    // SAFETY: as above.
+    unsafe { IMAGE_SLIDE = slide };
 }
 
 macro_rules! functions {

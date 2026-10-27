@@ -168,11 +168,11 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let apple = apple_vector(path.to_bytes())?;
     let slide = base as isize - program.base_address() as isize;
     // SAFETY: the program has not started; these record its image, arguments and streams.
-    unsafe {
-        libsystem::set_image(base, slide);
-        libsystem::set_process(argument_count(&startup), arguments, environment);
-        libsystem::set_up_streams();
-    }
+    unsafe { libsystem::set_image(base, slide) };
+    // SAFETY: as above; the arrays are never freed.
+    unsafe { libsystem::set_process(argument_count(&startup), arguments, environment) };
+    // SAFETY: as above.
+    unsafe { libsystem::set_up_streams() };
     let entry = base + program.entry as usize;
     // SAFETY: `entry` is LC_MAIN's checked entry point inside an executable segment of the
     // image, mapped, bound, rebased and protected; dyld calls it as
@@ -230,7 +230,7 @@ fn bind_imports<'a>(
         // SAFETY: `table` holds `count` entries.
         unsafe {
             table
-                .add(index)
+                .wrapping_add(index)
                 .write(address.wrapping_add(import.addend as u64))
         };
     }
@@ -258,7 +258,11 @@ fn argument_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
         .take(count)
     {
         // SAFETY: `vector` holds `count + 1` pointers; the strings stay on the start-up stack.
-        unsafe { vector.add(index).write(argument.as_ptr().cast_mut()) };
+        unsafe {
+            vector
+                .wrapping_add(index)
+                .write(argument.as_ptr().cast_mut())
+        };
     }
     Ok(vector)
 }
@@ -268,7 +272,7 @@ fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
     let vector = allocate_pages((count + 1) * 8)?.cast::<*mut c_char>();
     for (index, entry) in startup.environment().enumerate().take(count) {
         // SAFETY: as in `argument_vector`.
-        unsafe { vector.add(index).write(entry.as_ptr().cast_mut()) };
+        unsafe { vector.wrapping_add(index).write(entry.as_ptr().cast_mut()) };
     }
     Ok(vector)
 }
@@ -276,14 +280,14 @@ fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
 fn apple_vector(path: &[u8]) -> Result<*mut *mut c_char, Failure> {
     let length = EXECUTABLE_PATH.len() + path.len() + 1;
     let block = allocate_pages(16 + length)?;
-    // SAFETY: the block holds two pointers, then the `executable_path=` string and its NUL.
-    unsafe {
-        let text = block.add(16);
-        text.copy_from_nonoverlapping(EXECUTABLE_PATH.as_ptr(), EXECUTABLE_PATH.len());
-        text.add(EXECUTABLE_PATH.len())
-            .copy_from_nonoverlapping(path.as_ptr(), path.len());
-        block.cast::<*mut u8>().write(text);
-    }
+    let text = block.wrapping_add(16);
+    // SAFETY: the block holds two pointers, then the `executable_path=` string and its NUL,
+    // zeroed.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(text, length) };
+    bytes[..EXECUTABLE_PATH.len()].copy_from_slice(EXECUTABLE_PATH);
+    bytes[EXECUTABLE_PATH.len()..length - 1].copy_from_slice(path);
+    // SAFETY: the first of the two pointers; the second stays null.
+    unsafe { block.cast::<*mut u8>().write(text) };
     Ok(block.cast())
 }
 
