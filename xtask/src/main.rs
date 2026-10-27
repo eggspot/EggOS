@@ -876,6 +876,15 @@ fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<Mac
 const MACOS_FAT_PROGRAM: &str = "macos-fat";
 
 fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    if macos::not_built_for_this_run(std::env::var_os(macos::PROGRAMS_VARIABLE).as_deref()) {
+        eprintln!(
+            "xtask: {}: macOS programs boot test skipped: {} is empty, so this CI run built no \
+             Mach-O programs (pull requests that change code build them)",
+            arch.name,
+            macos::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    }
     let Some(programs) = macos::find_or_build_programs(&target_directory())? else {
         if std::env::var_os("CI").is_some() {
             return Err(format!(

@@ -89,7 +89,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Wait for the Mach-O test programs
-        if: steps.changes.outputs.code == 'true'
+        if: steps.changes.outputs.code == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -100,7 +100,10 @@ jobs:
               exit 0
             fi
             state=$(gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[] | select(.name == "macos-programs") | .conclusion // ""')
-            case "$state" in failure|cancelled|skipped) echo "macos-programs: $state"; exit 1;; esac
+            case "$state" in
+              failure|cancelled|skipped|timed_out) echo "macos-programs: $state"; exit 1;;
+              success) gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx macos-programs || { echo "macos-programs finished without its artifact"; exit 1; };;
+            esac
             sleep 5
           done
           echo "macos-programs: no artifact after 10 minutes"; exit 1
@@ -108,7 +111,7 @@ jobs:
       - name: QEMU boot tests (every architecture)
         if: steps.changes.outputs.code == 'true'
         env:
-          EGGOS_MACOS_PROGRAMS: target/macos-programs
+          EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
         run: cargo xtask qemu --arch all
 
       - name: Benchmarks against the baseline (every architecture)
@@ -122,20 +125,36 @@ jobs:
           key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
 
   macos-programs:
+    if: github.event_name == 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 10
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
     steps:
+      - name: Detect code changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only)
+          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE(-MIT|-APACHE)?$|^\.github/FUNDING\.yml$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"; echo "Docs-only change: no Mach-O programs to build."
+          fi
       - uses: actions/checkout@v7
+        if: steps.changes.outputs.code == 'true'
         with:
           fetch-depth: 1
       - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
       - name: Build the Mach-O test programs with Apple's linker
+        if: steps.changes.outputs.code == 'true'
         run: cargo xtask macos-programs
       - uses: actions/upload-artifact@v7
+        if: steps.changes.outputs.code == 'true'
         with:
           name: macos-programs
           path: target/macos-console/programs

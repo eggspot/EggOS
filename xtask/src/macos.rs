@@ -107,6 +107,12 @@ impl Programs {
     }
 }
 
+/// Whether `EGGOS_MACOS_PROGRAMS` is set but empty: CI built no programs for this run (only
+/// pull requests that change code build them), so the boot test is skipped rather than failed.
+pub fn not_built_for_this_run(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value.is_empty())
+}
+
 /// The boot test's programs: those in `EGGOS_MACOS_PROGRAMS` if it is set, else built here on a
 /// macOS host with Apple's linker; `None` on other hosts.
 pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs>, String> {
@@ -240,5 +246,8 @@ mod tests {
         );
         assert_eq!(target("riscv64"), None);
         assert!(layer_runs_on("aarch64") && layer_runs_on("x86_64") && !layer_runs_on("riscv64"));
+        assert!(not_built_for_this_run(Some(std::ffi::OsStr::new(""))));
+        assert!(!not_built_for_this_run(Some(std::ffi::OsStr::new("out"))));
+        assert!(!not_built_for_this_run(None));
     }
 }
