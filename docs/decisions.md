@@ -6604,3 +6604,113 @@ the license, by an explicit instruction recorded here.
   ahead-of-time translation. A benchmark of program start and of the hot libSystem calls
   against macOS on the same hardware needs a way to run a macOS program inside the benchmark
   kernel; it comes with part 2.
+
+## D121 The Windows layer, part 2a: threads, waits and locks, Windows' error codes, UTF-16 strings and directory listing for small console tools on x86_64 — Decided by the build loop (the wait design, the reported version, a partial user32, the read-only errors and ARM64's deferral decided by research)
+- **What.** v0.3.0 item 19, part 2a: small real Windows console tools run from `eggsh` on
+  x86_64, natively (D17): programs that start threads and wait for them, lock with critical
+  sections, SRW locks, mutexes, events and semaphores, list directories with wildcards, read
+  and print UTF-8 files through the W functions, split their UTF-16 command line with
+  `CommandLineToArgvW` and see the error codes Windows gives. The exact function list is in
+  docs/windows-programs.md. ARM64 programs are part 2b (roadmap item 19b).
+- **Clean room.** As D118: Microsoft's public API documentation (learn.microsoft.com) for each
+  function's contract, error codes ("System Error Codes") and structure layouts
+  (`WIN32_FIND_DATAW`, `BY_HANDLE_FILE_INFORMATION`, `WIN32_FILE_ATTRIBUTE_DATA`,
+  `SYSTEM_INFO`, `OSVERSIONINFOEXW`, `SYSTEMTIME`, `CRITICAL_SECTION`'s size), and the
+  observed behaviour of programs we built ourselves. No Wine or ReactOS code was read.
+- **Threads.** `CreateThread` maps the stack (1 MiB unless asked, in 64 KiB steps, at most
+  256 MiB, with a `PROT_NONE` guard page below), a TEB of its own (sharing the PEB), and a copy
+  of the image's static TLS, then starts a Linux thread of the process with `clone`
+  (`CLONE_VM | FS | FILES | SIGHAND | THREAD | SYSVSEM`, its id word set by
+  `CLONE_PARENT_SETTID` and cleared by `CLONE_CHILD_CLEARTID`). The new thread points GS at its
+  TEB with `arch_prctl(ARCH_SET_GS)` (the kernel already keeps the GS base per thread, D118),
+  writes its id there, runs the TLS callbacks with `DLL_THREAD_ATTACH` and calls the start
+  routine; on return or `ExitThread` it runs its FLS callbacks and `DLL_THREAD_DETACH`, records
+  its exit code, wakes its waiters and ends with `exit`. The process ends, with the last
+  thread's code, when its last thread ends, as on Windows (`exit_group` from the last one).
+  A thread's stack, TEB and TLS copy go back once the kernel has cleared its id word (it no
+  longer runs), the next time a thread is created or a handle closed. `CREATE_SUSPENDED`
+  holds the thread on a futex until `ResumeThread`. The kernel needed no change.
+- **Objects and waits (decided by research).** Threads, events, mutexes and semaphores are
+  reference-counted objects in one handle table (handles from `0x4000_0000` up, multiples of
+  four, apart from file handles' `(fd + 1) * 4`), whose states change only under the table's
+  lock. A wait checks every handle under the lock (wait-all takes them all at once, as
+  Microsoft documents) and otherwise sleeps on one process-wide futex word, the wake sequence,
+  read under the same lock; every state change bumps it and wakes the sleepers only when some
+  sleep (a counter), so no wake is lost between the check and the sleep. Research compared
+  per-object futex words with wait blocks (NT's dispatcher design): they avoid waking
+  unrelated waiters but make wait-all much harder; one sequence costs nothing when nobody
+  waits, keeps the already-signaled path free of system calls, and accepts a thundering herd
+  when many threads wait on different objects. Per-object words come when a program shows the
+  contention. The layer's spin locks yield the CPU every 128 tries, so a preempted holder runs.
+- **Locks on the program's memory.** Critical sections (a futex in `LockCount`, owner and
+  recursion in their fields, the spin count honoured up to 4,000), SRW locks (one word: a
+  writer bit, a waiters bit, the reader count), condition variables (a sequence word),
+  `InitOnce` (the state in the value's two low bits, the context above them, as Microsoft
+  documents `INIT_ONCE_CTX_RESERVED_BITS`) and `WaitOnAddress` (the futex on the aligned word
+  holding the address) need no handle and no system call when uncontended. Interlocked
+  operations are compiler intrinsics on x64 and run as the CPU's own instructions.
+- **Error codes.** Linux error numbers map to Win32 codes in one host-tested table
+  (`ENOENT` 2, `ENOTDIR` 3, `EACCES`/`EPERM`/`EISDIR`/`EROFS` 5, `EBADF` 6, `EEXIST` 80,
+  `ENOTEMPTY` 145, `ENAMETOOLONG` 206, ...). A missing file whose directory is missing too is
+  `ERROR_PATH_NOT_FOUND` (3), checked with a `stat` of the parent only on that failure, as
+  Windows reports it (part 1's test now expects 3 for `C:\no\such\file`). The last error is
+  the calling thread's, in its TEB. `FormatMessageW` gives the system's English message for
+  every code the layer sets.
+- **Read-only file system (decided by research).** `CreateDirectoryW`, `DeleteFileW` and
+  `RemoveDirectoryW` first give the answers that do not depend on writing
+  (`ERROR_ALREADY_EXISTS`, `ERROR_FILE_NOT_FOUND`, `ERROR_PATH_NOT_FOUND`, `ERROR_DIRECTORY`);
+  the kernel has no `mkdirat` or `unlinkat` yet, and their `ENOSYS` is `ERROR_ACCESS_DENIED`
+  (a missing feature), while `EROFS` would be `ERROR_WRITE_PROTECT`, the read-only media code.
+- **Paths.** `\` is `/`, any drive letter is the root (`C:\` is `/`), `\\?\` is dropped; paths
+  given back (`GetCurrentDirectoryW`, `GetFullPathNameW`, `GetModuleFileNameW`) are in
+  Windows' form with `C:\`. Names are case-sensitive, unlike Windows' (a documented
+  difference); wildcard matching (`*`, `?`, `*.*` for everything) ignores ASCII case, as
+  `FindFirstFileW` does. Directory listing reads `getdents64` and fills `WIN32_FIND_DATAW`
+  from `fstatat` on the directory (times as `FILETIME`s, attributes from the mode).
+- **Strings.** The ANSI and OEM code pages are UTF-8 (D118), so `MultiByteToWideChar` and
+  `WideCharToMultiByte` convert UTF-8 for `CP_UTF8`, `CP_ACP` and `CP_OEMCP`, with
+  `MB_ERR_INVALID_CHARS` and `WC_ERR_INVALID_CHARS` giving `ERROR_NO_UNICODE_TRANSLATION`;
+  comparisons are ordinal (locale-aware collation is later). `CharUpperW` and `CharLowerW`
+  make a partial user32 (decided by research: console programs import them from there; a
+  missing user32 function is still refused by name at load, and `GetProcAddress` gives
+  `ERROR_PROC_NOT_FOUND`); shell32 has `CommandLineToArgvW`, which splits as Microsoft
+  documents (the program name without escapes, then the backslash and quote rules).
+- **Version (decided by research).** `GetVersionExW`, `GetVersion` and `RtlGetVersion` report
+  Windows 11 (10.0, build 26100), whatever the program's manifest says; Windows gives
+  unmanifested programs 6.2 from `GetVersionExW`, which needs the loader to read the
+  manifest resource, a later part.
+- **Host tests.** Wildcard matching, search-path splitting, attributes from modes, the
+  `WIN32_FIND_DATAW` and file information layouts, `FILETIME` and `SYSTEMTIME` both ways
+  (leap years, the epoch, invalid dates), the errno map and messages, UTF-16 lengths,
+  surrogates, case mapping and ordinal comparison, Windows-form and absolute paths, and
+  `CommandLineToArgvW`'s rules.
+- **The boot test.** `tests/windows-console` gains `windows-tools.exe`, built from our own
+  source for `x86_64-pc-windows-msvc` like part 1's programs (same flags, same CI step, no new
+  job). The Windows programs session runs it three times from `eggsh`: `dir` over five patterns
+  (wildcards in `/bin`, a non-ASCII file name in `/usr/share/windows-tools`, which the test
+  image adds, a missing directory and no match), `cat` over a wildcard, a file and two
+  missing paths (UTF-8 content through `WriteConsoleW`, status 1 for the failures), and
+  `checks` (four workers joined with `WaitForMultipleObjects` adding 1,000 times each through
+  an interlocked add, a critical section, a mutex and an SRW lock; a manual-reset start event;
+  a semaphore; `InitOnceExecuteOnce` run once; TLS, FLS (with cleanup callbacks) and the last
+  error per thread; a suspended thread resumed and ended with `ExitThread(77)`; fifteen error
+  codes; `FormatMessageW`; UTF-8 round trips with German, Greek and an emoji; ordinal
+  comparison ignoring case; the system, version, clock, working directory, full path,
+  relative open and environment functions). On aarch64 and riscv64 each is refused with
+  `Exec format error` and status 126.
+- **Verified where.** The macOS development host (aarch64): host tests, clippy for every
+  target, `cargo xtask qemu --arch all` (x86_64 runs the tools; aarch64 and riscv64 refuse
+  them); CI on Linux.
+- **Cost.** Only the layer grows (it is in images only with a Windows program, D18); the kernel
+  is unchanged, so no benchmark or image-size line moves. Uncontended locks and waits on an
+  already-signaled object make no system call; a signal makes one only when a thread sleeps.
+- **Not yet.** ARM64 programs (item 19b: a per-architecture ABI for the exported functions,
+  `x18` reserved in the layer's build and set per thread to the TEB, an aarch64 thread start),
+  other processes and pipes, abandoned mutexes, `SuspendThread`, `TerminateThread`, named
+  objects, alertable waits and APCs, `TlsFree` and `FlsFree` clearing other threads' slots,
+  TLS expansion slots, writing files and directories (the read-only file system), time zones
+  (local time is UTC), locale-aware comparisons, the manifest-dependent version, `ReadConsoleW`
+  across a split multi-byte character, programs on a C/C++ runtime or Rust's std. A benchmark
+  of thread start, waits and locks against Windows on the same hardware needs a way to run a
+  Windows program inside the benchmark kernel, as D118 noted; the kernel tests D118 left for
+  the interpreter's refusal and the GS base across `fork`/`exec` remain open.
