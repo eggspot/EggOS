@@ -158,12 +158,17 @@ fn name(names: &[&'static str], index: i32) -> &'static str {
         .unwrap_or("?")
 }
 
+fn abbreviated(names: &[&'static str], index: i32) -> &'static [u8] {
+    let name = name(names, index).as_bytes();
+    &name[..name.len().min(3)]
+}
+
 fn convert(out: &mut Output<'_>, conversion: u8, time: &BrokenDown, seconds: i64) {
     let year = i64::from(time.year) + 1900;
     match conversion {
-        b'a' => out.push(&name(&DAYS, time.weekday).as_bytes()[..3]),
+        b'a' => out.push(abbreviated(&DAYS, time.weekday)),
         b'A' => out.push(name(&DAYS, time.weekday).as_bytes()),
-        b'b' | b'h' => out.push(&name(&MONTHS, time.month).as_bytes()[..3]),
+        b'b' | b'h' => out.push(abbreviated(&MONTHS, time.month)),
         b'B' => out.push(name(&MONTHS, time.month).as_bytes()),
         b'c' => format_into(out, b"%a %b %e %H:%M:%S %Y", time, seconds),
         b'C' => out.number(year.div_euclid(100), 2, b'0'),

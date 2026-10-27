@@ -526,3 +526,28 @@ fn darwin_mmap_and_status_flags_translate_to_linux() {
     );
     assert_eq!(linux_status_flags(4 | 8 | 1), 0o6000);
 }
+
+#[test]
+fn strftime_prints_a_question_mark_for_out_of_range_names_and_never_panics() {
+    use crate::calendar::{BrokenDown, format};
+    let mut buffer = [0u8; 64];
+    for (weekday, month) in [(9, 0), (-1, 12), (7, -1), (i32::MAX, i32::MIN)] {
+        let time = BrokenDown {
+            day: 1,
+            year: 70,
+            weekday,
+            month,
+            ..BrokenDown::default()
+        };
+        let length = format(b"%a %A %b %B %h", &time, &mut buffer).unwrap();
+        let text = core::str::from_utf8(&buffer[..length]).unwrap();
+        assert!(text.contains('?'), "{text}");
+    }
+    let invalid = BrokenDown {
+        weekday: 9,
+        month: 13,
+        ..BrokenDown::default()
+    };
+    let length = format(b"%a %b", &invalid, &mut buffer).unwrap();
+    assert_eq!(&buffer[..length], b"? ?");
+}

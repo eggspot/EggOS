@@ -468,8 +468,13 @@ pub unsafe extern "C" fn pthread_create(
         )
     } {
         Ok(id) => {
-            // SAFETY: the block stays mapped until the thread is joined or reaped.
-            unsafe { &(*thread).id }.store(id as u32, Ordering::Relaxed);
+            if !detached {
+                // SAFETY: a joinable thread's mapping is unmapped only by `pthread_join` or,
+                // after `pthread_detach`, by a reap, and neither can happen before the caller
+                // has the thread from `out` below. A detached thread may already have ended
+                // and been reaped, so its block is not touched: `thread_main` stores its id.
+                unsafe { &(*thread).id }.store(id as u32, Ordering::Relaxed);
+            }
             if !out.is_null() {
                 // SAFETY: the caller's promise.
                 unsafe { out.write(thread) };
