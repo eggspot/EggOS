@@ -1,7 +1,8 @@
 //! The calls that change files and directories (D125), on file systems that can be changed
 //! (the tmpfs on `/tmp` and `/home`; the initramfs answers `EROFS`): `write`, `writev` and
 //! `pwrite64` on regular files, `ftruncate`, `mkdirat`, `unlinkat`, `renameat`, `renameat2`
-//! and `utimensat`, with x86_64's `mkdir`, `rmdir`, `unlink` and `rename`; `openat` creates and
+//! and `utimensat`, with x86_64's `mkdir`, `rmdir`, `unlink` and `rename`, and `sync`,
+//! `syncfs`, `fsync` and `fdatasync`, which put changes on the disk (D131); `openat` creates and
 //! truncates files through [`create_file`] and [`truncate_on_open`]. Errors are Linux's, in
 //! Linux's order where it has one. User memory is copied through a buffer on the kernel stack,
 //! never while a file system's lock is held. Times are the wall clock's seconds.
@@ -45,6 +46,7 @@ pub fn refused(refused: Refused) -> Errno {
         Refused::InvalidArgument => Errno::EINVAL,
         Refused::TooBig => Errno::EFBIG,
         Refused::Busy => Errno::EBUSY,
+        Refused::Storage => Errno::EIO,
     }
 }
 
@@ -443,6 +445,46 @@ pub fn utimensat<P: Platform>(
         .set_modified(node.id(), modified)
         .map(|()| 0)
         .map_err(refused)
+}
+
+/// `sync()`: puts every file system's changes on stable storage. As Linux, it cannot fail.
+pub fn sync() -> Result<u64, Errno> {
+    let _ = vfs::sync_all();
+    Ok(0)
+}
+
+/// `fsync(fd)` and `fdatasync(fd)`: puts the changes of the file system `fd`'s file is on on
+/// stable storage, all of them (a file's own changes are not committed apart). As Linux:
+/// `EBADF` for a descriptor not open or `O_PATH`, `EINVAL` for the console, a pipe or a window,
+/// `EIO` if the disk failed.
+pub fn fsync(thread: &LinuxThread, fd: u64) -> Result<u64, Errno> {
+    let file = thread.files().file(fd)?;
+    let node = match file.kind() {
+        FileKind::Path(_) => return Err(Errno::EBADF),
+        kind => kind.node().ok_or(Errno::EINVAL)?,
+    };
+    node.file_system()
+        .sync()
+        .map(|()| 0)
+        .map_err(|_| Errno::EIO)
+}
+
+/// `syncfs(fd)`: puts the changes of the file system `fd`'s file is on on stable storage;
+/// nothing to do for the console, a pipe or a window. As Linux: `EBADF` for a descriptor not
+/// open or `O_PATH`, `EIO` if the disk failed.
+pub fn syncfs(thread: &LinuxThread, fd: u64) -> Result<u64, Errno> {
+    let file = thread.files().file(fd)?;
+    match file.kind() {
+        FileKind::Path(_) => Err(Errno::EBADF),
+        kind => match kind.node() {
+            Some(node) => node
+                .file_system()
+                .sync()
+                .map(|()| 0)
+                .map_err(|_| Errno::EIO),
+            None => Ok(0),
+        },
+    }
 }
 
 #[cfg(test)]

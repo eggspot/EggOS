@@ -61,6 +61,7 @@ name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
  "eggos-drivers",
+ "eggos-eggfs",
  "eggos-hal",
 ]
 
@@ -122,6 +123,7 @@ name = "xtask"
 version = "0.2.0"
 dependencies = [
  "eggos-drivers",
+ "eggos-eggfs",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",
 ]

@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 49] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 52] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -103,6 +103,9 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 49] {
         ("virtio_input_poll_idle", |_, n| virtio_input_poll_idle(n)),
         ("virtio_blk_read_fake", |_, n| virtio_blk_read_fake(n)),
         ("fat_read_4k", |_, n| fat_read_4k::<P>(n)),
+        ("eggfs_read_4k", |_, n| eggfs_read_4k::<P>(n)),
+        ("eggfs_create", |_, n| eggfs_create::<P>(n)),
+        ("eggfs_commit", |_, n| eggfs_commit::<P>(n)),
         ("input_key_to_bytes", |_, n| input_key_to_bytes(n)),
         ("input_event_queue_push_pop", |_, n| {
             input_event_queue_push_pop(n)
@@ -633,7 +636,9 @@ fn fat_image() -> alloc::vec::Vec<u8> {
 fn fat_read_4k<P: Platform>(n: u64) {
     use crate::vfs::FileSystem;
     let disk = Box::new(MemoryDisk(fat_image()));
-    let Ok(fat) = crate::vfs::fat::Fat::mount(disk, crate::devices::Deadline::after::<P>, (0, 0))
+    let sleeping = crate::sync::Sleeping::on::<P>();
+    let Ok(fat) =
+        crate::vfs::fat::Fat::mount(disk, crate::devices::Deadline::after::<P>, sleeping, (0, 0))
     else {
         panic!("fat_read_4k: the image could not be mounted");
     };
@@ -648,6 +653,97 @@ fn fat_read_4k<P: Platform>(n: u64) {
         let offset = (i % FAT_FILE_CLUSTERS as u64) * FAT_CLUSTER_BYTES as u64;
         black_box(fat.read_into(file, black_box(offset), &mut buffer).ok());
         black_box(&mut buffer);
+    }
+}
+
+type BenchEggFs = crate::vfs::eggfs::EggFs<eggos_eggfs::memory::MemoryDisk>;
+
+type BenchFolder = crate::vfs::eggfs::Folder<eggos_eggfs::memory::MemoryDisk>;
+
+const EGGFS_DISK_BLOCKS: usize = 512;
+
+const EGGFS_FILE_BLOCKS: u64 = 64;
+
+static EGGFS_FOLDER: core::sync::atomic::AtomicPtr<(BenchFolder, u64)> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+fn eggfs_folder<P: Platform>() -> &'static (BenchFolder, u64) {
+    use crate::vfs::{FileSystem, NodeKind, WriteAt};
+    use core::sync::atomic::Ordering;
+    let made = EGGFS_FOLDER.load(Ordering::Acquire);
+    if !made.is_null() {
+        // SAFETY: a non-null pointer is a leaked `(BenchFolder, u64)`, stored once below and
+        // never freed.
+        return unsafe { &*made };
+    }
+    let mut disk = eggos_eggfs::memory::MemoryDisk::new(EGGFS_DISK_BLOCKS);
+    let Ok(()) = eggos_eggfs::format(&mut disk, 0) else {
+        panic!("eggfs: the memory disk could not be formatted");
+    };
+    let Ok((volume, _)) = eggos_eggfs::Volume::mount(disk) else {
+        panic!("eggfs: the memory disk could not be mounted");
+    };
+    let sleeping = crate::sync::Sleeping::on::<P>();
+    let eggfs: &'static BenchEggFs = Box::leak(Box::new(crate::vfs::eggfs::EggFs::new(
+        volume,
+        (0, 0),
+        sleeping,
+    )));
+    let Ok(folder) = eggfs.folder(b"home", 0) else {
+        panic!("eggfs: no folder");
+    };
+    let Ok(file) = folder.create(folder.root(), b"file", NodeKind::Regular, 0o644, 0) else {
+        panic!("eggfs: the file could not be made");
+    };
+    let block = [0x5au8; eggos_eggfs::BLOCK_SIZE];
+    for _ in 0..EGGFS_FILE_BLOCKS {
+        if folder.write(file, WriteAt::End, &block, 0).is_err() {
+            panic!("eggfs: the file could not be written");
+        }
+    }
+    if folder.sync().is_err() {
+        panic!("eggfs: the file could not be committed");
+    }
+    let leaked = Box::into_raw(Box::new((folder, file)));
+    EGGFS_FOLDER.store(leaked, Ordering::Release);
+    // SAFETY: just leaked above, never freed.
+    unsafe { &*leaked }
+}
+
+fn eggfs_read_4k<P: Platform>(n: u64) {
+    use crate::vfs::FileSystem;
+    let (folder, file) = eggfs_folder::<P>();
+    let mut buffer = [0u8; eggos_eggfs::BLOCK_SIZE];
+    for i in 0..n {
+        let offset = (i % EGGFS_FILE_BLOCKS) * eggos_eggfs::BLOCK_SIZE as u64;
+        black_box(folder.read_into(*file, black_box(offset), &mut buffer).ok());
+        black_box(&mut buffer);
+    }
+}
+
+fn eggfs_create<P: Platform>(n: u64) {
+    use crate::vfs::{FileSystem, NodeKind};
+    let (folder, _) = eggfs_folder::<P>();
+    let root = folder.root();
+    for _ in 0..n {
+        black_box(
+            folder
+                .create(root, black_box(b"new"), NodeKind::Regular, 0o644, 1)
+                .ok(),
+        );
+        black_box(folder.remove(root, b"new", false, 1).ok());
+    }
+    if folder.sync().is_err() {
+        panic!("eggfs_create: the changes could not be committed");
+    }
+}
+
+fn eggfs_commit<P: Platform>(n: u64) {
+    use crate::vfs::FileSystem;
+    let (folder, file) = eggfs_folder::<P>();
+    for i in 0..n {
+        black_box(folder.set_modified(*file, i).ok());
+        black_box(folder.sync().ok());
     }
 }
 

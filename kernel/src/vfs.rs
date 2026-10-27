@@ -18,6 +18,7 @@
 
 pub mod cpio;
 pub mod devfs;
+pub mod eggfs;
 pub mod fat;
 pub mod initramfs;
 pub mod tmpfs;
@@ -66,6 +67,8 @@ pub enum Refused {
     TooBig,
     /// The name is `.` or `..`, which a rename cannot target (`EBUSY`).
     Busy,
+    /// The storage under the file system failed, or what it holds is inconsistent (`EIO`).
+    Storage,
 }
 
 /// The storage under a file system failed: a disk did not answer or reported an error, or
@@ -262,6 +265,11 @@ pub trait FileSystem: Sync + Send {
     }
     /// Entry `position` of `directory`, in a stable order, `.` and `..` not included.
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry>;
+    /// Puts every change made so far on stable storage (`sync`, `syncfs`, `fsync`); a file
+    /// system with nothing to put there has nothing to do.
+    fn sync(&self) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 /// A node of a mounted file system.
@@ -512,6 +520,12 @@ pub enum MountError {
     Taken,
 }
 
+/// Whether something is mounted on the directory `path` names from the root.
+pub fn is_mount_point(path: &[u8]) -> bool {
+    let root = root();
+    resolve(root, root, path).is_ok_and(|node| node != root && covered_by(node).is_some())
+}
+
 /// Mounts `file_system` on the directory `path` names from the root, for good.
 pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
     let root = root();
@@ -542,6 +556,18 @@ pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), Mo
     // SAFETY: `mounted` came from `Box::into_raw` above and was never published.
     drop(unsafe { alloc::boxed::Box::from_raw(mounted) });
     Err(MountError::Taken)
+}
+
+/// Puts every mounted file system's changes on stable storage (`sync`, and before the
+/// machine goes down); [`StorageError`] if any failed, after trying them all.
+pub fn sync_all() -> Result<(), StorageError> {
+    let mut result = Ok(());
+    for mounted in mounts() {
+        if mounted.root.file_system.sync().is_err() {
+            result = Err(StorageError);
+        }
+    }
+    result
 }
 
 static ROOT: AtomicPtr<Mount> = AtomicPtr::new(core::ptr::null_mut());

@@ -4,9 +4,10 @@
 //! `LINUX_REBOOT_MAGIC1` and `magic2` one of the four `LINUX_REBOOT_MAGIC2` values; then
 //! `EINVAL` for a command it does not know or has not built in (`KEXEC`, `SW_SUSPEND`).
 //! `CAD_ON` and `CAD_OFF` succeed and change nothing: no key combination resets the machine.
-//! `RESTART2` resets as `RESTART` does, its command string unread. Nothing is synced: there is
-//! no writable file system yet. Before the machine goes down every other CPU is parked
-//! ([`crate::cpu::stop_others`]), and the console says what happens, in Linux's words.
+//! `RESTART2` resets as `RESTART` does, its command string unread. Before the machine goes down
+//! every file system's changes are put on the disk ([`crate::vfs::sync_all`], D131), every
+//! other CPU is parked ([`crate::cpu::stop_others`]), and the console says what happens, in
+//! Linux's words.
 
 use super::Errno;
 use super::credentials::{self, Kind};
@@ -94,7 +95,10 @@ pub fn reboot<P: Platform>(
     let privileged = credentials::get_effective(process, Kind::User) == 0;
     match decode(privileged, magic as u32, magic2 as u32, cmd as u32)? {
         Action::None => Ok(0),
-        action => take_machine_down::<P>(action),
+        action => {
+            let _ = crate::vfs::sync_all();
+            take_machine_down::<P>(action)
+        }
     }
 }
 
