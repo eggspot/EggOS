@@ -125,6 +125,7 @@ struct Builder {
     next_free: u32,
     short_names: u32,
     fragment: bool,
+    directory_stride: u32,
 }
 
 struct Format {
@@ -133,6 +134,7 @@ struct Format {
     sectors_per_cluster: u8,
     partition_at: Option<u64>,
     fragment: bool,
+    directory_stride: u32,
 }
 
 impl Format {
@@ -148,6 +150,7 @@ impl Format {
             sectors_per_cluster: 1,
             partition_at: None,
             fragment: true,
+            directory_stride: 1,
         }
     }
 }
@@ -231,6 +234,7 @@ impl Builder {
             next_free: 2,
             short_names: 0,
             fragment: format.fragment,
+            directory_stride: format.directory_stride,
         };
         builder.set_fat(0, 0x0fff_fff8);
         builder.set_fat(1, 0x0fff_ffff);
@@ -263,9 +267,8 @@ impl Builder {
         }
     }
 
-    fn allocate(&mut self, bytes: u64, spread: bool) -> Vec<u32> {
+    fn allocate(&mut self, bytes: u64, stride: u32) -> Vec<u32> {
         let count = bytes.div_ceil(self.cluster_bytes).max(1);
-        let stride = if spread && self.fragment { 3 } else { 1 };
         let chain: Vec<u32> = (0..count as u32)
             .map(|index| self.next_free + index * stride)
             .collect();
@@ -390,13 +393,14 @@ impl Builder {
                     self.directory_entry(short, 0x20, 0, 0, *naming)
                 }
                 Item::File(bytes) => {
-                    let chain = self.allocate(bytes.len() as u64, true);
+                    let stride = if self.fragment { 3 } else { 1 };
+                    let chain = self.allocate(bytes.len() as u64, stride);
                     self.write_chain(&chain, bytes);
                     self.directory_entry(short, 0x20, chain[0], bytes.len() as u32, *naming)
                 }
                 Item::Directory(children) => {
                     let needed = 2 + entry_count(children);
-                    let chain = self.allocate(needed * 32, false);
+                    let chain = self.allocate(needed * 32, self.directory_stride);
                     let mut dot = self.directory_entry(*b".          ", 0x10, chain[0], 0, *naming);
                     dot[12] = 0;
                     let parent_cluster = match (self.fat_type, parent) {
@@ -435,7 +439,7 @@ impl Builder {
         match self.root_cluster() {
             Some(_) => {
                 let needed = (1 + entry_count(items)) * 32;
-                let chain = self.allocate(needed, false);
+                let chain = self.allocate(needed, 1);
                 assert_eq!(chain[0], 2);
                 self.write_directory(items, Some((chain, 0)), vec![label]);
             }
@@ -720,6 +724,39 @@ fn a_fat32_volume_without_mirroring_reads_its_active_fat() {
         Fat::mount(disk, test_deadline, (254, 0)),
         Err((MountError::NotFat, _))
     ));
+}
+
+#[test]
+fn long_names_across_scattered_directory_clusters_are_read_in_linear_time() {
+    const FILES: usize = 1500;
+    let name = |number: usize| format!("a file with a rather long name, number {number:05}");
+    let files = (0..FILES).map(|number| file(&name(number), b"")).collect();
+    let image = Builder::new(&Format {
+        directory_stride: 128,
+        ..Format::of(FatType::Fat32)
+    })
+    .build(&[folder("many", files)]);
+    let probes = Probes::default();
+    let fat = mounted_with(image, &probes);
+    let many = path(fat, "/many").id();
+    let clusters = (2 + FILES as u64 * 5).div_ceil(16);
+    let before = probes.reads.load(Ordering::Relaxed);
+    let last = fat.lookup(many, name(FILES - 1).as_bytes());
+    assert!(last.is_some());
+    let lookup_reads = probes.reads.load(Ordering::Relaxed) - before;
+    assert!(
+        lookup_reads as u64 <= 3 * clusters,
+        "{lookup_reads} reads for {clusters} clusters"
+    );
+    let before = probes.reads.load(Ordering::Relaxed);
+    let listed = names(fat, many);
+    assert_eq!(listed.len(), FILES);
+    assert_eq!(listed[FILES - 1], name(FILES - 1));
+    let listing_reads = probes.reads.load(Ordering::Relaxed) - before;
+    assert!(
+        listing_reads as u64 <= 3 * clusters,
+        "{listing_reads} reads for {clusters} clusters"
+    );
 }
 
 #[test]

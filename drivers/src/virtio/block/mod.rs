@@ -50,8 +50,11 @@ pub mod request {
 
 /// The status byte's values (`VIRTIO_BLK_S_*`).
 pub mod status {
+    /// The request succeeded.
     pub const OK: u8 = 0;
+    /// The device failed the transfer.
     pub const IO_ERROR: u8 = 1;
+    /// The device does not support the request type.
     pub const UNSUPPORTED: u8 = 2;
 }
 

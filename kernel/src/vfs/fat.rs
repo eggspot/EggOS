@@ -11,9 +11,11 @@
 //!   [`super::NAME_MAX`] bytes as UTF-8, the short name is shown, in lower case where its
 //!   entry says so. Lookups ignore ASCII case, as FAT does, and match either name.
 //! - **Reads.** One lock over the disk, a cache of [`CACHED_SECTORS`] sectors for directory
-//!   entries, FAT entries and file ends, and a cursor per cluster chain (file data and
-//!   directories) so sequential reads and listings follow a chain once. Whole sectors of file
-//!   data go from the disk straight to the caller, in runs of contiguous clusters.
+//!   entries, FAT entries and file ends, and cursors on cluster chains (one for file data, one
+//!   for each of the last four directories) that also remember the two clusters behind them,
+//!   so sequential reads, listings and lookups follow a chain once, long names that start in
+//!   an earlier cluster included. Whole sectors of file data go from the disk straight to the
+//!   caller, in runs of contiguous clusters.
 //! - **Read-only.** Every change is refused with `EROFS` (the trait's defaults). Permissions
 //!   are 0755 (0555 for a file marked read-only), owner and group 0, times the last write time
 //!   read as UTC; a directory reports one link and size 0, as its subdirectories are not
@@ -45,6 +47,10 @@ const MAX_DIRECTORY_ENTRIES: u32 = 65536;
 const MAX_LONG_NAME_ENTRIES: u32 = 20;
 const LONG_NAME_UNITS: usize = 13 * MAX_LONG_NAME_ENTRIES as usize;
 const MAX_RUN_BYTES: u64 = 1 << 20;
+const SMALLEST_CLUSTER_BYTES: usize = 512;
+const DIRECTORY_CURSORS: usize = 4;
+const CLUSTERS_BEHIND: usize =
+    (MAX_LONG_NAME_ENTRIES as usize * ENTRY_BYTES as usize).div_ceil(SMALLEST_CLUSTER_BYTES);
 const NO_DIRECTORY: u32 = u32::MAX;
 const SHOWN_SHORT_NAME_BYTES: usize = 12;
 
@@ -263,6 +269,7 @@ struct ChainCursor {
     first: u32,
     index: u64,
     cluster: u32,
+    behind: [u32; CLUSTERS_BEHIND],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -399,7 +406,8 @@ struct Volume {
     new_deadline: fn(u64) -> Deadline,
     cache: SectorCache,
     data_cursor: ChainCursor,
-    directory_cursor: ChainCursor,
+    directory_cursors: [ChainCursor; DIRECTORY_CURSORS],
+    next_directory_cursor: usize,
     listing: Option<ListingCursor>,
 }
 
@@ -485,6 +493,21 @@ impl Volume {
         Ok((value < layout.fat_type.end_of_chain() && layout.is_cluster(value)).then_some(value))
     }
 
+    fn directory_cursor_slot(&mut self, first: u32) -> usize {
+        match self
+            .directory_cursors
+            .iter()
+            .position(|cursor| cursor.first == first)
+        {
+            Some(slot) => slot,
+            None => {
+                let slot = self.next_directory_cursor;
+                self.next_directory_cursor = (slot + 1) % DIRECTORY_CURSORS;
+                slot
+            }
+        }
+    }
+
     fn cluster_in_chain(
         &mut self,
         layout: &Layout,
@@ -495,30 +518,42 @@ impl Volume {
         if !layout.is_cluster(first) || index >= u64::from(layout.clusters) {
             return Ok(None);
         }
-        let cursor = match directory_chain {
-            true => self.directory_cursor,
-            false => self.data_cursor,
+        let slot = directory_chain.then(|| self.directory_cursor_slot(first));
+        let cursor = match slot {
+            Some(slot) => self.directory_cursors[slot],
+            None => self.data_cursor,
         };
+        if cursor.first == first && index < cursor.index {
+            let back = (cursor.index - index) as usize;
+            if let Some(&cluster) = cursor.behind.get(back - 1)
+                && cluster != 0
+            {
+                return Ok(Some(cluster));
+            }
+        }
         let mut at = match cursor.first == first && cursor.index <= index {
             true => cursor,
             false => ChainCursor {
                 first,
                 index: 0,
                 cluster: first,
+                behind: [0; CLUSTERS_BEHIND],
             },
         };
         while at.index < index {
             match self.next_cluster(layout, at.cluster)? {
                 Some(next) => {
+                    at.behind.rotate_right(1);
+                    at.behind[0] = at.cluster;
                     at.cluster = next;
                     at.index += 1;
                 }
                 None => return Ok(None),
             }
         }
-        match directory_chain {
-            true => self.directory_cursor = at,
-            false => self.data_cursor = at,
+        match slot {
+            Some(slot) => self.directory_cursors[slot] = at,
+            None => self.data_cursor = at,
         }
         Ok(Some(at.cluster))
     }
@@ -755,7 +790,8 @@ impl Fat {
                 new_deadline,
                 cache: SectorCache::new(),
                 data_cursor: ChainCursor::default(),
-                directory_cursor: ChainCursor::default(),
+                directory_cursors: [ChainCursor::default(); DIRECTORY_CURSORS],
+                next_directory_cursor: 0,
                 listing: None,
             }),
         })

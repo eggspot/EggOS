@@ -7482,10 +7482,14 @@ the license, by an explicit instruction recorded here.
     FAT itself does.
   - *Reads.* One leaf lock over the disk and the caches, held across a disk request (polled,
     bounded by its 2 s deadline). A cache of 16 sectors (8 KiB, least recently used) serves
-    directory entries, FAT entries and the unaligned head and tail of a read; a cursor per chain
-    kind (file data, directories) remembers the last (first cluster, index, cluster), so a
-    sequential read or listing follows each chain once instead of from its start, and a
-    listing cursor makes `getdents64` linear. Whole sectors of file data go from the disk straight
+    directory entries, FAT entries and the unaligned head and tail of a read; cursors on cluster
+    chains (one for file data, one for each of the last four directories, so a lookup that reads
+    the parent's entry keeps its place in the child) remember the last (first cluster, index,
+    cluster) and the two clusters behind it, so a sequential read, a listing or a lookup follows
+    each chain once instead of from its start, even when a long name starts in the previous
+    cluster (20 long-name entries span at most two 512-byte clusters; review fix: without it a
+    hostile directory of 65536 entries in 512-byte clusters took quadratic FAT walks under the
+    lock), and a listing cursor makes `getdents64` linear. Whole sectors of file data go from the disk straight
     into the caller's buffer, in runs of contiguous clusters (up to 1 MiB per call). A chain
     shorter than the file's size or a disk error is `EIO`: `FileSystem::read_into` now returns
     `Result<usize, StorageError>` (the initramfs and tmpfs never fail), and `read` turns it into
@@ -7514,9 +7518,12 @@ the license, by an explicit instruction recorded here.
   reads `--apps` as an ordinary argument, not a parameter.
 - **D18 and D24.** Without a disk nothing runs and nothing is allocated: probing finds no block
   device, and the boot asks the empty disk table once (one leaf lock, four slots) before going
-  on, so a boot without `--apps` is unchanged (`boot_to_prompt` within noise). The release image
-  grows by the virtio-blk driver, the block table and the FAT reader (CI's size report in the
-  PR); the 64 KiB DMA region, the 8 KiB sector cache and the file system exist only with a disk.
+  on. A boot without `--apps` still costs a little more, deterministically (+0.9% to +1.0% on
+  `boot_to_prompt`, below): the two mount-point directories in the initramfs and one more driver
+  in the probe passes. The release image grows by the virtio-blk driver, the block table and
+  the FAT reader; the 64 KiB DMA region, the 8 KiB sector cache and the file system exist only
+  with a disk. The image-size baseline lines are left to the weekly pass (D122), which also
+  settles the growth of earlier PRs.
   Measured in CI against `main`: the release image grows by 32 KB on aarch64 (+3.4%), 42 KB on
   riscv64 (+3.7%) and 34 KB on x86_64 (+4.0%); `boot_to_prompt` (deterministic under `-icount`)
   by about 10,500, 9,700 and 12,700 instructions (+0.9%, +1.0%, +0.9%). Bisected locally on
