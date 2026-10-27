@@ -7467,7 +7467,8 @@ the license, by an explicit instruction recorded here.
   one; the boot sector is checked (jump, signature, a power-of-two cluster size, a valid sector
   size, FAT sizes that hold every cluster, a volume within the disk) and the FAT type follows
   the specification's cluster count (FAT12 under 4085, FAT16 under 65525, FAT32 above), so
-  FAT12, FAT16 and FAT32 all read; anything else is not mounted and the disk goes back.
+  FAT12, FAT16 and FAT32 all read (a FAT32 volume with mirroring off through its active FAT);
+  anything else is not mounted and the disk goes back.
   - *Nodes cost nothing.* A node is named by where its short directory entry is (the
     directory's first cluster, 0 for the root directory, and the entry's index), the root by
     `u64::MAX`; nothing is kept per node, so a folder of any size takes no memory until read.
@@ -7516,6 +7517,13 @@ the license, by an explicit instruction recorded here.
   on, so a boot without `--apps` is unchanged (`boot_to_prompt` within noise). The release image
   grows by the virtio-blk driver, the block table and the FAT reader (CI's size report in the
   PR); the 64 KiB DMA region, the 8 KiB sector cache and the file system exist only with a disk.
+  Measured in CI against `main`: the release image grows by 32 KB on aarch64 (+3.4%), 42 KB on
+  riscv64 (+3.7%) and 34 KB on x86_64 (+4.0%); `boot_to_prompt` (deterministic under `-icount`)
+  by about 10,500, 9,700 and 12,700 instructions (+0.9%, +1.0%, +0.9%). Bisected locally on
+  aarch64: about 7,000 of them are the two directory entries `/media` and `/media/host`, which
+  the kernel parses and indexes with the initramfs at boot, and about 2,500 the probe passes
+  offering every device to one more driver; nothing runs or is allocated for the host folder
+  without a disk. Every other benchmark is within 1% of `main`.
   Two benchmarks cover the new hot paths without QEMU's device in the measurement:
   `virtio_blk_read_fake` (a 4 KiB read through the driver, a fake device answering at once) and
   `fat_read_4k` (a 4 KiB read of a file on a FAT12 image in memory: the entry, the chain cursor

@@ -17,6 +17,7 @@ aarch64 breakpoint_round_trip 92.00
 aarch64 clock_read 5.00
 aarch64 device_tree_walk 75529.00
 aarch64 empty_loop 4.00
+aarch64 fat_read_4k 2953.78
 aarch64 fp_process_switch_round_trip 1107.98
 aarch64 frame_allocate_untouched 17.15
 aarch64 frame_contiguous_allocate_free 159.00
@@ -45,7 +46,7 @@ aarch64 process_switch_round_trip 487.27
 aarch64 process_syscall_round_trip 117.40
 aarch64 random_fill_16 1323.00
 aarch64 random_fill_4096 87816.16
-aarch64 release_image_bytes 701728.00
+aarch64 release_image_bytes 974336.00
 aarch64 syscall_round_trip 106.17
 aarch64 term_feed_line 6046.56
 aarch64 term_scroll_line 540783.08
@@ -53,6 +54,7 @@ aarch64 thread_wait_wake_round_trip 218.06
 aarch64 thread_yield_round_trip 131.08
 aarch64 timer_arm 6.00
 aarch64 timer_interrupt_round_trip 96.00
+aarch64 virtio_blk_read_fake 2246.38
 aarch64 virtio_gpu_flush_fake 788.14
 aarch64 virtio_input_poll_idle 25.25
 aarch64 virtqueue_round_trip_fake 375.00
@@ -63,6 +65,7 @@ riscv64 breakpoint_round_trip 127.00
 riscv64 clock_read 4.00
 riscv64 device_tree_walk 86792.01
 riscv64 empty_loop 4.00
+riscv64 fat_read_4k 3562.88
 riscv64 fp_process_switch_round_trip 1041.02
 riscv64 frame_allocate_untouched 16.16
 riscv64 frame_contiguous_allocate_free 203.00
@@ -91,7 +94,7 @@ riscv64 process_switch_round_trip 598.45
 riscv64 process_syscall_round_trip 156.39
 riscv64 random_fill_16 1998.00
 riscv64 random_fill_4096 131313.16
-riscv64 release_image_bytes 798392.00
+riscv64 release_image_bytes 1166912.00
 riscv64 syscall_round_trip 148.27
 riscv64 term_feed_line 6839.81
 riscv64 term_scroll_line 669769.34
@@ -99,6 +102,7 @@ riscv64 thread_wait_wake_round_trip 222.07
 riscv64 thread_yield_round_trip 162.10
 riscv64 timer_arm 266.01
 riscv64 timer_interrupt_round_trip 640.00
+riscv64 virtio_blk_read_fake 2795.43
 riscv64 virtio_gpu_flush_fake 865.17
 riscv64 virtio_input_poll_idle 28.28
 riscv64 virtqueue_round_trip_fake 353.00
@@ -109,6 +113,7 @@ x86_64 breakpoint_round_trip 60.00
 x86_64 clock_read 8.00
 x86_64 device_tree_walk 49162.73
 x86_64 empty_loop 4.00
+x86_64 fat_read_4k 1142.20
 x86_64 fp_process_switch_round_trip 798.34
 x86_64 frame_allocate_untouched 14.06
 x86_64 frame_contiguous_allocate_free 152.00
@@ -137,7 +142,7 @@ x86_64 process_switch_round_trip 450.32
 x86_64 process_syscall_round_trip 117.66
 x86_64 random_fill_16 1237.00
 x86_64 random_fill_4096 79921.61
-x86_64 release_image_bytes 603992.00
+x86_64 release_image_bytes 875720.00
 x86_64 syscall_round_trip 107.44
 x86_64 term_feed_line 5949.24
 x86_64 term_scroll_line 196729.62
@@ -145,6 +150,7 @@ x86_64 thread_wait_wake_round_trip 206.05
 x86_64 thread_yield_round_trip 122.07
 x86_64 timer_arm 33.00
 x86_64 timer_interrupt_round_trip 72.00
+x86_64 virtio_blk_read_fake 929.15
 x86_64 virtio_gpu_flush_fake 786.13
 x86_64 virtio_input_poll_idle 37.20
 x86_64 virtqueue_round_trip_fake 233.00
