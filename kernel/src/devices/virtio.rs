@@ -1,6 +1,6 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
 //! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device, GPU (D112) and input devices (D113) on top of either.
+//! device, GPU (D112), input devices (D113) and block device (D130) on top of either.
 
 use super::dma::DmaRegion;
 use super::{
@@ -480,6 +480,105 @@ mod input {
             }
             Err((_, transport)) => give_back_transport(identity, transport),
         }
+    }
+}
+
+#[cfg(any(test, feature = "virtio-blk"))]
+pub use disk::BLOCK_DRIVER;
+
+#[cfg(any(test, feature = "virtio-blk"))]
+mod disk {
+    use super::*;
+    use crate::block::{BlockDevice, BlockError};
+    use eggos_drivers::virtio::block::{MEMORY_BYTES, VirtioBlock};
+
+    type Disk = VirtioBlock<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio block device (virtio 1.2, 5.2), installed as one of the kernel's
+    /// disks ([`crate::block`]).
+    pub static BLOCK_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-blk",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::BLOCK)],
+        probe: probe_block,
+    };
+
+    struct VirtioDisk(Disk);
+
+    fn block_error(error: virtio::Error) -> BlockError {
+        match error {
+            virtio::Error::ReadOnly => BlockError::ReadOnly,
+            virtio::Error::PartialSector | virtio::Error::BeyondCapacity => BlockError::OutOfRange,
+            error => BlockError::Device(error.description()),
+        }
+    }
+
+    impl BlockDevice for VirtioDisk {
+        fn sectors(&self) -> u64 {
+            self.0.sectors()
+        }
+
+        fn is_read_only(&self) -> bool {
+            self.0.is_read_only()
+        }
+
+        fn read(
+            &mut self,
+            sector: u64,
+            buffer: &mut [u8],
+            deadline: &mut Deadline,
+        ) -> Result<(), BlockError> {
+            self.0
+                .read(sector, buffer, &mut || deadline.keep_waiting())
+                .map_err(block_error)
+        }
+
+        fn write(
+            &mut self,
+            sector: u64,
+            buffer: &[u8],
+            deadline: &mut Deadline,
+        ) -> Result<(), BlockError> {
+            self.0
+                .write(sector, buffer, &mut || deadline.keep_waiting())
+                .map_err(block_error)
+        }
+    }
+
+    fn probe_block(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        if !crate::block::has_room() {
+            return Err(ProbeError::Refused("no room for another disk"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let disk = match VirtioBlock::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(disk) => disk,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioBlock::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        crate::block::install(Box::new(VirtioDisk(disk)))
+            .map_err(|_| ProbeError::Refused("no room for another disk"))
     }
 }
 

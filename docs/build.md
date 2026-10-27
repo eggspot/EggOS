@@ -88,8 +88,15 @@ holds what used to be written in them.
   drags its corner to resize it by (100, 60), maximises and restores it by its control and by
   double-clicks on its title bar, cycles the windows with Alt+Tab, closes the first with Alt+F4
   and the second with its close control, comparing the display, the pointer included, with the
-  host's render of the same desktop after each step, and runs `wm list` (D127, D128). A boot that has not powered off within 30 seconds (90 for the
-  benchmarks) has hung.
+  host's render of the same desktop after each step, and runs `wm list` (D127, D128). Before
+  it, the host folder test writes `target/host-folder-<arch>/` (`readme.txt` and
+  `tests/linux-static`'s static build as `Programs and Tools/linux-static`), boots the release
+  image with it attached as `--apps` attaches one (`qemu::host_folder_args`: QEMU's `vvfat` on
+  the virtio block device) and types commands that list it at `/media/host`, read the file
+  (also through its short name), `cd` into the subfolder, run the program by its relative path
+  and try `>`, `mkdir` and `rm`; the mount's boot line, each command's lines, the program's
+  `LINUX-STATIC` checks and `Read-only file system` for each change must appear in order (D130).
+  A boot that has not powered off within 30 seconds (90 for the benchmarks) has hung.
 - **The Windows programs boot test** adds `tests/windows-console`'s two programs, built for
   `x86_64-pc-windows-msvc` with `rust-lld`, as `/bin/windows-console.exe` and
   `/bin/windows-unsupported.exe` (with the Windows layer on x86_64) and types three commands:
@@ -190,7 +197,8 @@ holds what used to be written in them.
   `cargo xtask run` shows the display in a
   window and the serial console on the terminal (`-serial mon:stdio`, so Ctrl-A then X still
   quits); `--nographic`, anywhere among the options, keeps both on the terminal for a machine
-  without a screen.
+  without a screen; `--apps <folder>` attaches a host folder, which EggOS mounts read-only at
+  `/media/host` (D130).
 - **Input** (D113). Every run with the display also gets a virtio keyboard, tablet and mouse:
   `-device virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on
   the `virt` machines, the `-pci` devices with `disable-legacy=on` on q35; the kernel prints
@@ -212,7 +220,9 @@ holds what used to be written in them.
   `RELEASE-NOTES.md`, a skeleton with each image's size and boot-to-prompt time whose
   what's-new section the release PR writes. The scripts' QEMU arguments are
   `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
-  (`-Serial`); a host test checks they match. Each script picks the host's architecture
+  (`-Serial`), and `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
+  PowerShell), with the folder made absolute and its commas doubled; a host test checks they
+  match. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one

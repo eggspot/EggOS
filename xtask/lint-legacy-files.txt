@@ -72,4 +72,3 @@ userland/std-selftest/src/console.rs 4
 userland/std-selftest/src/main.rs 2
 xtask/src/bench.rs 27
 xtask/src/elf.rs 12
-xtask/src/release.rs 3

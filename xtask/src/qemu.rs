@@ -149,6 +149,13 @@ pub enum Expect {
     /// write its lines in order before the next prompt: the program's checks, exit statuses,
     /// an abort, an unimplemented function and the refusals; on riscv64, `ENOEXEC` (D120).
     MacosPrograms,
+    /// The release kernel boots with a host folder attached as the run scripts attach one
+    /// (`--apps`, [`host_folder_args`]): a text file and our static Linux program in a
+    /// subfolder with a long name; the test types a line at each prompt that lists the folder
+    /// at `/media/host`, reads the file, runs the program from it and tries to change it, and
+    /// each command must write its lines in order before the next prompt: the listing, the
+    /// file, the program's checks and `Read-only file system` for each change (D130).
+    HostFolder,
     /// The release kernel with `hello-window` added boots to the shell's prompt; the test types
     /// a pipeline of two of them, each opening a window through `/dev/window` (D127), then
     /// through QMP clicks the first to raise it, drags it by its title bar, resizes it from its
@@ -206,6 +213,66 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"exit 7\r",
 ];
+
+const HOST_FOLDER_SESSION: [&[u8]; 7] = [
+    b"ls /media/host; ls -l /media/host/readme.txt\r",
+    b"cat /media/host/readme.txt; wc -c < /media/host/README.TXT\r",
+    b"cd '/media/host/Programs and Tools'; pwd; ls\r",
+    b"GREETING=hi ./linux-static a 'b c'; echo LINUX-STATIC status $?\r",
+    b"cd ..; pwd; echo x > new.txt; echo EGGOS-HOST-FOLDER read-only $?\r",
+    b"mkdir /media/host/new; rm /media/host/readme.txt; cat readme.txt\r",
+    b"exit 7\r",
+];
+
+const HOST_FOLDER_MOUNT_LINE: &str =
+    "vfs: FAT16 disk \"QEMU VVFAT\" mounted read-only at /media/host";
+
+fn host_folder_output() -> [Vec<Line>; HOST_FOLDER_SESSION.len()] {
+    let whole = |lines: &[&str]| {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let program = linux_program_output()[0].clone();
+    [
+        vec![
+            Line::Whole("Programs and Tools".into()),
+            Line::Whole("readme.txt".into()),
+            Line::Around("-rwxr-xr-x 1 0 0 38 ", " /media/host/readme.txt"),
+        ],
+        whole(&["EGGOS-HOST-FOLDER hello from the host", "38"]),
+        whole(&["/media/host/Programs and Tools", "linux-static"]),
+        program,
+        whole(&[
+            "/media/host",
+            "eggsh: new.txt: Read-only file system",
+            "EGGOS-HOST-FOLDER read-only 1",
+        ]),
+        whole(&[
+            "mkdir: cannot create directory '/media/host/new': Read-only file system",
+            "rm: cannot remove '/media/host/readme.txt': Read-only file system",
+            "EGGOS-HOST-FOLDER hello from the host",
+        ]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
+
+/// QEMU's arguments that attach the host's `folder` (an absolute path) as a read-only FAT
+/// disk on `arch`'s virtio block device: QEMU's `vvfat` driver, which presents the folder as a
+/// FAT16 volume in an MBR partition (D130). `cargo xtask run --apps`, the run scripts and the
+/// host folder boot test all use them.
+pub fn host_folder_args(arch: &Arch, folder: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=vvfat,node-name=host,dir={},read-only=on",
+            folder.replace(',', ",,")
+        ),
+        "-device".into(),
+        format!("{},drive=host", arch.disk_device),
+    ]
+}
 
 const PROGRAM_WINDOW_SESSION: [&[u8]; 4] = [
     b"ls /dev\r",
@@ -780,7 +847,9 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&["bin", "dev", "etc", "home", "init", "proc", "tmp", "usr"]),
+        whole(&[
+            "bin", "dev", "etc", "home", "init", "media", "proc", "tmp", "usr",
+        ]),
         vec![
             Line::Around("-rwxr-xr-x 24 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
@@ -1052,6 +1121,11 @@ fn boot(
             Expect::LinuxPrograms => shell_scripts_to_type(
                 &String::from_utf8_lossy(&console),
                 &LINUX_PROGRAM_SESSION,
+                &mut shell_typed,
+            ),
+            Expect::HostFolder => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &HOST_FOLDER_SESSION,
                 &mut shell_typed,
             ),
             Expect::ProgramWindows => {
@@ -1364,6 +1438,19 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 &LINUX_PROGRAM_SESSION,
                 linux_program_output(),
                 "Linux programs",
+            );
+        }
+        Expect::HostFolder => {
+            if !lines().any(|line| line == HOST_FOLDER_MOUNT_LINE) {
+                return Err(format!("{arch}: no `{HOST_FOLDER_MOUNT_LINE}`"));
+            }
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &HOST_FOLDER_SESSION,
+                host_folder_output(),
+                "host folder",
             );
         }
         Expect::ProgramWindows => {
@@ -2400,10 +2487,16 @@ fn check_desktop_frame_within(
 }
 
 /// Boots `kernel` with the console on this terminal, until the user quits QEMU; its display in
-/// a window when `window` says so.
-pub fn run_interactive(arch: &Arch, kernel: &Path, window: bool) -> Result<(), String> {
+/// a window when `window` says so, and `extra_args` added to QEMU's (a host folder's).
+pub fn run_interactive(
+    arch: &Arch,
+    kernel: &Path,
+    window: bool,
+    extra_args: &[String],
+) -> Result<(), String> {
     let status = Command::new(arch.qemu)
         .args(interactive_args(arch, window))
+        .args(extra_args)
         .arg("-kernel")
         .arg(kernel)
         .status()
@@ -2542,6 +2635,26 @@ mod tests {
         );
         let serial = interactive_args(arch, false).join(" ");
         assert!(serial.ends_with("-smp 4 -no-reboot -nographic"), "{serial}");
+    }
+
+    #[test]
+    fn a_host_folder_is_a_vvfat_block_device_with_its_commas_doubled() {
+        for arch in crate::ARCHES {
+            let args = host_folder_args(arch, "/home/me/a,b:c");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=vvfat,node-name=host,dir=/home/me/a,,b:c,read-only=on".into(),
+                    "-device".into(),
+                    format!("{},drive=host", arch.disk_device),
+                ]
+            );
+        }
+        assert_eq!(
+            crate::ARCHES[2].disk_device,
+            "virtio-blk-pci,disable-legacy=on"
+        );
     }
 
     #[test]

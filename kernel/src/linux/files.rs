@@ -376,12 +376,16 @@ fn copy_out_through_buffer<P: Platform>(
     while copied < count {
         let at = address + copied;
         let wanted = (count - copied).min(FRAME_SIZE - at % FRAME_SIZE) as usize;
-        let length = node
-            .file_system()
-            .read_into(node.id(), offset + copied, &mut chunk[..wanted]);
-        if length == 0 {
-            break;
-        }
+        let length =
+            match node
+                .file_system()
+                .read_into(node.id(), offset + copied, &mut chunk[..wanted])
+            {
+                Ok(0) => break,
+                Ok(length) => length,
+                Err(_) if copied > 0 => break,
+                Err(_) => return Err(Errno::EIO),
+            };
         if process.write_user_memory(at, &chunk[..length]).is_err() {
             return match copied {
                 0 => Err(Errno::EFAULT),

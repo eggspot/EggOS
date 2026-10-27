@@ -18,6 +18,7 @@
 
 pub mod cpio;
 pub mod devfs;
+pub mod fat;
 pub mod initramfs;
 pub mod tmpfs;
 
@@ -66,6 +67,11 @@ pub enum Refused {
     /// The name is `.` or `..`, which a rename cannot target (`EBUSY`).
     Busy,
 }
+
+/// The storage under a file system failed: a disk did not answer or reported an error, or
+/// what it holds is inconsistent (`EIO`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageError;
 
 /// Where a write goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,11 +191,12 @@ pub trait FileSystem: Sync + Send {
         false
     }
     /// Copies regular file `node`'s contents from `offset` into `buffer`: how many bytes, at
-    /// least one if any are there, 0 at the end.
-    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> usize {
+    /// least one if any are there, 0 at the end; [`StorageError`] if the storage under the file
+    /// system failed.
+    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
         let bytes = self.read(node, offset, buffer.len());
         buffer[..bytes.len()].copy_from_slice(bytes);
-        bytes.len()
+        Ok(bytes.len())
     }
     /// Whether it can be changed: the methods below do something.
     fn is_writable(&self) -> bool {
@@ -461,7 +468,7 @@ struct Mount {
 }
 
 /// The most file systems [`mount`] mounts besides the root.
-pub const MAX_MOUNTS: usize = 4;
+pub const MAX_MOUNTS: usize = 8;
 
 struct Mounted {
     point: Node,

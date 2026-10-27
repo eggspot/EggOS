@@ -37,6 +37,17 @@ sh run-eggos.sh riscv64 --serial      # another architecture, no window: the con
 On Windows, if PowerShell refuses to run a downloaded script, start it with
 `powershell -ExecutionPolicy Bypass -File run-eggos.ps1`.
 
+To use files from your computer, pass a folder: it appears read-only at `/media/host`, where
+you can list it, read its files and run programs from it (`ls /media/host`, `cat`,
+`/media/host/hello`). It must fit about 500 MB, with fewer than about 250 names at its top
+level ([docs/limitations.md](docs/limitations.md)):
+
+```
+sh run-eggos.sh --apps ~/eggos-apps                  # macOS, Linux
+.\run-eggos.ps1 -Apps C:\Users\me\eggos-apps         # Windows PowerShell
+cargo xtask run --arch aarch64 --apps ~/eggos-apps    # from a checkout
+```
+
 The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,

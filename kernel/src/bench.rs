@@ -28,6 +28,7 @@ use eggos_drivers::dma::DmaMemory;
 use eggos_drivers::font::{self, GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::input::{Capabilities, RawEvent, SYN_REPORT, event_type};
 use eggos_drivers::terminal::{TERM_BACKGROUND, TERM_FOREGROUND, Terminal};
+use eggos_drivers::virtio::block::{self as virtio_block, VirtioBlock};
 use eggos_drivers::virtio::gpu::{self as virtio_gpu, VirtioGpu};
 use eggos_drivers::virtio::input::{self as virtio_input, VirtioInput};
 use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
@@ -52,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 47] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 49] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -100,6 +101,8 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 47] {
         }),
         ("virtio_gpu_flush_fake", |_, n| virtio_gpu_flush_fake(n)),
         ("virtio_input_poll_idle", |_, n| virtio_input_poll_idle(n)),
+        ("virtio_blk_read_fake", |_, n| virtio_blk_read_fake(n)),
+        ("fat_read_4k", |_, n| fat_read_4k::<P>(n)),
         ("input_key_to_bytes", |_, n| input_key_to_bytes(n)),
         ("input_event_queue_push_pop", |_, n| {
             input_event_queue_push_pop(n)
@@ -474,6 +477,177 @@ fn virtio_input_poll_idle(n: u64) {
         black_box(device.poll(black_box(16), &mut |event| {
             black_box(event);
         }));
+    }
+}
+
+static BLOCK_MEMORY: QueueMemory<{ virtio_block::MEMORY_BYTES }> =
+    QueueMemory(core::cell::UnsafeCell::new([0; virtio_block::MEMORY_BYTES]));
+
+const BLOCK_READ_BYTES: usize = 4096;
+const BLOCK_DISK_SECTORS: u32 = 1 << 16;
+
+#[derive(Debug, Default)]
+struct InstantDisk {
+    status: core::cell::Cell<u8>,
+    device: core::cell::RefCell<Option<queue::DeviceSide>>,
+}
+
+impl Transport for InstantDisk {
+    fn device_type(&self) -> u32 {
+        virtio::device_type::BLOCK
+    }
+    fn status(&self) -> u8 {
+        self.status.get()
+    }
+    fn set_status(&self, status: u8) {
+        self.status.set(status);
+    }
+    fn device_features(&self) -> u64 {
+        virtio::feature::VERSION_1
+    }
+    fn set_driver_features(&self, _: u64) {}
+    fn max_queue_size(&self, queue: u16) -> u16 {
+        if queue == 0 {
+            virtio_block::QUEUE_SIZE
+        } else {
+            0
+        }
+    }
+    fn set_up_queue(
+        &self,
+        _: u16,
+        size: u16,
+        addresses: &virtio::QueueAddresses,
+    ) -> Result<(), virtio::Error> {
+        let memory = addresses.descriptors.get() as *mut u8;
+        // SAFETY: the queue the driver set up at the start of `BLOCK_MEMORY`, which outlives
+        // this device.
+        *self.device.borrow_mut() = Some(unsafe { queue::DeviceSide::new(memory, size) });
+        Ok(())
+    }
+    fn notify(&self, _: u16) {
+        let mut device = self.device.borrow_mut();
+        let Some(device) = device.as_mut() else {
+            return;
+        };
+        while let Some(head) = device.next_available() {
+            let (_, _, _, data) = device.descriptor(head);
+            let (_, len, _, status) = device.descriptor(data);
+            let (status, _, _, _) = device.descriptor(status);
+            // SAFETY: the status byte the driver posted, inside `BLOCK_MEMORY`.
+            unsafe { (status.get() as *mut u8).write_volatile(virtio_block::status::OK) };
+            device.put_used(head, len + 1);
+        }
+    }
+    fn read_config8(&self, _: usize) -> u8 {
+        0
+    }
+    fn write_config8(&self, _: usize, _: u8) {}
+    fn read_config32(&self, offset: usize) -> u32 {
+        match offset {
+            virtio_block::config::CAPACITY_OFFSET => BLOCK_DISK_SECTORS,
+            _ => 0,
+        }
+    }
+}
+
+fn virtio_blk_read_fake(n: u64) {
+    let memory = StaticDma::of(&BLOCK_MEMORY);
+    let Ok(mut disk) = VirtioBlock::new(InstantDisk::default(), memory, &mut || true) else {
+        panic!("virtio_blk_read_fake: the fake disk could not be set up");
+    };
+    let mut buffer = [0u8; BLOCK_READ_BYTES];
+    if disk.read(0, &mut buffer, &mut || true).is_err() {
+        panic!("virtio_blk_read_fake: the fake disk could not be read");
+    }
+    let sectors = (BLOCK_READ_BYTES / virtio_block::SECTOR_SIZE) as u64;
+    for i in 0..n {
+        let sector = i % 1024 * sectors;
+        black_box(disk.read(black_box(sector), &mut buffer, &mut || true).ok());
+        black_box(&mut buffer);
+    }
+}
+
+const FAT_FILE_CLUSTERS: usize = 4;
+const FAT_CLUSTER_BYTES: usize = 4096;
+
+struct MemoryDisk(alloc::vec::Vec<u8>);
+
+impl crate::block::BlockDevice for MemoryDisk {
+    fn sectors(&self) -> u64 {
+        (self.0.len() / crate::block::SECTOR_SIZE) as u64
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+    fn read(
+        &mut self,
+        sector: u64,
+        buffer: &mut [u8],
+        _: &mut crate::devices::Deadline,
+    ) -> Result<(), crate::block::BlockError> {
+        let start = sector as usize * crate::block::SECTOR_SIZE;
+        let bytes = self
+            .0
+            .get(start..start + buffer.len())
+            .ok_or(crate::block::BlockError::OutOfRange)?;
+        buffer.copy_from_slice(bytes);
+        Ok(())
+    }
+    fn write(
+        &mut self,
+        _: u64,
+        _: &[u8],
+        _: &mut crate::devices::Deadline,
+    ) -> Result<(), crate::block::BlockError> {
+        Err(crate::block::BlockError::ReadOnly)
+    }
+}
+
+fn fat_image() -> alloc::vec::Vec<u8> {
+    let sector = crate::block::SECTOR_SIZE;
+    let data_start = 3 * sector;
+    let mut image = alloc::vec![0u8; data_start + FAT_FILE_CLUSTERS * FAT_CLUSTER_BYTES];
+    let total = (image.len() / sector) as u16;
+    image[..3].copy_from_slice(&[0xeb, 0x3c, 0x90]);
+    image[11..13].copy_from_slice(&(sector as u16).to_le_bytes());
+    image[13] = (FAT_CLUSTER_BYTES / sector) as u8;
+    image[14] = 1;
+    image[16] = 1;
+    image[17] = 16;
+    image[19..21].copy_from_slice(&total.to_le_bytes());
+    image[21] = 0xf8;
+    image[22] = 1;
+    image[510..512].copy_from_slice(&[0x55, 0xaa]);
+    let fat = sector;
+    image[fat..fat + 9].copy_from_slice(&[0xf8, 0xff, 0xff, 0x03, 0x40, 0x00, 0x05, 0xf0, 0xff]);
+    let root = 2 * sector;
+    image[root..root + 11].copy_from_slice(b"FILE    BIN");
+    image[root + 11] = 0x20;
+    image[root + 26] = 2;
+    let size = (FAT_FILE_CLUSTERS * FAT_CLUSTER_BYTES) as u32;
+    image[root + 28..root + 32].copy_from_slice(&size.to_le_bytes());
+    image
+}
+
+fn fat_read_4k<P: Platform>(n: u64) {
+    use crate::vfs::FileSystem;
+    let disk = Box::new(MemoryDisk(fat_image()));
+    let Ok(fat) = crate::vfs::fat::Fat::mount(disk, crate::devices::Deadline::after::<P>, (0, 0))
+    else {
+        panic!("fat_read_4k: the image could not be mounted");
+    };
+    let Some(file) = fat.lookup(crate::vfs::fat::ROOT, b"file.bin") else {
+        panic!("fat_read_4k: the file is missing");
+    };
+    let mut buffer = [0u8; FAT_CLUSTER_BYTES];
+    if fat.read_into(file, 0, &mut buffer) != Ok(FAT_CLUSTER_BYTES) {
+        panic!("fat_read_4k: the file could not be read");
+    }
+    for i in 0..n {
+        let offset = (i % FAT_FILE_CLUSTERS as u64) * FAT_CLUSTER_BYTES as u64;
+        black_box(fat.read_into(file, black_box(offset), &mut buffer).ok());
+        black_box(&mut buffer);
     }
 }
 

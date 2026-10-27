@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod address_space;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
+pub mod block;
 #[cfg(feature = "qemu-boot-clock")]
 pub mod boot_clock;
 pub mod console;
@@ -100,6 +101,9 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     report_root(console, report)?;
                 }
                 mount_system_file_systems::<P>();
+                if let Some(host_folder) = mount_host_folder::<P>() {
+                    report_host_folder(console, host_folder)?;
+                }
                 if BOOT_MODE == BootMode::Init {
                     init::run(console, &mut memory)?;
                     return Ok(false);
@@ -151,6 +155,54 @@ fn mount_system_file_systems<P: Platform>() {
             let _ = vfs::mount(path, Box::leak(Box::new(file_system)));
         }
     }
+}
+
+const HOST_FOLDER: &[u8] = b"/media/host";
+
+const HOST_FOLDER_DEVICE: (u32, u32) = (254, 0);
+
+fn mount_host_folder<P: Platform>() -> Option<Result<&'static vfs::fat::Fat, &'static str>> {
+    use alloc::boxed::Box;
+    let disk = block::take_first()?;
+    let root = vfs::root();
+    if !vfs::resolve(root, root, HOST_FOLDER).is_ok_and(|node| node.is_directory()) {
+        let _ = block::install(disk);
+        return Some(Err("there is no /media/host to mount it on"));
+    }
+    let mounted = vfs::fat::Fat::mount(disk, devices::Deadline::after::<P>, HOST_FOLDER_DEVICE);
+    Some(match mounted {
+        Ok(fat) => {
+            let fat: &'static vfs::fat::Fat = Box::leak(Box::new(fat));
+            vfs::mount(HOST_FOLDER, fat)
+                .map(|()| fat)
+                .map_err(|_| "no room for another mount")
+        }
+        Err((error, disk)) => {
+            let _ = block::install(disk);
+            Err(error.description())
+        }
+    })
+}
+
+fn report_host_folder<W: Write>(
+    console: &mut W,
+    mounted: Result<&'static vfs::fat::Fat, &'static str>,
+) -> core::fmt::Result {
+    match mounted {
+        Ok(fat) => {
+            write!(console, "vfs: {} disk \"", fat.fat_type().name())?;
+            write_printable(console, fat.label())?;
+            writeln!(console, "\" mounted read-only at /media/host")
+        }
+        Err(reason) => writeln!(console, "vfs: the disk was not mounted: {reason}"),
+    }
+}
+
+fn write_printable<W: Write>(console: &mut W, bytes: &[u8]) -> core::fmt::Result {
+    bytes.iter().try_for_each(|&byte| {
+        let printable = byte.is_ascii_graphic() || byte == b' ';
+        console.write_char(if printable { char::from(byte) } else { '?' })
+    })
 }
 
 fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::fmt::Result {

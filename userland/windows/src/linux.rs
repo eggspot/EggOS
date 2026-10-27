@@ -538,7 +538,7 @@ pub fn futex_wait(
 }
 
 /// Wakes one or every thread sleeping on the 32-bit word at `address`.
-pub fn futex_wake(address: usize, count: crate::futex::WakeCount) {
+pub fn futex_wake(address: usize, count: eggos_runtime::futex::WakeCount) {
     // SAFETY: a wake touches no memory.
     let _ = unsafe {
         syscall(

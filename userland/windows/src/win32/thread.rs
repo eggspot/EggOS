@@ -5,10 +5,10 @@
 
 use super::sync::{self, Kind, Object, Thread};
 use super::{Bool, FALSE, TRUE, error, fail, thread_environment};
-use crate::futex::WakeCount;
 use crate::library::Export;
 use crate::linux::{self, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use eggos_runtime::futex::WakeCount;
 
 const CREATE_SUSPENDED: u32 = 0x4;
 const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x1_0000;

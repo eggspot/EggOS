@@ -16,7 +16,6 @@ const POWERSHELL_SCRIPT: &str = "run-eggos.ps1";
 const NOTES_FILE: &str = "RELEASE-NOTES.md";
 const SCREENSHOT_PATH: &str = "docs/images/desktop.png";
 
-/// One architecture's image in a release.
 #[derive(Debug)]
 struct Image {
     arch: &'static Arch,
@@ -121,14 +120,18 @@ fn sums(images: &[Image]) -> String {
     })
 }
 
-/// What a run script needs of an architecture: its name, QEMU, and QEMU's arguments for a
-/// window and for the serial console alone.
 #[derive(Debug)]
 struct ScriptArch {
     name: &'static str,
     window: Vec<String>,
     serial: Vec<String>,
+    shell_folder: Vec<String>,
+    powershell_folder: Vec<String>,
 }
+
+const SHELL_FOLDER: &str = "$folder";
+
+const POWERSHELL_FOLDER: &str = "$Folder";
 
 fn script_arches() -> Vec<ScriptArch> {
     ARCHES
@@ -137,8 +140,23 @@ fn script_arches() -> Vec<ScriptArch> {
             name: arch.name,
             window: qemu::interactive_args(arch, true),
             serial: qemu::interactive_args(arch, false),
+            shell_folder: qemu::host_folder_args(arch, SHELL_FOLDER),
+            powershell_folder: qemu::host_folder_args(arch, POWERSHELL_FOLDER),
         })
         .collect()
+}
+
+fn double_quoted(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            assert!(
+                !arg.contains(['"', '`', '\\']),
+                "a QEMU argument holds a quote, a backtick or a backslash: {arg}"
+            );
+            format!("\"{arg}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn single_quoted(args: &[String]) -> String {
@@ -154,6 +172,7 @@ fn single_quoted(args: &[String]) -> String {
 fn shell_script(arches: &[ScriptArch]) -> String {
     let names: Vec<&str> = arches.iter().map(|arch| arch.name).collect();
     let mut cases = String::new();
+    let mut folder_cases = String::new();
     for arch in arches {
         let _ = writeln!(
             cases,
@@ -163,26 +182,45 @@ fn shell_script(arches: &[ScriptArch]) -> String {
             arch.name,
             single_quoted(&arch.serial)
         );
+        let _ = writeln!(
+            folder_cases,
+            "    {}) set -- \"$@\" {} ;;",
+            arch.name,
+            double_quoted(&arch.shell_folder)
+        );
     }
     format!(
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial]"
+usage="usage: run-eggos.sh [{choices}] [--serial] [--apps <folder>]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
   *) arch=x86_64 ;;
 esac
 mode=window
-for argument in "$@"; do
-  case "$argument" in
+apps=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --serial) mode=serial ;;
-    {alternatives}) arch="$argument" ;;
+    --apps)
+      if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
+      shift
+      apps="$1" ;;
+    {alternatives}) arch="$1" ;;
     -h | --help) echo "$usage"; exit 0 ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
+  shift
 done
+if [ -n "$apps" ]; then
+  if [ ! -d "$apps" ]; then
+    echo "run-eggos.sh: $apps is not a folder" >&2
+    exit 1
+  fi
+  folder=$(CDPATH= cd -- "$apps" && pwd | sed 's/,/,,/g')
+fi
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 file="eggos-$version-$arch.elf"
 image="$dir/$file"
@@ -220,6 +258,11 @@ if ! command -v "$qemu" >/dev/null 2>&1; then
 fi
 case "$arch:$mode" in
 {cases}esac
+if [ -n "$apps" ]; then
+  case "$arch" in
+{folder_cases}  esac
+  echo "run-eggos.sh: $apps is at /media/host in EggOS, read-only."
+fi
 if [ "$mode" = window ]; then
   echo "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
 else
@@ -238,6 +281,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         .map(|arch| format!("'{}'", arch.name))
         .collect();
     let mut cases = String::new();
+    let mut folder_cases = String::new();
     for arch in arches {
         let list = |args: &[String]| single_quoted(args).replace("' '", "', '");
         let _ = writeln!(
@@ -247,15 +291,44 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
             list(&arch.serial),
             list(&arch.window)
         );
+        let _ = writeln!(
+            folder_cases,
+            "        '{}' {{ @({}) }}",
+            arch.name,
+            double_quoted(&arch.powershell_folder).replace("\" \"", "\", \"")
+        );
     }
     format!(
-        r#"param(
-    [ValidateSet({names})]
+        r#"[CmdletBinding(PositionalBinding = $false)]
+param(
     [string]$Arch,
-    [switch]$Serial
+    [switch]$Serial,
+    [string]$Apps,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
+$Arches = @({names})
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial] [-Apps <folder>]"
+for ($i = 0; $i -lt $Rest.Count; $i++) {{
+    $argument = $Rest[$i]
+    if ($argument -eq '--serial') {{
+        $Serial = $true
+    }} elseif ($argument -eq '--apps' -and $i + 1 -lt $Rest.Count) {{
+        $i++
+        $Apps = $Rest[$i]
+    }} elseif ($Arches -contains $argument -and -not $Arch) {{
+        $Arch = $argument
+    }} else {{
+        Write-Error "run-eggos.ps1: $Usage"
+        exit 2
+    }}
+}}
+if ($Arch -and $Arches -notcontains $Arch) {{
+    Write-Error "run-eggos.ps1: $Usage"
+    exit 2
+}}
 if (-not $Arch) {{
     $hostArch = $null
     try {{ $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() }} catch {{ }}
@@ -298,6 +371,16 @@ if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
 }}
 $QemuArgs = switch ($Arch) {{
 {cases}}}
+if ($Apps) {{
+    if (-not (Test-Path -LiteralPath $Apps -PathType Container)) {{
+        Write-Error "run-eggos.ps1: $Apps is not a folder"
+        exit 1
+    }}
+    $Folder = (Resolve-Path -LiteralPath $Apps).ProviderPath.Replace(',', ',,')
+    $QemuArgs += switch ($Arch) {{
+{folder_cases}    }}
+    Write-Host "run-eggos.ps1: $Apps is at /media/host in EggOS, read-only."
+}}
 if ($Serial) {{
     Write-Host "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
 }} else {{
@@ -307,6 +390,11 @@ if ($Serial) {{
 exit $LASTEXITCODE
 "#,
         names = names.join(", "),
+        choices = arches
+            .iter()
+            .map(|arch| arch.name)
+            .collect::<Vec<_>>()
+            .join("|"),
     )
 }
 
@@ -405,6 +493,20 @@ mod tests {
                 list(&serial),
                 list(&window)
             )));
+        }
+        for arch in ARCHES {
+            let folder = qemu::host_folder_args(arch, "$folder")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(shell.contains(&format!("    {}) set -- \"$@\" {folder} ;;\n", arch.name)));
+            let folder = qemu::host_folder_args(arch, "$Folder")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert!(powershell.contains(&format!("        '{}' {{ @({folder}) }}\n", arch.name)));
         }
         assert!(shell.starts_with("#!/bin/sh\n"));
         assert!(shell.contains(&format!("version='{VERSION}'")));

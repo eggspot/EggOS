@@ -473,6 +473,8 @@ impl Errno {
     pub const ESRCH: Self = Self(3);
     /// Interrupted: a signal's handler started during the wait (`rt_sigsuspend`, `pause`).
     pub const EINTR: Self = Self(4);
+    /// An input or output error: the disk under a file system failed (`read`, `execve`).
+    pub const EIO: Self = Self(5);
     /// No child the caller may wait for (`wait4`, `waitid`).
     pub const ECHILD: Self = Self(10);
     /// The arguments and environment are too long (`execve`).

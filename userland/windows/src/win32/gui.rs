@@ -13,7 +13,6 @@
 
 use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
-use crate::futex::WakeCount;
 use crate::gui::classes::ClassTable;
 use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
@@ -22,6 +21,7 @@ use crate::gui::queue::{Filter, Message, Queue};
 use crate::gui::windows::{self, Pixels, Procedure, WindowTable};
 use crate::linux;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use eggos_runtime::futex::WakeCount;
 
 const PENDING_CHARACTERS: usize = 8;
 const RECORDS_PER_READ: usize = 16;
