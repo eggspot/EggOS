@@ -167,10 +167,6 @@ const PERSISTENT_DEVICE: (u32, u32) = (254, 1);
 const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 2] =
     [(b"home", b"/home"), (b"Applications", b"/Applications")];
 
-/// Takes every disk drivers installed and mounts each by what it holds, never by the order
-/// the disks came in (D131): an EggFS disk, or a blank writable one formatted first, at
-/// `/home` and `/Applications`; a FAT disk read-only at `/media/host` (D130); the first of
-/// each. A disk holding anything else is left as it is, and said so.
 fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut persistent = false;
     let mut host_folder = false;
@@ -274,7 +270,7 @@ fn mount_persistent<P: Platform, W: Write>(
             )?,
         }
     }
-    let mebibytes = |blocks: u64| blocks * eggos_eggfs::BLOCK_SIZE as u64 >> 20;
+    let mebibytes = |blocks: u64| (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20;
     writeln!(
         console,
         "vfs: EggFS disk mounted at /home and /Applications ({} MiB, {} MiB free)",
