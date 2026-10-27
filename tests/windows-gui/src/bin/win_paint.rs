@@ -103,9 +103,9 @@ mod program {
     #[link(name = "kernel32", kind = "raw-dylib")]
     unsafe extern "system" {
         fn GetModuleHandleW(name: *const u16) -> usize;
-        fn GetStdHandle(which: u32) -> usize;
+        safe fn GetStdHandle(which: u32) -> usize;
         fn WriteFile(h: usize, b: *const u8, n: u32, w: *mut u32, o: *mut c_void) -> i32;
-        fn ExitProcess(code: u32) -> !;
+        safe fn ExitProcess(code: u32) -> !;
     }
 
     #[link(name = "user32", kind = "raw-dylib")]
@@ -125,8 +125,8 @@ mod program {
             instance: usize,
             parameter: *mut c_void,
         ) -> Window;
-        fn ShowWindow(window: Window, command: i32) -> i32;
-        fn UpdateWindow(window: Window) -> i32;
+        safe fn ShowWindow(window: Window, command: i32) -> i32;
+        safe fn UpdateWindow(window: Window) -> i32;
         fn GetMessageW(message: *mut Message, window: Window, first: u32, last: u32) -> i32;
         fn PeekMessageW(
             message: *mut Message,
@@ -138,19 +138,19 @@ mod program {
         fn TranslateMessage(message: *const Message) -> i32;
         fn DispatchMessageW(message: *const Message) -> isize;
         fn DefWindowProcW(window: Window, message: u32, wparam: usize, lparam: isize) -> isize;
-        fn PostQuitMessage(code: i32);
-        fn PostMessageW(window: Window, message: u32, wparam: usize, lparam: isize) -> i32;
+        safe fn PostQuitMessage(code: i32);
+        safe fn PostMessageW(window: Window, message: u32, wparam: usize, lparam: isize) -> i32;
         fn SendMessageW(window: Window, message: u32, wparam: usize, lparam: isize) -> isize;
         fn GetClientRect(window: Window, rect: *mut Rect) -> i32;
-        fn GetWindowLongPtrW(window: Window, index: i32) -> isize;
-        fn SetWindowLongPtrW(window: Window, index: i32, value: isize) -> isize;
-        fn GetSystemMetrics(index: i32) -> i32;
-        fn LoadCursorW(instance: usize, name: usize) -> usize;
-        fn LoadIconW(instance: usize, name: usize) -> usize;
+        safe fn GetWindowLongPtrW(window: Window, index: i32) -> isize;
+        safe fn SetWindowLongPtrW(window: Window, index: i32, value: isize) -> isize;
+        safe fn GetSystemMetrics(index: i32) -> i32;
+        safe fn LoadCursorW(instance: usize, name: usize) -> usize;
+        safe fn LoadIconW(instance: usize, name: usize) -> usize;
         fn BeginPaint(window: Window, paint: *mut PaintStruct) -> Context;
         fn EndPaint(window: Window, paint: *const PaintStruct) -> i32;
-        fn GetDC(window: Window) -> Context;
-        fn ReleaseDC(window: Window, context: Context) -> i32;
+        safe fn GetDC(window: Window) -> Context;
+        safe fn ReleaseDC(window: Window, context: Context) -> i32;
         fn InvalidateRect(window: Window, rect: *const Rect, erase: i32) -> i32;
         fn FillRect(context: Context, rect: *const Rect, brush: Object) -> i32;
         fn DrawTextW(
@@ -165,19 +165,19 @@ mod program {
 
     #[link(name = "gdi32", kind = "raw-dylib")]
     unsafe extern "system" {
-        fn CreateSolidBrush(colour: u32) -> Object;
-        fn CreatePen(style: i32, width: i32, colour: u32) -> Object;
-        fn GetStockObject(index: i32) -> Object;
-        fn SelectObject(context: Context, object: Object) -> Object;
-        fn DeleteObject(object: Object) -> i32;
-        fn Rectangle(context: Context, left: i32, top: i32, right: i32, bottom: i32) -> i32;
-        fn Ellipse(context: Context, left: i32, top: i32, right: i32, bottom: i32) -> i32;
+        safe fn CreateSolidBrush(colour: u32) -> Object;
+        safe fn CreatePen(style: i32, width: i32, colour: u32) -> Object;
+        safe fn GetStockObject(index: i32) -> Object;
+        safe fn SelectObject(context: Context, object: Object) -> Object;
+        safe fn DeleteObject(object: Object) -> i32;
+        safe fn Rectangle(context: Context, left: i32, top: i32, right: i32, bottom: i32) -> i32;
+        safe fn Ellipse(context: Context, left: i32, top: i32, right: i32, bottom: i32) -> i32;
         fn MoveToEx(context: Context, x: i32, y: i32, previous: *mut c_void) -> i32;
-        fn LineTo(context: Context, x: i32, y: i32) -> i32;
-        fn SetPixel(context: Context, x: i32, y: i32, colour: u32) -> u32;
-        fn SetTextColor(context: Context, colour: u32) -> u32;
-        fn SetBkColor(context: Context, colour: u32) -> u32;
-        fn SetBkMode(context: Context, mode: i32) -> i32;
+        safe fn LineTo(context: Context, x: i32, y: i32) -> i32;
+        safe fn SetPixel(context: Context, x: i32, y: i32, colour: u32) -> u32;
+        safe fn SetTextColor(context: Context, colour: u32) -> u32;
+        safe fn SetBkColor(context: Context, colour: u32) -> u32;
+        safe fn SetBkMode(context: Context, mode: i32) -> i32;
         fn TextOutW(context: Context, x: i32, y: i32, text: *const u16, count: i32) -> i32;
         fn GetTextExtentPoint32W(
             context: Context,
@@ -198,8 +198,7 @@ mod program {
 
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
-        // SAFETY: `ExitProcess` ends the process.
-        unsafe { ExitProcess(101) }
+        ExitProcess(101)
     }
 
     struct Line {
@@ -223,11 +222,12 @@ mod program {
             let _ = write!(line, $($argument)*);
             let _ = line.write_str("\n");
             let mut written = 0;
-            // SAFETY: `GetStdHandle` takes no pointers; `WriteFile` reads the line's own bytes
-            // and writes the count into a local (a null handle, the terminal, fails harmlessly).
+            let output = GetStdHandle(STD_OUTPUT_HANDLE);
+            // SAFETY: `WriteFile` reads the line's own bytes and writes the count into a local
+            // (a null handle, the terminal's, fails harmlessly).
             unsafe {
                 WriteFile(
-                    GetStdHandle(STD_OUTPUT_HANDLE),
+                    output,
                     line.bytes.as_ptr(),
                     line.length as u32,
                     &mut written,
@@ -266,36 +266,29 @@ mod program {
 
     impl GdiPainter {
         fn shape(&mut self, pen: Pen, brush: Option<u32>, draw: impl FnOnce(Context)) {
-            // SAFETY: the context is the window's, and every object selected into it is put
-            // back before it is deleted.
-            unsafe {
-                let pen = CreatePen(PS_SOLID, pen.width, pen.colour);
-                let brush = match brush {
-                    Some(colour) => CreateSolidBrush(colour),
-                    None => GetStockObject(NULL_BRUSH),
-                };
-                let old_pen = SelectObject(self.context, pen);
-                let old_brush = SelectObject(self.context, brush);
-                draw(self.context);
-                SelectObject(self.context, old_pen);
-                SelectObject(self.context, old_brush);
-                DeleteObject(pen);
-                DeleteObject(brush);
-            }
+            let pen = CreatePen(PS_SOLID, pen.width, pen.colour);
+            let brush = match brush {
+                Some(colour) => CreateSolidBrush(colour),
+                None => GetStockObject(NULL_BRUSH),
+            };
+            let old_pen = SelectObject(self.context, pen);
+            let old_brush = SelectObject(self.context, brush);
+            draw(self.context);
+            SelectObject(self.context, old_pen);
+            SelectObject(self.context, old_brush);
+            DeleteObject(pen);
+            DeleteObject(brush);
         }
 
         fn text_mode(&mut self, colour: u32, background: Option<u32>) {
-            // SAFETY: the calls only change the context's text state.
-            unsafe {
-                SetTextColor(self.context, colour);
-                match background {
-                    Some(background) => {
-                        SetBkColor(self.context, background);
-                        SetBkMode(self.context, OPAQUE);
-                    }
-                    None => {
-                        SetBkMode(self.context, TRANSPARENT);
-                    }
+            SetTextColor(self.context, colour);
+            match background {
+                Some(background) => {
+                    SetBkColor(self.context, background);
+                    SetBkMode(self.context, OPAQUE);
+                }
+                None => {
+                    SetBkMode(self.context, TRANSPARENT);
                 }
             }
         }
@@ -303,41 +296,34 @@ mod program {
 
     impl Painter for GdiPainter {
         fn fill(&mut self, rect: Rect, colour: u32) {
-            // SAFETY: the brush is made, used on the window's context and deleted here.
-            unsafe {
-                let brush = CreateSolidBrush(colour);
-                FillRect(self.context, &rect, brush);
-                DeleteObject(brush);
-            }
+            let brush = CreateSolidBrush(colour);
+            // SAFETY: the rectangle is a local.
+            unsafe { FillRect(self.context, &rect, brush) };
+            DeleteObject(brush);
         }
 
         fn rectangle(&mut self, rect: Rect, pen: Pen, brush: Option<u32>) {
             self.shape(pen, brush, |context| {
-                // SAFETY: the context is the window's.
-                unsafe { Rectangle(context, rect.left, rect.top, rect.right, rect.bottom) };
+                Rectangle(context, rect.left, rect.top, rect.right, rect.bottom);
             });
         }
 
         fn ellipse(&mut self, rect: Rect, pen: Pen, brush: Option<u32>) {
             self.shape(pen, brush, |context| {
-                // SAFETY: the context is the window's.
-                unsafe { Ellipse(context, rect.left, rect.top, rect.right, rect.bottom) };
+                Ellipse(context, rect.left, rect.top, rect.right, rect.bottom);
             });
         }
 
         fn line(&mut self, from: (i32, i32), to: (i32, i32), pen: Pen) {
             self.shape(pen, None, |context| {
-                // SAFETY: the context is the window's; no previous point is asked for.
-                unsafe {
-                    MoveToEx(context, from.0, from.1, core::ptr::null_mut());
-                    LineTo(context, to.0, to.1);
-                }
+                // SAFETY: no previous point is asked for.
+                unsafe { MoveToEx(context, from.0, from.1, core::ptr::null_mut()) };
+                LineTo(context, to.0, to.1);
             });
         }
 
         fn pixel(&mut self, x: i32, y: i32, colour: u32) {
-            // SAFETY: the context is the window's.
-            unsafe { SetPixel(self.context, x, y, colour) };
+            SetPixel(self.context, x, y, colour);
         }
 
         fn text(&mut self, x: i32, y: i32, text: &str, colour: u32, background: Option<u32>) {
@@ -377,9 +363,10 @@ mod program {
     }
 
     fn scene_of(window: Window) -> Option<&'static mut Scene> {
+        let scene = GetWindowLongPtrW(window, GWLP_USER_DATA) as *mut Scene;
         // SAFETY: the window's user data is the scene `WinMainCRTStartup` owns for as long as
         // its message loop runs, or null before `WM_CREATE` stored it.
-        unsafe { (GetWindowLongPtrW(window, GWLP_USER_DATA) as *mut Scene).as_mut() }
+        unsafe { scene.as_mut() }
     }
 
     extern "system" fn window_procedure(
@@ -393,8 +380,7 @@ mod program {
                 // SAFETY: `WM_CREATE`'s `lParam` is the `CREATESTRUCTW` whose first field is
                 // the parameter `CreateWindowExW` was given: the scene.
                 let scene = unsafe { (*(lparam as *const CreateStruct)).create_parameters };
-                // SAFETY: the window is this procedure's.
-                unsafe { SetWindowLongPtrW(window, GWLP_USER_DATA, scene as isize) };
+                SetWindowLongPtrW(window, GWLP_USER_DATA, scene as isize);
                 say!("created");
                 0
             }
@@ -429,12 +415,9 @@ mod program {
             WM_LEFT_BUTTON_DOWN => {
                 if let Some(scene) = scene_of(window) {
                     scene.clicked = !scene.clicked;
-                    // SAFETY: the context is the window's and released here.
-                    unsafe {
-                        let context = GetDC(window);
-                        scene.paint_ellipse(&mut GdiPainter { context });
-                        ReleaseDC(window, context);
-                    }
+                    let context = GetDC(window);
+                    scene.paint_ellipse(&mut GdiPainter { context });
+                    ReleaseDC(window, context);
                 }
                 let (x, y) = (lparam as i16, (lparam >> 16) as i16);
                 say!("clicked {x} {y}");
@@ -474,8 +457,7 @@ mod program {
             }
             WM_DESTROY => {
                 say!("destroyed");
-                // SAFETY: no pointers.
-                unsafe { PostQuitMessage(0) };
+                PostQuitMessage(0);
                 0
             }
             // SAFETY: the default procedure takes the message as it came.
@@ -504,10 +486,8 @@ mod program {
             class_extra: 0,
             window_extra: EXTRA_BYTES,
             instance,
-            // SAFETY: system resources, no pointers.
-            icon: unsafe { LoadIconW(0, IDI_APPLICATION) },
-            // SAFETY: as above.
-            cursor: unsafe { LoadCursorW(0, IDC_ARROW) },
+            icon: LoadIconW(0, IDI_APPLICATION),
+            cursor: LoadCursorW(0, IDC_ARROW),
             background: scene::BACKGROUND,
             menu_name: core::ptr::null(),
             class_name: class_name.pointer(),
@@ -550,43 +530,34 @@ mod program {
         };
         // SAFETY: the rectangle is a local.
         unsafe { GetClientRect(window, &mut client) };
-        // SAFETY: no pointers.
-        let caption = unsafe { GetSystemMetrics(SM_CY_CAPTION) };
+        let caption = GetSystemMetrics(SM_CY_CAPTION);
         say!(
             "window {}x{} caption {caption}",
             client.right,
             client.bottom
         );
-        // SAFETY: the window has 16 extra bytes; offset 8 holds a pointer-sized value.
-        let extra = unsafe {
-            SetWindowLongPtrW(window, 8, EXTRA_VALUE as isize);
-            GetWindowLongPtrW(window, 8)
-        };
+        SetWindowLongPtrW(window, 8, EXTRA_VALUE as isize);
+        let extra = GetWindowLongPtrW(window, 8);
         say!("extra {extra}");
         // SAFETY: the window's procedure answers `WM_APP` with the sum of its parameters.
         let sent = unsafe { SendMessageW(window, WM_APP, SENT.0, SENT.1) };
         say!("sent {sent}");
         let mut message = Message::default();
+        PostMessageW(window, WM_APP + 1, POSTED, 0);
         // SAFETY: the message is a local.
-        let waiting = unsafe {
-            PostMessageW(window, WM_APP + 1, POSTED, 0);
-            PeekMessageW(&mut message, window, WM_APP + 1, WM_APP + 1, PM_NO_REMOVE)
-        };
+        let waiting =
+            unsafe { PeekMessageW(&mut message, window, WM_APP + 1, WM_APP + 1, PM_NO_REMOVE) };
         if waiting != 0 {
             say!("posted {} waiting", message.wparam);
         }
-        // SAFETY: the window is this program's.
-        unsafe {
-            ShowWindow(window, SW_SHOW_NORMAL);
-            UpdateWindow(window);
-        }
-        // SAFETY: the message is a local, read and passed back as the loop got it.
+        ShowWindow(window, SW_SHOW_NORMAL);
+        UpdateWindow(window);
+        // SAFETY: the message is a local.
         while unsafe { GetMessageW(&mut message, 0, 0, 0) } > 0 {
+            // SAFETY: the message is the one the loop got.
+            unsafe { TranslateMessage(&message) };
             // SAFETY: as above.
-            unsafe {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
+            unsafe { DispatchMessageW(&message) };
         }
         say!("quit {}", message.wparam);
         message.wparam as u32
