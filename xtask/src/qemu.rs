@@ -202,7 +202,7 @@ const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
     b"exit 7\r",
 ];
 
-const MACOS_PROGRAM_SESSION: [&[u8]; 8] = [
+const MACOS_PROGRAM_SESSION: [&[u8]; 12] = [
     b"GREETING=hi macos-console a 'b c'; echo MACOS-CONSOLE status $?\r",
     b"/bin/macos-console exit 42; echo MACOS-CONSOLE status $?\r",
     b"macos-fat exit 3; echo MACOS-CONSOLE status $?\r",
@@ -210,6 +210,11 @@ const MACOS_PROGRAM_SESSION: [&[u8]; 8] = [
     b"macos-console unimplemented; echo MACOS-CONSOLE status $?\r",
     b"macos-unsupported; echo MACOS-CONSOLE status $?\r",
     b"macos-other; echo MACOS-CONSOLE status $?\r",
+    b"GREETING=hi macos-std a 'b c'; echo MACOS-CONSOLE status $?\r",
+    b"macos-std exit 5; echo MACOS-CONSOLE status $?\r",
+    b"macos-tools -v --verbose -n 3 --list /usr/share/eggos --name=eggos rest more; \
+      echo MACOS-CONSOLE status $?\r",
+    b"macos-tools -x; echo MACOS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
 
@@ -237,6 +242,10 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-console"),
             refused("macos-unsupported"),
             refused("macos-other"),
+            refused("macos-std"),
+            refused("macos-std"),
+            refused("macos-tools"),
+            refused("macos-tools"),
             end,
         ];
     }
@@ -293,6 +302,28 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             ),
             status(126),
         ],
+        whole(&[
+            "MACOS-STD hello from Rust std",
+            "MACOS-STD args a|b c",
+            "MACOS-STD env GREETING=hi",
+            "MACOS-STD file EggOS",
+            "MACOS-STD dir /bin eggsh macos-std",
+            "MACOS-STD missing NotFound",
+            "MACOS-STD threads 4 sum 10 tls [2, 2, 2, 2] main 1 names \
+             worker-1,worker-2,worker-3,worker-4",
+            "MACOS-CONSOLE status 0",
+        ]),
+        vec![status(5)],
+        whole(&[
+            "MACOS-TOOLS options v=2 n=3 name=eggos optind=8 rest=rest",
+            "MACOS-TOOLS dir /usr/share/eggos: about",
+            "MACOS-TOOLS time 1970-01-01 00:00:00 Thu Jan 001 UTC | 2023-11-14 22:13:20 \
+             Tuesday timegm nanosleep now",
+            "MACOS-TOOLS errno -1 2 No such file or directory",
+            "MACOS-TOOLS locale C US-ASCII . other refused",
+            "MACOS-CONSOLE status 0",
+        ]),
+        whole(&["macos-tools: illegal option -- x", "MACOS-CONSOLE status 2"]),
         end,
     ]
 }

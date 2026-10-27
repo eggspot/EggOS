@@ -454,7 +454,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
             qemu::Expect::MacosPrograms,
             qemu::TEST_CPUS,
             qemu::Display::Absent,
-            &[],
+            macos::qemu_cpu_args(arch.name),
         )?;
     }
     let kernel = build_kernel(arch, None)?;
@@ -962,6 +962,14 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
         image::AddedFile {
             host: fat_path.to_string_lossy().into_owned(),
             path: format!("bin/{MACOS_FAT_PROGRAM}"),
+        },
+        image::AddedFile {
+            host: host("macos-tools", own),
+            path: "bin/macos-tools".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-std", own),
+            path: "bin/macos-std".to_owned(),
         },
     ];
     let layer = macos_layer_for(arch, &added)?;

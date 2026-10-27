@@ -13,5 +13,13 @@ path = "src/main.rs"
 name = "macos-unsupported"
 path = "src/bin/unsupported.rs"
 
+[[bin]]
+name = "macos-tools"
+path = "src/bin/tools.rs"
+
+[[bin]]
+name = "macos-std"
+path = "src/bin/std.rs"
+
 [lints]
 workspace = true
