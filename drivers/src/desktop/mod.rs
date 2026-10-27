@@ -13,27 +13,38 @@
 //! after [`Desktop::new`].
 
 mod catalogue;
+mod desktop_icons;
 mod events;
 mod icons;
+mod launcher;
 pub mod layout;
 mod management;
 mod paint;
 mod pointer;
 mod popups;
 pub mod protocol;
+mod shell;
 pub mod shortcuts;
 mod windows;
 
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
+mod shell_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod window_tests;
 
+pub use catalogue::{AppId, COMMAND_CAPACITY, Catalogue, Command, Launch, MAX_INSTALLED};
+pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
+pub use icons::{Icon, IconSize, Source};
+pub use launcher::{FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS};
+pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
+pub use shell::{DOCK_ICON, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use windows::{
     CASCADE_STEP, CHROME, ControlSide, DEFAULT_MARGIN, DOUBLE_CLICK_DISTANCE, DOUBLE_CLICK_MS,
@@ -49,6 +60,8 @@ use crate::input::{button, key};
 use crate::terminal::{PADDING, TERM_BACKGROUND, TextArea};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use desktop_icons::DesktopIcons;
+use launcher::{Launcher, Notice};
 use management::Resize;
 use paint::{Canvas, egg_half_width, isqrt};
 use popups::{Switcher, WindowMenu};
@@ -56,6 +69,7 @@ use protocol::{
     EventRecord, EventSink, MAX_WINDOWS, MAX_WINDOWS_PER_CLIENT, PointerShape, Role,
     TITLE_CAPACITY, WindowError, WindowState, event, flags, modifier,
 };
+use shell::PanelState;
 use windows::{SLOT_BITS, Window};
 
 /// The design's colour tokens (`desktop-v0.3.md` section 2, `desktop-v0.3-gui.md` section 1),
@@ -129,7 +143,6 @@ pub const MENU_ITEM_HEIGHT: u32 = 32;
 pub const CLOCK_GLYPHS: usize = 10;
 
 const SHADOW_RINGS: u32 = 4;
-const POWER_BUTTON_SIZE: u32 = 28;
 const POWER_BUTTON_MARGIN: u32 = 8;
 const POWER_ICON_SIZE: u32 = 13;
 const POWER_ICON: [u16; 13] = [
@@ -185,6 +198,10 @@ pub enum Action {
     PowerOff,
     /// Restart the machine, as `reboot` does.
     Restart,
+    /// Start the app's program as a process ([`Catalogue::launch`]).
+    Start(AppId),
+    /// Type the app's command in the terminal, as if the user had ([`Catalogue::launch`]).
+    Type(AppId),
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -250,6 +267,14 @@ pub struct Desktop {
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
     profile: Profile,
+    layout: Layout,
+    catalogue: Catalogue,
+    catalogue_wanted: bool,
+    panels: PanelState,
+    launcher: Option<Launcher>,
+    notice: Option<Notice>,
+    icons: DesktopIcons,
+    super_alone: bool,
     now_ms: u32,
     focus_serial: u32,
     dialogs: usize,
@@ -257,11 +282,16 @@ pub struct Desktop {
 }
 
 impl Desktop {
-    /// The desktop of a `width` by `height` screen with the terminal's window centred below
-    /// the bar, shown and focused, the clock at `up 0:00`; `None` when the window and the bar
-    /// do not fit.
+    /// The desktop of a `width` by `height` screen in the default profile with the terminal's
+    /// window centred in the work area, shown and focused, the clock at `up 0:00`, and only the
+    /// built-in apps in the catalogue; `None` when the window does not fit every profile's
+    /// work area.
     pub fn new(width: u32, height: u32) -> Option<Self> {
-        if width < WINDOW_WIDTH || height < BAR_HEIGHT + WINDOW_HEIGHT {
+        let fits = Profile::ALL.into_iter().all(|profile| {
+            let work = layout(width, height, 1, profile).work_area;
+            work.width >= WINDOW_WIDTH && work.height >= WINDOW_HEIGHT
+        });
+        if !fits {
             return None;
         }
         let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
@@ -309,6 +339,14 @@ impl Desktop {
             pointer_visible: false,
             pointer_drawn: None,
             profile: Profile::default(),
+            layout: layout(width, height, 1, Profile::default()),
+            catalogue: Catalogue::new(),
+            catalogue_wanted: false,
+            panels: PanelState::default(),
+            launcher: None,
+            notice: None,
+            icons: DesktopIcons::default(),
+            super_alone: false,
             now_ms: 0,
             focus_serial: 0,
             dialogs: 0,
@@ -346,9 +384,41 @@ impl Desktop {
         Rect::new(0, 0, self.width, self.height)
     }
 
-    /// The work area: the screen below the top bar, where windows go.
+    /// The work area: the screen less the profile's panels, where windows go.
     pub fn work_area(&self) -> Rect {
-        Rect::new(0, BAR_HEIGHT, self.width, self.height - BAR_HEIGHT)
+        self.layout.work_area
+    }
+
+    /// The apps the shell offers.
+    pub fn catalogue(&self) -> &Catalogue {
+        &self.catalogue
+    }
+
+    /// Makes `catalogue` the shell's, redrawing what lists apps if it differs from the one it
+    /// had.
+    pub fn set_catalogue(&mut self, catalogue: Catalogue, damage: &mut Damage) {
+        if catalogue == self.catalogue {
+            return;
+        }
+        self.catalogue = catalogue;
+        self.icons_changed(damage);
+        self.refilter_launcher(damage);
+        self.damage_window_list(damage);
+        if let Some(bar) = self.layout.taskbar {
+            damage.add(bar);
+        }
+    }
+
+    /// Whether the shell wants the catalogue read again (the launcher opened since the last
+    /// call); clears the request.
+    pub fn take_catalogue_request(&mut self) -> bool {
+        core::mem::take(&mut self.catalogue_wanted)
+    }
+
+    /// What launching `app` asks of the kernel, as [`Action::Start`] and [`Action::Type`]
+    /// name it.
+    pub fn launch_command(&self, app: AppId) -> Option<Launch> {
+        self.catalogue.launch(app)
     }
 
     fn terminal(&self) -> &Window {
@@ -479,9 +549,10 @@ impl Desktop {
             return Err(WindowError::Invalid);
         }
         let (minimum_width, minimum_height) = self.window_at(slot).minimum;
+        let work = self.work_area();
         Ok(clamp_resized_content(
-            self.width,
-            self.height,
+            work.width,
+            work.height,
             width.max(minimum_width),
             height.max(minimum_height),
         ))
@@ -489,7 +560,8 @@ impl Desktop {
 
     /// The content size [`Self::create`] gives a window asking for `width` by `height`.
     pub fn created_size(&self, width: u32, height: u32) -> (u32, u32) {
-        clamp_content_size(self.width, self.height, width, height)
+        let work = self.work_area();
+        clamp_content_size(work.width, work.height, width, height)
     }
 
     /// How many windows `client` has.
@@ -549,38 +621,6 @@ impl Desktop {
         core::str::from_utf8(&self.clock).unwrap_or("")
     }
 
-    /// The clock's rectangle on the bar.
-    pub fn clock_rect(&self) -> Rect {
-        let width = CLOCK_GLYPHS as u32 * GLYPH_WIDTH as u32;
-        Rect::new(
-            (self.width - width) / 2,
-            BAR_TEXT_Y,
-            width,
-            GLYPH_HEIGHT as u32,
-        )
-    }
-
-    /// The power button's hit target.
-    pub fn power_button(&self) -> Rect {
-        Rect::new(
-            self.width - POWER_BUTTON_MARGIN - POWER_BUTTON_SIZE,
-            0,
-            POWER_BUTTON_SIZE,
-            POWER_BUTTON_SIZE,
-        )
-    }
-
-    /// The power menu, its border included, where it opens.
-    pub fn menu(&self) -> Rect {
-        let button = self.power_button();
-        Rect::new(
-            button.right() - MENU_WIDTH,
-            BAR_HEIGHT + MENU_GAP,
-            MENU_WIDTH,
-            MENU_ITEMS.len() as u32 * MENU_ITEM_HEIGHT + 2,
-        )
-    }
-
     /// The terminal's chip in the bar, where it shows when the terminal is the only window
     /// minimised.
     pub fn chip(&self) -> Rect {
@@ -598,12 +638,15 @@ impl Desktop {
         found
     }
 
-    fn chips_area(&self) -> Rect {
+    pub(super) fn chips_area(&self) -> Rect {
         let end = self.clock_rect().x.saturating_sub(CHIPS_CLEAR_OF_CLOCK);
         Rect::new(CHIP_X, CHIP_Y, end.saturating_sub(CHIP_X), CHIP_HEIGHT)
     }
 
-    fn for_each_chip(&self, mut chip: impl FnMut(usize, Rect)) {
+    pub(super) fn for_each_chip(&self, mut chip: impl FnMut(usize, Rect)) {
+        if self.profile != Profile::Linux {
+            return;
+        }
         let end = self.chips_area().right();
         let mut x = CHIP_X;
         for &slot in &self.created[..self.created_length] {
@@ -619,16 +662,6 @@ impl Desktop {
             chip(slot, rect);
             x = rect.right() + CHIP_GAP;
         }
-    }
-
-    fn chip_at(&self, x: u32, y: u32) -> Option<usize> {
-        let mut found = None;
-        self.for_each_chip(|slot, rect| {
-            if contains(rect, x, y) {
-                found = Some(slot);
-            }
-        });
-        found
     }
 
     fn menu_with_shadow(&self) -> Rect {
@@ -724,7 +757,7 @@ impl Desktop {
             .iter()
             .position(Option::is_none)
             .ok_or(WindowError::TableFull)?;
-        let (width, height) = clamp_content_size(self.width, self.height, width, height);
+        let (width, height) = self.created_size(width, height);
         let mut window = Window::new(
             self.id_for(slot),
             client,
@@ -763,9 +796,7 @@ impl Desktop {
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).title_bar());
         }
-        if self.window_at(slot).minimised {
-            damage.add(self.chips_area());
-        }
+        self.damage_window_list(damage);
         Ok(())
     }
 
@@ -857,10 +888,11 @@ impl Desktop {
         let slot = self.owned(client, id)?;
         self.window_mut(slot).requested_position = Some((x, y));
         if self.window_at(slot).shown {
+            let work = self.work_area();
             self.move_window(
                 slot,
-                i64::from(x),
-                i64::from(BAR_HEIGHT) + i64::from(y),
+                i64::from(work.x) + i64::from(x),
+                i64::from(work.y) + i64::from(y),
                 damage,
             );
         }
@@ -1000,9 +1032,7 @@ impl Desktop {
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
         }
-        if self.window_at(slot).minimised {
-            damage.add(self.chips_area());
-        }
+        self.damage_window_list(damage);
         let focused = self.focus == Some(slot);
         if self.drag.is_some_and(|drag| drag.window == slot) {
             self.drag = None;
@@ -1044,8 +1074,10 @@ impl Desktop {
         self.window_mut(slot).shown = true;
         self.stack[self.stack_length] = slot as u8;
         self.stack_length += 1;
+        if self.window_at(slot).role == Role::Normal {
+            self.damage_window_list(damage);
+        }
         if self.window_at(slot).minimised {
-            damage.add(self.chips_area());
             return;
         }
         if !self.is_visible(slot) {
@@ -1066,7 +1098,10 @@ impl Desktop {
         let outside = window.outside();
         let work = self.work_area();
         let (x, y) = if let Some((x, y)) = window.requested_position {
-            (i64::from(x), i64::from(work.y) + i64::from(y))
+            (
+                i64::from(work.x) + i64::from(x),
+                i64::from(work.y) + i64::from(y),
+            )
         } else if let Some(parent) = window.parent {
             let parent = self.window_at(usize::from(parent)).outside();
             (
@@ -1076,7 +1111,7 @@ impl Desktop {
         } else {
             match self.top_normal(slot) {
                 None => (
-                    i64::from(work.width.saturating_sub(outside.width) / 2),
+                    i64::from(work.x + work.width.saturating_sub(outside.width) / 2),
                     i64::from(work.y + work.height.saturating_sub(outside.height) / 2),
                 ),
                 Some(top) => {
@@ -1198,6 +1233,10 @@ impl Desktop {
         if self.focus == focus {
             return;
         }
+        if focus.is_some() {
+            self.set_desktop_focused(false, damage);
+        }
+        self.damage_focus_in_window_list(damage);
         if let Some(old) = self.focus {
             if self.is_visible(old) {
                 damage.add(self.window_at(old).outside());
@@ -1230,6 +1269,9 @@ impl Desktop {
             .map(|&slot| usize::from(slot))
             .find(|&slot| self.is_visible(slot));
         self.set_focus(top, damage, events);
+        if top.is_none() {
+            self.set_desktop_focused(true, damage);
+        }
     }
 
     fn send(&self, slot: usize, mut record: EventRecord, events: &mut dyn EventSink) {
@@ -1277,7 +1319,7 @@ impl Desktop {
             self.close_popups(damage, events);
         }
         self.window_mut(slot).minimised = true;
-        damage.add(self.chips_area());
+        self.damage_window_list(damage);
         self.send_state(slot, events);
         if self.focus.is_some_and(|focus| group(self, focus)) {
             self.focus_top(damage, events);
@@ -1289,7 +1331,7 @@ impl Desktop {
             return;
         }
         self.window_mut(slot).minimised = false;
-        damage.add(self.chips_area());
+        self.damage_window_list(damage);
         self.raise(slot, damage);
         damage.add(self.window_at(slot).with_shadow());
         self.send_state(slot, events);
@@ -1298,7 +1340,7 @@ impl Desktop {
     }
 
     fn top_window_at(&self, x: u32, y: u32) -> Option<usize> {
-        if y < BAR_HEIGHT {
+        if self.over_panel(x, y) {
             return None;
         }
         self.stack[..self.stack_length]
@@ -1347,6 +1389,9 @@ impl Desktop {
             }
         }
         self.window_menu_hover(x, y, damage);
+        self.launcher_hover(x, y, damage);
+        self.icon_menu_hover(x, y, damage);
+        self.update_panel_hover(x, y, damage);
         let hit = self.hit(x, y);
         let under = match (self.grab, self.drag.is_some() || self.resize.is_some()) {
             (Some(grab), _) => Some(grab),
@@ -1469,6 +1514,7 @@ impl Desktop {
             if code == button::LEFT {
                 self.drag = None;
                 self.resize = None;
+                self.panel_release(damage);
             }
             if let Some(grab) = self.grab {
                 let (cx, cy) = self.content_point(grab);
@@ -1496,8 +1542,25 @@ impl Desktop {
             return Action::None;
         }
         let (x, y) = self.pointer;
+        self.super_alone = false;
+        self.close_notice(damage);
         if self.switcher_press(x, y, damage, events) || self.window_menu_press(x, y, damage, events)
         {
+            return Action::None;
+        }
+        if let Some(action) = self.icon_menu_press(x, y, damage, events) {
+            return action;
+        }
+        let opener = self.panel_item_at(x, y);
+        let launcher_was_open = self.launcher.is_some();
+        if let Some(action) = self.launcher_press(code, x, y, damage, events) {
+            return action;
+        }
+        let opens_launcher = matches!(
+            opener,
+            Some(shell::PanelItem::Start | shell::PanelItem::System)
+        );
+        if launcher_was_open && opens_launcher {
             return Action::None;
         }
         let last_title_press = self.last_title_press.take();
@@ -1514,15 +1577,10 @@ impl Desktop {
                 return Action::None;
             }
         }
-        if contains(self.power_button(), x, y) {
-            self.open_menu(damage);
-            return Action::None;
+        if let Some(item) = opener {
+            return self.panel_press(item, damage, events);
         }
-        if let Some(slot) = self.chip_at(x, y) {
-            self.restore(slot, damage, events);
-            return Action::None;
-        }
-        if y < BAR_HEIGHT {
+        if self.over_panel(x, y) {
             return Action::None;
         }
         if let Some((slot, edges)) = self.resize_target(x, y) {
@@ -1532,8 +1590,7 @@ impl Desktop {
             return Action::None;
         }
         let Some(slot) = self.top_window_at(x, y) else {
-            self.set_focus(None, damage, events);
-            return Action::None;
+            return self.wallpaper_press(code, x, y, damage, events);
         };
         self.raise(slot, damage);
         if let Some(dialog) = self.top_dialog(slot) {
@@ -1578,11 +1635,11 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         let (x, y) = self.pointer;
-        if self.menu_open || y < BAR_HEIGHT {
+        if self.menu_open || self.over_panel(x, y) {
             return Action::None;
         }
         let Some(slot) = self.top_window_at(x, y) else {
-            return Action::None;
+            return self.wallpaper_press(code, x, y, damage, events);
         };
         self.raise(slot, damage);
         if let Some(dialog) = self.top_dialog(slot) {
@@ -1661,9 +1718,33 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        let super_key = matches!(code, key::LEFT_SUPER | key::RIGHT_SUPER);
+        let alone_released = super_key && !pressed && self.super_alone;
+        self.super_alone = super_key
+            && pressed
+            && modifiers.bits() & !Modifiers::SUPER.bits() & !Modifiers::CAPS_LOCK.bits() == 0;
+        if pressed {
+            self.close_notice(damage);
+        }
         if self.switcher.is_some() {
             self.switcher_key(code, pressed, modifiers, damage, events);
             return Action::None;
+        }
+        if alone_released && self.window_menu.is_none() && self.icons.menu.is_none() {
+            self.close_menu_if_open(damage);
+            self.toggle_launcher(damage, events);
+            return Action::None;
+        }
+        if self.icons.menu.is_some() {
+            return self.icon_menu_key(code, pressed, damage, events);
+        }
+        if self.launcher.is_some() {
+            if pressed && shortcut(code, modifiers, self.profile, false) == Some(Shortcut::Launcher)
+            {
+                self.close_launcher(damage, events);
+                return Action::None;
+            }
+            return self.launcher_key(code, pressed, modifiers, damage, events);
         }
         if self.window_menu.is_some() {
             self.window_menu_key(code, pressed, damage, events);
@@ -1679,6 +1760,9 @@ impl Desktop {
                 )
             {
                 return self.run_shortcut(shortcut, damage, events);
+            }
+            if pressed && self.desktop_focused() {
+                return self.desktop_key(code, modifiers, damage, events);
             }
             if let Some(slot) = self.focus.filter(|&slot| self.is_visible(slot)) {
                 let record = EventRecord::new(
@@ -1725,6 +1809,12 @@ impl Desktop {
         damage.add(self.power_button());
     }
 
+    fn close_menu_if_open(&mut self, damage: &mut Damage) {
+        if self.menu_open {
+            self.close_menu(damage);
+        }
+    }
+
     fn close_menu(&mut self, damage: &mut Damage) {
         self.menu_open = false;
         self.menu_hover = None;
@@ -1753,6 +1843,7 @@ impl Desktop {
             return;
         }
         self.draw_wallpaper(&mut canvas);
+        self.draw_desktop_icons(&mut canvas);
         for &slot in &self.stack[..self.stack_length] {
             let slot = usize::from(slot);
             let window = self.window_at(slot);
@@ -1763,12 +1854,13 @@ impl Desktop {
                 self.draw_window(&mut canvas, slot, contents);
             }
         }
-        self.draw_bar(&mut canvas);
+        self.draw_panels(&mut canvas);
         if self.menu_open {
             canvas.shadow(self.menu());
             self.draw_menu(&mut canvas);
         }
         self.draw_popups(&mut canvas);
+        self.draw_tooltip(&mut canvas);
         self.draw_pointer(&mut canvas);
     }
 
@@ -1791,7 +1883,10 @@ impl Desktop {
     }
 
     fn content_holding(&self, clip: Rect) -> Option<usize> {
-        if (self.menu_open && self.menu_with_shadow().overlaps(&clip)) || self.popups_overlap(clip)
+        let tooltip = self.tooltip_rect().is_some_and(|rect| rect.overlaps(&clip));
+        if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
+            || self.popups_overlap(clip)
+            || tooltip
         {
             return None;
         }
@@ -1957,56 +2052,6 @@ impl Desktop {
         }
     }
 
-    fn draw_bar(&self, canvas: &mut Canvas<'_>) {
-        canvas.fill(Rect::new(0, 0, self.width, BAR_HEIGHT - 1), colour::BAR);
-        canvas.fill(
-            Rect::new(0, BAR_HEIGHT - 1, self.width, 1),
-            colour::BAR_EDGE,
-        );
-        let mark_top = (BAR_HEIGHT - BAR_MARK_HEIGHT) / 2;
-        let mark_width = round_percent(72, BAR_MARK_HEIGHT);
-        for row in 0..BAR_MARK_HEIGHT {
-            let (left, right) = span(
-                BAR_MARK_X + mark_width / 2,
-                egg_half_width(BAR_MARK_HEIGHT, row),
-                self.width,
-            );
-            canvas.row(mark_top + row, left, right, colour::ACCENT);
-        }
-        canvas.text(SYSTEM_NAME_X, BAR_TEXT_Y, SYSTEM_NAME, colour::TEXT);
-        self.for_each_chip(|slot, chip| {
-            canvas.rounded(chip, &paint::INSET_R4, true, true, colour::BAR_HOVER);
-            let (text, cut) = windows::cut_title(self.window_at(slot).title(), CHIP_GLYPHS);
-            let x = chip.x + CHIP_PADDING;
-            canvas.text(x, BAR_TEXT_Y, text, colour::TEXT);
-            if cut {
-                let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-                canvas.text(after, BAR_TEXT_Y, windows::ellipsis(), colour::TEXT);
-            }
-        });
-        let clock = self.clock_rect();
-        canvas.text(clock.x, clock.y, self.clock_text(), colour::TEXT_DIM);
-        let button = self.power_button();
-        if self.menu_open {
-            canvas.fill(
-                Rect::new(button.x, button.y, button.width, BAR_HEIGHT - 1),
-                colour::BAR_PRESSED,
-            );
-        }
-        let offset = (POWER_BUTTON_SIZE - POWER_ICON_SIZE) / 2;
-        for (row, bits) in POWER_ICON.iter().enumerate() {
-            for column in 0..POWER_ICON_SIZE {
-                if bits & (1 << (POWER_ICON_SIZE - 1 - column)) != 0 {
-                    canvas.pixel(
-                        button.x + offset + column,
-                        button.y + offset + row as u32,
-                        colour::TEXT,
-                    );
-                }
-            }
-        }
-    }
-
     fn draw_menu(&self, canvas: &mut Canvas<'_>) {
         let menu = self.menu();
         canvas.rounded(menu, &paint::INSET_R6, true, true, colour::MENU_BORDER);
@@ -2074,6 +2119,17 @@ pub fn codepoint(code: u16, modifiers: Modifiers) -> u32 {
         return u32::from(character & 0x1f);
     }
     u32::from(character)
+}
+
+fn draw_chip_text(canvas: &mut Canvas<'_>, chip: Rect, title: &str) {
+    let (text, cut) = windows::cut_title(title, CHIP_GLYPHS);
+    let x = chip.x + CHIP_PADDING;
+    let y = chip.y + (chip.height - GLYPH_HEIGHT as u32) / 2;
+    canvas.text(x, y, text, colour::TEXT);
+    if cut {
+        let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
+        canvas.text(after, y, windows::ellipsis(), colour::TEXT);
+    }
 }
 
 fn chip_rect(x: u32, title: &str) -> Rect {

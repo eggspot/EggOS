@@ -91,7 +91,7 @@ impl Command {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InstalledApp {
     name: [u8; NAME_CAPACITY],
     name_length: u8,
@@ -126,7 +126,7 @@ impl InstalledApp {
 }
 
 /// The catalogue. See the module documentation.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Catalogue {
     installed: Vec<InstalledApp>,
     host_share: bool,

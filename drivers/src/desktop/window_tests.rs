@@ -81,7 +81,7 @@ fn a_window_shows_on_its_first_commit_cascaded_on_top_and_focused() {
     assert!(desktop.is_shown(created.window));
     assert_eq!(
         desktop.window_rect(created.window),
-        Some(Rect::new(311 + 32, 199 + 32, 402, 330))
+        Some(Rect::new(311 + 32, 163 + 32, 402, 330))
     );
     assert_eq!(desktop.focused_window(), Some(created.window));
     assert!(!desktop.keys_go_to_terminal());
@@ -90,12 +90,12 @@ fn a_window_shows_on_its_first_commit_cascaded_on_top_and_focused() {
         damage
             .rects()
             .iter()
-            .any(|rect| rect.overlaps(&Rect::new(343, 231, 402, 330)))
+            .any(|rect| rect.overlaps(&Rect::new(343, 195, 402, 330)))
     );
     let second = shown(&mut desktop, OTHER, 400, 300);
     assert_eq!(
         desktop.window_rect(second),
-        Some(Rect::new(311 + 64, 199 + 64, 402, 330))
+        Some(Rect::new(311 + 64, 163 + 64, 402, 330))
     );
     let stack: Vec<_> = desktop.stacking().collect();
     assert_eq!(stack, [desktop.terminal_window(), created.window, second]);
@@ -108,24 +108,24 @@ fn cascading_restarts_at_the_work_area_s_corner_when_the_next_step_does_not_fit(
             1280,
             800,
             [
-                (343, 231),
-                (375, 263),
-                (407, 295),
-                (439, 327),
-                (471, 359),
+                (343, 195),
+                (375, 227),
+                (407, 259),
+                (439, 291),
                 (32, 60),
+                (64, 92),
             ],
         ),
         (
             1024,
             768,
             [
-                (215, 215),
-                (247, 247),
-                (279, 279),
-                (311, 311),
+                (215, 179),
+                (247, 211),
+                (279, 243),
                 (32, 60),
                 (64, 92),
+                (96, 124),
             ],
         ),
     ] {
@@ -149,12 +149,12 @@ fn the_only_window_is_centred_and_a_too_large_one_is_clamped_to_the_work_area() 
     desktop.minimise_terminal(&mut damage, &mut DiscardEvents);
     let window = shown(&mut desktop, CLIENT, 5000, 5000);
     let rect = desktop.window_rect(window).unwrap();
-    assert_eq!((rect.width, rect.height), (1280 - 32, 800 - 28 - 32));
+    assert_eq!((rect.width, rect.height), (1280 - 32, 700 - 32));
     assert_eq!((rect.x, rect.y), (16, 28 + 16));
     let tiny = desktop.create(CLIENT, 0, 0, 1, 1, 0).unwrap();
     assert_eq!((tiny.width, tiny.height), (158, 62));
-    assert_eq!(clamp_content_size(200, 150, 400, 300), (166, 60));
-    assert_eq!(clamp_content_size(150, 100, 400, 300), (116, 10));
+    assert_eq!(clamp_content_size(200, 122, 400, 300), (166, 60));
+    assert_eq!(clamp_content_size(150, 72, 400, 300), (116, 10));
 }
 
 #[test]
@@ -220,19 +220,19 @@ fn dragging_the_title_bar_moves_a_window_and_keeps_it_in_the_work_area() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut events = Recorded::default();
     let window = shown(&mut desktop, CLIENT, 400, 300);
-    let title = Rect::new(343 + 100, 231 + 10, 1, 1);
+    let title = Rect::new(343 + 100, 195 + 10, 1, 1);
     press(&mut desktop, title.x, title.y, &mut events);
     let mut damage = Damage::new();
     desktop.pointer_moved(title.x + 50, title.y + 70, &mut damage, &mut events);
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(393, 301, 402, 330))
+        Some(Rect::new(393, 265, 402, 330))
     );
     assert!(
         damage
             .rects()
             .iter()
-            .any(|rect| rect.overlaps(&Rect::new(343, 231, 1, 1)))
+            .any(|rect| rect.overlaps(&Rect::new(343, 195, 1, 1)))
     );
     desktop.pointer_moved(0, 0, &mut damage, &mut events);
     assert_eq!(
@@ -290,7 +290,7 @@ fn a_press_in_the_content_holds_the_pointer_until_the_last_button_is_up() {
     assert_eq!(after, [event::BUTTON, event::POINTER_LEAVE]);
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(343, 231, 402, 330))
+        Some(Rect::new(343, 195, 402, 330))
     );
 }
 
@@ -361,8 +361,10 @@ fn minimising_a_window_moves_focus_shows_a_chip_and_the_chip_restores_it() {
             &mut damage,
         )
         .unwrap();
+    desktop.set_profile(Profile::Linux, &mut damage, &mut DiscardEvents);
     let rect = desktop.window_rect(window).unwrap();
-    click(&mut desktop, rect.x + 30, rect.y + 10, &mut events);
+    let minimise = desktop.control_of(window, Part::Minimise).unwrap();
+    click(&mut desktop, minimise.x + 10, minimise.y + 10, &mut events);
     assert!(!desktop.is_shown(window));
     assert!(desktop.keys_go_to_terminal());
     let records: Vec<_> = events
@@ -541,7 +543,7 @@ fn a_commit_damages_only_its_rects_on_screen_and_a_resize_waits_for_the_next() {
     assert_eq!(size, (500, 200));
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(343, 231, 502, 230))
+        Some(Rect::new(343, 195, 502, 230))
     );
     let pixels = painted(&desktop);
     assert_eq!(
@@ -587,10 +589,10 @@ fn a_window_shows_its_buffer_inside_its_chrome_and_hides_what_it_covers() {
         at(&pixels, content.x + 3, content.bottom() - 1),
         pattern(window, 3, 299)
     );
-    assert_eq!(at(&pixels, 343 + 12 + 6, 231 + 14), colour::BUTTON_CLOSE);
-    assert_eq!(at(&pixels, 343 + 32 + 6, 231 + 14), colour::BUTTON_MINIMISE);
-    assert_eq!(at(&pixels, 311 + 12 + 6, 199 + 14), colour::BUTTON_INACTIVE);
-    assert_eq!(at(&pixels, 400, 210), colour::TITLE_INACTIVE);
+    assert_eq!(at(&pixels, 343 + 12 + 6, 195 + 14), colour::BUTTON_CLOSE);
+    assert_eq!(at(&pixels, 343 + 32 + 6, 195 + 14), colour::BUTTON_MINIMISE);
+    assert_eq!(at(&pixels, 311 + 12 + 6, 163 + 14), colour::BUTTON_INACTIVE);
+    assert_eq!(at(&pixels, 400, 174), colour::TITLE_INACTIVE);
 }
 
 #[test]

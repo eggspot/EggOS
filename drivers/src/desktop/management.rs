@@ -10,7 +10,7 @@ use super::protocol::{
 };
 use super::shortcuts::{Shortcut, shortcut};
 use super::windows::{self, Geometry, Part, edge, resize_pointer};
-use super::{BAR_HEIGHT, Desktop, contains};
+use super::{Desktop, contains};
 use crate::display::{Damage, Rect};
 use crate::input::keymap::Modifiers;
 
@@ -156,18 +156,52 @@ impl Desktop {
         Ok(())
     }
 
-    /// Makes `profile` the desktop's layout profile: the side of the controls and the
-    /// shortcuts.
-    pub fn set_profile(&mut self, profile: super::Profile, damage: &mut Damage) {
+    /// Makes `profile` the desktop's layout profile: the panels, the work area, the side of
+    /// the controls and the shortcuts. The shell's popups close; maximised windows fill the new
+    /// work area (their clients get `Resize`), the others keep their size and are moved into
+    /// it; everything is drawn again.
+    pub fn set_profile(
+        &mut self,
+        profile: super::Profile,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         if self.profile == profile {
             return;
         }
+        self.close_popups(damage, events);
+        self.close_notice(damage);
         self.profile = profile;
+        self.layout = super::layout::layout(self.width, self.height, 1, profile);
+        self.control_hover = None;
+        self.reset_panels();
+        self.icons.last_press = None;
+        let work = self.work_area();
         for slot in 0..self.windows.len() {
-            if self.is_visible(slot) {
-                damage.add(self.window_at(slot).title_bar());
+            let Some(window) = self.windows[slot] else {
+                continue;
+            };
+            if !window.shown {
+                continue;
             }
+            if window.maximised {
+                self.apply_geometry(
+                    slot,
+                    windows::maximised(work),
+                    window.with_shadow(),
+                    damage,
+                    events,
+                );
+                continue;
+            }
+            if let Some(before) = window.before_maximised {
+                let (x, y) = self.clamped(slot, i64::from(before.x), i64::from(before.y));
+                self.window_mut(slot).before_maximised = Some(Geometry { x, y, ..before });
+            }
+            self.move_window(slot, i64::from(window.x), i64::from(window.y), damage);
         }
+        damage.add(self.screen());
+        self.update_pointer(damage);
     }
 
     /// The layout profile.
@@ -363,7 +397,7 @@ impl Desktop {
     /// window whose zone or body is there, or that window and the part of it the point is on;
     /// nothing over the bar or an open popup.
     pub(super) fn hit(&self, x: u32, y: u32) -> Hit {
-        if y < BAR_HEIGHT || self.popup_at(x, y) {
+        if self.over_panel(x, y) || self.popup_at(x, y) {
             return Hit::default();
         }
         for &slot in self.stack[..self.stack_length].iter().rev() {
@@ -513,6 +547,8 @@ impl Desktop {
         if destroyed {
             self.update_pointer(damage);
         }
+        self.tick_notice(damage);
+        self.tick_tooltip(damage);
         destroyed
     }
 
@@ -553,7 +589,7 @@ impl Desktop {
         length
     }
 
-    fn focused_normal(&self) -> Option<usize> {
+    pub(super) fn focused_normal(&self) -> Option<usize> {
         let focus = self.focus.filter(|&slot| self.is_visible(slot))?;
         Some(self.window_at(focus).parent.map_or(focus, usize::from))
     }
@@ -618,6 +654,7 @@ impl Desktop {
                 self.open_menu(damage);
                 self.menu_hover = Some(0);
             }
+            Shortcut::Launcher => self.toggle_launcher(damage, events),
         }
         super::Action::None
     }
@@ -670,6 +707,10 @@ impl Desktop {
         if let Some((_, edges)) = hit.resize {
             return resize_pointer(edges);
         }
+        let (x, y) = self.pointer;
+        if self.over_launcher_field(x, y) {
+            return PointerShape::IBeam;
+        }
         match self.content_under(hit) {
             Some(slot) => self.window_at(slot).pointer_shape,
             None => PointerShape::Arrow,
@@ -685,6 +726,13 @@ impl Desktop {
             || self
                 .window_menu_area()
                 .is_some_and(|rect| contains(rect, x, y))
+            || self
+                .launcher_area()
+                .is_some_and(|rect| contains(rect, x, y))
+            || self
+                .icon_menu_area()
+                .is_some_and(|rect| contains(rect, x, y))
+            || self.notice_area().is_some_and(|rect| contains(rect, x, y))
     }
 
     /// Brings the drawn pointer up to date with the desktop's state, damaging where it was and

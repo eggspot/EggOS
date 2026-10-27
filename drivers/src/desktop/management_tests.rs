@@ -146,7 +146,7 @@ fn the_resize_ring_is_two_outside_four_inside_two_along_the_title_with_sixteen_p
 
 #[test]
 fn resizing_keeps_the_opposite_edges_the_minimum_and_the_work_area() {
-    let work = Rect::new(0, 28, 1280, 772);
+    let work = Rect::new(0, 28, 1280, 700);
     let start = Rect::new(200, 200, 400, 300);
     let minimum = (160, 92);
     let resized_by = |edges, dx, dy| resized(start, edges, dx, dy, minimum, work);
@@ -170,7 +170,7 @@ fn resizing_keeps_the_opposite_edges_the_minimum_and_the_work_area() {
     );
     assert_eq!(
         resized_by(edge::RIGHT | edge::BOTTOM, 5000, 5000),
-        Rect::new(200, 200, 1080, 600),
+        Rect::new(200, 200, 1080, 528),
         "the work area's right and bottom"
     );
     assert_eq!(
@@ -308,10 +308,10 @@ fn the_maximise_control_fills_the_work_area_and_a_second_press_restores_the_wind
     assert!(desktop.is_maximised(window));
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(0, 28, 1280, 772))
+        Some(Rect::new(0, 28, 1280, 700))
     );
     let records = events.of_kind(event::RESIZE);
-    assert_eq!((records[0].a, records[0].b), (1278, 742));
+    assert_eq!((records[0].a, records[0].b), (1278, 670));
     let state = events.of_kind(event::STATE_CHANGED);
     assert_eq!(state[0].a, WindowState::Maximised.value() as i32);
     let pixels = painted(&desktop);
@@ -393,12 +393,12 @@ fn super_arrows_maximise_restore_minimise_and_snap_the_focused_window() {
     tap(&mut desktop, key::LEFT, held, &mut DiscardEvents);
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(0, 28, 640, 772))
+        Some(Rect::new(0, 28, 640, 700))
     );
     tap(&mut desktop, key::RIGHT, held, &mut DiscardEvents);
     assert_eq!(
         desktop.window_rect(window),
-        Some(Rect::new(640, 28, 640, 772))
+        Some(Rect::new(640, 28, 640, 700))
     );
     let pixels = painted(&desktop);
     assert_eq!(
@@ -502,7 +502,7 @@ fn the_controls_are_close_minimise_maximise_on_the_left_and_mirrored_on_the_righ
         at(&pixels, outside.x + 52 + 6, outside.y + 9),
         colour::BUTTON_MAXIMISE
     );
-    desktop.set_profile(Profile::Windows, &mut Damage::new());
+    desktop.set_profile(Profile::Windows, &mut Damage::new(), &mut DiscardEvents);
     let w = outside.width;
     assert_eq!(hits(&desktop), [w - 28, w - 68, w - 48]);
     let pixels = painted(&desktop);
@@ -571,7 +571,7 @@ fn alt_tab_lists_windows_most_recently_focused_first_and_releasing_alt_chooses()
     assert!(!desktop.keys_go_to_terminal());
     assert_eq!(events.kinds(), [event::KEY, event::FOCUS_OUT]);
     let area = desktop.switcher_area().unwrap();
-    assert_eq!(area, Rect::new(460, 28 + (772 - 114) / 2, 360, 3 * 32 + 18));
+    assert_eq!(area, Rect::new(460, 28 + (700 - 114) / 2, 360, 3 * 32 + 18));
     let pixels = painted(&desktop);
     assert_eq!(
         at(&pixels, area.x + 3, area.y + 1 + 8 + 32 + 12),
@@ -673,7 +673,7 @@ fn close_keys_follow_the_profile_and_spare_a_window_that_takes_ctrl_keys() {
     tap(&mut desktop, key::W, Modifiers::CTRL, &mut events);
     assert_eq!(events.of_kind(event::CLOSE_REQUEST).len(), 0);
     assert_eq!(events.of_kind(event::KEY).len(), 2);
-    desktop.set_profile(Profile::Windows, &mut Damage::new());
+    desktop.set_profile(Profile::Windows, &mut Damage::new(), &mut DiscardEvents);
     let mut events = Recorded::default();
     tap(&mut desktop, key::W, Modifiers::CTRL, &mut events);
     assert_eq!(events.of_kind(event::CLOSE_REQUEST).len(), 1);

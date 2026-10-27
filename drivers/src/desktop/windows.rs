@@ -479,38 +479,37 @@ pub fn ellipsis() -> &'static str {
     ELLIPSIS
 }
 
-/// The content size a window asking for `width` by `height` gets on a `screen_width` by
-/// `screen_height` screen: at least the minimum window and at most the work area less
+/// The content size a window asking for `width` by `height` gets in a `work_width` by
+/// `work_height` work area: at least the minimum window and at most the work area less
 /// [`DEFAULT_MARGIN`] each way (the minimum giving way when the work area is smaller).
 pub fn clamp_content_size(
-    screen_width: u32,
-    screen_height: u32,
+    work_width: u32,
+    work_height: u32,
     width: u32,
     height: u32,
 ) -> (u32, u32) {
-    clamp_within(screen_width, screen_height, width, height, DEFAULT_MARGIN)
+    clamp_within(work_width, work_height, width, height, DEFAULT_MARGIN)
 }
 
-/// The content size `SET_SIZE` gives a window asking for `width` by `height` on a
-/// `screen_width` by `screen_height` screen: at least the minimum window and at most the whole
+/// The content size `SET_SIZE` gives a window asking for `width` by `height` in a
+/// `work_width` by `work_height` work area: at least the minimum window and at most the whole
 /// work area.
 pub fn clamp_resized_content(
-    screen_width: u32,
-    screen_height: u32,
+    work_width: u32,
+    work_height: u32,
     width: u32,
     height: u32,
 ) -> (u32, u32) {
-    clamp_within(screen_width, screen_height, width, height, 0)
+    clamp_within(work_width, work_height, width, height, 0)
 }
 
 fn clamp_within(
-    screen_width: u32,
-    screen_height: u32,
+    work_width: u32,
+    work_height: u32,
     width: u32,
     height: u32,
     margin: u32,
 ) -> (u32, u32) {
-    let work_height = screen_height.saturating_sub(BAR_HEIGHT);
     let clamp = |wanted: u32, chrome: u32, minimum: u32, room: u32| {
         let largest = room.saturating_sub(margin).max(chrome + 1);
         wanted
@@ -521,7 +520,7 @@ fn clamp_within(
             - chrome
     };
     (
-        clamp(width, CHROME.0, MINIMUM_OUTSIDE.0, screen_width),
+        clamp(width, CHROME.0, MINIMUM_OUTSIDE.0, work_width),
         clamp(height, CHROME.1, MINIMUM_OUTSIDE.1, work_height),
     )
 }
