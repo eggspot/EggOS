@@ -239,8 +239,14 @@ impl<D: Disk + Send + 'static> Folder<D> {
         &self,
         change: impl FnOnce(&mut Volume<D>) -> Result<R, Error>,
     ) -> Result<R, Refused> {
-        let result = change(&mut self.volume());
-        self.eggfs.changed();
+        let (result, changed) = {
+            let mut volume = self.volume();
+            let result = change(&mut volume);
+            (result, volume.has_changes())
+        };
+        if changed {
+            self.eggfs.changed();
+        }
         result.map_err(refused)
     }
 }

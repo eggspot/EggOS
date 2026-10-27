@@ -260,7 +260,7 @@ impl<D: Disk> Volume<D> {
         Ok(())
     }
 
-    fn broken_by<R>(&mut self, result: Result<R, Error>) -> Result<R, Error> {
+    fn mark_broken_on_failure<R>(&mut self, result: Result<R, Error>) -> Result<R, Error> {
         if matches!(result, Err(Error::Io | Error::Corrupt)) {
             self.broken = true;
         }
@@ -975,6 +975,9 @@ impl<D: Disk> Volume<D> {
                 }
             }
         }
+        if matches!(failure, Some(Error::Io | Error::Corrupt)) {
+            self.broken = true;
+        }
         let reached = offset + written as u64;
         inode.size = inode.size.max(reached);
         if written > 0 {
@@ -1183,7 +1186,7 @@ impl<D: Disk> Volume<D> {
         now: u64,
     ) -> Result<u64, Error> {
         let result = self.create_changing(directory, name, kind, permissions, now);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 
     /// Writes `bytes` to regular file `node` at `offset`, or at its end for `None`, at time
@@ -1196,19 +1199,19 @@ impl<D: Disk> Volume<D> {
         now: u64,
     ) -> Result<(usize, u64), Error> {
         let result = self.write_changing(node, offset, bytes, now);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 
     /// Makes regular file `node` `length` bytes long at time `now`, cutting it or adding zeros.
     pub fn truncate(&mut self, node: u64, length: u64, now: u64) -> Result<(), Error> {
         let result = self.truncate_changing(node, length, now);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 
     /// Sets when `node`'s contents last changed.
     pub fn set_modified(&mut self, node: u64, time: u64) -> Result<(), Error> {
         let result = self.set_modified_changing(node, time);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 
     /// Removes `name` from `directory` at time `now`: an empty directory if `directories`,
@@ -1221,7 +1224,7 @@ impl<D: Disk> Volume<D> {
         now: u64,
     ) -> Result<(), Error> {
         let result = self.remove_changing(directory, name, directories, now);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 
     /// Moves `from_name` in `from` to `to_name` in `to` at time `now`, replacing what is there
@@ -1236,6 +1239,6 @@ impl<D: Disk> Volume<D> {
         now: u64,
     ) -> Result<(), Error> {
         let result = self.rename_changing(from, from_name, to, to_name, no_replace, now);
-        self.broken_by(result)
+        self.mark_broken_on_failure(result)
     }
 }
