@@ -43,11 +43,12 @@ commands:
                          build the release image with each file added to its initramfs at
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
-  run   --arch <arch> [--nographic] [--add <file> [--as <path>]]...
+  run   --arch <arch> [--nographic] [--apps <folder>] [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
-                         (quit: Ctrl-A then X); with --nographic, no window; with --add,
-                         the release image with those files, as `image` builds it
+                         (quit: Ctrl-A then X); with --nographic, no window; with --apps,
+                         the host's folder read-only at /media/host; with --add, the
+                         release image with those files, as `image` builds it
   bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -82,6 +83,8 @@ pub struct Arch {
     /// The input devices every boot with a display adds: a virtio keyboard, tablet and mouse
     /// (D113).
     pub input_args: &'static [&'static str],
+    /// The virtio block device a host folder is attached as (D130).
+    pub disk_device: &'static str,
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -103,6 +106,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        disk_device: MMIO_DISK_DEVICE,
     },
     Arch {
         name: "riscv64",
@@ -121,6 +125,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        disk_device: MMIO_DISK_DEVICE,
     },
     Arch {
         name: "x86_64",
@@ -149,8 +154,11 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-mouse-pci,disable-legacy=on",
         ],
+        disk_device: "virtio-blk-pci,disable-legacy=on",
     },
 ];
+
+const MMIO_DISK_DEVICE: &str = "virtio-blk-device";
 
 const MMIO_INPUT_ARGS: &[&str] = &[
     "-device",
@@ -223,6 +231,8 @@ const DEV_PATH: &str = "dev";
 const HELLO_WINDOW_PATH: &str = "usr/libexec/hello-window";
 
 const TMP_PATH: &str = "tmp";
+
+const HOST_FOLDER_PATH: &str = "media/host";
 
 const HOME_PATH: &str = "home";
 
@@ -338,12 +348,17 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("run") => {
             let (options, added) = image::added_files(&args[1..])?;
             let (options, nographic) = without_flag(&options, "--nographic");
+            let (options, folder) = with_value(&options, "--apps")?;
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
             };
+            let folder_args = match folder {
+                Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
+                None => Vec::new(),
+            };
             let kernel = build_release_image(arch, &added)?;
-            qemu::run_interactive(arch, &kernel, !nographic)
+            qemu::run_interactive(arch, &kernel, !nographic, &folder_args)
         }
         _ => Err(USAGE.into()),
     }
@@ -353,6 +368,35 @@ fn without_flag(args: &[String], flag: &str) -> (Vec<String>, bool) {
     let rest: Vec<String> = args.iter().filter(|arg| *arg != flag).cloned().collect();
     let found = rest.len() != args.len();
     (rest, found)
+}
+
+fn with_value(args: &[String], option: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let mut rest = Vec::new();
+    let mut value = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == option {
+            let given = args
+                .next()
+                .ok_or_else(|| format!("`{option}` needs a value"))?;
+            value = Some(given.clone());
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((rest, value))
+}
+
+fn host_folder(folder: &str) -> Result<String, String> {
+    let path = std::path::Path::new(folder);
+    if !path.is_dir() {
+        return Err(format!("`{folder}` is not a folder"));
+    }
+    let absolute = std::path::absolute(path).map_err(|e| format!("{folder}: {e}"))?;
+    absolute
+        .into_os_string()
+        .into_string()
+        .map_err(|_| format!("`{folder}` is not valid Unicode"))
 }
 
 fn arch_option(args: &[String]) -> Result<Vec<&'static Arch>, String> {
@@ -440,6 +484,17 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::TEST_CPUS,
         qemu::Display::Absent,
         &[],
+    )?;
+    let (kernel, folder) = build_host_folder_test(arch)?;
+    let folder_args = qemu::host_folder_args(arch, &folder);
+    let folder_args: Vec<&str> = folder_args.iter().map(String::as_str).collect();
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::HostFolder,
+        qemu::TEST_CPUS,
+        qemu::Display::Absent,
+        &folder_args,
     )?;
     let kernel = build_program_windows_test_kernel(arch)?;
     qemu::boot_test(
@@ -853,6 +908,7 @@ fn release_initramfs(
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
         (HOME_PATH, initramfs::Content::Directory),
+        (HOST_FOLDER_PATH, initramfs::Content::Directory),
     ];
     members.extend(
         links
@@ -973,6 +1029,37 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
         &format!("initramfs-linux-programs-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
+}
+
+const HOST_FOLDER_TEXT: (&str, &str) = ("readme.txt", "EGGOS-HOST-FOLDER hello from the host\n");
+
+const HOST_FOLDER_PROGRAM: &str = "Programs and Tools/linux-static";
+
+fn build_host_folder_test(arch: &Arch) -> Result<(std::path::PathBuf, String), String> {
+    let program = build_linux_static(arch, "static")?;
+    let folder = target_directory().join(format!("host-folder-{}", arch.name));
+    let write = |relative: &str, bytes: &[u8]| -> Result<(), String> {
+        let path = folder.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let (name, text) = HOST_FOLDER_TEXT;
+    write(name, text.as_bytes())?;
+    let program = std::fs::read(&program).map_err(|e| format!("{program}: {e}"))?;
+    write(HOST_FOLDER_PROGRAM, &program)?;
+    let extra = [(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-host-folder-{}.cpio", arch.user_target),
+    )?;
+    let kernel = build_release_kernel(arch, &initramfs)?;
+    Ok((kernel, host_folder(&folder.to_string_lossy())?))
 }
 
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {

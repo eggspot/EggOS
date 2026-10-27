@@ -12,16 +12,26 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **No acceleration.** QEMU emulates the CPU (TCG), so the system runs slower than it will on
   hardware; boot to the prompt still takes about a tenth of a second.
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
-  and on test kernels virtio-rng. Nothing else is driven: no disk, no network, no sound, no USB,
-  no real-time clock (D110-D113).
+  virtio-blk (polled, for the host folder) and on test kernels virtio-rng. Nothing else is
+  driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
 
 ## What the system can do
-- **No disk and no network.** The root file system is the read-only initramfs inside the
-  image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`. `/tmp` and `/home` are writable file systems in memory, together
-  at most half of the memory, and `/proc` has `meminfo`, `uptime` and `ps` (D125). Nothing you
-  do survives a reboot (D102, D125). A file removed while a program has it open is gone at
-  once, and programs cannot be run from `/tmp` or `/home` yet.
+- **No disk of its own and no network.** The root file system is the read-only initramfs
+  inside the image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`,
+  `/etc/hostname` and `/usr/share/eggos/about`. `/tmp` and `/home` are writable file systems in
+  memory, together at most half of the memory, and `/proc` has `meminfo`, `uptime` and `ps`
+  (D125). Nothing you do survives a reboot (D102, D125). A file removed while a program has it
+  open is gone at once. A Linux program run from `/tmp`, `/home` or `/media/host` is read into
+  memory whole first, so it must be smaller than 4 MiB (D130).
+- **The host folder is read-only and limited by QEMU.** The run scripts' `--apps <folder>`
+  shows a folder of your computer at `/media/host` through QEMU's `vvfat` driver (D130): it
+  cannot be changed from EggOS (`Read-only file system`), it must fit about 500 MB, its top
+  level holds fewer than about 250 names (QEMU refuses to start with "Too many entries in root
+  directory" beyond), files of 2 GB or more are refused, names are compared without case for
+  ASCII letters only, file times are your computer's local time shown as UTC, and changes made
+  on your computer while EggOS runs are not seen. Only one folder can be attached. A Windows or
+  macOS program in it runs only on an image that has its layer, which the release images do not
+  carry yet (`cargo xtask run --add` adds it with a program; D118, D120).
 - **The clock starts at the epoch.** Without an RTC driver the wall clock reads 1970 and the
   desktop's clock shows the uptime (D73, D115).
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own

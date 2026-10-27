@@ -13,12 +13,13 @@ eggos-hal = { path = "../hal" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input"]
+default = ["virtio-gpu", "virtio-input", "virtio-blk"]
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]
 virtio-rng = ["virtio"]
-qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng"]
+virtio-blk = ["virtio"]
+qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test"]
 qemu-boot-clock = []

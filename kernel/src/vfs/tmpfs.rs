@@ -11,7 +11,10 @@
 //! open file) then names nothing. A file removed while open is gone at once: reads find its
 //! end and writes fail, where Linux keeps it until its last close.
 
-use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, Refused, WriteAt};
+use super::{
+    Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, Refused, StorageError,
+    WriteAt,
+};
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -343,17 +346,17 @@ impl FileSystem for Tmpfs {
         true
     }
 
-    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> usize {
+    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> Result<usize, StorageError> {
         let state = self.state.lock();
         let Some(Inode {
             contents: Contents::File { pages, size },
             ..
         }) = state.inode(node)
         else {
-            return 0;
+            return Ok(0);
         };
         if offset >= *size {
-            return 0;
+            return Ok(0);
         }
         let wanted = buffer
             .len()
@@ -363,7 +366,7 @@ impl FileSystem for Tmpfs {
             Some(page) => buffer[..length].copy_from_slice(&page[within..within + length]),
             None => buffer[..length].fill(0),
         }
-        length
+        Ok(length)
     }
 
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
@@ -694,7 +697,7 @@ mod tests {
         let mut out = Vec::new();
         let mut buffer = [0u8; 1000];
         loop {
-            let read = fs.read_into(node, out.len() as u64, &mut buffer);
+            let read = fs.read_into(node, out.len() as u64, &mut buffer).unwrap();
             if read == 0 {
                 return out;
             }

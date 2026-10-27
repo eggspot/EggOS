@@ -5,6 +5,7 @@
 //! fake transport in host tests. Only version 1 (non-legacy) devices are driven:
 //! [`feature::VERSION_1`] is required.
 
+pub mod block;
 pub mod gpu;
 pub mod input;
 pub mod mmio;
@@ -107,6 +108,12 @@ pub enum Error {
     ScanoutInUse,
     /// A display mode the driver cannot set: empty, or too large for one region of memory.
     UnsupportedMode,
+    /// The device refuses writes.
+    ReadOnly,
+    /// A transfer that is not a whole number of sectors.
+    PartialSector,
+    /// A transfer past the end of the disk.
+    BeyondCapacity,
 }
 
 impl Error {
@@ -135,6 +142,9 @@ impl Error {
             Error::NoScanout => "the device has no display output, or none is set up",
             Error::ScanoutInUse => "the display output already shows a framebuffer",
             Error::UnsupportedMode => "a display mode the driver cannot set",
+            Error::ReadOnly => "the device is read-only",
+            Error::PartialSector => "a transfer that is not a whole number of sectors",
+            Error::BeyondCapacity => "a transfer past the end of the disk",
         }
     }
 }

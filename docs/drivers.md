@@ -1,20 +1,23 @@
 # Drivers and the driver model
 
 How EggOS finds devices and binds drivers to them (M5, D110), how the virtio core works (M8,
-D111), the display (D112), input (D113), and how to add a driver.
+D111), the display (D112), input (D113), disks and the host folder (D130), and how to add a
+driver.
 
 ## The pieces
 
 | Where | What |
 |---|---|
-| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `font` (Egg Mono 8x16, glyph ids, `draw_glyph`: the `eggos-font` crate in `font/`, re-exported, D129), `terminal` (the terminal emulator: cells, scrollback, the ANSI subset, rendering of damaged cells), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device) |
+| `drivers/` (`eggos-drivers`) | Register-level drivers, architecture-independent, host-tested against fakes: `io` (`RegisterIo`), `dma` (`DmaAddr`, `DmaMemory`), `pci` (configuration space, ECAM, MCFG, BARs, capabilities), `display` (`Mode`, `Rect`, `Damage`), `font` (Egg Mono 8x16, glyph ids, `draw_glyph`: the `eggos-font` crate in `font/`, re-exported, D129), `terminal` (the terminal emulator: cells, scrollback, the ANSI subset, rendering of damaged cells), `input` (the input event codes, `Capabilities`, the US keymap and key repeat, pointer scaling), `virtio` (transports, the split virtqueue, the entropy device, the 2D GPU, the input device, the block device) |
 | `hal/src/fdt/nodes.rs` | `Fdt::nodes`: every device-tree node with what a bus needs, allocating nothing |
 | `hal/src/lib.rs` | What the firmware gives: `Platform::device_tree`, `acpi_table`, `device_apertures`, the device-tree DMA default, and `make_kernel_mappings_visible` |
 | `kernel/src/devices.rs` | The model: descriptors, matching, the device table, probe passes, the `devices` capability |
 | `kernel/src/devices/fdt_bus.rs`, `pci_bus.rs` | Discovery: the device-tree platform bus, PCI Express through the MCFG |
 | `kernel/src/devices/window.rs` | Device windows: device registers mapped into the kernel |
 | `kernel/src/devices/dma.rs` | DMA regions |
-| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng, virtio-gpu and virtio-input on top |
+| `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng, virtio-gpu, virtio-input and virtio-blk on top |
+| `kernel/src/block.rs` | Disks: the `BlockDevice` drivers install and file systems take |
+| `kernel/src/vfs/fat.rs` | The read-only FAT file system the host folder is mounted with |
 | `kernel/src/display.rs` | The display: the framebuffer a display driver installs, damage, flushes, the first frame |
 | `kernel/src/input.rs` | Input: the devices drivers install, polling, keys to the console's line discipline, the input event queue |
 | `kernel/src/terminal.rs` | The graphical terminal: the console's session mirrored on the display, the drawing thread |
@@ -67,11 +70,11 @@ pub static RNG_DRIVER: DriverDescriptor = DriverDescriptor {
   empty virtio-mmio slot) and leaves it unbound, which is no failure.
   `Err(ProbeError::Refused(reason))` records the refusal, which the boot log shows.
 - **Registration.** `devices::BUILTIN` lists the drivers the kernel's cargo features build in
-  (`virtio`, `virtio-gpu`, `virtio-input`, `virtio-rng`): a driver not enabled is not linked
-  and costs nothing (D18). The release kernel enables `virtio-gpu` (D112) and `virtio-input`
-  (D113) by default, which bring the virtio core; `--no-default-features` leaves every driver
-  out. Test and benchmark kernels
-  (`qemu-test`) enable them all.
+  (`virtio`, `virtio-gpu`, `virtio-input`, `virtio-rng`, `virtio-blk`): a driver not enabled
+  is not linked and costs nothing (D18). The release kernel enables `virtio-gpu` (D112),
+  `virtio-input` (D113) and `virtio-blk` (D130) by default, which bring the virtio core;
+  `--no-default-features` leaves every driver out. Test and benchmark kernels (`qemu-test`)
+  enable them all.
 
 ## What a probe function gets
 
@@ -129,6 +132,14 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   event type for the codes it sends, 0x12 with an axis for its range): keyboard keys, buttons,
   relative X and Y, the wheel, absolute X and Y with their ranges. A device that is neither a
   keyboard nor a pointer is refused. The status queue (LEDs) is not set up.
+- **virtio-blk** (D130). One request queue of up to 8 entries, the 16-byte request header, the
+  status byte and a 60 KiB data area in one 64 KiB region; one request at a time, three
+  descriptors (header, data, status), a transfer over 60 KiB split into several. The disk is
+  addressed in 512-byte sectors whatever its block size; `VIRTIO_BLK_F_RO` is accepted and a
+  read-only disk refuses writes before any request; the capacity comes from the
+  configuration. The data is copied between the caller and the region once the request is
+  answered. A request not answered by its deadline stays posted and the next waits for it.
+  The driver installs the disk with `block::install`.
 
 ## Input
 
@@ -164,6 +175,26 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   h`), Shift with Page Up, Page Down, Home and End and the wheel (3 lines a notch) move its
   scrollback view and send nothing, and any key that sends bytes brings the view back to the
   live screen. A key repeat waits for a poll whose buffer has room for its whole sequence.
+
+## Disks and the host folder
+
+`kernel/src/block.rs` (D130) is where disks go:
+
+- A driver implements `block::BlockDevice` (`sectors`, `is_read_only`, `read` and `write` of
+  whole 512-byte sectors polling until a `Deadline`) and calls `block::install` (at most
+  `MAX_DISKS`, 4). A file system takes a disk with `block::take_first` and owns it from then on,
+  so nothing else reaches the device; one it cannot use goes back with `install`. With no disk
+  nothing is allocated.
+- At boot, after `/proc`, `/dev`, `/tmp` and `/home`, the kernel takes the first disk and, if
+  the root has `/media/host`, mounts the FAT volume on it there read-only
+  (`vfs::fat::Fat::mount`: the whole disk or its first MBR partition holding one), printing
+  `vfs: FAT16 disk "QEMU VVFAT" mounted read-only at /media/host`, or why not.
+- The host folder: `cargo xtask run --apps <folder>` and the run scripts' `--apps` attach a
+  host folder with QEMU's `vvfat` driver on the virtio block device (`-blockdev
+  driver=vvfat,node-name=host,dir=<folder>,read-only=on -device virtio-blk-device,drive=host`
+  on the `virt` machines, `virtio-blk-pci,disable-legacy=on` on q35; `qemu::host_folder_args`).
+  `vvfat` presents a 504 MiB disk with an MBR and a FAT16 volume with long names; its limits
+  are in docs/limitations.md.
 
 ## The display
 
@@ -221,7 +252,8 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 
 Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X; then input
 needs no poller), keyboard layouts other than US and the keyboard's LEDs, the virtio GPU's
-cursor queue, display events (a mode change), modes whose buffer is larger than one DMA
+cursor queue, display events (a mode change), several requests in flight and writes through a
+file system on virtio-blk (item 25), modes whose buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and

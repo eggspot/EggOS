@@ -7416,3 +7416,126 @@ the license, by an explicit instruction recorded here.
   posted and 256 input entries; a thread that finds another reading the server's records loops
   until it is done instead of sleeping; handing `ppoll` from one sleeping thread to another
   wakes the others once for nothing.
+
+## D130 The host's apps folder: a virtio block driver, block devices in the driver model, a read-only FAT reader at `/media/host`, programs run from any file system, and `--apps` in the run scripts (v0.3.0 item 33) — Decided by the build loop (QEMU's attachment, the FAT type, the PowerShell form and the details decided by research)
+- **What.** Users can now pass a folder from their computer to EggOS and use its files:
+  `run-eggos.sh --apps <folder>`, `run-eggos.ps1 -Apps <folder>` (or `--apps <folder>`) and
+  `cargo xtask run --apps <folder>` attach the folder read-only, and EggOS mounts it at
+  `/media/host`, where `ls`, `cat`, `cd` and running a program from it (a static Linux program
+  by its path, or a Windows or macOS program through its layer when the image has the layer)
+  work from `eggsh`; every change (`>`, `mkdir`, `rm`, `touch`) fails with `Read-only file
+  system`.
+- **How QEMU attaches the folder.** QEMU's `vvfat` block driver, which presents a host folder as
+  a FAT disk, on the architecture's virtio block device: `-blockdev
+  driver=vvfat,node-name=host,dir=<folder>,read-only=on -device <virtio-blk-device |
+  virtio-blk-pci,disable-legacy=on>,drive=host`, from one function (`qemu::host_folder_args`)
+  that `cargo xtask run`, both run scripts and the boot test use. `vvfat` works on macOS, Linux
+  and Windows hosts (virtio-9p does not on Windows). `-blockdev` rather than `-drive
+  file=fat:ro:<folder>`: the `fat:` file name is parsed for `:16:`, `:32:`, `:rw:` and the last
+  colon, so a folder whose path holds a colon would be misread; with `-blockdev` only commas
+  need doubling, which the scripts do. The scripts make the path absolute and refuse a missing
+  folder.
+- **What `vvfat` presents, and limits.** Without a FAT type `vvfat` makes a 504 MiB disk (1024
+  cylinders, 16 heads, 63 sectors) with a master boot record whose first partition (type 0x06,
+  at sector 63) holds a FAT16 volume with 8 KiB clusters and 512 root entries, every name with
+  long-name entries. `fat:32` (`fat-type=32`) is not used: QEMU warns it "has not been tested",
+  and its boot sector keeps FAT16's fields (a non-zero `BPB_FATSz16`, 512 root entries, the
+  `FAT16` string), which the FAT specification's cluster count reads as FAT16, so it is
+  inconsistent. Hence the folder must fit about 500 MB, and its top level holds fewer than about
+  250 names (each long name takes two or more of the 512 root entries; QEMU refuses to start with
+  "Too many entries in root directory" beyond); subfolders have no such limit. Files of 2 GB or
+  more are refused by QEMU. Times are the host's local time, read as UTC.
+- **virtio-blk** (`eggos_drivers::virtio::block`, polled like the other virtio drivers). One
+  request queue of up to 8 entries, the 16-byte request header, the status byte and a 60 KiB
+  data area in one 64 KiB DMA region (allocated only when a disk is found); one request at a time:
+  header (device-readable), data, status (device-writable); a transfer larger than 60 KiB goes as
+  several requests. Data is copied between the caller's buffer and the DMA area after the
+  request completes (its used index read with acquire ordering). The read-only feature is
+  accepted and honoured (writes refused before any request); the capacity is read from the
+  configuration, its high word read twice so a torn 64-bit read is retried. A request the device
+  has not answered when its deadline passes stays posted, and the next waits for it first (as
+  virtio-rng). Writes are there for item 25 and host-tested; nothing writes yet.
+- **Block devices in the driver model** (`kernel/src/block.rs`). A driver implements
+  `BlockDevice` (sectors of 512 bytes whatever the disk's own block size, `read` and `write` of
+  whole sectors polling until a `Deadline`, `is_read_only`) and calls `block::install`, at most
+  four disks; a file system takes one with `block::take_first` and owns it, so only it touches
+  the device and no second lock is needed. The kernel feature `virtio-blk` (default and test
+  kernels) builds the driver in, behind `devices::BUILTIN` like the others. Item 25's persistent
+  file system takes its disk the same way.
+- **FAT** (`kernel/src/vfs/fat.rs`, clean-room from Microsoft's public FAT specification). The
+  volume is on the whole disk or in the first partition of the master boot record that holds
+  one; the boot sector is checked (jump, signature, a power-of-two cluster size, a valid sector
+  size, FAT sizes that hold every cluster, a volume within the disk) and the FAT type follows
+  the specification's cluster count (FAT12 under 4085, FAT16 under 65525, FAT32 above), so
+  FAT12, FAT16 and FAT32 all read; anything else is not mounted and the disk goes back.
+  - *Nodes cost nothing.* A node is named by where its short directory entry is (the
+    directory's first cluster, 0 for the root directory, and the entry's index), the root by
+    `u64::MAX`; nothing is kept per node, so a folder of any size takes no memory until read.
+    The parent of a directory is found through its `..` entry and a scan of the grandparent;
+    `st_ino` is the node plus 2, 1 for the root, so none is 0.
+  - *Names.* The long name is assembled backward from the short entry (ordinals 1 to 20, each
+    entry's checksum against the short name's), decoded from UTF-16 (an unpaired surrogate as
+    U+FFFD); without a valid one, or when it is longer than 255 bytes in UTF-8 or holds `/`, the
+    short name is shown (`BASE.EXT`, lower case where the entry's `NTRes` bits say, bytes above
+    0x7f as `_`). Lookups compare ASCII without case, against the long and the short name, as
+    FAT itself does.
+  - *Reads.* One leaf lock over the disk and the caches, held across a disk request (polled,
+    bounded by its 2 s deadline). A cache of 16 sectors (8 KiB, least recently used) serves
+    directory entries, FAT entries and the unaligned head and tail of a read; a cursor per chain
+    kind (file data, directories) remembers the last (first cluster, index, cluster), so a
+    sequential read or listing follows each chain once instead of from its start, and a
+    listing cursor makes `getdents64` linear. Whole sectors of file data go from the disk straight
+    into the caller's buffer, in runs of contiguous clusters (up to 1 MiB per call). A chain
+    shorter than the file's size or a disk error is `EIO`: `FileSystem::read_into` now returns
+    `Result<usize, StorageError>` (the initramfs and tmpfs never fail), and `read` turns it into
+    `EIO` (what was read before it is returned first, as Linux does).
+  - *Attributes.* Permissions 0755 (0555 for a file marked read-only), owner and group 0, the
+    last write time as UTC seconds; a directory reports one link (the subdirectory count would
+    need a scan; tools such as `find` read 1 as "unknown", as on Btrfs) and size 0.
+  - *Read-only.* Every change keeps the trait's defaults: `EROFS`.
+- **Mounting at boot.** After the system file systems, if a driver installed a disk and the
+  root has `/media/host`, the kernel mounts its FAT volume there (`vfs: FAT16 disk "QEMU VVFAT"
+  mounted read-only at /media/host`); a disk without one is given back and reported. The
+  release image gains the empty directories `/media` and `/media/host`. `vfs::MAX_MOUNTS` goes
+  from 4 to 8 (`/proc`, `/dev`, `/tmp` and `/home` already took four); a lookup still scans
+  only the slots in use.
+- **Programs from any file system.** `execve` read a program as the bytes the initramfs lends;
+  from a file system that copies its contents (FAT, and tmpfs) it now reads the first 64 bytes to
+  choose between ELF and an interpreter (the Windows and macOS layers, which read the file
+  themselves), and the whole file into a heap buffer only for an ELF program. So programs also
+  run from `/tmp` and `/home` now. The buffer comes from the kernel heap, whose largest block is
+  4 MiB, so an ELF program from such a file system must be smaller than that (`ENOMEM`
+  otherwise); a program's segments are still copied into its pages at once (D51).
+- **Run scripts.** `run-eggos.sh` takes `--apps <folder>` anywhere among its options;
+  `run-eggos.ps1` takes `-Apps <folder>` (PowerShell's own form, as `-Arch` and `-Serial`) and
+  also `--apps <folder>`, `--serial` and the architecture as a bare word, through
+  `[CmdletBinding(PositionalBinding = $false)]` and the remaining arguments, since PowerShell
+  reads `--apps` as an ordinary argument, not a parameter.
+- **D18 and D24.** Without a disk nothing runs and nothing is allocated: probing finds no block
+  device, and the boot asks the empty disk table once (one leaf lock, four slots) before going
+  on, so a boot without `--apps` is unchanged (`boot_to_prompt` within noise). The release image
+  grows by the virtio-blk driver, the block table and the FAT reader (CI's size report in the
+  PR); the 64 KiB DMA region, the 8 KiB sector cache and the file system exist only with a disk.
+- **Decided by research.** `vvfat` with its default FAT16 rather than `fat-type=32` (above);
+  `-blockdev` rather than `-drive file=fat:ro:` (colons in paths); PowerShell's `-Apps` with
+  `--apps` accepted through the remaining arguments; `WakeCount` (from #127's review) moves to
+  `eggos-runtime` so the Windows and macOS layers share one definition, and the macOS layer's
+  `futex_wake` takes it instead of a raw count.
+- **Testing.** Host tests: the virtio-blk driver against a fake disk (capacity, the read-only
+  feature, requests split at 60 KiB with the header's fields at the specification's offsets,
+  writes, refusals before any request for transfers past the end or of part of a sector, a
+  failed status, a timeout and the next request waiting for it, devices that are not disks or
+  whose queue holds fewer than three descriptors); the FAT reader against FAT12, FAT16 and
+  FAT32 images the tests build (on the whole disk and in a partition, with long names,
+  UTF-16, short names in upper and lower case, an orphaned long name, a 255-byte name, a name
+  too long as UTF-8, empty and nested folders, files on scattered cluster chains read in chunks
+  from 1 byte to 200 KB, contiguous clusters read in one request, listing positions in any
+  order, `..` and paths through the VFS, times, every change refused, a failing disk as
+  `EIO`, disks without FAT given back, a volume larger than its disk or with a short FAT
+  refused, and 900 randomly corrupted images listed and read without a panic); `execve`'s
+  reading from a file system that copies. QEMU, on all three architectures: the host folder
+  boot test attaches a folder xtask writes (`readme.txt` and our static Linux program in
+  `Programs and Tools/`) with the arguments the scripts use and types `ls`, `ls -l`, `cat`,
+  `wc -c` through the short name, `cd` and `pwd` across the mount, the program run by its
+  relative path with its checks, `> new.txt`, `mkdir` and `rm`, each answered as expected; the
+  boot-to-prompt test's `ls /` now shows `media`.

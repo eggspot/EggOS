@@ -619,7 +619,7 @@ fn prepare<P: Platform>(
     if attributes.kind != NodeKind::Regular || !may_execute {
         return Err(Errno::EACCES);
     }
-    let image = node.read(0, attributes.size as usize);
+    let head = ProgramBytes::read(node, attributes.size, SIGNATURE_BYTES)?;
     let mut strings = Strings::new();
     let argument_count = strings.read_list(process, request.arguments)?;
     if argument_count == 0 {
@@ -627,29 +627,33 @@ fn prepare<P: Platform>(
     }
     let argument_count = argument_count.max(1);
     strings.read_list(process, request.environment)?;
-    if image.starts_with(b"#!") {
+    if head.bytes().starts_with(b"#!") {
         return Err(Errno::ENOEXEC);
     }
     let mut name = ExecName::new();
     let name = name.of(request.dirfd, path)?;
     let list = strings.list()?;
     let (arguments, environment) = list.split_at(argument_count);
-    let interpreter = match interpreter_for(image) {
-        Some(interpreter) => Some(read_interpreter(process, thread, interpreter)?),
-        None => None,
+    let (image, interpreter) = match interpreter_for(head.bytes()) {
+        Some(interpreter) => {
+            let (interpreter, image) = read_interpreter(process, thread, interpreter)?;
+            (image, Some(interpreter))
+        }
+        None => (ProgramBytes::read(node, attributes.size, u64::MAX)?, None),
     };
     let mut interpreted = Vec::new();
-    let (image, name, arguments) = match &interpreter {
-        Some((interpreter, image)) => {
+    let (name, arguments) = match interpreter {
+        Some(interpreter) => {
             interpreted
                 .try_reserve_exact(arguments.len() + 2)
                 .map_err(|_| Errno::ENOMEM)?;
             interpreted.extend([interpreter.path, name]);
             interpreted.extend_from_slice(arguments);
-            (*image, interpreter.path, &interpreted[..])
+            (interpreter.path, &interpreted[..])
         }
-        None => (image, name, arguments),
+        None => (name, arguments),
     };
+    let image = image.bytes();
     let files = match thread.files().is_shared() {
         true => Some(thread.files().copy()?),
         false => None,
@@ -745,7 +749,7 @@ fn read_interpreter<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
     interpreter: Interpreter,
-) -> Result<(Interpreter, &'static [u8]), Errno> {
+) -> Result<(Interpreter, ProgramBytes), Errno> {
     if !ANY_INTERPRETER {
         return Err(Errno::ENOEXEC);
     }
@@ -759,7 +763,47 @@ fn read_interpreter<P: Platform>(
     if attributes.kind != NodeKind::Regular || !may_execute {
         return Err(Errno::ENOEXEC);
     }
-    Ok((interpreter, node.read(0, attributes.size as usize)))
+    Ok((
+        interpreter,
+        ProgramBytes::read(node, attributes.size, u64::MAX)?,
+    ))
+}
+
+const SIGNATURE_BYTES: u64 = 64;
+
+enum ProgramBytes {
+    Lent(&'static [u8]),
+    Copied(Vec<u8>),
+}
+
+impl ProgramBytes {
+    fn read(node: Node, size: u64, at_most: u64) -> Result<Self, Errno> {
+        let file_system = node.file_system();
+        if !file_system.copies_contents() {
+            return Ok(Self::Lent(node.read(0, size as usize)));
+        }
+        let length = usize::try_from(size.min(at_most)).map_err(|_| Errno::ENOMEM)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+        bytes.resize(length, 0);
+        let mut filled = 0;
+        while filled < length {
+            match file_system.read_into(node.id(), filled as u64, &mut bytes[filled..]) {
+                Ok(0) => break,
+                Ok(read) => filled += read,
+                Err(_) => return Err(Errno::EIO),
+            }
+        }
+        bytes.truncate(filled);
+        Ok(Self::Copied(bytes))
+    }
+
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Lent(bytes) => bytes,
+            Self::Copied(bytes) => bytes,
+        }
+    }
 }
 
 fn find(thread: &LinuxThread, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
@@ -1001,6 +1045,27 @@ mod tests {
     use crate::tests::TestPlatform as P;
     use crate::thread::host::frames_for_test;
     use alloc::vec::Vec;
+
+    #[test]
+    fn a_program_on_a_file_system_that_copies_is_read_whole_or_by_its_head() {
+        use crate::vfs::tmpfs::{Budget, Tmpfs};
+        use crate::vfs::{FileSystem, WriteAt};
+        let budget = Box::leak(Box::new(Budget::new(1 << 20)));
+        let tmpfs = Box::leak(Box::new(Tmpfs::new(budget, (0, 30), 0o755).unwrap()));
+        let contents: Vec<u8> = (0..10_000u32).map(|index| index as u8).collect();
+        let file = tmpfs
+            .create(tmpfs.root(), b"program", NodeKind::Regular, 0o755, 0)
+            .unwrap();
+        tmpfs.write(file, WriteAt::Offset(0), &contents, 0).unwrap();
+        let node = Node::root_of(tmpfs).lookup(b"program").unwrap();
+        let size = contents.len() as u64;
+        let head = ProgramBytes::read(node, size, SIGNATURE_BYTES).unwrap();
+        assert_eq!(head.bytes(), &contents[..SIGNATURE_BYTES as usize]);
+        let whole = ProgramBytes::read(node, size, u64::MAX).unwrap();
+        assert_eq!(whole.bytes(), &contents[..]);
+        let short = ProgramBytes::read(node, 10, u64::MAX).unwrap();
+        assert_eq!(short.bytes(), &contents[..10]);
+    }
 
     #[test]
     fn arguments_and_environment_are_held_to_a_quarter_of_the_stack_with_their_pointers() {
