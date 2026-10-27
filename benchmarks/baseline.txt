@@ -16,6 +16,9 @@ aarch64 boot_to_prompt 1007440.00
 aarch64 breakpoint_round_trip 92.00
 aarch64 clock_read 5.00
 aarch64 device_tree_walk 75529.00
+aarch64 eggfs_commit 136663.00
+aarch64 eggfs_create 24151.20
+aarch64 eggfs_read_4k 4391.77
 aarch64 empty_loop 4.00
 aarch64 fat_read_4k 2953.78
 aarch64 fp_process_switch_round_trip 1107.98
@@ -64,6 +67,9 @@ riscv64 boot_to_prompt 831400.00
 riscv64 breakpoint_round_trip 127.00
 riscv64 clock_read 4.00
 riscv64 device_tree_walk 86792.01
+riscv64 eggfs_commit 169284.01
+riscv64 eggfs_create 28291.91
+riscv64 eggfs_read_4k 5227.93
 riscv64 empty_loop 4.00
 riscv64 fat_read_4k 3562.88
 riscv64 fp_process_switch_round_trip 1041.02
@@ -112,6 +118,9 @@ x86_64 boot_to_prompt 1312499.74
 x86_64 breakpoint_round_trip 60.00
 x86_64 clock_read 8.00
 x86_64 device_tree_walk 49162.73
+x86_64 eggfs_commit 90587.50
+x86_64 eggfs_create 15799.00
+x86_64 eggfs_read_4k 1904.35
 x86_64 empty_loop 4.00
 x86_64 fat_read_4k 1142.20
 x86_64 fp_process_switch_round_trip 798.34

@@ -7633,7 +7633,15 @@ the license, by an explicit instruction recorded here.
   disk and asks the empty table once. With one: the committer thread's stack, a cache of up to
   256 clean metadata blocks (1 MiB) plus the running transaction's, and one data block. The
   release image grows by the crate (format, journal, check, crash-safe allocator) and the
-  kernel glue; `boot_to_prompt` grows by the `/Applications` directory entry. Numbers in the PR.
+  kernel glue; `boot_to_prompt` grows by the `/Applications` directory entry. Measured in CI
+  against `main`: the release image grows by 88 KB on aarch64 (+9.1%), 118 KB on riscv64
+  (+10.2%) and 87 KB on x86_64 (+9.9%), the cost of a whole crash-safe file system (format,
+  journal and replay, allocator, directories, the CRC tables) and the disk glue; `boot_to_prompt`
+  by +1.0% on riscv64 and under 1% elsewhere; every other benchmark, `fat_read_4k` on the sleep
+  lock included, within 1%. The new benchmarks start at about 4,400 / 5,200 / 1,900
+  instructions for `eggfs_read_4k`, 24,000 / 28,000 / 16,000 for `eggfs_create` and 137,000 /
+  169,000 / 91,000 for `eggfs_commit` (aarch64 / riscv64 / x86_64); the commit is mostly the
+  byte-at-a-time CRC-64 over the journal, which a table-sliced CRC can cut later.
   Benchmarks `eggfs_read_4k`, `eggfs_create` and `eggfs_commit` measure a 4 KiB read, a create
   and remove, and a one-block commit on an in-memory disk.
 - **Testing.** Host: the crate's tests format, mount and change volumes (names, renames that
