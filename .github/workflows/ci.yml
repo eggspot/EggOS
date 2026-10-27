@@ -26,12 +26,15 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk
     timeout-minutes: 25
     outputs:
       code: ${{ steps.changes.outputs.code }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: "0"
+      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - name: Detect code changes
         id: changes

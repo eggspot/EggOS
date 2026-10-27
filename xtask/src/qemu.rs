@@ -130,6 +130,12 @@ pub enum Expect {
     /// must write its lines in order before the next prompt: on x86_64 the programs' checks,
     /// exit codes and the refusal of an unsupported import, elsewhere `ENOEXEC` (D118).
     WindowsPrograms,
+    /// The release kernel with a static Android console program, linked by the Android NDK
+    /// against bionic, added as `cargo xtask image --add` adds it (with `/system/bin/sh`), boots
+    /// to the shell's prompt; the test types a line at each prompt that runs it, and each
+    /// command must write its lines in order before the next prompt: the program's checks
+    /// (including `system`, which runs `/system/bin/sh`), an exit status and an abort (D119).
+    AndroidPrograms,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -174,6 +180,43 @@ const WINDOWS_PROGRAM_SESSION: [&[u8]; 4] = [
     b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
     b"exit 7\r",
 ];
+
+const ANDROID_PROGRAM_SESSION: [&[u8]; 4] = [
+    b"GREETING=hi android-console a 'b c'; echo ANDROID-CONSOLE status $?\r",
+    b"/bin/android-console exit 42; echo ANDROID-CONSOLE status $?\r",
+    b"android-console abort; echo ANDROID-CONSOLE status $?\r",
+    b"exit 7\r",
+];
+
+fn android_program_output() -> [Vec<Line>; ANDROID_PROGRAM_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    [
+        whole(&[
+            "ANDROID-CONSOLE android-console args a|b c",
+            "ANDROID-CONSOLE env GREETING=hi",
+            "ANDROID-CONSOLE file eggos",
+            "ANDROID-CONSOLE dir about",
+            "ANDROID-CONSOLE malloc small large realloc",
+            "ANDROID-CONSOLE time monotonic realtime",
+            "ANDROID-CONSOLE threads 4 joined sum 30",
+            "ANDROID-CONSOLE property ro.build.version.sdk unset",
+            "ANDROID-CONSOLE pagesize 4096",
+            "ANDROID-CONSOLE random differs",
+            "ANDROID-CONSOLE shell",
+            "ANDROID-CONSOLE system status 0",
+            "ANDROID-CONSOLE stderr",
+            "ANDROID-CONSOLE status 0",
+        ]),
+        whole(&["ANDROID-CONSOLE status 42"]),
+        whole(&["Aborted", "ANDROID-CONSOLE status 134"]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
 
 fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len()] {
     let whole = |lines: &[&str]| -> Vec<Line> {
@@ -598,6 +641,11 @@ fn boot(
                 &WINDOWS_PROGRAM_SESSION,
                 &mut shell_typed,
             ),
+            Expect::AndroidPrograms => shell_scripts_to_type(
+                &String::from_utf8_lossy(&console),
+                &ANDROID_PROGRAM_SESSION,
+                &mut shell_typed,
+            ),
             Expect::BootToPrompt => {
                 let prompts = String::from_utf8_lossy(&console)
                     .matches(SHELL_PROMPT)
@@ -852,6 +900,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 &WINDOWS_PROGRAM_SESSION,
                 windows_program_output(arch),
                 "Windows programs",
+            );
+        }
+        Expect::AndroidPrograms => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &ANDROID_PROGRAM_SESSION,
+                android_program_output(),
+                "Android programs",
             );
         }
         Expect::BootClock => return boot_clock_verdict(arch, console),
@@ -1544,6 +1602,41 @@ mod tests {
         assert!(scripts_to_type(&partial, &mut typed).is_empty());
         let whole = format!("{partial} and a line\r\n");
         assert_eq!(scripts_to_type(&whole, &mut typed), [CONSOLE_SCRIPTS[3].1]);
+    }
+
+    fn android_programs_console() -> String {
+        let mut console = String::from("EggOS 0.2.0 (aarch64)\r\n");
+        for (typed, output) in ANDROID_PROGRAM_SESSION.iter().zip(android_program_output()) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                if let Line::Whole(line) = line {
+                    console.push_str(&format!("{line}\r\n"));
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_android_programs_session_passes_only_with_each_command_s_lines_in_order() {
+        let ok = android_programs_console();
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &ok).is_ok());
+        assert!(verdict("aarch64", Expect::AndroidPrograms, false, &ok).is_err());
+        for missing in [
+            "ANDROID-CONSOLE shell",
+            "ANDROID-CONSOLE status 42",
+            "Aborted",
+            "ANDROID-CONSOLE stderr",
+        ] {
+            let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
+            assert!(
+                verdict("aarch64", Expect::AndroidPrograms, true, &without).is_err(),
+                "{missing}"
+            );
+        }
+        let set = ok.replace("ro.build.version.sdk unset", "ro.build.version.sdk set");
+        assert!(verdict("aarch64", Expect::AndroidPrograms, true, &set).is_err());
     }
 
     fn windows_programs_console(arch: &str) -> String {
