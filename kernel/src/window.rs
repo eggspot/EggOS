@@ -66,14 +66,9 @@ impl PixelBuffer {
         let frames = bytes.div_ceil(FRAME_SIZE).max(1);
         let order = frames.next_power_of_two().trailing_zeros();
         let block = FRAME_SIZE << order;
-        owner
-            .pinned
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pinned| {
-                pinned
-                    .checked_add(block)
-                    .filter(|&total| total <= CLIENT_PIXEL_LIMIT)
-            })
-            .ok()?;
+        if !owner.pin(block) {
+            return None;
+        }
         let allocated = {
             let mut allocator = FRAMES.lock();
             allocator.as_mut().and_then(|allocator| {
@@ -84,7 +79,7 @@ impl PixelBuffer {
             })
         };
         let Some((physical, frame_offset)) = allocated else {
-            owner.pinned.fetch_sub(block, Ordering::Relaxed);
+            owner.unpin(block);
             return None;
         };
         let buffer = Self {
@@ -147,9 +142,7 @@ impl Drop for PixelBuffer {
         // SAFETY: the block came from `allocate_contiguous` with this order on this allocator
         // (`new`), and this is the last holder: no window shows it and no process maps it.
         unsafe { allocator.free_contiguous(self.physical, self.order) };
-        self.owner
-            .pinned
-            .fetch_sub(FRAME_SIZE << self.order, Ordering::Relaxed);
+        self.owner.unpin(FRAME_SIZE << self.order);
     }
 }
 
@@ -173,6 +166,20 @@ impl Client {
     /// The bytes of pixel buffers it holds.
     pub fn pinned_bytes(&self) -> u64 {
         self.pinned.load(Ordering::Relaxed)
+    }
+
+    fn pin(&self, bytes: u64) -> bool {
+        self.pinned
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pinned| {
+                pinned
+                    .checked_add(bytes)
+                    .filter(|&total| total <= CLIENT_PIXEL_LIMIT)
+            })
+            .is_ok()
+    }
+
+    fn unpin(&self, bytes: u64) {
+        self.pinned.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     /// Whether an event waits to be read.
@@ -453,4 +460,140 @@ pub fn disconnect<P: Platform>(client: &Arc<Client>) {
         buffers.release_unused(desktop);
     });
     crate::terminal::with_clients(|clients| clients.remove(client));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread::host::frames_for_test;
+
+    fn free() -> u64 {
+        FRAMES.lock().as_ref().unwrap().free_frames()
+    }
+
+    fn client(clients: &mut Clients) -> Arc<Client> {
+        clients.add(EventQueue::new().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_buffer_reads_its_rows_and_the_window_background_outside_them() {
+        let _frames = frames_for_test();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let buffer = PixelBuffer::new(4, 2, &owner).unwrap();
+        assert_eq!(buffer.size(), (4, 2));
+        assert_eq!(buffer.length(), FRAME_SIZE);
+        let mut row = [7u32; 6];
+        buffer.copy_row(2, 1, &mut row);
+        assert_eq!(
+            row,
+            [
+                0,
+                0,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND
+            ]
+        );
+        let mut row = [7u32; 3];
+        buffer.copy_row(0, 2, &mut row);
+        assert_eq!(row, [colour::WINDOW_BACKGROUND; 3]);
+        buffer.copy_row(9, 0, &mut row);
+        assert_eq!(row, [colour::WINDOW_BACKGROUND; 3]);
+    }
+
+    #[test]
+    fn a_client_s_buffers_are_capped_and_counted_until_their_last_holder_lets_go() {
+        let _frames = frames_for_test();
+        let before = free();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let other = client(&mut clients);
+        assert!(owner.pin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE));
+        let first = PixelBuffer::new(32, 32, &owner).unwrap();
+        let second = PixelBuffer::new(32, 32, &owner).unwrap();
+        assert_eq!(owner.pinned_bytes(), CLIENT_PIXEL_LIMIT);
+        assert!(PixelBuffer::new(1, 1, &owner).is_none());
+        let theirs = PixelBuffer::new(1, 1, &other).unwrap();
+        assert_eq!(other.pinned_bytes(), FRAME_SIZE);
+        let kept = Arc::clone(&first);
+        drop(first);
+        assert!(
+            PixelBuffer::new(1, 1, &owner).is_none(),
+            "a mapping still holds it"
+        );
+        drop(kept);
+        let third = PixelBuffer::new(1, 1, &owner).unwrap();
+        drop((second, third, theirs));
+        owner.unpin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE);
+        assert_eq!((owner.pinned_bytes(), other.pinned_bytes()), (0, 0));
+        assert!(!owner.pin(CLIENT_PIXEL_LIMIT + 1));
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn buffers_are_found_by_their_window_and_offset_until_replaced_or_released() {
+        let _frames = frames_for_test();
+        let before = free();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let mut desktop = Desktop::new(1280, 800).unwrap();
+        let created = desktop.create(owner.id(), 0, 0, 10, 10, 0).unwrap();
+        let mut buffers = Buffers::new();
+        let first = PixelBuffer::new(created.width, created.height, &owner).unwrap();
+        let first_offset = buffers.attach(created.window, Arc::clone(&first));
+        let second = PixelBuffer::new(created.width, created.height, &owner).unwrap();
+        let second_offset = buffers.attach(created.window, Arc::clone(&second));
+        assert_ne!(first_offset, second_offset);
+        assert!(buffers.at_offset(first_offset).is_none(), "replaced");
+        let (window, found) = buffers.at_offset(second_offset).unwrap();
+        assert_eq!(window, created.window);
+        assert!(Arc::ptr_eq(&found, &second));
+        assert!(buffers.at_offset(second_offset + 1).is_none());
+        assert!(buffers.at_offset(second_offset + FRAME_SIZE).is_none());
+        assert!(core::ptr::eq(buffers.of(created.window).unwrap(), &*second));
+        assert!(
+            buffers.of(created.window + (1 << 6)).is_none(),
+            "another generation"
+        );
+        drop((first, found, second));
+        buffers.release_unused(&desktop);
+        assert!(
+            buffers.of(created.window).is_some(),
+            "the window still has it"
+        );
+        desktop
+            .destroy(
+                owner.id(),
+                u32::from(created.window),
+                &mut eggos_drivers::display::Damage::new(),
+                &mut eggos_drivers::desktop::protocol::DiscardEvents,
+            )
+            .unwrap();
+        buffers.release_unused(&desktop);
+        assert!(buffers.of(created.window).is_none());
+        assert_eq!(owner.pinned_bytes(), 0);
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn client_numbers_carry_a_generation_so_a_restarted_desktop_never_reuses_one() {
+        let mut first = Clients::new();
+        let old = client(&mut first);
+        let mut restarted = Clients::new();
+        let new = client(&mut restarted);
+        assert_eq!(client_slot(old.id()), client_slot(new.id()));
+        assert_ne!(old.id(), new.id());
+        assert!(restarted.has(&new) && !restarted.has(&old));
+        restarted.remove(&old);
+        assert!(
+            restarted.has(&new),
+            "an old client's going leaves the new one"
+        );
+        let ids: alloc::vec::Vec<u16> = (0..3000).map(client_number).collect();
+        assert!(ids.iter().all(|&id| id != KERNEL_CLIENT));
+        restarted.remove(&new);
+        assert!(!restarted.has(&new));
+    }
 }
