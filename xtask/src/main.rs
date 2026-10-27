@@ -119,7 +119,7 @@ pub const ARCHES: &[Arch] = &[
             "-machine",
             "q35",
             "-cpu",
-            "qemu64,+rdrand,+rdseed",
+            "qemu64,+rdrand,+rdseed,+ssse3,+sse4.1,+sse4.2,+popcnt",
             "-device",
             "virtio-rng-pci,disable-legacy=on",
         ],

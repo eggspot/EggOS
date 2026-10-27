@@ -68,7 +68,7 @@ jobs:
           restore-keys: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
       - name: Probe
-        run: cargo xtask qemu --arch aarch64 || cargo xtask qemu --arch x86_64 || true
+        run: cargo xtask qemu --arch x86_64 || true; cargo xtask qemu --arch aarch64 || true
 
       - name: Format
         if: steps.changes.outputs.code == 'true'
