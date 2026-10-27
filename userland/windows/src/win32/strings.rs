@@ -45,7 +45,7 @@ unsafe fn wide_input<'a>(text: *const u16, length: i32) -> Option<&'a [u16]> {
     Some(unsafe { core::slice::from_raw_parts(text, length) })
 }
 
-unsafe extern "win64" fn multi_byte_to_wide_char(
+unsafe extern "efiapi" fn multi_byte_to_wide_char(
     code_page: u32,
     flags: u32,
     bytes: *const u8,
@@ -85,7 +85,7 @@ unsafe extern "win64" fn multi_byte_to_wide_char(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "win64" fn wide_char_to_multi_byte(
+unsafe extern "efiapi" fn wide_char_to_multi_byte(
     code_page: u32,
     flags: u32,
     units: *const u16,
@@ -126,7 +126,7 @@ unsafe extern "win64" fn wide_char_to_multi_byte(
     text::write_utf8(units, out).0 as i32
 }
 
-unsafe extern "win64" fn lstrlen_w(text: *const u16) -> i32 {
+unsafe extern "efiapi" fn lstrlen_w(text: *const u16) -> i32 {
     if text.is_null() {
         return 0;
     }
@@ -134,7 +134,7 @@ unsafe extern "win64" fn lstrlen_w(text: *const u16) -> i32 {
     unsafe { super::file::wide_string(text) }.len() as i32
 }
 
-unsafe extern "win64" fn lstrlen_a(text: *const u8) -> i32 {
+unsafe extern "efiapi" fn lstrlen_a(text: *const u8) -> i32 {
     if text.is_null() {
         return 0;
     }
@@ -173,12 +173,12 @@ unsafe fn compare_terminated(a: *const u16, b: *const u16, ignore_case: bool) ->
     ))
 }
 
-unsafe extern "win64" fn lstrcmp_w(a: *const u16, b: *const u16) -> i32 {
+unsafe extern "efiapi" fn lstrcmp_w(a: *const u16, b: *const u16) -> i32 {
     // SAFETY: `lstrcmpW`'s contract.
     unsafe { compare_terminated(a, b, false) }
 }
 
-unsafe extern "win64" fn lstrcmpi_w(a: *const u16, b: *const u16) -> i32 {
+unsafe extern "efiapi" fn lstrcmpi_w(a: *const u16, b: *const u16) -> i32 {
     // SAFETY: `lstrcmpiW`'s contract.
     unsafe { compare_terminated(a, b, true) }
 }
@@ -196,7 +196,7 @@ unsafe fn compare(a: *const u16, a_count: i32, b: *const u16, b_count: i32, flag
     compare_result(text::compare_ordinal(a, b, ignore_case))
 }
 
-unsafe extern "win64" fn compare_string_ordinal(
+unsafe extern "efiapi" fn compare_string_ordinal(
     a: *const u16,
     a_count: i32,
     b: *const u16,
@@ -212,7 +212,7 @@ unsafe extern "win64" fn compare_string_ordinal(
     unsafe { compare(a, a_count, b, b_count, flags) }
 }
 
-unsafe extern "win64" fn compare_string_w(
+unsafe extern "efiapi" fn compare_string_w(
     _locale: u32,
     flags: u32,
     a: *const u16,
@@ -225,7 +225,7 @@ unsafe extern "win64" fn compare_string_w(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "win64" fn compare_string_ex(
+unsafe extern "efiapi" fn compare_string_ex(
     _locale: *const u16,
     flags: u32,
     a: *const u16,
@@ -258,18 +258,18 @@ unsafe fn map_case(text: *mut u16, map: fn(u16) -> u16) -> *mut u16 {
     }
 }
 
-unsafe extern "win64" fn char_upper_w(text: *mut u16) -> *mut u16 {
+unsafe extern "efiapi" fn char_upper_w(text: *mut u16) -> *mut u16 {
     // SAFETY: `CharUpperW`'s contract: one character in the low word, or a string.
     unsafe { map_case(text, text::upper) }
 }
 
-unsafe extern "win64" fn char_lower_w(text: *mut u16) -> *mut u16 {
+unsafe extern "efiapi" fn char_lower_w(text: *mut u16) -> *mut u16 {
     // SAFETY: `CharLowerW`'s contract.
     unsafe { map_case(text, text::lower) }
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "win64" fn format_message_w(
+unsafe extern "efiapi" fn format_message_w(
     flags: u32,
     _source: usize,
     message_id: u32,
@@ -329,7 +329,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"lstrcmpiW" => lstrcmpi_w,
     b"CompareStringOrdinal" => compare_string_ordinal,
     b"CompareStringW" => compare_string_w,
-    b"CompareStringEx" => compare_string_ex,
+    b"CompareStringEx" => compare_string_ex [stack_arguments],
     b"FormatMessageW" => format_message_w,
 ];
 

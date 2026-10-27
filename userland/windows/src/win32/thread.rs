@@ -28,7 +28,7 @@ fn stack_length(requested: usize) -> Option<usize> {
     (length <= MAX_STACK).then_some(length)
 }
 
-unsafe extern "win64" fn create_thread(
+unsafe extern "efiapi" fn create_thread(
     _security: usize,
     stack_size: usize,
     start: usize,
@@ -165,8 +165,8 @@ extern "C" fn thread_main(object: usize) -> ! {
     // SAFETY: the TEB `CreateThread` made for this thread.
     unsafe { thread_environment::enter(start.teb) };
     // SAFETY: `CreateThread`'s contract: `start` is a `LPTHREAD_START_ROUTINE`.
-    let routine: extern "win64" fn(usize) -> u32 = unsafe { core::mem::transmute(start.start) };
-    finish(routine(start.parameter))
+    let code = unsafe { super::call_program(start.start, [start.parameter, 0, 0, 0]) };
+    finish(code as u32)
 }
 
 /// Ends the calling thread with exit code `code`, as `ExitThread` does: the process ends,
@@ -183,11 +183,11 @@ pub fn finish(code: u32) -> ! {
     linux::exit_thread()
 }
 
-extern "win64" fn exit_thread(code: u32) -> ! {
+extern "efiapi" fn exit_thread(code: u32) -> ! {
     finish(code)
 }
 
-unsafe extern "win64" fn get_exit_code_thread(handle: usize, code: *mut u32) -> Bool {
+unsafe extern "efiapi" fn get_exit_code_thread(handle: usize, code: *mut u32) -> Bool {
     let state = match handle {
         super::CURRENT_THREAD => Some((sync::STILL_ACTIVE, 0)),
         handle => sync::thread_state(handle),
@@ -200,7 +200,7 @@ unsafe extern "win64" fn get_exit_code_thread(handle: usize, code: *mut u32) -> 
     TRUE
 }
 
-extern "win64" fn get_thread_id(handle: usize) -> u32 {
+extern "efiapi" fn get_thread_id(handle: usize) -> u32 {
     if handle == super::CURRENT_THREAD {
         return thread_environment::thread_id();
     }
@@ -210,7 +210,7 @@ extern "win64" fn get_thread_id(handle: usize) -> u32 {
     }
 }
 
-extern "win64" fn resume_thread(handle: usize) -> u32 {
+extern "efiapi" fn resume_thread(handle: usize) -> u32 {
     let run = sync::change(handle, |kind| match kind {
         Kind::Thread(thread) => (thread.run.as_ptr() as usize, false),
         _ => (0, false),
@@ -229,24 +229,24 @@ extern "win64" fn resume_thread(handle: usize) -> u32 {
     }
 }
 
-extern "win64" fn get_current_thread_id() -> u32 {
+extern "efiapi" fn get_current_thread_id() -> u32 {
     thread_environment::thread_id()
 }
 
-extern "win64" fn switch_to_thread() -> Bool {
+extern "efiapi" fn switch_to_thread() -> Bool {
     linux::yield_now();
     TRUE
 }
 
-extern "win64" fn set_thread_priority(_handle: usize, _priority: i32) -> Bool {
+extern "efiapi" fn set_thread_priority(_handle: usize, _priority: i32) -> Bool {
     TRUE
 }
 
-extern "win64" fn get_thread_priority(_handle: usize) -> i32 {
+extern "efiapi" fn get_thread_priority(_handle: usize) -> i32 {
     THREAD_PRIORITY_NORMAL
 }
 
-extern "win64" fn set_thread_description(_handle: usize, _description: *const u16) -> i32 {
+extern "efiapi" fn set_thread_description(_handle: usize, _description: *const u16) -> i32 {
     0
 }
 

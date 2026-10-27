@@ -37,7 +37,7 @@ fn page_range(address: usize, size: usize) -> Option<(usize, usize)> {
     Some((start, end - start))
 }
 
-extern "win64" fn virtual_alloc(address: usize, size: usize, kind: u32, protect: u32) -> usize {
+extern "efiapi" fn virtual_alloc(address: usize, size: usize, kind: u32, protect: u32) -> usize {
     let (Some(prot), Some((start, length))) = (protection(protect), page_range(address, size))
     else {
         return fail(error::INVALID_PARAMETER, 0);
@@ -75,7 +75,7 @@ extern "win64" fn virtual_alloc(address: usize, size: usize, kind: u32, protect:
     mapped
 }
 
-extern "win64" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
+extern "efiapi" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
     match kind {
         MEM_RELEASE if size == 0 => {
             let length = RESERVATIONS.with(|table| {
@@ -108,7 +108,7 @@ extern "win64" fn virtual_free(address: usize, size: usize, kind: u32) -> Bool {
     }
 }
 
-unsafe extern "win64" fn virtual_protect(
+unsafe extern "efiapi" fn virtual_protect(
     address: usize,
     size: usize,
     protect: u32,
@@ -132,20 +132,24 @@ unsafe extern "win64" fn virtual_protect(
     }
 }
 
-unsafe extern "win64" fn memcpy(destination: *mut u8, source: *const u8, length: usize) -> *mut u8 {
+unsafe extern "efiapi" fn memcpy(
+    destination: *mut u8,
+    source: *const u8,
+    length: usize,
+) -> *mut u8 {
     // SAFETY: the caller passes `length` readable and writable bytes, as `memcpy`'s contract
     // says; copying as `memmove` also covers callers that overlap them.
     unsafe { ptr::copy(source, destination, length) };
     destination
 }
 
-unsafe extern "win64" fn memset(destination: *mut u8, value: i32, length: usize) -> *mut u8 {
+unsafe extern "efiapi" fn memset(destination: *mut u8, value: i32, length: usize) -> *mut u8 {
     // SAFETY: the caller passes `length` writable bytes.
     unsafe { destination.write_bytes(value as u8, length) };
     destination
 }
 
-unsafe extern "win64" fn memcmp(a: *const u8, b: *const u8, length: usize) -> i32 {
+unsafe extern "efiapi" fn memcmp(a: *const u8, b: *const u8, length: usize) -> i32 {
     // SAFETY: the caller passes `length` readable bytes at each.
     let a = unsafe { core::slice::from_raw_parts(a, length) };
     // SAFETY: as above.
@@ -156,7 +160,7 @@ unsafe extern "win64" fn memcmp(a: *const u8, b: *const u8, length: usize) -> i3
         .map_or(0, |(x, y)| i32::from(*x) - i32::from(*y))
 }
 
-unsafe extern "win64" fn strlen(text: *const u8) -> usize {
+unsafe extern "efiapi" fn strlen(text: *const u8) -> usize {
     // SAFETY: the caller passes a NUL-terminated string.
     unsafe { core::ffi::CStr::from_ptr(text.cast()) }.count_bytes()
 }
@@ -165,6 +169,7 @@ unsafe extern "C" {
     fn eggos_windows_chkstk();
 }
 
+#[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     ".globl eggos_windows_chkstk",
     "eggos_windows_chkstk:",
@@ -189,6 +194,24 @@ core::arch::global_asm!(
     "ret",
 );
 
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".globl eggos_windows_chkstk",
+    "eggos_windows_chkstk:",
+    "mov x16, sp",
+    "subs x17, x16, x15, lsl #4",
+    "csel x17, xzr, x17, lo",
+    "and x16, x16, #-4096",
+    "2:",
+    "cmp x16, x17",
+    "b.ls 3f",
+    "sub x16, x16, #4096",
+    "ldrb wzr, [x16]",
+    "b 2b",
+    "3:",
+    "ret",
+);
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"VirtualAlloc" => virtual_alloc,
     b"VirtualFree" => virtual_free,
@@ -201,5 +224,5 @@ pub(super) const NTDLL_EXPORTS: &[Export] = exports![
     b"memset" => memset,
     b"memcmp" => memcmp,
     b"strlen" => strlen,
-    b"__chkstk" => eggos_windows_chkstk,
+    b"__chkstk" => eggos_windows_chkstk [direct],
 ];

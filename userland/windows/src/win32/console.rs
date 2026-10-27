@@ -17,7 +17,7 @@ const INPUT_MODE: u32 = 0x1 | 0x2 | 0x4;
 const OUTPUT_MODE: u32 = 0x1 | 0x2 | 0x4;
 const CHUNK: usize = 1024;
 
-extern "win64" fn get_std_handle(which: u32) -> usize {
+extern "efiapi" fn get_std_handle(which: u32) -> usize {
     match which {
         STD_INPUT_HANDLE => handle_of(0),
         STD_OUTPUT_HANDLE => handle_of(1),
@@ -30,7 +30,7 @@ fn console_fd(handle: usize) -> Option<usize> {
     fd_of(handle).filter(|fd| linux::is_terminal(*fd))
 }
 
-unsafe extern "win64" fn get_console_mode(handle: usize, mode: *mut u32) -> Bool {
+unsafe extern "efiapi" fn get_console_mode(handle: usize, mode: *mut u32) -> Bool {
     let Some(fd) = console_fd(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
@@ -40,25 +40,25 @@ unsafe extern "win64" fn get_console_mode(handle: usize, mode: *mut u32) -> Bool
     TRUE
 }
 
-extern "win64" fn set_console_mode(handle: usize, _mode: u32) -> Bool {
+extern "efiapi" fn set_console_mode(handle: usize, _mode: u32) -> Bool {
     match console_fd(handle) {
         Some(_) => TRUE,
         None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
-extern "win64" fn get_code_page() -> u32 {
+extern "efiapi" fn get_code_page() -> u32 {
     CODE_PAGE_UTF8
 }
 
-extern "win64" fn set_code_page(page: u32) -> Bool {
+extern "efiapi" fn set_code_page(page: u32) -> Bool {
     match page {
         CODE_PAGE_UTF8 => TRUE,
         _ => fail(error::INVALID_PARAMETER, FALSE),
     }
 }
 
-unsafe extern "win64" fn write_console_w(
+unsafe extern "efiapi" fn write_console_w(
     handle: usize,
     buffer: *const u16,
     length: u32,
@@ -82,7 +82,7 @@ unsafe extern "win64" fn write_console_w(
     TRUE
 }
 
-unsafe extern "win64" fn write_console_a(
+unsafe extern "efiapi" fn write_console_a(
     handle: usize,
     buffer: *const u8,
     length: u32,
@@ -101,7 +101,7 @@ unsafe extern "win64" fn write_console_a(
     TRUE
 }
 
-unsafe extern "win64" fn read_console_w(
+unsafe extern "efiapi" fn read_console_w(
     handle: usize,
     buffer: *mut u16,
     length: u32,
@@ -125,7 +125,7 @@ unsafe extern "win64" fn read_console_w(
     TRUE
 }
 
-unsafe extern "win64" fn read_console_a(
+unsafe extern "efiapi" fn read_console_a(
     handle: usize,
     buffer: *mut u8,
     length: u32,

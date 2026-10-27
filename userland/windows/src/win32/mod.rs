@@ -1,10 +1,17 @@
 //! The Win32 functions Windows console programs import, implemented natively on EggOS's Linux
-//! system calls: each is an `extern "win64"` function the program calls directly through its
-//! import address table, with no translation in between.
+//! system calls: each is an `extern "efiapi"` function (Windows' calling convention on x86_64
+//! and aarch64, `abi.rs`) the program calls through its import address table, directly on
+//! x86_64 and through an entry that restores `x18` on aarch64.
+
+#[macro_use]
+mod abi;
 
 macro_rules! exports {
-    ($($name:literal => $function:path),* $(,)?) => {
-        &[$(crate::library::Export { name: $name, address: $function as *const () }),*]
+    ($($name:literal => $function:path $([$stack_arguments:ident])?),* $(,)?) => {
+        &[$(crate::library::Export {
+            name: $name,
+            address: export_entry!($function $(, $stack_arguments)?),
+        }),*]
     };
 }
 
@@ -27,6 +34,7 @@ mod time;
 use crate::library::{self, Export, Library};
 use eggos_runtime::errno::Errno;
 
+pub use abi::call_program;
 pub use heap::{allocate as heap_allocate, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;

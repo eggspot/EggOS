@@ -6,7 +6,7 @@ use super::{error, fail, heap};
 use crate::command_line::{self, Piece};
 use crate::library::Export;
 
-unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i32) -> *mut usize {
+unsafe extern "efiapi" fn command_line_to_argv_w(line: *const u16, count: *mut i32) -> *mut usize {
     if count.is_null() {
         return fail(error::INVALID_PARAMETER, core::ptr::null_mut());
     }
