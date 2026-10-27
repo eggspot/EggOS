@@ -2,7 +2,7 @@ use super::protocol::{
     DiscardEvents, EventRecord, MAX_COMMIT_RECTS, MAX_WINDOWS_PER_CLIENT, Request, create_reply,
     request, set_size_reply, size,
 };
-use super::tests::{BlankTerminal, at, fnv, painted, pattern};
+use super::tests::{BlankTerminal, at, painted, pattern};
 use super::*;
 use alloc::vec;
 

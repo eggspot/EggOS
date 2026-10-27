@@ -11,6 +11,8 @@ impl Errno {
     pub const ENOENT: Self = Self(2);
     /// `EINTR`.
     pub const EINTR: Self = Self(4);
+    /// `ENXIO`.
+    pub const ENXIO: Self = Self(6);
     /// `E2BIG`.
     pub const E2BIG: Self = Self(7);
     /// `ENOEXEC`.
@@ -23,6 +25,8 @@ impl Errno {
     pub const EISDIR: Self = Self(21);
     /// `EINVAL`.
     pub const EINVAL: Self = Self(22);
+    /// `ENOTTY`.
+    pub const ENOTTY: Self = Self(25);
     /// `ENAMETOOLONG`.
     pub const ENAMETOOLONG: Self = Self(36);
     /// `EEXIST`.
@@ -51,6 +55,7 @@ impl Errno {
             3 => b"No such process",
             4 => b"Interrupted system call",
             5 => b"Input/output error",
+            6 => b"No such device or address",
             7 => b"Argument list too long",
             8 => b"Exec format error",
             9 => b"Bad file descriptor",
@@ -78,6 +83,7 @@ impl Errno {
             39 => b"Directory not empty",
             40 => b"Too many levels of symbolic links",
             75 => b"Value too large for defined data type",
+            95 => b"Operation not supported",
             _ => b"Unknown error",
         }
     }

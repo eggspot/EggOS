@@ -10,10 +10,11 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use eggos_drivers::desktop::protocol::DiscardEvents;
-use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, WindowId, colour};
+use eggos_drivers::desktop::protocol::{DiscardEvents, PointerShape};
+use eggos_drivers::desktop::{Contents, Desktop, GRID_SIZE, Part, WindowId, colour};
 use eggos_drivers::display::{Damage, Rect};
-use eggos_drivers::input::{AxisRange, scale_to_screen};
+use eggos_drivers::input::keymap::Modifiers;
+use eggos_drivers::input::{AxisRange, key, scale_to_screen};
 use eggos_drivers::terminal::Terminal;
 
 const PASS_MARKER: &str = "EGGOS-SELFTEST: PASS";
@@ -148,9 +149,13 @@ pub enum Expect {
     MacosPrograms,
     /// The release kernel with `hello-window` added boots to the shell's prompt; the test types
     /// a pipeline of two of them, each opening a window through `/dev/window` (D127), then
-    /// clicks the first to raise it, drags it by its title bar and closes both with their close
-    /// controls through QMP, checking the display against the host's render after each step,
-    /// and each program writes its lines in order (`shown`, then `close request`).
+    /// through QMP clicks the first to raise it, drags it by its title bar, resizes it from its
+    /// corner, maximises it by its control and by a double-click on its title bar and restores
+    /// it both ways, cycles the windows with Alt+Tab, closes the first with Alt+F4 and the
+    /// second with its close control (D128), checking the display, the pointer drawn on it
+    /// included, against the host's render after each step; each program writes its lines in
+    /// order (`shown`, its resizes and states, `close request`), and `wm list` lists the
+    /// terminal once they are gone.
     ProgramWindows,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
@@ -190,14 +195,17 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"exit 7\r",
 ];
 
-const PROGRAM_WINDOW_SESSION: [&[u8]; 3] = [
+const PROGRAM_WINDOW_SESSION: [&[u8]; 4] = [
     b"ls /dev\r",
     b"/usr/libexec/hello-window -o first | /usr/libexec/hello-window -i second; \
       echo EGGOS-WINDOWS status $?\r",
+    b"wm list\r",
     b"exit 7\r",
 ];
 
 const WINDOW_TITLES: [&str; 2] = ["first", "second"];
+
+const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 
 const WINDOW_CONTENT: (u32, u32) = (400, 300);
 
@@ -208,9 +216,17 @@ fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
         vec![
             line("hello-window first: shown"),
             line("hello-window second: shown"),
+            line("hello-window first: state maximised"),
+            line("hello-window first: state normal"),
+            line("hello-window first: state maximised"),
+            line("hello-window first: state normal"),
             line("hello-window first: close request"),
             line("hello-window second: close request"),
             line("EGGOS-WINDOWS status 0"),
+        ],
+        vec![
+            Line::Whole(WM_LIST_HEADER.to_owned()),
+            Line::Around("64 normal ", " kernel Terminal"),
         ],
         vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
     ]
@@ -706,7 +722,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["bin", "dev", "etc", "home", "init", "proc", "tmp", "usr"]),
         vec![
-            Line::Around("-rwxr-xr-x 23 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 24 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -1765,25 +1781,6 @@ fn has_line(console: &str, wanted: &str) -> bool {
         .any(|line| line.ends_with('\n') && line.trim_end() == wanted)
 }
 
-fn wait_for_line(
-    arch: &Arch,
-    console: &mut Vec<u8>,
-    output: &mpsc::Receiver<Vec<u8>>,
-    wanted: &str,
-) -> Result<(), String> {
-    let started = Instant::now();
-    loop {
-        console.extend(output.try_iter().flatten());
-        if has_line(&String::from_utf8_lossy(console), wanted) {
-            return Ok(());
-        }
-        if started.elapsed() > CLOSE_REQUEST_TIMEOUT {
-            return Err(format!("{}: no `{wanted}` line", arch.name));
-        }
-        std::thread::sleep(TERMINAL_FRAME_RETRY);
-    }
-}
-
 fn click_steps(x: u32, y: u32) -> [PointerStep; 2] {
     [
         PointerStep {
@@ -1889,37 +1886,318 @@ fn check_program_windows(
         console,
         "the first window dragged by its title bar",
     )?;
-    for (client, (id, name)) in [(0u16, (first, "first")), (1, (second, "second"))] {
-        let close = desktop.close_control(id).unwrap_or_default();
-        if desktop.stacking().last() != Some(id) {
-            return Err(format!("{}: the {name} window is not on top", arch.name));
+    let mut windows_test = WindowSteps {
+        arch,
+        qmp: &mut qmp,
+        desktop: &mut desktop,
+        console,
+        output,
+        windows: &windows,
+        screen,
+        now_ms: 0,
+        held: Modifiers::NONE,
+    };
+    windows_test.manage(first, second)
+}
+
+/// The window-management steps of the program windows test (D128), each sent to QEMU through
+/// QMP and applied to the host's desktop, whose render the display must match after each.
+struct WindowSteps<'a> {
+    arch: &'a Arch,
+    qmp: &'a mut Qmp,
+    desktop: &'a mut Desktop,
+    console: &'a mut Vec<u8>,
+    output: &'a mpsc::Receiver<Vec<u8>>,
+    windows: &'a [(WindowId, [u32; 2])],
+    screen: (u32, u32),
+    now_ms: u32,
+    held: Modifiers,
+}
+
+const DOUBLE_CLICK_PAUSE: Duration = Duration::from_millis(40);
+
+impl WindowSteps<'_> {
+    fn check(&mut self, at: &str) -> Result<(), String> {
+        check_desktop_frame(
+            self.arch,
+            self.qmp,
+            self.console,
+            self.output,
+            at,
+            self.desktop,
+            self.windows,
+        )
+    }
+
+    fn pointer(&mut self, x: u32, y: u32, button: Option<bool>) -> Result<(), String> {
+        let step = PointerStep { x, y, button };
+        send_pointer_step(self.qmp, step, self.screen)?;
+        self.now_ms += 1000;
+        self.desktop.set_time(self.now_ms);
+        apply_pointer_step(self.desktop, step);
+        Ok(())
+    }
+
+    fn click(&mut self, x: u32, y: u32) -> Result<(), String> {
+        self.pointer(x, y, Some(true))?;
+        self.pointer(x, y, Some(false))
+    }
+
+    fn double_click(&mut self, x: u32, y: u32) -> Result<(), String> {
+        let (tablet_x, tablet_y) = (
+            tablet_value(x, self.screen.0),
+            tablet_value(y, self.screen.1),
+        );
+        self.qmp.send_input(&[
+            InputEvent::Absolute {
+                axis: "x",
+                value: tablet_x,
+            },
+            InputEvent::Absolute {
+                axis: "y",
+                value: tablet_y,
+            },
+        ])?;
+        std::thread::sleep(DEVICE_PAUSE);
+        for down in [true, false, true, false] {
+            self.qmp.send_input(&[InputEvent::Button {
+                button: "left",
+                down,
+            }])?;
+            std::thread::sleep(DOUBLE_CLICK_PAUSE);
         }
-        for step in click_steps(close.x + 10, close.y + 14) {
-            send_pointer_step(&mut qmp, step, screen)?;
-            apply_pointer_step(&mut desktop, step);
+        std::thread::sleep(DEVICE_PAUSE);
+        self.now_ms += 1000;
+        for (offset, down) in [(0, true), (40, false), (80, true), (120, false)] {
+            self.desktop.set_time(self.now_ms + offset);
+            apply_pointer_step(
+                self.desktop,
+                PointerStep {
+                    x,
+                    y,
+                    button: Some(down),
+                },
+            );
         }
-        wait_for_line(
-            arch,
-            console,
-            output,
-            &format!("hello-window {name}: close request"),
+        Ok(())
+    }
+
+    fn key(&mut self, qcode: &'static str, code: u16, down: bool) -> Result<(), String> {
+        self.qmp.send_input(&[InputEvent::Key { qcode, down }])?;
+        std::thread::sleep(DEVICE_PAUSE);
+        let modifier = match code {
+            key::LEFT_ALT => Modifiers::ALT,
+            key::LEFT_SHIFT => Modifiers::SHIFT,
+            _ => Modifiers::NONE,
+        };
+        self.held = match down {
+            true => self.held.with(modifier),
+            false => Modifiers::from_bits(self.held.bits() & !modifier.bits()),
+        };
+        self.now_ms += 100;
+        self.desktop.set_time(self.now_ms);
+        self.desktop.key(
+            code,
+            down,
+            self.held,
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        );
+        Ok(())
+    }
+
+    fn tap(&mut self, qcode: &'static str, code: u16) -> Result<(), String> {
+        self.key(qcode, code, true)?;
+        self.key(qcode, code, false)
+    }
+
+    fn wait_for(&mut self, wanted: &str, count: usize) -> Result<(), String> {
+        let started = Instant::now();
+        loop {
+            self.console.extend(self.output.try_iter().flatten());
+            if count_lines(&String::from_utf8_lossy(self.console), wanted) >= count {
+                return Ok(());
+            }
+            if started.elapsed() > CLOSE_REQUEST_TIMEOUT {
+                return Err(format!("{}: no {count} `{wanted}` lines", self.arch.name));
+            }
+            std::thread::sleep(TERMINAL_FRAME_RETRY);
+        }
+    }
+
+    fn content(&self, id: WindowId) -> Result<Rect, String> {
+        self.desktop
+            .content_rect(id)
+            .ok_or_else(|| format!("{}: the window {id} is gone", self.arch.name))
+    }
+
+    fn answer_resize(&mut self, client: u16, id: WindowId, resizes: usize) -> Result<(), String> {
+        let content = self.content(id)?;
+        self.wait_for(
+            &format!(
+                "hello-window first: resized {}x{}",
+                content.width, content.height
+            ),
+            resizes,
         )?;
-        desktop
+        let refused = |error| format!("{}: the host refused a resize: {error:?}", self.arch.name);
+        self.desktop
+            .set_size(
+                client,
+                u32::from(id),
+                content.width,
+                content.height,
+                &mut Damage::new(),
+                &mut DiscardEvents,
+            )
+            .map_err(refused)?;
+        self.desktop
+            .commit(
+                client,
+                u32::from(id),
+                &[],
+                &mut Damage::new(),
+                &mut DiscardEvents,
+            )
+            .map_err(refused)
+    }
+
+    fn expect(&self, holds: bool, what: &str) -> Result<(), String> {
+        match holds {
+            true => Ok(()),
+            false => Err(format!("{}: {what}", self.arch.name)),
+        }
+    }
+
+    fn manage(&mut self, first: WindowId, second: WindowId) -> Result<(), String> {
+        let outside = self.desktop.window_rect(first).unwrap_or_default();
+        let (corner_x, corner_y) = (outside.right() - 2, outside.bottom() - 2);
+        self.pointer(corner_x, corner_y, None)?;
+        self.expect(
+            self.desktop.pointer().map(|(_, _, shape)| shape)
+                == Some(PointerShape::ResizeNorthWestSouthEast),
+            "the pointer over the corner is not the diagonal resize shape",
+        )?;
+        self.check("the resize pointer over the first window's corner")?;
+        self.pointer(corner_x, corner_y, Some(true))?;
+        self.pointer(corner_x + 50, corner_y + 30, None)?;
+        self.pointer(corner_x + 100, corner_y + 60, None)?;
+        self.pointer(corner_x + 100, corner_y + 60, Some(false))?;
+        let resized = self.content(first)?;
+        self.expect(
+            (resized.width, resized.height) == (WINDOW_CONTENT.0 + 100, WINDOW_CONTENT.1 + 60),
+            "the corner drag did not resize the first window by (100, 60)",
+        )?;
+        self.answer_resize(0, first, 1)?;
+        self.check("the first window resized from its corner")?;
+
+        let maximise = self
+            .desktop
+            .control_of(first, Part::Maximise)
+            .unwrap_or_default();
+        self.click(maximise.x + 10, maximise.y + 14)?;
+        self.expect(
+            self.desktop.is_maximised(first),
+            "the maximise control did not maximise the first window",
+        )?;
+        self.wait_for("hello-window first: state maximised", 1)?;
+        self.answer_resize(0, first, 1)?;
+        self.check("the first window maximised by its control")?;
+
+        let title = self.desktop.title_bar_of(first).unwrap_or_default();
+        let (title_x, title_y) = (title.x + title.width / 2, title.y + 14);
+        self.double_click(title_x, title_y)?;
+        self.expect(
+            !self.desktop.is_maximised(first),
+            "a double-click on the title bar did not restore the first window",
+        )?;
+        self.wait_for("hello-window first: state normal", 1)?;
+        self.answer_resize(0, first, 2)?;
+        self.check("the first window restored by a double-click")?;
+
+        let title = self.desktop.title_bar_of(first).unwrap_or_default();
+        let (title_x, title_y) = (title.x + title.width / 2, title.y + 14);
+        self.double_click(title_x, title_y)?;
+        self.expect(
+            self.desktop.is_maximised(first),
+            "a double-click on the title bar did not maximise the first window",
+        )?;
+        self.wait_for("hello-window first: state maximised", 2)?;
+        self.answer_resize(0, first, 2)?;
+        self.check("the first window maximised by a double-click")?;
+
+        let restore = self
+            .desktop
+            .control_of(first, Part::Maximise)
+            .unwrap_or_default();
+        self.click(restore.x + 10, restore.y + 14)?;
+        self.wait_for("hello-window first: state normal", 2)?;
+        self.answer_resize(0, first, 3)?;
+        self.check("the first window restored by its control")?;
+
+        self.key("alt", key::LEFT_ALT, true)?;
+        self.tap("tab", key::TAB)?;
+        let terminal = self.desktop.terminal_window();
+        let entries = self.desktop.switcher_entries();
+        self.expect(
+            entries == Some((vec![first, second, terminal], 1)),
+            "Alt+Tab did not open the switcher on the second window",
+        )?;
+        self.check("the switcher open on the second window")?;
+        self.tap("tab", key::TAB)?;
+        self.check("the switcher on the terminal")?;
+        self.key("alt", key::LEFT_ALT, false)?;
+        self.expect(
+            self.desktop.focused_window() == Some(terminal)
+                && self.desktop.stacking().last() == Some(terminal),
+            "releasing Alt did not raise and focus the terminal",
+        )?;
+        self.check("the terminal chosen in the switcher")?;
+        self.key("alt", key::LEFT_ALT, true)?;
+        self.tap("tab", key::TAB)?;
+        self.key("alt", key::LEFT_ALT, false)?;
+        self.expect(
+            self.desktop.focused_window() == Some(first),
+            "Alt+Tab did not go back to the first window",
+        )?;
+        self.check("the first window chosen with Alt+Tab")?;
+
+        self.key("alt", key::LEFT_ALT, true)?;
+        self.tap("f4", key::F4)?;
+        self.key("alt", key::LEFT_ALT, false)?;
+        self.wait_for("hello-window first: close request", 1)?;
+        self.destroy(0, first)?;
+        self.check("the first window closed with Alt+F4")?;
+
+        self.key("alt", key::LEFT_ALT, true)?;
+        self.tap("tab", key::TAB)?;
+        self.key("alt", key::LEFT_ALT, false)?;
+        self.expect(
+            self.desktop.stacking().last() == Some(second),
+            "Alt+Tab did not raise the second window",
+        )?;
+        let close = self.desktop.close_control(second).unwrap_or_default();
+        self.click(close.x + 10, close.y + 14)?;
+        self.wait_for("hello-window second: close request", 1)?;
+        self.destroy(1, second)?;
+        self.check("the second window closed by its close control")
+    }
+
+    fn destroy(&mut self, client: u16, id: WindowId) -> Result<(), String> {
+        self.desktop
             .destroy(
                 client,
                 u32::from(id),
                 &mut Damage::new(),
                 &mut DiscardEvents,
             )
-            .map_err(refused)?;
-        check(
-            &mut qmp,
-            &desktop,
-            console,
-            &format!("the {name} window closed by its close control"),
-        )?;
+            .map_err(|error| {
+                format!(
+                    "{}: the host's desktop refused to destroy a window: {error:?}",
+                    self.arch.name
+                )
+            })
     }
-    Ok(())
 }
 
 fn screen_size(qmp: &mut Qmp, arch: &Arch) -> Result<(u32, u32), String> {
@@ -2376,8 +2654,11 @@ mod tests {
             let command = String::from_utf8_lossy(typed);
             ok.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
             for line in output {
-                if let Line::Whole(line) = line {
-                    ok.push_str(&format!("{line}\r\n"));
+                match line {
+                    Line::Whole(line) => ok.push_str(&format!("{line}\r\n")),
+                    Line::Around(start, end) => {
+                        ok.push_str(&format!("{start}311 192 658 458{end}\r\n"))
+                    }
                 }
             }
         }
@@ -2610,7 +2891,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 23 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 24 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

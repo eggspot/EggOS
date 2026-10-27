@@ -20,7 +20,7 @@ use core::ops::ControlFlow;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, create_reply,
-    put_double_word, put_word, request, set_size_reply, size,
+    list_reply, put_double_word, put_word, request, set_size_reply, size,
 };
 use eggos_drivers::desktop::{Desktop, WindowId};
 use eggos_drivers::display::Damage;
@@ -38,6 +38,7 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::NotAllowed) => Errno::EPERM,
         ServerError::Refused(WindowError::TableFull) => Errno::ENOSPC,
         ServerError::Refused(WindowError::Unsupported) => Errno::EOPNOTSUPP,
+        ServerError::Refused(WindowError::NoSuchWindow) => Errno::ENOENT,
         ServerError::NoServer => Errno::ENXIO,
         ServerError::NoClientSlot => Errno::ENFILE,
         ServerError::OutOfMemory => Errno::ENOMEM,
@@ -76,6 +77,19 @@ pub fn ioctl<P: Platform>(
     }
     let request = Request::parse(number, bytes).ok_or(Errno::ENOTTY)?;
     let client = connection.client().id();
+    let manages = matches!(
+        request,
+        Request::ListWindow { .. } | Request::ManageWindow { .. }
+    );
+    if manages
+        && !process
+            .credentials_and_limits()
+            .lock()
+            .credentials
+            .is_privileged()
+    {
+        return Err(Errno::EPERM);
+    }
     match request {
         Request::Create {
             role,
@@ -173,6 +187,35 @@ pub fn ioctl<P: Platform>(
                 .write_user_memory(argument, bytes)
                 .map_err(|_| Errno::EFAULT)?;
         }
+        Request::ListWindow { index } => {
+            let info = on_windows::<P, _>(|desktop, _, _, _| desktop.window_info(index as usize))?;
+            bytes.fill(0);
+            for (offset, value) in [
+                (list_reply::WINDOW, u32::from(info.id)),
+                (list_reply::STATE, info.state.value()),
+                (list_reply::X, info.rect.x),
+                (list_reply::Y, info.rect.y),
+                (list_reply::WIDTH, info.rect.width),
+                (list_reply::HEIGHT, info.rect.height),
+                (list_reply::CLIENT, u32::from(info.client)),
+                (list_reply::TITLE_LENGTH, info.title_length as u32),
+            ] {
+                put_word(bytes, offset, value);
+            }
+            bytes[list_reply::TITLE..list_reply::TITLE + info.title.len()]
+                .copy_from_slice(&info.title);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ManageWindow {
+            window,
+            action,
+            a,
+            b,
+        } => on_windows::<P, _>(|desktop, _, damage, events| {
+            desktop.manage(window, action, a, b, damage, events)
+        })?,
     }
     Ok(0)
 }

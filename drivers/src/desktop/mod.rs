@@ -29,7 +29,7 @@ mod tests;
 mod window_tests;
 
 pub use events::EventQueue;
-pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, NOT_RESPONDING_AFTER_MS};
+pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, NOT_RESPONDING_AFTER_MS, WindowInfo};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
 pub use shortcuts::{Profile, Shortcut, shortcut};
 pub use windows::{

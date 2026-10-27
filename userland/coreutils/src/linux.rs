@@ -163,6 +163,20 @@ impl System for Linux {
         let path = path.as_ptr() as usize;
         call(number::UTIMENSAT, [AT_FDCWD, path, 0, 0, 0, 0]).map(|_| ())
     }
+
+    fn device_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Result<(), Errno> {
+        let pointer = argument.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [descriptor, request as usize, pointer, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
 }
 
 /// The program's main function: see the crate's documentation.

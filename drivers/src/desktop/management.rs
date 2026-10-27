@@ -4,7 +4,10 @@
 
 use super::pointer;
 use super::popups::{Switcher, WindowMenu};
-use super::protocol::{EventRecord, EventSink, PointerShape, Role, WindowState, event};
+use super::protocol::{
+    EventRecord, EventSink, Management, PointerShape, Role, TITLE_CAPACITY, WindowError,
+    WindowState, event,
+};
 use super::shortcuts::{Shortcut, shortcut};
 use super::windows::{self, Geometry, Part, edge, resize_pointer};
 use super::{BAR_HEIGHT, Desktop, contains};
@@ -17,6 +20,23 @@ pub const CLOSE_TIMEOUT_MS: u32 = 2000;
 pub const NOT_RESPONDING_AFTER_MS: u32 = 500;
 /// How far the window menu's keyboard move and size go per arrow key.
 pub const KEYBOARD_STEP: u32 = 8;
+
+/// One window as `wm list` shows it ([`Desktop::window_info`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowInfo {
+    /// Its id.
+    pub id: super::WindowId,
+    /// Normal, minimised or maximised.
+    pub state: WindowState,
+    /// Its outside rectangle on the screen.
+    pub rect: Rect,
+    /// Its client's number, [`super::KERNEL_CLIENT`] for the kernel's.
+    pub client: u16,
+    /// Its title, [`Self::title_length`] bytes of UTF-8.
+    pub title: [u8; TITLE_CAPACITY],
+    /// See [`Self::title`].
+    pub title_length: usize,
+}
 
 /// A resize the user started on a window's edge or corner: the window, its edges, its outside
 /// rectangle when it started and where the pointer was.
@@ -33,6 +53,99 @@ impl Desktop {
     /// double-clicks and close requests are timed by it.
     pub fn set_time(&mut self, now_ms: u32) {
         self.now_ms = now_ms;
+    }
+
+    /// The window at `index` among the shown windows (minimised ones included), in the order
+    /// they were created; [`WindowError::NoSuchWindow`] past the last.
+    pub fn window_info(&self, index: usize) -> Result<WindowInfo, WindowError> {
+        let slot = self.created[..self.created_length]
+            .iter()
+            .map(|&slot| usize::from(slot))
+            .filter(|&slot| self.window_at(slot).shown)
+            .nth(index)
+            .ok_or(WindowError::NoSuchWindow)?;
+        let window = self.window_at(slot);
+        let state = match (window.minimised, window.maximised) {
+            (true, _) => WindowState::Minimised,
+            (false, true) => WindowState::Maximised,
+            (false, false) => WindowState::Normal,
+        };
+        Ok(WindowInfo {
+            id: window.id,
+            state,
+            rect: window.outside(),
+            client: window.client,
+            title: window.title,
+            title_length: usize::from(window.title_length),
+        })
+    }
+
+    /// Does `action` ([`Management`]'s numbers) to window `id`, whoever's it is, as `wm`
+    /// asks: with (`a`, `b`) the position of `Move` or the content size of `Size`.
+    pub fn manage(
+        &mut self,
+        id: u32,
+        action: u32,
+        a: i32,
+        b: i32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let id = super::WindowId::try_from(id).map_err(|_| WindowError::Invalid)?;
+        let slot = self
+            .find(id)
+            .filter(|&slot| self.window_at(slot).shown)
+            .ok_or(WindowError::Invalid)?;
+        let action = Management::from_value(action).ok_or(WindowError::Invalid)?;
+        let window = *self.window_at(slot);
+        match action {
+            Management::Focus => self.activate(slot, damage, events),
+            Management::Minimise if window.role != Role::Normal => {
+                return Err(WindowError::Invalid);
+            }
+            Management::Minimise => self.minimise(slot, damage, events),
+            Management::Maximise if !window.can_maximise() => return Err(WindowError::Invalid),
+            Management::Maximise => {
+                self.restore(slot, damage, events);
+                self.maximise(slot, damage, events);
+            }
+            Management::Restore => {
+                self.restore(slot, damage, events);
+                self.unmaximise(slot, damage, events);
+            }
+            Management::Close if !window.closable => return Err(WindowError::NotAllowed),
+            Management::Close => self.request_close(slot, events),
+            Management::Move => {
+                self.unmaximise(slot, damage, events);
+                self.move_window(slot, i64::from(a), i64::from(b), damage);
+            }
+            Management::Size if window.role != Role::Normal || window.is_fixed_size() => {
+                return Err(WindowError::Invalid);
+            }
+            Management::Size => {
+                self.unmaximise(slot, damage, events);
+                let window = *self.window_at(slot);
+                let outside = window.outside();
+                let wanted = |value: i32, chrome: u32| i64::from(value.max(0)) + i64::from(chrome);
+                let outside = windows::resized(
+                    outside,
+                    edge::RIGHT | edge::BOTTOM,
+                    wanted(a, windows::CHROME.0) - i64::from(outside.width),
+                    wanted(b, windows::CHROME.1) - i64::from(outside.height),
+                    self.minimum_outside_of(slot),
+                    self.work_area(),
+                );
+                let geometry = Geometry {
+                    x: outside.x,
+                    y: outside.y,
+                    content_width: outside.width - windows::CHROME.0,
+                    content_height: outside.height - windows::CHROME.1,
+                };
+                self.apply_geometry(slot, geometry, window.with_shadow(), damage, events);
+            }
+        }
+        self.update_pointer(damage);
+        Ok(())
     }
 
     /// Makes `profile` the desktop's layout profile: the side of the controls and the
@@ -485,8 +598,9 @@ impl Desktop {
             .flatten()
             .any(|window| window.hidden_by_show_desktop && window.minimised);
         if hidden {
-            for index in 0..self.stack_length {
-                let slot = usize::from(self.stack[index]);
+            let stack = self.stack;
+            for &slot in &stack[..self.stack_length] {
+                let slot = usize::from(slot);
                 let window = self.window_at(slot);
                 if window.hidden_by_show_desktop && window.minimised {
                     self.restore(slot, damage, events);
