@@ -80,7 +80,7 @@ struct Drag {
 }
 
 /// The widgets of one window, at most `N`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WidgetTree<const N: usize> {
     nodes: [Option<Node>; N],
     count: usize,

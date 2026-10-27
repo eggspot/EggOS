@@ -93,6 +93,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-settings"
+version = "0.2.0"
+dependencies = [
+ "eggos-runtime",
+ "eggos-settings-file",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-settings-file"
 version = "0.2.0"
 
@@ -137,6 +146,9 @@ version = "0.2.0"
 dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-settings",
+ "eggos-settings-file",
+ "eggos-toolkit",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",
 ]

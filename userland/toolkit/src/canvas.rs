@@ -43,9 +43,7 @@ impl Shape<'_> {
     }
 }
 
-/// A shape shrunk by one pixel on every side, so an outline one pixel wide is what lies between
-/// the two: a pixel stays when it and its four neighbours are inside.
-fn eroded(insets: &[i32], height: i32, into: &mut [i32; LONGEST_INSETS]) -> usize {
+fn shrunk_by_one_pixel(insets: &[i32], height: i32, into: &mut [i32; LONGEST_INSETS]) -> usize {
     let at = |row: i32| -> i32 {
         if row < 0 {
             i32::MAX / 4
@@ -177,7 +175,8 @@ impl<'a> Canvas<'a> {
         let mut inner_rect = rect;
         for _ in 0..width {
             let mut next = [0i32; LONGEST_INSETS];
-            inner_count = eroded(&inner_insets[..inner_count], inner_rect.height, &mut next);
+            inner_count =
+                shrunk_by_one_pixel(&inner_insets[..inner_count], inner_rect.height, &mut next);
             inner_insets = next;
             inner_rect = inner_rect.inset(1);
         }
@@ -300,7 +299,7 @@ mod tests {
     #[test]
     fn the_eroded_insets_of_radius_6_are_the_desktop_s() {
         let mut inner = [0; LONGEST_INSETS];
-        let count = eroded(&INSET_R6, 40, &mut inner);
+        let count = shrunk_by_one_pixel(&INSET_R6, 40, &mut inner);
         assert_eq!(&inner[..count], &[3, 1, 1]);
     }
 
