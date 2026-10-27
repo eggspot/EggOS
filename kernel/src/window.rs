@@ -591,7 +591,7 @@ mod tests {
             restarted.has(&new),
             "an old client's going leaves the new one"
         );
-        let ids: alloc::vec::Vec<u16> = (0..3000).map(client_number).collect();
+        let ids: alloc::vec::Vec<u16> = (0..3000).map(|_| client_number(MAX_CLIENTS - 1)).collect();
         assert!(ids.iter().all(|&id| id != KERNEL_CLIENT));
         restarted.remove(&new);
         assert!(!restarted.has(&new));

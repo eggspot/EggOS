@@ -487,8 +487,8 @@ impl Desktop {
 
     /// The clock reached `now_ms`: windows whose close request went unread for
     /// [`NOT_RESPONDING_AFTER_MS`] say `(not responding)`, and those unread for
-    /// [`CLOSE_TIMEOUT_MS`] are destroyed (their programs keep running). Returns whether any
-    /// was destroyed.
+    /// [`CLOSE_TIMEOUT_MS`] are destroyed (their programs keep running). A clock behind the
+    /// request counts as no time waited. Returns whether any was destroyed.
     pub fn tick(&mut self, now_ms: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
         self.now_ms = now_ms;
         let mut destroyed = false;
@@ -499,7 +499,7 @@ impl Desktop {
             let Some(asked) = window.close_requested_ms else {
                 continue;
             };
-            let waited = now_ms.wrapping_sub(asked);
+            let waited = (now_ms.wrapping_sub(asked) as i32).max(0) as u32;
             if waited >= CLOSE_TIMEOUT_MS {
                 self.destroy_slot(slot, damage, events);
                 destroyed = true;
