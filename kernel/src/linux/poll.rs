@@ -7,9 +7,12 @@
 //! writable, as the console takes every byte at once, and readable when a read would take
 //! input without waiting for more (D100, superseding D61's "never readable"): a whole line in
 //! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
-//! descriptor is closed (`POLLNVAL`). A call that finds nothing ready waits until its timeout,
-//! or for good without one, unless `ppoll`'s signal mask lets a pending signal interrupt it
-//! first (D71); one that asks for the console's input is woken when it becomes readable.
+//! descriptor is closed (`POLLNVAL`). Pipes report what their ends allow (D125), and
+//! `/dev/window` reports `POLLIN` while an event waits (D127). A call that finds nothing ready
+//! waits until its timeout, or for good without one, unless `ppoll`'s signal mask lets a pending
+//! signal interrupt it first (D71); one that asks for the console's input, or watches a pipe or
+//! a window, is woken when the console's input, a pipe or a window's events change, and looks
+//! again only at what it watches.
 
 use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::terminal::{self, Waited};

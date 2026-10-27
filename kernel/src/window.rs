@@ -285,7 +285,6 @@ impl Clients {
         }
     }
 
-    /// A new client with an empty `queue`; `None` when every number is taken.
     fn add(&mut self, queue: EventQueue) -> Option<Arc<Client>> {
         let id = self.slots.iter().position(Option::is_none)?;
         let client = Arc::new(Client {

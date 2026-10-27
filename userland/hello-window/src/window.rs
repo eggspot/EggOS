@@ -216,7 +216,7 @@ fn serve(fd: usize, window: u32, title: &[u8]) -> i32 {
         if read <= 0 {
             return fail(title, b"cannot read events");
         }
-        for record in records[..read as usize].chunks_exact(RECORD) {
+        for record in records[..read as usize].as_chunks::<RECORD>().0 {
             let kind = u16::from_ne_bytes([record[0], record[1]]);
             let target = u16::from_ne_bytes([record[2], record[3]]);
             if kind == CLOSE_REQUEST && u32::from(target) == window {

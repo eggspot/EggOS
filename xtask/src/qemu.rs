@@ -2392,7 +2392,10 @@ mod tests {
         assert!(verdict("aarch64", Expect::ProgramWindows, true, &swapped).is_err());
         assert!(has_line(&ok, "hello-window first: shown"));
         assert!(!has_line(&ok, "hello-window first: show"));
-        assert!(!has_line("hello-window first: shown", "hello-window first: shown"));
+        assert!(!has_line(
+            "hello-window first: shown",
+            "hello-window first: shown"
+        ));
     }
 
     #[test]

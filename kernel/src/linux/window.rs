@@ -29,7 +29,6 @@ use eggos_hal::user::UserContext;
 
 const READ_RECORDS: usize = 16;
 
-/// The scale every window has in 0.3.0.
 const SCALE: u32 = 1;
 
 fn errno(error: ServerError) -> Errno {

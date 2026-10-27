@@ -1465,11 +1465,6 @@ impl Desktop {
         self.minimise(TERMINAL_SLOT, damage, events);
     }
 
-    /// Shows the minimised terminal window again where it was, on top and focused.
-    pub fn restore_terminal(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
-        self.restore(TERMINAL_SLOT, damage, events);
-    }
-
     /// Paints the part of the desktop inside `clip` into `pixels`, rows `stride` pixels apart,
     /// from scratch: the wallpaper, the windows bottom to top with their shadows and their
     /// content from `contents`, the bar and the menu. A rectangle inside the content of the
