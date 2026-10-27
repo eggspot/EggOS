@@ -18,6 +18,7 @@ driver.
 | `kernel/src/devices/virtio.rs` | virtio-mmio and virtio-pci as bus drivers, virtio-rng, virtio-gpu, virtio-input and virtio-blk on top |
 | `kernel/src/block.rs` | Disks: the `BlockDevice` drivers install and file systems take |
 | `kernel/src/vfs/fat.rs` | The read-only FAT file system the host folder is mounted with |
+| `eggfs/` (`eggos-eggfs`), `kernel/src/vfs/eggfs.rs` | EggFS, the journaled file system of the persistent disk (D131, docs/eggfs.md), and its folders in the VFS |
 | `kernel/src/display.rs` | The display: the framebuffer a display driver installs, damage, flushes, the first frame |
 | `kernel/src/input.rs` | Input: the devices drivers install, polling, keys to the console's line discipline, the input event queue |
 | `kernel/src/terminal.rs` | The graphical terminal: the console's session mirrored on the display, the drawing thread |
@@ -137,7 +138,9 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   descriptors (header, data, status), a transfer over 60 KiB split into several. The disk is
   addressed in 512-byte sectors whatever its block size; `VIRTIO_BLK_F_RO` is accepted and a
   read-only disk refuses writes before any request; the capacity comes from the
-  configuration. The data is copied between the caller and the region once the request is
+  configuration. `VIRTIO_BLK_F_FLUSH` is accepted when offered, and `flush` then sends a flush
+  request (header and status only) so writes before it reach stable storage (D131); a device
+  without it has no volatile cache. The data is copied between the caller and the region once the request is
   answered. A request not answered by its deadline stays posted and the next waits for it.
   The driver installs the disk with `block::install`.
 
@@ -180,15 +183,23 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 
 `kernel/src/block.rs` (D130) is where disks go:
 
-- A driver implements `block::BlockDevice` (`sectors`, `is_read_only`, `read` and `write` of
-  whole 512-byte sectors polling until a `Deadline`) and calls `block::install` (at most
-  `MAX_DISKS`, 4). A file system takes a disk with `block::take_first` and owns it from then on,
-  so nothing else reaches the device; one it cannot use goes back with `install`. With no disk
-  nothing is allocated.
-- At boot, after `/proc`, `/dev`, `/tmp` and `/home`, the kernel takes the first disk and, if
-  the root has `/media/host`, mounts the FAT volume on it there read-only
-  (`vfs::fat::Fat::mount`: the whole disk or its first MBR partition holding one), printing
-  `vfs: FAT16 disk "QEMU VVFAT" mounted read-only at /media/host`, or why not.
+- A driver implements `block::BlockDevice` (`sectors`, `is_read_only`, `read`, `write` of
+  whole 512-byte sectors and `flush`, polling until a `Deadline`) and calls `block::install`
+  (at most `MAX_DISKS`, 4). At boot `block::take_all` hands every disk to the mounting code,
+  and a file system owns the one it takes, so nothing else reaches the device; the others go
+  back with `install`. With no disk nothing is allocated.
+- At boot, before `/tmp` and `/home` get their memory file systems, the kernel reads what
+  each disk holds, never relying on their order (D131): EggFS (or a blank writable disk, which
+  it formats) is mounted at `/home` and `/Applications` (`vfs::eggfs`), printing `vfs: EggFS
+  disk mounted at /home and /Applications (...)`; a FAT volume on the whole disk or its first
+  MBR partition read-only at `/media/host` (`vfs::fat::Fat::mount`), printing `vfs: FAT16
+  disk "QEMU VVFAT" mounted read-only at /media/host`; anything else is left untouched and
+  reported. Both file systems hold their disk under a `SleepLock`, so a thread waiting for a
+  transfer sleeps.
+- The persistent disk: `cargo xtask run` and the run scripts attach `eggos-<arch>-disk.img`
+  (`qemu::disk_args`: `-blockdev driver=file,node-name=eggfs-file,filename=<image>
+  -blockdev driver=raw,node-name=eggfs,file=eggfs-file -device <the virtio-blk device>,
+  drive=eggfs`).
 - The host folder: `cargo xtask run --apps <folder>` and the run scripts' `--apps` attach a
   host folder with QEMU's `vvfat` driver on the virtio block device (`-blockdev
   driver=vvfat,node-name=host,dir=<folder>,read-only=on -device virtio-blk-device,drive=host`
@@ -252,8 +263,8 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 
 Device interrupts for drivers (issue #97, slice 3: GICv2 SPIs, the PLIC, MSI-X; then input
 needs no poller), keyboard layouts other than US and the keyboard's LEDs, the virtio GPU's
-cursor queue, display events (a mode change), several requests in flight and writes through a
-file system on virtio-blk (item 25), modes whose buffer is larger than one DMA
+cursor queue, display events (a mode change), several requests in flight and interrupts on
+virtio-blk, modes whose buffer is larger than one DMA
 region (4 MiB), and a display lock that sleeps instead of spinning, DMA cache
 maintenance for non-coherent devices, `ranges` translation in the device tree, PCI on Arm and
 RISC-V (a BAR allocator), ACPI devices beyond the `MCFG` (AML, M13), unmapping windows and

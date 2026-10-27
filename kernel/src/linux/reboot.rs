@@ -4,9 +4,10 @@
 //! `LINUX_REBOOT_MAGIC1` and `magic2` one of the four `LINUX_REBOOT_MAGIC2` values; then
 //! `EINVAL` for a command it does not know or has not built in (`KEXEC`, `SW_SUSPEND`).
 //! `CAD_ON` and `CAD_OFF` succeed and change nothing: no key combination resets the machine.
-//! `RESTART2` resets as `RESTART` does, its command string unread. Nothing is synced: there is
-//! no writable file system yet. Before the machine goes down every other CPU is parked
-//! ([`crate::cpu::stop_others`]), and the console says what happens, in Linux's words.
+//! `RESTART2` resets as `RESTART` does, its command string unread. Before the machine goes down
+//! every file system's changes are put on the disk ([`crate::vfs::sync_all`], D131), every
+//! other CPU is parked ([`crate::cpu::stop_others`]), and the console says what happens, in
+//! Linux's words.
 
 use super::Errno;
 use super::credentials::{self, Kind};
@@ -98,11 +99,15 @@ pub fn reboot<P: Platform>(
     }
 }
 
-/// Parks every other CPU, says `action`'s line on the console, then takes the machine down as
-/// `action` says.
+/// Puts every file system's changes on the disk ([`crate::vfs::sync_all`], D131), parks every
+/// other CPU, says `action`'s line on the console, then takes the machine down as `action`
+/// says: for `reboot(2)` and the desktop's power menu alike. Call it as
+/// [`crate::thread::yield_now`] is called, with no spin lock held: syncing may sleep on a file
+/// system's lock.
 #[cold]
 #[inline(never)]
 pub fn take_machine_down<P: Platform>(action: Action) -> ! {
+    let _ = crate::vfs::sync_all();
     crate::cpu::stop_others::<P>();
     if let Some(line) = action.announcement() {
         let _ = writeln!(crate::console::PlatformConsole::<P>::new(), "{line}");

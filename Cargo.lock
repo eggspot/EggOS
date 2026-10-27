@@ -21,6 +21,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-eggfs"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-eggsh"
 version = "0.2.0"
 dependencies = [
@@ -57,6 +61,7 @@ name = "eggos-kernel"
 version = "0.2.0"
 dependencies = [
  "eggos-drivers",
+ "eggos-eggfs",
  "eggos-hal",
 ]
 
@@ -118,6 +123,7 @@ name = "xtask"
 version = "0.2.0"
 dependencies = [
  "eggos-drivers",
+ "eggos-eggfs",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",
 ]

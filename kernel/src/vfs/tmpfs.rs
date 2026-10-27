@@ -1,4 +1,5 @@
-//! A writable file system in memory (D125), mounted on `/tmp` and `/home` at boot: directories
+//! A writable file system in memory (D125), mounted on `/tmp` at boot, and on `/home` when no
+//! disk holds it (D131): directories
 //! and regular files that can be created, written, appended to, truncated, renamed and
 //! removed. Contents are kept in pages taken as they are written, from a [`Budget`] that the
 //! file systems sharing it draw on; a write past it fails with [`Refused::NoSpace`], and

@@ -127,11 +127,17 @@ struct ScriptArch {
     serial: Vec<String>,
     shell_folder: Vec<String>,
     powershell_folder: Vec<String>,
+    shell_disk: Vec<String>,
+    powershell_disk: Vec<String>,
 }
 
 const SHELL_FOLDER: &str = "$folder";
 
 const POWERSHELL_FOLDER: &str = "$Folder";
+
+const SHELL_DISK: &str = "$disk_path";
+
+const POWERSHELL_DISK: &str = "$DiskPath";
 
 fn script_arches() -> Vec<ScriptArch> {
     ARCHES
@@ -142,6 +148,8 @@ fn script_arches() -> Vec<ScriptArch> {
             serial: qemu::interactive_args(arch, false),
             shell_folder: qemu::host_folder_args(arch, SHELL_FOLDER),
             powershell_folder: qemu::host_folder_args(arch, POWERSHELL_FOLDER),
+            shell_disk: qemu::disk_args(arch, SHELL_DISK),
+            powershell_disk: qemu::disk_args(arch, POWERSHELL_DISK),
         })
         .collect()
 }
@@ -173,7 +181,14 @@ fn shell_script(arches: &[ScriptArch]) -> String {
     let names: Vec<&str> = arches.iter().map(|arch| arch.name).collect();
     let mut cases = String::new();
     let mut folder_cases = String::new();
+    let mut disk_cases = String::new();
     for arch in arches {
+        let _ = writeln!(
+            disk_cases,
+            "    {}) set -- \"$@\" {} ;;",
+            arch.name,
+            double_quoted(&arch.shell_disk)
+        );
         let _ = writeln!(
             cases,
             "  {}:window) set -- {} ;;\n  {}:serial) set -- {} ;;",
@@ -193,7 +208,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial] [--apps <folder>]"
+usage="usage: run-eggos.sh [{choices}] [--serial] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -201,6 +216,9 @@ case "$(uname -m)" in
 esac
 mode=window
 apps=''
+disk=''
+no_disk=''
+format_disk=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) mode=serial ;;
@@ -208,6 +226,12 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
       shift
       apps="$1" ;;
+    --disk)
+      if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
+      shift
+      disk="$1" ;;
+    --no-disk) no_disk=yes ;;
+    --format-disk) format_disk=yes ;;
     {alternatives}) arch="$1" ;;
     -h | --help) echo "$usage"; exit 0 ;;
     *) echo "$usage" >&2; exit 2 ;;
@@ -220,6 +244,10 @@ if [ -n "$apps" ]; then
     exit 1
   fi
   folder=$(CDPATH= cd -- "$apps" && pwd | sed 's/,/,,/g')
+fi
+if [ -n "$no_disk" ] && [ -n "$disk$format_disk" ]; then
+  echo "$usage" >&2
+  exit 2
 fi
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 file="eggos-$version-$arch.elf"
@@ -263,6 +291,21 @@ if [ -n "$apps" ]; then
 {folder_cases}  esac
   echo "run-eggos.sh: $apps is at /media/host in EggOS, read-only."
 fi
+if [ -z "$no_disk" ]; then
+  if [ -z "$disk" ]; then disk="$dir/eggos-$arch-disk.img"; fi
+  if [ -n "$format_disk" ]; then
+    : > "$disk"
+    echo "run-eggos.sh: emptied $disk: EggOS formats it at boot."
+  fi
+  if [ ! -s "$disk" ]; then
+    dd if=/dev/null of="$disk" bs=1 seek={disk_bytes} 2>/dev/null
+  fi
+  disk_path=$(CDPATH= cd -- "$(dirname -- "$disk")" && pwd)/$(basename -- "$disk")
+  disk_path=$(printf '%s' "$disk_path" | sed 's/,/,,/g')
+  case "$arch" in
+{disk_cases}  esac
+  echo "run-eggos.sh: $disk holds /home and /Applications in EggOS (--no-disk: none)."
+fi
 if [ "$mode" = window ]; then
   echo "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
 else
@@ -272,6 +315,7 @@ exec "$qemu" "$@" -kernel "$image"
 "#,
         choices = names.join("|"),
         alternatives = names.join(" | "),
+        disk_bytes = qemu::DISK_IMAGE_BYTES,
     )
 }
 
@@ -282,7 +326,14 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         .collect();
     let mut cases = String::new();
     let mut folder_cases = String::new();
+    let mut disk_cases = String::new();
     for arch in arches {
+        let _ = writeln!(
+            disk_cases,
+            "        '{}' {{ @({}) }}",
+            arch.name,
+            double_quoted(&arch.powershell_disk).replace("\" \"", "\", \"")
+        );
         let list = |args: &[String]| single_quoted(args).replace("' '", "', '");
         let _ = writeln!(
             cases,
@@ -304,13 +355,16 @@ param(
     [string]$Arch,
     [switch]$Serial,
     [string]$Apps,
+    [string]$Disk,
+    [switch]$NoDisk,
+    [switch]$FormatDisk,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial] [-Apps <folder>]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
 for ($i = 0; $i -lt $Rest.Count; $i++) {{
     $argument = $Rest[$i]
     if ($argument -eq '--serial') {{
@@ -318,12 +372,23 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {{
     }} elseif ($argument -eq '--apps' -and $i + 1 -lt $Rest.Count) {{
         $i++
         $Apps = $Rest[$i]
+    }} elseif ($argument -eq '--disk' -and $i + 1 -lt $Rest.Count) {{
+        $i++
+        $Disk = $Rest[$i]
+    }} elseif ($argument -eq '--no-disk') {{
+        $NoDisk = $true
+    }} elseif ($argument -eq '--format-disk') {{
+        $FormatDisk = $true
     }} elseif ($Arches -contains $argument -and -not $Arch) {{
         $Arch = $argument
     }} else {{
         Write-Error "run-eggos.ps1: $Usage"
         exit 2
     }}
+}}
+if ($NoDisk -and ($Disk -or $FormatDisk)) {{
+    Write-Error "run-eggos.ps1: $Usage"
+    exit 2
 }}
 if ($Arch -and $Arches -notcontains $Arch) {{
     Write-Error "run-eggos.ps1: $Usage"
@@ -381,6 +446,29 @@ if ($Apps) {{
 {folder_cases}    }}
     Write-Host "run-eggos.ps1: $Apps is at /media/host in EggOS, read-only."
 }}
+if (-not $NoDisk) {{
+    if (-not $Disk) {{ $Disk = Join-Path $PSScriptRoot "eggos-$Arch-disk.img" }}
+    $Disk = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Disk)
+    $missing = -not (Test-Path -LiteralPath $Disk) -or (Get-Item -LiteralPath $Disk).Length -eq 0
+    if ($FormatDisk -or $missing) {{
+        $QemuImg = Join-Path (Split-Path -Parent (Get-Command $Qemu).Source) 'qemu-img.exe'
+        $created = $false
+        if (Test-Path -LiteralPath $QemuImg) {{
+            & $QemuImg create -q -f raw $Disk {disk_bytes}
+            $created = $LASTEXITCODE -eq 0
+        }}
+        if (-not $created) {{
+            $stream = [System.IO.File]::Open($Disk, [System.IO.FileMode]::Create)
+            $stream.SetLength({disk_bytes})
+            $stream.Close()
+        }}
+        if ($FormatDisk) {{ Write-Host "run-eggos.ps1: emptied ${{Disk}}: EggOS formats it at boot." }}
+    }}
+    $DiskPath = (Resolve-Path -LiteralPath $Disk).ProviderPath.Replace(',', ',,')
+    $QemuArgs += switch ($Arch) {{
+{disk_cases}    }}
+    Write-Host "run-eggos.ps1: $Disk holds /home and /Applications in EggOS (-NoDisk: none)."
+}}
 if ($Serial) {{
     Write-Host "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
 }} else {{
@@ -390,6 +478,7 @@ if ($Serial) {{
 exit $LASTEXITCODE
 "#,
         names = names.join(", "),
+        disk_bytes = qemu::DISK_IMAGE_BYTES,
         choices = arches
             .iter()
             .map(|arch| arch.name)
@@ -507,6 +596,18 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(", ");
             assert!(powershell.contains(&format!("        '{}' {{ @({folder}) }}\n", arch.name)));
+            let disk = qemu::disk_args(arch, "$disk_path")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(shell.contains(&format!("    {}) set -- \"$@\" {disk} ;;\n", arch.name)));
+            let disk = qemu::disk_args(arch, "$DiskPath")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert!(powershell.contains(&format!("        '{}' {{ @({disk}) }}\n", arch.name)));
         }
         assert!(shell.starts_with("#!/bin/sh\n"));
         assert!(shell.contains(&format!("version='{VERSION}'")));

@@ -1,5 +1,6 @@
 //! The virtio block device (virtio 1.2, 5.2), polled: one request queue, one request at a time,
-//! each a header the device reads, the data and a status byte the device writes. Disks are
+//! each a header the device reads, the data (none for a flush) and a status byte the device
+//! writes. Disks are
 //! addressed in sectors of [`SECTOR_SIZE`] bytes whatever their own block size; a transfer
 //! larger than [`MAX_TRANSFER`] goes as several requests.
 
@@ -38,6 +39,8 @@ const _: () = assert!(MAX_TRANSFER.is_multiple_of(SECTOR_SIZE));
 pub mod feature {
     /// The disk cannot be written.
     pub const READ_ONLY: u64 = 1 << 5;
+    /// The disk has a volatile write cache that a flush request writes back.
+    pub const FLUSH: u64 = 1 << 9;
 }
 
 /// Request types (`VIRTIO_BLK_T_*`).
@@ -46,6 +49,8 @@ pub mod request {
     pub const IN: u32 = 0;
     /// Write the data to sectors.
     pub const OUT: u32 = 1;
+    /// Write the disk's volatile cache back to stable storage; no data.
+    pub const FLUSH: u32 = 4;
 }
 
 /// The status byte's values (`VIRTIO_BLK_S_*`).
@@ -72,6 +77,7 @@ pub struct VirtioBlock<T: Transport, M: DmaMemory> {
     queue: SplitQueue,
     sectors: u64,
     read_only: bool,
+    flushes: bool,
     request_pending: bool,
 }
 
@@ -91,7 +97,8 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         if transport.device_type() != device_type::BLOCK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let accepted = match super::initialize(&transport, feature::READ_ONLY, keep_waiting) {
+        let wanted = feature::READ_ONLY | feature::FLUSH;
+        let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
         };
@@ -132,6 +139,7 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             queue,
             sectors,
             read_only: accepted & feature::READ_ONLY != 0,
+            flushes: accepted & feature::FLUSH != 0,
             request_pending: false,
         })
     }
@@ -212,6 +220,21 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         Ok(())
     }
 
+    /// Whether the device has a volatile write cache that [`Self::flush`] writes back.
+    pub fn has_write_cache(&self) -> bool {
+        self.flushes
+    }
+
+    /// Returns once every write before it is on stable storage, polling while `keep_waiting`
+    /// says to. A device that did not offer `VIRTIO_BLK_F_FLUSH` has no volatile cache: its
+    /// writes are stable when they complete, and there is nothing to do.
+    pub fn flush(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        if !self.flushes || self.read_only {
+            return Ok(());
+        }
+        self.request(request::FLUSH, 0, 0, keep_waiting)
+    }
+
     fn check_range(&self, sector: u64, bytes: usize) -> Result<(), Error> {
         if !bytes.is_multiple_of(SECTOR_SIZE) {
             return Err(Error::PartialSector);
@@ -255,24 +278,25 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
                 .checked_add(offset as u64)
                 .ok_or(Error::MemoryTooSmall)
         };
-        let chain = [
-            Buffer {
-                addr: at(HEADER_OFFSET)?,
-                len: HEADER_BYTES as u32,
-                device_writes: false,
-            },
-            Buffer {
-                addr: at(DATA_OFFSET)?,
-                len: len as u32,
-                device_writes: kind == request::IN,
-            },
-            Buffer {
-                addr: at(STATUS_OFFSET)?,
-                len: 1,
-                device_writes: true,
-            },
-        ];
-        self.queue.submit(&chain)?;
+        let header = Buffer {
+            addr: at(HEADER_OFFSET)?,
+            len: HEADER_BYTES as u32,
+            device_writes: false,
+        };
+        let status = Buffer {
+            addr: at(STATUS_OFFSET)?,
+            len: 1,
+            device_writes: true,
+        };
+        let data = Buffer {
+            addr: at(DATA_OFFSET)?,
+            len: len as u32,
+            device_writes: kind == request::IN,
+        };
+        match len {
+            0 => self.queue.submit(&[header, status])?,
+            _ => self.queue.submit(&[header, data, status])?,
+        };
         self.request_pending = true;
         if self.queue.should_notify() {
             self.transport.notify(REQUEST_QUEUE);

@@ -16,6 +16,7 @@ struct FakeDisk {
     device: RefCell<Option<DeviceSide>>,
     requests: RefCell<Vec<(u32, u64, u32)>>,
     not_a_disk: bool,
+    offers_flush: bool,
 }
 
 impl FakeDisk {
@@ -34,6 +35,7 @@ impl FakeDisk {
             device: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
             not_a_disk: false,
+            offers_flush: true,
         }
     }
 
@@ -44,13 +46,22 @@ impl FakeDisk {
             let (header, header_len, flags, data_index) = device.descriptor(head);
             assert_eq!(header_len as usize, HEADER_BYTES);
             assert_eq!(flags, DESCRIPTOR_NEXT);
+            let header = header.get() as *const u8;
+            // SAFETY: the request header the driver posted, inside the test's HostDma.
+            let kind = u32::from_le(unsafe { header.cast::<u32>().read() });
+            if kind == request::FLUSH {
+                let (status_at, status_len, status_flags, _) = device.descriptor(data_index);
+                assert_eq!((status_len, status_flags), (1, DESCRIPTOR_WRITE));
+                self.requests.borrow_mut().push((kind, 0, 0));
+                // SAFETY: the status byte the driver posted for the device to write.
+                unsafe { (status_at.get() as *mut u8).write(status::OK) };
+                device.put_used(head, 1);
+                continue;
+            }
             let (data, data_len, data_flags, status_index) = device.descriptor(data_index);
             assert_ne!(data_flags & DESCRIPTOR_NEXT, 0);
             let (status_at, status_len, status_flags, _) = device.descriptor(status_index);
             assert_eq!((status_len, status_flags), (1, DESCRIPTOR_WRITE));
-            let header = header.get() as *const u8;
-            // SAFETY: the request header the driver posted, inside the test's HostDma.
-            let kind = u32::from_le(unsafe { header.cast::<u32>().read() });
             // SAFETY: the header's reserved field.
             let reserved = unsafe { header.wrapping_add(4).cast::<u32>().read() };
             // SAFETY: the header's sector field.
@@ -117,7 +128,11 @@ impl Transport for FakeDisk {
             true => feature::READ_ONLY,
             false => 0,
         };
-        common_feature::VERSION_1 | read_only | 1 << 9
+        let flush = match self.offers_flush {
+            true => feature::FLUSH,
+            false => 0,
+        };
+        common_feature::VERSION_1 | read_only | flush
     }
     fn set_driver_features(&self, features: u64) {
         self.accepted.set(features);
@@ -189,7 +204,10 @@ fn the_disk_reports_its_capacity_and_is_driven_once_set_up() {
             | device_status::FEATURES_OK
             | device_status::DRIVER_OK
     );
-    assert_eq!(fake.accepted.get(), common_feature::VERSION_1);
+    assert_eq!(
+        fake.accepted.get(),
+        common_feature::VERSION_1 | feature::FLUSH
+    );
     assert!(
         fake.device
             .borrow()
@@ -208,12 +226,13 @@ fn a_read_only_disk_says_so_and_refuses_writes_without_a_request() {
     assert!(block.is_read_only());
     assert_eq!(
         block.transport().accepted.get(),
-        common_feature::VERSION_1 | feature::READ_ONLY
+        common_feature::VERSION_1 | feature::READ_ONLY | feature::FLUSH
     );
     assert_eq!(
         block.write(0, &[0; SECTOR_SIZE], &mut polls(10)),
         Err(Error::ReadOnly)
     );
+    block.flush(&mut polls(10)).unwrap();
     assert!(block.transport().requests.borrow().is_empty());
 }
 
@@ -357,4 +376,25 @@ fn a_queue_of_three_entries_holds_two_as_a_power_of_two_and_is_refused() {
         ..FakeDisk::new(1)
     };
     assert!(VirtioBlock::new(fake, memory(), &mut polls(10)).is_ok());
+}
+
+#[test]
+fn a_flush_is_a_request_without_data_only_on_a_disk_with_a_write_cache() {
+    let mut block = disk(FakeDisk::new(16));
+    assert!(block.has_write_cache());
+    block.write(2, &[7; SECTOR_SIZE], &mut polls(10)).unwrap();
+    block.flush(&mut polls(10)).unwrap();
+    assert_eq!(
+        *block.transport().requests.borrow(),
+        vec![
+            (request::OUT, 2, SECTOR_SIZE as u32),
+            (request::FLUSH, 0, 0)
+        ]
+    );
+    let mut fake = FakeDisk::new(16);
+    fake.offers_flush = false;
+    let mut block = disk(fake);
+    assert!(!block.has_write_cache());
+    block.flush(&mut polls(10)).unwrap();
+    assert!(block.transport().requests.borrow().is_empty());
 }

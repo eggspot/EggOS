@@ -37,7 +37,8 @@
 //! D95), and programs started from files with `execve` and `execveat` ([`exec`], D103), and
 //! children waited for with `wait4` and `waitid` ([`wait`], D105) and process groups,
 //! sessions and the console's foreground group ([`job_control`], D105), and the machine
-//! powered off, halted or reset with `reboot` ([`reboot`], D106). Every
+//! powered off, halted or reset with `reboot` ([`reboot`], D106), and changes put on the
+//! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -199,6 +200,10 @@ pub mod number {
         pub const UNLINKAT: u64 = 263;
         pub const RENAMEAT: u64 = 264;
         pub const UTIMENSAT: u64 = 280;
+        pub const FSYNC: u64 = 74;
+        pub const FDATASYNC: u64 = 75;
+        pub const SYNC: u64 = 162;
+        pub const SYNCFS: u64 = 306;
         pub const RENAMEAT2: u64 = 316;
         pub const GETRANDOM: u64 = 318;
         pub const EXECVEAT: u64 = 322;
@@ -226,6 +231,10 @@ pub mod number {
         pub const FTRUNCATE: u64 = 46;
         pub const PWRITE64: u64 = 68;
         pub const UTIMENSAT: u64 = 88;
+        pub const SYNC: u64 = 81;
+        pub const FSYNC: u64 = 82;
+        pub const FDATASYNC: u64 = 83;
+        pub const SYNCFS: u64 = 267;
         pub const RENAMEAT2: u64 = 276;
         pub const GETDENTS64: u64 = 61;
         pub const LSEEK: u64 = 62;
@@ -339,6 +348,10 @@ pub mod number {
             RENAMEAT,
             RENAMEAT2,
             UTIMENSAT,
+            SYNC,
+            FSYNC,
+            FDATASYNC,
+            SYNCFS,
             #[cfg(target_arch = "x86_64")]
             RENAME,
             #[cfg(target_arch = "x86_64")]
@@ -940,6 +953,9 @@ fn out_of_line_result<P: Platform>(
             file_changes::renameat2(process, thread, first, second, third, fourth, fifth)
         }
         number::UTIMENSAT => file_changes::utimensat(process, thread, first, second, third, fourth),
+        number::SYNC => file_changes::sync(),
+        number::FSYNC | number::FDATASYNC => file_changes::fsync(thread, first),
+        number::SYNCFS => file_changes::syncfs(thread, first),
         #[cfg(target_arch = "x86_64")]
         number::MKDIR => file_changes::mkdirat(process, thread, CWD, first, second),
         #[cfg(target_arch = "x86_64")]

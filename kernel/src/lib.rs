@@ -100,10 +100,8 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 if let Some(report) = vfs::mount_embedded_initramfs() {
                     report_root(console, report)?;
                 }
+                mount_disks::<P>(console)?;
                 mount_system_file_systems::<P>();
-                if let Some(host_folder) = mount_host_folder::<P>() {
-                    report_host_folder(console, host_folder)?;
-                }
                 if BOOT_MODE == BootMode::Init {
                     init::run(console, &mut memory)?;
                     return Ok(false);
@@ -141,13 +139,16 @@ fn mount_system_file_systems<P: Platform>() {
     if exists(b"/dev") {
         let _ = vfs::mount(b"/dev", &vfs::devfs::DeviceFiles);
     }
-    if !MEMORY_FILE_SYSTEMS.iter().any(|(path, _)| exists(path)) {
+    if !MEMORY_FILE_SYSTEMS
+        .iter()
+        .any(|(path, _)| exists(path) && !vfs::is_mount_point(path))
+    {
         return;
     }
     let limit = memory::total_frames() as usize * eggos_hal::memory::FRAME_SIZE as usize / 2;
     let budget: &'static vfs::tmpfs::Budget = Box::leak(Box::new(vfs::tmpfs::Budget::new(limit)));
     for (path, device) in MEMORY_FILE_SYSTEMS {
-        if !exists(path) {
+        if !exists(path) || vfs::is_mount_point(path) {
             continue;
         }
         let permissions = if path == b"/tmp" { 0o1777 } else { 0o755 };
@@ -161,41 +162,169 @@ const HOST_FOLDER: &[u8] = b"/media/host";
 
 const HOST_FOLDER_DEVICE: (u32, u32) = (254, 0);
 
-fn mount_host_folder<P: Platform>() -> Option<Result<&'static vfs::fat::Fat, &'static str>> {
+const PERSISTENT_DEVICE: (u32, u32) = (254, 1);
+
+const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 2] =
+    [(b"home", b"/home"), (b"Applications", b"/Applications")];
+
+fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
+    let mut persistent = false;
+    let mut host_folder = false;
+    for device in block::take_all().into_iter().flatten() {
+        let mut disk = vfs::eggfs::BlockDisk::new(device, devices::Deadline::after::<P>);
+        let contents = eggos_eggfs::probe(&mut disk);
+        let blank_writable = contents == Ok(eggos_eggfs::Contents::Blank) && !disk.is_read_only();
+        let ours = contents == Ok(eggos_eggfs::Contents::EggFs) || blank_writable;
+        if ours && !persistent {
+            match mount_persistent::<P, _>(disk, blank_writable, console)? {
+                Ok(()) => persistent = true,
+                Err(disk) => {
+                    let _ = block::install(disk.into_device());
+                }
+            }
+            continue;
+        }
+        let device = disk.into_device();
+        if ours || host_folder {
+            let _ = block::install(device);
+            continue;
+        }
+        match mount_host_folder::<P>(device) {
+            Ok(fat) => {
+                host_folder = true;
+                report_host_folder(console, fat)?;
+            }
+            Err((reason, device)) => {
+                if let Some(device) = device {
+                    let _ = block::install(device);
+                }
+                match contents {
+                    Ok(eggos_eggfs::Contents::Blank) => {
+                        writeln!(console, "vfs: a blank read-only disk was not mounted")?
+                    }
+                    _ => writeln!(
+                        console,
+                        "vfs: a disk holds neither EggFS nor FAT ({reason}): it was not \
+                         formatted; to erase it, run with --format-disk"
+                    )?,
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mount_persistent<P: Platform, W: Write>(
+    mut disk: vfs::eggfs::BlockDisk,
+    blank: bool,
+    console: &mut W,
+) -> Result<Result<(), vfs::eggfs::BlockDisk>, core::fmt::Error> {
     use alloc::boxed::Box;
-    let disk = block::take_first()?;
+    let now = linux::file_changes::now::<P>();
+    if blank {
+        if let Err(error) = eggos_eggfs::format(&mut disk, now) {
+            writeln!(
+                console,
+                "vfs: the blank disk could not be formatted: {error:?}"
+            )?;
+            return Ok(Err(disk));
+        }
+        writeln!(console, "vfs: formatted the blank disk with EggFS")?;
+    }
+    let (volume, mounted) = match eggos_eggfs::Volume::mount(disk) {
+        Ok(mounted) => mounted,
+        Err((error, disk)) => {
+            writeln!(
+                console,
+                "vfs: the EggFS disk was not mounted: {}",
+                error.description()
+            )?;
+            return Ok(Err(disk));
+        }
+    };
+    if mounted.recovered_blocks > 0 {
+        writeln!(
+            console,
+            "vfs: EggFS restored {} blocks of its last commit from the journal",
+            mounted.recovered_blocks
+        )?;
+    }
+    let (blocks, free) = volume.space();
+    let sleeping = sync::Sleeping::on::<P>();
+    let eggfs: &'static vfs::eggfs::EggFs<vfs::eggfs::BlockDisk> = Box::leak(Box::new(
+        vfs::eggfs::EggFs::new(volume, PERSISTENT_DEVICE, sleeping),
+    ));
+    let root = vfs::root();
+    for (name, path) in PERSISTENT_FOLDERS {
+        if !vfs::resolve(root, root, path).is_ok_and(|node| node.is_directory()) {
+            continue;
+        }
+        match eggfs.folder(name, now) {
+            Ok(folder) => {
+                let _ = vfs::mount(path, Box::leak(Box::new(folder)));
+            }
+            Err(error) => writeln!(
+                console,
+                "vfs: {} was not mounted from the EggFS disk: {error:?}",
+                core::str::from_utf8(path).unwrap_or("?")
+            )?,
+        }
+    }
+    let mebibytes = |blocks: u64| (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20;
+    writeln!(
+        console,
+        "vfs: EggFS disk mounted at /home and /Applications ({} MiB, {} MiB free)",
+        mebibytes(blocks),
+        mebibytes(free)
+    )?;
+    let committer = thread::spawn::<P, _>(move || {
+        eggfs.commit_changes(&|| thread::sleep::<P>(vfs::eggfs::COMMIT_DELAY), &|| {
+            let _ = writeln!(
+                console::PlatformConsole::<P>::new(),
+                "vfs: EggFS could not commit to the disk: changes are refused until the next boot"
+            );
+        })
+    });
+    if committer.is_err() {
+        writeln!(
+            console,
+            "vfs: no committer for EggFS: changes reach the disk at sync and power-off"
+        )?;
+    }
+    Ok(Ok(()))
+}
+
+type Disk = alloc::boxed::Box<dyn block::BlockDevice>;
+
+fn mount_host_folder<P: Platform>(
+    disk: Disk,
+) -> Result<&'static vfs::fat::Fat, (&'static str, Option<Disk>)> {
+    use alloc::boxed::Box;
     let root = vfs::root();
     if !vfs::resolve(root, root, HOST_FOLDER).is_ok_and(|node| node.is_directory()) {
-        let _ = block::install(disk);
-        return Some(Err("there is no /media/host to mount it on"));
+        return Err(("there is no /media/host to mount it on", Some(disk)));
     }
-    let mounted = vfs::fat::Fat::mount(disk, devices::Deadline::after::<P>, HOST_FOLDER_DEVICE);
-    Some(match mounted {
+    let sleeping = sync::Sleeping::on::<P>();
+    match vfs::fat::Fat::mount(
+        disk,
+        devices::Deadline::after::<P>,
+        sleeping,
+        HOST_FOLDER_DEVICE,
+    ) {
         Ok(fat) => {
             let fat: &'static vfs::fat::Fat = Box::leak(Box::new(fat));
             vfs::mount(HOST_FOLDER, fat)
                 .map(|()| fat)
-                .map_err(|_| "no room for another mount")
+                .map_err(|_| ("no room for another mount", None))
         }
-        Err((error, disk)) => {
-            let _ = block::install(disk);
-            Err(error.description())
-        }
-    })
+        Err((error, disk)) => Err((error.description(), Some(disk))),
+    }
 }
 
-fn report_host_folder<W: Write>(
-    console: &mut W,
-    mounted: Result<&'static vfs::fat::Fat, &'static str>,
-) -> core::fmt::Result {
-    match mounted {
-        Ok(fat) => {
-            write!(console, "vfs: {} disk \"", fat.fat_type().name())?;
-            write_printable(console, fat.label())?;
-            writeln!(console, "\" mounted read-only at /media/host")
-        }
-        Err(reason) => writeln!(console, "vfs: the disk was not mounted: {reason}"),
-    }
+fn report_host_folder<W: Write>(console: &mut W, fat: &'static vfs::fat::Fat) -> core::fmt::Result {
+    write!(console, "vfs: {} disk \"", fat.fat_type().name())?;
+    write_printable(console, fat.label())?;
+    writeln!(console, "\" mounted read-only at /media/host")
 }
 
 fn write_printable<W: Write>(console: &mut W, bytes: &[u8]) -> core::fmt::Result {

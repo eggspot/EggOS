@@ -16,12 +16,19 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
 
 ## What the system can do
-- **No disk of its own and no network.** The root file system is the read-only initramfs
-  inside the image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`,
-  `/etc/hostname` and `/usr/share/eggos/about`. `/tmp` and `/home` are writable file systems in
-  memory, together at most half of the memory, and `/proc` has `meminfo`, `uptime` and `ps`
-  (D125). Nothing you do survives a reboot (D102, D125). A file removed while a program has it
-  open is gone at once. A Linux program run from `/tmp`, `/home` or `/media/host` is read into
+- **One disk, and no network.** The root file system is the read-only initramfs inside the
+  image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
+  `/usr/share/eggos/about`. `/home` and `/Applications` live on the disk image the run scripts
+  attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
+  with `--no-disk` (together at most half of the memory), and `/proc` has `meminfo`, `uptime`
+  and `ps` (D125). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  window or a power cut loses the last seconds' changes, never the file system. EggFS has no
+  hard or symbolic links, access times or repair tool yet, searches directories linearly,
+  and keeps one request to the disk in flight; moving a file between `/home` and
+  `/Applications` fails (`EXDEV`) as between two disks. A disk holding anything but EggFS or
+  FAT is left alone: `--format-disk` erases the image. On Windows the image takes its full 1
+  GiB when QEMU's `qemu-img` is missing, and nothing stops two QEMUs sharing one image (macOS
+  and Linux refuse the second). A file removed while a program has it open is gone at once. A Linux program run from `/tmp`, `/home` or `/media/host` is read into
   memory whole first, so it must be smaller than 4 MiB (D130).
 - **The host folder is read-only and limited by QEMU.** The run scripts' `--apps <folder>`
   shows a folder of your computer at `/media/host` through QEMU's `vvfat` driver (D130): it
@@ -73,8 +80,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   arrows, but refuses `&&`, `||`, background jobs, subshells and command substitution, and has
   no wildcards, `if`, `while`, `for`, `case`, functions or `2>` ([shell](shell.md)).
 - The core utilities are `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`,
-  `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `true`, `uname`,
-  `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
+  `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `sync`, `tail`, `touch`, `true`,
+  `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
   they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
   capability's CLI; its GUI is the desktop's own chrome and keys).
 - The keyboard layout is US only (D113).

@@ -5,7 +5,7 @@ use crate::grep::grep;
 use crate::head::{head, tail};
 use crate::ls::{Listing, ls};
 use crate::output::{FAILURE, Output};
-use crate::power::{HALT, POWER_OFF, RESTART, power};
+use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
@@ -38,6 +38,7 @@ pub enum Utility {
     Reboot,
     Rm,
     Sleep,
+    Sync,
     Tail,
     Touch,
     True,
@@ -48,7 +49,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Cat,
         Self::Cp,
         Self::Echo,
@@ -65,6 +66,7 @@ impl Utility {
         Self::Reboot,
         Self::Rm,
         Self::Sleep,
+        Self::Sync,
         Self::Tail,
         Self::Touch,
         Self::True,
@@ -92,6 +94,7 @@ impl Utility {
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
             Self::Sleep => b"sleep",
+            Self::Sync => b"sync",
             Self::Tail => b"tail",
             Self::Touch => b"touch",
             Self::True => b"true",
@@ -124,6 +127,7 @@ impl Utility {
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
             Self::Sleep => sleep(output, arguments),
+            Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),
             Self::Touch => touch(output, arguments),
             Self::True => 0,

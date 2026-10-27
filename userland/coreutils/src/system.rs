@@ -92,6 +92,7 @@ pub trait System {
     ) -> Result<Status, Errno>;
     fn system_name(&mut self) -> Result<SystemName, Errno>;
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno>;
+    fn sync(&mut self);
     fn reboot(&mut self, command: u32) -> Result<(), Errno>;
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno>;
     fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
@@ -142,6 +143,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno> {
         (**self).sleep(duration)
+    }
+
+    fn sync(&mut self) {
+        (**self).sync();
     }
 
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {

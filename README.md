@@ -54,7 +54,12 @@ shell in a terminal window you can move, focus and minimise with the mouse. Type
 `grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, pipes such as `ls /bin | grep s | wc -l`,
 files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
 arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
-[core utilities](docs/coreutils.md)). Quit with Ctrl-A then X on that terminal, or close the
+[core utilities](docs/coreutils.md)). What you keep in `/home` and `/Applications` survives
+a reboot: the script creates `eggos-<arch>-disk.img` next to the image (1 GiB, sparse) and
+EggOS formats it with [EggFS](docs/eggfs.md), its own journaled file system, the first time;
+`sync` writes changes at once, and they are written within 5 s anyway. `--disk <image>` uses
+another image, `--no-disk` none (then `/home` is in memory and nothing is kept), and
+`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 
 ### Run your own Linux programs

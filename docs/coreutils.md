@@ -57,5 +57,6 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
   one name per line even on a terminal, and no colours. It holds one directory at a time:
   1024 entries and 32 KiB of names. A command takes at most 256 arguments.
 - `poweroff`, `reboot` and `halt` act at once, as `poweroff -f` does elsewhere: there is no
-  service manager to stop first and no writable file system to sync.
+  service manager to stop first; they `sync` first (and the kernel syncs again).
+- `sync` takes no operands: it puts every file system's changes on the disk (D131).
 - `echo` takes no escapes (`-e`), like the shell's builtin; `sleep` takes no `inf`.

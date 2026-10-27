@@ -6,6 +6,20 @@ pub const POWER_OFF: u32 = 0x4321_fedc;
 pub const RESTART: u32 = 0x0123_4567;
 pub const HALT: u32 = 0xcdef_0123;
 
+pub fn sync<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    if let Some(argument) = arguments.first() {
+        return match argument.to_bytes() {
+            option @ [b'-', _, ..] => output.invalid_option(option),
+            operand => {
+                output.error(&[b"extra operand '", operand, b"'"]);
+                FAILURE
+            }
+        };
+    }
+    output.system.sync();
+    0
+}
+
 pub fn power<S: System>(output: &mut Output<S>, arguments: &[&CStr], command: u32) -> i32 {
     for argument in arguments {
         match argument.to_bytes() {
@@ -25,6 +39,7 @@ pub fn power<S: System>(output: &mut Output<S>, arguments: &[&CStr], command: u3
         }
     }
     output.flush();
+    output.system.sync();
     match output.system.reboot(command) {
         Ok(()) => 0,
         Err(errno) => {
@@ -58,6 +73,18 @@ mod tests {
         }
         let (status, fake) = run(&[c"-f", c"--force", c"-ff"], POWER_OFF, true);
         assert_eq!((status, fake.rebooted), (0, vec![POWER_OFF]));
+    }
+
+    #[test]
+    fn sync_puts_changes_on_the_disk_and_takes_no_operands() {
+        let mut output = Output::new(Fake::default(), b"sync");
+        let status = sync(&mut output, &[]);
+        assert_eq!((output.finish(status), output.system.synced), (0, 1));
+        let mut output = Output::new(Fake::default(), b"sync");
+        let status = sync(&mut output, &[c"file"]);
+        assert_eq!(output.finish(status), 1);
+        assert_eq!(output.system.synced, 0);
+        assert_eq!(output.system.errors(), "sync: extra operand 'file'\n");
     }
 
     #[test]

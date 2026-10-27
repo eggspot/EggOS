@@ -10,7 +10,8 @@
 //!   short entry, checked by ordinal and checksum; without one, or with one that does not fit
 //!   [`super::NAME_MAX`] bytes as UTF-8, the short name is shown, in lower case where its
 //!   entry says so. Lookups ignore ASCII case, as FAT does, and match either name.
-//! - **Reads.** One lock over the disk, a cache of [`CACHED_SECTORS`] sectors for directory
+//! - **Reads.** One sleeping lock over the disk (a thread that wants it while a transfer runs
+//!   sleeps), a cache of [`CACHED_SECTORS`] sectors for directory
 //!   entries, FAT entries and file ends, and cursors on cluster chains (one for file data, one
 //!   for each of the last four directories) that also remember the two clusters behind them,
 //!   so sequential reads, listings and lookups follow a chain once, long names that start in
@@ -24,7 +25,7 @@
 use super::{Attributes, DirectoryEntry, FileSystem, NAME_MAX, Name, NodeKind, StorageError};
 use crate::block::{BlockDevice, SECTOR_SIZE};
 use crate::devices::Deadline;
-use crate::sync::LeafSpinLock;
+use crate::sync::{SleepLock, Sleeping};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -736,7 +737,7 @@ fn node_of(key: u32, index: u32) -> u64 {
 pub struct Fat {
     layout: Layout,
     device: (u32, u32),
-    volume: LeafSpinLock<Volume>,
+    volume: SleepLock<Volume>,
 }
 
 impl core::fmt::Debug for Fat {
@@ -752,10 +753,12 @@ impl core::fmt::Debug for Fat {
 impl Fat {
     /// The FAT volume on `disk`, on the whole disk or in its first partition that holds one,
     /// with device number `device`; each disk request polls until a deadline `new_deadline`
-    /// makes. On an error the disk comes back.
+    /// makes, and threads waiting for the volume meanwhile wait as `sleeping` says. On an
+    /// error the disk comes back.
     pub fn mount(
         mut disk: Box<dyn BlockDevice>,
         new_deadline: fn(u64) -> Deadline,
+        sleeping: Sleeping,
         device: (u32, u32),
     ) -> Result<Self, (MountError, Box<dyn BlockDevice>)> {
         let disk_bytes = disk.sectors().saturating_mul(SECTOR_SIZE as u64);
@@ -785,15 +788,18 @@ impl Fat {
         Ok(Self {
             layout,
             device,
-            volume: LeafSpinLock::new_leaf(Volume {
-                disk,
-                new_deadline,
-                cache: SectorCache::new(),
-                data_cursor: ChainCursor::default(),
-                directory_cursors: [ChainCursor::default(); DIRECTORY_CURSORS],
-                next_directory_cursor: 0,
-                listing: None,
-            }),
+            volume: SleepLock::new(
+                Volume {
+                    disk,
+                    new_deadline,
+                    cache: SectorCache::new(),
+                    data_cursor: ChainCursor::default(),
+                    directory_cursors: [ChainCursor::default(); DIRECTORY_CURSORS],
+                    next_directory_cursor: 0,
+                    listing: None,
+                },
+                sleeping,
+            ),
         })
     }
 

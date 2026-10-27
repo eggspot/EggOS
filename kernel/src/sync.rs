@@ -1,11 +1,12 @@
 //! Synchronisation primitives for kernel data shared between CPUs.
 
+use crate::thread::WaitQueue;
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 
 /// A spin lock: [`SpinLock::lock`] busy-waits until the value is free, doing what
 /// [`set_wait_duty`] gave it meanwhile unless `WAIT_DUTY` is false ([`LeafSpinLock`]).
@@ -202,9 +203,180 @@ impl<T, const WAIT_DUTY: bool> fmt::Debug for SpinLockGuard<'_, T, WAIT_DUTY> {
     }
 }
 
+/// How a [`SleepLock`] waits and wakes on a platform: its waiters sleep in a
+/// [`crate::thread::WaitQueue`] ([`Sleeping::on`]), or spin where no scheduler runs
+/// ([`Sleeping::spinning`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Sleeping {
+    wait: fn(&WaitQueue, &mut dyn FnMut() -> bool),
+    wake: fn(&WaitQueue),
+}
+
+fn wait_in<P: eggos_hal::Platform>(queue: &WaitQueue, condition: &mut dyn FnMut() -> bool) {
+    queue.wait_until::<P>(condition);
+}
+
+fn wake_in<P: eggos_hal::Platform>(queue: &WaitQueue) {
+    queue.wake_one::<P>();
+}
+
+fn spin_until(_: &WaitQueue, condition: &mut dyn FnMut() -> bool) {
+    while !condition() {
+        core::hint::spin_loop();
+    }
+}
+
+fn wake_nobody(_: &WaitQueue) {}
+
+impl Sleeping {
+    /// Waiters sleep on platform `P`'s scheduler.
+    pub fn on<P: eggos_hal::Platform>() -> Self {
+        Self {
+            wait: wait_in::<P>,
+            wake: wake_in::<P>,
+        }
+    }
+
+    /// Waiters spin: for host tests and benchmarks.
+    pub const fn spinning() -> Self {
+        Self {
+            wait: spin_until,
+            wake: wake_nobody,
+        }
+    }
+
+    /// Waits in `queue` until `condition` holds.
+    pub fn wait(&self, queue: &WaitQueue, condition: &mut dyn FnMut() -> bool) {
+        (self.wait)(queue, condition);
+    }
+
+    /// Wakes a thread waiting in `queue`, if one waits.
+    pub fn wake(&self, queue: &WaitQueue) {
+        (self.wake)(queue);
+    }
+}
+
+const UNLOCKED: u8 = 0;
+const LOCKED: u8 = 1;
+const CONTENDED: u8 = 2;
+
+/// A lock whose waiters sleep instead of spinning, for data held across slow work such as a
+/// disk transfer: the holder may wait for a device, take spin locks and yield. Taking it
+/// uncontended is one atomic exchange; a waiter marks it contended and sleeps until the holder
+/// releases it, and only then does releasing wake a waiter. Take it as
+/// [`crate::thread::yield_now`] is called: with no spin lock held.
+pub struct SleepLock<T> {
+    state: AtomicU8,
+    waiters: WaitQueue,
+    sleeping: Sleeping,
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: the lock hands out at most one guard at a time (see `lock`), so sharing it between
+// threads only moves the value's use from one to another, which `T: Send` allows.
+unsafe impl<T: Send> Sync for SleepLock<T> {}
+
+// SAFETY: as above: the lock owns the value, and moving it moves the value.
+unsafe impl<T: Send> Send for SleepLock<T> {}
+
+impl<T> fmt::Debug for SleepLock<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SleepLock")
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> SleepLock<T> {
+    /// A lock over `value` whose waiters wait as `sleeping` says.
+    pub const fn new(value: T, sleeping: Sleeping) -> Self {
+        Self {
+            state: AtomicU8::new(UNLOCKED),
+            waiters: WaitQueue::new(),
+            sleeping,
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Waits, asleep, until the lock is free, then holds it until the guard is dropped.
+    pub fn lock(&self) -> SleepLockGuard<'_, T> {
+        if self
+            .state
+            .compare_exchange(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            self.lock_contended();
+        }
+        SleepLockGuard { lock: self }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn lock_contended(&self) {
+        while self.state.swap(CONTENDED, Ordering::Acquire) != UNLOCKED {
+            self.sleeping.wait(&self.waiters, &mut || {
+                self.state.load(Ordering::Relaxed) != CONTENDED
+            });
+        }
+    }
+}
+
+/// Access to a [`SleepLock`]'s value; the lock is released, and a waiter woken, when it is
+/// dropped.
+pub struct SleepLockGuard<'a, T> {
+    lock: &'a SleepLock<T>,
+}
+
+impl<T> fmt::Debug for SleepLockGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SleepLockGuard").finish_non_exhaustive()
+    }
+}
+
+impl<T> Deref for SleepLockGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: the guard exists only while its holder owns the lock, so no other reference
+        // to the value exists.
+        unsafe { &*self.lock.value.get() }
+    }
+}
+
+impl<T> DerefMut for SleepLockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as in `deref`, and `&mut self` makes this the only reference through the
+        // guard.
+        unsafe { &mut *self.lock.value.get() }
+    }
+}
+
+impl<T> Drop for SleepLockGuard<'_, T> {
+    fn drop(&mut self) {
+        if self.lock.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {
+            self.lock.sleeping.wake(&self.lock.waiters);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sleep_lock_serialises_threads_and_releases_to_waiters() {
+        let lock = SleepLock::new(0u64, Sleeping::spinning());
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..5_000 {
+                        *lock.lock() += 1;
+                    }
+                });
+            }
+        });
+        assert_eq!(*lock.lock(), 20_000);
+        assert_eq!(lock.state.load(Ordering::Relaxed), UNLOCKED);
+    }
 
     #[test]
     fn try_lock_fails_while_held_and_succeeds_after() {
