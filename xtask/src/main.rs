@@ -180,6 +180,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-drivers",
     "eggos-font",
     "eggos-settings-file",
+    "eggos-app-manifest",
 ];
 
 const USER_CRATES: &[&str] = &[
