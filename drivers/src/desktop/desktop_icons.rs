@@ -9,8 +9,9 @@ use super::icons::{IconSize, draw_icon};
 use super::launcher::{AppMenu, MenuChoice};
 use super::layout::IconSide;
 use super::paint::{self, Canvas};
+use super::popups::with_shadow;
 use super::protocol::EventSink;
-use super::{Action, Desktop, SHADOW_RINGS, colour, contains, is_double_click, windows};
+use super::{Action, Desktop, colour, contains, is_double_click, windows};
 use crate::display::{Damage, Rect};
 use crate::font::GLYPH_WIDTH;
 use crate::input::key;
@@ -32,7 +33,6 @@ const MENU_FROM_CELL: (u32, u32) = (24, 64);
 const FOCUS_RING_INSET: u32 = 2;
 const FOCUS_RING_WIDTH: u32 = 2;
 const FOCUS_RING_INNER: [u32; 3] = [3, 1, 1];
-const COMPOSE: u16 = 127;
 
 /// The icons' state: the selected one, whether the wallpaper has the keyboard, the last
 /// press for double-clicks and the open menu.
@@ -290,7 +290,9 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
-        let count = self.catalogue.desktop_apps().count();
+        let count = (0..self.catalogue.desktop_apps().count())
+            .take_while(|&index| self.icon_cell(index).is_some())
+            .count();
         if count == 0 {
             return Action::None;
         }
@@ -322,7 +324,7 @@ impl Desktop {
             return Action::None;
         }
         let menu_key =
-            code == COMPOSE || (code == key::F10 && modifiers.contains(Modifiers::SHIFT));
+            code == key::COMPOSE || (code == key::F10 && modifiers.contains(Modifiers::SHIFT));
         match (code, self.icons.selected) {
             (key::ENTER | key::KEYPAD_ENTER, Some(index)) => {
                 self.launch_icon(index, damage, events)
@@ -413,13 +415,4 @@ impl Desktop {
             }
         }
     }
-}
-
-fn with_shadow(rect: Rect) -> Rect {
-    Rect::new(
-        rect.x.saturating_sub(SHADOW_RINGS),
-        rect.y,
-        rect.width + 2 * SHADOW_RINGS,
-        rect.height + SHADOW_RINGS,
-    )
 }

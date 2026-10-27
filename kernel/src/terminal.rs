@@ -30,8 +30,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink};
 use eggos_drivers::desktop::{
-    Action, AppId, COMMAND_CAPACITY, Contents, Desktop, GRID_SIZE, LAUNCH_FAILED, Launch, Profile,
-    WindowId, colour, shortcut,
+    Action, AppId, Contents, Desktop, GRID_SIZE, LAUNCH_FAILED, Launch, Profile, WindowId, colour,
+    shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -160,9 +160,9 @@ fn remember_profile(profile: Profile) {
     CHOSEN_PROFILE.store(profile.number() as u8 + 1, Ordering::Relaxed);
 }
 
-/// Makes `profile` the desktop's layout profile, at once when the desktop is shown: every
-/// window's controls move to the profile's side and its shortcuts apply. Windows keep their
-/// sizes and buffers; only their title bars are drawn again.
+/// Makes `profile` the desktop's layout profile, at once when the desktop is shown: the shell
+/// is laid out again, every window's controls move to the profile's side and its shortcuts
+/// apply ([`Desktop::set_profile`]).
 pub fn set_desktop_profile<P: Platform>(profile: Profile) {
     let shown = with_windows::<P, _>(|desktop, _, damage, events| {
         remember_profile(profile);
@@ -488,10 +488,7 @@ fn run_launch<P: Platform>(action: Action) {
     };
     match launch {
         Some(Launch::Start(path)) => {
-            let mut program = [0u8; COMMAND_CAPACITY];
-            let length = path.as_bytes().len();
-            program[..length].copy_from_slice(path.as_bytes());
-            if crate::apps::start_program(&program[..length]).is_err() {
+            if crate::apps::start_program(path.as_bytes()).is_err() {
                 with_windows::<P, _>(|desktop, _, damage, _| {
                     desktop.show_notice(LAUNCH_FAILED, damage)
                 });

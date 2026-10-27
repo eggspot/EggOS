@@ -90,7 +90,11 @@ pub fn start<P: Platform>(beside: &Process<P>, path: &[u8]) -> Result<(), &'stat
             .map_err(|_| "no room in the process table")?;
         table.set_name(process.id().get(), process_table::name_of(file_name));
     }
-    linux::spawn::<P>(process, context).map_err(|_| "could not start its thread")?;
+    let id = process.id().get();
+    if linux::spawn::<P>(process, context).is_err() {
+        process_table::TABLE.lock().remove_unended(id);
+        return Err("could not start its thread");
+    }
     Ok(())
 }
 

@@ -573,7 +573,9 @@ at 1x and double at 2x.
 13. **Taskbar overflow.** The room is x 8 to the clock's left - 16 (width - 152; 1128 at 1280).
     The group is centred while it fits; otherwise it starts at x 8 and items whose right edge
     would pass the limit are not drawn. Their windows stay reachable through the switcher.
-14. **The launcher's `Minimised:` line**, shown with at least one minimised window and at most
+14. **Desktop icon labels** hold 11 glyphs, not 12: with 4 px of padding each side, 12 glyphs
+    (104 px) do not fit the 96 px cell (found while building; the cut with `...` is unchanged).
+15. **The launcher's `Minimised:` line**, shown with at least one minimised window and at most
     7 rows: top at the last row's bottom + 8, 20 tall; `Minimised:` in `text.dim` at x 12
     (76 with the dash), glyph top at + 2; chips from the label's right + 8 with the top bar's
     chip metrics (hover `bar.pressed`); a chip passing x 468 is dropped with those after it.

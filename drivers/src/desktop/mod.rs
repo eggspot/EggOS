@@ -402,11 +402,12 @@ impl Desktop {
         }
         if let Some(menu) = self.icons.menu.as_mut() {
             let name = self.catalogue.name(menu.app);
-            if let Some(app) = catalogue
+            match catalogue
                 .desktop_apps()
                 .find(|&app| catalogue.name(app) == name)
             {
-                menu.app = app;
+                Some(app) => menu.app = app,
+                None => menu.app = AppId::Terminal,
             }
         }
         self.catalogue = catalogue;
@@ -801,11 +802,17 @@ impl Desktop {
             return Err(WindowError::Invalid);
         }
         let title = core::str::from_utf8(title).map_err(|_| WindowError::Invalid)?;
+        if self.window_at(slot).title() == title {
+            return Ok(());
+        }
         self.window_mut(slot).set_title(title);
         if self.is_visible(slot) {
             damage.add(self.window_at(slot).title_bar());
         }
-        self.damage_window_list(damage);
+        let window = self.window_at(slot);
+        if window.shown && window.role == Role::Normal {
+            self.damage_window_list(damage);
+        }
         Ok(())
     }
 
@@ -1042,7 +1049,7 @@ impl Desktop {
             damage.add(self.window_at(slot).with_shadow());
         }
         self.damage_window_list(damage);
-        self.forget_in_panels(slot, damage);
+        self.forget_in_panels(slot);
         let focused = self.focus == Some(slot);
         if self.drag.is_some_and(|drag| drag.window == slot) {
             self.drag = None;
@@ -1086,6 +1093,7 @@ impl Desktop {
         self.stack_length += 1;
         if self.window_at(slot).role == Role::Normal {
             self.damage_window_list(damage);
+            self.app_window_shown(slot);
         }
         if self.window_at(slot).minimised {
             return;

@@ -678,3 +678,31 @@ fn a_window_too_large_for_the_new_work_area_shrinks_into_it() {
     let work = desktop.work_area();
     assert!(rect.height <= work.height && rect.y >= work.y && rect.bottom() <= work.bottom());
 }
+
+#[test]
+fn a_second_click_while_an_app_starts_does_not_start_it_twice() {
+    let mut desktop = desktop(Profile::Macos);
+    let settings = desktop.dock_icon(AppId::Settings).unwrap();
+    desktop.set_time(0);
+    assert_eq!(
+        click_in(&mut desktop, settings),
+        Action::Start(AppId::Settings)
+    );
+    desktop.set_time(300);
+    assert_eq!(click_in(&mut desktop, settings), Action::None);
+    desktop.set_time(2300);
+    assert_eq!(
+        click_in(&mut desktop, settings),
+        Action::Start(AppId::Settings)
+    );
+    let opened = window(&mut desktop, "Settings");
+    let mut damage = Damage::new();
+    desktop
+        .destroy(CLIENT, u32::from(opened), &mut damage, &mut DiscardEvents)
+        .unwrap();
+    desktop.set_time(2400);
+    assert_eq!(
+        click_in(&mut desktop, settings),
+        Action::Start(AppId::Settings)
+    );
+}

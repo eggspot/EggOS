@@ -49,6 +49,7 @@ const DOCK_SEPARATOR_ROOM: u32 = 2 * DOCK_GAP + 1;
 const DOCK_SEPARATOR_INSET: u32 = 8;
 const DOCK_PINNED: [AppId; 3] = [AppId::Terminal, AppId::Files, AppId::Settings];
 const DOCK_CAPACITY: usize = DOCK_PINNED.len() + MAX_WINDOWS;
+const STARTING_MS: u32 = 2000;
 const TOOLTIP_HEIGHT: u32 = 24;
 const TOOLTIP_PADDING: u32 = 8;
 const TOOLTIP_GAP: u32 = 4;
@@ -88,6 +89,7 @@ pub(super) struct PanelState {
     pub tooltip_spent: bool,
     pub tooltip_area: Option<Rect>,
     pub moved: bool,
+    pub starting: Option<(AppId, u32)>,
 }
 
 struct DockEntries {
@@ -425,7 +427,7 @@ impl Desktop {
         self.hide_tooltip(damage);
         self.panels.tooltip_spent = true;
         if self.launcher.is_some() {
-            damage.add(super::launcher::launcher_with_shadow(self.layout.launcher));
+            damage.add(super::popups::with_shadow(self.layout.launcher));
         }
         match self.profile {
             Profile::Linux => damage.add(self.chips_area()),
@@ -538,7 +540,16 @@ impl Desktop {
                 self.show_notice(super::launcher::FILES_MISSING, damage);
                 Action::None
             }
-            AppId::Files | AppId::Settings => Action::Start(app),
+            AppId::Files | AppId::Settings => {
+                let starting = self.panels.starting.is_some_and(|(pending, at)| {
+                    pending == app && self.now_ms.wrapping_sub(at) < STARTING_MS
+                });
+                if starting {
+                    return Action::None;
+                }
+                self.panels.starting = Some((app, self.now_ms));
+                Action::Start(app)
+            }
             AppId::HostShare | AppId::Installed(_) => {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::Type(app)
@@ -629,6 +640,15 @@ impl Desktop {
         }
     }
 
+    /// Window `slot` showed: the app it belongs to has started.
+    pub(super) fn app_window_shown(&mut self, slot: usize) {
+        if let Some((app, _)) = self.panels.starting
+            && self.app_of(slot) == Some(app)
+        {
+            self.panels.starting = None;
+        }
+    }
+
     /// Forgets the panels' pointer state, as a profile change does.
     pub(super) fn reset_panels(&mut self) {
         self.panels = PanelState::default();
@@ -642,7 +662,7 @@ impl Desktop {
     }
 
     /// Window `slot` is going away: no panel item of its stays hovered, pressed or tipped.
-    pub(super) fn forget_in_panels(&mut self, slot: usize, damage: &mut Damage) {
+    pub(super) fn forget_in_panels(&mut self, slot: usize) {
         let slot = slot as u8;
         let names = |item: Option<PanelItem>| {
             matches!(
@@ -652,9 +672,6 @@ impl Desktop {
                 ) if at == slot
             )
         };
-        if names(self.panels.tooltip) {
-            self.hide_tooltip(damage);
-        }
         if names(self.panels.hover) {
             self.panels.hover = None;
         }
@@ -853,6 +870,9 @@ impl Desktop {
         canvas.fill(Rect::new(0, bar.y, self.width, 1), colour::BAR_EDGE);
         let focused = self.focused_normal();
         self.for_each_taskbar_item(|item, rect| {
+            if !rect.overlaps(&canvas.clip()) {
+                return;
+            }
             let open = item == PanelItem::Start && self.launcher.is_some();
             if let Some(fill) = self.item_fill(item, open) {
                 canvas.fill(
@@ -930,6 +950,10 @@ impl Desktop {
                 );
             }
             index += 1;
+            let tile = Rect::new(rect.x - DOCK_TILE_FROM_ICON, dock.y, DOCK_TILE, dock.height);
+            if !tile.overlaps(&canvas.clip()) {
+                return;
+            }
             if let Some(fill) = self.item_fill(item, false) {
                 canvas.rounded(
                     Rect::new(rect.x - DOCK_TILE_FROM_ICON, dock.y, DOCK_TILE, DOCK_TILE),

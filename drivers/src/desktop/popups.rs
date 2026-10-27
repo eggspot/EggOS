@@ -160,7 +160,7 @@ impl WindowMenu {
     }
 }
 
-fn with_shadow(rect: Rect) -> Rect {
+pub(super) fn with_shadow(rect: Rect) -> Rect {
     Rect::new(
         rect.x.saturating_sub(SHADOW_RINGS),
         rect.y,

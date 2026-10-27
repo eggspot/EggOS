@@ -7789,8 +7789,9 @@ the license, by an explicit instruction recorded here.
   dock floats 8 px above the bottom), Linux y 28..799. Everything that assumed "below the 28 px
   bar" (placement, clamps, sizes, `SET_POSITION`, `GET_WORK_AREA`, hit tests) uses the layout's
   work area. `set_profile` closes the shell's popups, re-lays out, fits maximised windows to the
-  new work area (their clients get `Resize`), moves the others into it keeping their size, and
-  redraws the screen.
+  new work area and shrinks resizable windows larger than it (their clients get `Resize`),
+  moves every window into it, and redraws the screen. A launch of Settings or Files is not
+  repeated while the first is still starting (2 s, or until its window shows).
 - **The catalogue** (decided by research): an installed app is a folder
   `/Applications/<name>/` holding its program and `app.manifest`, a small text file of the
   crate `eggos-app-manifest` (`app-manifest/`, no_std, no heap): the line `eggos-app 1`, then

@@ -49,7 +49,8 @@ and the installer share it.
 
 A manifest that is not this format, is longer than 1024 bytes, lacks a required key, has an
 invalid value for one, or names another folder is not an app: the shell skips it. At most 32
-apps are listed, sorted by name ignoring case.
+apps are listed, sorted by name ignoring case; past 32, the first 32 found in `/Applications`
+are kept.
 
 ## What launching does
 

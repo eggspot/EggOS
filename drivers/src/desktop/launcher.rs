@@ -8,11 +8,12 @@
 use super::catalogue::{AppId, Catalogue, MAX_INSTALLED};
 use super::icons::{IconSize, draw_icon};
 use super::paint::{self, Canvas};
+use super::popups::with_shadow;
 use super::protocol::{EventSink, Role};
 use super::shortcuts::Profile;
 use super::{
-    Action, Desktop, MENU_ITEM_HEIGHT, MENU_TEXT_X, MENU_WIDTH, SHADOW_RINGS, colour, contains,
-    draw_chip_text, windows,
+    Action, Desktop, MENU_ITEM_HEIGHT, MENU_TEXT_X, MENU_WIDTH, colour, contains, draw_chip_text,
+    windows,
 };
 use crate::display::{Damage, Rect};
 use crate::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -38,6 +39,7 @@ const ROW_ICON_X: u32 = 8;
 const ROW_ICON_Y: u32 = 4;
 const ROW_TEXT_X: u32 = 48;
 const ROW_SOURCE_FROM_RIGHT: u32 = 8;
+const SOURCE_ROOM_GLYPHS: usize = 10;
 const DASH_WIDTH: u32 = 64;
 const DASH_ICON_X: u32 = 8;
 const DASH_FIRST_Y: u32 = 12;
@@ -66,7 +68,6 @@ const NOTICE_TEXT_Y: u32 = 12;
 const FOCUS_RING_INSET: u32 = 2;
 const FOCUS_RING_WIDTH: u32 = 2;
 const FOCUS_RING_INNER: [u32; 1] = [1];
-const COMPOSE: u16 = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Spot {
@@ -249,19 +250,6 @@ impl Launcher {
 pub(super) struct Notice {
     pub text: &'static str,
     pub until_ms: u32,
-}
-
-pub(super) fn launcher_with_shadow(rect: Rect) -> Rect {
-    with_shadow(rect)
-}
-
-fn with_shadow(rect: Rect) -> Rect {
-    Rect::new(
-        rect.x.saturating_sub(SHADOW_RINGS),
-        rect.y,
-        rect.width + 2 * SHADOW_RINGS,
-        rect.height + SHADOW_RINGS,
-    )
 }
 
 impl Desktop {
@@ -562,7 +550,7 @@ impl Desktop {
                     self.open_launcher_menu(&mut launcher, selected, None);
                 }
             }
-            COMPOSE => {
+            key::COMPOSE => {
                 if let Some(selected) = launcher.selected {
                     self.open_launcher_menu(&mut launcher, selected, None);
                 }
@@ -799,7 +787,7 @@ impl Desktop {
             );
             let name = self.catalogue.name(app);
             let room = ((row.width - ROW_TEXT_X) / GLYPH_WIDTH as u32) as usize;
-            let (shown, cut) = windows::cut_title(name, room.saturating_sub(10));
+            let (shown, cut) = windows::cut_title(name, room.saturating_sub(SOURCE_ROOM_GLYPHS));
             canvas.text(row.x + ROW_TEXT_X, row.y + text_offset, shown, colour::TEXT);
             if cut {
                 let after = row.x + ROW_TEXT_X + shown.chars().count() as u32 * GLYPH_WIDTH as u32;

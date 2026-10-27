@@ -158,8 +158,8 @@ impl Desktop {
 
     /// Makes `profile` the desktop's layout profile: the panels, the work area, the side of
     /// the controls and the shortcuts. The shell's popups close; maximised windows fill the new
-    /// work area (their clients get `Resize`), the others keep their size and are moved into
-    /// it; everything is drawn again.
+    /// work area, resizable windows larger than it shrink to fit it (their clients get
+    /// `Resize`), and every window is moved into it; everything is drawn again.
     pub fn set_profile(
         &mut self,
         profile: super::Profile,
