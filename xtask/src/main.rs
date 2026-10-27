@@ -9,6 +9,7 @@ mod bench;
 mod elf;
 mod image;
 mod initramfs;
+mod macos;
 mod png;
 mod qemu;
 mod qmp;
@@ -160,6 +161,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-std-selftest",
     "eggos-linux-static",
     "eggos-windows",
+    "eggos-macos",
 ];
 
 struct UserProgram {
@@ -417,6 +419,16 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
             &[],
         )?;
     }
+    if let Some(kernel) = build_macos_programs_test_kernel(arch)? {
+        qemu::boot_test(
+            arch,
+            &kernel,
+            qemu::Expect::MacosPrograms,
+            qemu::TEST_CPUS,
+            qemu::Display::Absent,
+            &[],
+        )?;
+    }
     let kernel = build_kernel(arch, None)?;
     qemu::boot_test(
         arch,
@@ -447,6 +459,18 @@ fn clippy_targets() -> Result<(), String> {
             target,
             "-p",
             ANDROID_CONSOLE_PACKAGE,
+            "--",
+            "-D",
+            "warnings",
+        ])?;
+    }
+    for (_, target) in ARCHES.iter().filter_map(|arch| macos::target(arch.name)) {
+        cargo(&[
+            "clippy",
+            "--target",
+            target,
+            "-p",
+            macos::CONSOLE_PACKAGE,
             "--",
             "-D",
             "warnings",
@@ -528,8 +552,10 @@ pub fn build_release_image(
         return Err(format!("`{}` is not a file to add", missing.host));
     }
     let layer = windows_layer_for(arch, added)?;
+    let macos_layer = macos_layer_for(arch, added)?;
     let mut members = image::members(added);
     members.extend(layer.iter().map(|layer| layer.member()));
+    members.extend(macos_layer.iter().map(|layer| layer.member()));
     if added.iter().any(|file| android::is_program(&file.host)) {
         members.extend(
             android::system_members(SHELL_PATH)
@@ -819,6 +845,92 @@ fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, Str
     Ok(path.to_string_lossy().into_owned())
 }
 
+struct MacosLayer {
+    host: String,
+}
+
+impl MacosLayer {
+    fn member(&self) -> (&str, initramfs::Content<'_>) {
+        (macos::LAYER_PATH, initramfs::Content::Program(&self.host))
+    }
+}
+
+fn macos_layer_for(arch: &Arch, added: &[image::AddedFile]) -> Result<Option<MacosLayer>, String> {
+    if !macos::layer_runs_on(arch.name) || !added.iter().any(|file| macos::is_program(&file.host)) {
+        return Ok(None);
+    }
+    let host = build_runtime_program(arch, macos::LAYER_PACKAGE)?;
+    Ok(Some(MacosLayer { host }))
+}
+
+const MACOS_FAT_PROGRAM: &str = "macos-fat";
+
+fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(programs) = macos::find_or_build_programs(&target_directory())? else {
+        if std::env::var_os("CI").is_some() {
+            return Err(format!(
+                "{}: the macOS programs boot test needs the Mach-O test programs in CI: set {}",
+                arch.name,
+                macos::PROGRAMS_VARIABLE
+            ));
+        }
+        eprintln!(
+            "xtask: {}: macOS programs boot test skipped: Apple's linker builds its programs, \
+             so it runs on a macOS host or with {} naming a folder of them; CI runs it",
+            arch.name,
+            macos::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    };
+    let (own, other) = match arch.name {
+        "x86_64" => ("x86_64", "arm64"),
+        _ => ("arm64", "x86_64"),
+    };
+    let read = |program: &str, cpu: &str| {
+        let path = programs.path(program, cpu);
+        std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let fat = macos::fat(&[
+        &read("macos-console", "x86_64")?,
+        &read("macos-console", "arm64")?,
+    ])?;
+    let fat_path = programs.directory.join(MACOS_FAT_PROGRAM);
+    std::fs::write(&fat_path, fat).map_err(|e| format!("{}: {e}", fat_path.display()))?;
+    let host =
+        |program: &str, cpu: &str| programs.path(program, cpu).to_string_lossy().into_owned();
+    let added = [
+        image::AddedFile {
+            host: host("macos-console", own),
+            path: "bin/macos-console".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-unsupported", own),
+            path: "bin/macos-unsupported".to_owned(),
+        },
+        image::AddedFile {
+            host: host("macos-console", other),
+            path: "bin/macos-other".to_owned(),
+        },
+        image::AddedFile {
+            host: fat_path.to_string_lossy().into_owned(),
+            path: format!("bin/{MACOS_FAT_PROGRAM}"),
+        },
+    ];
+    let layer = macos_layer_for(arch, &added)?;
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(layer.iter().map(|layer| layer.member()));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-macos-programs-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs).map(Some)
+}
+
 const ANDROID_CONSOLE_PACKAGE: &str = "eggos-android-console";
 
 const ANDROID_CONSOLE_PATH: &str = "bin/android-console";
@@ -1048,7 +1160,7 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     cargo_with_env(args, &[])
 }
 
-fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
+pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     eprintln!("xtask: cargo {}", args.join(" "));
     let status = Command::new(&cargo)

@@ -1,0 +1,17 @@
+[package]
+name = "eggos-macos-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "macos-console"
+path = "src/main.rs"
+
+[[bin]]
+name = "macos-unsupported"
+path = "src/bin/unsupported.rs"
+
+[lints]
+workspace = true

@@ -662,24 +662,72 @@ fn prepare<P: Platform>(
 }
 
 /// A program format the kernel does not run itself but starts through an interpreter program
-/// of an optional component, as Linux's `binfmt_misc` does (D118): a file that starts with
-/// `magic` runs as the program at `path` with the arguments `path`, the file's name as
-/// `execve` was given it, then the file's own arguments.
+/// of an optional component, as Linux's `binfmt_misc` does (D118): a file whose first bytes
+/// match `signature` runs as the program at `path` with the arguments `path`, the file's name
+/// as `execve` was given it, then the file's own arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interpreter {
-    pub magic: &'static [u8],
+    pub signature: Signature,
     pub path: &'static [u8],
+}
+
+/// How an [`Interpreter`]'s files start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signature {
+    /// These bytes.
+    Prefix(&'static [u8]),
+    /// A Mach-O fat (universal) header: its magic, then an architecture count from 1 to
+    /// [`MAX_FAT_ARCHITECTURES`]. A Java class file starts with the same magic, followed by a
+    /// version of at least 45, so it does not match (D120).
+    MachOFat,
+}
+
+/// The most architectures a fat file may list for the macOS layer to start it.
+pub const MAX_FAT_ARCHITECTURES: u32 = 32;
+
+impl Signature {
+    fn matches(self, image: &[u8]) -> bool {
+        match self {
+            Self::Prefix(prefix) => image.starts_with(prefix),
+            Self::MachOFat => {
+                let word = |at: usize| {
+                    image
+                        .get(at..at + 4)
+                        .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                };
+                matches!(word(0), Some(0xcafe_babe | 0xcafe_babf))
+                    && word(4).is_some_and(|count| (1..=MAX_FAT_ARCHITECTURES).contains(&count))
+            }
+        }
+    }
 }
 
 /// The Windows layer (D118): PE executables (`MZ`) run on x86_64 only.
 pub const WINDOWS_LAYER: Interpreter = Interpreter {
-    magic: b"MZ",
+    signature: Signature::Prefix(b"MZ"),
     path: b"/usr/lib/eggos/windows",
 };
 
+/// The macOS layer (D120): 64-bit Mach-O executables (`0xfeedfacf`, little-endian), on
+/// aarch64 and x86_64.
+pub const MACOS_LAYER: Interpreter = Interpreter {
+    signature: Signature::Prefix(&[0xcf, 0xfa, 0xed, 0xfe]),
+    path: MACOS_LAYER_PATH,
+};
+
+/// The macOS layer for fat (universal) files, which hold one executable per CPU.
+pub const MACOS_FAT_LAYER: Interpreter = Interpreter {
+    signature: Signature::MachOFat,
+    path: MACOS_LAYER_PATH,
+};
+
+const MACOS_LAYER_PATH: &[u8] = b"/usr/lib/eggos/macos";
+
 #[cfg(target_arch = "x86_64")]
-const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER];
-#[cfg(not(target_arch = "x86_64"))]
+const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER];
+#[cfg(target_arch = "aarch64")]
+const INTERPRETERS: &[Interpreter] = &[MACOS_LAYER, MACOS_FAT_LAYER];
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const INTERPRETERS: &[Interpreter] = &[];
 const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
 
@@ -687,7 +735,7 @@ const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
 pub fn interpreter_for(image: &[u8]) -> Option<Interpreter> {
     INTERPRETERS
         .iter()
-        .find(|interpreter| image.starts_with(interpreter.magic))
+        .find(|interpreter| interpreter.signature.matches(image))
         .copied()
 }
 
@@ -1424,6 +1472,26 @@ mod tests {
         }
         assert_eq!(WINDOWS_LAYER.path, b"/usr/lib/eggos/windows");
         for image in [&b"\x7fELF"[..], b"#!/bin/eggsh", b"M", b"", b"ZM"] {
+            assert_eq!(interpreter_for(image), None);
+        }
+    }
+
+    #[test]
+    fn mach_o_and_fat_files_start_through_the_macos_layer_on_aarch64_and_x86_64() {
+        let runs = cfg!(any(target_arch = "aarch64", target_arch = "x86_64"));
+        let thin = interpreter_for(b"\xcf\xfa\xed\xfe\x0c\0\0\x01");
+        let fat = interpreter_for(b"\xca\xfe\xba\xbe\0\0\0\x02rest");
+        assert_eq!(thin, runs.then_some(MACOS_LAYER));
+        assert_eq!(fat, runs.then_some(MACOS_FAT_LAYER));
+        assert_eq!(MACOS_LAYER.path, b"/usr/lib/eggos/macos");
+        assert_eq!(MACOS_FAT_LAYER.path, b"/usr/lib/eggos/macos");
+        for image in [
+            &b"\xca\xfe\xba\xbe\0\0\0\x41java"[..],
+            b"\xca\xfe\xba\xbe\0\0\0\0",
+            b"\xca\xfe\xba\xbe\0\0",
+            b"\xfe\xed\xfa\xcf",
+            b"\xce\xfa\xed\xfe",
+        ] {
             assert_eq!(interpreter_for(image), None);
         }
     }

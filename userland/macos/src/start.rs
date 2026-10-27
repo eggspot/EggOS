@@ -1,0 +1,324 @@
+//! Starting a macOS program, as dyld does: the kernel runs the layer as
+//! `macos <program> <arguments>` for a Mach-O or fat file (D120). The layer reads the file,
+//! picks the slice for this CPU, checks it, maps its segments (anywhere for a position-
+//! independent program, at its own addresses otherwise), binds its imports to the layer's
+//! libSystem and rebases its pointers by the slide through its chained fixups, protects each
+//! segment and calls `main(argc, argv, envp, apple)`, whose return value goes to `exit`.
+
+use crate::fixups::{ChainedFixups, Source};
+use crate::libsystem;
+use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
+use crate::macho::{
+    self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, VM_PROT_EXECUTE, VM_PROT_READ,
+    VM_PROT_WRITE,
+};
+use core::ffi::{c_char, c_int};
+use eggos_runtime::errno::Errno;
+use eggos_runtime::startup::Startup;
+
+const STANDARD_ERROR: usize = 2;
+const CANNOT_EXECUTE: i32 = 126;
+const EXECUTABLE_PATH: &[u8] = b"executable_path=";
+
+enum Failure {
+    Usage,
+    Open(Errno),
+    Read(Errno),
+    Invalid(InvalidMachO),
+    OtherCpus([Option<Cpu>; 4]),
+    Library(&'static [u8]),
+    TooManyMissing,
+    Memory,
+}
+
+pub fn run(startup: &Startup) -> i32 {
+    let program = startup
+        .arguments()
+        .nth(1)
+        .map_or(&b"macos"[..], |path| path.to_bytes());
+    let failure = match start(*startup) {
+        Ok(never) => match never {},
+        Err(failure) => failure,
+    };
+    report(program, failure);
+    CANNOT_EXECUTE
+}
+
+fn report(program: &[u8], failure: Failure) {
+    let mut message = Message::default();
+    message.push(b"macos: ");
+    if !matches!(failure, Failure::Usage) {
+        message.push(program);
+        message.push(b": ");
+    }
+    match failure {
+        Failure::Usage => message.push(b"macOS programs start by their own name, e.g. `hello`"),
+        Failure::Open(errno) | Failure::Read(errno) => message.push(errno.message()),
+        Failure::Invalid(InvalidMachO(reason)) => message.push(reason.as_bytes()),
+        Failure::OtherCpus(found) => {
+            message.push(b"has code only for ");
+            for (index, cpu) in found.iter().flatten().enumerate() {
+                if index > 0 {
+                    message.push(b", ");
+                }
+                message.push(cpu.name().as_bytes());
+            }
+            message.push(b", not for this ");
+            message.push(macho::host_cpu().map_or("", Cpu::name).as_bytes());
+            message.push(b" machine");
+        }
+        Failure::Library(path) => {
+            message.push(b"needs ");
+            message.push(path);
+            message.push(b", which EggOS does not provide yet");
+        }
+        Failure::TooManyMissing => {
+            message.push(b"imports more functions EggOS does not provide yet than it can stub")
+        }
+        Failure::Memory => message.push(b"out of memory"),
+    }
+    message.push(b"\n");
+    message.write();
+}
+
+struct Message {
+    bytes: [u8; 512],
+    length: usize,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            bytes: [0; 512],
+            length: 0,
+        }
+    }
+}
+
+impl Message {
+    fn push(&mut self, text: &[u8]) {
+        let room = self.bytes.len() - self.length;
+        let taken = text.len().min(room);
+        self.bytes[self.length..self.length + taken].copy_from_slice(&text[..taken]);
+        self.length += taken;
+    }
+
+    fn write(&self) {
+        let _ = linux::write_all(STANDARD_ERROR, &self.bytes[..self.length]);
+    }
+}
+
+type Main =
+    extern "C" fn(c_int, *const *mut c_char, *const *mut c_char, *const *mut c_char) -> c_int;
+
+fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
+    let path = startup.arguments().nth(1).ok_or(Failure::Usage)?;
+    let file = read_file(path.to_bytes_with_nul())?;
+    let cpu = macho::host_cpu().ok_or(Failure::OtherCpus([None; 4]))?;
+    let slice = macho::select_slice(file, cpu).map_err(|error| match error {
+        NoSlice::Invalid(invalid) => Failure::Invalid(invalid),
+        NoSlice::OtherCpus { found } => Failure::OtherCpus(found),
+    })?;
+    let program = MachO::parse(slice).map_err(Failure::Invalid)?;
+    if program.cpu != cpu {
+        return Err(Failure::OtherCpus([Some(program.cpu), None, None, None]));
+    }
+    for library in program.libraries() {
+        if library.path != macho::LIBSYSTEM && !library.weak {
+            return Err(Failure::Library(library.path));
+        }
+    }
+    let fixups = match program.chained_fixups {
+        Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
+        None if program.dyld_info => {
+            return Err(Failure::Invalid(InvalidMachO(
+                "uses LC_DYLD_INFO fixups (built for macOS 12 or earlier), which EggOS does \
+                 not read yet",
+            )));
+        }
+        None => None,
+    };
+    let size = program.mapped_size() as usize;
+    let read_write = PROT_READ | PROT_WRITE;
+    let base = if program.pie {
+        linux::map_anonymous(0, size, read_write, false)
+    } else {
+        linux::map_anonymous(program.base_address() as usize, size, read_write, true)
+    }
+    .map_err(|_| Failure::Memory)?;
+    // SAFETY: `base` is a new private mapping of `size` zeroed bytes that only this slice uses
+    // until the program runs.
+    let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
+    for segment in program.segments() {
+        let at = (segment.vmaddr - program.base_address()) as usize;
+        let from = segment.fileoff as usize;
+        let length = segment.filesize as usize;
+        image[at..at + length].copy_from_slice(&slice[from..from + length]);
+    }
+    if let Some(fixups) = fixups {
+        let imports = bind_imports(&program, &fixups)?;
+        fixups
+            .apply(&program, image, base as u64, imports)
+            .map_err(Failure::Invalid)?;
+    }
+    protect(&program, base)?;
+    let arguments = argument_vector(&startup)?;
+    let environment = environment_vector(&startup)?;
+    let apple = apple_vector(path.to_bytes())?;
+    let slide = base as isize - program.base_address() as isize;
+    // SAFETY: the program has not started; these record its image, arguments and streams.
+    unsafe {
+        libsystem::set_image(base, slide);
+        libsystem::set_process(startup.argument_count() - 1, arguments, environment);
+        libsystem::set_up_streams();
+    }
+    let entry = base + program.entry as usize;
+    // SAFETY: `entry` is LC_MAIN's checked entry point inside an executable segment of the
+    // image, mapped, bound, rebased and protected; dyld calls it as
+    // `int main(int, char **, char **, char **)`.
+    let main: Main = unsafe { core::mem::transmute(entry) };
+    let status = main(
+        (startup.argument_count() - 1) as c_int,
+        arguments,
+        environment,
+        apple,
+    );
+    libsystem::exit(status)
+}
+
+fn bind_imports<'a>(
+    program: &MachO<'a>,
+    fixups: &ChainedFixups<'a>,
+) -> Result<&'static [u64], Failure> {
+    let count = fixups.import_count();
+    let table = libsystem_allocate(count.max(1) * 8)?.cast::<u64>();
+    let mut missing = 0;
+    for index in 0..count {
+        let import = fixups.import(index).map_err(Failure::Invalid)?;
+        let from_libsystem = match import.source {
+            Source::Library(ordinal) => {
+                program
+                    .library(ordinal)
+                    .ok_or(Failure::Invalid(InvalidMachO(
+                        "an import from a library it does not link",
+                    )))?
+                    .path
+                    == macho::LIBSYSTEM
+            }
+            Source::Flat | Source::Weak => true,
+            Source::Executable => false,
+        };
+        let found = from_libsystem
+            .then(|| libsystem::resolve(import.name))
+            .flatten();
+        let address = match found {
+            Some(address) => address,
+            None if import.weak => 0,
+            None => {
+                if missing == libsystem::MISSING_STUBS {
+                    return Err(Failure::TooManyMissing);
+                }
+                // SAFETY: the file's mapping stays for as long as the program runs, so the
+                // name does too.
+                let name: &'static [u8] =
+                    unsafe { core::slice::from_raw_parts(import.name.as_ptr(), import.name.len()) };
+                missing += 1;
+                libsystem::bind_missing(missing - 1, name)
+            }
+        };
+        // SAFETY: `table` holds `count` entries.
+        unsafe {
+            table
+                .add(index)
+                .write(address.wrapping_add(import.addend as u64))
+        };
+    }
+    // SAFETY: the `count` entries written above, in a block that is never freed.
+    Ok(unsafe { core::slice::from_raw_parts(table, count) })
+}
+
+fn libsystem_allocate(size: usize) -> Result<*mut u8, Failure> {
+    let block = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    Ok(block as *mut u8)
+}
+
+fn argument_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
+    let count = startup.argument_count().saturating_sub(1);
+    let vector = libsystem_allocate((count + 1) * 8)?.cast::<*mut c_char>();
+    for (index, argument) in startup.arguments().skip(1).enumerate().take(count) {
+        // SAFETY: `vector` holds `count + 1` pointers; the strings stay on the start-up stack.
+        unsafe { vector.add(index).write(argument.as_ptr().cast_mut()) };
+    }
+    Ok(vector)
+}
+
+fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
+    let count = startup.environment().count();
+    let vector = libsystem_allocate((count + 1) * 8)?.cast::<*mut c_char>();
+    for (index, entry) in startup.environment().enumerate().take(count) {
+        // SAFETY: as in `argument_vector`.
+        unsafe { vector.add(index).write(entry.as_ptr().cast_mut()) };
+    }
+    Ok(vector)
+}
+
+fn apple_vector(path: &[u8]) -> Result<*mut *mut c_char, Failure> {
+    let length = EXECUTABLE_PATH.len() + path.len() + 1;
+    let block = libsystem_allocate(16 + length)?;
+    // SAFETY: the block holds two pointers, then the `executable_path=` string and its NUL.
+    unsafe {
+        let text = block.add(16);
+        text.copy_from_nonoverlapping(EXECUTABLE_PATH.as_ptr(), EXECUTABLE_PATH.len());
+        text.add(EXECUTABLE_PATH.len())
+            .copy_from_nonoverlapping(path.as_ptr(), path.len());
+        block.cast::<*mut u8>().write(text);
+    }
+    Ok(block.cast())
+}
+
+fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {
+    let fd = linux::open(path, linux::O_RDONLY | linux::O_CLOEXEC, 0).map_err(Failure::Open)?;
+    let mut status = [0u8; crate::darwin::LINUX_STAT_SIZE];
+    linux::fstat(fd, &mut status).map_err(Failure::Read)?;
+    let size = crate::darwin::Status::from_linux(&status, crate::darwin::LinuxLayout::HOST).size;
+    if size < 0 || size as u64 > 2 * macho::MAX_IMAGE_SIZE {
+        return Err(Failure::Invalid(InvalidMachO("larger than 2 GiB")));
+    }
+    let size = size as usize;
+    let buffer = linux::map_anonymous(0, size.max(1), PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    // SAFETY: a new private mapping of at least `size` bytes, used only through this slice.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(buffer as *mut u8, size) };
+    let mut filled = 0;
+    while filled < size {
+        match linux::read(fd, &mut bytes[filled..]).map_err(Failure::Read)? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    let _ = linux::close(fd);
+    Ok(&bytes[..filled])
+}
+
+fn protect(program: &MachO<'_>, base: usize) -> Result<(), Failure> {
+    for segment in program.segments() {
+        let start = base + (segment.vmaddr - program.base_address()) as usize;
+        let length = (segment.vmsize as usize).next_multiple_of(linux::PAGE_SIZE);
+        let writable = segment.initprot & VM_PROT_WRITE != 0 && segment.flags & SG_READ_ONLY == 0;
+        let protection = if segment.initprot & VM_PROT_READ != 0 {
+            PROT_READ
+        } else {
+            0
+        } | if writable { PROT_WRITE } else { 0 }
+            | if segment.initprot & VM_PROT_EXECUTE != 0 {
+                PROT_EXEC | PROT_READ
+            } else {
+                0
+            };
+        // SAFETY: each segment's pages get the protection its load command asks for; nothing
+        // but the program uses them from now on.
+        unsafe { linux::protect(start, length, protection) }.map_err(|_| Failure::Memory)?;
+    }
+    Ok(())
+}
