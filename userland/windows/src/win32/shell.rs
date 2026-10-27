@@ -43,7 +43,11 @@ unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i3
         if start {
             // SAFETY: the block holds `arguments + 1` pointers first; `argument` is below
             // `arguments`.
-            unsafe { pointers.add(argument).write(text.wrapping_add(at) as usize) };
+            unsafe {
+                pointers
+                    .wrapping_add(argument)
+                    .write(text.wrapping_add(at) as usize)
+            };
             start = false;
         }
         let unit = match piece {
@@ -55,11 +59,11 @@ unsafe extern "win64" fn command_line_to_argv_w(line: *const u16, count: *mut i3
             }
         };
         // SAFETY: the text after the pointers holds `units` units, and `at` is below it.
-        unsafe { text.add(at).write(unit) };
+        unsafe { text.wrapping_add(at).write(unit) };
         at += 1;
     });
     // SAFETY: as above: the array ends with a null pointer, as `argv` does.
-    unsafe { pointers.add(arguments).write(0) };
+    unsafe { pointers.wrapping_add(arguments).write(0) };
     // SAFETY: the caller passes a writable `int` for the count.
     unsafe { count.write(arguments as i32) };
     pointers

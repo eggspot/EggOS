@@ -34,7 +34,7 @@ impl SystemTime {
             self.milliseconds,
         ];
         let mut bytes = [0u8; 16];
-        for (pair, field) in bytes.chunks_exact_mut(2).zip(fields) {
+        for (pair, field) in bytes.as_chunks_mut::<2>().0.iter_mut().zip(fields) {
             pair.copy_from_slice(&field.to_le_bytes());
         }
         bytes

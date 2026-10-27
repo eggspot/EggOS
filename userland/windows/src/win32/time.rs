@@ -76,8 +76,10 @@ unsafe extern "win64" fn system_time_to_file_time(time: *const u8, file_time: *m
 }
 
 unsafe extern "win64" fn file_time_to_local_file_time(from: *const u64, to: *mut u64) -> Bool {
-    // SAFETY: the caller passes a readable and a writable `FILETIME`.
-    unsafe { to.write_unaligned(from.read_unaligned()) };
+    // SAFETY: the caller passes a readable `FILETIME`.
+    let time = unsafe { from.read_unaligned() };
+    // SAFETY: and a writable one.
+    unsafe { to.write_unaligned(time) };
     TRUE
 }
 

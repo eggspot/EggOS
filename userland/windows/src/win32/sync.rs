@@ -76,7 +76,7 @@ fn slot_of(handle: usize) -> Option<usize> {
     (is_object_handle(handle) && handle.is_multiple_of(4)).then(|| (handle - OBJECT_HANDLES) / 4)
 }
 
-fn object<'a>(table: &'a mut Table, handle: usize) -> Option<&'a mut Object> {
+fn object(table: &mut Table, handle: usize) -> Option<&mut Object> {
     let pointer = table.objects[slot_of(handle)?];
     // SAFETY: a non-null slot points to a live object, which the table's lock (held by the
     // caller, who lent `table`) guards.
@@ -690,10 +690,9 @@ unsafe extern "win64" fn leave_critical_section(section: *mut u8) {
         return;
     }
     // SAFETY: only the owner touches the recursion count.
-    let left = unsafe {
-        *section.recursion = section.recursion.read().saturating_sub(1);
-        section.recursion.read()
-    };
+    let left = unsafe { section.recursion.read() }.saturating_sub(1);
+    // SAFETY: as above.
+    unsafe { section.recursion.write(left) };
     if left == 0 {
         section.owner.store(0, Ordering::Relaxed);
         unlock(section.lock);
@@ -981,16 +980,14 @@ unsafe extern "win64" fn wait_on_address(
     if !matches!(size, 1 | 2 | 4 | 8) || !address.is_multiple_of(size) {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
-    // SAFETY: `WaitOnAddress`' contract: `address` and `compare` each hold `size` readable
-    // bytes; the program changes `address` only with atomic writes.
-    let differs = unsafe {
-        match size {
-            1 => (address as *const u8).read_volatile() != (compare as *const u8).read(),
-            2 => (address as *const u16).read_volatile() != (compare as *const u16).read(),
-            4 => (address as *const u32).read_volatile() != (compare as *const u32).read(),
-            _ => (address as *const u64).read_volatile() != (compare as *const u64).read(),
-        }
-    };
+    let mut current = [0u8; 8];
+    let mut expected = [0u8; 8];
+    // SAFETY: `WaitOnAddress`' contract: `address` holds `size` readable bytes, which the
+    // program changes only with atomic writes.
+    unsafe { core::ptr::copy(address as *const u8, current.as_mut_ptr(), size) };
+    // SAFETY: as above: `compare` holds `size` readable bytes.
+    unsafe { core::ptr::copy(compare as *const u8, expected.as_mut_ptr(), size) };
+    let differs = current != expected;
     if differs {
         return TRUE;
     }

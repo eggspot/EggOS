@@ -9,10 +9,11 @@
 #![cfg_attr(all(windows, not(test)), no_std, no_main)]
 
 #[cfg(all(windows, not(test)))]
+#[allow(clippy::multiple_unsafe_ops_per_block)]
 mod tool {
     use core::cell::UnsafeCell;
     use core::ffi::c_void;
-    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
     const GENERIC_READ: u32 = 0x8000_0000;
@@ -594,11 +595,12 @@ mod tool {
     // SAFETY: the cells are touched only under the lock each stands for.
     unsafe impl Sync for Shared {}
 
-    static mut SHARED: Option<Shared> = None;
+    static SHARED: AtomicPtr<Shared> = AtomicPtr::new(core::ptr::null_mut());
 
     fn shared() -> &'static Shared {
-        // SAFETY: `SHARED` is set before any worker starts and not changed while they run.
-        unsafe { (*&raw const SHARED).as_ref() }.unwrap_or_else(|| panic!())
+        // SAFETY: `threads` publishes its `Shared` before any worker starts and keeps it alive
+        // until every worker has ended.
+        unsafe { SHARED.load(Ordering::Acquire).as_ref() }.unwrap_or_else(|| panic!())
     }
 
     extern "system" fn once_function(_: *mut usize, parameter: usize, context: *mut usize) -> i32 {
@@ -681,13 +683,11 @@ mod tool {
         unsafe { ExitThread(77) }
     }
 
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     fn threads() {
         let null = core::ptr::null_mut();
-        // SAFETY: the objects are created with no names or security attributes; `SHARED` is
-        // set before any worker starts.
-        unsafe {
-            let shared = Shared {
+        // SAFETY: the objects are created with no names or security attributes.
+        let shared = unsafe {
+            Shared {
                 start: CreateEventW(null, 1, 0, core::ptr::null()),
                 mutex: CreateMutexW(null, 0, core::ptr::null()),
                 semaphore: CreateSemaphoreW(null, 0, WORKERS as i32, core::ptr::null()),
@@ -704,11 +704,12 @@ mod tool {
                 fls_cleanups: AtomicU32::new(0),
                 main_thread: GetCurrentThreadId(),
                 failures: AtomicU32::new(0),
-            };
-            InitializeCriticalSection(shared.section.get());
-            SHARED = Some(shared);
-        }
-        let shared = shared();
+            }
+        };
+        // SAFETY: the critical section is `shared`'s own.
+        unsafe { InitializeCriticalSection(shared.section.get()) };
+        SHARED.store(core::ptr::from_ref(&shared).cast_mut(), Ordering::Release);
+        let shared = &shared;
         let mut handles = [0isize; WORKERS];
         for (index, handle) in handles.iter_mut().enumerate() {
             let mut id = 0;
@@ -802,7 +803,6 @@ mod tool {
         unsafe { DeleteCriticalSection(shared.section.get()) };
     }
 
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     fn errors() {
         let mut line = Line::new();
         line.text("errors");
@@ -882,7 +882,6 @@ mod tool {
         line.print();
     }
 
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     fn text() {
         let original = "grüße 🥚 Ελληνικά";
         let bytes = original.as_bytes();
@@ -985,7 +984,6 @@ mod tool {
         units.iter().copied().eq(text.encode_utf16())
     }
 
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     fn system() {
         let mut info = [0u32; 12];
         let mut version = [0u32; 71];

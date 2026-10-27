@@ -26,6 +26,9 @@ mod offset {
     pub const ALTERNATE_FILE_NAME: usize = 564;
 }
 
+const _: () = assert!(offset::FILE_NAME + MAX_PATH * 2 == offset::ALTERNATE_FILE_NAME);
+const _: () = assert!(offset::ALTERNATE_FILE_NAME + 28 == FIND_DATA_SIZE);
+
 const FILE_TYPE: u32 = 0o170_000;
 const DIRECTORY_MODE: u32 = 0o040_000;
 const OWNER_WRITE: u32 = 0o200;
@@ -152,7 +155,6 @@ pub fn fill_find_data(out: &mut [u8; FIND_DATA_SIZE], entry: &Entry, name: &[u8]
         let at = offset::FILE_NAME + index * 2;
         out[at..at + 2].copy_from_slice(&unit.to_le_bytes());
     }
-    debug_assert!(offset::FILE_NAME + MAX_PATH * 2 == offset::ALTERNATE_FILE_NAME);
     true
 }
 

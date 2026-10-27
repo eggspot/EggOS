@@ -246,13 +246,16 @@ unsafe fn map_case(text: *mut u16, map: fn(u16) -> u16) -> *mut u16 {
         return map(address as u16) as usize as *mut u16;
     }
     let mut at = text;
-    // SAFETY: the callers' contract: a NUL-terminated, writable string.
-    while unsafe { at.read() } != 0 {
+    loop {
+        // SAFETY: the callers' contract: a NUL-terminated, writable string.
+        let unit = unsafe { at.read() };
+        if unit == 0 {
+            return text;
+        }
         // SAFETY: as above.
-        unsafe { at.write(map(at.read())) };
+        unsafe { at.write(map(unit)) };
         at = at.wrapping_add(1);
     }
-    text
 }
 
 unsafe extern "win64" fn char_upper_w(text: *mut u16) -> *mut u16 {
@@ -305,15 +308,13 @@ unsafe extern "win64" fn format_message_w(
     } else {
         return fail(error::INSUFFICIENT_BUFFER, 0);
     };
-    let mut at = 0;
-    for unit in message
+    let units = message
         .encode_utf16()
         .chain(line_end.encode_utf16())
-        .chain([0])
-    {
+        .chain([0]);
+    for (at, unit) in units.enumerate() {
         // SAFETY: `out` holds more than `length` units (the message is ASCII).
-        unsafe { out.add(at).write(unit) };
-        at += 1;
+        unsafe { out.wrapping_add(at).write(unit) };
     }
     super::thread_environment::set_last_error(error::SUCCESS);
     length as u32
