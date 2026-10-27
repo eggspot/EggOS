@@ -6574,7 +6574,7 @@ the license, by an explicit instruction recorded here.
   `sigaltstack`, `mmap`, libdispatch semaphores, the unwinder), threads, signal handlers,
   `mmap`, `fork`/`exec`/`posix_spawn`, pipes, `scanf`, locales, Objective-C and Swift runtimes,
   libc++, frameworks (CoreFoundation, Foundation, Cocoa), `dlopen`, the dyld shared cache,
-  other dylibs, Mach ports and calls, programs without chained fixups (`LC_DYLD_INFO`
+  other dylibs, imports an executable makes from itself (its export trie), Mach ports and calls, programs without chained fixups (`LC_DYLD_INFO`
   opcodes, macOS 12 and earlier), `LC_UNIXTHREAD`, 32-bit, arm64e and encrypted programs,
   `.app` bundles and `.dmg`/`.pkg` installers, x86_64 programs on aarch64 through
   ahead-of-time translation. A benchmark of program start and of the hot libSystem calls

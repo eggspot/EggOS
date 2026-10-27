@@ -98,7 +98,8 @@ runs: `macos: /bin/x: needs /usr/lib/libz.1.dylib, which EggOS does not provide 
   **`scanf`** and **locale** functions.
 - **Other libraries and frameworks**: no libc++, no CoreFoundation, Foundation or Cocoa, no
   `dlopen`, no dyld shared cache; a program that links any library other than libSystem is
-  refused. Weak libraries are allowed and their imports are missing.
+  refused. Weak libraries are allowed and their imports are missing. Imports a program makes
+  from itself (C++'s weak definitions, through its export trie) are missing too.
 - **Older programs**: files without chained fixups (built for macOS 12 or earlier, which use
   `LC_DYLD_INFO` opcodes), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e
   programs (pointer authentication) and encrypted ones are refused with a message.

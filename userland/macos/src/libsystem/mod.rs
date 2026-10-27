@@ -186,6 +186,10 @@ extern "C" fn aligned_alloc(alignment: usize, size: usize) -> *mut c_void {
     heap::allocate_aligned(alignment, size).cast()
 }
 
+extern "C" fn valloc(size: usize) -> *mut c_void {
+    heap::allocate_aligned(linux::PAGE_SIZE, size).cast()
+}
+
 extern "C" fn getpagesize() -> c_int {
     linux::PAGE_SIZE as c_int
 }
@@ -258,7 +262,7 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_malloc_size" => malloc_size,
         b"_posix_memalign" => posix_memalign,
         b"_aligned_alloc" => aligned_alloc,
-        b"_valloc" => malloc,
+        b"_valloc" => valloc,
         b"_getpagesize" => getpagesize,
         b"_sysconf" => sysconf,
         b"__dyld_image_count" => image_count,
