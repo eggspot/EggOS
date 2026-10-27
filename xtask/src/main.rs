@@ -470,16 +470,18 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
 }
 
 fn clippy_targets() -> Result<(), String> {
-    cargo(&[
-        "clippy",
-        "--target",
-        WINDOWS_TARGET,
-        "-p",
-        WINDOWS_CONSOLE_PACKAGE,
-        "--",
-        "-D",
-        "warnings",
-    ])?;
+    for target in WINDOWS_TARGETS {
+        cargo(&[
+            "clippy",
+            "--target",
+            target,
+            "-p",
+            WINDOWS_CONSOLE_PACKAGE,
+            "--",
+            "-D",
+            "warnings",
+        ])?;
+    }
     for target in ARCHES.iter().filter_map(|arch| android::target(arch.name)) {
         cargo(&[
             "clippy",
@@ -603,9 +605,27 @@ const WINDOWS_LAYER_PACKAGE: &str = "eggos-windows";
 
 const WINDOWS_LAYER_PATH: &str = "usr/lib/eggos/windows";
 
-const WINDOWS_LAYER_ARCH: &str = "x86_64";
+const WINDOWS_LAYER_ARCHES: [&str; 2] = ["x86_64", "aarch64"];
 
-const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
+const WINDOWS_X64_TARGET: &str = "x86_64-pc-windows-msvc";
+
+const WINDOWS_ARM64_TARGET: &str = "aarch64-pc-windows-msvc";
+
+const WINDOWS_TARGETS: [&str; 2] = [WINDOWS_X64_TARGET, WINDOWS_ARM64_TARGET];
+
+fn windows_target(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => WINDOWS_ARM64_TARGET,
+        _ => WINDOWS_X64_TARGET,
+    }
+}
+
+fn other_cpu_windows_target(arch: &str) -> &'static str {
+    match arch {
+        "x86_64" => WINDOWS_ARM64_TARGET,
+        _ => WINDOWS_X64_TARGET,
+    }
+}
 
 const WINDOWS_CONSOLE_PACKAGE: &str = "eggos-windows-console";
 
@@ -614,6 +634,8 @@ const WINDOWS_CONSOLE_PROGRAMS: [(&str, &str); 3] = [
     ("windows-unsupported", "bin/windows-unsupported.exe"),
     ("windows-tools", "bin/windows-tools.exe"),
 ];
+
+const WINDOWS_OTHER_CPU_PROGRAM: (&str, &str) = ("windows-console", "bin/other-cpu.exe");
 
 const WINDOWS_TOOLS_TEXT_PATH: &str = "usr/share/windows-tools/über.txt";
 
@@ -639,7 +661,7 @@ fn windows_layer_for(
             .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
             .is_ok_and(|()| &magic == b"MZ")
     });
-    if !windows_program || arch.name != WINDOWS_LAYER_ARCH {
+    if !windows_program || !WINDOWS_LAYER_ARCHES.contains(&arch.name) {
         return Ok(None);
     }
     let host = build_runtime_program(arch, WINDOWS_LAYER_PACKAGE)?;
@@ -650,10 +672,15 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
     let mut added = Vec::new();
     for (program, path) in WINDOWS_CONSOLE_PROGRAMS {
         added.push(image::AddedFile {
-            host: build_windows_program(program)?,
+            host: build_windows_program(program, windows_target(arch.name))?,
             path: path.to_owned(),
         });
     }
+    let (program, path) = WINDOWS_OTHER_CPU_PROGRAM;
+    added.push(image::AddedFile {
+        host: build_windows_program(program, other_cpu_windows_target(arch.name))?,
+        path: path.to_owned(),
+    });
     let layer = windows_layer_for(arch, &added)?;
     let mut extra = vec![
         (
@@ -686,7 +713,7 @@ const WINDOWS_PROGRAM_RUSTFLAGS: &[&str] = &[
     "link-arg=/ENTRY:mainCRTStartup",
 ];
 
-fn build_windows_program(program: &str) -> Result<String, String> {
+fn build_windows_program(program: &str, target: &str) -> Result<String, String> {
     let rustflags = WINDOWS_PROGRAM_RUSTFLAGS.join("\x1f");
     let target_dir = target_directory().join("windows-console");
     let target_dir = target_dir.to_string_lossy();
@@ -698,13 +725,13 @@ fn build_windows_program(program: &str) -> Result<String, String> {
             "--bin",
             program,
             "--target",
-            WINDOWS_TARGET,
+            target,
         ],
         &[
             ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
             ("CARGO_TARGET_DIR", &target_dir),
         ],
-        &format!("{program} executable for {WINDOWS_TARGET}"),
+        &format!("{program} executable for {target}"),
     )?;
     Ok(path.to_string_lossy().into_owned())
 }

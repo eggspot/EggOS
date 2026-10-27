@@ -1,5 +1,6 @@
-//! A small Windows console tool, built from our own source for `x86_64-pc-windows-msvc` like
-//! `windows-console`, that the Windows programs boot test runs from `eggsh` (D121). It reads its
+//! A small Windows console tool, built from our own source for `x86_64-pc-windows-msvc` and
+//! `aarch64-pc-windows-msvc` like `windows-console`, that the Windows programs boot test runs
+//! from `eggsh` (D121, D124). It reads its
 //! arguments with `CommandLineToArgvW` and writes UTF-16 through `WriteConsoleW`, one
 //! `WINDOWS-TOOLS` line per result: `dir <patterns>` lists what each wildcard pattern matches
 //! (`FindFirstFileW`), `cat <files or patterns>` prints files read as UTF-8 and converted with
