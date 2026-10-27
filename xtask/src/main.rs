@@ -191,6 +191,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-hello-window",
     "eggos-toolkit",
     "eggos-settings",
+    "eggos-app",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
@@ -239,6 +240,10 @@ const SHELL_PATH: &str = "bin/eggsh";
 const COREUTILS_PATH: &str = "bin/coreutils";
 
 const SETTINGS_PATH: &str = "bin/settings";
+
+const APP_PATH: &str = "bin/app";
+
+const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 
 const PROC_PATH: &str = "proc";
 
@@ -604,6 +609,8 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::persistent::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
+    let (install_kernel, install_folder) = build_install_test(arch)?;
+    qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -960,12 +967,15 @@ fn release_initramfs(
     let shell = build_shell(arch)?;
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let settings = build_runtime_program(arch, "eggos-settings")?;
+    let app = build_runtime_program(arch, "eggos-app")?;
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
         (SHELL_PATH, initramfs::Content::Program(&shell)),
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
+        (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (APP_PATH, initramfs::Content::Program(&app)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
@@ -1123,6 +1133,35 @@ fn build_host_folder_test(arch: &Arch) -> Result<(std::path::PathBuf, String), S
     )?;
     let kernel = build_release_kernel(arch, &initramfs)?;
     Ok((kernel, host_folder(&folder.to_string_lossy())?))
+}
+
+fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let folder = target_directory().join(format!("install-folder-{}", arch.name));
+    std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let (program, _) = WIN_PAINT;
+    let paint = build_windows_gui_program(program, windows_target(arch.name))?;
+    let linux = build_linux_static(arch, "static")?;
+    for (host, name) in [
+        (&paint, qemu::install::WINDOWS_PROGRAM),
+        (&linux, qemu::install::LINUX_PROGRAM),
+    ] {
+        let to = folder.join(name);
+        std::fs::copy(host, &to).map_err(|e| format!("{host} to {}: {e}", to.display()))?;
+    }
+    let detected = [image::AddedFile {
+        host: paint,
+        path: String::new(),
+    }];
+    let layer = windows_layer_for(arch, &detected)?;
+    let extra: Vec<(&str, initramfs::Content)> = layer.iter().map(|layer| layer.member()).collect();
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-install-{}.cpio", arch.user_target),
+    )?;
+    let kernel = build_release_kernel(arch, &initramfs)?;
+    let folder = std::path::PathBuf::from(host_folder(&folder.to_string_lossy())?);
+    Ok((kernel, folder))
 }
 
 fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {

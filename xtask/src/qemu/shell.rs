@@ -40,22 +40,22 @@ fn catalogue_with_the_app() -> Catalogue {
     catalogue
 }
 
-struct Shell<'a> {
-    boot: Boot<'a>,
-    screen: Screen,
-    now_ms: u32,
+pub(super) struct Shell<'a> {
+    pub(super) boot: Boot<'a>,
+    pub(super) screen: Screen,
+    pub(super) now_ms: u32,
 }
 
 impl Shell<'_> {
-    fn arch(&self) -> &'static str {
+    pub(super) fn arch(&self) -> &'static str {
         self.boot.arch.name
     }
 
-    fn check(&mut self, at: &str) -> Result<(), String> {
+    pub(super) fn check(&mut self, at: &str) -> Result<(), String> {
         self.screen.check(&mut self.boot, at, FRAME_TIMEOUT)
     }
 
-    fn click(&mut self, rect: Rect) -> Result<Action, String> {
+    pub(super) fn click(&mut self, rect: Rect) -> Result<Action, String> {
         let (x, y) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
         let mut action = Action::None;
         for button in [None, Some(true), Some(false)] {
@@ -70,7 +70,7 @@ impl Shell<'_> {
         Ok(action)
     }
 
-    fn double_click(&mut self, rect: Rect) -> Result<Action, String> {
+    pub(super) fn double_click(&mut self, rect: Rect) -> Result<Action, String> {
         let (x, y) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
         send_pointer_step(
             &mut self.screen.qmp,
@@ -105,7 +105,7 @@ impl Shell<'_> {
         Ok(action)
     }
 
-    fn key(
+    pub(super) fn key(
         &mut self,
         qcode: &'static str,
         code: u16,
@@ -124,13 +124,18 @@ impl Shell<'_> {
             .key(code, down, held, &mut Damage::new(), &mut DiscardEvents))
     }
 
-    fn tap(&mut self, qcode: &'static str, code: u16, held: Modifiers) -> Result<Action, String> {
+    pub(super) fn tap(
+        &mut self,
+        qcode: &'static str,
+        code: u16,
+        held: Modifiers,
+    ) -> Result<Action, String> {
         let action = self.key(qcode, code, true, held)?;
         self.key(qcode, code, false, held)?;
         Ok(action)
     }
 
-    fn settings_focused(&mut self, focused: bool) {
+    pub(super) fn settings_focused(&mut self, focused: bool) {
         if let Some((_, settings)) = self.screen.settings.as_mut() {
             let input = match focused {
                 true => Input::FocusIn,
@@ -141,7 +146,7 @@ impl Shell<'_> {
         }
     }
 
-    fn expect(&self, action: Action, wanted: Action, at: &str) -> Result<(), String> {
+    pub(super) fn expect(&self, action: Action, wanted: Action, at: &str) -> Result<(), String> {
         match action == wanted {
             true => Ok(()),
             false => Err(format!(
@@ -151,11 +156,11 @@ impl Shell<'_> {
         }
     }
 
-    fn rect(&self, rect: Option<Rect>, what: &str) -> Result<Rect, String> {
+    pub(super) fn rect(&self, rect: Option<Rect>, what: &str) -> Result<Rect, String> {
         rect.ok_or_else(|| format!("{}: the host's desktop has no {what}", self.arch()))
     }
 
-    fn wait_for_line(&mut self, wanted: &str) -> Result<(), String> {
+    pub(super) fn wait_for_line(&mut self, wanted: &str) -> Result<(), String> {
         let started = Instant::now();
         loop {
             self.boot

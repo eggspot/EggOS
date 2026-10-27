@@ -114,7 +114,7 @@ impl Painter for HostPainter<'_, '_> {
     }
 }
 
-fn scene_content(state: &Scene) -> WindowContent {
+pub(super) fn scene_content(state: &Scene) -> WindowContent {
     let (width, height) = (scene::CLIENT.0 as u32, scene::CLIENT.1 as u32);
     let mut pixels = vec![colour::pixel(scene::WINDOW_COLOUR); (width * height) as usize];
     let mut surface = Surface::new(&mut pixels, width, height).expect("the scene fits");
