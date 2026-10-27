@@ -6814,8 +6814,10 @@ the license, by an explicit instruction recorded here.
   (free, held, held with waiters); the thread that holds it re-entering still ends the program
   (status 134). Mutexes (normal, error-checking, recursive, and Darwin's static initializers),
   condition variables, `pthread_once` and libdispatch semaphores are futexes in the program's
-  own memory. On aarch64, compiler-builtins' atomics ask `getauxval` for LSE: the layer answers
-  "no features", so they use load-exclusive/store-exclusive pairs, which every Armv8 CPU has.
+  own memory. On aarch64, the compiler-builtins atomics in the layer's own code ask `getauxval`
+  for LSE: the layer answers 0 ("no features"), so its own atomics use load-exclusive/store-
+  exclusive pairs, which every Armv8 CPU has; the macOS program's own code keeps the LSE
+  atomics Apple's compiler emitted for the M1.
 - **Signals and memory.** `sigaction` and `signal` record handlers and pass `SIG_IGN` and
   `SIG_DFL` on to the kernel (so Rust's ignored `SIGPIPE` makes writes to closed pipes fail with
   `EPIPE`); handlers are not delivered yet. `sigaltstack` keeps each thread's stack, masks are
@@ -6842,9 +6844,11 @@ the license, by an explicit instruction recorded here.
   options (`--list` a directory, times, `errno`, the locale) and with an unknown option
   (`getopt`'s message, status 2); riscv64 refuses each with 126.
 - **Cost.** The layer is only in images with a Mach-O file, so the kernel and release images
-  do not change. Programs pay one `getauxval`-free LL/SC loop per contended atomic on aarch64
-  and a futex lock (one uncontended compare-and-swap) around the heap and the other process
-  state; a thread-local access is three or four instructions with no call into Rust.
+  do not change. On aarch64 the layer's own atomics (its locks, semaphores and thread state)
+  are load-exclusive/store-exclusive loops, since `getauxval` returns 0, while the program's
+  own code uses LSE; the heap and the other process state sit behind a futex lock (one
+  uncontended compare-and-swap); a thread-local access is three or four instructions with no
+  call into Rust.
 - **Not yet.** Signal delivery to handlers, the unwinder (`_Unwind_*`: a panic with
   `panic = "unwind"` stops at it with status 127), `fork`/`exec`/`posix_spawn`, pipes, `scanf`,
   time zones, locales other than C, stdio streams shared between threads, `getopt_long`'s word
