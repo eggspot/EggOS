@@ -7558,3 +7558,91 @@ the license, by an explicit instruction recorded here.
   `wc -c` through the short name, `cd` and `pwd` across the mount, the program run by its
   relative path with its checks, `> new.txt`, `mkdir` and `rm`, each answered as expected; the
   boot-to-prompt test's `ls /` now shows `media`.
+
+## D131 Files that survive a reboot: EggFS, a journaled file system of our own, on a disk image the run scripts attach, at `/home` and `/Applications` (v0.3.0 item 25) — Decided by the build loop (the name, the data mode, the commit policy, the disk image and the format option decided by research)
+- **What.** Users can now keep files across reboots. `run-eggos.sh`, `run-eggos.ps1` and
+  `cargo xtask run` create `eggos-<arch>-disk.img` next to the image if it is missing (1 GiB,
+  sparse) and attach it writable on the virtio block device, next to the `--apps` folder (D130)
+  when there is one; `--disk <image>` picks another image, `--no-disk` attaches none (then
+  `/home` stays in memory, as before), `--format-disk` empties the image first. At boot EggOS
+  formats a blank disk with **EggFS** and mounts its directories `home` and `Applications` at
+  `/home` and `/Applications`; `/tmp` stays in memory.
+- **EggFS** (docs/eggfs.md is the format's specification; the `eggos-eggfs` crate, `eggfs/`,
+  no_std, shared by the kernel and xtask). 4 KiB blocks; a superblock written once; block and
+  inode bitmaps; 128-byte inodes with a CRC-32C, 12 direct pointers and single, double and
+  triple indirect blocks; directories of packed (inode, kind, name) records; a journal of
+  0.4% of the disk (64 to 16384 blocks) holding one transaction at a time. Designed by us from
+  public techniques (write-ahead logging, Unix block maps); no code from any other file system.
+- **Crash safety: metadata journaled, data copy on write** (decided by research, over ext4's
+  ordered mode and full data journaling). Bitmaps, inodes, directory and pointer blocks change in
+  a cache and reach the disk only through the journal: images, flush, a commit record with a
+  CRC-64 over the transaction, flush, then the blocks in place, flush. File data never
+  overwrites a block the last commit uses: it goes to a free block written before the commit,
+  and blocks freed by the running transaction wait for its commit. A power cut therefore leaves
+  exactly the last committed state, which mounting restores by replaying a committed
+  transaction whose blocks did not all land. Data is written once, as in ordered mode, but a
+  file is never torn between versions; ordered mode can tear an overwrite, data journaling
+  writes everything twice. The cost is fragmentation of files overwritten in the middle.
+- **The transaction checksum is CRC-64, not CRC-32C.** The randomized crash test found a
+  power cut whose torn journal passed a CRC-32C: blocks that carry their own CRC-32C (inodes)
+  change without changing an enclosing CRC-32C. A different polynomial does not cancel.
+- **Commits.** A change wakes the volume's committer, a kernel thread that waits 5 s and commits
+  everything changed meanwhile (decided by research: Linux's ext4 also commits every 5 s;
+  nothing runs while nothing changes, and without a disk there is no thread, D18). `sync`,
+  `syncfs`, `fsync` and `fdatasync` commit at once (a file's changes are not committed apart from
+  the rest), an operation that would not fit the journal commits first, and `reboot(2)` syncs
+  every file system before the machine goes down; `poweroff`, `reboot` and `halt` also call
+  `sync` first, as elsewhere. The new `sync` utility is the command-line front-end; the GUI and
+  MCP front-ends (D22) come with the capability framework and the MCP server (M14).
+- **Disks by role, never by order.** The kernel takes every disk and reads what it holds: an
+  EggFS superblock, or a blank writable disk (its first 128 KiB zeros, or a format that stopped
+  midway), goes to `/home` and `/Applications`; a FAT volume to `/media/host` (D130); anything
+  else is left untouched and reported (`vfs: a disk holds neither EggFS nor FAT ...: it was not
+  formatted; to erase it, run with --format-disk`). Erasing is the user's explicit choice on the
+  host: `--format-disk` empties the image (decided by research over a format command in EggOS,
+  which would need all three front-ends before the freeze).
+- **Locks.** Each volume has one `SleepLock` (new in `sync.rs`): a thread that wants the volume
+  while a disk transfer runs sleeps in a wait queue instead of spinning; uncontended it costs
+  one atomic exchange to take and one to release. The FAT reader moves to it too, which closes
+  #128's review finding of a `LeafSpinLock` held across polled I/O.
+- **virtio-blk** negotiates `VIRTIO_BLK_F_FLUSH` and sends a flush request (header and status,
+  no data) when the device has a volatile cache; QEMU's default write-back cache passes a guest
+  flush to the host file. `BlockDevice` gains `flush`; `block::take_all` replaces `take_first`.
+- **The VFS** gains `FileSystem::sync`, `vfs::sync_all`, `vfs::is_mount_point` and
+  `Refused::Storage` (`EIO`). A volume whose commit failed refuses every change after it.
+  `/Applications` is a new empty directory of the initramfs (read-only without a disk); the
+  shell's `ls /` lists it. Moving a file between `/home` and `/Applications` is `EXDEV`, as
+  between two mounts.
+- **Disk image** (decided by research). `dd if=/dev/null of=<image> bs=1 seek=<size>` in the
+  shell script (sparse on APFS and ext4, no root, stock macOS and Linux); `qemu-img create -f
+  raw` from QEMU's folder in PowerShell (sparse on NTFS), else `SetLength`, which reserves the
+  space; `File::set_len` in xtask (sparse on Unix, reserved on Windows). QEMU attaches it with
+  `-blockdev driver=file` and `driver=raw`; QEMU locks the image on macOS and Linux, so a second
+  QEMU on the same image refuses to start (Windows has no such lock: do not run two).
+- **Limits.** Freeing a file spread over more bitmap blocks than a transaction holds (a disk
+  over about 120 GiB) may commit midway; a power cut then can leave blocks or an inode that
+  nothing names: lost space, which the check reports (there is no repair yet).
+  No hard links, symbolic links, extended attributes, access times or quotas; directories are
+  searched linearly (16384 blocks at most); one request at a time, polled.
+- **D18 and D24.** Without a disk nothing is allocated and nothing runs: the boot probes no
+  disk and asks the empty table once. With one: the committer thread's stack, a cache of up to
+  256 clean metadata blocks (1 MiB) plus the running transaction's, and one data block. The
+  release image grows by the crate (format, journal, check, crash-safe allocator) and the
+  kernel glue; `boot_to_prompt` grows by the `/Applications` directory entry. Numbers in the PR.
+  Benchmarks `eggfs_read_4k`, `eggfs_create` and `eggfs_commit` measure a 4 KiB read, a create
+  and remove, and a one-block commit on an in-memory disk.
+- **Testing.** Host: the crate's tests format, mount and change volumes (names, renames that
+  replace, large and sparse files, truncation, a remount), fill a disk to `ENOSPC` and run out
+  of inodes, recover a transaction cut between its commit record and its places, cut the power
+  after **every** disk write of three random 240-operation workloads and recover each cut three
+  ways (no unflushed write kept, all kept, a random half of their sectors kept), checking that
+  the volume is consistent and equals a committed state, and fuzz 600 corrupted images through
+  mount, check, listing, reads and changes without a panic or a hang; the kernel's folders
+  through the VFS; virtio-blk's flush against the fake device; the sleep lock under four
+  threads; `sync` and the power utilities. QEMU on all three architectures: a garbage disk left
+  untouched; a blank disk formatted, written (a 3 MiB file copied from the host folder, larger
+  than the journal and the 60 KiB bounce buffer, an append, a rename, a removal), synced and
+  powered off, then checked on the host with the crate (journal replayed in memory, full
+  check, every file's bytes); a second boot reads it back, then QEMU is killed while a loop
+  replaces the large file through a temporary name, and the image must check clean with the
+  file one version whole; a third boot recovers and powers off cleanly.

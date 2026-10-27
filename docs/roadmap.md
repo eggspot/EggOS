@@ -255,7 +255,15 @@ D16):
     in the driver model (`block`), a FAT12/16/32 reader with long names, and programs run from
     any file system (`/tmp`, `/home` and `/media/host` too). Next: the writable disk (item
     25), several requests in flight, interrupts.
-25. files that survive a reboot: a persistent disk.
+25. **done** — users can now keep files across reboots (D131, docs/eggfs.md): the run scripts
+    and `cargo xtask run` create and attach a sparse 1 GiB `eggos-<arch>-disk.img` (`--disk`,
+    `--no-disk`, `--format-disk`); EggOS formats it with EggFS, its own journaled file system
+    (metadata journaled, data copy on write, CRC-checked commits), and mounts `/home` and
+    `/Applications` on it; disks are told apart by what they hold; virtio-blk writes and
+    flushes; `sync`, `syncfs`, `fsync`, `fdatasync`, the `sync` utility and a sync before
+    power-off; a committer every 5 s; host crash tests at every write and a QEMU power cut.
+    Next: a repair tool, links, a format command in EggOS with its three front-ends, several
+    requests in flight.
 34. a UI toolkit and the Settings app with the profile picker.
 35. the desktop shell: taskbar or dock, the launcher, desktop icons.
 36. install, open and uninstall of `.exe`, `.app` and ELF programs.
@@ -571,14 +579,16 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | virtio-gpu 2D (polled): display mode, framebuffer on scanout 0, transfers and flushes of damaged rectangles (D112) | **done** (cursor queue, interrupts: planned) |
 | virtio-input (polled): keyboard, tablet and mouse, capabilities from the device's configuration, the US keymap and key repeat, the input event queue (D113) | **done** (interrupts, LEDs, keyboard layouts: planned) |
 | Graphical terminal on the virtio-gpu display: Egg Mono 8x16, the ANSI subset, scrollback, damage-only rendering (D114) | **done** (cursor blink, 2x scale: planned) |
-| virtio-blk (polled): capacity, read-only disks, reads and writes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
+| virtio-blk (polled): capacity, read-only disks, reads, writes and flushes of 512-byte sectors, one request at a time; a FAT12/16/32 reader mounts the host folder at `/media/host` (D130) | **done** (several requests in flight, interrupts: planned) |
+| EggFS, our own journaled disk file system: `/home` and `/Applications` on a disk image, metadata journal, copy-on-write data, CRC-checked commits, crash recovery at mount, `sync`/`fsync` (D131, docs/eggfs.md) | **done** (repair tool, links, several requests in flight: planned) |
 | virtio (console, net) | planned (M8) |
 
 ## Toward "better than macOS, Windows and Linux"
 
 Rough estimate: **~3%**. The kernel boots on three architectures (x86_64, aarch64, riscv64) to
 a desktop with windows; static Linux programs, Windows console and GUI programs (part 1), and
-Android and macOS console programs run natively; no disk, network or real hardware yet.
+Android and macOS console programs run natively; files in `/home` survive reboots on an EggFS
+disk (D131); no network or real hardware yet.
 
 | Area | Missing |
 |------|---------|

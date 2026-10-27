@@ -199,6 +199,17 @@ holds what used to be written in them.
   quits); `--nographic`, anywhere among the options, keeps both on the terminal for a machine
   without a screen; `--apps <folder>` attaches a host folder, which EggOS mounts read-only at
   `/media/host` (D130).
+- **Persistent disk** (D131). `cargo xtask run` attaches `target/image/eggos-<arch>-disk.img`,
+  created empty and 1 GiB sparse if missing (`File::set_len`: sparse on APFS and ext4; on NTFS
+  the space is reserved), which EggOS formats with EggFS at its first boot and mounts at
+  `/home` and `/Applications`. `--disk <image>` uses another image, `--no-disk` none, and
+  `--format-disk` empties the image first, erasing everything on it: the only way to reuse a
+  disk that holds something else, which EggOS never formats on its own. The run scripts take
+  the same options (`-Disk`, `-NoDisk`, `-FormatDisk` in PowerShell) and keep the image next
+  to themselves; `run-eggos.sh` creates it with `dd ... seek=`, `run-eggos.ps1` with
+  `qemu-img create -f raw` from QEMU's folder (sparse), else `SetLength`. The persistent files
+  boot test (`xtask/src/qemu/persistent.rs`) boots on images in `target/qemu-disks` and checks
+  them afterwards with the `eggos-eggfs` crate.
 - **Input** (D113). Every run with the display also gets a virtio keyboard, tablet and mouse:
   `-device virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on
   the `virt` machines, the `-pci` devices with `disable-legacy=on` on q35; the kernel prints
@@ -220,8 +231,9 @@ holds what used to be written in them.
   `RELEASE-NOTES.md`, a skeleton with each image's size and boot-to-prompt time whose
   what's-new section the release PR writes. The scripts' QEMU arguments are
   `qemu::interactive_args`, the ones `cargo xtask run` uses, with `-nographic` for `--serial`
-  (`-Serial`), and `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
-  PowerShell), with the folder made absolute and its commas doubled; a host test checks they
+  (`-Serial`), `qemu::host_folder_args` for `--apps <folder>` (`-Apps`, or `--apps`, in
+  PowerShell), with the folder made absolute and its commas doubled, and `qemu::disk_args`
+  for the disk image; a host test checks they
   match. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
