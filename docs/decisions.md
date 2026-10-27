@@ -7374,7 +7374,12 @@ the license, by an explicit instruction recorded here.
   coordinates no longer overflow (saturating arithmetic in `CreateWindowExW`,
   `AdjustWindowRectEx`, the shapes and text); a line computes only the points that can reach the
   surface (a `LineTo` toward `i32::MAX` used to take 2^31 steps under the lock). The thread
-  affinity of messages and the futex-and-poller sleep came with the second fix.
+  affinity of messages and the futex-and-poller sleep came with the second fix. From the
+  re-review: waking every futex sleeper passed `u32::MAX`, which Linux (and our kernel) read as
+  the `int` -1, waking one; every wake in the layer now names `WakeCount::One` or
+  `WakeCount::All` (`i32::MAX`), so no site can pass a raw count. A pen is at most as wide as the
+  surface's width and height together, so a pen near `i32::MAX` wide cannot hold the lock for
+  long.
 - **Cost.** Nothing for console programs but a few words of static data (no state, no
   connection). A Win32 call is a function call; reading a message makes one non-blocking `read`
   of the server's descriptor first (`EAGAIN` when no record waits), one more per batch of 16
@@ -7406,4 +7411,8 @@ the license, by an explicit instruction recorded here.
   start-up (item 43). Follow-ups: `SendMessageW` to another thread's window calls the procedure
   on the caller's thread; destroying a window that owns an open message box leaves the box's
   loop waiting (the server destroys the dialog with its parent); `WM_CREATE` answered with -1
-  removes the window without `WM_DESTROY` and `WM_NCDESTROY`.
+  removes the window without `WM_DESTROY` and `WM_NCDESTROY`; `DestroyWindow` from another
+  thread runs the window procedure on the caller's thread too; every thread shares the 256
+  posted and 256 input entries; a thread that finds another reading the server's records loops
+  until it is done instead of sleeping; handing `ppoll` from one sleeping thread to another
+  wakes the others once for nothing.

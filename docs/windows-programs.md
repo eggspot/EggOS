@@ -189,7 +189,12 @@ size needed, as each function documents.
   from the program, `SW_HIDE`, bitmaps and `BitBlt`, dashed pens, raster operations and
   clipping beyond one rectangle. Follow-ups: `SendMessageW` to another thread's window calls
   the procedure on the caller's thread; destroying a window that owns an open message box leaves
-  the box waiting; `WM_CREATE` answered with -1 removes the window without `WM_DESTROY`. 32-bit
+  the box waiting; `WM_CREATE` answered with -1 removes the window without `WM_DESTROY`;
+  `DestroyWindow` from another thread runs the procedure on the caller's thread too; all
+  threads share the 256 posted and 256 input entries; a thread waiting while another reads the
+  server's records spins instead of sleeping; handing the `ppoll` wait between sleeping threads
+  wakes the others once for nothing; a pen is never wider than the window's width and height
+  together. 32-bit
   programs (x86 and 32-bit Arm).
 - **Writing files**: the file system is read-only, so `CreateFileW` for writing fails with
   `ERROR_ACCESS_DENIED`.
