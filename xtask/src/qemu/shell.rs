@@ -12,6 +12,7 @@
 use super::settings::{Boot, LINUX_CARD, Screen, WINDOWS_CARD};
 use super::*;
 use eggos_drivers::desktop::{Action, AppId, Catalogue, Profile};
+use eggos_toolkit::input::Input;
 
 const FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 const TEST_DISK_BYTES: u64 = 64 << 20;
@@ -129,6 +130,17 @@ impl Shell<'_> {
         Ok(action)
     }
 
+    fn settings_focused(&mut self, focused: bool) {
+        if let Some((_, settings)) = self.screen.settings.as_mut() {
+            let input = match focused {
+                true => Input::FocusIn,
+                false => Input::FocusOut,
+            };
+            let response = settings.tree().handle(input, 0);
+            settings.respond(response, 0);
+        }
+    }
+
     fn expect(&self, action: Action, wanted: Action, at: &str) -> Result<(), String> {
         match action == wanted {
             true => Ok(()),
@@ -210,14 +222,17 @@ fn windows_steps(shell: &mut Shell<'_>) -> Result<(), String> {
     shell.check("the Windows profile: the taskbar")?;
     let start = shell.rect(shell.screen.desktop.start_button(), "Start button")?;
     shell.click(start)?;
+    shell.settings_focused(false);
     shell.check("Start opened the launcher above the taskbar")?;
     shell.tap("esc", key::ESC, Modifiers::NONE)?;
+    shell.settings_focused(true);
     let terminal = shell.screen.desktop.terminal_window();
     let item = shell.rect(
         shell.screen.desktop.window_entry(terminal),
         "terminal's taskbar item",
     )?;
     shell.click(item)?;
+    shell.settings_focused(false);
     shell.screen.park_pointer()?;
     shell.check("the terminal focused from its taskbar item")?;
     let settings = shell
@@ -231,6 +246,7 @@ fn windows_steps(shell: &mut Shell<'_>) -> Result<(), String> {
         "Settings' taskbar item",
     )?;
     shell.click(item)?;
+    shell.settings_focused(true);
     shell.screen.park_pointer()?;
     shell.check("Settings focused from its taskbar item")
 }

@@ -86,6 +86,7 @@ pub(super) struct PanelState {
     pub pressed: Option<PanelItem>,
     pub tooltip: Option<PanelItem>,
     pub tooltip_spent: bool,
+    pub moved: bool,
 }
 
 struct DockEntries {
@@ -227,8 +228,15 @@ impl Desktop {
         2 * DOCK_PADDING + shown as u32 * (DOCK_ICON + DOCK_GAP) - DOCK_GAP + separator
     }
 
+    fn in_panel_band(&self, x: u32, y: u32) -> bool {
+        self.layout.panels().any(|panel| contains(panel, x, y))
+    }
+
     /// Whether (`x`, `y`) is on a panel.
     pub(super) fn over_panel(&self, x: u32, y: u32) -> bool {
+        if !self.in_panel_band(x, y) {
+            return false;
+        }
         [self.layout.top_bar, self.layout.taskbar, self.dock_rect()]
             .into_iter()
             .flatten()
@@ -369,6 +377,9 @@ impl Desktop {
 
     /// The panel item at (`x`, `y`), if any.
     pub(super) fn panel_item_at(&self, x: u32, y: u32) -> Option<PanelItem> {
+        if !self.in_panel_band(x, y) {
+            return None;
+        }
         let mut found = None;
         self.for_each_panel_item(|item, rect| {
             if contains(rect, x, y) {
@@ -401,8 +412,10 @@ impl Desktop {
         })
     }
 
-    /// Damages what lists the windows: the Linux top bar's chips, the taskbar or the dock.
-    pub(super) fn damage_window_list(&self, damage: &mut Damage) {
+    /// Damages what lists the windows: the Linux top bar's chips, the taskbar or the dock; the
+    /// item under the pointer is looked for again after the event.
+    pub(super) fn damage_window_list(&mut self, damage: &mut Damage) {
+        self.panels.moved = true;
         match self.profile {
             Profile::Linux => damage.add(self.chips_area()),
             Profile::Windows => {
@@ -598,7 +611,7 @@ impl Desktop {
     /// The panels moved under a pointer that did not: the item under it is the hovered one,
     /// with no tooltip until the pointer moves.
     pub(super) fn refresh_panel_hover(&mut self, damage: &mut Damage) {
-        if self.pointer_visible {
+        if core::mem::take(&mut self.panels.moved) && self.pointer_visible {
             let (x, y) = self.pointer;
             let before = self.panels.hover;
             self.update_panel_hover(x, y, damage);
@@ -710,7 +723,9 @@ impl Desktop {
         {
             self.draw_taskbar(canvas, bar);
         }
-        if let Some(dock) = self.dock_rect()
+        let band = self.layout.dock_band;
+        if band.is_some_and(|band| band.overlaps(&clip))
+            && let Some(dock) = self.dock_rect()
             && Rect::new(
                 dock.x.saturating_sub(4),
                 dock.y,
