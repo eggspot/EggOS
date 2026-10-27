@@ -108,6 +108,100 @@ pub fn eggos_path(
     Some(length - skipped + 1)
 }
 
+/// How many UTF-8 bytes UTF-16 `units` take (an unpaired surrogate as U+FFFD's three).
+pub fn utf8_length(units: &[u16]) -> usize {
+    utf16_chars(units).map(char::len_utf8).sum()
+}
+
+/// Whether `units` hold an unpaired surrogate, which UTF-8 cannot carry.
+pub fn has_unpaired_surrogate(units: &[u16]) -> bool {
+    char::decode_utf16(units.iter().copied()).any(|unit| unit.is_err())
+}
+
+/// The upper case of UTF-16 unit `unit` when it is one character whose simple upper case is one
+/// unit too, as `CharUpperW` maps it; otherwise `unit` itself.
+pub fn upper(unit: u16) -> u16 {
+    let Some(c) = char::from_u32(u32::from(unit)) else {
+        return unit;
+    };
+    let mut upper = c.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(single), None) => u16::try_from(u32::from(single)).unwrap_or(unit),
+        _ => unit,
+    }
+}
+
+/// The lower case of UTF-16 unit `unit`, as [`upper`] maps upper case.
+pub fn lower(unit: u16) -> u16 {
+    let Some(c) = char::from_u32(u32::from(unit)) else {
+        return unit;
+    };
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(single), None) => u16::try_from(u32::from(single)).unwrap_or(unit),
+        _ => unit,
+    }
+}
+
+/// Compares UTF-16 strings unit by unit, as `CompareStringOrdinal` does (with `ignore_case`,
+/// after [`upper`]).
+pub fn compare_ordinal(a: &[u16], b: &[u16], ignore_case: bool) -> core::cmp::Ordering {
+    let fold = |unit: &u16| if ignore_case { upper(*unit) } else { *unit };
+    a.iter().map(fold).cmp(b.iter().map(fold))
+}
+
+/// Writes the EggOS path `path` (UTF-8, no NUL) in Windows' form through `out`: `/` is `\`,
+/// and an absolute path starts with the drive `C:`.
+pub fn windows_path(path: &[u8], out: &mut impl FnMut(char)) {
+    if path.first() == Some(&b'/') {
+        out('C');
+        out(':');
+    }
+    for c in utf8_chars(path) {
+        out(if c == '/' { '\\' } else { c });
+    }
+}
+
+/// Writes `path` (an EggOS path, UTF-8, no NUL), taken relative to the absolute directory
+/// `directory` unless it is absolute itself, into `out` as an absolute path with `.`, `..` and
+/// repeated or trailing slashes resolved; its length (no NUL), or `None` if it does not fit.
+pub fn absolute_path(directory: &[u8], path: &[u8], out: &mut [u8]) -> Option<usize> {
+    let mut length = 0;
+    let base: &[u8] = if path.first() == Some(&b'/') {
+        b""
+    } else {
+        directory
+    };
+    for component in base
+        .split(|byte| *byte == b'/')
+        .chain(path.split(|byte| *byte == b'/'))
+    {
+        match component {
+            b"" | b"." => {}
+            b".." => {
+                length = out[..length]
+                    .iter()
+                    .rposition(|byte| *byte == b'/')
+                    .unwrap_or(0);
+            }
+            name => {
+                let end = length.checked_add(1 + name.len())?;
+                if end > out.len() {
+                    return None;
+                }
+                out[length] = b'/';
+                out[length + 1..end].copy_from_slice(name);
+                length = end;
+            }
+        }
+    }
+    if length == 0 {
+        *out.first_mut()? = b'/';
+        length = 1;
+    }
+    Some(length)
+}
+
 /// Whether two ASCII names are equal, ignoring case, as Windows compares DLL and environment
 /// variable names.
 pub fn equal_ignoring_ascii_case(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> bool {
@@ -176,5 +270,94 @@ mod tests {
             b"kernel32".iter().copied(),
             b"kernel32.dll".iter().copied()
         ));
+    }
+
+    #[test]
+    fn lengths_surrogates_and_upper_case() {
+        let wide: Vec<u16> = "aé\u{1f95a}".encode_utf16().collect();
+        assert_eq!(utf8_length(&wide), 1 + 2 + 4);
+        assert_eq!(utf8_length(&[0xd800]), 3);
+        assert!(has_unpaired_surrogate(&[0x61, 0xdc00]));
+        assert!(!has_unpaired_surrogate(&wide));
+        assert_eq!(upper(u16::from(b'a')), u16::from(b'A'));
+        assert_eq!(upper(0xe9), 0xc9);
+        assert_eq!(upper(0xdf), 0xdf);
+        assert_eq!(upper(0xd800), 0xd800);
+        assert_eq!(upper(u16::from(b'1')), u16::from(b'1'));
+        assert_eq!(lower(0xc9), 0xe9);
+        assert_eq!(lower(0x130), 0x130);
+    }
+
+    #[test]
+    fn ordinal_comparison_is_by_unit_with_optional_case_folding() {
+        use core::cmp::Ordering;
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(
+            compare_ordinal(&wide("abc"), &wide("abc"), false),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_ordinal(&wide("ABC"), &wide("abc"), false),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_ordinal(&wide("ABC"), &wide("abc"), true),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_ordinal(&wide("ab"), &wide("abc"), false),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_ordinal(&wide("Grüße"), &wide("GRÜSSE"), true),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_ordinal(&wide("é"), &wide("É"), true),
+            Ordering::Equal
+        );
+    }
+
+    fn windows(path: &str) -> String {
+        let mut out = String::new();
+        windows_path(path.as_bytes(), &mut |c| out.push(c));
+        out
+    }
+
+    #[test]
+    fn eggos_paths_become_windows_paths() {
+        assert_eq!(windows("/"), r"C:\");
+        assert_eq!(
+            windows("/bin/windows-tools.exe"),
+            r"C:\bin\windows-tools.exe"
+        );
+        assert_eq!(windows("data/é.txt"), r"data\é.txt");
+    }
+
+    fn absolute(directory: &str, path: &str) -> Option<String> {
+        let mut out = [0u8; 64];
+        let length = absolute_path(directory.as_bytes(), path.as_bytes(), &mut out)?;
+        Some(String::from_utf8(out[..length].to_vec()).unwrap())
+    }
+
+    #[test]
+    fn paths_resolve_against_the_directory() {
+        assert_eq!(
+            absolute("/etc", "hostname").as_deref(),
+            Some("/etc/hostname")
+        );
+        assert_eq!(absolute("/etc", "/bin//x/").as_deref(), Some("/bin/x"));
+        assert_eq!(
+            absolute("/usr/lib", "../share/./a").as_deref(),
+            Some("/usr/share/a")
+        );
+        assert_eq!(absolute("/", "../..").as_deref(), Some("/"));
+        assert_eq!(absolute("/etc", "").as_deref(), Some("/etc"));
+        assert_eq!(absolute("/", "").as_deref(), Some("/"));
+        assert_eq!(
+            absolute("/", &"a".repeat(63)).as_deref(),
+            Some(&*format!("/{}", "a".repeat(63)))
+        );
+        assert_eq!(absolute("/", &"a".repeat(64)), None);
     }
 }

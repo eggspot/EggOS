@@ -181,10 +181,17 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"exit 7\r",
 ];
 
-const WINDOWS_PROGRAM_SESSION: [&[u8]; 4] = [
+const WINDOWS_PROGRAM_SESSION: [&[u8]; 8] = [
     b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"/bin/windows-console.exe exit 300; echo WINDOWS-CONSOLE status $?\r",
     b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
+    b"windows-tools.exe dir 'C:\\bin\\windows-*.exe' 'C:\\bin\\windows-?ools.exe' \
+      'C:\\usr\\share\\windows-tools\\*' 'C:\\nope\\*' 'C:\\bin\\*.zzz'; \
+      echo WINDOWS-TOOLS status $?\r",
+    b"windows-tools.exe cat 'C:\\usr\\share\\windows-tools\\*.txt' 'C:\\etc\\hostname' \
+      'C:\\etc\\missing' 'C:\\nope\\x'; echo WINDOWS-TOOLS status $?\r",
+    b"windows-tools.exe checks; echo WINDOWS-TOOLS status $?\r",
+    b"windows-tools.exe detach; echo WINDOWS-TOOLS status $?\r",
     b"exit 7\r",
 ];
 
@@ -335,10 +342,20 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
                 Line::Whole("WINDOWS-CONSOLE status 126".into()),
             ]
         };
+        let tools = || {
+            vec![
+                Line::Whole("eggsh: windows-tools.exe: Exec format error".into()),
+                Line::Whole("WINDOWS-TOOLS status 126".into()),
+            ]
+        };
         return [
             refused("windows-console.exe"),
             refused("/bin/windows-console.exe"),
             refused("windows-unsupported.exe"),
+            tools(),
+            tools(),
+            tools(),
+            tools(),
             end,
         ];
     }
@@ -348,7 +365,7 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             "WINDOWS-CONSOLE env GREETING=hi",
             "WINDOWS-CONSOLE teb ok",
             "WINDOWS-CONSOLE file eggos",
-            "WINDOWS-CONSOLE missing file refused error 2",
+            "WINDOWS-CONSOLE missing file refused error 3",
             "WINDOWS-CONSOLE heap ok",
             "WINDOWS-CONSOLE time ok",
             "WINDOWS-CONSOLE stack ok",
@@ -366,6 +383,59 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             ),
             Line::Whole("WINDOWS-CONSOLE status 126".into()),
         ],
+        whole(&[
+            concat!(
+                r"WINDOWS-TOOLS dir C:\bin\windows-*.exe: windows-console.exe ",
+                "windows-tools.exe windows-unsupported.exe"
+            ),
+            r"WINDOWS-TOOLS dir C:\bin\windows-?ools.exe: windows-tools.exe",
+            r"WINDOWS-TOOLS dir C:\usr\share\windows-tools\*: ..\ .\ über.txt",
+            r"WINDOWS-TOOLS dir C:\nope\*: error 3",
+            r"WINDOWS-TOOLS dir C:\bin\*.zzz: error 2",
+            "WINDOWS-TOOLS status 1",
+        ]),
+        whole(&[
+            "WINDOWS-TOOLS über.txt: grüße aus EggOS 🥚",
+            "WINDOWS-TOOLS über.txt: zweite Zeile",
+            r"WINDOWS-TOOLS C:\etc\hostname: eggos",
+            concat!(
+                r"WINDOWS-TOOLS cat C:\etc\missing: error 2 ",
+                "The system cannot find the file specified."
+            ),
+            concat!(
+                r"WINDOWS-TOOLS cat C:\nope\x: error 3 ",
+                "The system cannot find the path specified."
+            ),
+            "WINDOWS-TOOLS status 1",
+        ]),
+        whole(&[
+            "WINDOWS-TOOLS threads 4 joined exits 10 11 12 13 interlocked 4000 critical 4000 \
+             mutex 4000 srw 4000 once 1",
+            "WINDOWS-TOOLS threads semaphore 4 suspended ok exit-thread 77 fls-cleanups 4 \
+             per-thread tls and last error ok",
+            "WINDOWS-TOOLS sync wait-on-address ok timeout 1460 condition ok shared-srw ok \
+             check-only 0 current-thread 259",
+            "WINDOWS-TOOLS errors 2 3 16 183 2 267 6 203 10 122 1 6 288 298 0",
+            "WINDOWS-TOOLS message 2 The system cannot find the file specified.",
+            "WINDOWS-TOOLS text grüße 🥚 Ελληνικά units 17 bytes 29 round trip ok invalid 1 1113 \
+             unpaired 1 1113 ordinal ok",
+            concat!(
+                "WINDOWS-TOOLS system arch 9 page 4096 granularity 65536 cpus some version ",
+                r"10.0.26100 module C:\bin\windows-tools.exe"
+            ),
+            "WINDOWS-TOOLS time epoch 1970-1-1 weekday 4 now ok",
+            concat!(
+                r"WINDOWS-TOOLS cwd C:\etc full C:\etc\hostname part hostname relative ",
+                "open ok small buffer 7"
+            ),
+            "WINDOWS-TOOLS env EGG=yolk ü block ok removed 0 203",
+            "WINDOWS-TOOLS status 0",
+        ]),
+        whole(&[
+            "WINDOWS-TOOLS detach the first thread returns 0",
+            "WINDOWS-TOOLS detach the last thread ran after the first one returned",
+            "WINDOWS-TOOLS status 5",
+        ]),
         end,
     ]
 }

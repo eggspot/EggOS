@@ -16,12 +16,22 @@ pub mod number {
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
     pub const GETPID: usize = 39;
+    pub const CLONE: usize = 56;
+    pub const EXIT: usize = 60;
+    pub const GETCWD: usize = 79;
+    pub const CHDIR: usize = 80;
     pub const ARCH_PRCTL: usize = 158;
     pub const GETTID: usize = 186;
+    pub const FUTEX: usize = 202;
+    pub const SCHED_GETAFFINITY: usize = 204;
+    pub const GETDENTS64: usize = 217;
     pub const CLOCK_GETTIME: usize = 228;
     pub const CLOCK_NANOSLEEP: usize = 230;
     pub const EXIT_GROUP: usize = 231;
     pub const OPENAT: usize = 257;
+    pub const MKDIRAT: usize = 258;
+    pub const NEWFSTATAT: usize = 262;
+    pub const UNLINKAT: usize = 263;
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -32,7 +42,11 @@ pub const O_RDWR: usize = 2;
 pub const O_CREAT: usize = 0o100;
 pub const O_EXCL: usize = 0o200;
 pub const O_TRUNC: usize = 0o1000;
+pub const O_DIRECTORY: usize = 0o200_000;
 pub const O_CLOEXEC: usize = 0o2_000_000;
+pub const AT_REMOVEDIR: usize = 0x200;
+pub const FUTEX_WAIT_PRIVATE: usize = 128;
+pub const FUTEX_WAKE_PRIVATE: usize = 129;
 pub const PROT_NONE: usize = 0;
 pub const PROT_READ: usize = 1;
 pub const PROT_WRITE: usize = 2;
@@ -49,6 +63,12 @@ pub const TERMIOS_SIZE: usize = 60;
 pub const STAT_WORDS: usize = 18;
 pub const STAT_MODE_WORD: usize = 3;
 pub const STAT_SIZE_WORD: usize = 6;
+pub const STAT_DEVICE_WORD: usize = 0;
+pub const STAT_INODE_WORD: usize = 1;
+pub const STAT_LINKS_WORD: usize = 2;
+pub const STAT_ACCESS_TIME_WORD: usize = 9;
+pub const STAT_MODIFY_TIME_WORD: usize = 11;
+pub const STAT_CHANGE_TIME_WORD: usize = 13;
 pub const FILE_TYPE: u32 = 0o170_000;
 pub const DIRECTORY: u32 = 0o040_000;
 pub const REGULAR_FILE: u32 = 0o100_000;
@@ -239,6 +259,205 @@ pub fn thread_id() -> u32 {
 pub unsafe fn set_gs_base(address: usize) -> Result<usize, Errno> {
     // SAFETY: the caller's duty; `arch_prctl(ARCH_SET_GS)` touches no memory.
     unsafe { syscall(number::ARCH_PRCTL, [ARCH_SET_GS, address, 0, 0, 0, 0]) }
+}
+
+/// The `stat` words of the NUL-terminated `path`, relative to directory `directory_fd`
+/// ([`AT_FDCWD`] for the working directory).
+pub fn stat_at(directory_fd: usize, path: &[u8]) -> Result<[u64; STAT_WORDS], Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    let mut words = [0u64; STAT_WORDS];
+    // SAFETY: `newfstatat` reads the NUL-terminated path and writes one `struct stat` into the
+    // borrowed words.
+    unsafe {
+        syscall(
+            number::NEWFSTATAT,
+            [
+                directory_fd,
+                path.as_ptr() as usize,
+                words.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok(words)
+}
+
+/// Reads directory entries (`struct linux_dirent64`) from `fd` into `buffer`; 0 at the end.
+pub fn directory_entries(fd: usize, buffer: &mut [u8]) -> Result<usize, Errno> {
+    // SAFETY: `getdents64` writes at most `buffer.len()` bytes into the borrowed buffer.
+    unsafe {
+        syscall(
+            number::GETDENTS64,
+            [fd, buffer.as_mut_ptr() as usize, buffer.len(), 0, 0, 0],
+        )
+    }
+}
+
+/// Writes the working directory, NUL-terminated, into `buffer`; its length with the NUL.
+pub fn working_directory(buffer: &mut [u8]) -> Result<usize, Errno> {
+    // SAFETY: `getcwd` writes at most `buffer.len()` bytes into the borrowed buffer.
+    unsafe {
+        syscall(
+            number::GETCWD,
+            [buffer.as_mut_ptr() as usize, buffer.len(), 0, 0, 0, 0],
+        )
+    }
+}
+
+/// Changes the working directory to the NUL-terminated `path`.
+pub fn change_directory(path: &[u8]) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `chdir` reads the NUL-terminated path.
+    unsafe { syscall(number::CHDIR, [path.as_ptr() as usize, 0, 0, 0, 0, 0]) }
+}
+
+/// Makes the directory at the NUL-terminated `path`.
+pub fn make_directory(path: &[u8]) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `mkdirat` reads the NUL-terminated path.
+    unsafe {
+        syscall(
+            number::MKDIRAT,
+            [AT_FDCWD, path.as_ptr() as usize, 0o777, 0, 0, 0],
+        )
+    }
+}
+
+/// Removes the file (or, with [`AT_REMOVEDIR`], the directory) at the NUL-terminated `path`.
+pub fn remove(path: &[u8], flags: usize) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `unlinkat` reads the NUL-terminated path.
+    unsafe {
+        syscall(
+            number::UNLINKAT,
+            [AT_FDCWD, path.as_ptr() as usize, flags, 0, 0, 0],
+        )
+    }
+}
+
+/// How many CPUs the process may run on.
+pub fn cpu_count() -> u32 {
+    let mut mask = [0u64; 16];
+    // SAFETY: `sched_getaffinity` writes at most the borrowed mask's 128 bytes.
+    let result = unsafe {
+        syscall(
+            number::SCHED_GETAFFINITY,
+            [
+                0,
+                core::mem::size_of_val(&mask),
+                mask.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    match result {
+        Ok(_) => mask
+            .iter()
+            .map(|word| word.count_ones())
+            .sum::<u32>()
+            .max(1),
+        Err(_) => 1,
+    }
+}
+
+/// Sleeps while the 32-bit word at `word` holds `expected`, at most `timeout` nanoseconds
+/// (forever if `None`); returns early on a wake, a signal or a changed value, and
+/// `Err(ETIMEDOUT)` when the time ran out.
+pub fn futex_wait(
+    word: &core::sync::atomic::AtomicU32,
+    expected: u32,
+    timeout: Option<u64>,
+) -> Result<usize, Errno> {
+    let time = timeout.map(|nanoseconds| {
+        [
+            (nanoseconds / 1_000_000_000).min(i64::MAX as u64) as i64,
+            (nanoseconds % 1_000_000_000) as i64,
+        ]
+    });
+    let time_pointer = time.as_ref().map_or(0, |time| time.as_ptr() as usize);
+    // SAFETY: `futex` reads the borrowed word and, with a timeout, one `struct timespec` from
+    // the borrowed local.
+    unsafe {
+        syscall(
+            number::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAIT_PRIVATE,
+                expected as usize,
+                time_pointer,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// Wakes at most `count` threads sleeping on the 32-bit word at `address`.
+pub fn futex_wake(address: usize, count: u32) {
+    // SAFETY: a wake touches no memory.
+    let _ = unsafe {
+        syscall(
+            number::FUTEX,
+            [address, FUTEX_WAKE_PRIVATE, count as usize, 0, 0, 0],
+        )
+    };
+}
+
+const THREAD_FLAGS: usize =
+    0x100 | 0x200 | 0x400 | 0x800 | 0x1_0000 | 0x4_0000 | 0x10_0000 | 0x20_0000;
+
+/// Starts a thread of this process on `stack_top` that calls `entry(argument)`; `id_word`
+/// holds its id from before this returns until the thread has ended and no longer uses its
+/// stack, when the kernel clears it.
+///
+/// # Safety
+/// `stack_top` must be the 16-byte aligned end of memory only the new thread uses, for as long
+/// as `id_word` is not 0; `id_word` must stay valid as long too.
+pub unsafe fn spawn_thread(
+    stack_top: usize,
+    id_word: *mut u32,
+    entry: extern "C" fn(usize) -> !,
+    argument: usize,
+) -> Result<usize, Errno> {
+    let result: isize;
+    // SAFETY: Linux's x86_64 `clone`: the caller's registers and memory are as before but
+    // `rax`, `rcx` and `r11`; the child starts on its own stack and never comes back here.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "test rax, rax",
+            "jnz 2f",
+            "mov rdi, r13",
+            "call r12",
+            "ud2",
+            "2:",
+            inlateout("rax") number::CLONE as isize => result,
+            in("rdi") THREAD_FLAGS, in("rsi") stack_top, in("rdx") id_word,
+            in("r10") id_word, in("r8") 0usize, in("r12") entry, in("r13") argument,
+            lateout("rcx") _, lateout("r11") _,
+        );
+    }
+    Errno::result(result)
+}
+
+/// Ends the calling thread only.
+pub fn exit_thread() -> ! {
+    loop {
+        // SAFETY: `exit` ends the calling thread; the rest of the process goes on.
+        let _ = unsafe { syscall(number::EXIT, [0; 6]) };
+    }
 }
 
 pub fn exit(status: u32) -> ! {

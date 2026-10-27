@@ -164,6 +164,45 @@ fn release(block: Block) {
     });
 }
 
+/// Gives back a block [`allocate`] returned; null does nothing.
+///
+/// # Safety
+/// `pointer` must be null or a block this heap handed out that nothing uses any more.
+pub unsafe fn free(pointer: *mut u8) {
+    // SAFETY: the caller's duty.
+    if let Some(block) = unsafe { block_of(pointer) } {
+        release(block);
+    }
+}
+
+const LMEM_ZEROINIT: u32 = 0x40;
+const LMEM_MOVEABLE: u32 = 0x2;
+
+extern "win64" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
+    if flags & LMEM_MOVEABLE != 0 {
+        return fail(error::NOT_SUPPORTED, ptr::null_mut());
+    }
+    let block = allocate_with(size, flags & LMEM_ZEROINIT != 0);
+    if block.is_null() {
+        return fail(error::NOT_ENOUGH_MEMORY, block);
+    }
+    block
+}
+
+unsafe extern "win64" fn local_free(pointer: *mut u8) -> *mut u8 {
+    if pointer.is_null() {
+        return pointer;
+    }
+    // SAFETY: `LocalFree`'s contract: a block `LocalAlloc` (this heap) returned.
+    match unsafe { block_of(pointer) } {
+        Some(block) => {
+            release(block);
+            ptr::null_mut()
+        }
+        None => fail(error::INVALID_HANDLE, pointer),
+    }
+}
+
 extern "win64" fn get_process_heap() -> usize {
     process_heap()
 }
@@ -251,4 +290,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"HeapReAlloc" => heap_realloc,
     b"HeapCreate" => heap_create,
     b"HeapDestroy" => heap_destroy,
+    b"LocalAlloc" => local_alloc,
+    b"LocalFree" => local_free,
+    b"GlobalAlloc" => local_alloc,
+    b"GlobalFree" => local_free,
 ];

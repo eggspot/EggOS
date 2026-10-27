@@ -147,26 +147,39 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     })
     .map_err(|_| Failure::Memory)?;
     if let Some(tls) = tls {
-        let slots = thread_local_block(image, &tls).ok_or(Failure::Memory)?;
         image[tls.index..tls.index + 4].copy_from_slice(&0u32.to_le_bytes());
+        // SAFETY: the template lies inside the image, which stays mapped and readable for the
+        // process's life.
+        let template = unsafe {
+            core::slice::from_raw_parts(
+                (base + tls.template_start) as *const u8,
+                tls.template_end - tls.template_start,
+            )
+        };
+        thread_environment::set_static_tls(thread_environment::StaticTls {
+            template,
+            zero_fill: tls.zero_fill,
+            callbacks: tls
+                .callbacks
+                .map(|callbacks| (base, base + callbacks, base + size)),
+        })
+        .ok_or(Failure::Memory)?;
+        let slots = thread_environment::new_thread_local_storage().ok_or(Failure::Memory)?;
         // SAFETY: `teb` is the TEB `create` returned.
         unsafe { thread_environment::set_thread_local_storage(teb, slots) };
     }
-    let callbacks = tls.and_then(|tls| tls.callbacks);
     let entry = base + pe.entry as usize;
     protect(&pe, base)?;
     // SAFETY: the file's copy is not used after this: the image holds everything it needs.
     let _ = unsafe { linux::unmap(file.as_ptr() as usize, file.len().max(1)) };
     // SAFETY: GS gets the TEB this process's Win32 functions read through it.
     unsafe { linux::set_gs_base(teb) }.map_err(|_| Failure::Memory)?;
-    if let Some(callbacks) = callbacks {
-        run_callbacks(base, callbacks, size);
-    }
+    thread_environment::run_tls_callbacks(DLL_PROCESS_ATTACH);
     // SAFETY: `entry` is the checked entry point inside an executable section of the image,
     // laid out, relocated and bound, and Windows calls it as a function without arguments
     // that returns the exit code.
     let entry: extern "win64" fn() -> u32 = unsafe { core::mem::transmute(entry) };
-    linux::exit(entry())
+    win32::end_thread(entry())
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {
@@ -195,21 +208,6 @@ fn stack_top() -> usize {
     (&raw const marker as usize).next_multiple_of(linux::PAGE_SIZE)
 }
 
-fn thread_local_block(image: &[u8], tls: &image::ThreadLocalStorage) -> Option<usize> {
-    let template = &image[tls.template_start..tls.template_end];
-    let size = template.len().checked_add(tls.zero_fill)?;
-    let block = win32::heap_allocate(size.max(1));
-    let slots = win32::heap_allocate(8).cast::<u64>();
-    if block.is_null() || slots.is_null() {
-        return None;
-    }
-    // SAFETY: `block` is a fresh heap block of `size` bytes, the template's length first.
-    unsafe { block.copy_from_nonoverlapping(template.as_ptr(), template.len()) };
-    // SAFETY: `slots` is a fresh heap block of one pointer.
-    unsafe { slots.write(block as u64) };
-    Some(slots as usize)
-}
-
 fn protect(pe: &Pe<'_>, base: usize) -> Result<(), Failure> {
     let headers = (pe.headers_size as usize).next_multiple_of(linux::PAGE_SIZE);
     // SAFETY: the headers are read-only from now on, as on Windows.
@@ -227,21 +225,4 @@ fn protect(pe: &Pe<'_>, base: usize) -> Result<(), Failure> {
         unsafe { linux::protect(base + start, end - start, flags) }.map_err(|_| Failure::Memory)?;
     }
     Ok(())
-}
-
-fn run_callbacks(base: usize, callbacks: usize, size: usize) {
-    let mut at = base + callbacks;
-    while at + 8 <= base + size {
-        // SAFETY: the TLS directory's callback array, checked to start inside the image, is a
-        // null-terminated array of function addresses the image's relocations fixed.
-        let callback = unsafe { (at as *const u64).read_unaligned() };
-        if callback == 0 {
-            return;
-        }
-        // SAFETY: as above; Windows calls each callback as `PIMAGE_TLS_CALLBACK`.
-        let callback: extern "win64" fn(usize, u32, usize) =
-            unsafe { core::mem::transmute(callback as usize) };
-        callback(base, DLL_PROCESS_ATTACH, 0);
-        at += 8;
-    }
 }

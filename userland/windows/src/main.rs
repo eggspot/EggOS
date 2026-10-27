@@ -7,7 +7,13 @@
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
 #[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+mod calendar;
+#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
 mod command_line;
+#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+mod errors;
+#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+mod find;
 #[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
 mod image;
 #[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]

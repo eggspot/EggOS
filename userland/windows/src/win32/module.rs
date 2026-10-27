@@ -9,18 +9,27 @@ use crate::text;
 
 static KERNEL32_MODULE: u64 = 1;
 static NTDLL_MODULE: u64 = 2;
+static SHELL32_MODULE: u64 = 3;
+static USER32_MODULE: u64 = 4;
 
 fn module_handle(library: Library) -> usize {
     match library {
         Library::Kernel32 => &raw const KERNEL32_MODULE as usize,
         Library::Ntdll => &raw const NTDLL_MODULE as usize,
+        Library::Shell32 => &raw const SHELL32_MODULE as usize,
+        Library::User32 => &raw const USER32_MODULE as usize,
     }
 }
 
 fn library_of(module: usize) -> Option<Library> {
-    [Library::Kernel32, Library::Ntdll]
-        .into_iter()
-        .find(|library| module_handle(*library) == module)
+    [
+        Library::Kernel32,
+        Library::Ntdll,
+        Library::Shell32,
+        Library::User32,
+    ]
+    .into_iter()
+    .find(|library| module_handle(*library) == module)
 }
 
 fn find_library(name: &[u8]) -> usize {
@@ -107,6 +116,8 @@ unsafe extern "win64" fn get_proc_address(module: usize, name: *const u8) -> usi
     let name_of = |library| match library {
         Library::Kernel32 => &b"kernel32"[..],
         Library::Ntdll => b"ntdll",
+        Library::Shell32 => b"shell32",
+        Library::User32 => b"user32",
     };
     match super::resolve(name_of(library), name) {
         Some(address) => address as usize,
@@ -123,11 +134,11 @@ unsafe extern "win64" fn get_module_file_name_w(module: usize, buffer: *mut u16,
     }
     // SAFETY: `GetModuleFileNameW`'s contract: `buffer` holds `size` writable units.
     let out = unsafe { core::slice::from_raw_parts_mut(buffer, size as usize) };
-    let program = process().program;
-    let last = out.len() - 1;
-    let written = text::write_utf16(program, &mut out[..last]);
+    let program = process().program_windows;
+    let written = program.len().min(out.len() - 1);
+    out[..written].copy_from_slice(&program[..written]);
     out[written] = 0;
-    match written < text::utf16_length(program) {
+    match written < program.len() {
         true => fail(error::INSUFFICIENT_BUFFER, size),
         false => {
             super::thread_environment::set_last_error(error::SUCCESS);

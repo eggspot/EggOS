@@ -44,6 +44,90 @@ pub fn write<'a>(arguments: impl Iterator<Item = &'a [u8]>, out: &mut impl FnMut
     }
 }
 
+/// One step of splitting a command line: a UTF-16 unit of the current argument, or its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Piece {
+    Unit(u16),
+    End,
+}
+
+const BACKSLASH: u16 = b'\\' as u16;
+const QUOTE: u16 = b'"' as u16;
+
+fn is_blank(unit: u16) -> bool {
+    unit == u16::from(b' ') || unit == u16::from(b'\t')
+}
+
+/// Splits the UTF-16 command line `units` into arguments as `CommandLineToArgvW` does
+/// (Microsoft's "Parsing C++ command-line arguments"): the program name runs to the first
+/// blank, or between quotes with no escapes; after it, `2n` backslashes before a quote are `n`
+/// backslashes and the quote toggles quoting, `2n + 1` are `n` and a literal quote, `""`
+/// inside quotes is a literal quote, and other backslashes are themselves.
+pub fn split(units: &[u16], out: &mut impl FnMut(Piece)) {
+    if units.is_empty() {
+        return;
+    }
+    let mut at = 0;
+    if units[0] == QUOTE {
+        at = 1;
+        while at < units.len() && units[at] != QUOTE {
+            out(Piece::Unit(units[at]));
+            at += 1;
+        }
+        at += 1;
+    } else {
+        while at < units.len() && !is_blank(units[at]) {
+            out(Piece::Unit(units[at]));
+            at += 1;
+        }
+    }
+    out(Piece::End);
+    let mut started = false;
+    let mut quoted = false;
+    while at < units.len() {
+        let unit = units[at];
+        at += 1;
+        match unit {
+            BACKSLASH => {
+                let mut count = 1;
+                while units.get(at) == Some(&BACKSLASH) {
+                    count += 1;
+                    at += 1;
+                }
+                let before_quote = units.get(at) == Some(&QUOTE);
+                let backslashes = if before_quote { count / 2 } else { count };
+                (0..backslashes).for_each(|_| out(Piece::Unit(BACKSLASH)));
+                if before_quote && count % 2 == 1 {
+                    out(Piece::Unit(QUOTE));
+                    at += 1;
+                }
+                started = true;
+            }
+            QUOTE if quoted && units.get(at) == Some(&QUOTE) => {
+                out(Piece::Unit(QUOTE));
+                at += 1;
+            }
+            QUOTE => {
+                quoted = !quoted;
+                started = true;
+            }
+            unit if is_blank(unit) && !quoted => {
+                if started {
+                    out(Piece::End);
+                }
+                started = false;
+            }
+            unit => {
+                out(Piece::Unit(unit));
+                started = true;
+            }
+        }
+    }
+    if started {
+        out(Piece::End);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,50 +139,26 @@ mod tests {
     }
 
     fn parse(line: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-        let mut current = String::new();
-        let mut in_argument = false;
-        let mut quoted = false;
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => {
-                    let mut count = 1;
-                    while chars.peek() == Some(&'\\') {
-                        chars.next();
-                        count += 1;
-                    }
-                    if chars.peek() == Some(&'"') {
-                        current.extend(core::iter::repeat_n('\\', count / 2));
-                        if count % 2 == 1 {
-                            chars.next();
-                            current.push('"');
-                        }
-                    } else {
-                        current.extend(core::iter::repeat_n('\\', count));
-                    }
-                    in_argument = true;
-                }
-                '"' => {
-                    quoted = !quoted;
-                    in_argument = true;
-                }
-                ' ' | '\t' if !quoted => {
-                    if in_argument {
-                        arguments.push(core::mem::take(&mut current));
-                    }
-                    in_argument = false;
-                }
-                c => {
-                    current.push(c);
-                    in_argument = true;
-                }
-            }
-        }
-        if in_argument {
-            arguments.push(current);
-        }
+        let units: Vec<u16> = line.encode_utf16().collect();
+        let mut arguments = vec![Vec::new()];
+        split(&units, &mut |piece| match piece {
+            Piece::Unit(unit) => arguments.last_mut().unwrap().push(unit),
+            Piece::End => arguments.push(Vec::new()),
+        });
+        arguments.pop();
         arguments
+            .iter()
+            .map(|argument| String::from_utf16(argument).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn the_program_name_takes_no_escapes_and_empty_lines_have_none() {
+        assert_eq!(parse(r#""C:\a b\x.exe" y"#), [r"C:\a b\x.exe", "y"]);
+        assert_eq!(parse(r"C:\dir\x.exe\ a"), [r"C:\dir\x.exe\", "a"]);
+        assert_eq!(parse(r#"x.exe "a""b" "c"#), ["x.exe", r#"a"b"#, "c"]);
+        assert_eq!(parse("x.exe   "), ["x.exe"]);
+        assert_eq!(parse(""), Vec::<String>::new());
     }
 
     #[test]

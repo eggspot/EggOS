@@ -54,7 +54,8 @@ cargo xtask image --arch all --add path/to/hello       # writes target/image/egg
 ```
 
 ### Run Windows console programs
-On x86_64, Windows console programs run natively through EggOS's own Windows layer, part 1
+On x86_64, Windows console programs run natively through EggOS's own Windows layer, threads,
+waits and directory listing included
 ([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
 
 ```

@@ -13,5 +13,9 @@ path = "src/main.rs"
 name = "windows-unsupported"
 path = "src/bin/unsupported.rs"
 
+[[bin]]
+name = "windows-tools"
+path = "src/bin/tools.rs"
+
 [lints]
 workspace = true
