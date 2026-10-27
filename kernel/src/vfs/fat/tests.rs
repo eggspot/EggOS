@@ -519,7 +519,7 @@ fn mounted_with(image: Image, probes: &Probes) -> &'static Fat {
         image,
         probes: probes.clone(),
     });
-    match Fat::mount(disk, test_deadline, (254, 0)) {
+    match Fat::mount(disk, test_deadline, Sleeping::spinning(), (254, 0)) {
         Ok(fat) => Box::leak(Box::new(fat)),
         Err((error, _)) => panic!("not mounted: {error:?}"),
     }
@@ -721,7 +721,7 @@ fn a_fat32_volume_without_mirroring_reads_its_active_fat() {
         probes: Probes::default(),
     });
     assert!(matches!(
-        Fat::mount(disk, test_deadline, (254, 0)),
+        Fat::mount(disk, test_deadline, Sleeping::spinning(), (254, 0)),
         Err((MountError::NotFat, _))
     ));
 }
@@ -855,7 +855,8 @@ fn a_disk_without_a_fat_volume_is_given_back() {
         image: Image::new(4096),
         probes: probes.clone(),
     });
-    let Err((error, disk)) = Fat::mount(blank, test_deadline, (254, 0)) else {
+    let Err((error, disk)) = Fat::mount(blank, test_deadline, Sleeping::spinning(), (254, 0))
+    else {
         panic!("a blank disk mounted");
     };
     assert_eq!(error, MountError::NotFat);
@@ -866,7 +867,7 @@ fn a_disk_without_a_fat_volume_is_given_back() {
         probes,
     });
     assert!(matches!(
-        Fat::mount(failing, test_deadline, (254, 0)),
+        Fat::mount(failing, test_deadline, Sleeping::spinning(), (254, 0)),
         Err((MountError::Unreadable, _))
     ));
 }
@@ -880,7 +881,7 @@ fn a_volume_larger_than_its_disk_or_with_a_short_fat_is_refused() {
         probes: Probes::default(),
     });
     assert!(matches!(
-        Fat::mount(disk, test_deadline, (254, 0)),
+        Fat::mount(disk, test_deadline, Sleeping::spinning(), (254, 0)),
         Err((MountError::NotFat, _))
     ));
     image.sectors += 1;
@@ -890,7 +891,7 @@ fn a_volume_larger_than_its_disk_or_with_a_short_fat_is_refused() {
         probes: Probes::default(),
     });
     assert!(matches!(
-        Fat::mount(disk, test_deadline, (254, 0)),
+        Fat::mount(disk, test_deadline, Sleeping::spinning(), (254, 0)),
         Err((MountError::NotFat, _))
     ));
 }
@@ -961,7 +962,7 @@ fn corrupt_volumes_never_panic() {
                 image,
                 probes: Probes::default(),
             });
-            if let Ok(fat) = Fat::mount(disk, test_deadline, (254, 0)) {
+            if let Ok(fat) = Fat::mount(disk, test_deadline, Sleeping::spinning(), (254, 0)) {
                 let mut budget = 2000;
                 walk(&fat, ROOT, 0, &mut budget);
             }
