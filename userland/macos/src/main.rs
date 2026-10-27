@@ -15,6 +15,14 @@
         any(target_arch = "aarch64", target_arch = "x86_64")
     )
 ))]
+mod calendar;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
 mod darwin;
 #[cfg(any(
     test,
@@ -32,6 +40,14 @@ mod fixups;
     )
 ))]
 mod format;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod getopt;
 #[cfg(all(
     target_env = "musl",
     any(target_arch = "aarch64", target_arch = "x86_64")

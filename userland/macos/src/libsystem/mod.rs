@@ -4,11 +4,19 @@
 //! that names it and ends the program with status 127 when it is called, so a program whose
 //! unused imports are missing still runs.
 
+mod dynamic;
 mod file;
 mod heap;
+mod locale;
+mod memory;
+mod options;
 mod process;
+mod signal;
 mod stdio;
 mod string;
+mod sync;
+mod thread;
+mod time;
 mod variadic;
 
 use crate::darwin;
@@ -16,51 +24,56 @@ use crate::linux;
 use core::ffi::{c_char, c_int, c_long, c_void};
 use eggos_runtime::errno::Errno;
 
+pub use dynamic::set_image;
 pub use process::{exit, set_process};
 pub use stdio::set_up as set_up_streams;
+pub use thread::{set_thread_local_template, set_up_main_thread};
 
-/// The layer's process-wide state. Programs have one thread (no `pthread_create` yet), so
-/// `with` needs no atomic read-modify-write; it ends the program if a call re-enters it, which
-/// only a bug in the layer could do.
+/// The layer's process-wide state, behind a lock that any of the program's threads may take;
+/// `with` ends the program if the thread that holds it re-enters it, which only a bug in the
+/// layer could do.
 pub struct Exclusive<T> {
-    busy: core::sync::atomic::AtomicBool,
+    lock: core::sync::atomic::AtomicU32,
+    owner: core::sync::atomic::AtomicUsize,
     value: core::cell::UnsafeCell<T>,
 }
 
-// SAFETY: programs have one thread, and `busy` refuses a second reference to `value`.
+// SAFETY: the lock gives one thread at a time a reference to `value`.
 unsafe impl<T: Send> Sync for Exclusive<T> {}
 
 impl<T> Exclusive<T> {
     pub const fn new(value: T) -> Self {
         Self {
-            busy: core::sync::atomic::AtomicBool::new(false),
+            lock: core::sync::atomic::AtomicU32::new(0),
+            owner: core::sync::atomic::AtomicUsize::new(0),
             value: core::cell::UnsafeCell::new(value),
         }
     }
 
     pub fn with<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
         use core::sync::atomic::Ordering;
-        if self.busy.load(Ordering::Acquire) {
+        let me = thread::current() as usize;
+        if self.owner.load(Ordering::Relaxed) == me {
             linux::exit(134);
         }
-        self.busy.store(true, Ordering::Release);
-        // SAFETY: `busy` was clear, so this is the only reference to the value.
+        sync::lock(&self.lock);
+        self.owner.store(me, Ordering::Relaxed);
+        // SAFETY: the lock is held, so this is the only reference to the value.
         let result = work(unsafe { &mut *self.value.get() });
-        self.busy.store(false, Ordering::Release);
+        self.owner.store(0, Ordering::Relaxed);
+        sync::unlock(&self.lock);
         result
     }
 }
 
-static mut ERRNO: c_int = 0;
-
 pub fn set_errno(value: c_int) {
-    // SAFETY: the program's only thread owns `errno`.
-    unsafe { ERRNO = value };
+    // SAFETY: each thread's `errno` is its own.
+    unsafe { *thread::errno_location() = value };
 }
 
 pub fn errno() -> c_int {
     // SAFETY: as above.
-    unsafe { ERRNO }
+    unsafe { *thread::errno_location() }
 }
 
 /// Sets `errno` to Darwin's number for `errno` and returns `value`: how a failing function
@@ -71,7 +84,7 @@ pub fn errno_from<T>(errno: Errno, value: T) -> T {
 }
 
 extern "C" fn error_location() -> *mut c_int {
-    &raw mut ERRNO
+    thread::errno_location()
 }
 
 pub fn error_message(errno: c_int) -> &'static [u8] {
@@ -93,8 +106,11 @@ pub fn error_message(errno: c_int) -> &'static [u8] {
         25 => b"Inappropriate ioctl for device",
         28 => b"No space left on device",
         30 => b"Read-only file system",
+        11 => b"Resource deadlock avoided",
+        16 => b"Resource busy",
         34 => b"Result too large",
         35 => b"Resource temporarily unavailable",
+        60 => b"Operation timed out",
         63 => b"File name too long",
         66 => b"Directory not empty",
         78 => b"Function not implemented",
@@ -111,6 +127,29 @@ extern "C" fn strerror(errno: c_int) -> *const c_char {
     buffer[..length].copy_from_slice(&message[..length]);
     buffer[length] = 0;
     buffer.as_ptr().cast()
+}
+
+/// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics
+/// ask for: none, so they use load-exclusive and store-exclusive pairs, which every Armv8 CPU
+/// has.
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn getauxval(_: core::ffi::c_ulong) -> core::ffi::c_ulong {
+    0
+}
+
+/// # Safety
+/// `buffer` must be writable for `length` bytes.
+unsafe extern "C" fn strerror_r(errno: c_int, buffer: *mut c_char, length: usize) -> c_int {
+    let message = error_message(errno);
+    if length <= message.len() {
+        return darwin::ERANGE;
+    }
+    // SAFETY: the caller's promise; the message and its NUL fit.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), message.len() + 1) };
+    out[..message.len()].copy_from_slice(message);
+    out[message.len()] = 0;
+    0
 }
 
 /// The bytes of the NUL-terminated `text`, without the NUL.
@@ -197,48 +236,15 @@ extern "C" fn getpagesize() -> c_int {
 extern "C" fn sysconf(name: c_int) -> c_long {
     match name {
         29 => linux::PAGE_SIZE as c_long,
-        57 | 58 => 1,
+        1 => 1 << 20,
+        3 => 100,
+        5 => 256,
+        57 | 58 => linux::cpu_count() as c_long,
         _ => {
             set_errno(darwin::EINVAL);
             -1
         }
     }
-}
-
-extern "C" fn image_count() -> u32 {
-    1
-}
-
-extern "C" fn image_header(index: u32) -> *const c_void {
-    if index == 0 {
-        // SAFETY: written once before the program runs.
-        unsafe { IMAGE_HEADER as *const c_void }
-    } else {
-        core::ptr::null()
-    }
-}
-
-extern "C" fn image_slide(index: u32) -> isize {
-    if index == 0 {
-        // SAFETY: as above.
-        unsafe { IMAGE_SLIDE }
-    } else {
-        0
-    }
-}
-
-static mut IMAGE_HEADER: usize = 0;
-static mut IMAGE_SLIDE: isize = 0;
-
-/// Records where the program's image is, for `_dyld_get_image_header` and its kin.
-///
-/// # Safety
-/// Called once, before the program runs.
-pub unsafe fn set_image(header: usize, slide: isize) {
-    // SAFETY: the caller's promise.
-    unsafe { IMAGE_HEADER = header };
-    // SAFETY: as above.
-    unsafe { IMAGE_SLIDE = slide };
 }
 
 macro_rules! functions {
@@ -265,9 +271,96 @@ fn function(name: &[u8]) -> Option<usize> {
         b"_valloc" => valloc,
         b"_getpagesize" => getpagesize,
         b"_sysconf" => sysconf,
-        b"__dyld_image_count" => image_count,
-        b"__dyld_get_image_header" => image_header,
-        b"__dyld_get_image_vmaddr_slide" => image_slide,
+        b"__dyld_image_count" => dynamic::image_count,
+        b"__dyld_get_image_header" => dynamic::image_header,
+        b"__dyld_get_image_vmaddr_slide" => dynamic::image_slide,
+        b"__dyld_get_image_name" => dynamic::image_name,
+        b"__NSGetExecutablePath" => dynamic::ns_get_executable_path,
+        b"_dlsym" => dynamic::dlsym,
+        b"_dlopen" => dynamic::dlopen,
+        b"_dlclose" => dynamic::dlclose,
+        b"_dlerror" => dynamic::dlerror,
+        b"__tlv_bootstrap" => thread::tlv_get_address,
+        b"__tlv_atexit" => thread::tlv_atexit,
+        b"_pthread_create" => thread::pthread_create,
+        b"_pthread_join" => thread::pthread_join,
+        b"_pthread_detach" => thread::pthread_detach,
+        b"_pthread_exit" => thread::pthread_exit,
+        b"_pthread_self" => thread::pthread_self,
+        b"_pthread_equal" => thread::pthread_equal,
+        b"_pthread_main_np" => thread::pthread_main_np,
+        b"_pthread_threadid_np" => thread::pthread_threadid_np,
+        b"_pthread_mach_thread_np" => thread::pthread_mach_thread_np,
+        b"_pthread_get_stackaddr_np" => thread::pthread_get_stackaddr_np,
+        b"_pthread_get_stacksize_np" => thread::pthread_get_stacksize_np,
+        b"_pthread_setname_np" => thread::pthread_setname_np,
+        b"_pthread_getname_np" => thread::pthread_getname_np,
+        b"_pthread_attr_init" => thread::pthread_attr_init,
+        b"_pthread_attr_destroy" => thread::pthread_attr_destroy,
+        b"_pthread_attr_setstacksize" => thread::pthread_attr_setstacksize,
+        b"_pthread_attr_getstacksize" => thread::pthread_attr_getstacksize,
+        b"_pthread_attr_setdetachstate" => thread::pthread_attr_setdetachstate,
+        b"_pthread_attr_getdetachstate" => thread::pthread_attr_getdetachstate,
+        b"_pthread_attr_setguardsize" => thread::pthread_attr_setguardsize,
+        b"_pthread_key_create" => thread::pthread_key_create,
+        b"_pthread_key_delete" => thread::pthread_key_delete,
+        b"_pthread_getspecific" => thread::pthread_getspecific,
+        b"_pthread_setspecific" => thread::pthread_setspecific,
+        b"_sched_yield" => thread::sched_yield,
+        b"_pthread_mutexattr_init" => sync::pthread_mutexattr_init,
+        b"_pthread_mutexattr_destroy" => sync::pthread_mutexattr_destroy,
+        b"_pthread_mutexattr_settype" => sync::pthread_mutexattr_settype,
+        b"_pthread_mutex_init" => sync::pthread_mutex_init,
+        b"_pthread_mutex_destroy" => sync::pthread_mutex_destroy,
+        b"_pthread_mutex_lock" => sync::pthread_mutex_lock,
+        b"_pthread_mutex_trylock" => sync::pthread_mutex_trylock,
+        b"_pthread_mutex_unlock" => sync::pthread_mutex_unlock,
+        b"_pthread_cond_init" => sync::pthread_cond_init,
+        b"_pthread_cond_destroy" => sync::pthread_cond_destroy,
+        b"_pthread_cond_wait" => sync::pthread_cond_wait,
+        b"_pthread_cond_timedwait" => sync::pthread_cond_timedwait,
+        b"_pthread_cond_signal" => sync::pthread_cond_signal,
+        b"_pthread_cond_broadcast" => sync::pthread_cond_broadcast,
+        b"_pthread_once" => sync::pthread_once,
+        b"_dispatch_semaphore_create" => sync::dispatch_semaphore_create,
+        b"_dispatch_semaphore_wait" => sync::dispatch_semaphore_wait,
+        b"_dispatch_semaphore_signal" => sync::dispatch_semaphore_signal,
+        b"_dispatch_retain" => sync::dispatch_retain,
+        b"_dispatch_release" => sync::dispatch_release,
+        b"_dispatch_time" => sync::dispatch_time,
+        b"_sigaction" => signal::sigaction,
+        b"_signal" => signal::signal,
+        b"_sigaltstack" => signal::sigaltstack,
+        b"_sigprocmask" => signal::sigprocmask,
+        b"_pthread_sigmask" => signal::sigprocmask,
+        b"_sigemptyset" => signal::sigemptyset,
+        b"_sigfillset" => signal::sigfillset,
+        b"_sigaddset" => signal::sigaddset,
+        b"_sigdelset" => signal::sigdelset,
+        b"_sigismember" => signal::sigismember,
+        b"_pause" => signal::pause,
+        b"_mmap" => memory::mmap,
+        b"_munmap" => memory::munmap,
+        b"_mprotect" => memory::mprotect,
+        b"_madvise" => memory::madvise,
+        b"_getopt" => options::getopt,
+        b"_getopt_long" => options::getopt_long,
+        b"_setlocale" => locale::setlocale,
+        b"_nl_langinfo" => locale::nl_langinfo,
+        b"_localeconv" => locale::localeconv,
+        b"___mb_cur_max" => locale::mb_cur_max,
+        b"_gmtime_r" => time::gmtime_r,
+        b"_localtime_r" => time::gmtime_r,
+        b"_gmtime" => time::gmtime,
+        b"_localtime" => time::gmtime,
+        b"_timegm" => time::timegm,
+        b"_mktime" => time::timegm,
+        b"_strftime" => time::strftime,
+        b"_tzset" => time::tzset,
+        b"_strerror_r" => strerror_r,
+        b"_dup" => file::dup,
+        b"_fcntl" => file::fcntl,
+        b"_writev" => file::writev,
         b"_strlen" => string::strlen,
         b"_strnlen" => string::strnlen,
         b"_strcmp" => string::strcmp,
@@ -415,6 +508,11 @@ fn data(name: &[u8]) -> Option<usize> {
         b"___stdoutp" => &raw const stdio::STDOUT_POINTER as usize,
         b"___stderrp" => &raw const stdio::STDERR_POINTER as usize,
         b"___stack_chk_guard" => &raw const process::STACK_GUARD as usize,
+        b"_optarg" => &raw const options::OPTARG as usize,
+        b"_optind" => &raw const options::OPTIND as usize,
+        b"_opterr" => &raw const options::OPTERR as usize,
+        b"_optopt" => &raw const options::OPTOPT as usize,
+        b"_optreset" => &raw const options::OPTRESET as usize,
         b"_environ" => &raw const process::ENVIRON as usize,
         _ => return None,
     })

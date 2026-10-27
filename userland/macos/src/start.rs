@@ -113,6 +113,9 @@ type Main =
     extern "C" fn(c_int, *const *mut c_char, *const *mut c_char, *const *mut c_char) -> c_int;
 
 fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
+    let stack_marker = 0u8;
+    // SAFETY: the layer's first step, on its only thread.
+    unsafe { libsystem::set_up_main_thread(&raw const stack_marker as usize) };
     let path = startup.arguments().nth(1).ok_or(Failure::Usage)?;
     let file = read_file(path.to_bytes_with_nul())?;
     let cpu = macho::host_cpu().ok_or(Failure::OtherCpus([None; 4]))?;
@@ -163,12 +166,27 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             .map_err(Failure::Invalid)?;
     }
     protect(&program, base)?;
+    if let Some(template) = program.thread_locals {
+        let address = base + (template.address - program.base_address()) as usize;
+        // SAFETY: the template lies inside a readable segment of the image, which stays
+        // mapped and which nothing writes: each thread uses its own copy.
+        let made = unsafe {
+            libsystem::set_thread_local_template(
+                address,
+                template.size as usize,
+                template.alignment as usize,
+            )
+        };
+        if !made {
+            return Err(Failure::Memory);
+        }
+    }
     let arguments = argument_vector(&startup)?;
     let environment = environment_vector(&startup)?;
-    let apple = apple_vector(path.to_bytes())?;
+    let (apple, executable_path) = apple_vector(path.to_bytes())?;
     let slide = (base as isize).wrapping_sub(program.base_address() as isize);
     // SAFETY: the program has not started; these record its image, arguments and streams.
-    unsafe { libsystem::set_image(base, slide) };
+    unsafe { libsystem::set_image(base, slide, executable_path) };
     // SAFETY: as above; the arrays are never freed.
     unsafe { libsystem::set_process(argument_count(&startup), arguments, environment) };
     // SAFETY: as above.
@@ -277,7 +295,7 @@ fn environment_vector(startup: &Startup) -> Result<*mut *mut c_char, Failure> {
     Ok(vector)
 }
 
-fn apple_vector(path: &[u8]) -> Result<*mut *mut c_char, Failure> {
+fn apple_vector(path: &[u8]) -> Result<(*mut *mut c_char, *const c_char), Failure> {
     let length = EXECUTABLE_PATH.len() + path.len() + 1;
     let block = allocate_pages(16 + length)?;
     let text = block.wrapping_add(16);
@@ -288,7 +306,10 @@ fn apple_vector(path: &[u8]) -> Result<*mut *mut c_char, Failure> {
     bytes[EXECUTABLE_PATH.len()..length - 1].copy_from_slice(path);
     // SAFETY: the first of the two pointers; the second stays null.
     unsafe { block.cast::<*mut u8>().write(text) };
-    Ok(block.cast())
+    Ok((
+        block.cast(),
+        text.wrapping_add(EXECUTABLE_PATH.len()).cast_const().cast(),
+    ))
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {

@@ -94,6 +94,7 @@ pub extern "C" fn atexit(handler: extern "C" fn()) -> c_int {
 }
 
 pub extern "C" fn exit(status: c_int) -> ! {
+    super::thread::run_destructors();
     loop {
         let handler = HANDLERS.with(|(handlers, count)| {
             (*count > 0).then(|| {
