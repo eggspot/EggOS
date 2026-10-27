@@ -174,7 +174,13 @@ const MMIO_INPUT_ARGS: &[&str] = &[
     "virtio-mouse-device",
 ];
 
-const KERNEL_CRATES: &[&str] = &["eggos-kernel", "eggos-hal", "eggos-drivers", "eggos-font"];
+const KERNEL_CRATES: &[&str] = &[
+    "eggos-kernel",
+    "eggos-hal",
+    "eggos-drivers",
+    "eggos-font",
+    "eggos-settings-file",
+];
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",

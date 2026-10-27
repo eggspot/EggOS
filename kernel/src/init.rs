@@ -56,6 +56,7 @@ pub fn run<P: Platform, W: Write>(
     if let Err(error) = input::start_polling::<P>() {
         writeln!(console, "input: not polled: {error:?}")?;
     }
+    terminal::load_saved_profile();
     if let Some(area) = terminal::start::<P>(terminal::Session::Interactive) {
         writeln!(
             console,

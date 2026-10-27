@@ -9,6 +9,7 @@ repository.workspace = true
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
 eggos-hal = { path = "../hal" }
+eggos-settings-file = { path = "../settings-file" }
 
 [lints]
 workspace = true

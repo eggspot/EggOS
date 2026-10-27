@@ -634,6 +634,16 @@ fn request_numbers_and_layouts_are_the_contract_s() {
     assert_eq!(request::COMMIT, 0x4088_7708);
     assert_eq!(request::DESTROY, 0x4004_7709);
     assert_eq!(request::GET_WORK_AREA, 0x8014_770a);
+    assert_eq!(request::GET_PROFILE, 0x8004_770d);
+    assert_eq!(request::SET_PROFILE, 0x4004_770e);
+    assert_eq!(
+        Request::parse(request::SET_PROFILE, &2u32.to_ne_bytes()),
+        Some(Request::SetProfile { profile: 2 })
+    );
+    assert_eq!(
+        Request::parse(request::GET_PROFILE, &[0; 4]),
+        Some(Request::GetProfile)
+    );
     assert_eq!(size::COMMIT, 8 + 16 * MAX_COMMIT_RECTS);
     assert_eq!(
         (

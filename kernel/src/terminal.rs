@@ -23,10 +23,11 @@ use crate::input::{self, Button, InputEvent};
 use crate::linux::reboot::{self, take_machine_down};
 use crate::sync::LeafSpinLock;
 use crate::thread::{self, SpawnError, WaitQueue};
+use crate::vfs;
 use crate::window::{self, Buffers, Clients, Queues};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::EventSink;
 use eggos_drivers::desktop::{
     Action, Contents, Desktop, GRID_SIZE, Profile, WindowId, colour, shortcut,
@@ -140,13 +141,71 @@ pub fn keys_go_to_console() -> bool {
     !is_active() || KEYS_TO_TERMINAL.load(Ordering::Relaxed)
 }
 
-/// The desktop's layout profile: the controls' side and the shortcuts (D128).
-pub const DESKTOP_PROFILE: Profile = Profile::Macos;
+static CHOSEN_PROFILE: AtomicU8 = AtomicU8::new(NO_PROFILE_CHOSEN);
+
+const NO_PROFILE_CHOSEN: u8 = 0;
+
+/// The desktop's layout profile: the controls' side and the shortcuts (D128): the one the
+/// settings file holds, read at boot ([`load_saved_profile`]), or the last one set through
+/// `/dev/window` ([`set_desktop_profile`]); macOS habits until one is chosen (D132).
+pub fn desktop_profile() -> Profile {
+    match CHOSEN_PROFILE.load(Ordering::Relaxed) {
+        NO_PROFILE_CHOSEN => Profile::default(),
+        chosen => Profile::from_number(u32::from(chosen - 1)).unwrap_or_default(),
+    }
+}
+
+fn remember_profile(profile: Profile) {
+    CHOSEN_PROFILE.store(profile.number() as u8 + 1, Ordering::Relaxed);
+}
+
+/// Makes `profile` the desktop's layout profile, at once when the desktop is shown: every
+/// window's controls move to the profile's side and its shortcuts apply. Windows keep their
+/// sizes and buffers; only their title bars are drawn again.
+pub fn set_desktop_profile<P: Platform>(profile: Profile) {
+    let shown = with_windows::<P, _>(|desktop, _, damage, _| {
+        remember_profile(profile);
+        desktop.set_profile(profile, damage);
+    });
+    if shown.is_none() {
+        remember_profile(profile);
+    }
+}
+
+/// Makes the profile the settings file holds ([`eggos_settings_file::PATH`]) the desktop's,
+/// before the desktop starts, so its first frame is already in it; the default stays when
+/// there is no file, it holds no known profile, or it cannot be read.
+pub fn load_saved_profile() {
+    let root = vfs::root();
+    let Ok(node) = vfs::resolve(root, root, eggos_settings_file::PATH.as_bytes()) else {
+        return;
+    };
+    if node.kind() != vfs::NodeKind::Regular {
+        return;
+    }
+    let mut file = alloc::vec![0u8; eggos_settings_file::LARGEST + 1];
+    let mut length = 0;
+    while length < file.len() {
+        match node
+            .file_system()
+            .read_into(node.id(), length as u64, &mut file[length..])
+        {
+            Ok(0) => break,
+            Ok(read) => length += read,
+            Err(_) => return,
+        }
+    }
+    if let Some(profile) = eggos_settings_file::profile(&file[..length])
+        .and_then(|number| Profile::from_number(number as u32))
+    {
+        remember_profile(profile);
+    }
+}
 
 /// Whether key `code` pressed with `modifiers` is a shortcut the desktop takes from the
 /// terminal, which takes every Ctrl key: its bytes do not go to the console.
 pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
-    is_active() && shortcut(code, modifiers, DESKTOP_PROFILE, true).is_some()
+    is_active() && shortcut(code, modifiers, desktop_profile(), true).is_some()
 }
 
 /// Draws the desktop with the terminal's window, blank, over the whole display, and from then
@@ -156,7 +215,7 @@ pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
 pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mode = display::mode()?;
     let mut desktop = Desktop::new(mode.width, mode.height)?;
-    desktop.set_profile(DESKTOP_PROFILE, &mut Damage::new());
+    desktop.set_profile(desktop_profile(), &mut Damage::new());
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);

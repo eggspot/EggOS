@@ -42,6 +42,8 @@ pub mod size {
     pub const GET_WORK_AREA: usize = 20;
     pub const LIST_WINDOW: usize = 96;
     pub const MANAGE_WINDOW: usize = 16;
+    pub const GET_PROFILE: usize = 4;
+    pub const SET_PROFILE: usize = 4;
     /// The largest argument.
     pub const LARGEST: usize = COMMIT;
 }
@@ -63,6 +65,8 @@ pub mod request {
     pub const GET_WORK_AREA: u32 = encode(READ, 10, size::GET_WORK_AREA);
     pub const LIST_WINDOW: u32 = encode(READ | WRITE, 11, size::LIST_WINDOW);
     pub const MANAGE_WINDOW: u32 = encode(WRITE, 12, size::MANAGE_WINDOW);
+    pub const GET_PROFILE: u32 = encode(READ, 13, size::GET_PROFILE);
+    pub const SET_PROFILE: u32 = encode(WRITE, 14, size::SET_PROFILE);
 }
 
 /// The flags `Create` takes.
@@ -248,6 +252,10 @@ pub enum Request {
         a: i32,
         b: i32,
     },
+    GetProfile,
+    SetProfile {
+        profile: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -282,6 +290,8 @@ impl Request {
             request::GET_WORK_AREA => size::GET_WORK_AREA,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
+            request::GET_PROFILE => size::GET_PROFILE,
+            request::SET_PROFILE => size::SET_PROFILE,
             _ => return None,
         })
     }
@@ -354,6 +364,8 @@ impl Request {
                 a: at(8) as i32,
                 b: at(12) as i32,
             },
+            request::GET_PROFILE => Self::GetProfile,
+            request::SET_PROFILE => Self::SetProfile { profile: at(0) },
             _ => Self::GetWorkArea,
         })
     }

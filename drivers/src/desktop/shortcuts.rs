@@ -19,6 +19,24 @@ pub enum Profile {
 }
 
 impl Profile {
+    /// Every profile, each at the index that is its number in `/dev/window`'s `GET_PROFILE`
+    /// and `SET_PROFILE` and in the settings file's `PROFILES`.
+    pub const ALL: [Self; 3] = [Self::Windows, Self::Macos, Self::Linux];
+
+    /// The profile numbered `number`.
+    pub fn from_number(number: u32) -> Option<Self> {
+        Self::ALL.get(number as usize).copied()
+    }
+
+    /// The profile's number.
+    pub fn number(self) -> u32 {
+        match self {
+            Self::Windows => 0,
+            Self::Macos => 1,
+            Self::Linux => 2,
+        }
+    }
+
     /// The side of the title bar the controls are on.
     pub const fn control_side(self) -> ControlSide {
         match self {
