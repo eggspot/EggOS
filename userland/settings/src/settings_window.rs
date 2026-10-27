@@ -361,7 +361,10 @@ impl SettingsWindow {
                 Length::Px(EGG_HEIGHT),
                 Length::Px(EGG_HEIGHT),
             ),
-            Kind::Custom { painter: art::egg },
+            Kind::Custom {
+                painter: art::egg,
+                data: 0,
+            },
         );
         let mut title = Text::<64>::new();
         let _ = write!(title, "EggOS {}", facts.version);
