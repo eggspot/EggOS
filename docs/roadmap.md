@@ -447,12 +447,15 @@ items, which `cargo xtask docs` checks in CI (done, PR #59). Done: drivers; xtas
 or what D50–D75 record (PR #71, after PR #70 touched it); the kernel's `linux/memory.rs`
 (PR #78); `rust-toolchain.toml` and the CI image's `Dockerfile` and `ci-image.yml`, whose notes
 are in `docs/build.md` (PR #79). Next: the HAL, then the kernel's other modules, a few hundred
-lines per PR. Last: the other files PR #47 changed (`xtask/src/main.rs` among them).
+lines per PR. Last: the other files PR #47 changed (`xtask/src/main.rs` among them). `cargo xtask lint`
+(D122) fails on any new disallowed comment and lists the files still to clean in
+`xtask/lint-legacy-files.txt`; each cleanup PR lowers it with `cargo xtask lint --shrink`.
 
 Setup follow-ups from the 2026-10-22 review (all done: exception vectors in D25, the benchmark harness
 in D27):
 - **Benchmarks: done** (D27). `cargo xtask bench` boots each architecture under QEMU `-icount`
-  and fails on a regression against `benchmarks/baseline.txt`; CI runs it. Every new hot path
+  and fails on a regression against `benchmarks/baseline.txt`; CI runs it report-only, failing only a
+  2x slowdown, and the weekly performance pass enforces the exact gate (D122). Every new hot path
   (frame allocator, page faults, scheduler, syscalls) adds its benchmark there. Cycle-accurate
   numbers on real hardware come with M13.
 - **A BSS self-test that can fail: done.** The QEMU boot tests look the kernel's `.bss` probe
