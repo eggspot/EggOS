@@ -38,6 +38,13 @@ pub struct WindowInfo {
     pub title_length: usize,
 }
 
+/// What a point is on ([`Desktop::hit`]): a window's resize zone, or a window and its part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct Hit {
+    pub resize: Option<(usize, u8)>,
+    pub window: Option<(usize, Part)>,
+}
+
 /// A resize the user started on a window's edge or corner: the window, its edges, its outside
 /// rectangle when it started and where the pointer was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,10 +358,12 @@ impl Desktop {
         }
     }
 
-    /// The resize zone of the top-most window there at (`x`, `y`): its slot and edges.
-    pub(super) fn resize_target(&self, x: u32, y: u32) -> Option<(usize, u8)> {
-        if y < BAR_HEIGHT {
-            return None;
+    /// What is at (`x`, `y`), in one walk down the stack: the resize zone of the top-most
+    /// window whose zone or body is there, or that window and the part of it the point is on;
+    /// nothing over the bar or an open popup.
+    pub(super) fn hit(&self, x: u32, y: u32) -> Hit {
+        if y < BAR_HEIGHT || self.popup_at(x, y) {
+            return Hit::default();
         }
         for &slot in self.stack[..self.stack_length].iter().rev() {
             let slot = usize::from(slot);
@@ -364,13 +373,33 @@ impl Desktop {
             let window = self.window_at(slot);
             let edges = window.resize_edges(x, y);
             if edges != 0 && self.top_dialog(slot).is_none() {
-                return Some((slot, edges));
+                return Hit {
+                    resize: Some((slot, edges)),
+                    window: None,
+                };
             }
             if contains(window.outside(), x, y) {
-                return None;
+                let part = window.part_at(x, y, self.profile.control_side());
+                return Hit {
+                    resize: None,
+                    window: part.map(|part| (slot, part)),
+                };
             }
         }
-        None
+        Hit::default()
+    }
+
+    /// The resize zone of the top-most window there at (`x`, `y`): its slot and edges.
+    pub(super) fn resize_target(&self, x: u32, y: u32) -> Option<(usize, u8)> {
+        self.hit(x, y).resize
+    }
+
+    /// The window whose content is under `hit`, unless a dialog of it takes its input.
+    pub(super) fn content_under(&self, hit: Hit) -> Option<usize> {
+        match hit.window {
+            Some((slot, Part::Content)) if self.top_dialog(slot).is_none() => Some(slot),
+            _ => None,
+        }
     }
 
     pub(super) fn start_resize(&mut self, slot: usize, edges: u8) {
@@ -622,8 +651,8 @@ impl Desktop {
         }
     }
 
-    /// The pointer shape the desktop shows now at the pointer.
-    pub(super) fn wanted_pointer(&self) -> PointerShape {
+    /// The pointer shape the desktop shows now at the pointer, over `hit`.
+    pub(super) fn wanted_pointer(&self, hit: Hit) -> PointerShape {
         if let Some(resize) = self.resize {
             return resize_pointer(resize.edges);
         }
@@ -636,14 +665,10 @@ impl Desktop {
         if let Some(grab) = self.grab {
             return self.window_at(grab).pointer_shape;
         }
-        let (x, y) = self.pointer;
-        if self.popup_at(x, y) {
-            return PointerShape::Arrow;
-        }
-        if let Some((_, edges)) = self.resize_target(x, y) {
+        if let Some((_, edges)) = hit.resize {
             return resize_pointer(edges);
         }
-        match self.content_window_at(x, y) {
+        match self.content_under(hit) {
             Some(slot) => self.window_at(slot).pointer_shape,
             None => PointerShape::Arrow,
         }
@@ -663,11 +688,19 @@ impl Desktop {
     /// Brings the drawn pointer up to date with the desktop's state, damaging where it was and
     /// where it is when it moved or changed shape.
     pub(super) fn update_pointer(&mut self, damage: &mut Damage) {
+        if self.pointer_visible {
+            let (x, y) = self.pointer;
+            self.update_pointer_over(self.hit(x, y), damage);
+        }
+    }
+
+    /// [`Self::update_pointer`] with `hit` what is under the pointer.
+    pub(super) fn update_pointer_over(&mut self, hit: Hit, damage: &mut Damage) {
         if !self.pointer_visible {
             return;
         }
         let (x, y) = self.pointer;
-        let drawn = Some((x, y, self.wanted_pointer()));
+        let drawn = Some((x, y, self.wanted_pointer(hit)));
         if drawn == self.pointer_drawn {
             return;
         }
@@ -680,27 +713,27 @@ impl Desktop {
         self.pointer_drawn = drawn;
     }
 
-    /// The control under the pointer, if one is: its window and which.
-    pub(super) fn control_under_pointer(&self) -> Option<(usize, Part)> {
+    /// The control under `hit`, if one is and nothing holds the pointer: its window and which.
+    fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
         if self.drag.is_some() || self.resize.is_some() || self.grab.is_some() {
             return None;
         }
-        let (x, y) = self.pointer;
-        if self.popup_at(x, y) || self.resize_target(x, y).is_some() {
-            return None;
-        }
-        let slot = self.top_window_at(x, y)?;
-        match self
-            .window_at(slot)
-            .part_at(x, y, self.profile.control_side())
-        {
-            Some(part @ (Part::Close | Part::Minimise | Part::Maximise)) => Some((slot, part)),
+        match hit.window {
+            Some((slot, part @ (Part::Close | Part::Minimise | Part::Maximise))) => {
+                Some((slot, part))
+            }
             _ => None,
         }
     }
 
     pub(super) fn update_control_hover(&mut self, damage: &mut Damage) {
-        let hover = self.control_under_pointer();
+        let (x, y) = self.pointer;
+        self.update_control_hover_over(self.hit(x, y), damage);
+    }
+
+    /// [`Self::update_control_hover`] with `hit` what is under the pointer.
+    pub(super) fn update_control_hover_over(&mut self, hit: Hit, damage: &mut Damage) {
+        let hover = self.control_under(hit);
         if hover == self.control_hover {
             return;
         }

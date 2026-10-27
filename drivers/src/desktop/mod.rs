@@ -1279,16 +1279,7 @@ impl Desktop {
     }
 
     fn content_window_at(&self, x: u32, y: u32) -> Option<usize> {
-        if self.popup_at(x, y) {
-            return None;
-        }
-        let slot = self.top_window_at(x, y)?;
-        (self
-            .window_at(slot)
-            .part_at(x, y, self.profile.control_side())
-            == Some(Part::Content)
-            && self.top_dialog(slot).is_none())
-        .then_some(slot)
+        self.content_under(self.hit(x, y))
     }
 
     fn content_point(&self, slot: usize) -> (i32, i32) {
@@ -1326,10 +1317,11 @@ impl Desktop {
             }
         }
         self.window_menu_hover(x, y, damage);
+        let hit = self.hit(x, y);
         let under = match (self.grab, self.drag.is_some() || self.resize.is_some()) {
             (Some(grab), _) => Some(grab),
             (None, true) => None,
-            (None, false) => self.content_window_at(x, y),
+            (None, false) => self.content_under(hit),
         };
         if under != self.hover {
             if let Some(old) = self.hover {
@@ -1358,8 +1350,8 @@ impl Desktop {
                 events,
             );
         }
-        self.update_control_hover(damage);
-        self.update_pointer(damage);
+        self.update_control_hover_over(hit, damage);
+        self.update_pointer_over(hit, damage);
     }
 
     fn drag_to(

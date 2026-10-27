@@ -315,13 +315,13 @@ fn keys_and_the_wheel_go_to_the_focused_window_s_client() {
         (event::KEY, window, 30, 1, modifier::SHIFT, u32::from(b'A'))
     );
     let content = desktop.content_rect(window).unwrap();
-    desktop.pointer_moved(content.x + 1, content.y + 2, &mut damage, &mut events);
+    desktop.pointer_moved(content.x + 8, content.y + 9, &mut damage, &mut events);
     events.take();
     desktop.wheel(-2, &mut events);
     let (_, wheel) = events.take()[0];
     assert_eq!(
         (wheel.kind, wheel.a, wheel.b, wheel.d as i32),
-        (event::WHEEL, 1, 2, -2)
+        (event::WHEEL, 8, 9, -2)
     );
     let terminal = desktop.window();
     click(&mut desktop, terminal.x + 10, terminal.y + 100, &mut events);
