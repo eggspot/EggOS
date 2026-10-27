@@ -1,17 +1,45 @@
+use super::protocol::DiscardEvents;
 use super::*;
 use alloc::vec;
 
-fn painted(desktop: &Desktop) -> Vec<u32> {
+pub(super) struct BlankTerminal;
+
+impl Contents for BlankTerminal {
+    fn copy_row(&self, window: WindowId, x: u32, y: u32, out: &mut [u32]) {
+        match slot_of(window) {
+            TERMINAL_SLOT => out.fill(TERM_BACKGROUND),
+            _ => {
+                for (index, pixel) in out.iter_mut().enumerate() {
+                    *pixel = pattern(window, x + index as u32, y);
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn pattern(window: WindowId, x: u32, y: u32) -> u32 {
+    match (x / 16 + y / 16) % 2 {
+        0 => u32::from(window) * 0x0001_0203,
+        _ => !u32::from(window) & 0x00ff_ffff,
+    }
+}
+
+pub(super) fn painted(desktop: &Desktop) -> Vec<u32> {
     let mut pixels = vec![0; desktop.width as usize * desktop.height as usize];
-    desktop.draw(&mut pixels, desktop.width as usize, desktop.screen());
+    desktop.draw(
+        &mut pixels,
+        desktop.width as usize,
+        desktop.screen(),
+        &BlankTerminal,
+    );
     pixels
 }
 
-fn at(pixels: &[u32], x: u32, y: u32) -> u32 {
+pub(super) fn at(pixels: &[u32], x: u32, y: u32) -> u32 {
     pixels[y as usize * 1280 + x as usize]
 }
 
-fn fnv(pixels: &[u32]) -> u64 {
+pub(super) fn fnv(pixels: &[u32]) -> u64 {
     pixels
         .iter()
         .flat_map(|pixel| pixel.to_le_bytes())
@@ -22,9 +50,9 @@ fn fnv(pixels: &[u32]) -> u64 {
 
 fn click(desktop: &mut Desktop, x: u32, y: u32) -> Action {
     let mut damage = Damage::new();
-    desktop.pointer_moved(x, y, &mut damage);
-    let action = desktop.left_button(true, &mut damage);
-    desktop.left_button(false, &mut damage);
+    desktop.pointer_moved(x, y, &mut damage, &mut DiscardEvents);
+    let action = desktop.left_button(true, &mut damage, &mut DiscardEvents);
+    desktop.left_button(false, &mut damage, &mut DiscardEvents);
     action
 }
 
@@ -89,7 +117,7 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
     let mut parts = vec![0; 1280 * 800];
     for y in (0..800).step_by(100) {
         for x in (0..1280).step_by(128) {
-            desktop.draw(&mut parts, 1280, Rect::new(x, y, 128, 100));
+            desktop.draw(&mut parts, 1280, Rect::new(x, y, 128, 100), &BlankTerminal);
         }
     }
     assert!(whole == parts);
@@ -99,15 +127,15 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
 fn dragging_the_title_bar_moves_the_window_within_the_screen() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
-    desktop.pointer_moved(600, 210, &mut damage);
-    desktop.left_button(true, &mut damage);
-    desktop.pointer_moved(700, 260, &mut damage);
+    desktop.pointer_moved(600, 210, &mut damage, &mut DiscardEvents);
+    desktop.left_button(true, &mut damage, &mut DiscardEvents);
+    desktop.pointer_moved(700, 260, &mut damage, &mut DiscardEvents);
     assert_eq!(desktop.window(), Rect::new(411, 249, 658, 430));
     assert!(!damage.is_empty());
-    desktop.pointer_moved(5000, 0, &mut damage);
+    desktop.pointer_moved(5000, 0, &mut damage, &mut DiscardEvents);
     assert_eq!(desktop.window(), Rect::new(1280 - 658, 28, 658, 430));
-    desktop.left_button(false, &mut damage);
-    desktop.pointer_moved(0, 600, &mut damage);
+    desktop.left_button(false, &mut damage, &mut DiscardEvents);
+    desktop.pointer_moved(0, 600, &mut damage, &mut DiscardEvents);
     assert_eq!(desktop.window().x, 1280 - 658);
 }
 
@@ -140,9 +168,9 @@ fn minimise_hides_the_window_behind_a_chip_that_restores_it() {
 fn the_close_control_is_disabled() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
-    desktop.pointer_moved(311 + 15, 199 + 10, &mut damage);
-    desktop.left_button(true, &mut damage);
-    desktop.pointer_moved(311 + 100, 199 + 100, &mut damage);
+    desktop.pointer_moved(311 + 15, 199 + 10, &mut damage, &mut DiscardEvents);
+    desktop.left_button(true, &mut damage, &mut DiscardEvents);
+    desktop.pointer_moved(311 + 100, 199 + 100, &mut damage, &mut DiscardEvents);
     assert_eq!(desktop.window(), Rect::new(311, 199, 658, 430));
     assert!(!desktop.minimised());
 }
@@ -171,11 +199,44 @@ fn the_power_menu_powers_off_or_restarts_by_pointer_or_keys() {
     assert!(!desktop.menu_open());
     click(&mut desktop, button.x + 4, 4);
     let mut damage = Damage::new();
-    assert_eq!(desktop.key(key::DOWN, true, &mut damage), Action::None);
-    assert_eq!(desktop.key(key::DOWN, true, &mut damage), Action::None);
-    assert_eq!(desktop.key(key::ENTER, true, &mut damage), Action::Restart);
+    assert_eq!(
+        desktop.key(
+            key::DOWN,
+            true,
+            Modifiers::NONE,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Action::None
+    );
+    assert_eq!(
+        desktop.key(
+            key::DOWN,
+            true,
+            Modifiers::NONE,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Action::None
+    );
+    assert_eq!(
+        desktop.key(
+            key::ENTER,
+            true,
+            Modifiers::NONE,
+            &mut damage,
+            &mut DiscardEvents
+        ),
+        Action::Restart
+    );
     click(&mut desktop, button.x + 4, 4);
-    desktop.key(key::ESC, true, &mut damage);
+    desktop.key(
+        key::ESC,
+        true,
+        Modifiers::NONE,
+        &mut damage,
+        &mut DiscardEvents,
+    );
     assert!(!desktop.menu_open() && desktop.keys_go_to_terminal());
 }
 

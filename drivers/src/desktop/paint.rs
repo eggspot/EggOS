@@ -81,6 +81,19 @@ impl<'a> Canvas<'a> {
         self.pixels[start + left as usize..start + right as usize].fill(colour);
     }
 
+    pub(super) fn row_pixels(&mut self, row: u32, left: u32, right: u32) -> Option<&mut [u32]> {
+        if row < self.clip.y || row >= self.clip.bottom() {
+            return None;
+        }
+        let left = left.max(self.clip.x);
+        let right = right.min(self.clip.right());
+        if left >= right {
+            return None;
+        }
+        let start = row as usize * self.stride;
+        Some(&mut self.pixels[start + left as usize..start + right as usize])
+    }
+
     pub(super) fn fill(&mut self, rect: Rect, colour: u32) {
         for row in rect.y..rect.bottom() {
             self.row(row, rect.x, rect.right(), colour);
