@@ -49,6 +49,33 @@ struct Entry {
     no_zombie_children: bool,
     executed: bool,
     running: Option<Running>,
+    name: Name,
+}
+
+/// The length of a process's name, its NUL included (Linux's `TASK_COMM_LEN`).
+pub const NAME_LENGTH: usize = 16;
+
+/// A process's name: the last component of the file its program came from, at most
+/// [`NAME_LENGTH`] - 1 bytes, as Linux's `comm`; NUL-padded.
+pub type Name = [u8; NAME_LENGTH];
+
+/// The name of the file at `path`'s last component, cut as a process's [`Name`] is.
+pub fn name_of(file_name: &[u8]) -> Name {
+    let mut name = [0; NAME_LENGTH];
+    let length = file_name.len().min(NAME_LENGTH - 1);
+    name[..length].copy_from_slice(&file_name[..length]);
+    name
+}
+
+/// What `/proc` says of a process (D125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listed {
+    pub id: u32,
+    pub parent: u32,
+    pub group: u32,
+    pub session: u32,
+    pub ended: bool,
+    pub name: Name,
 }
 
 /// Which children a wait looks at: Linux's `pid` argument.
@@ -200,6 +227,7 @@ impl Table {
             no_zombie_children: inherited.is_some_and(|parent| parent.no_zombie_children),
             executed: false,
             running: None,
+            name: inherited.map_or([0; NAME_LENGTH], |parent| parent.name),
         };
         self.entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         self.entries.insert(at, entry);
@@ -238,6 +266,25 @@ impl Table {
         if let Some(entry) = self.entry_mut(id) {
             entry.running = Some(running);
         }
+    }
+
+    /// Names process `id`.
+    pub fn set_name(&mut self, id: u32, name: Name) {
+        if let Some(entry) = self.entry_mut(id) {
+            entry.name = name;
+        }
+    }
+
+    /// Every process in the table, by id: what `/proc` lists.
+    pub fn list(&self) -> impl Iterator<Item = Listed> + '_ {
+        self.entries.iter().map(|entry| Listed {
+            id: entry.id,
+            parent: entry.parent,
+            group: entry.group,
+            session: entry.session,
+            ended: entry.exit.is_some(),
+            name: entry.name,
+        })
     }
 
     /// Records that process `id` ran `execve`: its parent may no longer move it to another

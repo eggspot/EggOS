@@ -916,6 +916,7 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     // through the direct map, as the boot page tables already had it.
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
+    memory::record_total_frames(frames.free_frames());
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
 }

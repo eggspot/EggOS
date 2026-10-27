@@ -5,6 +5,7 @@ use crate::head::{head, tail};
 use crate::ls::{Listing, ls};
 use crate::output::{FAILURE, Output};
 use crate::power::{HALT, POWER_OFF, RESTART, power};
+use crate::processes::{free, ps, uptime};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use crate::uname::uname;
@@ -22,34 +23,40 @@ pub enum Utility {
     Cat,
     Echo,
     False,
+    Free,
     Grep,
     Halt,
     Head,
     Ls,
     Poweroff,
+    Ps,
     Reboot,
     Sleep,
     Tail,
     True,
     Uname,
+    Uptime,
     Wc,
 }
 
 impl Utility {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::Cat,
         Self::Echo,
         Self::False,
+        Self::Free,
         Self::Grep,
         Self::Halt,
         Self::Head,
         Self::Ls,
         Self::Poweroff,
+        Self::Ps,
         Self::Reboot,
         Self::Sleep,
         Self::Tail,
         Self::True,
         Self::Uname,
+        Self::Uptime,
         Self::Wc,
     ];
 
@@ -58,16 +65,19 @@ impl Utility {
             Self::Cat => b"cat",
             Self::Echo => b"echo",
             Self::False => b"false",
+            Self::Free => b"free",
             Self::Grep => b"grep",
             Self::Halt => b"halt",
             Self::Head => b"head",
             Self::Ls => b"ls",
             Self::Poweroff => b"poweroff",
+            Self::Ps => b"ps",
             Self::Reboot => b"reboot",
             Self::Sleep => b"sleep",
             Self::Tail => b"tail",
             Self::True => b"true",
             Self::Uname => b"uname",
+            Self::Uptime => b"uptime",
             Self::Wc => b"wc",
         }
     }
@@ -81,16 +91,19 @@ impl Utility {
             Self::Cat => cat(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
+            Self::Free => free(output, arguments),
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
             Self::Head => head(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
+            Self::Ps => ps(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Sleep => sleep(output, arguments),
             Self::Tail => tail(output, arguments),
             Self::True => 0,
             Self::Uname => uname(output, arguments),
+            Self::Uptime => uptime(output, arguments),
             Self::Wc => wc(output, arguments),
         }
     }

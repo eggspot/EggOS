@@ -26,6 +26,19 @@ pub struct Memory<P: Platform> {
 /// Lock order: the heap's lock ([`crate::heap::KernelHeap`]) before this one, never the reverse.
 pub static FRAMES: LeafSpinLock<Option<FrameAllocator>> = LeafSpinLock::new_leaf(None);
 
+static TOTAL_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Records how many frames the allocator had once the kernel's page tables were built: the
+/// memory programs can have, as `/proc/meminfo`'s `MemTotal` reports it.
+pub fn record_total_frames(frames: u64) {
+    TOTAL_FRAMES.store(frames, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The frames [`record_total_frames`] recorded; 0 before.
+pub fn total_frames() -> u64 {
+    TOTAL_FRAMES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Marks the end of the free stack. Never a frame address: frames are aligned to
 /// [`FRAME_SIZE`].
 const NO_FRAME: u64 = u64::MAX;

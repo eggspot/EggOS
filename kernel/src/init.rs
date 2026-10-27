@@ -114,7 +114,12 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
         return Outcome::NotStarted("/init is not a program this machine runs");
     };
     let process = Arc::new(process);
-    process_table::TABLE.lock().set_init(process.id().get());
+    {
+        let mut table = process_table::TABLE.lock();
+        table.set_init(process.id().get());
+        let _ = table.add_if_missing(process.id().get());
+        table.set_name(process.id().get(), process_table::name_of(b"init"));
+    }
     let Ok(thread) = linux::spawn::<P>(Arc::clone(&process), context) else {
         return Outcome::NotStarted("could not start process 1's thread");
     };

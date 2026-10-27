@@ -276,6 +276,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         FileKind::Regular(node) | FileKind::Directory(node) | FileKind::Path(node) => {
             Ok(node_status(*node))
         }
+        FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
     }
 }
 

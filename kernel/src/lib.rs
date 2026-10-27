@@ -98,6 +98,9 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 if let Some(report) = vfs::mount_embedded_initramfs() {
                     report_root(console, report)?;
                 }
+                let proc: &'static linux::proc::Proc<P> =
+                    alloc::boxed::Box::leak(alloc::boxed::Box::new(linux::proc::Proc::new()));
+                let _ = vfs::mount(b"/proc", proc);
                 if BOOT_MODE == BootMode::Init {
                     init::run(console, &mut memory)?;
                     return Ok(false);

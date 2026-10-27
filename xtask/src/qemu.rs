@@ -523,7 +523,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 16] = [
+const PROMPT_SESSION: [&[u8]; 19] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -539,6 +539,9 @@ const PROMPT_SESSION: [&[u8]; 16] = [
     b"tail -n 1 /etc/motd /etc/hostname | head -n 4 | tail -n +2\r",
     PIPELINE_READING_THE_TERMINAL,
     b"echo EGGOS-PIPE interrupted $?\r",
+    b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
+    b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
+    b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
     b"poweroff\r",
 ];
 
@@ -568,9 +571,8 @@ const REACTIONS: [Reaction; 2] = [
 
 const PROMPT_SESSION_FRAME_PROMPT: usize = 9;
 
-const _: () = assert!(
-    PROMPT_SESSION[PROMPT_SESSION_FRAME_PROMPT - 2].len() == SHIFTED_KEYS_LINE.len()
-);
+const _: () =
+    assert!(PROMPT_SESSION[PROMPT_SESSION_FRAME_PROMPT - 2].len() == SHIFTED_KEYS_LINE.len());
 
 const UNAME_LINE: &[u8] = b"uname -a\r";
 
@@ -650,9 +652,9 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&["bin", "etc", "init", "usr"]),
+        whole(&["bin", "etc", "init", "proc", "usr"]),
         vec![
-            Line::Around("-rwxr-xr-x 15 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 18 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -676,6 +678,13 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
+        whole(&["meminfo", "ps", "uptime", "/proc", "/", "3"]),
+        whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
+        whole(&[
+            "               total        used        free      shared  buff/cache   available",
+            "1",
+            "1",
+        ]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -2254,7 +2263,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 15 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 18 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

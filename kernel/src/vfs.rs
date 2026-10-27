@@ -11,7 +11,10 @@
 //!
 //! The root is mounted once at boot ([`mount_embedded_initramfs`]) and never unmounted, so a
 //! node holds a `'static` reference to its file system and costs no reference count; mounts
-//! that can go away (tmpfs, devfs, disks) will count references in their mount.
+//! that can go away (tmpfs, devfs, disks) will count references in their mount. Other file
+//! systems are mounted on directories at boot ([`mount`], D125), at most [`MAX_MOUNTS`],
+//! never unmounted either: a lookup that finds a mount point gives the mounted root, and `..`
+//! from a mounted root leaves through its mount point.
 
 pub mod cpio;
 pub mod initramfs;
@@ -96,6 +99,11 @@ pub trait FileSystem: Sync + Send {
     /// Up to `length` bytes of regular file `node`'s contents from `offset`, at least one if
     /// any are there: fewer than asked at its end, or where the file system's storage breaks.
     fn read(&self, node: u64, offset: u64, length: usize) -> &[u8];
+    /// The contents of regular file `node` made now, for a file system whose files are made
+    /// when they are opened (`/proc`); `None` for one whose contents [`Self::read`] gives.
+    fn generate(&self, _node: u64) -> Option<alloc::vec::Vec<u8>> {
+        None
+    }
     /// Entry `position` of `directory`, in a stable order, `.` and `..` not included.
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry<'_>>;
 }
@@ -165,9 +173,18 @@ impl Node {
         self.file_system.attributes(self.id)
     }
 
-    /// The directory that holds it; the root's is the root.
+    /// The directory that holds it; the root's is the root, and a mounted root's is its
+    /// mount point's.
     pub fn parent(&self) -> Self {
-        self.with_id(self.file_system.parent(self.id))
+        match covered_by(*self) {
+            Some(point) => point.parent(),
+            None => self.with_id(self.file_system.parent(self.id)),
+        }
+    }
+
+    /// The contents of a regular file made when it is opened ([`FileSystem::generate`]).
+    pub fn generate(&self) -> Option<alloc::vec::Vec<u8>> {
+        self.file_system.generate(self.id)
     }
 
     /// Up to `length` bytes of its contents from `offset` ([`FileSystem::read`]).
@@ -197,7 +214,7 @@ impl Node {
             .file_system
             .lookup(self.id, name)
             .ok_or(Error::NotFound)?;
-        Ok(self.with_id(id))
+        Ok(mounted_on(self.with_id(id)))
     }
 
     /// Writes its absolute path, from the root of the file system it is on, to the end of
@@ -205,8 +222,16 @@ impl Node {
     pub fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
         let mut start = buffer.len();
         let mut node = *self;
-        let root = self.file_system.root();
-        while node.id != root {
+        loop {
+            if node.id == node.file_system.root() {
+                match covered_by(node) {
+                    Some(point) => {
+                        node = point;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
             let name = node.file_system.name(node.id);
             start = start.checked_sub(name.len() + 1)?;
             buffer[start] = b'/';
@@ -278,6 +303,83 @@ pub fn split_last(path: &[u8]) -> Option<(&[u8], &[u8])> {
 
 struct Mount {
     root: Node,
+}
+
+/// The most file systems [`mount`] mounts besides the root.
+pub const MAX_MOUNTS: usize = 4;
+
+struct Mounted {
+    point: Node,
+    root: Node,
+}
+
+static MOUNTS: [AtomicPtr<Mounted>; MAX_MOUNTS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_MOUNTS];
+
+fn mounts() -> impl Iterator<Item = &'static Mounted> {
+    MOUNTS.iter().map_while(|slot| {
+        let mounted = slot.load(Ordering::Acquire);
+        // SAFETY: a slot that is not null points to a leaked `Mounted`, published once by
+        // `mount` and never freed or changed.
+        (!mounted.is_null()).then(|| unsafe { &*mounted })
+    })
+}
+
+#[inline]
+fn mounted_on(node: Node) -> Node {
+    mounts()
+        .find(|mounted| mounted.point == node)
+        .map_or(node, |mounted| mounted.root)
+}
+
+fn covered_by(node: Node) -> Option<Node> {
+    if node.id != node.file_system.root() {
+        return None;
+    }
+    mounts()
+        .find(|mounted| mounted.root == node)
+        .map(|mounted| mounted.point)
+}
+
+/// Why [`mount`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountError {
+    /// The path does not name a directory of the root file system.
+    NoMountPoint,
+    /// Something is mounted there already, or [`MAX_MOUNTS`] file systems are.
+    Taken,
+}
+
+/// Mounts `file_system` on the directory `path` names from the root, for good.
+pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    let root = root();
+    let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
+    if !point.is_directory() || point == root {
+        return Err(MountError::NoMountPoint);
+    }
+    if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
+        return Err(MountError::Taken);
+    }
+    let mounted = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mounted {
+        point,
+        root: Node::root_of(file_system),
+    }));
+    for slot in &MOUNTS {
+        if slot
+            .compare_exchange(
+                core::ptr::null_mut(),
+                mounted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    // SAFETY: `mounted` came from `Box::into_raw` above and was never published.
+    drop(unsafe { alloc::boxed::Box::from_raw(mounted) });
+    Err(MountError::Taken)
 }
 
 static ROOT: AtomicPtr<Mount> = AtomicPtr::new(core::ptr::null_mut());

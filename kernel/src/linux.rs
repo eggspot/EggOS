@@ -55,6 +55,7 @@ pub mod limits;
 pub mod memory;
 pub mod pipe;
 pub mod poll;
+pub mod proc;
 pub mod process_table;
 pub mod random;
 pub mod reboot;
@@ -1227,12 +1228,12 @@ fn read<P: Platform>(
             FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
             FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
             kind => {
-                let result = match kind {
-                    FileKind::Regular(node) => {
+                let result = match files::Contents::of(kind) {
+                    Some(contents) => {
                         let buffers = iovecs.entries().iter().map(iovec);
-                        files::read_regular(process, &file, *node, buffers)
+                        files::read_regular(process, &file, contents, buffers)
                     }
-                    _ => Err(Errno::EISDIR),
+                    None => Err(Errno::EISDIR),
                 };
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())

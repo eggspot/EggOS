@@ -132,6 +132,17 @@ pub enum FileKind {
     Path(Node),
     /// One end of a pipe.
     Pipe(PipeEnd),
+    /// A regular file whose contents were made when it was opened (`/proc`, D125).
+    Snapshot(Snapshot),
+}
+
+/// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The file.
+    pub node: Node,
+    /// Its contents.
+    pub bytes: Vec<u8>,
 }
 
 impl FileKind {
@@ -140,6 +151,7 @@ impl FileKind {
         match self {
             Self::Console | Self::Pipe(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
+            Self::Snapshot(snapshot) => Some(snapshot.node),
         }
     }
 }
