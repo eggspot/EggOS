@@ -225,14 +225,36 @@ Must-have, in order:
     while open stays readable until its last close; programs run from `/tmp` and `/home`;
     `cp -r`; files that survive a reboot (a disk driver and a disk file system).
 
-Next in the plan: what the build loop picks next.
+The GUI block (owner, 2026-10-27, D126): v0.3.0 must install and open Windows, macOS and Linux
+apps in windows on the desktop; console programs alone are not enough. In this order, after
+items 22 and 23; the design of 30-31 and 34-37 is Claude Fable's (docs/ux/desktop-v0.3-gui.md,
+D16):
 
-Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
-serial console, an RTC driver for `date` (pipes, a tmpfs at `/tmp`, a minimal `/proc` and line
-history are items 22 and 23). Checkpoint 2026-10-28 23:00: if `execve` or process creation is not green on all three,
-fall back to one `eggsh` with built-in commands. Cut order when behind: `/proc`, RTC, tmpfs,
-pipes, MCP; `fork`; the desktop's window controls and mouse; the fallback; last, ship a late
-architecture as "boots, no shell". The graphical terminal is the owner's priority.
+30. **in progress** — several windows from programs: the window server, `/dev/window` (D127):
+    programs open their own windows (shared pixel buffers, commits, input events), the
+    terminal is one window among them; click to raise and focus, move by the title bar,
+    minimise to a chip, the close control asks the program to close.
+31. window management: resize from the edges, maximise and restore, drawn pointer shapes,
+    Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu, snap, keyboard operation, the
+    `wm` command.
+32. Windows GUI apps, part 1: a Windows program's windows on the desktop (user32 and gdi32 over
+    `/dev/window`).
+33. a host apps folder: a virtio-blk driver and a FAT32 reader, so `cargo xtask run --apps
+    <dir>` shows a host folder (QEMU's `fat:ro:`) in EggOS.
+25. files that survive a reboot: a persistent disk.
+34. a UI toolkit and the Settings app with the profile picker.
+35. the desktop shell: taskbar or dock, the launcher, desktop icons.
+36. install, open and uninstall of `.exe`, `.app` and ELF programs.
+37. the Files app.
+38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
+39. a Wayland server, `eggway`, for Linux GUI apps.
+40. the macOS Objective-C runtime and the core of Foundation.
+41. macOS GUI apps, part 1.
+
+Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
+Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
+Editor; 29 an RTC driver for `date`. Moved after the release: networking, the MCP server, the
+terminal's `edit`. The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones
 

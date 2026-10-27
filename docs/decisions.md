@@ -7071,3 +7071,34 @@ the license, by an explicit instruction recorded here.
 - **Not yet (follow-ups).** Per-pipe wait queues; files kept until their last close; programs
   run from tmpfs; `/proc/self`, `/proc/<pid>`; `umask`; access times; `2>` and `2>&1`; cursor
   movement and a history file; `cp -r`; the GUI and MCP front-ends of the utilities (M14).
+
+## D126 v0.3.0 becomes GUI-ready: apps from Windows, macOS and Linux open in windows (owner, 2026-10-27) — Decided (owner); the order of the items decided by the owner, their split by the build loop
+- **The owner's decision (2026-10-27).** v0.3.0 must let a user install and open Windows, macOS
+  and Linux apps in windows on the EggOS desktop. Console programs from those systems (D117 to
+  D125) are not enough for the release: a switcher expects their apps to open as windows.
+- **What it means for the plan** (`docs/roadmap.md`, v0.3.0): after items 22 and 23 (done),
+  in this order: 30 several windows from programs (the window server, D127); 31 window
+  management (edge resize, maximise and restore, pointer shapes, the switcher, Alt+F4 and
+  Cmd+W, the window menu, snap, `wm`); 32 Windows GUI apps, part 1; 33 a host apps folder
+  (virtio-blk and a FAT32 reader, `cargo xtask run --apps <dir>` as QEMU's `fat:ro:`); 25 files
+  that survive a reboot; 34 a UI toolkit and the Settings app; 35 the desktop shell (taskbar or
+  dock, launcher, icons); 36 install, open and uninstall of `.exe`, `.app` and ELF programs; 37
+  the Files app; 38 `AF_UNIX`, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files;
+  39 a Wayland server, `eggway`; 40 the macOS Objective-C runtime and Foundation core; 41 macOS
+  GUI apps, part 1. Extras after those, in order: 42 Windows controls, menus and dialogs; 43
+  Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a
+  Text Editor; 29 an RTC driver. Moved after the release: networking, the MCP server (D21) and
+  the terminal's `edit`. The earlier nice-to-haves and cut order of D99 are replaced by this
+  list.
+- **The design** is Claude Fable's (D16): `docs/ux/desktop-v0.3-gui.md` designs items 30 and
+  31 now and items 34 to 37 for later, on top of `desktop-v0.3.md` (D109). Its default layout
+  profile for 0.3.0 is macOS habits (controls on the left, the top bar), the layout already
+  built; the owner can overrule it.
+- **The window server is in the kernel for v0.3.0**, an exception like D109's in-kernel desktop
+  and D115's in-kernel terminal: it extends the desktop the kernel already draws, so the
+  terminal moves behind the same contract with no visible change, and nothing in user space
+  has to exist first. The contract that stays when the server moves to user space (with the
+  userland terminal and the component manager, D18) is `/dev/window`: a character device whose
+  `ioctl`s create and change windows, whose `mmap` maps a window's pixels, and whose `read`
+  and `poll` deliver input events (D127, docs/windows.md). Programs written against it keep
+  working when the server moves.
