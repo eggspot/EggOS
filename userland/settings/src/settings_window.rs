@@ -5,7 +5,6 @@
 
 use crate::art;
 use crate::facts::Facts;
-use crate::keys::Key;
 use core::fmt::Write;
 use eggos_toolkit::colour;
 use eggos_toolkit::input::key;
@@ -526,11 +525,6 @@ impl SettingsWindow {
             }
             _ => None,
         }
-    }
-
-    /// The line `settings list` prints for each setting, as the window shows it.
-    pub fn value_of(&self, key: Key) -> crate::keys::Value {
-        key.value(&self.facts)
     }
 }
 

@@ -16,7 +16,7 @@ use eggos_settings_file::{self as settings_file, DIRECTORIES, LARGEST, PATH, TEM
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::{Response, WidgetTree};
-use eggos_toolkit::window::{Device, Window, now_ms};
+use eggos_toolkit::window::{Window, WindowServer, now_ms};
 
 const STANDARD_OUTPUT: usize = 1;
 const STANDARD_ERROR: usize = 2;
@@ -232,14 +232,14 @@ fn home_is_on_a_disk() -> bool {
     found.is_ok() && major != 0
 }
 
-fn facts(device: Option<&Device>) -> Facts {
+fn facts(server: Option<&WindowServer>) -> Facts {
     let mut file = [0u8; LARGEST + 1];
     let length = saved_settings(&mut file);
     let saved = settings_file::profile(&file[..length]).unwrap_or(DEFAULT_PROFILE);
-    let profile = device
-        .and_then(|device| device.desktop_profile().ok())
+    let profile = server
+        .and_then(|server| server.desktop_profile().ok())
         .map_or(saved, |profile| profile as usize);
-    let area = device.and_then(|device| device.work_area().ok());
+    let area = server.and_then(|server| server.work_area().ok());
     Facts {
         version: env!("CARGO_PKG_VERSION"),
         architecture: architecture(),
@@ -277,17 +277,17 @@ fn save_profile(index: usize) -> bool {
     saved.is_ok()
 }
 
-fn apply_profile(index: usize, device: Option<&Device>) -> bool {
+fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
     let opened;
-    let device = match device {
-        Some(device) => Some(device),
+    let server = match server {
+        Some(server) => Some(server),
         None => {
-            opened = Device::open();
+            opened = WindowServer::open();
             opened.as_ref().ok()
         }
     };
-    let applied = match device {
-        Some(device) => device.set_desktop_profile(index as u32),
+    let applied = match server {
+        Some(server) => server.set_desktop_profile(index as u32),
         None => Ok(()),
     };
     if let Err(error) = applied {
@@ -310,10 +310,10 @@ fn print_line(parts: &[&str]) {
 }
 
 fn command(arguments: &[&str]) -> i32 {
-    let device = Device::open().ok();
+    let server = WindowServer::open().ok();
     match arguments {
         ["list"] => {
-            let facts = facts(device.as_ref());
+            let facts = facts(server.as_ref());
             for key in Key::ALL {
                 print_line(&[key.name(), "=", key.value(&facts).as_str()]);
             }
@@ -321,7 +321,7 @@ fn command(arguments: &[&str]) -> i32 {
         }
         ["get", name] => match Key::named(name) {
             Some(key) => {
-                print_line(&[key.value(&facts(device.as_ref())).as_str()]);
+                print_line(&[key.value(&facts(server.as_ref())).as_str()]);
                 0
             }
             None => {
@@ -332,7 +332,7 @@ fn command(arguments: &[&str]) -> i32 {
         ["set", name, value] => match keys::change(name, value) {
             Ok((_, Change::Profile(index))) => {
                 let saved = save_profile(index);
-                match apply_profile(index, device.as_ref()) && saved {
+                match apply_profile(index, server.as_ref()) && saved {
                     true => 0,
                     false => 1,
                 }
@@ -430,7 +430,7 @@ fn open_window() -> i32 {
             return 1;
         }
     };
-    let facts = facts(Some(window.device()));
+    let facts = facts(Some(window.server()));
     let mut settings = Settings {
         window: SettingsWindow::new(facts),
         uptime_from_ms: now_ms(),

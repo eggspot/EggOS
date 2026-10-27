@@ -68,11 +68,11 @@ pub struct WorkArea {
 
 /// One connection to the window server.
 #[derive(Debug)]
-pub struct Device {
+pub struct WindowServer {
     fd: usize,
 }
 
-impl Device {
+impl WindowServer {
     /// Connects: `ENXIO` without a display.
     pub fn open() -> Result<Self, Errno> {
         let path: &CStr = c"/dev/window";
@@ -126,7 +126,7 @@ impl Device {
     }
 }
 
-impl Drop for Device {
+impl Drop for WindowServer {
     fn drop(&mut self) {
         // SAFETY: `close` ends the descriptor this value owns; nothing uses it after.
         unsafe { call(number::CLOSE, [self.fd, 0, 0, 0, 0, 0]) };
@@ -136,7 +136,7 @@ impl Drop for Device {
 /// A normal window of the program and its mapped pixels.
 #[derive(Debug)]
 pub struct Window {
-    device: Device,
+    server: WindowServer,
     id: u32,
     pixels: usize,
     width: u32,
@@ -155,15 +155,15 @@ impl Window {
         height: u32,
         minimum: (u32, u32),
     ) -> Result<Self, Errno> {
-        let device = Device::open()?;
-        let scale = device.work_area()?.scale;
+        let server = WindowServer::open()?;
+        let scale = server.work_area()?.scale;
         let mut create = [0u8; 32];
         put(&mut create, 8, width * scale);
         put(&mut create, 12, height * scale);
-        device.ioctl(CREATE, &mut create)?;
+        server.ioctl(CREATE, &mut create)?;
         let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
         let mut window = Self {
-            device,
+            server,
             id: word(&create, 20),
             pixels: 0,
             width: word(&create, 8),
@@ -173,22 +173,26 @@ impl Window {
         };
         window.map(offset)?;
         let mut set_title = [0u8; 72];
-        let title = &title.as_bytes()[..title.len().min(TITLE_CAPACITY)];
+        let mut end = title.len().min(TITLE_CAPACITY);
+        while !title.is_char_boundary(end) {
+            end -= 1;
+        }
+        let title = &title.as_bytes()[..end];
         put(&mut set_title, 0, window.id);
         put(&mut set_title, 4, title.len() as u32);
         set_title[8..8 + title.len()].copy_from_slice(title);
-        window.device.ioctl(SET_TITLE, &mut set_title)?;
+        window.server.ioctl(SET_TITLE, &mut set_title)?;
         let mut minimum_size = [0u8; 12];
         put(&mut minimum_size, 0, window.id);
         put(&mut minimum_size, 4, minimum.0 * scale);
         put(&mut minimum_size, 8, minimum.1 * scale);
-        window.device.ioctl(SET_MINIMUM_SIZE, &mut minimum_size)?;
+        window.server.ioctl(SET_MINIMUM_SIZE, &mut minimum_size)?;
         Ok(window)
     }
 
     /// The connection the window was made on.
-    pub fn device(&self) -> &Device {
-        &self.device
+    pub fn server(&self) -> &WindowServer {
+        &self.server
     }
 
     /// The content's size in buffer pixels.
@@ -215,7 +219,7 @@ impl Window {
                     self.length(),
                     PROT_READ_WRITE,
                     MAP_SHARED,
-                    self.device.fd,
+                    self.server.fd,
                     offset,
                 ],
             )
@@ -270,7 +274,7 @@ impl Window {
                 }
             }
         }
-        self.device.ioctl(COMMIT, &mut commit)
+        self.server.ioctl(COMMIT, &mut commit)
     }
 
     /// Takes the content size the server gave (`width` by `height` buffer pixels): a new
@@ -280,7 +284,7 @@ impl Window {
         put(&mut set_size, 0, self.id);
         put(&mut set_size, 4, width);
         put(&mut set_size, 8, height);
-        self.device.ioctl(SET_SIZE, &mut set_size)?;
+        self.server.ioctl(SET_SIZE, &mut set_size)?;
         let offset = u64::from_ne_bytes(set_size[16..24].try_into().unwrap_or([0; 8])) as usize;
         self.unmap();
         self.width = word(&set_size, 4);
@@ -303,7 +307,7 @@ impl Window {
                 PointerShape::IBeam => 1,
             },
         );
-        self.device.ioctl(SET_POINTER, &mut set_pointer)?;
+        self.server.ioctl(SET_POINTER, &mut set_pointer)?;
         self.pointer = shape;
         Ok(())
     }
@@ -312,7 +316,7 @@ impl Window {
     /// fit `records`; how many bytes, 0 when the time ran out.
     pub fn read_events(&self, records: &mut [u8], timeout_ms: Option<u32>) -> Result<usize, Errno> {
         let mut poll = [0u8; 8];
-        poll[0..4].copy_from_slice(&(self.device.fd as i32).to_ne_bytes());
+        poll[0..4].copy_from_slice(&(self.server.fd as i32).to_ne_bytes());
         poll[4..6].copy_from_slice(&POLLIN.to_ne_bytes());
         let timeout = timeout_ms.map(|ms| [u64::from(ms / 1000), u64::from(ms % 1000) * 1_000_000]);
         let timeout_pointer = timeout.as_ref().map_or(0, |time| time.as_ptr() as usize);
@@ -334,7 +338,7 @@ impl Window {
             call(
                 number::READ,
                 [
-                    self.device.fd,
+                    self.server.fd,
                     records.as_mut_ptr() as usize,
                     length,
                     0,
@@ -355,7 +359,7 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         let mut destroy = self.id.to_ne_bytes();
-        let _ = self.device.ioctl(DESTROY, &mut destroy);
+        let _ = self.server.ioctl(DESTROY, &mut destroy);
         self.unmap();
     }
 }
