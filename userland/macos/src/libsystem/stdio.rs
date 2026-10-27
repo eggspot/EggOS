@@ -8,6 +8,7 @@ use super::{c_string, errno_from, file, heap, set_errno};
 use crate::darwin::{self, EBADF, EINVAL};
 use crate::format::{self, Output};
 use crate::linux;
+use crate::stream_buffer::StreamBuffer;
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
 
@@ -26,8 +27,7 @@ enum Buffering {
 pub struct Stream {
     fd: c_int,
     buffering: Buffering,
-    buffer: *mut u8,
-    capacity: usize,
+    buffer: StreamBuffer,
     written: usize,
     read_at: usize,
     read_end: usize,
@@ -45,8 +45,7 @@ impl Stream {
         Self {
             fd,
             buffering,
-            buffer: ptr::null_mut(),
-            capacity: 0,
+            buffer: StreamBuffer::none(),
             written: 0,
             read_at: 0,
             read_end: 0,
@@ -79,11 +78,9 @@ pub static mut STDERR_POINTER: *mut Stream = ptr::null_mut();
 /// Called once, before the program runs.
 pub unsafe fn set_up() {
     let input = standard(&raw mut STDIN);
-    input.buffer = (&raw mut STDIN_BUFFER).cast();
-    input.capacity = BUFFER_SIZE;
+    input.buffer = StreamBuffer::borrowed((&raw mut STDIN_BUFFER).cast(), BUFFER_SIZE);
     let output = standard(&raw mut STDOUT);
-    output.buffer = (&raw mut STDOUT_BUFFER).cast();
-    output.capacity = BUFFER_SIZE;
+    output.buffer = StreamBuffer::borrowed((&raw mut STDOUT_BUFFER).cast(), BUFFER_SIZE);
     if linux::is_terminal(1) {
         output.buffering = Buffering::Line;
     }
@@ -138,7 +135,7 @@ fn flush(stream: &mut Stream) -> c_int {
         return 0;
     }
     // SAFETY: the buffer holds `written` bytes of output.
-    let bytes = unsafe { core::slice::from_raw_parts(stream.buffer, stream.written) };
+    let bytes = unsafe { core::slice::from_raw_parts(stream.buffer.start, stream.written) };
     stream.written = 0;
     match linux::write_all(stream.fd as usize, bytes) {
         Ok(()) => 0,
@@ -157,7 +154,7 @@ fn write_bytes(stream: &mut Stream, bytes: &[u8]) -> bool {
     }
     stream.read_at = 0;
     stream.read_end = 0;
-    if stream.buffering == Buffering::None || stream.capacity == 0 {
+    if stream.buffering == Buffering::None || stream.buffer.capacity == 0 {
         return match linux::write_all(stream.fd as usize, bytes) {
             Ok(()) => true,
             Err(errno) => {
@@ -168,14 +165,15 @@ fn write_bytes(stream: &mut Stream, bytes: &[u8]) -> bool {
     }
     let mut rest = bytes;
     while !rest.is_empty() {
-        if stream.written == stream.capacity && flush(stream) != 0 {
+        if stream.written == stream.buffer.capacity && flush(stream) != 0 {
             return false;
         }
-        let taken = rest.len().min(stream.capacity - stream.written);
+        let taken = rest.len().min(stream.buffer.capacity - stream.written);
         // SAFETY: the buffer has room for `taken` more bytes.
         unsafe {
             stream
                 .buffer
+                .start
                 .wrapping_add(stream.written)
                 .copy_from_nonoverlapping(rest.as_ptr(), taken)
         };
@@ -192,7 +190,7 @@ fn fill(stream: &mut Stream) -> bool {
     if stream.read_at < stream.read_end {
         return true;
     }
-    if !stream.readable || stream.capacity == 0 {
+    if !stream.readable || stream.buffer.capacity == 0 {
         stream.error |= !stream.readable;
         return false;
     }
@@ -200,7 +198,8 @@ fn fill(stream: &mut Stream) -> bool {
         flush(standard(&raw mut STDOUT));
     }
     // SAFETY: the buffer holds `capacity` bytes.
-    let buffer = unsafe { core::slice::from_raw_parts_mut(stream.buffer, stream.capacity) };
+    let buffer =
+        unsafe { core::slice::from_raw_parts_mut(stream.buffer.start, stream.buffer.capacity) };
     match linux::read(stream.fd as usize, buffer) {
         Ok(0) => {
             stream.end = true;
@@ -229,7 +228,7 @@ fn read_byte(stream: &mut Stream) -> Option<u8> {
         return None;
     }
     // SAFETY: `fill` left at least one unread byte in the buffer.
-    let byte = unsafe { stream.buffer.wrapping_add(stream.read_at).read() };
+    let byte = unsafe { stream.buffer.start.wrapping_add(stream.read_at).read() };
     stream.read_at += 1;
     Some(byte)
 }
@@ -623,7 +622,7 @@ pub unsafe extern "C" fn fread(
         // SAFETY: `taken` buffered bytes into the rest of the caller's buffer.
         unsafe {
             out.wrapping_add(filled)
-                .copy_from_nonoverlapping(stream.buffer.wrapping_add(stream.read_at), taken)
+                .copy_from_nonoverlapping(stream.buffer.start.wrapping_add(stream.read_at), taken)
         };
         stream.read_at += taken;
         filled += taken;
@@ -737,8 +736,7 @@ fn new_stream(fd: c_int, readable: bool, writable: bool) -> *mut Stream {
         return ptr::null_mut();
     }
     let mut value = Stream::standard(fd, Buffering::Full);
-    value.buffer = buffer;
-    value.capacity = BUFFER_SIZE;
+    value.buffer = StreamBuffer::heap(buffer, BUFFER_SIZE);
     value.readable = readable;
     value.writable = writable;
     value.owned = true;
@@ -791,6 +789,9 @@ pub unsafe extern "C" fn fclose(file: *mut Stream) -> c_int {
     };
     let flushed = flush(stream);
     let closed = linux::close(stream.fd as usize).is_ok();
+    if let Some(block) = stream.buffer.take_owned() {
+        heap::release(block);
+    }
     if stream.owned {
         let mut link = open_streams();
         loop {
@@ -808,7 +809,6 @@ pub unsafe extern "C" fn fclose(file: *mut Stream) -> c_int {
             // SAFETY: `current` is a live stream on the list.
             link = unsafe { &raw mut (*current).next };
         }
-        heap::release(stream.buffer);
         heap::release(file.cast());
     }
     if flushed == 0 && closed { 0 } else { EOF }
@@ -929,9 +929,15 @@ pub unsafe extern "C" fn setvbuf(
         2 => Buffering::None,
         _ => return -1,
     };
-    if !buffer.is_null() && size > 0 && stream.written == 0 {
-        stream.buffer = buffer.cast();
-        stream.capacity = size;
+    if !buffer.is_null() && size > 0 {
+        if flush(stream) != 0 {
+            return -1;
+        }
+        if let Some(block) = stream.buffer.replace_with_borrowed(buffer.cast(), size) {
+            heap::release(block);
+        }
+        stream.read_at = 0;
+        stream.read_end = 0;
     }
     0
 }

@@ -423,7 +423,7 @@ fn data(name: &[u8]) -> Option<usize> {
 /// The address of the libSystem function or variable `name` (a Mach-O symbol name, with its
 /// leading underscore), if the layer has it.
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    let name = darwin::base_symbol(name);
+    let name = darwin::bound_symbol(name, cfg!(target_arch = "x86_64"))?;
     data(name)
         .or_else(|| function(name))
         .map(|address| address as u64)

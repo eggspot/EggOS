@@ -90,6 +90,9 @@ pub unsafe extern "C" fn strncpy(
     source: *const c_char,
     count: usize,
 ) -> *mut c_char {
+    if count == 0 {
+        return destination;
+    }
     // SAFETY: the caller's promise.
     let length = unsafe { strnlen(source, count) };
     // SAFETY: as above.
@@ -232,6 +235,9 @@ pub unsafe extern "C" fn memchr(
     character: c_int,
     count: usize,
 ) -> *mut c_void {
+    if count == 0 {
+        return core::ptr::null_mut();
+    }
     // SAFETY: the caller's promise.
     let slice = unsafe { core::slice::from_raw_parts(bytes.cast::<u8>(), count) };
     slice
@@ -245,6 +251,9 @@ pub unsafe extern "C" fn memchr(
 /// # Safety
 /// Both must be readable for `count` bytes.
 pub unsafe extern "C" fn memcmp(left: *const c_void, right: *const c_void, count: usize) -> c_int {
+    if count == 0 {
+        return 0;
+    }
     // SAFETY: the caller's promise.
     let a = unsafe { core::slice::from_raw_parts(left.cast::<u8>(), count) };
     // SAFETY: as above.
@@ -262,6 +271,9 @@ pub unsafe extern "C" fn memcpy(
     source: *const c_void,
     count: usize,
 ) -> *mut c_void {
+    if count == 0 {
+        return destination;
+    }
     // SAFETY: the caller's promise.
     unsafe {
         destination
@@ -278,6 +290,9 @@ pub unsafe extern "C" fn memmove(
     source: *const c_void,
     count: usize,
 ) -> *mut c_void {
+    if count == 0 {
+        return destination;
+    }
     // SAFETY: the caller's promise.
     unsafe { destination.cast::<u8>().copy_from(source.cast(), count) };
     destination
@@ -290,6 +305,9 @@ pub unsafe extern "C" fn memset(
     value: c_int,
     count: usize,
 ) -> *mut c_void {
+    if count == 0 {
+        return destination;
+    }
     // SAFETY: the caller's promise.
     unsafe { destination.cast::<u8>().write_bytes(value as u8, count) };
     destination
@@ -298,6 +316,9 @@ pub unsafe extern "C" fn memset(
 /// # Safety
 /// `destination` must be writable for `count` bytes.
 pub unsafe extern "C" fn bzero(destination: *mut c_void, count: usize) {
+    if count == 0 {
+        return;
+    }
     // SAFETY: the caller's promise.
     unsafe { destination.cast::<u8>().write_bytes(0, count) };
 }

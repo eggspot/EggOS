@@ -107,6 +107,20 @@ impl Arguments for VaList {
             }
         }
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn long_double(&mut self) -> f64 {
+        // SAFETY: as in `integer`.
+        let state = unsafe { &mut *self.state };
+        let at = (state.overflow as usize).next_multiple_of(16) as *const u64;
+        // SAFETY: a `long double` is passed in the caller's overflow area, 16-byte aligned, its
+        // 64-bit significand then its sign and exponent.
+        let significand = unsafe { at.read() };
+        // SAFETY: as above.
+        let sign_exponent = unsafe { at.wrapping_add(1).cast::<u16>().read() };
+        state.overflow = at.wrapping_add(2);
+        crate::format::extended_to_double(significand, sign_exponent)
+    }
 }
 
 macro_rules! variadic {

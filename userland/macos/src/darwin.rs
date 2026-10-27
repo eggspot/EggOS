@@ -289,13 +289,20 @@ pub fn linux_dirent(bytes: &[u8]) -> Option<(u64, u64, u8, &[u8], usize)> {
     Some((inode, offset, kind, &name[..end], record))
 }
 
-/// A Darwin symbol name without the variant suffix that picks a newer ABI of the same
-/// function (`$INODE64`, `$UNIX2003`, `$DARWIN_EXTSN`, `$NOCANCEL`, `$1050`): the layer
-/// implements only those ABIs, so both names reach the same function.
-pub fn base_symbol(name: &[u8]) -> &[u8] {
+/// The name of the layer's function a Darwin import binds to: the import's own name without
+/// the variant suffix that picks a newer ABI of the same function (`$INODE64`, `$UNIX2003`,
+/// `$DARWIN_EXTSN`, `$NOCANCEL`, `$1050`), since the layer implements only those ABIs. `None`
+/// on x86_64 for the unsuffixed `stat`, `lstat`, `fstat` and `readdir`, which there are the old
+/// 32-bit-inode ABI with a smaller `struct stat` and `struct dirent` than the layer writes.
+pub fn bound_symbol(name: &[u8], x86_64: bool) -> Option<&[u8]> {
+    if x86_64 && OLD_INODE_FUNCTIONS.contains(&name) {
+        return None;
+    }
     let end = name.iter().position(|&b| b == b'$').unwrap_or(name.len());
-    &name[..end]
+    Some(&name[..end])
 }
+
+const OLD_INODE_FUNCTIONS: [&[u8]; 4] = [b"_stat", b"_lstat", b"_fstat", b"_readdir"];
 
 #[cfg(test)]
 mod tests {
@@ -429,8 +436,26 @@ mod tests {
 
     #[test]
     fn symbol_variants_reach_the_same_function() {
-        assert_eq!(base_symbol(b"_stat$INODE64"), b"_stat");
-        assert_eq!(base_symbol(b"_fputs$UNIX2003"), b"_fputs");
-        assert_eq!(base_symbol(b"_printf"), b"_printf");
+        for x86_64 in [false, true] {
+            assert_eq!(bound_symbol(b"_stat$INODE64", x86_64), Some(&b"_stat"[..]));
+            assert_eq!(
+                bound_symbol(b"_fputs$UNIX2003", x86_64),
+                Some(&b"_fputs"[..])
+            );
+            assert_eq!(bound_symbol(b"_printf", x86_64), Some(&b"_printf"[..]));
+        }
+    }
+
+    #[test]
+    fn x86_64_s_old_inode_functions_are_not_bound() {
+        for name in [&b"_stat"[..], b"_lstat", b"_fstat", b"_readdir"] {
+            assert_eq!(bound_symbol(name, true), None);
+            assert_eq!(bound_symbol(name, false), Some(name));
+        }
+        assert_eq!(
+            bound_symbol(b"_readdir$INODE64", true),
+            Some(&b"_readdir"[..])
+        );
+        assert_eq!(bound_symbol(b"_opendir", true), Some(&b"_opendir"[..]));
     }
 }

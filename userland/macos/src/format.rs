@@ -9,6 +9,11 @@ pub trait Arguments {
     fn integer(&mut self) -> u64;
     /// The next floating-point argument.
     fn double(&mut self) -> f64;
+    /// The next `long double` argument (`%Lf`), as the nearest double; a `long double` is a
+    /// double on arm64.
+    fn long_double(&mut self) -> f64 {
+        self.double()
+    }
 }
 
 /// Where the formatted bytes go.
@@ -87,6 +92,7 @@ struct Spec {
     width: usize,
     precision: Option<usize>,
     length: Length,
+    long_double: bool,
     conversion: u8,
 }
 
@@ -103,6 +109,7 @@ impl Spec {
             width: 0,
             precision: None,
             length: Length::Int,
+            long_double: false,
             conversion: 0,
         };
         while let Some(&flag) = format.get(at) {
@@ -138,6 +145,7 @@ impl Spec {
             }
         }
         while let Some(&modifier) = format.get(at) {
+            spec.long_double |= modifier == b'L';
             spec.length = match (modifier, spec.length) {
                 (b'h', Length::Short) => Length::Char,
                 (b'h', _) => Length::Short,
@@ -221,7 +229,11 @@ impl Spec {
                 self.pad(text, out);
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
-                let value = arguments.double();
+                let value = if self.long_double {
+                    arguments.long_double()
+                } else {
+                    arguments.double()
+                };
                 let mut buffer = [0u8; 400];
                 let (sign, text) = self.float(value, &mut buffer);
                 self.number(sign, b"", text, value.is_finite(), out);
@@ -376,6 +388,36 @@ impl Spec {
 }
 
 const MAX_FLOAT_PRECISION: usize = 40;
+
+/// The double nearest to the x87 80-bit extended value with the 64-bit `significand` (its
+/// integer bit explicit) and the 16-bit `sign_exponent` (sign, then a bias of 16383).
+#[cfg(any(test, target_arch = "x86_64"))]
+pub fn extended_to_double(significand: u64, sign_exponent: u16) -> f64 {
+    let negative = sign_exponent & 0x8000 != 0;
+    let exponent = i32::from(sign_exponent & 0x7fff);
+    let magnitude = if exponent == 0x7fff {
+        if significand << 1 == 0 {
+            f64::INFINITY
+        } else {
+            f64::NAN
+        }
+    } else {
+        let mut value = significand as f64;
+        let mut scale = exponent - 16383 - 63;
+        while scale > 0 && value.is_finite() {
+            let step = scale.min(1000);
+            value *= f64::from_bits(((1023 + step) as u64) << 52);
+            scale -= step;
+        }
+        while scale < 0 && value != 0.0 {
+            let step = scale.max(-1000);
+            value *= f64::from_bits(((1023 + step) as u64) << 52);
+            scale -= step;
+        }
+        value
+    };
+    if negative { -magnitude } else { magnitude }
+}
 
 struct Buffer<'b> {
     bytes: &'b mut [u8; 400],
@@ -741,6 +783,38 @@ mod tests {
             ),
             "inf -INF 0.000000e+00 1.0e+01 100000000000000000000.000000"
         );
+    }
+
+    #[test]
+    fn x87_extended_values_become_the_nearest_double() {
+        assert_eq!(extended_to_double(1 << 63, 16383), 1.0);
+        assert_eq!(
+            extended_to_double(0xc000_0000_0000_0000, 16384 | 0x8000),
+            -3.0
+        );
+        assert_eq!(extended_to_double(0xa000_0000_0000_0000, 16383 - 1), 0.625);
+        assert_eq!(extended_to_double(0, 0), 0.0);
+        assert!(extended_to_double(0, 0x8000).is_sign_negative());
+        assert_eq!(extended_to_double(1 << 63, 0x7fff), f64::INFINITY);
+        assert!(extended_to_double(3 << 62, 0x7fff).is_nan());
+        assert_eq!(extended_to_double(1 << 63, 0x7ffe), f64::INFINITY);
+        assert_eq!(extended_to_double(1 << 63, 1), 0.0);
+        let mut out = Vec::new();
+        struct LongDouble;
+        impl Arguments for LongDouble {
+            fn integer(&mut self) -> u64 {
+                0
+            }
+            fn double(&mut self) -> f64 {
+                1.0
+            }
+            fn long_double(&mut self) -> f64 {
+                2.5
+            }
+        }
+        // SAFETY: the format has no `%s`.
+        unsafe { format(b"%.1Lf %.1f", &mut LongDouble, &mut out) };
+        assert_eq!(out, b"2.5 1.0");
     }
 
     #[test]

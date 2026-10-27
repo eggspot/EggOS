@@ -133,8 +133,8 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
         None if program.dyld_info => {
             return Err(Failure::Invalid(InvalidMachO(
-                "uses LC_DYLD_INFO fixups (built for macOS 12 or earlier), which EggOS does \
-                 not read yet",
+                "uses LC_DYLD_INFO fixups instead of chained ones (built for an older macOS: \
+                 before 12 on arm64, before 13 on x86_64), which EggOS does not read yet",
             )));
         }
         None => None,
@@ -166,7 +166,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let arguments = argument_vector(&startup)?;
     let environment = environment_vector(&startup)?;
     let apple = apple_vector(path.to_bytes())?;
-    let slide = base as isize - program.base_address() as isize;
+    let slide = (base as isize).wrapping_sub(program.base_address() as isize);
     // SAFETY: the program has not started; these record its image, arguments and streams.
     unsafe { libsystem::set_image(base, slide) };
     // SAFETY: as above; the arrays are never freed.
