@@ -6490,8 +6490,11 @@ the license, by an explicit instruction recorded here.
 - **Binding.** Each import is looked up by its symbol name in the layer's table (a `match` on
   byte strings, which compiles to compares), with Darwin's ABI-variant suffixes (`$INODE64`,
   `$UNIX2003`, `$DARWIN_EXTSN`, `$NOCANCEL`) stripped, since the layer implements only the
-  current ABI of each function. Functions and variables (`__stdoutp`, `__stack_chk_guard`,
-  `environ`) both bind. A missing weak import binds to 0; a missing strong one to one of 256
+  current ABI of each function. On x86_64 the unsuffixed `stat`, `lstat`, `fstat` and
+  `readdir` are the old 32-bit-inode ABI, whose `struct stat` and `struct dirent` are smaller
+  than the layouts the layer writes, so those four names bind as missing functions there
+  instead of overflowing the caller's buffer. Functions and variables (`__stdoutp`,
+  `__stack_chk_guard`, `environ`) both bind. A missing weak import binds to 0; a missing strong one to one of 256
   stubs that prints `eggos-macos: unimplemented libSystem function <name>` and exits with
   127 when called, so a program whose unused imports are missing still runs (a program with
   more than 256 missing imports is refused). There is no lazy binding: with chained fixups
@@ -6509,6 +6512,11 @@ the license, by an explicit instruction recorded here.
   kernel's argument list without the layer's two), `envp` and `apple[]` holding
   `executable_path=<path>`; its return value goes to `exit`, which runs the `atexit` handlers
   and flushes stdio, as libSystem's start-up does. The layer's own stack is the program's.
+- **stdio buffers.** A stream's buffer records its owner (`StreamBuffer`): a block of the
+  layer's heap (`fopen`, `fdopen`), freed at `fclose` or when `setvbuf` replaces it, or memory
+  the stream only borrows (the standard streams' static buffers, a buffer the program hands
+  `setvbuf`), which it never frees. `setvbuf` flushes first and drops buffered input, so reads
+  never run past the new buffer's size.
 - **The calling conventions.** Non-variadic functions are plain `extern "C"` functions: on
   x86_64 Darwin's convention is System V's; on arm64 Apple's differences from AAPCS64 that
   touch a callee (the caller extends small arguments; arguments past the eighth packed on the
@@ -6550,7 +6558,19 @@ the license, by an explicit instruction recorded here.
   failed, was cancelled or skipped, and after 10 minutes) and downloads it. Research compared a
   `needs:` on the macOS job (adds its queue and run time, 1 to 3 minutes, to every run) and
   making the existing `hosts` job a prerequisite (worse: it runs after check by design); the
-  wait adds nothing to the wall-clock time when the macOS job finishes first.
+  wait adds nothing to the wall-clock time when the macOS job finishes first. The 10-minute
+  limit starts when the wait does, about six minutes into the check job, so a macOS job that
+  waits in GitHub's queue for more than about 16 minutes fails the check job; re-running the
+  failed jobs then finds the artifact.
+- **When CI builds them.** Following the CI rules (macOS jobs only on pull requests into
+  `main`, nothing a change cannot affect), the `macos-programs` job runs only on pull requests,
+  and only builds when the pull request changes more than documentation (the check job's own
+  test, repeated in the job; a job whose steps are skipped still passes). The check job waits
+  for the artifact only on pull requests, and its docs-only runs skip every step anyway. On a
+  push to `main` its QEMU step sets `EGGOS_MACOS_PROGRAMS` to the empty string, which
+  `cargo xtask qemu` takes as "this run built no programs" and skips the macOS programs test
+  with a message; an unset variable in CI still fails the test, so a run that should have the
+  programs cannot pass without them.
 - **Verified where.** The parser, fixups, fat selection, `printf`'s formatter, Darwin's
   translations, the xtask helpers and the session's verdict: host tests on every host. The
   programs: on the development Mac (QEMU 10.2.2) on aarch64 and x86_64, with riscv64's
@@ -6560,13 +6580,15 @@ the license, by an explicit instruction recorded here.
   let fold away there (the layer's lookup and permission check, the interpreter's argument
   list) is live: `release_image_bytes` +1,080 bytes (700,592 to 701,672), the price of the hook
   that D118 paid on x86_64 (+752); the two entries themselves are a 4-byte prefix and the fat
-  check that keeps Java class files out. x86_64's image shrank by 384 bytes (603,904 to
-  603,520) with the table's `Signature`, and riscv64's is unchanged. `linux_exec_load` is
+  check that keeps Java class files out. x86_64's image grows by 88 bytes (603,904 to 603,992:
+  the `Signature` match and the two entries next to Windows'), and riscv64's is unchanged.
+  These are CI's numbers (its Linux build); the development Mac's x86_64 build measures
+  different image sizes for the same commit, so image-size baseline lines come from CI. `linux_exec_load` is
   identical to `main`'s on all three, `linux_execve` too on aarch64 and riscv64 and 20 ns
   (0.05%) slower on x86_64, which now compares three entries; system-call round trips are
   unchanged. Linux keeps its `binfmt_misc` table in every kernel, and XNU and NT build their
   executable-format dispatch into theirs. The aarch64 and x86_64 `release_image_bytes` lines
-  are updated (x86_64's tightened). CI gains a parallel macOS job (about 1 to 2 minutes, not on
+  are updated. CI gains a parallel macOS job (about 1 to 2 minutes, not on
   the check job's path) and the check job one boot per architecture (about 15 seconds each)
   and the toolchain step the two Apple targets.
 - **Not yet.** Programs on Rust's standard library (it imports about 80 functions: thread-local
@@ -6574,8 +6596,10 @@ the license, by an explicit instruction recorded here.
   `sigaltstack`, `mmap`, libdispatch semaphores, the unwinder), threads, signal handlers,
   `mmap`, `fork`/`exec`/`posix_spawn`, pipes, `scanf`, locales, Objective-C and Swift runtimes,
   libc++, frameworks (CoreFoundation, Foundation, Cocoa), `dlopen`, the dyld shared cache,
-  other dylibs, imports an executable makes from itself (its export trie), Mach ports and calls, programs without chained fixups (`LC_DYLD_INFO`
-  opcodes, macOS 12 and earlier), `LC_UNIXTHREAD`, 32-bit, arm64e and encrypted programs,
+  other dylibs, imports an executable makes from itself (its export trie), Mach ports and
+  calls, programs without chained fixups (`LC_DYLD_INFO` opcodes: arm64 programs built for
+  macOS 11, x86_64 ones built for macOS 12 or earlier), x86_64's old 32-bit-inode `stat` and
+  `readdir`, `scanf`, `LC_UNIXTHREAD`, 32-bit, arm64e and encrypted programs,
   `.app` bundles and `.dmg`/`.pkg` installers, x86_64 programs on aarch64 through
   ahead-of-time translation. A benchmark of program start and of the hot libSystem calls
   against macOS on the same hardware needs a way to run a macOS program inside the benchmark

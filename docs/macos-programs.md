@@ -40,9 +40,12 @@ deployment target of macOS 13 or later, which gives chained fixups:
 
 ```
 MACOSX_DEPLOYMENT_TARGET=13.0 clang -O2 -o hello hello.c
-MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --target aarch64-apple-darwin
 lipo -create -output hello-universal hello-arm64 hello-x86_64      # a fat file, if wanted
+cargo xtask macos-programs     # builds tests/macos-console for both CPUs, on a Mac
 ```
+
+Rust programs on the standard library do not run yet (see below); a `no_std` one that calls
+libSystem's C functions, as `tests/macos-console` does, does.
 
 `tests/macos-console` is such a program: `#![no_std]` Rust that defines `main` and calls
 libSystem's C functions, built for `aarch64-apple-darwin` and `x86_64-apple-darwin`
@@ -66,7 +69,7 @@ refusals of a program that links `libz` and of the other CPU's program.
 | Strings and memory | `strlen`, `strnlen`, `strcmp`, `strncmp`, `strcasecmp`, `strncasecmp`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strlcpy`, `strchr`, `strrchr`, `strstr`, `strdup`, `strndup`, `strerror`, `memchr`, `memcmp`, `bcmp`, `memcpy`, `memmove`, `memset`, `bzero`, and the `_FORTIFY_SOURCE` checks `__memcpy_chk`, `__memmove_chk`, `__memset_chk`, `__strcpy_chk`, `__strncpy_chk`, `__strcat_chk`, `__sprintf_chk`, `__snprintf_chk`, `__vsnprintf_chk` |
 | Heap | `malloc`, `calloc`, `realloc`, `reallocf`, `free`, `malloc_size`, `posix_memalign`, `aligned_alloc`, `valloc` |
 | Numbers | `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul`, `strtoull`, `abs`, `labs`, `llabs`, `qsort`, `bsearch`, `rand`, `srand`, `arc4random`, `arc4random_buf`, `arc4random_uniform` |
-| Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (and their `$INODE64` names), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir`, `closedir`, `dirfd` |
+| Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (on x86_64 only their `$INODE64` names: the unsuffixed ones are the old 32-bit-inode ABI, and calling them stops with status 127), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir` (`readdir$INODE64` on x86_64, likewise), `closedir`, `dirfd` |
 | Process and environment | `exit`, `_exit`, `_Exit`, `abort`, `atexit`, `raise`, `kill`, `getpid`, `getppid`, `getuid`, `geteuid`, `getenv`, `setenv`, `putenv`, `unsetenv`, `environ`, `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron`, `_NSGetProgname`, `__error` (`errno`), `__stack_chk_guard`, `__stack_chk_fail`, `getpagesize`, `sysconf` (page size, CPUs) |
 | Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep` |
 | dyld | `_dyld_image_count`, `_dyld_get_image_header`, `_dyld_get_image_vmaddr_slide` |
@@ -74,7 +77,8 @@ refusals of a program that links `libz` and of the other CPU's program.
 Darwin's numbers become Linux's at the boundary: `open`'s flags, error numbers (`EAGAIN` is
 35, `ENOSYS` 78), clocks (`CLOCK_MONOTONIC` is 6), signals, `struct stat` and `struct dirent`.
 `printf` supports the flags `- + space # 0`, `*` widths and precisions, the length modifiers
-`hh h l ll q j z t L` and the conversions `d i u o x X c s p f F e E g G %`; `%n` writes nothing.
+`hh h l ll q j z t L` (`%Lf`'s 80-bit x86_64 `long double` printed through the nearest
+double) and the conversions `d i u o x X c s p f F e E g G %`; `%n` writes nothing.
 Floating-point output is rounded from the double's value scaled in double precision, so in
 rare cases (a value whose decimal expansion sits next to a rounding boundary, or one above
 about 10^18) its last digit differs from a Mac's, which prints the exact decimal value.
@@ -100,8 +104,8 @@ runs: `macos: /bin/x: needs /usr/lib/libz.1.dylib, which EggOS does not provide 
   `dlopen`, no dyld shared cache; a program that links any library other than libSystem is
   refused. Weak libraries are allowed and their imports are missing. Imports a program makes
   from itself (C++'s weak definitions, through its export trie) are missing too.
-- **Older programs**: files without chained fixups (built for macOS 12 or earlier, which use
-  `LC_DYLD_INFO` opcodes), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e
+- **Older programs**: files without chained fixups, which use `LC_DYLD_INFO` opcodes (arm64
+  programs built for macOS 11, x86_64 ones built for macOS 12 or earlier), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e
   programs (pointer authentication) and encrypted ones are refused with a message.
 - **Mach**: no ports, no messages, no `task_*` or `vm_*` calls; `mach_absolute_time` and
   `mach_timebase_info` only.
