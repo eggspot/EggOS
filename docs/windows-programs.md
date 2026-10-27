@@ -98,9 +98,10 @@ the root) or `\\?\`; paths the layer gives back (`GetCurrentDirectoryW`, `GetFul
 `GetModuleFileNameW`) are in Windows' form, with `C:\` for `/`. Names are case-sensitive, unlike
 on Windows: `C:\ETC\HOSTNAME` is not `/etc/hostname` (wildcard matching ignores ASCII case).
 
-On aarch64 the layer follows the ARM64 Windows ABI: the program's TEB is in `x18` (the layer
-keeps it in `tpidr_el0` too and reloads `x18` on every return to the program and every call
-into it, since its own code is built for Linux, where `x18` is an ordinary register), the
+On aarch64 the layer follows the ARM64 Windows ABI: the program's TEB is in `x18` (the layer's
+own code is built for Linux, where `x18` is an ordinary register, so each Win32 function saves
+and restores the program's `x18`, and the layer loads it from its own copy in `tpidr_el0`
+before every call into the program), the
 arguments follow the Arm64 procedure call standard, `__chkstk` takes the frame size in 16-byte
 units in `x15`, and the TEB and PEB have the same layout as on x64.
 

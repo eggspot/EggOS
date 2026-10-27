@@ -28,13 +28,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   dynamic linking, no `/proc`, `/dev` or `/tmp`, no pipes (so a program cannot start another
   through `std::process::Command`, `posix_spawn`, `system` or `popen`), no `mmap` of files, no
   copy-on-write `fork` (memory is copied at once, D104).
-- **Windows: console programs on x86_64 only, parts 1 and 2a.** Windows console programs that
-  use the kernel32, ntdll, shell32 and user32 functions the Windows layer provides run natively
-  on x86_64, added with `cargo xtask image --add` ([Windows programs](windows-programs.md),
-  D118, D121): threads, waits, locks, directory listing and UTF-16 strings work. Programs on a
-  C/C++ runtime or Rust's std, other processes, other DLLs, structured exception handling, GUI
-  programs, ARM64 programs and other architectures do not run yet; names are case-sensitive
-  and local time is UTC.
+- **Windows: console programs on x86_64 and aarch64 only, parts 1, 2a and 2b.** Windows
+  console programs that use the kernel32, ntdll, shell32 and user32 functions the Windows layer
+  provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
+  `cargo xtask image --add` ([Windows programs](windows-programs.md), D118, D121, D124):
+  threads, waits, locks, directory listing and UTF-16 strings work. Programs on a C/C++
+  runtime or Rust's std, other processes, other DLLs, structured exception handling, GUI
+  programs, x64 programs on Arm (and ARM64 programs on x86_64) and riscv64 do not run yet;
+  names are case-sensitive and local time is UTC.
 - **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
