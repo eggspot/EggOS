@@ -560,9 +560,13 @@ fn library() -> Result<(), &'static str> {
         if tick_count() == 0 && GetTickCount64() == 0 {
             return Err("GetTickCount64 through GetProcAddress gave 0");
         }
-        if LoadLibraryA(c"gdi32.dll".as_ptr().cast()) != 0 || GetLastError() != ERROR_MOD_NOT_FOUND
+        let gdi32 = LoadLibraryA(c"gdi32.dll".as_ptr().cast());
+        if gdi32 == 0 || GetProcAddress(gdi32, c"Ellipse".as_ptr().cast()).is_null() {
+            return Err("gdi32's Ellipse was not found");
+        }
+        if LoadLibraryA(c"ws2_32.dll".as_ptr().cast()) != 0 || GetLastError() != ERROR_MOD_NOT_FOUND
         {
-            return Err("LoadLibraryA(gdi32) did not fail with ERROR_MOD_NOT_FOUND");
+            return Err("LoadLibraryA(ws2_32) did not fail with ERROR_MOD_NOT_FOUND");
         }
     }
     Ok(())
