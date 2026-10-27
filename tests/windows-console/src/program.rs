@@ -548,9 +548,9 @@ fn library() -> Result<(), &'static str> {
         if tick_count() == 0 && GetTickCount64() == 0 {
             return Err("GetTickCount64 through GetProcAddress gave 0");
         }
-        if LoadLibraryA(c"user32.dll".as_ptr().cast()) != 0 || GetLastError() != ERROR_MOD_NOT_FOUND
+        if LoadLibraryA(c"gdi32.dll".as_ptr().cast()) != 0 || GetLastError() != ERROR_MOD_NOT_FOUND
         {
-            return Err("LoadLibraryA(user32) did not fail with ERROR_MOD_NOT_FOUND");
+            return Err("LoadLibraryA(gdi32) did not fail with ERROR_MOD_NOT_FOUND");
         }
     }
     Ok(())

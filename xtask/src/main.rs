@@ -591,10 +591,15 @@ const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 
 const WINDOWS_CONSOLE_PACKAGE: &str = "eggos-windows-console";
 
-const WINDOWS_CONSOLE_PROGRAMS: [(&str, &str); 2] = [
+const WINDOWS_CONSOLE_PROGRAMS: [(&str, &str); 3] = [
     ("windows-console", "bin/windows-console.exe"),
     ("windows-unsupported", "bin/windows-unsupported.exe"),
+    ("windows-tools", "bin/windows-tools.exe"),
 ];
+
+const WINDOWS_TOOLS_TEXT_PATH: &str = "usr/share/windows-tools/über.txt";
+
+const WINDOWS_TOOLS_TEXT: &str = "grüße aus EggOS 🥚\nzweite Zeile\n";
 
 struct WindowsLayer {
     host: String,
@@ -632,10 +637,16 @@ fn build_windows_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf,
         });
     }
     let layer = windows_layer_for(arch, &added)?;
-    let mut extra = vec![(
-        "etc/eggos/init.conf",
-        initramfs::Content::Text(SHELL_TEST_CONFIG),
-    )];
+    let mut extra = vec![
+        (
+            "etc/eggos/init.conf",
+            initramfs::Content::Text(SHELL_TEST_CONFIG),
+        ),
+        (
+            WINDOWS_TOOLS_TEXT_PATH,
+            initramfs::Content::Text(WINDOWS_TOOLS_TEXT),
+        ),
+    ];
     extra.extend(image::members(&added));
     extra.extend(layer.iter().map(|layer| layer.member()));
     let initramfs = release_initramfs(
