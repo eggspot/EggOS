@@ -12,7 +12,10 @@
 //! through [`Contents`]. Every table is fixed ([`protocol::MAX_WINDOWS`]); nothing allocates
 //! after [`Desktop::new`].
 
+mod catalogue;
 mod events;
+mod icons;
+pub mod layout;
 mod management;
 mod paint;
 mod pointer;
@@ -84,6 +87,19 @@ pub mod colour {
     pub const DOCK: u32 = 0x001c_2430;
     pub const BUTTON_INACTIVE: u32 = 0x004a_5466;
     pub const WINDOW_BACKGROUND: u32 = 0x0012_161d;
+    pub const FIELD: u32 = 0x000b_0e13;
+    pub const BUTTON_BORDER: u32 = 0x003a_4454;
+    pub const ICON_TILE: u32 = 0x0026_303f;
+    pub const ICON_TILE_BORDER: u32 = 0x003a_4454;
+    pub const ICON_PROMPT: u32 = 0x005f_b865;
+    pub const ICON_FOLDER: u32 = 0x00e2_b341;
+    pub const ICON_FOLDER_BACK: u32 = 0x00b8_8a24;
+    pub const ICON_GEAR: u32 = 0x008a_94a6;
+    pub const ICON_GEAR_HOLE: u32 = 0x001f_2630;
+    pub const ICON_WINDOWS: u32 = 0x004f_8fe0;
+    pub const ICON_MAC: u32 = 0x00c9_d1db;
+    pub const ICON_LINUX: u32 = 0x00e2_b341;
+    pub const ICON_DARK: u32 = 0x000b_0e13;
 }
 
 /// Height of the top bar, the 1 px edge line included.

@@ -242,9 +242,8 @@ pub fn write(manifest: &Manifest<'_>, out: &mut [u8]) -> Result<usize, Refused> 
         return Err(Refused::InvalidRun);
     }
     let architecture = manifest.architecture.unwrap_or("");
-    let valid_value = |value: &str, capacity: usize| {
-        value.len() <= capacity && is_printable(value.as_bytes())
-    };
+    let valid_value =
+        |value: &str, capacity: usize| value.len() <= capacity && is_printable(value.as_bytes());
     if !valid_value(architecture, ARCHITECTURE_CAPACITY)
         || !valid_value(manifest.synonyms, SYNONYMS_CAPACITY)
     {
@@ -305,7 +304,12 @@ mod tests {
             b"",
             b"\xff\xfe\x00garbage",
         ] {
-            assert_eq!(parse(file, b"Hello"), None, "{:?}", String::from_utf8_lossy(file));
+            assert_eq!(
+                parse(file, b"Hello"),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(file)
+            );
         }
     }
 
@@ -386,11 +390,23 @@ mod tests {
         let mut out = [0u8; LARGEST];
         let refused = |manifest: Manifest<'_>, out: &mut [u8]| write(&manifest, out);
         assert_eq!(
-            refused(Manifest { name: "a/b", ..good }, &mut out),
+            refused(
+                Manifest {
+                    name: "a/b",
+                    ..good
+                },
+                &mut out
+            ),
             Err(Refused::InvalidName)
         );
         assert_eq!(
-            refused(Manifest { run: "../x", ..good }, &mut out),
+            refused(
+                Manifest {
+                    run: "../x",
+                    ..good
+                },
+                &mut out
+            ),
             Err(Refused::InvalidRun)
         );
         assert_eq!(
@@ -403,10 +419,7 @@ mod tests {
             ),
             Err(Refused::InvalidValue)
         );
-        assert_eq!(
-            refused(good, &mut [0u8; 8]),
-            Err(Refused::TooLarge)
-        );
+        assert_eq!(refused(good, &mut [0u8; 8]), Err(Refused::TooLarge));
     }
 
     #[test]
