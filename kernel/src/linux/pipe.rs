@@ -288,12 +288,8 @@ fn read_or_wait<P: Platform>(
         return ControlFlow::Continue(Some(Ok(0)));
     }
     loop {
-        {
-            let ring = end.pipe.ring.lock();
-            if ring.length > 0 || ring.writers == 0 {
-                drop(ring);
-                return ControlFlow::Continue(Some(take_into(process, end, buffers, count)));
-            }
+        if let Some(result) = take_into(process, end, buffers, count) {
+            return ControlFlow::Continue(Some(result));
         }
         if file.is_nonblocking() {
             return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
@@ -308,12 +304,30 @@ fn read_or_wait<P: Platform>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Taken {
+    Bytes(usize),
+    Empty,
+    Ended,
+}
+
+impl PipeEnd {
+    fn take(&self, buffer: &mut [u8]) -> Taken {
+        let mut ring = self.pipe.ring.lock();
+        match ring.take(buffer) {
+            0 if ring.writers == 0 => Taken::Ended,
+            0 => Taken::Empty,
+            taken => Taken::Bytes(taken),
+        }
+    }
+}
+
 fn take_into<P: Platform>(
     process: &Process<P>,
     end: &PipeEnd,
     buffers: &Iovecs,
     count: u64,
-) -> Result<u64, Errno> {
+) -> Option<Result<u64, Errno>> {
     let mut chunk = [0u8; READ_CHUNK];
     let mut copied = 0;
     for entry in buffers.entries() {
@@ -322,19 +336,20 @@ fn take_into<P: Platform>(
         let mut done = 0;
         while done < length {
             let wanted = (length - done).min(READ_CHUNK as u64) as usize;
-            let taken = end.pipe.ring.lock().take(&mut chunk[..wanted]);
-            if taken == 0 {
-                return Ok(copied);
-            }
+            let taken = match end.take(&mut chunk[..wanted]) {
+                Taken::Bytes(taken) => taken,
+                Taken::Empty if copied == 0 => return None,
+                Taken::Empty | Taken::Ended => return Some(Ok(copied)),
+            };
             (end.pipe.wake)();
             if process
                 .write_user_memory(base + done, &chunk[..taken])
                 .is_err()
             {
-                return match copied {
+                return Some(match copied {
                     0 => Err(Errno::EFAULT),
                     _ => Ok(copied),
-                };
+                });
             }
             done += taken as u64;
             copied += taken as u64;
@@ -343,7 +358,7 @@ fn take_into<P: Platform>(
             break;
         }
     }
-    Ok(copied)
+    Some(Ok(copied))
 }
 
 /// `write` or `writev` of `buffers` to pipe end `end` of `file`, which the caller checked is
@@ -486,6 +501,29 @@ mod tests {
         let mut out = alloc::vec![0; CAPACITY + 5];
         assert_eq!(ring.take(&mut out), CAPACITY);
         assert_eq!(ring.take(&mut out), 0);
+    }
+
+    #[test]
+    fn an_empty_pipe_with_a_writer_says_wait_and_one_without_says_its_end() {
+        fn no_wake() {}
+        let pipe = Pipe::new(no_wake).unwrap();
+        let reading = PipeEnd {
+            pipe: Arc::clone(&pipe),
+            writes: false,
+        };
+        let writing = PipeEnd {
+            pipe: Arc::clone(&pipe),
+            writes: true,
+        };
+        let mut buffer = [0u8; 8];
+        assert_eq!(reading.take(&mut buffer), Taken::Empty);
+        pipe.ring.lock().push(b"abc");
+        assert_eq!(reading.take(&mut buffer), Taken::Bytes(3));
+        assert_eq!(reading.take(&mut buffer), Taken::Empty);
+        pipe.ring.lock().push(b"z");
+        drop(writing);
+        assert_eq!(reading.take(&mut buffer), Taken::Bytes(1));
+        assert_eq!(reading.take(&mut buffer), Taken::Ended);
     }
 
     #[test]

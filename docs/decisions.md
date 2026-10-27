@@ -6956,10 +6956,17 @@ the license, by an explicit instruction recorded here.
   none is; a write of at most `PIPE_BUF` (4096) bytes goes in whole or waits for room, a longer
   one goes in as room appears; with no reader the write fails with `EPIPE` and the kernel sends
   `SIGPIPE` to the writing thread. `O_NONBLOCK` turns each wait into `EAGAIN` or what was done.
-  Waits are interruptible as the console's are (restarted after an `SA_RESTART` handler).
+  Waits are interruptible as the console's are (restarted after an `SA_RESTART` handler). A
+  reader that finds the bytes it was woken for taken by another reader waits again rather than
+  returning 0, which only the last writer's close gives (review fix).
   `poll` reports `POLLIN`, `POLLOUT` (room for `PIPE_BUF`), `POLLHUP` and `POLLERR`; `fstat`
   a FIFO on the anonymous device 0:12; `lseek` and `pread64` `ESPIPE`; `FIONREAD` the bytes
   waiting. User memory is copied through a buffer on the kernel stack, never under the lock.
+  - **Readiness under the bucket lock.** A wait's readiness check runs with the futex
+    bucket's lock held, so it must never drop an open file description (a pipe end's last
+    drop wakes the same key's bucket: a hang). `poll`'s check reads each pipe end through the
+    descriptor table under its lock, cloning nothing (a leaf lock under a leaf lock), and the
+    pipe's own checks look only at the ring (review fix).
   - **One wait key for pipes and the console.** Pipe waiters wait on the console's input key
     and are woken with its waiters, so `poll` on pipes and the console is one wait, and a
     process's end, which already wakes the console's waiters, wakes them too. The price is
@@ -6989,12 +6996,16 @@ the license, by an explicit instruction recorded here.
 - **tmpfs** (`vfs::tmpfs`, architecture-independent). Directories and regular files in memory,
   mounted on `/tmp` (`1777`) and `/home` (`755`). One leaf lock per file system, held only
   while its own memory is read or changed. File contents are pages of 4 KiB taken as they are
-  written (sparse files cost nothing for their holes) so no file needs a contiguous block, and
-  the heap's 4 MiB block limit is no file's limit. The memory limit is one budget shared by
+  written, found through a per-file index of 16 bytes per page, so no file needs a contiguous
+  block and the heap's 4 MiB block limit is no file's limit; a sparse file's holes cost only
+  their index entries. The memory limit is one budget shared by
   `/tmp` and `/home`, half of the memory the frame allocator had once the kernel's tables were
-  built (Linux's tmpfs default, per mount), charged for every page and for each node (128
-  bytes and its name); a write past it fails with `ENOSPC` (after what fitted), and a removed
-  file's pages go back at once. A node's number holds its slot, its kind and the slot's
+  built (Linux's tmpfs default, per mount), charged for every page, for every index entry the
+  index holds room for, and for each node (128 bytes and its name); a write past it fails with
+  `ENOSPC` (after what fitted) and gives back the index it grew for what it could not write,
+  truncation gives back the pages and index past the new end, and a removed file's pages and
+  index go back at once. A write far past a file's end (`pwrite` at 1 GiB) thus fails with
+  `ENOSPC` before it can take the kernel heap's memory for its index (review fix). A node's number holds its slot, its kind and the slot's
   generation, which changes when the slot's node is removed, so a number kept from before (an
   open file, a working directory) names nothing instead of whatever reuses the slot: no
   reference counts and no use-after-free. The price, a documented difference from Linux: a

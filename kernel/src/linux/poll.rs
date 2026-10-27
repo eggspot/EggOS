@@ -417,13 +417,16 @@ fn sleep<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, deadline: 
 }
 
 fn any_pipe_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
+    let table = files.lock();
     entries.iter().any(|entry| {
         let (fd, requested) = pollfd(entry);
         fd >= 0
-            && files.file(fd as u64).is_ok_and(|file| match file.kind() {
-                FileKind::Pipe(end) => end.events(requested) != 0,
-                _ => false,
-            })
+            && table
+                .get(fd as u32)
+                .is_some_and(|descriptor| match descriptor.file.kind() {
+                    FileKind::Pipe(end) => end.events(requested) != 0,
+                    _ => false,
+                })
     })
 }
 
@@ -466,6 +469,36 @@ mod tests {
         assert_eq!(fill_in_events(&mut entries, &files, false), 3);
         let returned = entries.map(|entry| u16::from_ne_bytes([entry[6], entry[7]]));
         assert_eq!(returned, [0, event::NVAL, event::NVAL, 0, event::OUT]);
+    }
+
+    #[test]
+    fn pipe_readiness_is_read_under_the_table_s_lock_without_a_reference_to_drop() {
+        let files = Descriptors::with_console_streams();
+        let (reading, writing) =
+            super::super::pipe::new_pair::<crate::tests::TestPlatform>(0).unwrap();
+        let limit = 64;
+        let read_fd = files
+            .lock()
+            .open(Arc::clone(&reading), false, limit)
+            .unwrap();
+        let write_fd = files.lock().open(writing, false, limit).unwrap();
+        let entry = |fd: u32, events: u16| {
+            let mut entry = [0; POLLFD_SIZE];
+            entry[..4].copy_from_slice(&(fd as i32).to_ne_bytes());
+            entry[4..6].copy_from_slice(&events.to_ne_bytes());
+            entry
+        };
+        assert!(!any_pipe_ready(&[entry(read_fd, event::IN)], &files));
+        assert!(any_pipe_ready(&[entry(write_fd, event::OUT)], &files));
+        assert_eq!(Arc::strong_count(&reading), 2);
+        let closed = files.lock().remove(write_fd);
+        drop(closed);
+        assert!(any_pipe_ready(&[entry(read_fd, event::IN)], &files));
+        assert!(!any_pipe_ready(
+            &[entry(write_fd, event::OUT), entry(-1i32 as u32, 0)],
+            &files
+        ));
+        assert_eq!(Arc::strong_count(&reading), 2);
     }
 
     #[test]

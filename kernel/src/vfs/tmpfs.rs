@@ -23,6 +23,34 @@ const NODE_COST: usize = 128;
 
 type Page = Box<[u8]>;
 
+const INDEX_ENTRY_COST: usize = core::mem::size_of::<Option<Page>>();
+
+fn index_cost(pages: &Vec<Option<Page>>) -> usize {
+    pages.capacity() * INDEX_ENTRY_COST
+}
+
+fn settle_index(budget: &Budget, pages: &Vec<Option<Page>>, charged: usize) {
+    let cost = index_cost(pages);
+    if cost < charged {
+        budget.give_back(charged - cost);
+    }
+}
+
+fn grow_index(budget: &Budget, pages: &mut Vec<Option<Page>>, entries: usize) -> bool {
+    let charged = index_cost(pages);
+    if pages.try_reserve(entries - pages.len()).is_err() {
+        return false;
+    }
+    let grown = index_cost(pages) - charged;
+    if budget.take(grown).is_err() {
+        pages.shrink_to_fit();
+        settle_index(budget, pages, charged);
+        return false;
+    }
+    pages.resize_with(entries, || None);
+    true
+}
+
 fn zeroed_page() -> Option<Page> {
     let mut page = Vec::new();
     page.try_reserve_exact(PAGE_SIZE).ok()?;
@@ -208,10 +236,12 @@ impl State {
         let entry = &mut self.slots[slot as usize];
         if let Some(inode) = entry.inode.take() {
             let pages = match &inode.contents {
-                Contents::File { pages, .. } => pages.iter().flatten().count(),
+                Contents::File { pages, .. } => {
+                    pages.iter().flatten().count() * PAGE_SIZE + index_cost(pages)
+                }
                 Contents::Directory(_) => 0,
             };
-            budget.give_back(pages * PAGE_SIZE + NODE_COST + inode.name.len());
+            budget.give_back(pages + NODE_COST + inode.name.len());
         }
         entry.generation = entry.generation.wrapping_add(1);
         if self.free.try_reserve(1).is_ok() {
@@ -375,13 +405,11 @@ impl FileSystem for Tmpfs {
             .filter(|&end| end <= i64::MAX as u64)
             .ok_or(Refused::TooBig)?;
         let mut written = 0;
+        let index_before = pages.len();
         while written < bytes.len() {
             let (page, within, length) = page_range(offset + written as u64, bytes.len() - written);
-            if pages.len() <= page {
-                if pages.try_reserve(page + 1 - pages.len()).is_err() {
-                    break;
-                }
-                pages.resize_with(page + 1, || None);
+            if pages.len() <= page && !grow_index(self.budget, pages, page + 1) {
+                break;
             }
             if pages[page].is_none() {
                 if self.budget.take(PAGE_SIZE).is_err() {
@@ -400,10 +428,17 @@ impl FileSystem for Tmpfs {
             }
             written += length;
         }
+        let reached = offset + written as u64;
+        let needed = index_before.max((reached.max(*size) as usize).div_ceil(PAGE_SIZE));
+        if pages.len() > needed {
+            let charged = index_cost(pages);
+            pages.truncate(needed);
+            pages.shrink_to_fit();
+            settle_index(self.budget, pages, charged);
+        }
         if written == 0 && !bytes.is_empty() {
             return Err(Refused::NoSpace);
         }
-        let reached = offset + written as u64;
         if reached > *size {
             *size = reached;
         }
@@ -424,9 +459,11 @@ impl FileSystem for Tmpfs {
         let kept = (length as usize).div_ceil(PAGE_SIZE);
         if kept < pages.len() {
             let freed = pages[kept..].iter().flatten().count();
+            let charged = index_cost(pages);
             pages.truncate(kept);
             pages.shrink_to_fit();
             self.budget.give_back(freed * PAGE_SIZE);
+            settle_index(self.budget, pages, charged);
         }
         let within = (length % PAGE_SIZE as u64) as usize;
         if length < *size
@@ -643,6 +680,13 @@ mod tests {
         Box::leak(Box::new(Tmpfs::new(budget, (0, 30), 0o1777).unwrap()))
     }
 
+    fn index_charged(fs: &Tmpfs, node: u64) -> usize {
+        match &fs.state.lock().inode(node).unwrap().contents {
+            Contents::File { pages, .. } => index_cost(pages),
+            Contents::Directory(_) => 0,
+        }
+    }
+
     fn read_all(fs: &Tmpfs, node: u64) -> Vec<u8> {
         let mut out = Vec::new();
         let mut buffer = [0u8; 1000];
@@ -683,7 +727,10 @@ mod tests {
             (attributes.size, attributes.modified, attributes.permissions),
             (10_004, 8, 0o644)
         );
-        assert_eq!(fs.budget.used(), NODE_COST + 1 + 3 * PAGE_SIZE);
+        assert_eq!(
+            fs.budget.used(),
+            NODE_COST + 1 + 3 * PAGE_SIZE + index_charged(fs, file)
+        );
     }
 
     #[test]
@@ -694,13 +741,18 @@ mod tests {
             .unwrap();
         fs.write(file, WriteAt::Offset(3 * PAGE_SIZE as u64 + 1), b"z", 0)
             .unwrap();
-        assert_eq!(fs.budget.used(), NODE_COST + 6 + PAGE_SIZE);
+        assert!(index_charged(fs, file) >= 4 * INDEX_ENTRY_COST);
+        assert_eq!(
+            fs.budget.used(),
+            NODE_COST + 6 + PAGE_SIZE + index_charged(fs, file)
+        );
         let back = read_all(fs, file);
         assert_eq!(back.len(), 3 * PAGE_SIZE + 2);
         assert!(back[..3 * PAGE_SIZE + 1].iter().all(|&byte| byte == 0));
         fs.truncate(file, 1, 0).unwrap();
         assert_eq!(read_all(fs, file), b"\0");
-        assert_eq!(fs.budget.used(), NODE_COST + 6);
+        assert_eq!(fs.budget.used(), NODE_COST + 6 + index_charged(fs, file));
+        assert_eq!(index_charged(fs, file), INDEX_ENTRY_COST);
         fs.write(file, WriteAt::Offset(0), b"abcdef", 0).unwrap();
         fs.truncate(file, 2, 0).unwrap();
         fs.truncate(file, 4, 0).unwrap();
@@ -709,7 +761,7 @@ mod tests {
 
     #[test]
     fn the_budget_bounds_what_is_kept_and_removing_gives_it_back() {
-        let fs = tmpfs(NODE_COST + 1 + 2 * PAGE_SIZE);
+        let fs = tmpfs(NODE_COST + 1 + 2 * PAGE_SIZE + 8 * INDEX_ENTRY_COST);
         let file = fs
             .create(fs.root(), b"f", NodeKind::Regular, 0o644, 0)
             .unwrap();
@@ -739,6 +791,31 @@ mod tests {
             .unwrap();
         assert_ne!(again, file);
         assert_eq!(fs.attributes(file).links, 0);
+    }
+
+    #[test]
+    fn a_write_far_past_the_end_pays_for_its_page_index_and_fails_past_the_budget() {
+        let fs = tmpfs(64 * 1024);
+        let file = fs
+            .create(fs.root(), b"far", NodeKind::Regular, 0o644, 0)
+            .unwrap();
+        let base = fs.budget.used();
+        assert_eq!(
+            fs.write(file, WriteAt::Offset(1 << 30), b"x", 0),
+            Err(Refused::NoSpace)
+        );
+        assert_eq!(fs.budget.used(), base);
+        assert_eq!(index_charged(fs, file), 0);
+        assert_eq!(fs.attributes(file).size, 0);
+        let offset = 1000 * PAGE_SIZE as u64;
+        assert_eq!(
+            fs.write(file, WriteAt::Offset(offset), b"x", 0),
+            Ok((1, offset + 1))
+        );
+        assert!(index_charged(fs, file) >= 1001 * INDEX_ENTRY_COST);
+        assert_eq!(fs.budget.used(), base + PAGE_SIZE + index_charged(fs, file));
+        fs.remove(fs.root(), b"far", false, 0).unwrap();
+        assert_eq!(fs.budget.used(), 0);
     }
 
     #[test]
