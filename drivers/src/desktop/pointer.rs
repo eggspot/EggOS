@@ -98,24 +98,19 @@ enum Transform {
 
 struct Bitmap {
     rows: &'static [&'static [u8]],
-    hotspot: (u32, u32),
     transform: Transform,
 }
 
 fn bitmap(shape: PointerShape) -> Bitmap {
-    let (rows, hotspot, transform): (&'static [&'static [u8]], _, _) = match shape {
-        PointerShape::Arrow => (&ARROW, (0, 0), Transform::None),
-        PointerShape::IBeam => (&I_BEAM, (4, 8), Transform::None),
-        PointerShape::ResizeNorthSouth => (&RESIZE_NORTH_SOUTH, (4, 9), Transform::None),
-        PointerShape::ResizeEastWest => (&RESIZE_NORTH_SOUTH, (9, 4), Transform::Transposed),
-        PointerShape::ResizeNorthWestSouthEast => (&RESIZE_NORTH_WEST, (7, 7), Transform::None),
-        PointerShape::ResizeNorthEastSouthWest => (&RESIZE_NORTH_WEST, (8, 7), Transform::Mirrored),
+    let (rows, transform): (&'static [&'static [u8]], _) = match shape {
+        PointerShape::Arrow => (&ARROW, Transform::None),
+        PointerShape::IBeam => (&I_BEAM, Transform::None),
+        PointerShape::ResizeNorthSouth => (&RESIZE_NORTH_SOUTH, Transform::None),
+        PointerShape::ResizeEastWest => (&RESIZE_NORTH_SOUTH, Transform::Transposed),
+        PointerShape::ResizeNorthWestSouthEast => (&RESIZE_NORTH_WEST, Transform::None),
+        PointerShape::ResizeNorthEastSouthWest => (&RESIZE_NORTH_WEST, Transform::Mirrored),
     };
-    Bitmap {
-        rows,
-        hotspot,
-        transform,
-    }
+    Bitmap { rows, transform }
 }
 
 impl Bitmap {
@@ -146,9 +141,15 @@ impl Bitmap {
 }
 
 /// The size of `shape`'s bitmap and its hotspot, the pixel at the pointer's position.
-pub fn size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
-    let bitmap = bitmap(shape);
-    (bitmap.size(), bitmap.hotspot)
+pub const fn size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
+    match shape {
+        PointerShape::Arrow => ((12, 19), (0, 0)),
+        PointerShape::IBeam => ((9, 16), (4, 8)),
+        PointerShape::ResizeNorthSouth => ((9, 19), (4, 9)),
+        PointerShape::ResizeEastWest => ((19, 9), (9, 4)),
+        PointerShape::ResizeNorthWestSouthEast => ((16, 16), (7, 7)),
+        PointerShape::ResizeNorthEastSouthWest => ((16, 16), (8, 7)),
+    }
 }
 
 /// The rectangle `shape` covers with its hotspot at (`x`, `y`), cut at the screen's top and
@@ -170,10 +171,37 @@ pub fn area(shape: PointerShape, x: u32, y: u32) -> Rect {
 pub fn pixel_at(shape: PointerShape, at: (u32, u32), x: u32, y: u32) -> Option<u32> {
     let bitmap = bitmap(shape);
     let (width, height) = bitmap.size();
-    let column = i64::from(x) - i64::from(at.0) + i64::from(bitmap.hotspot.0);
-    let row = i64::from(y) - i64::from(at.1) + i64::from(bitmap.hotspot.1);
+    let (_, hotspot) = size_and_hotspot(shape);
+    let column = i64::from(x) - i64::from(at.0) + i64::from(hotspot.0);
+    let row = i64::from(y) - i64::from(at.1) + i64::from(hotspot.1);
     if column < 0 || row < 0 || column >= i64::from(width) || row >= i64::from(height) {
         return None;
     }
     bitmap.pixel(column as u32, row as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_shape_s_listed_size_is_its_bitmap_s() {
+        for shape in [
+            PointerShape::Arrow,
+            PointerShape::IBeam,
+            PointerShape::ResizeNorthSouth,
+            PointerShape::ResizeEastWest,
+            PointerShape::ResizeNorthWestSouthEast,
+            PointerShape::ResizeNorthEastSouthWest,
+        ] {
+            let bitmap = bitmap(shape);
+            assert_eq!(bitmap.size(), size_and_hotspot(shape).0, "{shape:?}");
+            assert!(
+                bitmap
+                    .rows
+                    .iter()
+                    .all(|row| row.len() == bitmap.rows[0].len())
+            );
+        }
+    }
 }

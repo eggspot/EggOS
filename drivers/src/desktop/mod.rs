@@ -236,6 +236,7 @@ pub struct Desktop {
     profile: Profile,
     now_ms: u32,
     focus_serial: u32,
+    dialogs: usize,
     clock: [u8; CLOCK_GLYPHS],
 }
 
@@ -294,6 +295,7 @@ impl Desktop {
             profile: Profile::default(),
             now_ms: 0,
             focus_serial: 0,
+            dialogs: 0,
             clock: [b' '; CLOCK_GLYPHS],
         };
         let content = (WINDOW_WIDTH - CHROME.0, WINDOW_HEIGHT - CHROME.1);
@@ -716,6 +718,7 @@ impl Desktop {
         );
         window.parent = parent;
         window.flags = window_flags;
+        self.dialogs += usize::from(parent.is_some());
         self.windows[slot] = Some(window);
         self.created[self.created_length] = slot as u8;
         self.created_length += 1;
@@ -1007,6 +1010,9 @@ impl Desktop {
         }
         remove(&mut self.stack, &mut self.stack_length, slot);
         remove(&mut self.created, &mut self.created_length, slot);
+        if self.window_at(slot).parent.is_some() {
+            self.dialogs -= 1;
+        }
         self.windows[slot] = None;
         self.generations[slot] = match self.generations[slot] + 1 {
             GENERATIONS => FIRST_GENERATION,
@@ -1160,6 +1166,9 @@ impl Desktop {
     }
 
     fn top_dialog(&self, slot: usize) -> Option<usize> {
+        if self.dialogs == 0 {
+            return None;
+        }
         self.stack[..self.stack_length]
             .iter()
             .rev()

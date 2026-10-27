@@ -43,6 +43,7 @@ pub struct ListedWindow {
 pub(super) struct Hit {
     pub resize: Option<(usize, u8)>,
     pub window: Option<(usize, Part)>,
+    pub content: Option<usize>,
 }
 
 /// A resize the user started on a window's edge or corner: the window, its edges, its outside
@@ -376,13 +377,17 @@ impl Desktop {
                 return Hit {
                     resize: Some((slot, edges)),
                     window: None,
+                    content: None,
                 };
             }
             if contains(window.outside(), x, y) {
                 let part = window.part_at(x, y, self.profile.control_side());
+                let content = (part == Some(Part::Content) && self.top_dialog(slot).is_none())
+                    .then_some(slot);
                 return Hit {
                     resize: None,
                     window: part.map(|part| (slot, part)),
+                    content,
                 };
             }
         }
@@ -396,10 +401,7 @@ impl Desktop {
 
     /// The window whose content is under `hit`, unless a dialog of it takes its input.
     pub(super) fn content_under(&self, hit: Hit) -> Option<usize> {
-        match hit.window {
-            Some((slot, Part::Content)) if self.top_dialog(slot).is_none() => Some(slot),
-            _ => None,
-        }
+        hit.content
     }
 
     pub(super) fn start_resize(&mut self, slot: usize, edges: u8) {

@@ -271,17 +271,17 @@ impl Window {
         if !contains(self.outside(), x, y) {
             return None;
         }
-        if let Some(&control) = self.controls().iter().find(|&&part| {
+        if contains(self.content(), x, y) {
+            return Some(Part::Content);
+        }
+        if !contains(self.title_bar(), x, y) {
+            return Some(Part::Border);
+        }
+        let control = self.controls().iter().find(|&&part| {
             self.control(part, side)
                 .is_some_and(|rect| contains(rect, x, y))
-        }) {
-            return Some(control);
-        }
-        Some(match () {
-            () if contains(self.title_bar(), x, y) => Part::TitleBar,
-            () if contains(self.content(), x, y) => Part::Content,
-            () => Part::Border,
-        })
+        });
+        Some(control.copied().unwrap_or(Part::TitleBar))
     }
 
     /// The edges a press at (`x`, `y`) would resize the window by ([`edge`] bits), 0 when the

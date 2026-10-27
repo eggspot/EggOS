@@ -7257,8 +7257,9 @@ the license, by an explicit instruction recorded here.
   more hard link, no new program in the image).
 - **Cost.** No new allocation: the switcher and the window menu are fixed state in the
   desktop, the pointer's bitmaps are constant tables. Pointer motion walks the stack once for
-  the content, the resize zones, the control hover and the pointer's shape together, and damages
-  the pointer's old and new rectangles (at most 19x19 each). A maximised window's buffer at
+  the content, the resize zones, the control hover and the pointer's shape together, looks for a
+  window's dialogs only when a dialog exists, and damages the pointer's old and new rectangles
+  (at most 19x19 each). A maximised window's buffer at
   1280x800 is 3.79 MB (a 4 MiB block). The kernel image grows by the new desktop code; the
   release image by `wm`'s code in `coreutils`. CI's benchmark deltas and size report are in the
   PR.
