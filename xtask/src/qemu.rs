@@ -166,7 +166,7 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
-    b"echo a | b; echo EGGSH-TEST never\r",
+    b"echo a && b; echo EGGSH-TEST never\r",
     b"echo EGGSH-TEST after unsupported $?\r",
     b"eggos-std-selftest shell-child wait-for-interrupt\r",
     b"echo EGGSH-TEST interrupted $?\r",
@@ -523,7 +523,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 9] = [
+const PROMPT_SESSION: [&[u8]; 16] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -532,10 +532,45 @@ const PROMPT_SESSION: [&[u8]; 9] = [
     b"sleep 0; sleep 0.05; echo EGGOS-COREUTILS slept $?\r",
     b"/bin/false; echo EGGOS-COREUTILS false $?\r",
     SHIFTED_KEYS_LINE,
+    b"echo hello | wc\r",
+    b"ls / | grep bin | head -n 1\r",
+    b"cat < /etc/motd | grep -c -i eggos; wc -l < /etc/hostname\r",
+    b"ls /nope | grep x; echo EGGOS-PIPE last $?; true | false; echo EGGOS-PIPE status $?\r",
+    b"tail -n 1 /etc/motd /etc/hostname | head -n 4 | tail -n +2\r",
+    PIPELINE_READING_THE_TERMINAL,
+    b"echo EGGOS-PIPE interrupted $?\r",
     b"poweroff\r",
 ];
 
-const PROMPT_SESSION_FRAME_PROMPT: usize = PROMPT_SESSION.len();
+const PIPELINE_READING_THE_TERMINAL: &[u8] = b"cat | grep EGGOS-PIPE\r";
+
+const PIPELINE_INPUT_LINE: &str = "EGGOS-PIPE interrupt me";
+
+#[derive(Debug, Clone, Copy)]
+struct Reaction {
+    line_ends_with: &'static str,
+    occurrences: usize,
+    keys: &'static [u8],
+}
+
+const REACTIONS: [Reaction; 2] = [
+    Reaction {
+        line_ends_with: "# cat | grep EGGOS-PIPE",
+        occurrences: 1,
+        keys: b"EGGOS-PIPE interrupt me\r",
+    },
+    Reaction {
+        line_ends_with: PIPELINE_INPUT_LINE,
+        occurrences: 2,
+        keys: b"\x03",
+    },
+];
+
+const PROMPT_SESSION_FRAME_PROMPT: usize = 9;
+
+const _: () = assert!(
+    PROMPT_SESSION[PROMPT_SESSION_FRAME_PROMPT - 2].len() == SHIFTED_KEYS_LINE.len()
+);
 
 const UNAME_LINE: &[u8] = b"uname -a\r";
 
@@ -617,7 +652,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["bin", "etc", "init", "usr"]),
         vec![
-            Line::Around("-rwxr-xr-x 11 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 15 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -630,6 +665,17 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["EGGOS-COREUTILS slept 0"]),
         whole(&["EGGOS-COREUTILS false 1"]),
         whole(&["EGGOS-KEYBOARD Typed_On+Virtio:OK"]),
+        whole(&["      1       1       6"]),
+        whole(&["bin"]),
+        whole(&["1", "1"]),
+        whole(&[
+            "ls: cannot access '/nope': No such file or directory",
+            "EGGOS-PIPE last 1",
+            "EGGOS-PIPE status 1",
+        ]),
+        whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
+        whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
+        whole(&["EGGOS-PIPE interrupted 130"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -643,6 +689,7 @@ const SHELL_INTERRUPT: (&str, &[u8]) = (
 struct ShellTyping {
     lines: usize,
     interrupts: usize,
+    reactions: [bool; REACTIONS.len()],
 }
 
 const SHELL_LINES: [&str; 19] = [
@@ -661,7 +708,7 @@ const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST sourced yes",
     "EGGSH-TEST script status 5",
     "EGGSH-TEST dash-c name arg",
-    "eggsh: `|` is not supported yet",
+    "eggsh: `&&` is not supported yet",
     "EGGSH-TEST after unsupported 2",
     "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
@@ -1085,6 +1132,18 @@ fn shell_scripts_to_type(
     while typed.interrupts < asked {
         scripts.push(interrupt);
         typed.interrupts += 1;
+    }
+    for (reaction, done) in REACTIONS.iter().zip(&mut typed.reactions) {
+        let seen = console
+            .split_inclusive('\n')
+            .filter(|line| {
+                line.ends_with('\n') && line.trim_end().ends_with(reaction.line_ends_with)
+            })
+            .count();
+        if !*done && seen >= reaction.occurrences {
+            scripts.push(reaction.keys);
+            *done = true;
+        }
     }
     scripts
 }
@@ -2195,7 +2254,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 11 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 15 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

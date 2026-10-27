@@ -32,6 +32,7 @@ pub fn each_line<S: System>(
     let mut filled = 0;
     let mut status = 0;
     'reading: loop {
+        output.flush();
         let read = match output.system.read(descriptor, &mut buffer[filled..]) {
             Ok(read) => read,
             Err(Errno::EINTR) => continue,
