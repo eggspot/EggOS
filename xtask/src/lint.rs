@@ -73,7 +73,11 @@ fn tracked_files(root: &Path) -> Result<Vec<String>, String> {
         .output()
         .map_err(|e| format!("could not run git ls-files: {e}"))?;
     if !output.status.success() {
-        return Err(format!("git ls-files failed: {}", output.status));
+        return Err(format!(
+            "git ls-files failed: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .split('\0')
