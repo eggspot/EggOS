@@ -1,3 +1,4 @@
+use crate::editor::{Editor, Fed, History};
 use crate::path::{Files, Kind, PATH_CAPACITY};
 use crate::shell::{Errno, Group, MAX_POSITIONAL, Read, Shell, Streams, System};
 use crate::status::USAGE;
@@ -39,6 +40,13 @@ const SIG_SETMASK: usize = 2;
 const INTERRUPT_MASK: u64 = 1 << (SIGINT - 1);
 const POLLIN: i16 = 1;
 const TCGETS: usize = 0x5401;
+const TCSETS: usize = 0x5402;
+const LOCAL_FLAGS: usize = 12;
+const ICANON: u32 = 0o2;
+const ECHO: u32 = 0o10;
+const CONTROL_CHARACTERS: usize = 17;
+const VTIME: usize = 5;
+const VMIN: usize = 6;
 const TIOCSPGRP: usize = 0x5410;
 const TERMIOS_SIZE: usize = 64;
 const STAT_SIZE: usize = 144;
@@ -175,6 +183,32 @@ fn wait_for_input_or_interrupt(descriptor: usize) -> bool {
     ) != -EINTR
 }
 
+fn terminal_settings() -> Option<[u8; TERMIOS_SIZE]> {
+    let mut settings = [0u8; TERMIOS_SIZE];
+    let got = call(
+        number::IOCTL,
+        [TERMINAL, TCGETS, settings.as_mut_ptr() as usize, 0, 0, 0],
+    );
+    (got == 0).then_some(settings)
+}
+
+fn set_terminal_settings(settings: &[u8; TERMIOS_SIZE]) {
+    call(
+        number::IOCTL,
+        [TERMINAL, TCSETS, settings.as_ptr() as usize, 0, 0, 0],
+    );
+}
+
+fn byte_at_a_time(mut settings: [u8; TERMIOS_SIZE]) -> [u8; TERMIOS_SIZE] {
+    let mut local = [0; 4];
+    local.copy_from_slice(&settings[LOCAL_FLAGS..LOCAL_FLAGS + 4]);
+    let local = u32::from_ne_bytes(local) & !(ICANON | ECHO);
+    settings[LOCAL_FLAGS..LOCAL_FLAGS + 4].copy_from_slice(&local.to_ne_bytes());
+    settings[CONTROL_CHARACTERS + VMIN] = 1;
+    settings[CONTROL_CHARACTERS + VTIME] = 0;
+    settings
+}
+
 fn take_the_terminal() -> i32 {
     set_signal_mask(SIG_BLOCK, INTERRUPT_MASK);
     set_signal_action(SIGINT, interrupted as *const () as usize);
@@ -259,11 +293,61 @@ fn wait_for(child: isize) -> Result<i32, Errno> {
 #[derive(Debug)]
 struct Linux {
     group: i32,
+    settings: Option<[u8; TERMIOS_SIZE]>,
+    editing: bool,
+    editor: Editor,
+    history: History,
 }
 
 impl Linux {
     fn has_the_terminal(&self) -> bool {
         self.group != 0
+    }
+
+    fn edit_lines(&mut self, editing: bool) {
+        let Some(settings) = self.settings else {
+            return;
+        };
+        if self.editing != editing {
+            self.editing = editing;
+            match editing {
+                true => set_terminal_settings(&byte_at_a_time(settings)),
+                false => set_terminal_settings(&settings),
+            }
+        }
+    }
+
+    fn read_edited_line(&mut self, buffer: &mut [u8]) -> Read {
+        self.edit_lines(true);
+        loop {
+            if !wait_for_input_or_interrupt(TERMINAL) {
+                return self.interrupted();
+            }
+            let mut byte = 0u8;
+            let read = call(number::READ, [TERMINAL, &raw mut byte as usize, 1, 0, 0, 0]);
+            match read {
+                1 => {}
+                _ if read == -EINTR => return self.interrupted(),
+                _ => return Read::End,
+            }
+            let fed = self.editor.feed(byte, buffer, &self.history, &mut |echo| {
+                syscall::write_all(STANDARD_ERROR, echo);
+            });
+            match fed {
+                Fed::Editing => {}
+                Fed::Line(length) => {
+                    self.history.add(&buffer[..length - 1]);
+                    return Read::Bytes(length);
+                }
+                Fed::End => return Read::End,
+            }
+        }
+    }
+
+    fn interrupted(&mut self) -> Read {
+        self.editor = Editor::new();
+        syscall::write_all(STANDARD_ERROR, b"^C");
+        Read::Interrupted
     }
 }
 
@@ -301,6 +385,9 @@ impl System for Linux {
     }
 
     fn read(&mut self, descriptor: usize, buffer: &mut [u8]) -> Read {
+        if descriptor == TERMINAL && self.has_the_terminal() && self.settings.is_some() {
+            return self.read_edited_line(buffer);
+        }
         if descriptor == TERMINAL
             && self.has_the_terminal()
             && !wait_for_input_or_interrupt(descriptor)
@@ -394,6 +481,7 @@ impl System for Linux {
     fn take_back_terminal(&mut self) {
         if self.has_the_terminal() {
             set_foreground(self.group);
+            self.edit_lines(true);
         }
     }
 
@@ -408,6 +496,7 @@ impl System for Linux {
         if arguments.len() > MAX_WORDS || environment.len() > MAX_VARIABLES + MAX_WORDS {
             return Err(Errno::E2BIG);
         }
+        self.edit_lines(false);
         let mut argument_pointers = [ptr::null::<u8>(); MAX_WORDS + 1];
         for (slot, argument) in argument_pointers.iter_mut().zip(arguments) {
             *slot = argument.as_ptr();
@@ -492,14 +581,22 @@ pub fn run(startup: &Startup) -> i32 {
     let pid = call(number::GETPID, [0; 6]) as u32;
     let root = call(number::GETEUID, [0; 6]) == 0;
     let kept = count.min(MAX_POSITIONAL);
-    let mut shell = Shell::new(
-        Linux { group },
-        pid,
-        &positional[..kept],
-        count,
-        interactive,
-        root,
-    );
+    let settings = if interactive {
+        terminal_settings()
+    } else {
+        None
+    };
+    let mut linux = Linux {
+        group,
+        settings,
+        editing: false,
+        editor: Editor::new(),
+        history: History::default(),
+    };
+    if interactive {
+        linux.edit_lines(true);
+    }
+    let mut shell = Shell::new(linux, pid, &positional[..kept], count, interactive, root);
     for variable in startup.environment() {
         shell.import(variable.to_bytes());
     }
@@ -526,5 +623,6 @@ pub fn run(startup: &Startup) -> i32 {
     } else {
         shell.run_descriptor(TERMINAL, interactive);
     }
+    shell.system.edit_lines(false);
     shell.exit_status()
 }

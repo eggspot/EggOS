@@ -523,7 +523,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 19] = [
+const PROMPT_SESSION: [&[u8]; 22] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -542,8 +542,23 @@ const PROMPT_SESSION: [&[u8]; 19] = [
     b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
     b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
     b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
+    b"echo EGGOS-HISTORY recalled\r",
+    b"echo EGGOS-HISTORY newest\r",
+    RECALL_THE_LINE_BEFORE_LAST,
     b"poweroff\r",
 ];
+
+const RECALL_THE_LINE_BEFORE_LAST: &[u8] = b"\x1b[A\x1b[A\r";
+
+fn shown_command(session: &[&[u8]], index: usize) -> String {
+    let typed = match session[index] {
+        RECALL_THE_LINE_BEFORE_LAST => session[index - 2],
+        typed => typed,
+    };
+    String::from_utf8_lossy(typed)
+        .trim_end_matches('\r')
+        .to_owned()
+}
 
 const PIPELINE_READING_THE_TERMINAL: &[u8] = b"cat | grep EGGOS-PIPE\r";
 
@@ -685,6 +700,9 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "1",
             "1",
         ]),
+        whole(&["EGGOS-HISTORY recalled"]),
+        whole(&["EGGOS-HISTORY newest"]),
+        whole(&["EGGOS-HISTORY recalled"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -1399,15 +1417,18 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
         ));
     }
-    for (typed, expected) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
-        let command = String::from_utf8_lossy(typed);
-        let command = command.trim_end_matches('\r');
-        let Some(echoed) = lines
+    let mut from = 0;
+    for (index, expected) in prompt_session_output(arch).into_iter().enumerate() {
+        let command = shown_command(&PROMPT_SESSION, index);
+        let command = command.as_str();
+        let Some(echoed) = lines[from..]
             .iter()
             .position(|line| line.starts_with(SHELL_PROMPT) && line.ends_with(command))
+            .map(|at| from + at)
         else {
             return Err(format!("{arch}: `{command}` was not typed at a prompt"));
         };
+        from = echoed + 1;
         let written = lines.get(echoed + 1..echoed + 1 + expected.len());
         let matched = written.is_some_and(|written| {
             expected
@@ -2228,9 +2249,9 @@ mod tests {
         let mut console = format!(
             "EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
-        for (typed, written) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
-            let command = String::from_utf8_lossy(typed);
-            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+        for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
+            let command = shown_command(&PROMPT_SESSION, index);
+            console.push_str(&format!("{SHELL_PROMPT}# {command}\r\n"));
             for line in written {
                 match line {
                     Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
