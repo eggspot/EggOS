@@ -83,43 +83,40 @@ pub fn ellipse(surface: &mut Surface<'_>, rect: Rect, pen: Option<Pen>, brush: O
     }
 }
 
-/// The pixels `left..right` of row `y` inside the ellipse inscribed in `rect`, if any.
+/// The pixels `left..right` of row `y` inside the ellipse inscribed in `rect`, if any. The
+/// reach from the centre is found by bisection on 128-bit products, with no 128-bit division.
 pub fn ellipse_span(rect: Rect, y: i32) -> Option<(i32, i32)> {
     if rect.is_empty() || y < rect.top || y >= rect.bottom {
         return None;
     }
-    let width = i128::from(rect.width());
+    let width = i64::from(rect.width());
     let height = i128::from(rect.height());
-    let across = 2 * i128::from(y) + 1 - i128::from(rect.top) - i128::from(rect.bottom);
-    let room = width * width * height * height - across * across * width * width;
+    let across = i128::from(2 * i64::from(y) + 1 - i64::from(rect.top) - i64::from(rect.bottom));
+    let room = i128::from(width) * i128::from(width) * (height * height - across * across);
     if room < 0 {
         return None;
     }
-    let sum = i128::from(rect.left) + i128::from(rect.right);
-    let mut reach = isqrt(room / (height * height));
-    if (reach - sum - 1).rem_euclid(2) != 0 {
+    let fits = |reach: i64| i128::from(reach) * i128::from(reach) * height * height <= room;
+    let (mut low, mut high) = (0i64, width + 1);
+    while high - low > 1 {
+        let middle = low + ((high - low) >> 1);
+        match fits(middle) {
+            true => low = middle,
+            false => high = middle,
+        }
+    }
+    let sum = i64::from(rect.left) + i64::from(rect.right);
+    let mut reach = low;
+    if (reach - sum - 1) & 1 != 0 {
         reach -= 1;
     }
     if reach < 0 {
         return None;
     }
     Some((
-        ((sum - 1 - reach) / 2) as i32,
-        ((sum - 1 + reach) / 2 + 1) as i32,
+        ((sum - 1 - reach) >> 1) as i32,
+        (((sum - 1 + reach) >> 1) + 1) as i32,
     ))
-}
-
-fn isqrt(value: i128) -> i128 {
-    if value < 2 {
-        return value.max(0);
-    }
-    let mut root = value;
-    let mut next = (root + 1) / 2;
-    while next < root {
-        root = next;
-        next = (root + value / root) / 2;
-    }
-    root
 }
 
 /// `LineTo` from `from` to `to`: Bresenham's line without its end point, each point a square

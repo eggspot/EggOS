@@ -1,0 +1,16 @@
+[package]
+name = "eggos-windows-gui-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "win-paint"
+path = "src/bin/win_paint.rs"
+
+[lints]
+workspace = true

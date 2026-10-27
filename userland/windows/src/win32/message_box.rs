@@ -10,7 +10,7 @@ use super::window_device::{FIXED_SIZE, ROLE_DIALOG, ROLE_NORMAL};
 use super::{error, error_for, fail};
 use crate::gui::input::{Record, kind};
 use crate::gui::message;
-use crate::gui::queue::Filter;
+use crate::gui::queue::{Filter, Message};
 use crate::gui::windows::{Procedure, Window};
 use crate::text as layer_text;
 use eggos_windows_gui::message_box::{Controller, Layout, Outcome, paint};
@@ -209,7 +209,18 @@ pub fn handle_event(state: usize, record: &Record) {
         return;
     };
     match button.result {
-        Some(result) => state.result = Some(result),
+        Some(result) => {
+            state.result = Some(result);
+            let window = state.window;
+            with(|gui| {
+                gui.queue.post(Message {
+                    window,
+                    message: message::NULL,
+                    ..Message::default()
+                })
+            });
+            gui::wake();
+        }
         None if state.owner != 0 => {
             let help = HelpInfo {
                 size: core::mem::size_of::<HelpInfo>() as u32,
