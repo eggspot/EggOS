@@ -141,6 +141,57 @@ pub fn sched_getaffinity<P: Platform>(
     Ok(bytes)
 }
 
+/// `sched_getscheduler(pid)`: `SCHED_OTHER` (0), the only scheduling policy threads have
+/// yet. `EINVAL` for a negative `pid`; otherwise `pid` names the caller as for
+/// [`sched_getaffinity`], and another id is `ESRCH`.
+pub fn sched_getscheduler<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+) -> Result<u64, Errno> {
+    scheduling_target(process, thread, pid)?;
+    Ok(SCHED_OTHER)
+}
+
+/// `sched_getparam(pid, param)`: writes `SCHED_OTHER`'s priority, 0, to the
+/// `struct sched_param` at `param`. `EINVAL` for a null `param` or a negative `pid`, then
+/// `ESRCH` as for [`sched_getscheduler`]; `EFAULT` if `param` is not the program's writable
+/// memory.
+pub fn sched_getparam<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+    param: u64,
+) -> Result<u64, Errno> {
+    if param == 0 {
+        return Err(Errno::EINVAL);
+    }
+    scheduling_target(process, thread, pid)?;
+    process
+        .write_user_memory(param, &SCHED_OTHER_PRIORITY.to_ne_bytes())
+        .map(|()| 0)
+        .map_err(|_| Errno::EFAULT)
+}
+
+const SCHED_OTHER: u64 = 0;
+const SCHED_OTHER_PRIORITY: i32 = 0;
+
+fn scheduling_target<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+) -> Result<(), Errno> {
+    let pid = pid as i32;
+    if pid < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let pid = pid as u32;
+    if pid != 0 && pid != thread.id() && pid != process.id().get() {
+        return Err(Errno::ESRCH);
+    }
+    Ok(())
+}
+
 const AFFINITY_WORD_BITS: usize = u64::BITS as usize;
 const AFFINITY_WORD_BYTES: usize = size_of::<u64>();
 

@@ -33,7 +33,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `cargo xtask image --add` ([Windows programs](windows-programs.md), D118). Programs on a
   C/C++ runtime or Rust's std, threads, waits, directory listing, other DLLs, structured
   exception handling, GUI programs and other architectures do not run yet.
-- **Other foreign apps are not in yet.** macOS, Android and iOS apps (D17) do not run in this
+- **Android: static console programs only, on aarch64 and x86_64.** Programs built with the
+  Android NDK and linked statically against bionic run natively through the Linux layer
+  ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
+  system properties (all read as unset), no `logd` or binder, no riscv64.
+- **Other foreign apps are not in yet.** macOS and iOS apps (D17) do not run in this
   release.
 - **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
   of every capability (D22) and the component manager (D18) come later.

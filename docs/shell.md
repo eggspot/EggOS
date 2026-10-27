@@ -10,7 +10,8 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
   reads a line, and runs its commands. `^D` at an empty prompt ends it (`exit`), `^C` gives a
   fresh prompt and sets `$?` to 130.
 - `eggsh file [arguments]` runs the commands of a file, `$0` the file and `$1`... the arguments.
-- `eggsh -c 'commands' [name [arguments]]` runs `commands`, `$0` being `name`.
+- `eggsh -c [--] 'commands' [name [arguments]]` runs `commands`, `$0` being `name` (`--`, which
+  ends the options as in `sh -c -- commands`, is how bionic's `system()` calls the shell).
 - The shell exits with `exit`'s status, or the last command's.
 
 ## The language

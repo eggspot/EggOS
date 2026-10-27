@@ -4,6 +4,7 @@
 //! locally and in CI. What each command does and the flags our Linux programs are built with:
 //! docs/build.md, "Developer commands".
 
+mod android;
 mod bench;
 mod elf;
 mod image;
@@ -118,7 +119,7 @@ pub const ARCHES: &[Arch] = &[
             "-machine",
             "q35",
             "-cpu",
-            "qemu64,+rdrand,+rdseed",
+            "qemu64,+rdrand,+rdseed,+ssse3,+sse4.1,+sse4.2,+popcnt",
             "-device",
             "virtio-rng-pci,disable-legacy=on",
         ],
@@ -406,6 +407,16 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Absent,
         &[],
     )?;
+    if let Some(kernel) = build_android_programs_test_kernel(arch)? {
+        qemu::boot_test(
+            arch,
+            &kernel,
+            qemu::Expect::AndroidPrograms,
+            qemu::TEST_CPUS,
+            qemu::Display::Absent,
+            &[],
+        )?;
+    }
     let kernel = build_kernel(arch, None)?;
     qemu::boot_test(
         arch,
@@ -429,6 +440,18 @@ fn clippy_targets() -> Result<(), String> {
         "-D",
         "warnings",
     ])?;
+    for target in ARCHES.iter().filter_map(|arch| android::target(arch.name)) {
+        cargo(&[
+            "clippy",
+            "--target",
+            target,
+            "-p",
+            ANDROID_CONSOLE_PACKAGE,
+            "--",
+            "-D",
+            "warnings",
+        ])?;
+    }
     for arch in ARCHES {
         let mut args = vec!["clippy", "--target", arch.user_target];
         for krate in USER_CRATES {
@@ -507,6 +530,13 @@ pub fn build_release_image(
     let layer = windows_layer_for(arch, added)?;
     let mut members = image::members(added);
     members.extend(layer.iter().map(|layer| layer.member()));
+    if added.iter().any(|file| android::is_program(&file.host)) {
+        members.extend(
+            android::system_members(SHELL_PATH)
+                .into_iter()
+                .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
+        );
+    }
     let initramfs = release_initramfs(
         arch,
         &members,
@@ -787,6 +817,82 @@ fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, Str
         ),
     )?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+const ANDROID_CONSOLE_PACKAGE: &str = "eggos-android-console";
+
+const ANDROID_CONSOLE_PATH: &str = "bin/android-console";
+
+fn build_android_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(target) = android::target(arch.name) else {
+        eprintln!(
+            "xtask: {}: no Android programs boot test: Rust has no prebuilt Android target \
+             for it",
+            arch.name
+        );
+        return Ok(None);
+    };
+    let Some(ndk) = android::find_ndk() else {
+        if std::env::var_os("CI").is_some() {
+            return Err(format!(
+                "{}: the Android programs boot test needs the Android NDK in CI: set \
+                 ANDROID_NDK_HOME or ANDROID_HOME",
+                arch.name
+            ));
+        }
+        eprintln!(
+            "xtask: {}: Android programs boot test skipped: no Android NDK found (set \
+             ANDROID_NDK_HOME, or ANDROID_HOME to an SDK with one in ndk/); CI runs it",
+            arch.name
+        );
+        return Ok(None);
+    };
+    let program = build_android_console(&ndk, target)?;
+    let added = [image::AddedFile {
+        host: program.to_string_lossy().into_owned(),
+        path: ANDROID_CONSOLE_PATH.to_owned(),
+    }];
+    if !android::is_program(&added[0].host) {
+        return Err(format!(
+            "{}: the NDK linked no `.note.android.ident` note into it",
+            added[0].host
+        ));
+    }
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(android::system_members(SHELL_PATH));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-android-programs-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs).map(Some)
+}
+
+fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::PathBuf, String> {
+    let target_dir = target_directory().join("android-console");
+    let target_dir_text = target_dir.to_string_lossy();
+    cargo_with_env(
+        &[
+            "build",
+            "-p",
+            ANDROID_CONSOLE_PACKAGE,
+            "--target",
+            target,
+            "--release",
+        ],
+        &[
+            ("CARGO_ENCODED_RUSTFLAGS", ""),
+            ("CARGO_TARGET_DIR", &target_dir_text),
+        ],
+    )?;
+    let release = target_dir.join(target).join("release");
+    let program = release.join("android-console");
+    android::link(ndk, target, &release.join("libandroid_console.a"), &program)?;
+    Ok(program)
 }
 
 fn build_init(arch: &Arch) -> Result<String, String> {

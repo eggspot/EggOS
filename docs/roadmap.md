@@ -138,6 +138,19 @@ Must-have, in order:
     users can run static glibc programs, tested in CI; users can choose a program's CPUs
     (`sched_setaffinity`); users can add programs to a running system once there is a writable file
     system; static PIEs built for aarch64 and riscv64 are tested too.
+17. **done** — Android: users can now run Android console programs from `eggsh` on aarch64 and
+    x86_64 (D119, docs/android-programs.md): a static program built with the Android NDK, with
+    bionic's own start-up code and C library, runs natively through the Linux layer, which
+    gained `sched_getscheduler` and `sched_getparam`, AArch64's top-byte ignore for user
+    addresses and `eggsh -c --`; QEMU's x86_64 CPU gains the SSE4.2 and POPCNT the NDK's ABI
+    requires; `cargo xtask image --add` gives an image with an Android program
+    `/system/bin/sh` (`eggsh`, the shell `system()` runs) and leaves other images unchanged.
+    System properties all read as unset (no property area). A QEMU test on aarch64 and x86_64,
+    run in CI with the runner's NDK, links a program from our own source against bionic and
+    checks stdio, files, directories, the heap, clocks, threads, properties, `getauxval`,
+    `arc4random`, `system()`, exit statuses and `abort`. Next, as user capabilities: users'
+    programs can read system properties (a property service); users can run Android programs
+    on riscv64 and dynamically linked ones; then apps (`.apk`).
 18. **done** — Windows, part 1: users can now run Windows console programs from `eggsh` on
     x86_64 (D118, docs/windows-programs.md): an unmodified PE32+ console program runs
     natively through the Windows layer, an optional component at `/usr/lib/eggos/windows` that
@@ -153,6 +166,8 @@ Must-have, in order:
     directories, and run programs built on Rust's std or a C runtime; then structured exception
     handling, other DLLs, ARM64 programs and x86_64 programs on Arm through ahead-of-time
     translation.
+
+Next in the plan: item 20, macOS, part 1.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
@@ -180,7 +195,7 @@ architecture as "boots, no shell". The graphical terminal is the owner's priorit
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
 | M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
-| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, part 1: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118) |
+| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, part 1: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119) |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
 Timer follow-ups (D26): on x86_64, read the TSC/APIC frequencies from CPUID 0x15 and hypervisor

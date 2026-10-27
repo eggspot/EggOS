@@ -1241,6 +1241,7 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         // `ELR_EL1` already points after the `svc`.
         return UserExit::Syscall;
     }
+    let far = without_user_tag(far);
     // With `vector`, all `last_exception` needs.
     registers.esr = esr;
     registers.far = far;
@@ -1338,6 +1339,16 @@ fn irq(pc: u64) {
 fn console_input(interrupt: timer::Acknowledged) {
     crate::interrupt::deliver(Interrupt::ConsoleInput);
     timer::end_of_interrupt(interrupt);
+}
+
+fn without_user_tag(address: u64) -> u64 {
+    const TTBR1_BIT: u64 = 1 << 55;
+    const TAG: u64 = 0xff << 56;
+    if address & TTBR1_BIT == 0 {
+        address & !TAG
+    } else {
+        address
+    }
 }
 
 // Inlined into both callers, as when the kernel's vectors were its only one: the kernel's

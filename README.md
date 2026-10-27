@@ -61,6 +61,15 @@ On x86_64, Windows console programs run natively through EggOS's own Windows lay
 cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.exe
 ```
 
+### Run Android console programs
+On aarch64 and x86_64, static Android console programs built with the NDK run natively through
+the Linux layer ([docs/android-programs.md](docs/android-programs.md) says how to build them and
+what works):
+
+```
+cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello and /system/bin/sh
+```
+
 ## Layout
 | Path | What |
 |------|------|
@@ -68,7 +77,7 @@ cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.e
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
 | `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
-| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), and `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)) |
+| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)), and `android-console`, a static Android console program linked against bionic ([Android programs](docs/android-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 

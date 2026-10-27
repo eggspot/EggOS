@@ -263,8 +263,9 @@ const TCR: u64 = {
     let walks0 = (0b01 << 8) | (0b01 << 10) | (0b11 << 12); // IRGN0, ORGN0 write-back; SH0 inner
     let walks1 = (0b01 << 24) | (0b01 << 26) | (0b11 << 28); // likewise for TTBR1
     let granule1 = 0b10 << 30; // TG1: 4 KiB (TG0 = 0b00 is 4 KiB too)
-    t0sz | t1sz | walks0 | walks1 | granule1
+    t0sz | t1sz | walks0 | walks1 | granule1 | TCR_TBI0_USER_TOP_BYTE_IGNORED
 };
+const TCR_TBI0_USER_TOP_BYTE_IGNORED: u64 = 1 << 37;
 const TCR_IPS_SHIFT: u32 = 32;
 /// The largest `IPS` the 4 KiB granule takes without FEAT_LPA2: 48 bits.
 const TCR_IPS_MAX: u64 = 0b101;
