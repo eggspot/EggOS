@@ -28,8 +28,8 @@ const TEST_DISK_BYTES: u64 = 64 << 20;
 const CLIENT: u16 = 0;
 const ROLE_NORMAL: u32 = 0;
 const CARET_HIDDEN_MS: u32 = 500;
-const WINDOWS_CARD: usize = 0;
-const LINUX_CARD: usize = 2;
+pub(super) const WINDOWS_CARD: usize = 0;
+pub(super) const LINUX_CARD: usize = 2;
 
 const SESSION_WITHOUT_DISK: [&[u8]; 4] = [
     b"settings\r",
@@ -89,19 +89,19 @@ fn output_after_the_reboot() -> [Vec<Line>; SESSION_AFTER_THE_REBOOT.len()] {
     ]
 }
 
-struct Boot<'a> {
-    arch: &'a Arch,
+pub(super) struct Boot<'a> {
+    pub(super) arch: &'a Arch,
     child: std::process::Child,
-    output: mpsc::Receiver<Vec<u8>>,
-    keyboard: std::process::ChildStdin,
-    console: Vec<u8>,
+    pub(super) output: mpsc::Receiver<Vec<u8>>,
+    pub(super) keyboard: std::process::ChildStdin,
+    pub(super) console: Vec<u8>,
     port: u16,
     started: Instant,
     typed: usize,
 }
 
 impl<'a> Boot<'a> {
-    fn start(arch: &'a Arch, kernel: &Path, args: &[String]) -> Result<Self, String> {
+    pub(super) fn start(arch: &'a Arch, kernel: &Path, args: &[String]) -> Result<Self, String> {
         eprintln!("xtask: booting {} in {} (settings)", arch.name, arch.qemu);
         let port = qmp::free_port()?;
         let cpus = TEST_CPUS.to_string();
@@ -134,19 +134,19 @@ impl<'a> Boot<'a> {
         })
     }
 
-    fn fail(&mut self, error: String) -> String {
+    pub(super) fn fail(&mut self, error: String) -> String {
         let _ = self.child.kill();
         let _ = self.child.wait();
         error
     }
 
-    fn prompts(&self) -> usize {
+    pub(super) fn prompts(&self) -> usize {
         String::from_utf8_lossy(&self.console)
             .matches(SHELL_PROMPT)
             .count()
     }
 
-    fn wait_for_prompts(&mut self, count: usize) -> Result<(), String> {
+    pub(super) fn wait_for_prompts(&mut self, count: usize) -> Result<(), String> {
         loop {
             self.console.extend(self.output.try_iter().flatten());
             if self.prompts() >= count {
@@ -175,7 +175,7 @@ impl<'a> Boot<'a> {
         }
     }
 
-    fn type_next(&mut self, session: &[&[u8]]) -> Result<(), String> {
+    pub(super) fn type_next(&mut self, session: &[&[u8]]) -> Result<(), String> {
         self.wait_for_prompts(self.typed + 1)?;
         let line = session[self.typed];
         self.typed += 1;
@@ -185,7 +185,7 @@ impl<'a> Boot<'a> {
             .map_err(|e| format!("{}: could not type on the console: {e}", self.arch.name))
     }
 
-    fn finish(mut self) -> Result<(String, bool), String> {
+    pub(super) fn finish(mut self) -> Result<(String, bool), String> {
         let status = loop {
             if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
                 break status;
@@ -208,15 +208,15 @@ impl<'a> Boot<'a> {
     }
 }
 
-struct Screen {
-    qmp: Qmp,
-    desktop: Desktop,
-    size: (u32, u32),
-    settings: Option<(WindowId, SettingsWindow)>,
+pub(super) struct Screen {
+    pub(super) qmp: Qmp,
+    pub(super) desktop: Desktop,
+    pub(super) size: (u32, u32),
+    pub(super) settings: Option<(WindowId, SettingsWindow)>,
 }
 
 impl Screen {
-    fn new(boot: &Boot<'_>, profile: Profile) -> Result<Self, String> {
+    pub(super) fn new(boot: &Boot<'_>, profile: Profile) -> Result<Self, String> {
         let mut qmp = Qmp::connect(boot.port)?;
         let size = screen_size(&mut qmp, boot.arch)?;
         let mut desktop = Desktop::new(size.0, size.1).ok_or_else(|| {
@@ -234,18 +234,18 @@ impl Screen {
         })
     }
 
-    fn pointer(&mut self, x: u32, y: u32, button: Option<bool>) -> Result<(), String> {
+    pub(super) fn pointer(&mut self, x: u32, y: u32, button: Option<bool>) -> Result<(), String> {
         let step = PointerStep { x, y, button };
         send_pointer_step(&mut self.qmp, step, self.size)?;
         apply_pointer_step(&mut self.desktop, step);
         Ok(())
     }
 
-    fn park_pointer(&mut self) -> Result<(), String> {
+    pub(super) fn park_pointer(&mut self) -> Result<(), String> {
         self.pointer(self.size.0 - 2, self.size.1 - 2, None)
     }
 
-    fn open_settings(&mut self, arch: &str, on_disk: bool) -> Result<(), String> {
+    pub(super) fn open_settings(&mut self, arch: &str, on_disk: bool) -> Result<(), String> {
         let refused = |error| format!("{arch}: the host's desktop refused Settings: {error:?}");
         let (width, height) = DEFAULT_SIZE;
         let created = self
@@ -268,7 +268,7 @@ impl Screen {
         Ok(())
     }
 
-    fn contents(&self) -> Vec<Vec<(WindowId, WindowContent)>> {
+    pub(super) fn contents(&self) -> Vec<Vec<(WindowId, WindowContent)>> {
         let Some((id, settings)) = &self.settings else {
             return vec![Vec::new()];
         };
@@ -285,7 +285,12 @@ impl Screen {
         vec![render(true), render(false)]
     }
 
-    fn check(&mut self, boot: &mut Boot<'_>, at: &str, timeout: Duration) -> Result<(), String> {
+    pub(super) fn check(
+        &mut self,
+        boot: &mut Boot<'_>,
+        at: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
         let contents = self.contents();
         let alternatives: Vec<&[(WindowId, WindowContent)]> =
             contents.iter().map(Vec::as_slice).collect();
@@ -301,7 +306,7 @@ impl Screen {
         )
     }
 
-    fn click_card(&mut self, arch: &str, card: usize) -> Result<(), String> {
+    pub(super) fn click_card(&mut self, arch: &str, card: usize) -> Result<(), String> {
         let Some((id, settings)) = self.settings.as_mut() else {
             return Err(format!("{arch}: Settings is not open"));
         };
@@ -355,7 +360,7 @@ impl Screen {
         Ok(())
     }
 
-    fn close_settings(&mut self, arch: &str) -> Result<(), String> {
+    pub(super) fn close_settings(&mut self, arch: &str) -> Result<(), String> {
         let Some((id, _)) = self.settings.take() else {
             return Err(format!("{arch}: Settings is not open"));
         };

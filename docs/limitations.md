@@ -102,10 +102,11 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   pointer shapes;
 - dragging a window partly off screen;
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
-- the launcher's key (Super alone) and F11 come with the shell (item 35);
-- closing the terminal (its close control is disabled), a second terminal, the taskbar, dock,
-  launcher and desktop icons, so the profiles differ only in the controls' side and the
-  shortcuts (item 35); Settings is opened from the prompt with `settings` until then;
+- F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
+  blink in the launcher's search field, keyboard focus in the Linux launcher's dash, and the
+  launcher's `Install from host share...` row and `Uninstall...` (item 36) (D133);
+- closing the terminal (its close control is disabled) and a second terminal: launching
+  Terminal focuses the one console terminal, and installed console apps run in it;
 - Settings is the one program with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); its Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs open windows

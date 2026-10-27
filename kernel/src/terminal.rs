@@ -368,8 +368,6 @@ fn request_render<P: Platform>() {
     }
 }
 
-/// What the drawing thread does once it has let go of the screen: the action the desktop
-/// asked for, whether programs got events, and whether the catalogue is to be read again.
 #[derive(Debug, Clone, Copy)]
 struct Asked {
     action: Action,

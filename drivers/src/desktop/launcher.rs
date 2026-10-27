@@ -68,7 +68,6 @@ const FOCUS_RING_WIDTH: u32 = 2;
 const FOCUS_RING_INNER: [u32; 1] = [1];
 const COMPOSE: u16 = 127;
 
-/// A place in the launcher the pointer can be over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Spot {
     Row(usize),

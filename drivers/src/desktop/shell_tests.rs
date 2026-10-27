@@ -480,3 +480,113 @@ fn drawing_rects_equals_drawing_the_whole_shell() {
         assert!(whole == parts, "{profile:?}");
     }
 }
+
+struct Screen {
+    desktop: Desktop,
+    pixels: Vec<u32>,
+}
+
+impl Screen {
+    fn new(profile: Profile) -> Self {
+        let desktop = desktop(profile);
+        let pixels = painted(&desktop);
+        Self { desktop, pixels }
+    }
+
+    fn redraw(&mut self, damage: &Damage, at: &str) {
+        for &rect in damage.rects() {
+            self.desktop
+                .draw(&mut self.pixels, 1280, rect, &super::tests::BlankTerminal);
+        }
+        assert!(
+            self.pixels == painted(&self.desktop),
+            "stale pixels after {at}"
+        );
+    }
+
+    fn step(&mut self, at: &str, change: impl FnOnce(&mut Desktop, &mut Damage)) {
+        let mut damage = Damage::new();
+        change(&mut self.desktop, &mut damage);
+        self.redraw(&damage, at);
+    }
+
+    fn point(&mut self, at: &str, x: u32, y: u32, button: Option<bool>) {
+        self.step(at, |desktop, damage| {
+            desktop.pointer_moved(x, y, damage, &mut DiscardEvents);
+            if let Some(pressed) = button {
+                desktop.left_button(pressed, damage, &mut DiscardEvents);
+            }
+        });
+    }
+
+    fn click(&mut self, at: &str, rect: Rect) {
+        let (x, y) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
+        self.point(at, x, y, None);
+        self.point(at, x, y, Some(true));
+        self.point(at, x, y, Some(false));
+    }
+
+    fn key(&mut self, at: &str, code: u16, modifiers: Modifiers) {
+        self.step(at, |desktop, damage| {
+            for pressed in [true, false] {
+                desktop.key(code, pressed, modifiers, damage, &mut DiscardEvents);
+            }
+        });
+    }
+}
+
+#[test]
+fn what_the_shell_damages_is_all_that_changes_on_screen() {
+    let mut screen = Screen::new(Profile::Macos);
+    let settings = screen.desktop.dock_icon(AppId::Settings).unwrap();
+    screen.click("the dock's Settings", settings);
+    screen.step("Settings shown", |desktop, damage| {
+        let created = desktop.create(CLIENT, 0, 0, 400, 300, 0).unwrap();
+        let id = u32::from(created.window);
+        desktop.set_title(CLIENT, id, b"Settings", damage).unwrap();
+        desktop
+            .commit(CLIENT, id, &[], damage, &mut DiscardEvents)
+            .unwrap();
+    });
+    screen.point("the pointer parked", 1278, 798, None);
+    screen.step("the tooltip's time", |desktop, damage| {
+        desktop.tick(0, damage, &mut DiscardEvents);
+    });
+    let files = screen.desktop.dock_icon(AppId::Files).unwrap();
+    screen.point("the pointer on Files", files.x + 4, files.y + 4, None);
+    screen.step("Files' tooltip", |desktop, damage| {
+        desktop.tick(TOOLTIP_DELAY_MS + 1, damage, &mut DiscardEvents);
+    });
+    assert!(screen.desktop.tooltip_rect().is_some());
+    screen.click("the dock's Files", files);
+    screen.key("Cmd+Space", key::SPACE, Modifiers::SUPER);
+    screen.key("a letter", 25, Modifiers::from_bits(0));
+    screen.step("the catalogue read again", |desktop, damage| {
+        desktop.set_catalogue(catalogue(), damage);
+    });
+    screen.key("Down", key::DOWN, Modifiers::from_bits(0));
+    screen.key("Esc", key::ESC, Modifiers::from_bits(0));
+    screen.step("the Windows profile", |desktop, damage| {
+        desktop.set_profile(Profile::Windows, damage, &mut DiscardEvents);
+    });
+    let start = screen.desktop.start_button().unwrap();
+    screen.click("Start", start);
+    screen.click("Start again", start);
+    let terminal = screen.desktop.terminal_window();
+    let item = screen.desktop.window_entry(terminal).unwrap();
+    screen.click("the terminal's taskbar item", item);
+    screen.click("the terminal's taskbar item again", item);
+    let item = screen.desktop.window_entry(terminal).unwrap();
+    screen.click("the minimised terminal's item", item);
+    let hello = screen.desktop.catalogue().installed_named("Hello").unwrap();
+    let cell = screen.desktop.desktop_icon(hello).unwrap();
+    screen.click("a desktop icon", cell);
+    screen.key("Up on the desktop", key::UP, Modifiers::from_bits(0));
+    screen.step("the Linux profile", |desktop, damage| {
+        desktop.set_profile(Profile::Linux, damage, &mut DiscardEvents);
+    });
+    let activities = screen.desktop.system_item().unwrap();
+    screen.click("Activities", activities);
+    screen.click("Activities again", activities);
+    screen.point("the pointer on the wallpaper", 600, 700, None);
+}

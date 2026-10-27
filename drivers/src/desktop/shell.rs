@@ -388,6 +388,19 @@ impl Desktop {
         found
     }
 
+    fn panel_item_drawn_area(&self, item: PanelItem) -> Option<Rect> {
+        let rect = self.panel_item_rect(item)?;
+        Some(match item {
+            PanelItem::DockApp(_) | PanelItem::DockWindow(_) => Rect::new(
+                rect.x - DOCK_TILE_FROM_ICON,
+                rect.y - DOCK_ICON_TOP,
+                DOCK_TILE,
+                DOCK_TILE,
+            ),
+            _ => rect,
+        })
+    }
+
     /// Damages what lists the windows: the Linux top bar's chips, the taskbar or the dock.
     pub(super) fn damage_window_list(&self, damage: &mut Damage) {
         match self.profile {
@@ -522,7 +535,7 @@ impl Desktop {
         self.panels.pressed = Some(item);
         self.panels.tooltip_spent = true;
         self.hide_tooltip(damage);
-        if let Some(rect) = self.panel_item_rect(item) {
+        if let Some(rect) = self.panel_item_drawn_area(item) {
             damage.add(rect);
         }
         match item {
@@ -558,7 +571,7 @@ impl Desktop {
     /// The left button went up: the pressed panel item is no longer drawn pressed.
     pub(super) fn panel_release(&mut self, damage: &mut Damage) {
         if let Some(item) = self.panels.pressed.take()
-            && let Some(rect) = self.panel_item_rect(item)
+            && let Some(rect) = self.panel_item_drawn_area(item)
         {
             damage.add(rect);
         }
@@ -572,7 +585,7 @@ impl Desktop {
             return;
         }
         for item in [self.panels.hover, hover].into_iter().flatten() {
-            if let Some(rect) = self.panel_item_rect(item) {
+            if let Some(rect) = self.panel_item_drawn_area(item) {
                 damage.add(rect);
             }
         }
@@ -580,6 +593,19 @@ impl Desktop {
         self.panels.hover = hover;
         self.panels.hover_since_ms = self.now_ms;
         self.panels.tooltip_spent = false;
+    }
+
+    /// The panels moved under a pointer that did not: the item under it is the hovered one,
+    /// with no tooltip until the pointer moves.
+    pub(super) fn refresh_panel_hover(&mut self, damage: &mut Damage) {
+        if self.pointer_visible {
+            let (x, y) = self.pointer;
+            let before = self.panels.hover;
+            self.update_panel_hover(x, y, damage);
+            if self.panels.hover != before {
+                self.panels.tooltip_spent = true;
+            }
+        }
     }
 
     /// Forgets the panels' pointer state, as a profile change does.

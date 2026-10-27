@@ -39,13 +39,9 @@ pub enum Icon {
     Settings,
     /// A folder with a grey front: the host's shared folder.
     HostShare,
-    /// A tile with an upper-case letter and, for an installed app, its source's badge.
-    App {
-        /// The letter shown: `A`-`Z`, `0`-`9` or `?`.
-        letter: u8,
-        /// The source whose badge it wears, none for a window the catalogue cannot name.
-        badge: Option<Source>,
-    },
+    /// A tile with `letter` (`A`-`Z`, `0`-`9` or `?`) and, for an installed app, the badge of
+    /// its source (none for a window the catalogue cannot name).
+    App { letter: u8, badge: Option<Source> },
 }
 
 impl Icon {

@@ -1495,6 +1495,7 @@ impl Desktop {
         let action = self.button_change(code, pressed, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
+        self.refresh_panel_hover(damage);
         action
     }
 
@@ -1707,6 +1708,7 @@ impl Desktop {
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
+        self.refresh_panel_hover(damage);
         action
     }
 
