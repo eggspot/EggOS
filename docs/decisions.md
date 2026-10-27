@@ -6293,7 +6293,25 @@ the license, by an explicit instruction recorded here.
   affected CPUs only), the kernel cannot tell affected CPUs apart yet, the `syscall` entry's
   unconditional `swapgs` needs no fence, and an `lfence` costs a few cycles on an entry that
   costs hundreds; a boot-time patch to skip it on AMD can come when a benchmark shows the
-  interrupt path matters. `AT_HWCAP2` still has no `FSGSBASE` (`CR4.FSGSBASE` stays clear).
+  interrupt path matters. `AT_HWCAP2` still has no `FSGSBASE`: it would tell programs they may
+  use `wrfsbase` and `wrgsbase`, which `CR4.FSGSBASE` keeps from them (D83).
+- **The segment bases' id.** `Registers::segment_bases_id` names the values of a context's
+  `fs_base` and `gs_base`: 0 for one that never set either (both 0), a new number from
+  `NEXT_SEGMENT_BASES_ID` (never 0, never reused) each time one is set. Each CPU keeps the id
+  its bases were last loaded for (`X86Tables::segment_bases_id`, 0 after `set_up_user_mode`
+  zeroes both MSRs), and `x86_64_enter_user` loads `IA32_FS_BASE` and `IA32_KERNEL_GS_BASE`
+  (which `swapgs` swaps in) only when the ids differ; neither base is saved on the way out.
+  A program cannot write a base with `wrfsbase`/`wrgsbase`, but loading a segment selector
+  into FS or GS resets that base (to the GDT descriptor's, 0) without the kernel knowing; the
+  cache then holds a stale value only for contexts with the same id, which are the same thread
+  or threads that cloned its bases, so a program can only zero its own process family's base,
+  never see another's. Enabling `FSGSBASE` for programs would need the bases saved on every
+  exit.
+- **Follow-up: the GS base on a fault in the return window.** An NMI or machine check between
+  the return path's `swapgs` and its `iretq`/`sysretq` enters the kernel with the program's GS
+  base, which programs now choose. The entry already cannot recover there (D49); the IST
+  stacks for NMIs and machine checks (D47's follow-up) must read the GS base MSR to decide
+  whether to `swapgs`, as Linux's paranoid entry does, instead of the `testb $3` check.
 - **Not yet** (roadmap item 19 and later): threads and waits, synchronisation, directory
   listing, other processes, structured exception handling, other DLLs, programs on a C/C++
   runtime or Rust's std (they import more: MinGW's and MSVC's CRT start-up, `ProcessPrng`,

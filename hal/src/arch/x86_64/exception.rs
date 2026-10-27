@@ -199,8 +199,6 @@ x86_64_enter_user:
     movq    %rsp, {kernel_rsp}(%rdi)
     leaq    {kernel_rsp}(%rdi), %rax
     movq    %rax, %gs:{tss_rsp0}
-    // The program's FS and GS bases, unless this CPU's are already the ones its
-    // `segment_bases_id` names.
     movq    {segment_bases_id}(%rdi), %rax
     cmpq    %rax, %gs:{cpu_segment_bases_id}
     jne     2f
@@ -246,8 +244,6 @@ x86_64_enter_user:
     swapgs
     sysretq
     int3
-    // Loads the FS base and the GS base `swapgs` swaps in (`rax` holds the context's
-    // `segment_bases_id`): `rax`, `rcx` and `rdx` are the program's to load after this.
 2:  movq    %rax, %gs:{cpu_segment_bases_id}
     movq    {fs_base}(%rdi), %rax
     movq    %rax, %rdx
@@ -1660,9 +1656,6 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
             options(nomem, nostack),
         );
     }
-    // Programs' FS and GS bases start at zero, whatever firmware left, as the per-CPU block's
-    // `segment_bases_id` 0 says: `x86_64_enter_user` loads others only for a context that set
-    // one. Neither is used in the kernel.
     // SAFETY: both MSRs are architectural, and nothing runs in ring 3 on this CPU yet.
     unsafe { super::write_msr(IA32_FS_BASE, 0) };
     // SAFETY: as above; the kernel's own GS base is `IA32_GS_BASE`, which this leaves alone.

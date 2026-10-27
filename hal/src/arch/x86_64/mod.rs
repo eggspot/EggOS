@@ -767,8 +767,6 @@ impl Platform for X86_64 {
 
     fn linux_hardware_capabilities() -> [u64; 2] {
         let features = core::arch::x86_64::__cpuid(1).edx;
-        // `AT_HWCAP2` stays 0: its `FSGSBASE` bit would tell programs they may use
-        // `wrfsbase` and `wrgsbase`, which `CR4.FSGSBASE` keeps from them (D83).
         [u64::from(features), 0]
     }
 

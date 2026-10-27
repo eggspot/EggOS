@@ -123,8 +123,6 @@ pub(crate) struct X86Tables {
     pub(crate) tss: Tss,
     /// The program's `rsp` for the moment between `syscall` and its frame being pushed.
     pub(crate) user_rsp: u64,
-    /// The `segment_bases_id` of the user context this CPU's FS base was last loaded for: 0, the FS
-    /// base zeroed by `set_up_user_mode`, until a program with one set runs here.
     pub(crate) segment_bases_id: u64,
 }
 
@@ -174,7 +172,6 @@ pub(crate) const USER_RSP_OFFSET: usize = HAL_CPU_LOCAL_OFFSET
     + core::mem::offset_of!(HalCpuLocal, x86)
     + core::mem::offset_of!(X86Tables, user_rsp);
 
-/// Where the `segment_bases_id` this CPU's FS base was loaded for is in a per-CPU block (x86_64).
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 pub(crate) const SEGMENT_BASES_ID_OFFSET: usize = HAL_CPU_LOCAL_OFFSET

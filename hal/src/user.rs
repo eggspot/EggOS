@@ -665,14 +665,7 @@ pub(crate) mod x86_64 {
         pub(crate) ss: u64,
         /// The kernel's stack pointer while the program runs; `TSS.RSP0` points here.
         pub(crate) kernel_rsp: u64,
-        /// The FS base: the thread pointer. Programs cannot write it themselves (`CR4.FSGSBASE`
-        /// is clear), so it is never saved; the way in loads it, with `gs_base`, only when this
-        /// CPU's segment bases belong to another value of `segment_bases_id`.
         pub(crate) fs_base: u64,
-        /// Names the values of `fs_base` and `gs_base`: 0 for a context that never set either
-        /// (both 0), and a new number, from [`NEXT_SEGMENT_BASES_ID`], each time one is set. The
-        /// way in compares it with the one this CPU's bases were last loaded for
-        /// (`X86Tables::segment_bases_id`).
         pub(crate) segment_bases_id: u64,
         /// After a page fault, the faulting address (`CR2`), kept by the way out of `run_user`
         /// for [`super::UserContext::last_exception`] (with `vector` and `error_code`).
@@ -680,7 +673,6 @@ pub(crate) mod x86_64 {
         pub(crate) gs_base: u64,
     }
 
-    /// The next [`Registers::segment_bases_id`]: never 0, never reused (2^64 settings).
     static NEXT_SEGMENT_BASES_ID: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(1);
 
