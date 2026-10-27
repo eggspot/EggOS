@@ -6772,3 +6772,83 @@ the license, by an explicit instruction recorded here.
   allowance, not per-benchmark. `main` pushes are report-only like PRs. The shell comments inside
   YAML `run:` blocks are not scanned (they are values for the lint). `hosts` no longer waits for
   the Linux job: it starts with the others, the runners being free.
+
+## D123 The macOS layer, part 2: threads, thread-local variables, locks, `getopt`, calendar time and the C locale, so small console tools and Rust std programs run; part 2 of D120 and the owner's exception to the D17/D34 order for v0.3.0 — Decided by the build loop
+- **What.** v0.3.0 item 21: macOS console tools that parse options with `getopt_long`, list
+  directories, format times, read `errno` and ask the locale, and programs on Rust's standard
+  library (arguments, environment, files, directories, `std::thread`, `Mutex`, `thread_local!`,
+  `std::process::exit`) run from `eggsh` on aarch64 and x86_64. It is part 2 of D120 and, like
+  it, comes in v0.3.0 by the owner's exception to the D17/D34 order. riscv64 still refuses
+  Mach-O files with `ENOEXEC` (D120). Guide and function list: docs/macos-programs.md.
+- **Clean room.** Apple's public headers' structure layouts and constants (`pthread_mutex_t`,
+  `pthread_cond_t`, `pthread_attr_t`, `pthread_once_t` and their signatures and static
+  initializers, `struct sigaction`, `stack_t`, `struct tm`, `struct lconv`, `struct option`,
+  `langinfo.h`'s items, `mman.h`'s flags, `fcntl.h`'s commands, `mach-o/loader.h`'s section
+  types), Apple's man pages (`getopt(3)`, `getopt_long(3)`, `strftime(3)`, `pthread(3)`,
+  `dispatch_semaphore_create(3)`), POSIX, and the observed behaviour of the Rust standard
+  library's public code paths on macOS (which functions it imports and how it calls them). No
+  dyld, libSystem, libpthread, Libc, xnu or GPL/LGPL code was read.
+- **Threads.** A Linux thread of the program's process (`clone` with `CLONE_SETTLS`,
+  `CLONE_PARENT_SETTID` and `CLONE_CHILD_CLEARTID`) on a mapped stack (512 KiB by default, as
+  Darwin's secondary threads, or `pthread_attr_setstacksize`'s size) with a guard page below it
+  and the thread's control block above it. The thread pointer (`tpidr_el0` on aarch64, the FS
+  base on x86_64) points at the control block; macOS programs use neither (Darwin keeps its own
+  thread data behind `tpidrro_el0` and GS). The block holds the thread's `errno` (so `errno` is
+  per thread now), its thread-local copy, its 512 `pthread_key_t` values (Darwin's
+  `PTHREAD_KEYS_MAX`), its `_tlv_atexit` destructors and its alternate signal stack.
+  `pthread_join` waits for the kernel to clear the id word as a shared futex (the kind
+  `CLONE_CHILD_CLEARTID` wakes) and unmaps the stack; a detached thread's stack is unmapped by
+  the next `pthread_create` once the kernel has cleared its word.
+- **Thread-local variables.** The loader records the template (the `S_THREAD_LOCAL_REGULAR`
+  and `S_THREAD_LOCAL_ZEROFILL` sections, from the lowest address to the end of the highest,
+  checked to lie in a readable segment, at most 16 MiB, aligned to at most 4 KiB) and each
+  thread gets a copy when it is created (the main thread's before `main`). Every descriptor's
+  thunk is bound to `_tlv_bootstrap`, which the layer implements as the accessor itself, so no
+  descriptor is rewritten and no lazy allocation is needed: on arm64 `mrs x16, tpidr_el0;
+  ldr x16, [x16]; ldr x0, [x0, #16]; add x0, x16, x0; ret`, which touches only `x0` and `x16`
+  (the scratch registers the TLV calling convention leaves the callee), and on x86_64
+  `mov rax, [rdi + 16]; add rax, fs:[0]; ret`, which touches only `rax`. `_tlv_atexit`
+  destructors run at thread exit, then key destructors (up to four rounds), and the calling
+  thread's at `exit`, as Darwin does.
+- **Locks.** The layer's own state lock (`Exclusive`, now taken by any thread) is a futex word
+  (free, held, held with waiters); the thread that holds it re-entering still ends the program
+  (status 134). Mutexes (normal, error-checking, recursive, and Darwin's static initializers),
+  condition variables, `pthread_once` and libdispatch semaphores are futexes in the program's
+  own memory. On aarch64, compiler-builtins' atomics ask `getauxval` for LSE: the layer answers
+  "no features", so they use load-exclusive/store-exclusive pairs, which every Armv8 CPU has.
+- **Signals and memory.** `sigaction` and `signal` record handlers and pass `SIG_IGN` and
+  `SIG_DFL` on to the kernel (so Rust's ignored `SIGPIPE` makes writes to closed pipes fail with
+  `EPIPE`); handlers are not delivered yet. `sigaltstack` keeps each thread's stack, masks are
+  accepted and empty. `mmap` translates Darwin's flags (`MAP_ANON` is 0x1000) and drops its
+  hints; `madvise` is accepted as the hint it is (Darwin's `MADV_DONTNEED` does not discard).
+- **Options, time and locale (host-tested).** `getopt` and `getopt_long` follow BSD: grouped
+  short options, attached or separate arguments, `::` optional arguments, `--name=value`,
+  unique abbreviations, BSD's messages, `optreset`; they do not reorder words (parsing stops at
+  the first operand). Calendar time is UTC only (`localtime_r` is `gmtime_r`, `%Z` is `UTC`),
+  with the days-from-civil algorithm over 400-year eras, and `strftime` covers the C locale's
+  conversions. The C locale is the only one: `setlocale` accepts `""`, `"C"` and `"POSIX"` and
+  refuses others with a null pointer, `nl_langinfo(CODESET)` is `US-ASCII` as on a Mac.
+- **The boot test on aarch64 uses QEMU's `max` CPU (decided by the build loop).** Apple
+  compiles arm64 macOS code for the M1 and later, so the Rust std program uses LSE atomics and
+  RCPC loads, which the other boot tests' Cortex-A72 (ARMv8.0-A) lacks (it stopped with an
+  illegal instruction). Only the macOS programs boot passes `-cpu max` (QEMU takes the last
+  `-cpu`); the other boots and the benchmarks keep the Cortex-A72. On real hardware arm64 macOS
+  programs need an ARMv8.4-A-level CPU, as they do on a Mac.
+- **The boot test.** `tests/macos-console` gains `macos-tools` (`no_std`, libSystem's C
+  functions only) and `macos-std` (Rust's standard library), built by CI's macOS runner as
+  before. The session runs `macos-std` with arguments and an environment variable (a file,
+  `/bin`'s listing, a missing file's `NotFound`, four named threads adding to a `Mutex` and
+  counting in a `thread_local!`) and with `exit 5`, `macos-tools` with short, long and grouped
+  options (`--list` a directory, times, `errno`, the locale) and with an unknown option
+  (`getopt`'s message, status 2); riscv64 refuses each with 126.
+- **Cost.** The layer is only in images with a Mach-O file, so the kernel and release images
+  do not change. Programs pay one `getauxval`-free LL/SC loop per contended atomic on aarch64
+  and a futex lock (one uncontended compare-and-swap) around the heap and the other process
+  state; a thread-local access is three or four instructions with no call into Rust.
+- **Not yet.** Signal delivery to handlers, the unwinder (`_Unwind_*`: a panic with
+  `panic = "unwind"` stops at it with status 127), `fork`/`exec`/`posix_spawn`, pipes, `scanf`,
+  time zones, locales other than C, stdio streams shared between threads, `getopt_long`'s word
+  reordering and `getopt_long_only`, Objective-C, Swift and libc++, frameworks, `dlopen`,
+  programs without chained fixups, x86_64 programs on Arm, and a benchmark of program start
+  and of the hot libSystem calls against macOS on the same hardware (it needs a way to run a
+  macOS program inside the benchmark kernel).

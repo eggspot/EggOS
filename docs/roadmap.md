@@ -191,13 +191,19 @@ Must-have, in order:
     name (126). The kernel's `execve` starts the layer for Mach-O and fat files (not Java
     class files) on aarch64 and x86_64; riscv64 refuses them with `ENOEXEC`. A QEMU test on all
     three boots programs built from our own source by Apple's linker (on CI's macOS runner).
-21. **next** — macOS, part 2: users can run macOS programs built on Rust's std and C programs
-    with threads: thread-local variables, pthread, signals, `mmap`, libdispatch semaphores and
-    the unwinder; then programs without chained fixups (`LC_DYLD_INFO`), other dylibs and
-    frameworks, and x86_64 programs on Arm through ahead-of-time translation (D120's
-    "Not yet").
+21. **done** — macOS, part 2: users can now run small real macOS console tools from `eggsh`:
+    `getopt`/`getopt_long`, directory listing, calendar time (`gmtime_r`, `localtime_r`,
+    `timegm`, `strftime`, in UTC), `errno` per thread with `strerror`, C-locale `setlocale`,
+    `nl_langinfo` and `localeconv`, and Rust std programs (arguments, environment, files,
+    directories, `std::thread`, `Mutex`, `thread_local!`) on aarch64 and x86_64 (D123,
+    docs/macos-programs.md): threads with their own control blocks behind the thread pointer,
+    Mach-O thread-local variables, pthread keys, mutexes, condition variables and once,
+    libdispatch semaphores, `mmap`, `fcntl`, `writev` and `dlsym`. Signal handlers are recorded
+    but not delivered, and the unwinder, time zones, other locales, programs without chained
+    fixups, other dylibs and frameworks, and x86_64 programs on Arm come later (D123's "Not
+    yet").
 
-Next in the plan: item 19b or 21, whichever the build loop picks first.
+Next in the plan: item 19b, then what the build loop picks next.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
 serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
@@ -225,7 +231,7 @@ architecture as "boots, no shell". The graphical terminal is the owner's priorit
 | M12 | Adaptive shell, designed by Claude Fable from `docs/ux/` (D16, D23): desktop first, then phone/tablet and TV | |
 | M13 | Real hardware and vendor GPU drivers | |
 | M14 | Component manager (D18) and app capability registry: installed apps published as CLI commands and MCP tools; agent permissions and audit log (D21); components downloaded on demand in the background, delta updates applied atomically (D69) | |
-| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, parts 1 and 2a: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118), then threads, waits, locks, error codes, UTF-16 and directory listing (D121); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119); macOS console programs on aarch64 and x86_64, part 1: a Mach-O loader (thin and fat, chained fixups) and a libSystem subset as an optional user-mode layer (D120) |
+| M15 | Compatibility layers, native not emulated (D17), each an optional component exposed to AI through M14: Linux userland, Windows and macOS side by side, then Android and iOS (order: D34) | **in progress** — Windows console programs on x86_64, parts 1 and 2a: the PE32+ loader and a kernel32/ntdll subset as an optional user-mode layer (D118), then threads, waits, locks, error codes, UTF-16 and directory listing (D121); static Android console programs (NDK, bionic) through the Linux layer on aarch64 and x86_64 (D119); macOS console programs on aarch64 and x86_64, part 1: a Mach-O loader (thin and fat, chained fixups) and a libSystem subset as an optional user-mode layer (D120), and part 2: threads, thread-local variables, locks, `getopt`, calendar time and the C locale, so small tools and Rust std programs run (D123) |
 | M16 | Editions as component presets (D18): personal, professional, enterprise, server | |
 
 Timer follow-ups (D26): on x86_64, read the TSC/APIC frequencies from CPUID 0x15 and hypervisor

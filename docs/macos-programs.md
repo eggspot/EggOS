@@ -10,9 +10,10 @@ file's chained fixups and calls `main(argc, argv, envp, apple)`. A libSystem cal
 function call; no system call happens unless the function needs the kernel (a write, a file
 read), and `malloc` allocates without one.
 
-This is part 1: console programs that use the libSystem functions listed below. Programs on
-Rust's standard library, Objective-C or Swift, and anything that needs threads, signals or
-other libraries, do not run yet (see below).
+Part 1 (D120) runs console programs that use the libSystem functions listed below; part 2
+(D123) adds what small real tools and Rust's standard library need: threads, thread-local
+variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Objective-C,
+Swift, C++'s runtime and programs that need other libraries do not run yet (see below).
 
 ## Add a program to the image
 
@@ -44,8 +45,16 @@ lipo -create -output hello-universal hello-arm64 hello-x86_64      # a fat file,
 cargo xtask macos-programs     # builds tests/macos-console for both CPUs, on a Mac
 ```
 
-Rust programs on the standard library do not run yet (see below); a `no_std` one that calls
-libSystem's C functions, as `tests/macos-console` does, does.
+Rust programs on the standard library run too, built with `cargo build --target
+aarch64-apple-darwin` (or `x86_64-apple-darwin`) and `MACOSX_DEPLOYMENT_TARGET=13.0`: their
+arguments, environment, standard streams, files, directories, `std::thread` (spawn, join,
+names), `Mutex`, `thread_local!` and `std::process::exit` work. A panic prints its message;
+with the default `panic = "unwind"` unwinding stops at the first unwinder function with status
+127 (`panic = "abort"` aborts with 134).
+
+arm64 macOS programs are compiled for Apple's M1 and later, so they use instructions an
+ARMv8.0-A CPU lacks (LSE atomics, RCPC loads): on aarch64 they need a CPU of ARMv8.4-A level or
+later, and their boot test runs QEMU's `max` CPU.
 
 `tests/macos-console` is such a program: `#![no_std]` Rust that defines `main` and calls
 libSystem's C functions, built for `aarch64-apple-darwin` and `x86_64-apple-darwin`
@@ -61,6 +70,16 @@ reading a file through `fopen` and `fgets` and through `open` and `read`, a miss
 and a call to a function the layer lacks. It also runs a fat file of both slices, and checks the
 refusals of a program that links `libz` and of the other CPU's program.
 
+Two more programs come from the same package. `macos-tools` (`no_std`, C functions only) parses
+`-v --verbose -n 3 --list /usr/share/eggos --name=eggos rest more` with `getopt_long`, lists the
+directory with `opendir` and `readdir`, formats the epoch and a fixed time with `localtime_r`,
+`gmtime_r`, `timegm` and `strftime`, sleeps with `nanosleep`, reads a missing file's `errno`
+through `__error` and `strerror`, asks `setlocale`, `nl_langinfo` and `localeconv`, and an
+unknown option ends it with `getopt`'s message and status 2. `macos-std` is a Rust std program:
+its arguments, an environment variable, a file, `/bin`'s listing, a missing file's
+`ErrorKind::NotFound`, four named threads that add to a `Mutex` and count calls in a
+`thread_local!`, and `std::process::exit(5)`.
+
 ## What the layer provides
 
 | Area | Functions |
@@ -70,9 +89,16 @@ refusals of a program that links `libz` and of the other CPU's program.
 | Heap | `malloc`, `calloc`, `realloc`, `reallocf`, `free`, `malloc_size`, `posix_memalign`, `aligned_alloc`, `valloc` |
 | Numbers | `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul`, `strtoull`, `abs`, `labs`, `llabs`, `qsort`, `bsearch`, `rand`, `srand`, `arc4random`, `arc4random_buf`, `arc4random_uniform` |
 | Files | `open`, `close`, `read`, `write`, `lseek`, `stat`, `lstat`, `fstat` (on x86_64 only their `$INODE64` names: the unsuffixed ones are the old 32-bit-inode ABI, and calling them stops with status 127), `isatty`, `access`, `getcwd`, `chdir`, `unlink`, `rmdir`, `mkdir`, `opendir`, `readdir` (`readdir$INODE64` on x86_64, likewise), `closedir`, `dirfd` |
-| Process and environment | `exit`, `_exit`, `_Exit`, `abort`, `atexit`, `raise`, `kill`, `getpid`, `getppid`, `getuid`, `geteuid`, `getenv`, `setenv`, `putenv`, `unsetenv`, `environ`, `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron`, `_NSGetProgname`, `__error` (`errno`), `__stack_chk_guard`, `__stack_chk_fail`, `getpagesize`, `sysconf` (page size, CPUs) |
-| Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep` |
-| dyld | `_dyld_image_count`, `_dyld_get_image_header`, `_dyld_get_image_vmaddr_slide` |
+| Files, part 2 | `dup`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `writev` |
+| Process and environment | `exit`, `_exit`, `_Exit`, `abort`, `atexit`, `raise`, `kill`, `getpid`, `getppid`, `getuid`, `geteuid`, `getenv`, `setenv`, `putenv`, `unsetenv`, `environ`, `_NSGetArgc`, `_NSGetArgv`, `_NSGetEnviron`, `_NSGetProgname`, `_NSGetExecutablePath`, `__error` (`errno`, one per thread), `strerror_r`, `__stack_chk_guard`, `__stack_chk_fail`, `getpagesize`, `sysconf` (page size, CPUs, `_SC_OPEN_MAX`, `_SC_CLK_TCK`, `_SC_ARG_MAX`) |
+| Options | `getopt`, `getopt_long`, `optarg`, `optind`, `opterr`, `optopt`, `optreset` |
+| Threads | `pthread_create`, `pthread_join`, `pthread_detach`, `pthread_exit`, `pthread_self`, `pthread_equal`, `pthread_main_np`, `pthread_threadid_np`, `pthread_mach_thread_np`, `pthread_get_stackaddr_np`, `pthread_get_stacksize_np`, `pthread_setname_np`, `pthread_getname_np`, `pthread_attr_init`, `pthread_attr_destroy`, `pthread_attr_setstacksize`, `pthread_attr_getstacksize`, `pthread_attr_setdetachstate`, `pthread_attr_getdetachstate`, `pthread_attr_setguardsize`, `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific`, `pthread_setspecific`, `sched_yield`, thread-local variables (`_tlv_bootstrap`, `_tlv_atexit`) |
+| Locks | `pthread_mutex_init`, `pthread_mutex_destroy`, `pthread_mutex_lock`, `pthread_mutex_trylock`, `pthread_mutex_unlock` (normal, error-checking, recursive, and the static initializers), `pthread_mutexattr_init`, `pthread_mutexattr_destroy`, `pthread_mutexattr_settype`, `pthread_cond_init`, `pthread_cond_destroy`, `pthread_cond_wait`, `pthread_cond_timedwait`, `pthread_cond_signal`, `pthread_cond_broadcast`, `pthread_once`, `dispatch_semaphore_create`, `dispatch_semaphore_wait`, `dispatch_semaphore_signal`, `dispatch_time`, `dispatch_retain`, `dispatch_release` |
+| Signals | `sigaction`, `signal`, `sigaltstack`, `sigprocmask`, `pthread_sigmask`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`, `pause` |
+| Memory | `mmap` (Darwin's flags), `munmap`, `mprotect`, `madvise` (a hint: accepted) |
+| Time | `clock_gettime`, `clock_gettime_nsec_np`, `gettimeofday`, `time`, `mach_absolute_time`, `mach_continuous_time`, `mach_timebase_info` (1/1: nanoseconds), `nanosleep`, `usleep`, `sleep`, `gmtime_r`, `gmtime`, `localtime_r`, `localtime`, `timegm`, `mktime`, `strftime`, `tzset` |
+| Locale | `setlocale`, `nl_langinfo`, `localeconv`, `__mb_cur_max` (the C locale only) |
+| dyld | `_dyld_image_count`, `_dyld_get_image_header`, `_dyld_get_image_vmaddr_slide`, `_dyld_get_image_name`, `dlsym` (the layer's own functions), `dlopen` (loads nothing), `dlclose`, `dlerror` |
 
 Darwin's numbers become Linux's at the boundary: `open`'s flags, error numbers (`EAGAIN` is
 35, `ENOSYS` 78), clocks (`CLOCK_MONOTONIC` is 6), signals, `struct stat` and `struct dirent`.
@@ -90,16 +116,27 @@ used). An import from a library other than libSystem refuses the program before 
 runs: `macos: /bin/x: needs /usr/lib/libz.1.dylib, which EggOS does not provide yet`, status
 126.
 
+Threads are Linux threads of the program's process. Each has a control block that its thread
+pointer (`tpidr_el0` on aarch64, the FS base on x86_64, neither of which macOS programs use)
+points at, holding its `errno`, its copy of the program's thread-local template
+(`__thread_data` and `__thread_bss`) and its `pthread_key_t` values; `_tlv_bootstrap`, which
+every thread-local variable's descriptor calls, is the accessor itself: three instructions that
+return the calling thread's copy plus the variable's offset. Locks are futexes in the program's
+own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`), and the only locale is C
+(`nl_langinfo(CODESET)` is `US-ASCII`, as on a Mac).
+
 ## What does not work yet
 
-- **Programs on Rust's standard library, Objective-C, Swift or C++'s runtime.** A Rust std
-  program imports about 80 functions: thread-local variables (`_tlv_bootstrap`, which dyld
-  sets up), pthread mutexes and thread ids, `sigaction` and `sigaltstack`, `mmap`, libdispatch
-  semaphores and the unwinder; it starts, then stops at the first of them with status 127. The
-  next part adds them.
-- **Threads** (`pthread_create` and everything else in pthread), **signal handlers**
-  (`sigaction`, `signal`), **`mmap`**, **`fork`, `exec` and `posix_spawn`**, **pipes**,
-  **`scanf`** and **locale** functions.
+- **Objective-C, Swift or C++'s runtime**, and **unwinding** (`_Unwind_*`): a Rust panic with
+  `panic = "unwind"` stops at the first unwinder call with status 127.
+- **Signal handlers**: `sigaction` and `signal` record handlers and pass ignoring or the default
+  action on to the kernel, but do not deliver signals to a handler yet; a fault ends the
+  program as Linux's default action does. Signal masks are accepted and stay empty.
+- **`fork`, `exec` and `posix_spawn`**, **pipes**, **`scanf`**, **time zones** (all times are
+  UTC), **locales other than C** (`setlocale` refuses them with a null pointer), and stdio
+  streams shared between threads (each stream assumes one thread at a time).
+- **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
+  does, so options after an operand stay operands; `getopt_long_only` is missing.
 - **Other libraries and frameworks**: no libc++, no CoreFoundation, Foundation or Cocoa, no
   `dlopen`, no dyld shared cache; a program that links any library other than libSystem is
   refused. Weak libraries are allowed and their imports are missing. Imports a program makes
