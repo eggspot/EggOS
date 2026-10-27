@@ -9,12 +9,18 @@ macro_rules! exports {
 }
 
 mod console;
+mod directory;
 mod environment;
 mod file;
 mod heap;
 mod memory;
 mod module;
 mod process;
+mod shell;
+mod strings;
+mod sync;
+mod system;
+mod thread;
 pub mod thread_environment;
 mod time;
 
@@ -28,43 +34,21 @@ pub type Bool = i32;
 pub const TRUE: Bool = 1;
 pub const FALSE: Bool = 0;
 pub const INVALID_HANDLE_VALUE: usize = usize::MAX;
+pub const CURRENT_PROCESS: usize = usize::MAX;
+pub const CURRENT_THREAD: usize = usize::MAX - 1;
 
-pub mod error {
-    pub const SUCCESS: u32 = 0;
-    pub const FILE_NOT_FOUND: u32 = 2;
-    pub const PATH_NOT_FOUND: u32 = 3;
-    pub const TOO_MANY_OPEN_FILES: u32 = 4;
-    pub const ACCESS_DENIED: u32 = 5;
-    pub const INVALID_HANDLE: u32 = 6;
-    pub const NOT_ENOUGH_MEMORY: u32 = 8;
-    pub const NOT_SUPPORTED: u32 = 50;
-    pub const FILE_EXISTS: u32 = 80;
-    pub const INVALID_PARAMETER: u32 = 87;
-    pub const INSUFFICIENT_BUFFER: u32 = 122;
-    pub const MOD_NOT_FOUND: u32 = 126;
-    pub const PROC_NOT_FOUND: u32 = 127;
-    pub const NEGATIVE_SEEK: u32 = 131;
-    pub const ENVVAR_NOT_FOUND: u32 = 203;
-    pub const INVALID_ADDRESS: u32 = 487;
-}
+pub use crate::errors::code as error;
 
 /// The Win32 error code for a Linux error number.
 pub fn error_for(errno: Errno) -> u32 {
-    match errno.0 {
-        2 => error::FILE_NOT_FOUND,
-        20 => error::PATH_NOT_FOUND,
-        1 | 13 | 21 | 30 => error::ACCESS_DENIED,
-        9 => error::INVALID_HANDLE,
-        12 => error::NOT_ENOUGH_MEMORY,
-        17 => error::FILE_EXISTS,
-        23 | 24 => error::TOO_MANY_OPEN_FILES,
-        38 | 95 => error::NOT_SUPPORTED,
-        _ => error::INVALID_PARAMETER,
-    }
+    crate::errors::for_errno(errno.0)
 }
 
+const SPINS_BEFORE_YIELD: u32 = 128;
+
 /// A lock around `T` for the layer's process-wide tables: uncontended, it is one atomic
-/// exchange each way.
+/// exchange each way; contended, it yields the CPU every 128 tries, so a holder that was
+/// preempted gets to run.
 pub struct SpinLock<T> {
     locked: core::sync::atomic::AtomicBool,
     value: core::cell::UnsafeCell<T>,
@@ -83,12 +67,18 @@ impl<T> SpinLock<T> {
 
     pub fn with<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
         use core::sync::atomic::Ordering;
+        let mut spins = 0u32;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            core::hint::spin_loop();
+            spins += 1;
+            if spins.is_multiple_of(SPINS_BEFORE_YIELD) {
+                crate::linux::yield_now();
+            } else {
+                core::hint::spin_loop();
+            }
         }
         // SAFETY: the lock is held, so this is the only reference to the value.
         let result = work(unsafe { &mut *self.value.get() });
@@ -105,22 +95,33 @@ pub fn fail<T>(code: u32, value: T) -> T {
 
 const KERNEL32: &[&[Export]] = &[
     console::EXPORTS,
+    directory::EXPORTS,
     environment::EXPORTS,
     file::EXPORTS,
     heap::EXPORTS,
     memory::EXPORTS,
     module::EXPORTS,
     process::EXPORTS,
+    strings::EXPORTS,
+    sync::EXPORTS,
+    system::EXPORTS,
+    thread::EXPORTS,
     thread_environment::EXPORTS,
     time::EXPORTS,
 ];
 
-const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS];
+const NTDLL: &[&[Export]] = &[memory::NTDLL_EXPORTS, system::NTDLL_EXPORTS];
+
+const SHELL32: &[&[Export]] = &[shell::EXPORTS];
+
+const USER32: &[&[Export]] = &[strings::USER32_EXPORTS];
 
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
         Library::Kernel32 => KERNEL32,
         Library::Ntdll => NTDLL,
+        Library::Shell32 => SHELL32,
+        Library::User32 => USER32,
     }
 }
 

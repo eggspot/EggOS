@@ -1,6 +1,7 @@
 //! The Windows libraries the layer provides and how an import's library name finds one: names
 //! compare ignoring ASCII case, with or without `.dll`, and the API sets
-//! (`api-ms-win-core-*`) resolve to kernel32's functions, where Windows forwards them too.
+//! (`api-ms-win-core-*`) resolve to kernel32's functions, where Windows forwards them too;
+//! shell32 has only `CommandLineToArgvW` and user32 only its character functions.
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -9,6 +10,8 @@ use crate::text::equal_ignoring_ascii_case;
 pub enum Library {
     Kernel32,
     Ntdll,
+    Shell32,
+    User32,
 }
 
 /// One function a library exports: its name and its address in the layer.
@@ -31,6 +34,10 @@ pub fn library(name: &[u8]) -> Option<Library> {
         Some(Library::Kernel32)
     } else if is(b"ntdll") {
         Some(Library::Ntdll)
+    } else if is(b"shell32") {
+        Some(Library::Shell32)
+    } else if is(b"user32") {
+        Some(Library::User32)
     } else {
         None
     }
@@ -70,8 +77,10 @@ mod tests {
             Some(Library::Kernel32)
         );
         assert_eq!(library(b"ntdll.dll"), Some(Library::Ntdll));
+        assert_eq!(library(b"SHELL32.dll"), Some(Library::Shell32));
+        assert_eq!(library(b"user32.dll"), Some(Library::User32));
         for name in [
-            &b"user32.dll"[..],
+            &b"gdi32.dll"[..],
             b"kernel32.dll.dll",
             b"",
             b".dll",

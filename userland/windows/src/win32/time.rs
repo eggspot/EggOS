@@ -1,8 +1,10 @@
 //! Time: the tick counts and performance counter from the monotonic clock (the counter at
 //! 10 MHz, the frequency Windows reports), the system time as a `FILETIME` (100 ns intervals
-//! since 1601) from the real-time clock, and `Sleep`.
+//! since 1601) from the real-time clock, its calendar form (`SYSTEMTIME`, in UTC: local time is
+//! UTC until EggOS has time zones), and `Sleep`.
 
-use super::{Bool, TRUE};
+use super::{Bool, FALSE, TRUE, error, fail};
+use crate::calendar::{self, SystemTime};
 use crate::library::Export;
 use crate::linux::{self, CLOCK_MONOTONIC, CLOCK_REALTIME};
 
@@ -33,11 +35,50 @@ unsafe extern "win64" fn query_performance_frequency(frequency: *mut i64) -> Boo
 }
 
 unsafe extern "win64" fn get_system_time_as_file_time(time: *mut u64) {
-    let nanoseconds = linux::clock_nanoseconds(CLOCK_REALTIME);
-    let intervals = nanoseconds / NANOSECONDS_PER_TICK + FILETIME_EPOCH_OFFSET_SECONDS * 10_000_000;
+    let intervals = now();
     // SAFETY: the caller passes a writable `FILETIME`: two `DWORD`s, low first, which is a
     // little-endian 64-bit value at 4-byte alignment.
     unsafe { time.write_unaligned(intervals) };
+}
+
+fn now() -> u64 {
+    let nanoseconds = linux::clock_nanoseconds(CLOCK_REALTIME);
+    nanoseconds / NANOSECONDS_PER_TICK + FILETIME_EPOCH_OFFSET_SECONDS * 10_000_000
+}
+
+unsafe extern "win64" fn get_system_time(time: *mut u8) {
+    let calendar = calendar::system_time(now()).unwrap_or_default();
+    // SAFETY: the caller passes a writable `SYSTEMTIME` (16 bytes).
+    unsafe { time.copy_from_nonoverlapping(calendar.to_bytes().as_ptr(), 16) };
+}
+
+unsafe extern "win64" fn file_time_to_system_time(file_time: *const u64, time: *mut u8) -> Bool {
+    // SAFETY: the caller passes a readable `FILETIME` (4-byte aligned).
+    let value = unsafe { file_time.read_unaligned() };
+    let Some(calendar) = calendar::system_time(value).filter(|_| value <= i64::MAX as u64) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    // SAFETY: the caller passes a writable `SYSTEMTIME`.
+    unsafe { time.copy_from_nonoverlapping(calendar.to_bytes().as_ptr(), 16) };
+    TRUE
+}
+
+unsafe extern "win64" fn system_time_to_file_time(time: *const u8, file_time: *mut u64) -> Bool {
+    let mut bytes = [0u8; 16];
+    // SAFETY: the caller passes a readable `SYSTEMTIME`.
+    unsafe { bytes.as_mut_ptr().copy_from_nonoverlapping(time, 16) };
+    let Some(value) = calendar::file_time(&SystemTime::from_bytes(bytes)) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    // SAFETY: the caller passes a writable `FILETIME`.
+    unsafe { file_time.write_unaligned(value) };
+    TRUE
+}
+
+unsafe extern "win64" fn file_time_to_local_file_time(from: *const u64, to: *mut u64) -> Bool {
+    // SAFETY: the caller passes a readable and a writable `FILETIME`.
+    unsafe { to.write_unaligned(from.read_unaligned()) };
+    TRUE
 }
 
 extern "win64" fn sleep(milliseconds: u32) {
@@ -62,6 +103,12 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"QueryPerformanceFrequency" => query_performance_frequency,
     b"GetSystemTimeAsFileTime" => get_system_time_as_file_time,
     b"GetSystemTimePreciseAsFileTime" => get_system_time_as_file_time,
+    b"GetSystemTime" => get_system_time,
+    b"GetLocalTime" => get_system_time,
+    b"FileTimeToSystemTime" => file_time_to_system_time,
+    b"SystemTimeToFileTime" => system_time_to_file_time,
+    b"FileTimeToLocalFileTime" => file_time_to_local_file_time,
+    b"LocalFileTimeToFileTime" => file_time_to_local_file_time,
     b"Sleep" => sleep,
     b"SleepEx" => sleep_ex,
 ];

@@ -109,8 +109,11 @@ unsafe extern "win64" fn write_file(
 }
 
 extern "win64" fn close_handle(handle: usize) -> Bool {
-    if handle >= usize::MAX - 1 {
+    if handle >= super::CURRENT_THREAD {
         return TRUE;
+    }
+    if super::sync::is_object_handle(handle) {
+        return super::sync::close(handle);
     }
     let Some(fd) = fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
@@ -146,7 +149,12 @@ fn create_file(path: &[u8], access: u32, disposition: u32) -> usize {
     };
     let fd = match linux::open(path, flags) {
         Ok(fd) => fd,
-        Err(errno) => return fail(error_for(errno), INVALID_HANDLE_VALUE),
+        Err(errno) => {
+            return fail(
+                super::directory::path_error(path, errno),
+                INVALID_HANDLE_VALUE,
+            );
+        }
     };
     let directory = linux::fstat(fd)
         .is_ok_and(|words| linux::file_mode(&words) & linux::FILE_TYPE == linux::DIRECTORY);
