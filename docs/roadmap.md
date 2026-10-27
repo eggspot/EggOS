@@ -209,12 +209,27 @@ Must-have, in order:
     but not delivered, and the unwinder, time zones, other locales, programs without chained
     fixups, other dylibs and frameworks, and x86_64 programs on Arm come later (D123's "Not
     yet").
+22. **done** — users can now pipe commands and redirect input and output from `eggsh` (D125,
+    docs/shell.md): `a | b | c` runs its programs at the same time, piped, in one process
+    group that `^C` reaches, with the last one's status; `<`, `>` and `>>` on builtins and
+    programs; the kernel's pipes (`pipe`, `pipe2`, blocking and non-blocking reads and writes,
+    end of file, `EPIPE` and `SIGPIPE`, `poll`); a history of the last lines on the up and down
+    arrows, on the serial and graphical terminals; `grep`, `wc`, `head` and `tail`; and `ps`,
+    `free` and `uptime` from a minimal `/proc` (`meminfo`, `uptime`, `ps`). Next, as user
+    capabilities: `2>` and `2>&1`; moving the cursor within a line; `/proc/self` and
+    `/proc/<pid>`; the utilities' GUI and MCP front-ends (M14).
+23. **done** — users can now create and change files from `eggsh` (D125, docs/coreutils.md):
+    `/tmp` and `/home` are writable file systems in memory (files and directories, at most
+    half of the memory together, `ENOSPC` past it), with `cp`, `mv`, `rm` (`-r`, `-f`), `mkdir`
+    (`-p`) and `touch`. Nothing survives a reboot. Next, as user capabilities: a file removed
+    while open stays readable until its last close; programs run from `/tmp` and `/home`;
+    `cp -r`; files that survive a reboot (a disk driver and a disk file system).
 
 Next in the plan: what the build loop picks next.
 
 Nice-to-have, in order, only after the must-haves and before the freeze: an MCP server over the
-serial console, pipes, a tmpfs at `/tmp`, a minimal `/proc`, an RTC driver for `date`, line
-history. Checkpoint 2026-10-28 23:00: if `execve` or process creation is not green on all three,
+serial console, an RTC driver for `date` (pipes, a tmpfs at `/tmp`, a minimal `/proc` and line
+history are items 22 and 23). Checkpoint 2026-10-28 23:00: if `execve` or process creation is not green on all three,
 fall back to one `eggsh` with built-in commands. Cut order when behind: `/proc`, RTC, tmpfs,
 pipes, MCP; `fork`; the desktop's window controls and mouse; the fallback; last, ship a late
 architecture as "boots, no shell". The graphical terminal is the owner's priority.

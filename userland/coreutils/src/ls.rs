@@ -350,7 +350,7 @@ fn read_statuses<S: System>(
     status
 }
 
-fn record_names(records: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub fn record_names(records: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = records;
     core::iter::from_fn(move || {
         let length = rest.get(RECORD_LENGTH_OFFSET..RECORD_LENGTH_OFFSET + 2)?;

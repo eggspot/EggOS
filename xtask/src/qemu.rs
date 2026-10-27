@@ -166,7 +166,7 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"eggos-std-selftest shell-child kill-self; echo EGGSH-TEST killed $?\r",
     b"eggsh /usr/share/eggsh/test-script one two; echo EGGSH-TEST script status $?\r",
     b"eggsh -c 'echo EGGSH-TEST dash-c $0 $1' name arg\r",
-    b"echo a | b; echo EGGSH-TEST never\r",
+    b"echo a && b; echo EGGSH-TEST never\r",
     b"echo EGGSH-TEST after unsupported $?\r",
     b"eggos-std-selftest shell-child wait-for-interrupt\r",
     b"echo EGGSH-TEST interrupted $?\r",
@@ -523,7 +523,7 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
     ]
 }
 
-const PROMPT_SESSION: [&[u8]; 9] = [
+const PROMPT_SESSION: [&[u8]; 26] = [
     b"ls /\r",
     b"ls -l /bin/ls; ls /nope; echo EGGOS-COREUTILS ls status $?\r",
     b"cat /etc/motd /etc/hostname\r",
@@ -532,10 +532,66 @@ const PROMPT_SESSION: [&[u8]; 9] = [
     b"sleep 0; sleep 0.05; echo EGGOS-COREUTILS slept $?\r",
     b"/bin/false; echo EGGOS-COREUTILS false $?\r",
     SHIFTED_KEYS_LINE,
+    b"echo hello | wc\r",
+    b"ls / | grep bin | head -n 1\r",
+    b"cat < /etc/motd | grep -c -i eggos; wc -l < /etc/hostname\r",
+    b"ls /nope | grep x; echo EGGOS-PIPE last $?; true | false; echo EGGOS-PIPE status $?\r",
+    b"tail -n 1 /etc/motd /etc/hostname | head -n 4 | tail -n +2\r",
+    PIPELINE_READING_THE_TERMINAL,
+    b"echo EGGOS-PIPE interrupted $?\r",
+    b"ls /proc; cd /proc; pwd; cd ..; pwd; grep -c kB /proc/meminfo\r",
+    b"ps | head -n 1; ps | grep ' init$'; ps | grep -c ' R ps$'\r",
+    b"free | head -n 1; free | grep -c '^Mem: '; uptime | grep -c '^up [0-9]'\r",
+    b"echo a > /tmp/x; echo b >> /tmp/x; cat /tmp/x; cat < /tmp/x\r",
+    b"mkdir /home/u; touch /home/u/f; cp /tmp/x /home/u/y; mv /home/u/y /home/u/z; ls /home/u\r",
+    b"rm /home/u/z; ls /home/u; echo x > /etc/motd; echo EGGOS-FILES read-only $?\r",
+    b"mkdir -p /tmp/a/b; mv /tmp/x /home; rm -r /home/u /tmp/a; ls /tmp /home; wc -c < /home/x\r",
+    b"echo EGGOS-HISTORY recalled\r",
+    b"echo EGGOS-HISTORY newest\r",
+    RECALL_THE_LINE_BEFORE_LAST,
     b"poweroff\r",
 ];
 
-const PROMPT_SESSION_FRAME_PROMPT: usize = PROMPT_SESSION.len();
+const RECALL_THE_LINE_BEFORE_LAST: &[u8] = b"\x1b[A\x1b[A\r";
+
+fn shown_command(session: &[&[u8]], index: usize) -> String {
+    let typed = match session[index] {
+        RECALL_THE_LINE_BEFORE_LAST => session[index - 2],
+        typed => typed,
+    };
+    String::from_utf8_lossy(typed)
+        .trim_end_matches('\r')
+        .to_owned()
+}
+
+const PIPELINE_READING_THE_TERMINAL: &[u8] = b"cat | grep EGGOS-PIPE\r";
+
+const PIPELINE_INPUT_LINE: &str = "EGGOS-PIPE interrupt me";
+
+#[derive(Debug, Clone, Copy)]
+struct Reaction {
+    line_ends_with: &'static str,
+    occurrences: usize,
+    keys: &'static [u8],
+}
+
+const REACTIONS: [Reaction; 2] = [
+    Reaction {
+        line_ends_with: "# cat | grep EGGOS-PIPE",
+        occurrences: 1,
+        keys: b"EGGOS-PIPE interrupt me\r",
+    },
+    Reaction {
+        line_ends_with: PIPELINE_INPUT_LINE,
+        occurrences: 2,
+        keys: b"\x03",
+    },
+];
+
+const PROMPT_SESSION_FRAME_PROMPT: usize = 9;
+
+const _: () =
+    assert!(PROMPT_SESSION[PROMPT_SESSION_FRAME_PROMPT - 2].len() == SHIFTED_KEYS_LINE.len());
 
 const UNAME_LINE: &[u8] = b"uname -a\r";
 
@@ -615,9 +671,9 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             .collect()
     };
     [
-        whole(&["bin", "etc", "init", "usr"]),
+        whole(&["bin", "etc", "home", "init", "proc", "tmp", "usr"]),
         vec![
-            Line::Around("-rwxr-xr-x 11 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 23 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -630,6 +686,35 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["EGGOS-COREUTILS slept 0"]),
         whole(&["EGGOS-COREUTILS false 1"]),
         whole(&["EGGOS-KEYBOARD Typed_On+Virtio:OK"]),
+        whole(&["      1       1       6"]),
+        whole(&["bin"]),
+        whole(&["1", "1"]),
+        whole(&[
+            "ls: cannot access '/nope': No such file or directory",
+            "EGGOS-PIPE last 1",
+            "EGGOS-PIPE status 1",
+        ]),
+        whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
+        whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
+        whole(&["EGGOS-PIPE interrupted 130"]),
+        whole(&["meminfo", "ps", "uptime", "/proc", "/", "3"]),
+        whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
+        whole(&[
+            "               total        used        free      shared  buff/cache   available",
+            "1",
+            "1",
+        ]),
+        whole(&["a", "b", "a", "b"]),
+        whole(&["f", "z"]),
+        whole(&[
+            "f",
+            "eggsh: /etc/motd: Read-only file system",
+            "EGGOS-FILES read-only 1",
+        ]),
+        whole(&["/home:", "x", "", "/tmp:", "4"]),
+        whole(&["EGGOS-HISTORY recalled"]),
+        whole(&["EGGOS-HISTORY newest"]),
+        whole(&["EGGOS-HISTORY recalled"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -643,6 +728,7 @@ const SHELL_INTERRUPT: (&str, &[u8]) = (
 struct ShellTyping {
     lines: usize,
     interrupts: usize,
+    reactions: [bool; REACTIONS.len()],
 }
 
 const SHELL_LINES: [&str; 19] = [
@@ -661,7 +747,7 @@ const SHELL_LINES: [&str; 19] = [
     "EGGSH-TEST sourced yes",
     "EGGSH-TEST script status 5",
     "EGGSH-TEST dash-c name arg",
-    "eggsh: `|` is not supported yet",
+    "eggsh: `&&` is not supported yet",
     "EGGSH-TEST after unsupported 2",
     "EGGSH-TEST interrupted 130",
     "EGGSH-TEST prompt interrupt 130",
@@ -1086,6 +1172,18 @@ fn shell_scripts_to_type(
         scripts.push(interrupt);
         typed.interrupts += 1;
     }
+    for (reaction, done) in REACTIONS.iter().zip(&mut typed.reactions) {
+        let seen = console
+            .split_inclusive('\n')
+            .filter(|line| {
+                line.ends_with('\n') && line.trim_end().ends_with(reaction.line_ends_with)
+            })
+            .count();
+        if !*done && seen >= reaction.occurrences {
+            scripts.push(reaction.keys);
+            *done = true;
+        }
+    }
     scripts
 }
 
@@ -1331,15 +1429,18 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
         ));
     }
-    for (typed, expected) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
-        let command = String::from_utf8_lossy(typed);
-        let command = command.trim_end_matches('\r');
-        let Some(echoed) = lines
+    let mut from = 0;
+    for (index, expected) in prompt_session_output(arch).into_iter().enumerate() {
+        let command = shown_command(&PROMPT_SESSION, index);
+        let command = command.as_str();
+        let Some(echoed) = lines[from..]
             .iter()
             .position(|line| line.starts_with(SHELL_PROMPT) && line.ends_with(command))
+            .map(|at| from + at)
         else {
             return Err(format!("{arch}: `{command}` was not typed at a prompt"));
         };
+        from = echoed + 1;
         let written = lines.get(echoed + 1..echoed + 1 + expected.len());
         let matched = written.is_some_and(|written| {
             expected
@@ -2160,9 +2261,9 @@ mod tests {
         let mut console = format!(
             "EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
-        for (typed, written) in PROMPT_SESSION.iter().zip(prompt_session_output(arch)) {
-            let command = String::from_utf8_lossy(typed);
-            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+        for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
+            let command = shown_command(&PROMPT_SESSION, index);
+            console.push_str(&format!("{SHELL_PROMPT}# {command}\r\n"));
             for line in written {
                 match line {
                     Line::Whole(line) => console.push_str(&format!("{line}\r\n")),
@@ -2195,7 +2296,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\netc\r\n", "etc\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 11 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 23 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

@@ -214,8 +214,15 @@ const SHELL_PATH: &str = "bin/eggsh";
 
 const COREUTILS_PATH: &str = "bin/coreutils";
 
-const COREUTILS: [&str; 10] = [
-    "cat", "echo", "false", "halt", "ls", "poweroff", "reboot", "sleep", "true", "uname",
+const PROC_PATH: &str = "proc";
+
+const TMP_PATH: &str = "tmp";
+
+const HOME_PATH: &str = "home";
+
+const COREUTILS: [&str; 22] = [
+    "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
+    "ps", "reboot", "rm", "sleep", "tail", "touch", "true", "uname", "uptime", "wc",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -749,6 +756,9 @@ fn release_initramfs(
         (INIT_PATH, initramfs::Content::Program(&init)),
         (SHELL_PATH, initramfs::Content::Program(&shell)),
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
+        (PROC_PATH, initramfs::Content::Directory),
+        (TMP_PATH, initramfs::Content::Directory),
+        (HOME_PATH, initramfs::Content::Directory),
     ];
     members.extend(
         links

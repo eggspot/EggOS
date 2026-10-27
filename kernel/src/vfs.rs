@@ -11,10 +11,14 @@
 //!
 //! The root is mounted once at boot ([`mount_embedded_initramfs`]) and never unmounted, so a
 //! node holds a `'static` reference to its file system and costs no reference count; mounts
-//! that can go away (tmpfs, devfs, disks) will count references in their mount.
+//! that can go away (tmpfs, devfs, disks) will count references in their mount. Other file
+//! systems are mounted on directories at boot ([`mount`], D125), at most [`MAX_MOUNTS`],
+//! never unmounted either: a lookup that finds a mount point gives the mounted root, and `..`
+//! from a mounted root leaves through its mount point.
 
 pub mod cpio;
 pub mod initramfs;
+pub mod tmpfs;
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -33,6 +37,42 @@ pub enum Error {
     NotDirectory,
     /// A component is longer than [`NAME_MAX`] (`ENAMETOOLONG`).
     NameTooLong,
+}
+
+/// Why a file system refused a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// It cannot be changed (`EROFS`).
+    ReadOnly,
+    /// The name is taken (`EEXIST`).
+    Exists,
+    /// Nothing has that name, or the node is gone (`ENOENT`).
+    NotFound,
+    /// A directory was needed (`ENOTDIR`).
+    NotDirectory,
+    /// A directory is not what this takes (`EISDIR`).
+    IsDirectory,
+    /// The directory has entries (`ENOTEMPTY`).
+    NotEmpty,
+    /// Its memory is used up (`ENOSPC`).
+    NoSpace,
+    /// The name is longer than [`NAME_MAX`] (`ENAMETOOLONG`).
+    NameTooLong,
+    /// The change makes no sense, such as a directory moved into itself (`EINVAL`).
+    InvalidArgument,
+    /// A file would be larger than the largest offset (`EFBIG`).
+    TooBig,
+    /// The name is `.` or `..`, which a rename cannot target (`EBUSY`).
+    Busy,
+}
+
+/// Where a write goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteAt {
+    /// At this offset.
+    Offset(u64),
+    /// At the end of the file, wherever it is when the write is made (`O_APPEND`).
+    End,
 }
 
 /// What a node is.
@@ -65,11 +105,46 @@ pub struct Attributes {
     pub modified: u64,
 }
 
+/// A name of one path component, at most [`NAME_MAX`] bytes, held by value: a file system
+/// whose names change gives copies of them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Name {
+    bytes: [u8; NAME_MAX],
+    length: u8,
+}
+
+impl core::fmt::Debug for Name {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_tuple("Name")
+            .field(&core::str::from_utf8(self.as_bytes()))
+            .finish()
+    }
+}
+
+impl Name {
+    /// The first [`NAME_MAX`] bytes of `bytes`.
+    pub fn new(bytes: &[u8]) -> Self {
+        let length = bytes.len().min(NAME_MAX);
+        let mut name = Self {
+            bytes: [0; NAME_MAX],
+            length: length as u8,
+        };
+        name.bytes[..length].copy_from_slice(&bytes[..length]);
+        name
+    }
+
+    /// Its bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
 /// One entry of a directory, as [`FileSystem::entry`] lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DirectoryEntry<'a> {
+pub struct DirectoryEntry {
     /// Its name.
-    pub name: &'a [u8],
+    pub name: Name,
     /// The node it names.
     pub node: u64,
     /// What that node is.
@@ -92,12 +167,86 @@ pub trait FileSystem: Sync + Send {
     /// The directory that holds `node`; the root for the root.
     fn parent(&self, node: u64) -> u64;
     /// The name `node` has in its parent; empty for the root.
-    fn name(&self, node: u64) -> &[u8];
+    fn name(&self, node: u64) -> Name;
     /// Up to `length` bytes of regular file `node`'s contents from `offset`, at least one if
     /// any are there: fewer than asked at its end, or where the file system's storage breaks.
     fn read(&self, node: u64, offset: u64, length: usize) -> &[u8];
+    /// The contents of regular file `node` made now, for a file system whose files are made
+    /// when they are opened (`/proc`); `None` for one whose contents [`Self::read`] gives.
+    fn generate(&self, _node: u64) -> Option<alloc::vec::Vec<u8>> {
+        None
+    }
+    /// Whether reads go through [`Self::read_into`], for contents that may change, rather than
+    /// [`Self::read`].
+    fn copies_contents(&self) -> bool {
+        false
+    }
+    /// Copies regular file `node`'s contents from `offset` into `buffer`: how many bytes, at
+    /// least one if any are there, 0 at the end.
+    fn read_into(&self, node: u64, offset: u64, buffer: &mut [u8]) -> usize {
+        let bytes = self.read(node, offset, buffer.len());
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        bytes.len()
+    }
+    /// Whether it can be changed: the methods below do something.
+    fn is_writable(&self) -> bool {
+        false
+    }
+    /// Writes `bytes` to regular file `node` `at` an offset or its end at time `now` (seconds
+    /// since the epoch): how many it wrote, fewer if memory ran out, and the offset after them.
+    fn write(
+        &self,
+        _node: u64,
+        _at: WriteAt,
+        _bytes: &[u8],
+        _now: u64,
+    ) -> Result<(usize, u64), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Makes regular file `node` `length` bytes long, cutting it or adding zeros.
+    fn truncate(&self, _node: u64, _length: u64, _now: u64) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Makes an empty `kind` named `name` in `directory`, with `permissions`: its node.
+    fn create(
+        &self,
+        _directory: u64,
+        _name: &[u8],
+        _kind: NodeKind,
+        _permissions: u32,
+        _now: u64,
+    ) -> Result<u64, Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Removes `name` from `directory`: an empty directory if `directories`, else a file.
+    fn remove(
+        &self,
+        _directory: u64,
+        _name: &[u8],
+        _directories: bool,
+        _now: u64,
+    ) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Moves `from_name` in `from` to `to_name` in `to`, replacing what is there unless
+    /// `no_replace`.
+    fn rename(
+        &self,
+        _from: u64,
+        _from_name: &[u8],
+        _to: u64,
+        _to_name: &[u8],
+        _no_replace: bool,
+        _now: u64,
+    ) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// Sets when `node`'s contents last changed.
+    fn set_modified(&self, _node: u64, _time: u64) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
     /// Entry `position` of `directory`, in a stable order, `.` and `..` not included.
-    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry<'_>>;
+    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry>;
 }
 
 /// A node of a mounted file system.
@@ -165,9 +314,18 @@ impl Node {
         self.file_system.attributes(self.id)
     }
 
-    /// The directory that holds it; the root's is the root.
+    /// The directory that holds it; the root's is the root, and a mounted root's is its
+    /// mount point's.
     pub fn parent(&self) -> Self {
-        self.with_id(self.file_system.parent(self.id))
+        match covered_by(*self) {
+            Some(point) => point.parent(),
+            None => self.with_id(self.file_system.parent(self.id)),
+        }
+    }
+
+    /// The contents of a regular file made when it is opened ([`FileSystem::generate`]).
+    pub fn generate(&self) -> Option<alloc::vec::Vec<u8>> {
+        self.file_system.generate(self.id)
     }
 
     /// Up to `length` bytes of its contents from `offset` ([`FileSystem::read`]).
@@ -177,7 +335,7 @@ impl Node {
     }
 
     /// Its entry `position` ([`FileSystem::entry`]), with the node it names.
-    pub fn entry(&self, position: u64) -> Option<(&'static [u8], Self, NodeKind)> {
+    pub fn entry(&self, position: u64) -> Option<(Name, Self, NodeKind)> {
         let entry = self.file_system.entry(self.id, position)?;
         Some((entry.name, self.with_id(entry.node), entry.kind))
     }
@@ -197,7 +355,7 @@ impl Node {
             .file_system
             .lookup(self.id, name)
             .ok_or(Error::NotFound)?;
-        Ok(self.with_id(id))
+        Ok(mounted_on(self.with_id(id)))
     }
 
     /// Writes its absolute path, from the root of the file system it is on, to the end of
@@ -205,9 +363,18 @@ impl Node {
     pub fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
         let mut start = buffer.len();
         let mut node = *self;
-        let root = self.file_system.root();
-        while node.id != root {
+        loop {
+            if node.id == node.file_system.root() {
+                match covered_by(node) {
+                    Some(point) => {
+                        node = point;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
             let name = node.file_system.name(node.id);
+            let name = name.as_bytes();
             start = start.checked_sub(name.len() + 1)?;
             buffer[start] = b'/';
             buffer[start + 1..start + 1 + name.len()].copy_from_slice(name);
@@ -278,6 +445,83 @@ pub fn split_last(path: &[u8]) -> Option<(&[u8], &[u8])> {
 
 struct Mount {
     root: Node,
+}
+
+/// The most file systems [`mount`] mounts besides the root.
+pub const MAX_MOUNTS: usize = 4;
+
+struct Mounted {
+    point: Node,
+    root: Node,
+}
+
+static MOUNTS: [AtomicPtr<Mounted>; MAX_MOUNTS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_MOUNTS];
+
+fn mounts() -> impl Iterator<Item = &'static Mounted> {
+    MOUNTS.iter().map_while(|slot| {
+        let mounted = slot.load(Ordering::Acquire);
+        // SAFETY: a slot that is not null points to a leaked `Mounted`, published once by
+        // `mount` and never freed or changed.
+        (!mounted.is_null()).then(|| unsafe { &*mounted })
+    })
+}
+
+#[inline]
+fn mounted_on(node: Node) -> Node {
+    mounts()
+        .find(|mounted| mounted.point == node)
+        .map_or(node, |mounted| mounted.root)
+}
+
+fn covered_by(node: Node) -> Option<Node> {
+    if node.id != node.file_system.root() {
+        return None;
+    }
+    mounts()
+        .find(|mounted| mounted.root == node)
+        .map(|mounted| mounted.point)
+}
+
+/// Why [`mount`] refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountError {
+    /// The path does not name a directory of the root file system.
+    NoMountPoint,
+    /// Something is mounted there already, or [`MAX_MOUNTS`] file systems are.
+    Taken,
+}
+
+/// Mounts `file_system` on the directory `path` names from the root, for good.
+pub fn mount(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(), MountError> {
+    let root = root();
+    let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
+    if !point.is_directory() || point == root {
+        return Err(MountError::NoMountPoint);
+    }
+    if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
+        return Err(MountError::Taken);
+    }
+    let mounted = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mounted {
+        point,
+        root: Node::root_of(file_system),
+    }));
+    for slot in &MOUNTS {
+        if slot
+            .compare_exchange(
+                core::ptr::null_mut(),
+                mounted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    // SAFETY: `mounted` came from `Box::into_raw` above and was never published.
+    drop(unsafe { alloc::boxed::Box::from_raw(mounted) });
+    Err(MountError::Taken)
 }
 
 static ROOT: AtomicPtr<Mount> = AtomicPtr::new(core::ptr::null_mut());

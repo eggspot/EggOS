@@ -1590,6 +1590,17 @@ fn send_to_self<P: Platform>(
     }
 }
 
+/// Sends `signal` from the kernel to the calling thread, as a write to a pipe with no reader
+/// sends `SIGPIPE`; it is delivered as any signal sent to the thread. A real-time signal past
+/// `RLIMIT_SIGPENDING` is dropped.
+pub fn send_from_kernel_to_self<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    signal: u32,
+) {
+    let _ = send_to_self(process, thread, u64::from(signal), Info::from_kernel);
+}
+
 fn queue_limit<P: Platform>(process: &Process<P>) -> u64 {
     process
         .credentials_and_limits()

@@ -1,13 +1,15 @@
 use super::*;
 use crate::path::Kind;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Ran {
+struct Started {
     program: String,
     arguments: Vec<String>,
     environment: Vec<String>,
     job_control: bool,
+    streams: Streams,
+    group: Group,
 }
 
 #[derive(Debug, Default)]
@@ -19,9 +21,25 @@ struct FakeSystem {
     working_directory: String,
     output: Vec<u8>,
     errors: Vec<u8>,
-    ran: Vec<Ran>,
+    ran: Vec<Started>,
     statuses: HashMap<String, i32>,
     run_error: Option<Errno>,
+    descriptors_given: usize,
+    live: BTreeSet<usize>,
+    written: HashMap<usize, Vec<u8>>,
+    redirected: Vec<(String, Redirection, usize)>,
+    pipes: Vec<(usize, usize)>,
+    waited: Vec<i32>,
+    terminal_taken_back: usize,
+}
+
+impl FakeSystem {
+    fn descriptor(&mut self) -> usize {
+        let descriptor = 3 + self.descriptors_given;
+        self.descriptors_given += 1;
+        self.live.insert(descriptor);
+        descriptor
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -43,6 +61,11 @@ impl System for FakeSystem {
         match descriptor {
             1 => self.output.extend_from_slice(bytes),
             2 => self.errors.extend_from_slice(bytes),
+            _ if self.live.contains(&descriptor) => self
+                .written
+                .entry(descriptor)
+                .or_default()
+                .extend_from_slice(bytes),
             _ => panic!("write to {descriptor}"),
         }
     }
@@ -75,15 +98,46 @@ impl System for FakeSystem {
     }
 
     fn open(&mut self, path: &[u8]) -> Result<usize, Errno> {
-        let content = self.contents.get(&text(path)).ok_or(Errno::ENOENT)?;
-        let descriptor = 3 + self.open.len();
+        let content = self.contents.get(&text(path)).ok_or(Errno::ENOENT)?.clone();
+        let descriptor = self.descriptor();
         self.open
             .insert(descriptor, content.iter().copied().collect());
         Ok(descriptor)
     }
 
     fn close(&mut self, descriptor: usize) {
-        assert!(self.open.remove(&descriptor).is_some());
+        assert!(self.live.remove(&descriptor), "close of {descriptor}");
+        self.open.remove(&descriptor);
+    }
+
+    fn open_redirection(&mut self, path: &[u8], redirection: Redirection) -> Result<usize, Errno> {
+        assert_eq!(path.last(), Some(&0));
+        let path = text(path);
+        if redirection == Redirection::Input && !self.contents.contains_key(&path) {
+            return Err(Errno::ENOENT);
+        }
+        if path.starts_with("/readonly/") {
+            return Err(Errno(30));
+        }
+        let descriptor = self.descriptor();
+        self.redirected.push((path, redirection, descriptor));
+        Ok(descriptor)
+    }
+
+    fn pipe(&mut self) -> Result<(usize, usize), Errno> {
+        let ends = (self.descriptor(), self.descriptor());
+        self.pipes.push(ends);
+        Ok(ends)
+    }
+
+    fn wait(&mut self, child: i32) -> Result<i32, Errno> {
+        self.waited.push(child);
+        let program = &self.ran[(child - 100) as usize].program;
+        Ok(self.statuses.get(program).copied().unwrap_or(0))
+    }
+
+    fn take_back_terminal(&mut self) {
+        self.terminal_taken_back += 1;
     }
 
     fn change_directory(&mut self, path: &[u8]) -> Result<(), Errno> {
@@ -111,12 +165,13 @@ impl System for FakeSystem {
         Some(&buffer[..directory.len()])
     }
 
-    fn run(
+    fn start(
         &mut self,
         program: &[u8],
         arguments: &[&[u8]],
         environment: &[&[u8]],
-        job_control: bool,
+        streams: Streams,
+        group: Group,
     ) -> Result<i32, Errno> {
         assert_eq!(program.last(), Some(&0));
         assert!(arguments.iter().all(|argument| argument.last() == Some(&0)));
@@ -126,16 +181,21 @@ impl System for FakeSystem {
                 .all(|variable| variable.last() == Some(&0))
         );
         let program = text(program);
-        self.ran.push(Ran {
-            program: program.clone(),
-            arguments: arguments.iter().map(|argument| text(argument)).collect(),
-            environment: environment.iter().map(|variable| text(variable)).collect(),
-            job_control,
-        });
+        for descriptor in [streams.input, streams.output] {
+            assert!(descriptor < 3 || self.live.contains(&descriptor));
+        }
         if let Some(error) = self.run_error {
             return Err(error);
         }
-        Ok(self.statuses.get(&program).copied().unwrap_or(0))
+        self.ran.push(Started {
+            program,
+            arguments: arguments.iter().map(|argument| text(argument)).collect(),
+            environment: environment.iter().map(|variable| text(variable)).collect(),
+            job_control: group != Group::Shell,
+            streams,
+            group,
+        });
+        Ok(99 + self.ran.len() as i32)
     }
 }
 
@@ -328,15 +388,120 @@ fn type_says_what_a_name_runs() {
 
 #[test]
 fn unsupported_operators_reject_the_whole_line_and_end_a_script() {
-    let shell = run("echo first\necho ran; ls | wc\necho never");
+    let shell = run("echo first\necho ran; ls || wc\necho never");
     assert_eq!(output(&shell), "first\n");
-    assert_eq!(errors(&shell), "eggsh: `|` is not supported yet\n");
+    assert_eq!(errors(&shell), "eggsh: `||` is not supported yet\n");
     assert_eq!(shell.exit_status(), 2);
-    let mut interactive = shell_with_input(true, &["echo a > f\n", "echo next\n"]);
+    let mut interactive = shell_with_input(true, &["echo a << f\n", "echo next\n"]);
     interactive.run_descriptor(0, true);
     assert_eq!(output(&interactive), "next\n");
-    assert!(errors(&interactive).contains("eggsh: `>` is not supported yet\n"));
+    assert!(errors(&interactive).contains("eggsh: `<<` is not supported yet\n"));
     assert!(interactive.system.ran.is_empty());
+}
+
+fn all_closed(shell: &Shell<FakeSystem>) {
+    assert!(
+        shell.system.live.is_empty(),
+        "left open: {:?}",
+        shell.system.live
+    );
+}
+
+#[test]
+fn a_pipeline_s_programs_start_together_piped_and_its_status_is_the_last_one_s() {
+    let mut shell = shell(false);
+    shell.run_text(b"ls / | fail | tool; echo $?; tool | fail; echo $?");
+    let ran = &shell.system.ran;
+    assert_eq!(ran.len(), 5);
+    let pipes = &shell.system.pipes;
+    assert_eq!(
+        ran[0].streams,
+        Streams {
+            input: 0,
+            output: pipes[0].1
+        }
+    );
+    assert_eq!(
+        ran[1].streams,
+        Streams {
+            input: pipes[0].0,
+            output: pipes[1].1
+        }
+    );
+    assert_eq!(
+        ran[2].streams,
+        Streams {
+            input: pipes[1].0,
+            output: 1
+        }
+    );
+    assert_eq!(ran[2].program, "/usr/bin/tool");
+    assert!(ran.iter().all(|ran| ran.group == Group::Shell));
+    assert_eq!(shell.system.waited, [100, 101, 102, 103, 104]);
+    assert_eq!(output(&shell), "0\n3\n");
+    assert_eq!(shell.system.terminal_taken_back, 0);
+    all_closed(&shell);
+}
+
+#[test]
+fn an_interactive_pipeline_is_one_process_group_led_by_its_first_program() {
+    let mut shell = shell_with_input(true, &["echo hi | ls | tool\n", "ls\n"]);
+    shell.run_descriptor(0, true);
+    let groups: Vec<Group> = shell.system.ran.iter().map(|ran| ran.group).collect();
+    assert_eq!(groups, [Group::New, Group::Join(100), Group::New]);
+    assert_eq!(shell.system.terminal_taken_back, 2);
+    assert_eq!(
+        shell.system.written.get(&shell.system.pipes[0].1).unwrap(),
+        b"hi\n"
+    );
+    all_closed(&shell);
+}
+
+#[test]
+fn builtins_in_a_pipeline_write_into_it_and_missing_commands_close_their_ends() {
+    let mut shell = shell(false);
+    shell.run_text(b"echo a b | ls; nothing | ls; echo $?; ls | nothing; echo $?");
+    let pipes = shell.system.pipes.clone();
+    assert_eq!(shell.system.written.get(&pipes[0].1).unwrap(), b"a b\n");
+    assert_eq!(shell.system.ran[0].streams.input, pipes[0].0);
+    assert_eq!(output(&shell), "0\n127\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: nothing: command not found\n".repeat(2)
+    );
+    assert_eq!(shell.system.waited, [100, 101, 102]);
+    all_closed(&shell);
+}
+
+#[test]
+fn redirections_open_their_files_for_builtins_and_programs() {
+    let mut shell = shell(false);
+    shell
+        .system
+        .contents
+        .insert("/in".to_owned(), b"text".to_vec());
+    shell.run_text(b"echo a > /tmp/x; echo b >> /tmp/x; ls < /in > /out | tool; cat < /missing; echo $?; echo c > /readonly/f; echo $?");
+    let redirected = &shell.system.redirected;
+    assert_eq!(redirected[0].0, "/tmp/x");
+    assert_eq!(redirected[0].1, Redirection::Output);
+    assert_eq!(redirected[1].1, Redirection::Append);
+    assert_eq!(shell.system.written.get(&redirected[0].2).unwrap(), b"a\n");
+    assert_eq!(shell.system.written.get(&redirected[1].2).unwrap(), b"b\n");
+    let ls = &shell.system.ran[0];
+    assert_eq!(
+        ls.streams,
+        Streams {
+            input: redirected[2].2,
+            output: redirected[3].2
+        }
+    );
+    assert_eq!(shell.system.ran[1].streams.input, shell.system.pipes[0].0);
+    assert_eq!(output(&shell), "1\n1\n");
+    assert_eq!(
+        errors(&shell),
+        "eggsh: /missing: No such file or directory\neggsh: /readonly/f: Read-only file system\n"
+    );
+    all_closed(&shell);
 }
 
 #[test]

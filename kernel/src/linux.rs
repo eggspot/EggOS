@@ -46,6 +46,7 @@ pub mod credentials;
 pub mod descriptors;
 pub mod exec;
 pub mod fault;
+pub mod file_changes;
 pub mod files;
 pub mod fork;
 pub mod futex;
@@ -53,7 +54,9 @@ pub mod identity;
 pub mod job_control;
 pub mod limits;
 pub mod memory;
+pub mod pipe;
 pub mod poll;
+pub mod proc;
 pub mod process_table;
 pub mod random;
 pub mod reboot;
@@ -183,6 +186,19 @@ pub mod number {
         pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
         pub const DUP3: u64 = 292;
+        pub const PIPE: u64 = 22;
+        pub const PIPE2: u64 = 293;
+        pub const PWRITE64: u64 = 18;
+        pub const FTRUNCATE: u64 = 77;
+        pub const RENAME: u64 = 82;
+        pub const MKDIR: u64 = 83;
+        pub const RMDIR: u64 = 84;
+        pub const UNLINK: u64 = 87;
+        pub const MKDIRAT: u64 = 258;
+        pub const UNLINKAT: u64 = 263;
+        pub const RENAMEAT: u64 = 264;
+        pub const UTIMENSAT: u64 = 280;
+        pub const RENAMEAT2: u64 = 316;
         pub const GETRANDOM: u64 = 318;
         pub const EXECVEAT: u64 = 322;
         pub const STATX: u64 = 332;
@@ -201,6 +217,15 @@ pub mod number {
         pub const FCHDIR: u64 = 50;
         pub const OPENAT: u64 = 56;
         pub const CLOSE: u64 = 57;
+        pub const PIPE2: u64 = 59;
+        pub const MKDIRAT: u64 = 34;
+        pub const UNLINKAT: u64 = 35;
+        #[cfg(target_arch = "aarch64")]
+        pub const RENAMEAT: u64 = 38;
+        pub const FTRUNCATE: u64 = 46;
+        pub const PWRITE64: u64 = 68;
+        pub const UTIMENSAT: u64 = 88;
+        pub const RENAMEAT2: u64 = 276;
         pub const GETDENTS64: u64 = 61;
         pub const LSEEK: u64 = 62;
         pub const READ: u64 = 63;
@@ -302,6 +327,25 @@ pub mod number {
             DUP3,
             FCNTL,
             CLOSE_RANGE,
+            #[cfg(target_arch = "x86_64")]
+            PIPE,
+            PIPE2,
+            PWRITE64,
+            FTRUNCATE,
+            MKDIRAT,
+            UNLINKAT,
+            #[cfg(not(target_arch = "riscv64"))]
+            RENAMEAT,
+            RENAMEAT2,
+            UTIMENSAT,
+            #[cfg(target_arch = "x86_64")]
+            RENAME,
+            #[cfg(target_arch = "x86_64")]
+            MKDIR,
+            #[cfg(target_arch = "x86_64")]
+            RMDIR,
+            #[cfg(target_arch = "x86_64")]
+            UNLINK,
             EXIT,
             EXIT_GROUP,
             CLONE,
@@ -478,8 +522,20 @@ impl Errno {
     pub const EMFILE: Self = Self(24);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
-    /// Not seekable: here, the console (`lseek`).
+    /// Not seekable: here, the console or a pipe (`lseek`, `pread64`).
     pub const ESPIPE: Self = Self(29);
+    /// A write to a pipe that no reader has open any more.
+    pub const EPIPE: Self = Self(32);
+    /// Busy: here, a rename of `.` or `..`, or a mount point removed.
+    pub const EBUSY: Self = Self(16);
+    /// A rename across file systems.
+    pub const EXDEV: Self = Self(18);
+    /// A file larger than the largest offset.
+    pub const EFBIG: Self = Self(27);
+    /// A file system's memory is used up.
+    pub const ENOSPC: Self = Self(28);
+    /// A directory removed or replaced while it has entries.
+    pub const ENOTEMPTY: Self = Self(39);
     /// A path longer than `PATH_MAX`, or a component longer than `NAME_MAX`.
     pub const ENAMETOOLONG: Self = Self(36);
     /// No such system call.
@@ -699,7 +755,10 @@ fn syscall<P: Platform>(
         return ControlFlow::Continue(());
     }
     let result = match number {
-        number::WRITE => write::<P>(process, thread.files(), first, second, third),
+        number::WRITE => match write::<P>(process, thread.files(), first, second, third) {
+            Err(NOT_THE_CONSOLE) => return out_of_line_call::<P>(process, thread, number, context),
+            result => result,
+        },
         number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
         number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
             memory_call::<P>(process, number, context.syscall_arguments())
@@ -752,6 +811,8 @@ fn out_of_line_call<P: Platform>(
         number::PAUSE => signals::pause(process, thread, context),
         number::READ => read::<P>(process, thread, context, Buffers::One),
         number::READV => read::<P>(process, thread, context, Buffers::Vectors),
+        number::WRITE => write_out_of_line::<P>(process, thread, context, Buffers::One),
+        number::WRITEV => write_out_of_line::<P>(process, thread, context, Buffers::Vectors),
         number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
@@ -850,13 +911,37 @@ fn out_of_line_result<P: Platform>(
     use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
-        number::WRITEV => writev::<P>(process, thread.files(), first, second, third),
         number::CLOSE => descriptors::close(thread.files(), first),
         number::DUP => descriptors::dup(process, thread.files(), first),
         #[cfg(target_arch = "x86_64")]
         number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
         number::DUP3 => descriptors::dup3(process, thread.files(), first, second, third),
         number::FCNTL => descriptors::fcntl(process, thread.files(), first, second, third),
+        number::PIPE2 => pipe::pipe2::<P>(process, thread, first, second),
+        number::PWRITE64 => file_changes::pwrite64(process, thread, first, second, third, fourth),
+        number::FTRUNCATE => file_changes::ftruncate::<P>(thread, first, second),
+        number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
+        number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
+        #[cfg(not(target_arch = "riscv64"))]
+        number::RENAMEAT => {
+            file_changes::renameat2(process, thread, first, second, third, fourth, 0)
+        }
+        number::RENAMEAT2 => {
+            file_changes::renameat2(process, thread, first, second, third, fourth, fifth)
+        }
+        number::UTIMENSAT => file_changes::utimensat(process, thread, first, second, third, fourth),
+        #[cfg(target_arch = "x86_64")]
+        number::MKDIR => file_changes::mkdirat(process, thread, CWD, first, second),
+        #[cfg(target_arch = "x86_64")]
+        number::RMDIR => {
+            file_changes::unlinkat(process, thread, CWD, first, file_changes::AT_REMOVEDIR)
+        }
+        #[cfg(target_arch = "x86_64")]
+        number::UNLINK => file_changes::unlinkat(process, thread, CWD, first, 0),
+        #[cfg(target_arch = "x86_64")]
+        number::RENAME => file_changes::renameat2(process, thread, CWD, first, CWD, second, 0),
+        #[cfg(target_arch = "x86_64")]
+        number::PIPE => pipe::pipe2::<P>(process, thread, first, 0),
         number::CLOSE_RANGE => {
             let own = descriptors::close_range(thread.files(), first, second, third)?;
             if let Some(own) = own {
@@ -922,9 +1007,9 @@ fn out_of_line_result<P: Platform>(
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
         number::STATX => stat::statx(process, thread, first, second, third, fourth, fifth),
-        number::OPENAT => files::openat(process, thread, first, second, third),
+        number::OPENAT => files::openat(process, thread, first, second, third, fourth),
         #[cfg(target_arch = "x86_64")]
-        number::OPEN => files::openat(process, thread, stat::at::FDCWD as u64, first, second),
+        number::OPEN => files::openat(process, thread, CWD, first, second, third),
         #[cfg(target_arch = "x86_64")]
         number::STAT => stat::newfstatat(process, thread, stat::at::FDCWD as u64, first, second, 0),
         #[cfg(target_arch = "x86_64")]
@@ -1093,6 +1178,7 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
+        FileKind::Pipe(_) | FileKind::Regular(_) => return Err(NOT_THE_CONSOLE),
         _ => return Err(Errno::EBADF),
     };
     if written == 0 && count > 0 {
@@ -1110,24 +1196,15 @@ fn writable_file(files: &Descriptors, fd: u64) -> Result<Arc<descriptors::OpenFi
     }
 }
 
-#[inline(never)]
-fn writev<P: Platform>(
+fn write_iovecs_to_console<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
-    fd: u64,
-    buffers: u64,
-    count: u64,
+    iovecs: &Iovecs,
 ) -> Result<u64, Errno> {
-    let file = writable_file(files, fd)?;
-    let iovecs = Iovecs::read(process, buffers, count)?;
     let mut written = 0;
     for entry in iovecs.entries() {
         let (base, length) = iovec(entry);
         let length = length.min(MAX_RW_COUNT - written);
-        let done = match file.kind() {
-            FileKind::Console => write_to_console(process, base, length),
-            _ => return Err(Errno::EBADF),
-        };
+        let done = write_to_console(process, base, length);
         written += done;
         if done < length {
             return if written > 0 {
@@ -1138,6 +1215,52 @@ fn writev<P: Platform>(
         }
     }
     Ok(written)
+}
+
+const NOT_THE_CONSOLE: Errno = Errno(u16::MAX);
+
+#[cfg(target_arch = "x86_64")]
+const CWD: u64 = stat::at::FDCWD as u64;
+
+#[inline(never)]
+fn write_out_of_line<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    buffers: Buffers,
+) -> ControlFlow<()> {
+    let [fd, address, count, ..] = context.syscall_arguments();
+    let prepared = writable_file(thread.files(), fd).and_then(|file| {
+        let iovecs = match buffers {
+            Buffers::One if !ends_in_user_space::<P>(address, count) => Err(Errno::EFAULT),
+            Buffers::One => Ok(Iovecs::one(address, count)),
+            Buffers::Vectors => Iovecs::read(process, address, count),
+        }?;
+        Ok((file, iovecs))
+    });
+    match prepared {
+        Ok((file, iovecs)) => match file.kind() {
+            FileKind::Pipe(end) => pipe::write(process, thread, context, &file, end, &iovecs),
+            FileKind::Regular(node) => {
+                let result = file_changes::write_regular(process, &file, *node, &iovecs, None);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            FileKind::Console => {
+                let result = write_iovecs_to_console(process, &iovecs);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+            _ => {
+                context.set_syscall_result(Errno::EBADF.result());
+                ControlFlow::Continue(())
+            }
+        },
+        Err(error) => {
+            context.set_syscall_result(error.result());
+            ControlFlow::Continue(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1168,13 +1291,14 @@ fn read<P: Platform>(
     match prepared {
         Ok((file, iovecs)) => match file.kind() {
             FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+            FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
             kind => {
-                let result = match kind {
-                    FileKind::Regular(node) => {
+                let result = match files::Contents::of(kind) {
+                    Some(contents) => {
                         let buffers = iovecs.entries().iter().map(iovec);
-                        files::read_regular(process, &file, *node, buffers)
+                        files::read_regular(process, &file, contents, buffers)
                     }
-                    _ => Err(Errno::EISDIR),
+                    None => Err(Errno::EISDIR),
                 };
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
@@ -1205,6 +1329,13 @@ fn ioctl<P: Platform>(
     }
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
+        FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
+            let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
+            process
+                .write_user_memory(argument, &available.to_ne_bytes())
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
         _ => Err(Errno::ENOTTY),
     }
 }
@@ -1212,7 +1343,7 @@ fn ioctl<P: Platform>(
 fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
-        FileKind::Console => terminal::lseek(whence),
+        FileKind::Console | FileKind::Pipe(_) => terminal::lseek(whence),
         _ => files::lseek_node(&file, offset, whence),
     }
 }

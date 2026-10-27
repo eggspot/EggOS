@@ -93,6 +93,11 @@ pub trait System {
     fn system_name(&mut self) -> Result<SystemName, Errno>;
     fn sleep(&mut self, duration: Duration) -> Result<(), Errno>;
     fn reboot(&mut self, command: u32) -> Result<(), Errno>;
+    fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno>;
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno>;
+    fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno>;
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno>;
+    fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -135,6 +140,26 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn reboot(&mut self, command: u32) -> Result<(), Errno> {
         (**self).reboot(command)
+    }
+
+    fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
+        (**self).create(path, mode, truncate)
+    }
+
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        (**self).make_directory(path, mode)
+    }
+
+    fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno> {
+        (**self).remove(path, directory)
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        (**self).rename(from, to)
+    }
+
+    fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
+        (**self).set_modified_now(path)
     }
 }
 

@@ -28,7 +28,7 @@ use super::descriptors::Descriptors;
 use super::files::{self, PathBuffer};
 use super::stat::at;
 use super::thread::LinuxThread;
-use super::{Errno, futex, signals};
+use super::{Errno, futex, process_table, signals};
 use crate::elf::{self, Elf, InvalidElf, Kind, ProgramHeader, segment};
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind};
@@ -568,6 +568,7 @@ struct Prepared<P: Platform> {
     image: Arc<Process<P>>,
     context: UserContext,
     files: Option<Descriptors>,
+    name: process_table::Name,
 }
 
 #[inline(never)]
@@ -609,6 +610,7 @@ fn prepare<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let node = find(thread, request.dirfd, path)?;
+    let process_name = process_table::name_of(node.file_system().name(node.id()).as_bytes());
     let attributes = node.attributes();
     let may_execute = {
         let credentials = process.credentials_and_limits().lock();
@@ -658,6 +660,7 @@ fn prepare<P: Platform>(
         image: Arc::new(new),
         context,
         files,
+        name: process_name,
     })
 }
 
@@ -795,6 +798,7 @@ fn start<P: Platform>(
         image,
         context: started,
         files,
+        name,
     } = prepared;
     let id = process.id().get();
     let signals = process.signals().lock().take_for_exec(thread.id(), id);
@@ -829,6 +833,7 @@ fn start<P: Platform>(
     image.add_thread();
     super::wait::record_running(&image, thread, |table, id| {
         table.mark_executed(id);
+        table.set_name(id, name);
         table.set_no_zombie_children(id, sigchld_ignored);
     });
     *context = started;

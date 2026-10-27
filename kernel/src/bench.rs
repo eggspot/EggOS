@@ -1087,7 +1087,7 @@ fn linux_openat_close<P: Platform>(memory: &mut Memory<P>, n: u64) {
     let program = process_with_path(memory, b"/etc/hostname\0");
     let thread = linux::thread::LinuxThread::first(&program);
     for _ in 0..n {
-        let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0)
+        let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0, 0)
             .expect("/etc/hostname is in the initramfs");
         linux::descriptors::close(thread.files(), black_box(fd)).expect("it was just opened");
     }
@@ -1097,7 +1097,7 @@ fn linux_file_read<P: Platform>(memory: &mut Memory<P>, n: u64) {
     use linux::stat::at::FDCWD;
     let program = process_with_path(memory, b"/etc/motd\0");
     let thread = linux::thread::LinuxThread::first(&program);
-    let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0)
+    let fd = linux::files::openat(&program, &thread, FDCWD as u64, FILE_BENCH_MEMORY, 0, 0)
         .expect("/etc/motd is in the initramfs");
     for _ in 0..n {
         let read = linux::files::pread64(

@@ -9,6 +9,12 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
   (`$ ` for a user other than root; `PS1` replaces it, `PS2` the `> ` of a continued line),
   reads a line, and runs its commands. `^D` at an empty prompt ends it (`exit`), `^C` gives a
   fresh prompt and sets `$?` to 130.
+- At the prompt the shell edits the line itself (D125): delete or backspace erases a
+  character, `^U` the line, `^W` the last word, and the up and down arrows go back and forth
+  through the last 64 lines typed (8 KiB at most; an empty line or one repeating the last is
+  not kept). The history lives in memory and ends with the shell. There is no cursor movement
+  within a line yet: the left and right arrows and the other keys that send escape sequences
+  are ignored.
 - `eggsh file [arguments]` runs the commands of a file, `$0` the file and `$1`... the arguments.
 - `eggsh -c [--] 'commands' [name [arguments]]` runs `commands`, `$0` being `name` (`--`, which
   ends the options as in `sh -c -- commands`, is how bionic's `system()` calls the shell).
@@ -17,6 +23,17 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
 ## The language
 
 - Words are separated by blanks; a command ends at a newline or `;`.
+- `a | b | c` is a pipeline (D125): its commands run at the same time, each one's standard
+  output piped into the next one's standard input, and the shell waits for all of them; `$?`
+  is the last one's status. Interactive, the pipeline is one process group, led by its first
+  program, that has the terminal while it runs, so `^C` reaches all of it. A `|` needs a
+  command on each side, on the same line.
+- `< file` reads standard input from `file`, `> file` writes standard output to `file`
+  (created if missing, emptied if not), `>> file` adds to its end (created if missing). They
+  can come anywhere in a command, and apply to builtins (their output) as well as programs; the
+  word after the operator, expanded as any word, is the file. A file that cannot be opened is
+  reported (`eggsh: /etc/motd: Read-only file system`) and the command does not run, with
+  status 1. Writable files are under `/tmp` and `/home` (docs/coreutils.md).
 - `'...'` keeps everything as it is. `"..."` keeps everything but `$` expansions, and a `\`
   before `$`, `` ` ``, `"`, `\` or a newline. Outside quotes `\` keeps the next character, and
   `\` before a newline continues the line. A quote left open continues on the next line.
@@ -42,8 +59,13 @@ Rust program on our own runtime: no C library, no allocator, about 50 KiB.
 `exit [n]`, `export`, `help`, `pwd`, `set` (lists the variables), `type`, `unset`.
 
 Other commands are programs found through `PATH` (`/bin` under init), such as the core
-utilities `ls`, `cat`, `uname`, `sleep` and `poweroff` (docs/coreutils.md); `/bin/echo`,
+utilities `ls`, `cat`, `grep`, `cp` and `poweroff` (docs/coreutils.md); `/bin/echo`,
 `/bin/true` and `/bin/false` run the programs instead of the builtins.
+
+A builtin in a pipeline runs in the shell itself, its output written into the pipe, so `cd`,
+`export` and `exit` there act on the shell, where other shells run them in a subshell and
+their effect is lost. The shell ignores `SIGPIPE` for this and gives programs the default
+back, so a program it starts dies of a broken pipe as usual.
 
 ## Job control
 
@@ -55,9 +77,9 @@ Run from a file or with `-c`, the shell leaves signals and groups as they are.
 
 ## Not supported yet
 
-Pipes `|`, redirections `<`, `>`, `>>`, `<<`, `&&`, `||`, background jobs `&`, subshells
-`( )`, command substitution `` `...` `` and `$(...)` are refused with
-`eggsh: `|` is not supported yet` (never read as plain words, so adding them later changes no
-command that works now). Also not yet: wildcards, `${NAME:-default}` and the other parameter
-operators, `$@` and `$*`, `if`, `while`, `for`, `case` and functions, stopping and resuming
-jobs, line editing beyond the terminal's own, and history.
+Here-documents `<<`, `&&`, `||`, background jobs `&`, subshells `( )`, command substitution
+`` `...` `` and `$(...)` are refused with `eggsh: `&&` is not supported yet` (never read as
+plain words, so adding them later changes no command that works now). Also not yet:
+redirections of other descriptors (`2>`, `2>&1`), wildcards, `${NAME:-default}` and the other
+parameter operators, `$@` and `$*`, `if`, `while`, `for`, `case` and functions, stopping and
+resuming jobs, moving the cursor within a line, and a history kept across sessions.

@@ -1,12 +1,14 @@
 //! The shell itself (D107): it reads lines, checks each one's syntax, then runs its commands
-//! one after another, each a builtin or a program found through `PATH`. Everything it asks
-//! of the system goes through [`System`], so all of it runs in host tests against a fake one.
+//! one after another, each a builtin or a program found through `PATH`. A pipeline's commands
+//! run at the same time, each one's output piped into the next one's input, and the shell
+//! waits for all of them; its status is the last one's (D125). Everything it asks of the
+//! system goes through [`System`], so all of it runs in host tests against a fake one.
 
 use crate::path::{self, DEFAULT_PATH, Files, Lookup, PATH_CAPACITY};
 use crate::status::{self, Ended, NOT_EXECUTABLE, NOT_FOUND, USAGE};
 use crate::syntax::{
-    MAX_WORDS, Parameters, Quoting, SyntaxError, Terminator, Value, Words, check_line, is_name,
-    line_end, next_command,
+    MAX_WORDS, Parameters, Quoting, Redirection, SyntaxError, Terminator, Value, Words, check_line,
+    is_name, line_end, next_command,
 };
 use crate::variables::{MAX_VARIABLES, VARIABLES_CAPACITY, Variables};
 pub use eggos_runtime::errno::Errno;
@@ -23,7 +25,12 @@ pub const MAX_POSITIONAL: usize = 10;
 /// `$?` after `^C` at the prompt, as if the line had been interrupted by `SIGINT`.
 pub const INTERRUPTED: i32 = 128 + status::SIGINT as i32;
 
+/// The most commands a pipeline has.
+pub const MAX_PIPELINE: usize = 16;
+
 const OUTPUT_CAPACITY: usize = 512;
+
+const STANDARD_INPUT: usize = 0;
 
 const STANDARD_OUTPUT: usize = 1;
 
@@ -34,8 +41,9 @@ Commands are words separated by blanks, ended by a newline or `;`. Quote with '.
 or \"...\" ($ expands); \\ keeps the next character; # starts a comment.\n\
 $NAME, ${NAME}, $?, $$, $#, $0-$9 expand; ~ is $HOME; NAME=value sets a variable, and\n\
 NAME=value command sets it for that command only.\n\
+a | b pipes a's output into b; < file reads a file, > file writes one, >> file adds to one.\n\
 Builtins: . (source) : cd echo exit export false help pwd set true type unset\n\
-Not supported yet: | && || & < > >> ( ) `...` $(...) and wildcards.\n";
+Not supported yet: && || & << ( ) `...` $(...) and wildcards.\n";
 
 /// What a read from a descriptor gave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,16 +70,72 @@ pub trait System: Files {
     fn change_directory(&mut self, path: &[u8]) -> Result<(), Errno>;
     /// The working directory, written in `buffer`.
     fn working_directory<'b>(&mut self, buffer: &'b mut [u8; PATH_CAPACITY]) -> Option<&'b [u8]>;
-    /// Runs `program` (with its NUL) with `arguments` and `environment` (each with its NUL)
-    /// and waits for it to end: its wait status. With `job_control`, in a process group of its
-    /// own that has the terminal while it runs.
-    fn run(
+    /// Opens the file at `path` (with its NUL) for `redirection`, closed by `execve`.
+    fn open_redirection(&mut self, path: &[u8], redirection: Redirection) -> Result<usize, Errno>;
+    /// A new pipe, both ends closed by `execve`: the end to read, then the end to write.
+    fn pipe(&mut self) -> Result<(usize, usize), Errno>;
+    /// Starts `program` (with its NUL) with `arguments` and `environment` (each with its NUL),
+    /// `streams` as its standard input and output, in `group`, and returns its process id once
+    /// it runs. An error if it could not be run (it was waited for then).
+    fn start(
         &mut self,
         program: &[u8],
         arguments: &[&[u8]],
         environment: &[&[u8]],
-        job_control: bool,
+        streams: Streams,
+        group: Group,
     ) -> Result<i32, Errno>;
+    /// Waits for child `child` to end: its wait status.
+    fn wait(&mut self, child: i32) -> Result<i32, Errno>;
+    /// Gives the terminal back to the shell's own group once a pipeline that had it ended.
+    fn take_back_terminal(&mut self);
+}
+
+/// A started program's standard input and output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Streams {
+    /// The descriptor its standard input reads.
+    pub input: usize,
+    /// The descriptor its standard output writes.
+    pub output: usize,
+}
+
+/// The process group a started program joins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// The shell's: no job control.
+    Shell,
+    /// A new one, led by the program, that takes the terminal: a pipeline's first program.
+    New,
+    /// The group led by this process: the pipeline's later programs.
+    Join(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ran {
+    Started(i32),
+    Finished(i32),
+}
+
+#[derive(Debug)]
+struct Pipeline {
+    input: Option<usize>,
+    children: [i32; MAX_PIPELINE],
+    count: usize,
+    group: Option<i32>,
+    last: Option<Ran>,
+}
+
+impl Pipeline {
+    fn new() -> Self {
+        Self {
+            input: None,
+            children: [0; MAX_PIPELINE],
+            count: 0,
+            group: None,
+            last: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +248,7 @@ pub struct Shell<'a, S> {
     root: bool,
     exit: Option<i32>,
     depth: u8,
+    output: usize,
 }
 
 impl<'a, S: System> Shell<'a, S> {
@@ -214,6 +279,7 @@ impl<'a, S: System> Shell<'a, S> {
             root,
             exit: None,
             depth: 0,
+            output: STANDARD_OUTPUT,
         }
     }
 
@@ -343,21 +409,131 @@ impl<'a, S: System> Shell<'a, S> {
 
     fn run_line(&mut self, line: &[u8], words: &mut Words) {
         let mut at = 0;
+        let mut pipeline = Pipeline::new();
         while self.exit.is_none() {
             match next_command(&line[at..], true, &*self, words) {
                 Ok(parsed) => {
                     at += parsed.consumed;
-                    self.execute(words);
-                    if parsed.terminator != Terminator::Semicolon {
-                        return;
+                    let piped = parsed.terminator == Terminator::Pipe;
+                    self.stage(words, &mut pipeline, piped);
+                    if !piped {
+                        self.finish(&mut pipeline);
+                        if parsed.terminator != Terminator::Semicolon {
+                            return;
+                        }
                     }
                 }
                 Err(error) => {
+                    self.finish(&mut pipeline);
                     self.syntax_error(error);
                     return;
                 }
             }
         }
+        self.finish(&mut pipeline);
+    }
+
+    fn stage(&mut self, words: &Words, pipeline: &mut Pipeline, piped: bool) {
+        let mut opened = [None; 4];
+        let mut streams = Streams {
+            input: pipeline.input.take().unwrap_or(STANDARD_INPUT),
+            output: STANDARD_OUTPUT,
+        };
+        if streams.input != STANDARD_INPUT {
+            opened[0] = Some(streams.input);
+        }
+        let mut ran = None;
+        if piped {
+            if pipeline.count == MAX_PIPELINE {
+                self.error(&[b"pipeline too long"]);
+                ran = Some(Ran::Finished(USAGE));
+            } else {
+                match self.system.pipe() {
+                    Ok((read, write)) => {
+                        pipeline.input = Some(read);
+                        streams.output = write;
+                        opened[1] = Some(write);
+                    }
+                    Err(errno) => {
+                        self.error(&[b"pipe: ", errno.message()]);
+                        ran = Some(Ran::Finished(1));
+                    }
+                }
+            }
+        }
+        if ran.is_none() {
+            let [.., input, output] = &mut opened;
+            ran = self.redirect(words, &mut streams, [input, output]);
+        }
+        let ran = ran.unwrap_or_else(|| self.execute(words, streams, pipeline));
+        for descriptor in opened.into_iter().flatten() {
+            self.system.close(descriptor);
+        }
+        if let Ran::Started(child) = ran {
+            pipeline.children[pipeline.count] = child;
+            pipeline.count += 1;
+        }
+        pipeline.last = Some(ran);
+    }
+
+    fn redirect(
+        &mut self,
+        words: &Words,
+        streams: &mut Streams,
+        [opened_input, opened_output]: [&mut Option<usize>; 2],
+    ) -> Option<Ran> {
+        for (redirection, path) in words.redirections() {
+            let descriptor = match self.system.open_redirection(path, redirection) {
+                Ok(descriptor) => descriptor,
+                Err(errno) => {
+                    self.error(&[&path[..path.len() - 1], b": ", errno.message()]);
+                    return Some(Ran::Finished(1));
+                }
+            };
+            let (target, opened) = match redirection {
+                Redirection::Input => (&mut streams.input, &mut *opened_input),
+                Redirection::Output | Redirection::Append => {
+                    (&mut streams.output, &mut *opened_output)
+                }
+            };
+            *target = descriptor;
+            if let Some(previous) = opened.replace(descriptor) {
+                self.system.close(previous);
+            }
+        }
+        None
+    }
+
+    fn finish(&mut self, pipeline: &mut Pipeline) {
+        if let Some(input) = pipeline.input.take() {
+            self.system.close(input);
+        }
+        let Some(last) = pipeline.last.take() else {
+            return;
+        };
+        let mut last_status = None;
+        for &child in &pipeline.children[..pipeline.count] {
+            let waited = self.system.wait(child);
+            if last == Ran::Started(child) {
+                last_status = Some(waited);
+            }
+        }
+        if pipeline.group.is_some() {
+            self.system.take_back_terminal();
+        }
+        self.status = match (last, last_status) {
+            (Ran::Finished(status), _) => status,
+            (Ran::Started(_), Some(Ok(wait_status))) => {
+                let ended = Ended::from_wait_status(wait_status);
+                let report = ended.report();
+                if !report.is_empty() {
+                    self.system.write(STANDARD_ERROR, report);
+                }
+                ended.shell_status()
+            }
+            (Ran::Started(_), _) => 1,
+        };
+        *pipeline = Pipeline::new();
     }
 
     fn syntax_error(&mut self, error: SyntaxError) {
@@ -415,22 +591,25 @@ impl<'a, S: System> Shell<'a, S> {
         }
     }
 
-    fn execute(&mut self, words: &Words) {
+    fn execute(&mut self, words: &Words, streams: Streams, pipeline: &mut Pipeline) -> Ran {
         if words.command_length() == 0 {
             for assignment in words.assignments() {
                 if self.variables.assign(assignment, false).is_err() {
                     self.error(&[b"too many variables"]);
-                    self.status = 1;
-                    return;
+                    return Ran::Finished(1);
                 }
             }
-            self.status = 0;
-            return;
+            return Ran::Finished(0);
         }
-        self.status = match builtin(words.command(0)) {
-            Some(builtin) => self.builtin(builtin, words),
-            None => self.external(words),
-        };
+        match builtin(words.command(0)) {
+            Some(builtin) => {
+                self.output = streams.output;
+                let status = self.builtin(builtin, words);
+                self.output = STANDARD_OUTPUT;
+                Ran::Finished(status)
+            }
+            None => self.external(words, streams, pipeline),
+        }
     }
 
     fn builtin(&mut self, builtin: Builtin, words: &Words) -> i32 {
@@ -442,7 +621,7 @@ impl<'a, S: System> Shell<'a, S> {
             Builtin::Exit => self.exit(words),
             Builtin::Export => self.export(words),
             Builtin::Help => {
-                self.system.write(STANDARD_OUTPUT, HELP);
+                self.system.write(self.output, HELP);
                 0
             }
             Builtin::Pwd => self.pwd(),
@@ -507,7 +686,7 @@ impl<'a, S: System> Shell<'a, S> {
             return 1;
         }
         if back {
-            let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+            let mut output = Output::new(&mut self.system, self.output);
             output.push(current);
             output.push(b"\n");
         }
@@ -520,7 +699,7 @@ impl<'a, S: System> Shell<'a, S> {
             self.error(&[b"pwd: the working directory is unknown"]);
             return 1;
         };
-        let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+        let mut output = Output::new(&mut self.system, self.output);
         output.push(directory);
         output.push(b"\n");
         0
@@ -529,7 +708,7 @@ impl<'a, S: System> Shell<'a, S> {
     fn echo(&mut self, words: &Words) -> i32 {
         let newline = !(words.command_length() > 1 && words.command(1) == b"-n");
         let first = if newline { 1 } else { 2 };
-        let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+        let mut output = Output::new(&mut self.system, self.output);
         for index in first..words.command_length() {
             if index > first {
                 output.push(b" ");
@@ -563,7 +742,7 @@ impl<'a, S: System> Shell<'a, S> {
 
     fn export(&mut self, words: &Words) -> i32 {
         if words.command_length() == 1 {
-            let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+            let mut output = Output::new(&mut self.system, self.output);
             for variable in self.variables.iter().filter(|variable| variable.exported) {
                 output.push(b"export ");
                 output.push(variable.name);
@@ -615,7 +794,7 @@ impl<'a, S: System> Shell<'a, S> {
             self.error(&[b"set: options are not supported yet"]);
             return USAGE;
         }
-        let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+        let mut output = Output::new(&mut self.system, self.output);
         for variable in self.variables.iter() {
             if let Some(value) = variable.value {
                 output.push(variable.name);
@@ -659,13 +838,13 @@ impl<'a, S: System> Shell<'a, S> {
             let mut program = [0; PATH_CAPACITY];
             let search = self.variables.get(b"PATH").unwrap_or(DEFAULT_PATH);
             if builtin(name).is_some() {
-                let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+                let mut output = Output::new(&mut self.system, self.output);
                 output.push(name);
                 output.push(b" is a shell builtin\n");
             } else if let Lookup::Program(length) =
                 path::find(name, search, &mut self.system, &mut program)
             {
-                let mut output = Output::new(&mut self.system, STANDARD_OUTPUT);
+                let mut output = Output::new(&mut self.system, self.output);
                 output.push(name);
                 output.push(b" is ");
                 output.push(&program[..length - 1]);
@@ -678,7 +857,19 @@ impl<'a, S: System> Shell<'a, S> {
         status
     }
 
-    fn external(&mut self, words: &Words) -> i32 {
+    fn external(&mut self, words: &Words, streams: Streams, pipeline: &mut Pipeline) -> Ran {
+        match self.start(words, streams, pipeline) {
+            Ok(child) => {
+                if self.interactive && pipeline.group.is_none() {
+                    pipeline.group = Some(child);
+                }
+                Ran::Started(child)
+            }
+            Err(status) => Ran::Finished(status),
+        }
+    }
+
+    fn start(&mut self, words: &Words, streams: Streams, pipeline: &Pipeline) -> Result<i32, i32> {
         let name = words.command(0);
         let mut program = [0; PATH_CAPACITY];
         let search = self.variables.get(b"PATH").unwrap_or(DEFAULT_PATH);
@@ -686,23 +877,23 @@ impl<'a, S: System> Shell<'a, S> {
             Lookup::Program(length) => length,
             Lookup::NotFound => {
                 self.error(&[name, b": command not found"]);
-                return NOT_FOUND;
+                return Err(NOT_FOUND);
             }
             Lookup::Missing => {
                 self.error(&[name, b": ", Errno::ENOENT.message()]);
-                return NOT_FOUND;
+                return Err(NOT_FOUND);
             }
             Lookup::TooLong => {
                 self.error(&[name, b": ", Errno::ENAMETOOLONG.message()]);
-                return NOT_FOUND;
+                return Err(NOT_FOUND);
             }
             Lookup::Directory => {
                 self.error(&[name, b": ", Errno::EISDIR.message()]);
-                return NOT_EXECUTABLE;
+                return Err(NOT_EXECUTABLE);
             }
             Lookup::NotExecutable => {
                 self.error(&[name, b": ", Errno::EACCES.message()]);
-                return NOT_EXECUTABLE;
+                return Err(NOT_EXECUTABLE);
             }
         };
         let mut arguments: [&[u8]; MAX_WORDS] = [b""; MAX_WORDS];
@@ -725,30 +916,26 @@ impl<'a, S: System> Shell<'a, S> {
                 variables += 1;
             }
         }
-        let result = self.system.run(
+        let group = match (self.interactive, pipeline.group) {
+            (false, _) => Group::Shell,
+            (true, None) => Group::New,
+            (true, Some(leader)) => Group::Join(leader),
+        };
+        let result = self.system.start(
             &program[..length],
             &arguments[..count],
             &environment[..variables],
-            self.interactive,
+            streams,
+            group,
         );
-        match result {
-            Ok(wait_status) => {
-                let ended = Ended::from_wait_status(wait_status);
-                let report = ended.report();
-                if !report.is_empty() {
-                    self.system.write(STANDARD_ERROR, report);
-                }
-                ended.shell_status()
+        result.map_err(|errno| {
+            self.error(&[name, b": ", errno.message()]);
+            if errno == Errno::ENOENT {
+                NOT_FOUND
+            } else {
+                NOT_EXECUTABLE
             }
-            Err(errno) => {
-                self.error(&[name, b": ", errno.message()]);
-                if errno == Errno::ENOENT {
-                    NOT_FOUND
-                } else {
-                    NOT_EXECUTABLE
-                }
-            }
-        }
+        })
     }
 }
 

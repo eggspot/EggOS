@@ -98,6 +98,15 @@ impl Device {
 /// A character device's file type bits (`S_IFCHR`).
 pub const S_IFCHR: u32 = 0o020000;
 
+/// A pipe's file type bits (`S_IFIFO`).
+pub const S_IFIFO: u32 = 0o010000;
+
+/// The device Linux's pipes report (`st_dev`): the anonymous device of its pipe file system.
+pub const PIPES: Device = Device {
+    major: 0,
+    minor: 12,
+};
+
 /// A directory's file type bits (`S_IFDIR`).
 pub const S_IFDIR: u32 = 0o040000;
 
@@ -254,9 +263,20 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
 fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
     match files.file(fd)?.kind() {
         FileKind::Console => Ok(CONSOLE),
+        FileKind::Pipe(end) => Ok(Status {
+            device: PIPES,
+            inode: end.inode(),
+            mode: S_IFIFO | 0o600,
+            links: 1,
+            represented_device: Device { major: 0, minor: 0 },
+            size: 0,
+            blocks: 0,
+            ..CONSOLE
+        }),
         FileKind::Regular(node) | FileKind::Directory(node) | FileKind::Path(node) => {
             Ok(node_status(*node))
         }
+        FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
     }
 }
 

@@ -6937,3 +6937,137 @@ the license, by an explicit instruction recorded here.
   x86_64; ARM64EC and ARM64X hybrid code (an ARM64X image runs as plain ARM64); exports with
   more than two stack words of arguments on aarch64 (none yet); `dwProcessorType` on ARM64 is
   0 (Microsoft documents the field as obsolete); and everything D121 lists, on both CPUs.
+
+## D125 Pipes, redirections, a writable in-memory file system on `/tmp` and `/home`, a minimal `/proc`, line history, and the utilities that use them (v0.3.0 release extras 22 and 23) — Decided by the build loop
+
+- **What.** Users can now pipe commands, redirect input and output, and create and change
+  files from `eggsh`: the kernel gains pipes, a writable file system in memory and a minimal
+  `/proc`; the shell gains `|`, `<`, `>`, `>>` and a history of recent lines on the arrows; the
+  core utilities gain `grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, `cp`, `mv`, `rm`,
+  `mkdir` and `touch` (docs/shell.md, docs/coreutils.md). Four of the roadmap's nice-to-haves
+  before the freeze (pipes, a tmpfs at `/tmp`, a minimal `/proc`, line history).
+- **Pipes** (`linux::pipe`, architecture-independent). `pipe` (x86_64) and `pipe2`
+  (`O_CLOEXEC`, `O_NONBLOCK`; other flags `EINVAL`, `EFAULT` closing both descriptors). A pipe
+  is a ring of 64 KiB, Linux's default capacity, behind a leaf lock, with a count of each
+  end's open file descriptions: `FileKind::Pipe(PipeEnd)`, whose drop with the last
+  description of an end closes it, so `dup`, `fork`, `execve`'s close-on-exec and a process's
+  end all count right with no new bookkeeping. A read takes what is there and returns as soon
+  as it has something, waits while the pipe is empty and a writer is left, and returns 0 once
+  none is; a write of at most `PIPE_BUF` (4096) bytes goes in whole or waits for room, a longer
+  one goes in as room appears; with no reader the write fails with `EPIPE` and the kernel sends
+  `SIGPIPE` to the writing thread. `O_NONBLOCK` turns each wait into `EAGAIN` or what was done.
+  Waits are interruptible as the console's are (restarted after an `SA_RESTART` handler). A
+  reader that finds the bytes it was woken for taken by another reader waits again rather than
+  returning 0, which only the last writer's close gives (review fix).
+  `poll` reports `POLLIN`, `POLLOUT` (room for `PIPE_BUF`), `POLLHUP` and `POLLERR`; `fstat`
+  a FIFO on the anonymous device 0:12; `lseek` and `pread64` `ESPIPE`; `FIONREAD` the bytes
+  waiting. User memory is copied through a buffer on the kernel stack, never under the lock.
+  - **Readiness under the bucket lock.** A wait's readiness check runs with the futex
+    bucket's lock held, so it must never drop an open file description (a pipe end's last
+    drop wakes the same key's bucket: a hang). `poll`'s check reads each pipe end through the
+    descriptor table under its lock, cloning nothing (a leaf lock under a leaf lock), and the
+    pipe's own checks look only at the ring (review fix).
+  - **One wait key for pipes and the console.** Pipe waiters wait on the console's input key
+    and are woken with its waiters, so `poll` on pipes and the console is one wait, and a
+    process's end, which already wakes the console's waiters, wakes them too. The price is
+    spurious wake-ups: every pipe transfer wakes every thread waiting for the console or a
+    pipe, which looks again and sleeps. That is fine for a shell's pipelines; per-pipe wait
+    queues with a poll table come when something waits on many pipes (follow-up).
+  - **`write` on the system-call path.** `write` still answers the console inline; for a pipe
+    or a regular file it hands the call to the out-of-line path (`NOT_THE_CONSOLE`, never
+    returned to a program), which has the registers a waiting call needs: one compare more on
+    `write`'s own arm only.
+- **Mounts** (`vfs`). Besides the root, up to four file systems are mounted on directories of
+  the root at boot (`vfs::mount`), never unmounted, so nodes keep their `'static` file system
+  as before: a lookup that finds a mount point gives the mounted root (a scan of at most four
+  published pointers, stopping at the first empty slot), `..` from a mounted root leaves
+  through its mount point, and `getcwd` builds paths across mounts. The release image has the
+  empty directories `/proc`, `/tmp` and `/home` (`initramfs::Content::Directory`); test
+  kernels have none, so they mount nothing and their self-tests' memory is unchanged.
+- **The file system trait.** Names now come by value (`vfs::Name`, up to 255 bytes) from
+  `name` and `entry`, since a writable file system cannot lend a name that a rename may free;
+  the initramfs copies its names (getdents and `getcwd` only, not on the read path). New
+  methods with read-only defaults (`EROFS`): `is_writable`, `copies_contents` and `read_into`
+  (contents that may change are copied into the caller's buffer instead of lent), `write` at
+  an offset or at the end (`O_APPEND`, decided under the file system's lock), `truncate`,
+  `create`, `remove`, `rename` (with `RENAME_NOREPLACE`) and `set_modified`; `generate` for
+  files made when opened. Reads of the initramfs keep their zero-copy path (one virtual call
+  more to ask whether the file system copies).
+- **tmpfs** (`vfs::tmpfs`, architecture-independent). Directories and regular files in memory,
+  mounted on `/tmp` (`1777`) and `/home` (`755`). One leaf lock per file system, held only
+  while its own memory is read or changed. File contents are pages of 4 KiB taken as they are
+  written, found through a per-file index of 16 bytes per page, so no file needs a contiguous
+  block and the heap's 4 MiB block limit is no file's limit; a sparse file's holes cost only
+  their index entries. The memory limit is one budget shared by
+  `/tmp` and `/home`, half of the memory the frame allocator had once the kernel's tables were
+  built (Linux's tmpfs default, per mount), charged for every page, for every index entry the
+  index holds room for, and for each node (128 bytes and its name); a write past it fails with
+  `ENOSPC` (after what fitted) and gives back the index it grew for what it could not write,
+  truncation gives back the pages and index past the new end, and a removed file's pages and
+  index go back at once. A write far past a file's end (`pwrite` at 1 GiB) thus fails with
+  `ENOSPC` before it can take the kernel heap's memory for its index (review fix). A node's number holds its slot, its kind and the slot's
+  generation, which changes when the slot's node is removed, so a number kept from before (an
+  open file, a working directory) names nothing instead of whatever reuses the slot: no
+  reference counts and no use-after-free. The price, a documented difference from Linux: a
+  file removed while open is gone at once (reads see its end, writes fail with `ENOENT`),
+  where Linux keeps it until the last close (follow-up, with reference counts on open nodes).
+  Times are the wall clock's seconds, which start at the epoch at boot (D73); only the
+  modification time is kept.
+- **The calls.** `openat` creates files with `O_CREAT` (mode masked by a fixed `umask` of
+  `022`: there is no `umask` call yet), truncates with `O_TRUNC` and opens for writing on a
+  writable file system (`EROFS` elsewhere, as before); `write`, `writev`, `pwrite64`,
+  `ftruncate`, `mkdirat`, `unlinkat` (`AT_REMOVEDIR`), `renameat`, `renameat2` (`EXDEV` across
+  file systems, `EINVAL` for a directory moved into itself, `EBUSY` for `.` and `..` and for a
+  mount point removed), `utimensat` (`UTIME_NOW`, `UTIME_OMIT`, a null path for the
+  descriptor), and x86_64's `mkdir`, `rmdir`, `unlink` and `rename` (`linux::file_changes`),
+  with Linux's errors. Executing a program from `/tmp` or `/home` is not supported yet
+  (`execve` maps images it can lend, follow-up).
+- **`/proc`** (`linux::proc`). `meminfo` (`MemTotal`, `MemFree`, `MemAvailable` in kB),
+  `uptime` (seconds since boot, idle time `0.00` until it is counted) and `ps`, EggOS's own
+  table (id, parent, group, session, `R` or `Z`, name), made when they are opened
+  (`FileKind::Snapshot`, read and seeked like a regular file; `fstat` says size 0, as
+  Linux's). A process's name is the last component of the file `execve` ran (15 bytes, as
+  Linux's `comm`), inherited by `fork`, `init` for process 1; it lives in the process table's
+  entry, not in `Process`, which stays at its heap class (D59). Not yet: `/proc/self` and
+  `/proc/<pid>` (a file system's lookup does not know the calling process), the other files.
+- **The shell.** `|` ends a command and pipes it into the next; the stages start one after
+  another as they are read, each on the shared child stack (`CLONE_VFORK` returns once the
+  child runs its program), with the pipe's ends as its standard input and output (`dup3` in
+  the child, every end close-on-exec), then the shell closes its copies and waits for all;
+  `$?` is the last stage's. Interactive, the first program leads a new process group that
+  takes the terminal and the others join it, so `^C` reaches the whole pipeline.
+  `<`, `>` and `>>` take the next word as their file, anywhere in a command; a builtin's output
+  goes to the redirected file or pipe. A builtin stage runs in the shell (there is no `fork`
+  of the shell's memory for a subshell), so `cd` in a pipeline changes the shell's directory,
+  a documented difference; the shell ignores `SIGPIPE` for its own writes and gives programs
+  the default back. The help and the refusals now name `&&`, `||`, `<<`, `&`, `(`, `)` and
+  command substitution.
+- **Line history.** While at the prompt, the shell switches the terminal to non-canonical,
+  no-echo input (`ISIG` stays, so `^C` still interrupts the read) and edits the line itself:
+  erase, word erase, kill, `^D`, and `ESC [ A` / `ESC [ B` (and the `ESC O` forms the graphical
+  terminal sends in application mode) through a history of the last 64 lines in 8 KiB. It
+  switches back to the terminal's settings before starting a program and again when the shell
+  ends, and reads one byte per call so what is typed ahead for a program stays in the
+  terminal for it. Cursor movement within a line and a history file come later.
+- **The utilities**, pure logic over the `System` trait with host tests (docs/coreutils.md):
+  shared option parsing (GNU style) and a line reader of 16 KiB pieces that flushes output
+  before each read, so `cat | grep x` answers as lines are typed. D22 asks every capability
+  for a CLI, a GUI and an MCP front-end: there is no capability framework or MCP server yet
+  (M14), so these utilities are the CLI front-end only, as the existing ones are.
+- **Testing.** Host tests: the pipe ring (order across the end, full and empty, poll events
+  and hang-ups), tmpfs (pages, sparse writes, truncation, the budget and `ENOSPC`, removal and
+  stale numbers, directories, rename's rules), path splitting and error mapping, `/proc`'s
+  formats, the shell's pipelines, redirections and process groups against the fake system
+  (every descriptor closed), the lexer's `|` and redirections, the line editor and history,
+  and every new utility. In QEMU on aarch64, riscv64 and x86_64 the boot-to-prompt session
+  runs `echo hello | wc`, `ls / | grep bin | head -n 1`, `<` into a pipeline, a pipeline's
+  status, a multi-file `tail | head | tail`, `^C` to `cat | grep` reading the terminal, `ls
+  /proc`, `cd /proc; cd ..`, `ps`, `free`, `uptime`, `>` and `>>` in `/tmp`, `cat < /tmp/x`,
+  `mkdir`, `touch`, `cp`, `mv` (also across `/tmp` and `/home`), `rm`, `rm -r`, `mkdir -p`, a
+  refused write to the initramfs, and a line brought back with the up arrow twice.
+- **Cost.** Image sizes and benchmarks are CI's (the PR lists them); no hot path waits or
+  locks more than before but `write`'s arm (one compare) and the initramfs read (one virtual
+  call). Each process name is 16 bytes in the process table.
+- **Not yet (follow-ups).** Per-pipe wait queues; files kept until their last close; programs
+  run from tmpfs; `/proc/self`, `/proc/<pid>`; `umask`; access times; `2>` and `2>&1`; cursor
+  movement and a history file; `cp -r`; the GUI and MCP front-ends of the utilities (M14).

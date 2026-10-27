@@ -17,7 +17,7 @@
 //! truncating or creating fails with `EROFS` as on a read-only Linux mount. A read copies
 //! the file's bytes straight from the archive in the kernel image to the program's buffer.
 
-use super::descriptors::{Descriptors, FileKind, OpenFile, open_file_limit, open_flag};
+use super::descriptors::{Descriptors, FileKind, OpenFile, Snapshot, open_file_limit, open_flag};
 use super::stat::at;
 use super::thread::LinuxThread;
 use super::{Errno, MAX_RW_COUNT};
@@ -173,6 +173,7 @@ pub fn openat<P: Platform>(
     dirfd: u64,
     path: u64,
     flags: u64,
+    mode: u64,
 ) -> Result<u64, Errno> {
     let flags = flags as u32;
     let only_path = flags & open_flag::PATH != 0;
@@ -194,10 +195,18 @@ pub fn openat<P: Platform>(
         return Err(Errno::ENOENT);
     }
     let (root, start) = starting_points(thread, dirfd, path)?;
+    let mut created = false;
     let node = match vfs::resolve(root, start, path) {
         Ok(node) => node,
         Err(vfs::Error::NotFound) if !only_path && flags & open_flag::CREAT != 0 => {
-            return Err(creation_error(root, start, path));
+            match super::file_changes::create_file::<P>(root, start, path, mode) {
+                Ok(node) => {
+                    created = true;
+                    node
+                }
+                Err(Errno::EROFS) => return Err(creation_error(root, start, path)),
+                Err(error) => return Err(error),
+            }
         }
         Err(error) => return Err(walk_error(error)),
     };
@@ -213,7 +222,9 @@ pub fn openat<P: Platform>(
             false => Errno::ENOTDIR,
         });
     } else {
-        if flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL {
+        if !created
+            && flags & (open_flag::CREAT | open_flag::EXCL) == open_flag::CREAT | open_flag::EXCL
+        {
             return Err(Errno::EEXIST);
         }
         if directory && (flags & (open_flag::CREAT | open_flag::TRUNC) != 0 || writes) {
@@ -223,11 +234,12 @@ pub fn openat<P: Platform>(
             return Err(Errno::ENOTDIR);
         }
         if !directory && (writes || flags & open_flag::TRUNC != 0) {
-            return Err(Errno::EROFS);
+            super::file_changes::truncate_on_open::<P>(node, flags)?;
         }
-        match directory {
-            true => FileKind::Directory(node),
-            false => FileKind::Regular(node),
+        match (directory, node.generate()) {
+            (true, _) => FileKind::Directory(node),
+            (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),
+            (false, None) => FileKind::Regular(node),
         }
     };
     let status = match only_path {
@@ -259,24 +271,68 @@ fn creation_error(root: Node, start: Node, path: &[u8]) -> Errno {
     }
 }
 
-/// Copies up to `count` bytes of regular file `node` from `offset` to the program's memory at
+/// What a regular file's reads take: a node's contents, or those made when it was opened.
+#[derive(Debug, Clone, Copy)]
+pub enum Contents<'a> {
+    /// What [`Node::read`] gives.
+    Node(Node),
+    /// These bytes ([`FileKind::Snapshot`]).
+    Bytes(&'a [u8]),
+}
+
+impl<'a> Contents<'a> {
+    /// The contents of what `kind` names, if it is a regular file.
+    pub fn of(kind: &'a FileKind) -> Option<Self> {
+        match kind {
+            FileKind::Regular(node) => Some(Self::Node(*node)),
+            FileKind::Snapshot(snapshot) => Some(Self::Bytes(&snapshot.bytes)),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn read(self, offset: u64, length: usize) -> &'a [u8] {
+        match self {
+            Self::Node(node) => node.read(offset, length),
+            Self::Bytes(bytes) => {
+                let start =
+                    usize::try_from(offset).map_or(bytes.len(), |start| start.min(bytes.len()));
+                &bytes[start..bytes.len().min(start.saturating_add(length))]
+            }
+        }
+    }
+
+    fn size(self) -> u64 {
+        match self {
+            Self::Node(node) => node.attributes().size,
+            Self::Bytes(bytes) => bytes.len() as u64,
+        }
+    }
+}
+
+/// Copies up to `count` bytes of a regular file's `contents` from `offset` to the program's memory at
 /// `address`, a range that ends within user space, and returns how many it copied: 0 at the
 /// end of the file; fewer than asked at its end or at a byte that is not the program's
 /// writable memory; `EFAULT` if that is the first. Chunks never cross a page of the program's,
 /// so the count is exact.
 pub fn copy_out<P: Platform>(
     process: &Process<P>,
-    node: Node,
+    contents: Contents<'_>,
     offset: u64,
     address: u64,
     count: u64,
 ) -> Result<u64, Errno> {
     let count = count.min(MAX_RW_COUNT);
+    if let Contents::Node(node) = contents
+        && node.file_system().copies_contents()
+    {
+        return copy_out_through_buffer(process, node, offset, address, count);
+    }
     let mut copied = 0;
     while copied < count {
         let at = address + copied;
         let page_left = FRAME_SIZE - at % FRAME_SIZE;
-        let bytes = node.read(offset + copied, (count - copied).min(page_left) as usize);
+        let bytes = contents.read(offset + copied, (count - copied).min(page_left) as usize);
         if bytes.is_empty() {
             break;
         }
@@ -291,6 +347,36 @@ pub fn copy_out<P: Platform>(
     Ok(copied)
 }
 
+#[inline(never)]
+fn copy_out_through_buffer<P: Platform>(
+    process: &Process<P>,
+    node: Node,
+    offset: u64,
+    address: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    let mut chunk = [0u8; FRAME_SIZE as usize];
+    let mut copied = 0;
+    while copied < count {
+        let at = address + copied;
+        let wanted = (count - copied).min(FRAME_SIZE - at % FRAME_SIZE) as usize;
+        let length = node
+            .file_system()
+            .read_into(node.id(), offset + copied, &mut chunk[..wanted]);
+        if length == 0 {
+            break;
+        }
+        if process.write_user_memory(at, &chunk[..length]).is_err() {
+            return match copied {
+                0 => Err(Errno::EFAULT),
+                _ => Ok(copied),
+            };
+        }
+        copied += length as u64;
+    }
+    Ok(copied)
+}
+
 /// Reads regular file `node` through `file`, its open file description, into the buffers
 /// `buffers` lists (base, length), from the description's offset, which moves past what was
 /// read: `read` and `readv`. Two calls on one description never read the same bytes: if
@@ -299,7 +385,7 @@ pub fn copy_out<P: Platform>(
 pub fn read_regular<P: Platform>(
     process: &Process<P>,
     file: &OpenFile,
-    node: Node,
+    contents: Contents<'_>,
     buffers: impl Iterator<Item = (u64, u64)> + Clone,
 ) -> Result<u64, Errno> {
     loop {
@@ -307,7 +393,7 @@ pub fn read_regular<P: Platform>(
         let mut total = 0;
         for (base, length) in buffers.clone() {
             let length = length.min(MAX_RW_COUNT - total);
-            let copied = match copy_out(process, node, offset + total, base, length) {
+            let copied = match copy_out(process, contents, offset + total, base, length) {
                 Ok(copied) => copied,
                 Err(_) if total > 0 => break,
                 Err(error) => return Err(error),
@@ -343,15 +429,15 @@ pub fn pread64<P: Platform>(
     if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
         return Err(Errno::EBADF);
     }
-    if matches!(file.kind(), FileKind::Console) {
+    if matches!(file.kind(), FileKind::Console | FileKind::Pipe(_)) {
         return Err(Errno::ESPIPE);
     }
     if !super::ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    match file.kind() {
-        FileKind::Regular(node) => copy_out(process, *node, offset, buffer, count),
-        _ => Err(Errno::EISDIR),
+    match Contents::of(file.kind()) {
+        Some(contents) => copy_out(process, contents, offset, buffer, count),
+        None => Err(Errno::EISDIR),
     }
 }
 
@@ -374,13 +460,15 @@ pub mod whence {
 /// `SEEK_SET` and `SEEK_CUR` (positions `getdents64` gave), `EINVAL` otherwise; `ENXIO` for
 /// `SEEK_DATA` or `SEEK_HOLE` at or past the end; `EBADF` for an `O_PATH` descriptor.
 pub fn lseek_node(file: &OpenFile, offset: u64, whence: u64) -> Result<u64, Errno> {
-    let (node, directory) = match file.kind() {
-        FileKind::Regular(node) => (*node, false),
-        FileKind::Directory(node) => (*node, true),
-        FileKind::Path(_) | FileKind::Console => return Err(Errno::EBADF),
+    let (size, directory) = match file.kind() {
+        FileKind::Directory(node) => (node.attributes().size, true),
+        kind => match Contents::of(kind) {
+            Some(contents) => (contents.size(), false),
+            None => return Err(Errno::EBADF),
+        },
     };
     let offset = offset as i64;
-    let size = node.attributes().size as i64;
+    let size = size as i64;
     let current = file.offset() as i64;
     let target = match whence as u32 {
         whence::SET => Some(offset),
@@ -441,10 +529,14 @@ pub fn pack_dirent(
 
 const DIRENT_CHUNK: usize = 512;
 
-fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, &'static [u8])> {
+fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, vfs::Name)> {
     match position {
-        0 => Some((directory.attributes().file_id, DT_DIR, b".")),
-        1 => Some((directory.parent().attributes().file_id, DT_DIR, b"..")),
+        0 => Some((directory.attributes().file_id, DT_DIR, vfs::Name::new(b"."))),
+        1 => Some((
+            directory.parent().attributes().file_id,
+            DT_DIR,
+            vfs::Name::new(b".."),
+        )),
         _ => {
             let (name, node, kind) = directory.entry(position - 2)?;
             let kind = match kind {
@@ -486,6 +578,7 @@ pub fn getdents64<P: Platform>(
     let mut gathered = 0;
     let mut failed = false;
     while let Some((inode, kind, name)) = directory_entry(directory, position) {
+        let name = name.as_bytes();
         let length = dirent_length(name);
         if written + (gathered + length) as u64 > count {
             break;

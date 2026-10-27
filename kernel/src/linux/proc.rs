@@ -1,0 +1,242 @@
+//! A minimal `/proc` (D125): `meminfo`, `uptime` and `ps`, read-only regular files made when
+//! they are opened, mounted on `/proc` at boot when the root file system has that directory.
+//!
+//! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them: the
+//!   frames the allocator had once the kernel's page tables were built, and the frames it has
+//!   now (every free frame is available: there is no page cache to reclaim).
+//! - `uptime`: the seconds since boot and the seconds CPUs spent idle, with two decimals, as
+//!   Linux writes them; idle time is not counted yet, so it is `0.00`.
+//! - `ps`: EggOS's own, one line per process in the process table, by id: its id, its
+//!   parent's, its process group, its session, its state (`R` running, `Z` ended and not yet
+//!   waited for) and its name, separated by single spaces. `ps` reads it.
+
+use super::process_table::{NAME_LENGTH, TABLE};
+use crate::memory;
+use crate::vfs::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind};
+use alloc::vec::Vec;
+use core::fmt::Write;
+use core::marker::PhantomData;
+use eggos_hal::Platform;
+use eggos_hal::memory::FRAME_SIZE;
+
+const ROOT: u64 = 1;
+
+const FILES: [(&[u8], u64); 3] = [(b"meminfo", 2), (b"ps", 3), (b"uptime", 4)];
+
+const MEMINFO: u64 = 2;
+
+const PS: u64 = 3;
+
+const UPTIME: u64 = 4;
+
+const DEVICE: (u32, u32) = (0, 4);
+
+/// The `/proc` file system on platform `P`.
+pub struct Proc<P> {
+    platform: PhantomData<fn() -> P>,
+}
+
+impl<P> core::fmt::Debug for Proc<P> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("Proc")
+    }
+}
+
+impl<P: Platform> Proc<P> {
+    /// The file system; it holds nothing, so it costs nothing until a file is opened.
+    pub const fn new() -> Self {
+        Self {
+            platform: PhantomData,
+        }
+    }
+}
+
+impl<P: Platform> Default for Proc<P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct Text(Vec<u8>);
+
+impl Write for Text {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        self.0
+            .try_reserve(text.len())
+            .map_err(|_| core::fmt::Error)?;
+        self.0.extend_from_slice(text.as_bytes());
+        Ok(())
+    }
+}
+
+/// `/proc/meminfo`'s text for `total` and `free` frames.
+pub fn meminfo(total: u64, free: u64) -> Option<Vec<u8>> {
+    let kilobytes = |frames: u64| frames * (FRAME_SIZE / 1024);
+    let mut text = Text(Vec::new());
+    for (name, frames) in [
+        ("MemTotal", total),
+        ("MemFree", free),
+        ("MemAvailable", free),
+    ] {
+        writeln!(
+            text,
+            "{:<16}{:>8} kB",
+            alloc::format!("{name}:"),
+            kilobytes(frames)
+        )
+        .ok()?;
+    }
+    Some(text.0)
+}
+
+/// `/proc/uptime`'s text after `ticks` of a clock of `frequency` ticks per second.
+pub fn uptime(ticks: u64, frequency: u64) -> Option<Vec<u8>> {
+    let hundredths = u128::from(ticks) * 100 / u128::from(frequency.max(1));
+    let mut text = Text(Vec::new());
+    writeln!(text, "{}.{:02} 0.00", hundredths / 100, hundredths % 100).ok()?;
+    Some(text.0)
+}
+
+fn ps() -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    let table = TABLE.lock();
+    text.0.try_reserve(table.list().count() * 48).ok()?;
+    for process in table.list() {
+        let length = process
+            .name
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(NAME_LENGTH);
+        let state = if process.ended { 'Z' } else { 'R' };
+        write!(
+            text,
+            "{} {} {} {} {state} ",
+            process.id, process.parent, process.group, process.session
+        )
+        .ok()?;
+        text.0.extend_from_slice(&process.name[..length]);
+        text.0.push(b'\n');
+    }
+    Some(text.0)
+}
+
+impl<P: Platform> FileSystem for Proc<P> {
+    fn root(&self) -> u64 {
+        ROOT
+    }
+
+    fn device(&self) -> (u32, u32) {
+        DEVICE
+    }
+
+    fn kind(&self, node: u64) -> NodeKind {
+        match node {
+            ROOT => NodeKind::Directory,
+            _ => NodeKind::Regular,
+        }
+    }
+
+    fn attributes(&self, node: u64) -> Attributes {
+        let directory = node == ROOT;
+        Attributes {
+            kind: self.kind(node),
+            permissions: if directory { 0o555 } else { 0o444 },
+            file_id: node,
+            links: if directory { 2 } else { 1 },
+            owner: 0,
+            group: 0,
+            size: 0,
+            modified: 0,
+        }
+    }
+
+    fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
+        if directory != ROOT {
+            return None;
+        }
+        FILES
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|&(_, node)| node)
+    }
+
+    fn parent(&self, _node: u64) -> u64 {
+        ROOT
+    }
+
+    fn name(&self, node: u64) -> Name {
+        Name::new(
+            FILES
+                .iter()
+                .find(|&&(_, file)| file == node)
+                .map_or(&[][..], |(name, _)| name),
+        )
+    }
+
+    fn read(&self, _node: u64, _offset: u64, _length: usize) -> &[u8] {
+        &[]
+    }
+
+    fn generate(&self, node: u64) -> Option<Vec<u8>> {
+        match node {
+            MEMINFO => {
+                let free = memory::FRAMES
+                    .lock()
+                    .as_ref()
+                    .map_or(0, |frames| frames.free_frames());
+                meminfo(memory::total_frames(), free)
+            }
+            UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
+            PS => ps(),
+            _ => None,
+        }
+    }
+
+    fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
+        if directory != ROOT {
+            return None;
+        }
+        let &(name, node) = FILES.get(usize::try_from(position).ok()?)?;
+        Some(DirectoryEntry {
+            name: Name::new(name),
+            node,
+            kind: NodeKind::Regular,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meminfo_is_in_kilobytes_aligned_as_linux_s() {
+        let text = meminfo(32768, 1000).unwrap();
+        assert_eq!(
+            core::str::from_utf8(&text).unwrap(),
+            "MemTotal:         131072 kB\nMemFree:            4000 kB\nMemAvailable:       4000 kB\n"
+        );
+    }
+
+    #[test]
+    fn uptime_has_two_decimals() {
+        assert_eq!(uptime(12_345, 1000).unwrap(), b"12.34 0.00\n");
+        assert_eq!(uptime(5, 100).unwrap(), b"0.05 0.00\n");
+        assert_eq!(uptime(0, 0).unwrap(), b"0.00 0.00\n");
+    }
+
+    #[test]
+    fn the_root_lists_and_finds_its_three_files() {
+        let proc = Proc::<crate::tests::TestPlatform>::new();
+        let names: Vec<Vec<u8>> = (0..)
+            .map_while(|position| proc.entry(ROOT, position))
+            .map(|entry| entry.name.as_bytes().to_vec())
+            .collect();
+        assert_eq!(names, [&b"meminfo"[..], b"ps", b"uptime"]);
+        assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
+        assert_eq!(proc.lookup(ROOT, b"self"), None);
+        assert_eq!(proc.name(UPTIME).as_bytes(), b"uptime");
+        assert_eq!(proc.attributes(MEMINFO).permissions, 0o444);
+        assert_eq!(proc.kind(ROOT), NodeKind::Directory);
+    }
+}

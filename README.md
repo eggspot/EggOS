@@ -40,7 +40,9 @@ On Windows, if PowerShell refuses to run a downloaded script, start it with
 The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
-`sleep`, `true`, `false`, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
+`grep`, `wc`, `head`, `tail`, `ps`, `free`, `uptime`, pipes such as `ls /bin | grep s | wc -l`,
+files in `/tmp` and `/home` (`echo hi > /tmp/x`, `cp`, `mv`, `rm`, `mkdir`, `touch`), the up
+arrow for the last lines, and `poweroff` or `reboot` (the [shell](docs/shell.md) and the
 [core utilities](docs/coreutils.md)). Quit with Ctrl-A then X on that terminal, or close the
 window. What does not work yet: [docs/limitations.md](docs/limitations.md).
 

@@ -1,11 +1,16 @@
 use crate::cat::cat;
 use crate::echo::echo;
+use crate::file_changes::{cp, mkdir, mv, rm, touch};
+use crate::grep::grep;
+use crate::head::{head, tail};
 use crate::ls::{Listing, ls};
 use crate::output::{FAILURE, Output};
 use crate::power::{HALT, POWER_OFF, RESTART, power};
+use crate::processes::{free, ps, uptime};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use crate::uname::uname;
+use crate::wc::wc;
 use core::ffi::CStr;
 
 pub const MAX_ARGUMENTS: usize = 256;
@@ -17,43 +22,79 @@ const UTILITY_NOT_FOUND: i32 = 127;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Utility {
     Cat,
+    Cp,
     Echo,
     False,
+    Free,
+    Grep,
     Halt,
+    Head,
     Ls,
+    Mkdir,
+    Mv,
     Poweroff,
+    Ps,
     Reboot,
+    Rm,
     Sleep,
+    Tail,
+    Touch,
     True,
     Uname,
+    Uptime,
+    Wc,
 }
 
 impl Utility {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 22] = [
         Self::Cat,
+        Self::Cp,
         Self::Echo,
         Self::False,
+        Self::Free,
+        Self::Grep,
         Self::Halt,
+        Self::Head,
         Self::Ls,
+        Self::Mkdir,
+        Self::Mv,
         Self::Poweroff,
+        Self::Ps,
         Self::Reboot,
+        Self::Rm,
         Self::Sleep,
+        Self::Tail,
+        Self::Touch,
         Self::True,
         Self::Uname,
+        Self::Uptime,
+        Self::Wc,
     ];
 
     pub fn name(self) -> &'static [u8] {
         match self {
             Self::Cat => b"cat",
+            Self::Cp => b"cp",
             Self::Echo => b"echo",
             Self::False => b"false",
+            Self::Free => b"free",
+            Self::Grep => b"grep",
             Self::Halt => b"halt",
+            Self::Head => b"head",
             Self::Ls => b"ls",
+            Self::Mkdir => b"mkdir",
+            Self::Mv => b"mv",
             Self::Poweroff => b"poweroff",
+            Self::Ps => b"ps",
             Self::Reboot => b"reboot",
+            Self::Rm => b"rm",
             Self::Sleep => b"sleep",
+            Self::Tail => b"tail",
+            Self::Touch => b"touch",
             Self::True => b"true",
             Self::Uname => b"uname",
+            Self::Uptime => b"uptime",
+            Self::Wc => b"wc",
         }
     }
 
@@ -64,15 +105,27 @@ impl Utility {
     fn run<S: System>(self, output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match self {
             Self::Cat => cat(output, arguments),
+            Self::Cp => cp(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
+            Self::Free => free(output, arguments),
+            Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),
+            Self::Head => head(output, arguments),
             Self::Ls => ls(output, &mut Listing::new(), arguments),
+            Self::Mkdir => mkdir(output, arguments),
+            Self::Mv => mv(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
+            Self::Ps => ps(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
+            Self::Rm => rm(output, arguments),
             Self::Sleep => sleep(output, arguments),
+            Self::Tail => tail(output, arguments),
+            Self::Touch => touch(output, arguments),
             Self::True => 0,
             Self::Uname => uname(output, arguments),
+            Self::Uptime => uptime(output, arguments),
+            Self::Wc => wc(output, arguments),
         }
     }
 }

@@ -10,6 +10,10 @@ use eggos_runtime::syscall::{self, number};
 const AT_FDCWD: usize = -100isize as usize;
 const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
+const O_WRONLY: usize = 0o1;
+const O_CREAT: usize = 0o100;
+const O_TRUNC: usize = 0o1000;
+const AT_REMOVEDIR: usize = 0x200;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const CLOCK_MONOTONIC: usize = 1;
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
@@ -131,6 +135,33 @@ impl System for Linux {
             [REBOOT_MAGIC1, REBOOT_MAGIC2, command as usize, 0, 0, 0],
         )
         .map(|_| ())
+    }
+
+    fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
+        let flags = O_RDONLY_CLOEXEC | O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
+        let path = path.as_ptr() as usize;
+        call(number::OPENAT, [AT_FDCWD, path, flags, mode as usize, 0, 0])
+    }
+
+    fn make_directory(&mut self, path: &CStr, mode: u32) -> Result<(), Errno> {
+        let path = path.as_ptr() as usize;
+        call(number::MKDIRAT, [AT_FDCWD, path, mode as usize, 0, 0, 0]).map(|_| ())
+    }
+
+    fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno> {
+        let flags = if directory { AT_REMOVEDIR } else { 0 };
+        let path = path.as_ptr() as usize;
+        call(number::UNLINKAT, [AT_FDCWD, path, flags, 0, 0, 0]).map(|_| ())
+    }
+
+    fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
+        let (from, to) = (from.as_ptr() as usize, to.as_ptr() as usize);
+        call(number::RENAMEAT2, [AT_FDCWD, from, AT_FDCWD, to, 0, 0]).map(|_| ())
+    }
+
+    fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
+        let path = path.as_ptr() as usize;
+        call(number::UTIMENSAT, [AT_FDCWD, path, 0, 0, 0, 0]).map(|_| ())
     }
 }
 

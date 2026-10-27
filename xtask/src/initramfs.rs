@@ -29,6 +29,8 @@ pub enum Content<'a> {
     Text(&'a str),
     /// Another name for the extra member at this path in the archive, which comes earlier.
     HardLink(&'a str),
+    /// An empty directory: where the kernel mounts a file system (`/proc`, D125).
+    Directory,
 }
 
 /// A member of the archive: its path, mode and data, and the member it is another name for.
@@ -106,6 +108,7 @@ fn add(members: &mut Vec<Member>, path: &str, content: Content) -> Result<(), St
             Member::new(path, PROGRAM_MODE, data)
         }
         Content::Text(text) => Member::new(path, FILE_MODE, text.as_bytes().to_vec()),
+        Content::Directory => Member::new(path, DIRECTORY_MODE, Vec::new()),
         Content::HardLink(target) => {
             let index = members
                 .iter()
