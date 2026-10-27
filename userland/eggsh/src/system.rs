@@ -391,7 +391,11 @@ pub fn run(startup: &Startup) -> i32 {
     let mut file = None;
     positional[0] = match first.map(CStr::to_bytes) {
         Some(b"-c") => {
-            let Some(command) = arguments.next() else {
+            let command = match arguments.next() {
+                Some(end) if end.to_bytes() == b"--" => arguments.next(),
+                command => command,
+            };
+            let Some(command) = command else {
                 syscall::write_all(STANDARD_ERROR, b"eggsh: -c: option requires an argument\n");
                 return USAGE;
             };

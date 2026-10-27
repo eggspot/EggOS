@@ -1241,8 +1241,8 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         // `ELR_EL1` already points after the `svc`.
         return UserExit::Syscall;
     }
-    // With `vector`, all `last_exception` needs.
     let far = without_user_tag(far);
+    // With `vector`, all `last_exception` needs.
     registers.esr = esr;
     registers.far = far;
     UserExit::Exception(decode(index % 4, esr, far, registers.elr))
@@ -1341,9 +1341,6 @@ fn console_input(interrupt: timer::Acknowledged) {
     timer::end_of_interrupt(interrupt);
 }
 
-// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
-// trap path keeps its length (D47).
-#[inline(always)]
 fn without_user_tag(address: u64) -> u64 {
     const TTBR1_BIT: u64 = 1 << 55;
     const TAG: u64 = 0xff << 56;
@@ -1354,6 +1351,9 @@ fn without_user_tag(address: u64) -> u64 {
     }
 }
 
+// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
+// trap path keeps its length (D47).
+#[inline(always)]
 fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     let class = esr >> 26 & 0x3f;
     let (kind, name, far_valid) = match entry_type {

@@ -892,10 +892,6 @@ fn build_android_console(ndk: &android::Ndk, target: &str) -> Result<std::path::
     let release = target_dir.join(target).join("release");
     let program = release.join("android-console");
     android::link(ndk, target, &release.join("libandroid_console.a"), &program)?;
-    let nm = ndk.clang.with_file_name("llvm-nm");
-    let _ = Command::new(nm).arg("-n").arg(&program).status();
-    let objdump = ndk.clang.with_file_name("llvm-readelf");
-    let _ = Command::new(objdump).arg("-lW").arg(&program).status();
     Ok(program)
 }
 

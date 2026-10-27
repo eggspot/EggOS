@@ -597,25 +597,6 @@ pub fn handle<P: Platform>(
     context: &mut UserContext,
     exit: UserExit,
 ) -> ControlFlow<()> {
-    if probe::traced(process.id().get()) {
-        if let UserExit::Syscall = exit {
-            let number = context.syscall_number();
-            let a = context.syscall_arguments();
-            let flow = syscall(process, thread, context);
-            probe::say::<P>(format_args!(
-                "PROBE {} nr {} ({:#x}, {:#x}, {:#x}, {:#x}) -> {:#x} pc {:#x}\n",
-                process.id().get(),
-                number,
-                a[0],
-                a[1],
-                a[2],
-                a[3],
-                context.syscall_arguments()[0],
-                context.pc()
-            ));
-            return flow;
-        }
-    }
     match exit {
         UserExit::Syscall => syscall(process, thread, context),
         UserExit::Interrupt => signals::deliver_sent_on_interrupt(process, thread, context),
@@ -681,39 +662,8 @@ fn signal_fault<P: Platform>(
     if first_fp_use::<P>(thread, exception.kind) {
         return ControlFlow::Continue(());
     }
-    probe::say::<P>(format_args!(
-        "PROBE fault pid {} kind {:?} code {:#x} address {:?} pc {:#x} sp {:#x}\n",
-        process.id().get(),
-        exception.kind,
-        exception.code,
-        exception.address,
-        context.pc(),
-        context.stack()
-    ));
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, thread, context, &fault)
-}
-
-pub(crate) mod probe {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    pub static PID: AtomicU32 = AtomicU32::new(u32::MAX);
-    pub fn traced(pid: u32) -> bool {
-        PID.load(Ordering::Relaxed) == pid
-    }
-    struct Buffer([u8; 200], usize);
-    impl core::fmt::Write for Buffer {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result {
-            let n = text.len().min(self.0.len() - self.1);
-            self.0[self.1..self.1 + n].copy_from_slice(&text.as_bytes()[..n]);
-            self.1 += n;
-            Ok(())
-        }
-    }
-    pub fn say<P: eggos_hal::Platform>(arguments: core::fmt::Arguments) {
-        let mut buffer = Buffer([0; 200], 0);
-        let _ = core::fmt::Write::write_fmt(&mut buffer, arguments);
-        crate::console::write::<P>(&buffer.0[..buffer.1]);
-    }
 }
 
 pub(crate) fn load_inherited_fp<P: Platform>(thread: &mut LinuxThread) {
