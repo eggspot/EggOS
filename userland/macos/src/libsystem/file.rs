@@ -42,6 +42,75 @@ unsafe extern "C" fn open_with(path: *const c_char, flags: c_int, arguments: Raw
 variadic!(eggos_macos_open => open_with, 2, "x2", "rdx");
 pub use eggos_macos_open as open;
 
+const F_DUPFD: c_int = 0;
+const F_GETFD: c_int = 1;
+const F_SETFD: c_int = 2;
+const F_GETFL: c_int = 3;
+const F_SETFL: c_int = 4;
+const F_DUPFD_CLOEXEC: c_int = 67;
+const LINUX_F_DUPFD_CLOEXEC: usize = 1030;
+const MAX_VECTORS: c_int = 1024;
+
+pub extern "C" fn dup(fd: c_int) -> c_int {
+    // SAFETY: `dup` touches no memory.
+    match unsafe { linux::syscall(linux::number::DUP, [fd as usize, 0, 0, 0, 0, 0]) } {
+        Ok(new) => new as c_int,
+        Err(errno) => errno_from(errno, -1),
+    }
+}
+
+unsafe extern "C" fn fcntl_with(fd: c_int, command: c_int, arguments: RawVaList) -> c_int {
+    let argument = || {
+        // SAFETY: the commands that read it take one integer variadic argument.
+        unsafe { VaList::new(arguments) }.integer() as usize
+    };
+    let (linux_command, linux_argument) = match command {
+        F_DUPFD => (0, argument()),
+        F_GETFD => (1, 0),
+        F_SETFD => (2, argument() & 1),
+        F_GETFL => (3, 0),
+        F_SETFL => (4, darwin::linux_status_flags(argument() as u32)),
+        F_DUPFD_CLOEXEC => (LINUX_F_DUPFD_CLOEXEC, argument()),
+        _ => {
+            set_errno(EINVAL);
+            return -1;
+        }
+    };
+    // SAFETY: these commands touch no memory.
+    match unsafe {
+        linux::syscall(
+            linux::number::FCNTL,
+            [fd as usize, linux_command, linux_argument, 0, 0, 0],
+        )
+    } {
+        Ok(result) if command == F_GETFL => darwin::darwin_status_flags(result) as c_int,
+        Ok(result) => result as c_int,
+        Err(errno) => errno_from(errno, -1),
+    }
+}
+
+variadic!(eggos_macos_fcntl => fcntl_with, 2, "x2", "rdx");
+pub use eggos_macos_fcntl as fcntl;
+
+/// # Safety
+/// `vectors` must be `count` readable `struct iovec`s, each over readable memory.
+pub unsafe extern "C" fn writev(fd: c_int, vectors: *const [usize; 2], count: c_int) -> isize {
+    if !(0..=MAX_VECTORS).contains(&count) {
+        set_errno(EINVAL);
+        return -1;
+    }
+    // SAFETY: `writev` reads the caller's vectors and the memory they describe.
+    match unsafe {
+        linux::syscall(
+            linux::number::WRITEV,
+            [fd as usize, vectors as usize, count as usize, 0, 0, 0],
+        )
+    } {
+        Ok(written) => written as isize,
+        Err(errno) => errno_from(errno, -1),
+    }
+}
+
 pub extern "C" fn close(fd: c_int) -> c_int {
     linux::close(fd as usize).map_or_else(|errno| errno_from(errno, -1), |_| 0)
 }

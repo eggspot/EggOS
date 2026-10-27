@@ -26,6 +26,12 @@ const FAT_ARCH_64_SIZE: usize = 32;
 const SEGMENT_COMMAND_SIZE: usize = 72;
 const SEGMENT_ALIGNMENT: u64 = 4096;
 const LC_REQ_DYLD: u32 = 0x8000_0000;
+const SECTION_SIZE: usize = 80;
+const SECTION_TYPE: u32 = 0xff;
+const S_THREAD_LOCAL_REGULAR: u32 = 0x11;
+const S_THREAD_LOCAL_ZEROFILL: u32 = 0x12;
+const MAX_THREAD_LOCAL_SIZE: u64 = 16 << 20;
+const MAX_THREAD_LOCAL_ALIGNMENT_SHIFT: u32 = 12;
 
 mod command {
     pub const UNIXTHREAD: u32 = 0x5;
@@ -266,6 +272,16 @@ pub struct Range {
     pub size: usize,
 }
 
+/// The template of the program's thread-local variables: its `__thread_data` and
+/// `__thread_bss` sections (`S_THREAD_LOCAL_REGULAR` and `S_THREAD_LOCAL_ZEROFILL`), from the
+/// lowest address to the end of the highest, which each thread gets a copy of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadLocalTemplate {
+    pub address: u64,
+    pub size: u64,
+    pub alignment: u64,
+}
+
 /// A parsed 64-bit Mach-O executable.
 #[derive(Debug, Clone, Copy)]
 pub struct MachO<'a> {
@@ -279,6 +295,7 @@ pub struct MachO<'a> {
     pub entry: u64,
     pub chained_fixups: Option<Range>,
     pub dyld_info: bool,
+    pub thread_locals: Option<ThreadLocalTemplate>,
 }
 
 impl<'a> MachO<'a> {
@@ -313,6 +330,7 @@ impl<'a> MachO<'a> {
             entry: 0,
             chained_fixups: None,
             dyld_info: false,
+            thread_locals: None,
         };
         let mut entry = None;
         let mut at = HEADER_SIZE;
@@ -404,6 +422,16 @@ impl<'a> MachO<'a> {
         {
             return Err(invalid("a segment's sections run past its command"));
         }
+        for index in 0..sections {
+            let at = SEGMENT_COMMAND_SIZE + index * SECTION_SIZE;
+            let kind = u32_at(command, at + 64).unwrap_or(0) & SECTION_TYPE;
+            if kind == S_THREAD_LOCAL_REGULAR || kind == S_THREAD_LOCAL_ZEROFILL {
+                let address = u64_at(command, at + 32).unwrap_or(0);
+                let size = u64_at(command, at + 40).unwrap_or(0);
+                let shift = u32_at(command, at + 52).unwrap_or(0);
+                self.add_thread_locals(address, size, shift)?;
+            }
+        }
         if segment.is_page_zero() {
             return Ok(());
         }
@@ -413,6 +441,36 @@ impl<'a> MachO<'a> {
             .ok_or(invalid("too many segments"))?;
         *slot = segment;
         self.segment_count += 1;
+        Ok(())
+    }
+
+    fn add_thread_locals(
+        &mut self,
+        address: u64,
+        size: u64,
+        shift: u32,
+    ) -> Result<(), InvalidMachO> {
+        let invalid = InvalidMachO("a thread-local section is too large or misaligned");
+        if shift > MAX_THREAD_LOCAL_ALIGNMENT_SHIFT {
+            return Err(invalid);
+        }
+        let end = address.checked_add(size).ok_or(invalid)?;
+        let (start, end, alignment) = match self.thread_locals {
+            Some(template) => (
+                template.address.min(address),
+                (template.address + template.size).max(end),
+                template.alignment.max(1 << shift),
+            ),
+            None => (address, end, 1 << shift),
+        };
+        if end - start > MAX_THREAD_LOCAL_SIZE {
+            return Err(invalid);
+        }
+        self.thread_locals = Some(ThreadLocalTemplate {
+            address: start,
+            size: end - start,
+            alignment,
+        });
         Ok(())
     }
 
@@ -459,6 +517,18 @@ impl<'a> MachO<'a> {
         });
         if !entry_in_code {
             return Err(invalid("the entry point is not in executable code"));
+        }
+        if let Some(template) = self.thread_locals {
+            let inside = segments.iter().any(|segment| {
+                template.address >= segment.vmaddr
+                    && template.address + template.size <= segment.end()
+                    && segment.initprot & VM_PROT_READ != 0
+            });
+            if !inside {
+                return Err(invalid(
+                    "the thread-local template is outside every segment",
+                ));
+            }
         }
         if let Some(range) = self.chained_fixups {
             let linkedit = segments.iter().any(|segment| {

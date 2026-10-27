@@ -13,8 +13,20 @@ pub mod number {
     pub const MMAP: usize = 9;
     pub const MPROTECT: usize = 10;
     pub const MUNMAP: usize = 11;
+    pub const RT_SIGACTION: usize = 13;
     pub const IOCTL: usize = 16;
+    pub const WRITEV: usize = 20;
+    pub const SCHED_YIELD: usize = 24;
+    pub const DUP: usize = 32;
     pub const GETPID: usize = 39;
+    pub const CLONE: usize = 56;
+    pub const EXIT: usize = 60;
+    pub const FCNTL: usize = 72;
+    pub const ARCH_PRCTL: usize = 158;
+    pub const GETTID: usize = 186;
+    pub const FUTEX: usize = 202;
+    pub const SCHED_GETAFFINITY: usize = 204;
+    pub const PPOLL: usize = 271;
     pub const KILL: usize = 62;
     pub const GETCWD: usize = 79;
     pub const CHDIR: usize = 80;
@@ -35,6 +47,8 @@ pub mod number {
 #[cfg(target_arch = "aarch64")]
 pub mod number {
     pub const GETCWD: usize = 17;
+    pub const DUP: usize = 23;
+    pub const FCNTL: usize = 25;
     pub const IOCTL: usize = 29;
     pub const MKDIRAT: usize = 34;
     pub const UNLINKAT: usize = 35;
@@ -46,16 +60,25 @@ pub mod number {
     pub const LSEEK: usize = 62;
     pub const READ: usize = 63;
     pub const WRITE: usize = 64;
+    pub const WRITEV: usize = 66;
+    pub const PPOLL: usize = 73;
     pub const NEWFSTATAT: usize = 79;
     pub const FSTAT: usize = 80;
+    pub const EXIT: usize = 93;
     pub const EXIT_GROUP: usize = 94;
+    pub const FUTEX: usize = 98;
     pub const CLOCK_GETTIME: usize = 113;
     pub const CLOCK_NANOSLEEP: usize = 115;
+    pub const SCHED_GETAFFINITY: usize = 123;
+    pub const SCHED_YIELD: usize = 124;
     pub const KILL: usize = 129;
+    pub const RT_SIGACTION: usize = 134;
     pub const GETPID: usize = 172;
     pub const GETPPID: usize = 173;
     pub const GETUID: usize = 174;
+    pub const GETTID: usize = 178;
     pub const MUNMAP: usize = 215;
+    pub const CLONE: usize = 220;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const GETRANDOM: usize = 278;
@@ -73,6 +96,10 @@ pub const PROT_EXEC: usize = 4;
 pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
+pub const FUTEX_WAIT: usize = 0;
+pub const FUTEX_WAIT_PRIVATE: usize = 128;
+pub const FUTEX_WAKE_PRIVATE: usize = 129;
+pub const ETIMEDOUT: Errno = Errno(110);
 pub const TCGETS: usize = 0x5401;
 pub const TERMIOS_SIZE: usize = 60;
 pub const SIGABRT: usize = 6;
@@ -244,6 +271,183 @@ pub fn sleep(time: [i64; 2]) -> Result<usize, Errno> {
 pub fn process_id() -> usize {
     // SAFETY: `getpid` touches no memory.
     unsafe { syscall(number::GETPID, [0; 6]) }.unwrap_or(0)
+}
+
+pub fn thread_id() -> u32 {
+    // SAFETY: `gettid` touches no memory.
+    unsafe { syscall(number::GETTID, [0; 6]) }.unwrap_or(0) as u32
+}
+
+pub fn yield_now() {
+    // SAFETY: `sched_yield` touches no memory.
+    let _ = unsafe { syscall(number::SCHED_YIELD, [0; 6]) };
+}
+
+/// How many CPUs the process may run on.
+pub fn cpu_count() -> u32 {
+    let mut mask = [0u64; 16];
+    // SAFETY: `sched_getaffinity` writes at most the borrowed mask's 128 bytes.
+    let result = unsafe {
+        syscall(
+            number::SCHED_GETAFFINITY,
+            [0, size_of_val(&mask), mask.as_mut_ptr() as usize, 0, 0, 0],
+        )
+    };
+    match result {
+        Ok(_) => mask
+            .iter()
+            .map(|word| word.count_ones())
+            .sum::<u32>()
+            .max(1),
+        Err(_) => 1,
+    }
+}
+
+/// Sleeps while the 32-bit word holds `expected`, at most `timeout` nanoseconds (forever if
+/// `None`); returns early on a wake, a signal or a changed value, and `Err(ETIMEDOUT)` when
+/// the time ran out.
+pub fn futex_wait(
+    word: &core::sync::atomic::AtomicU32,
+    expected: u32,
+    timeout: Option<u64>,
+) -> Result<usize, Errno> {
+    let time = timeout.map(|nanoseconds| {
+        [
+            (nanoseconds / 1_000_000_000).min(i64::MAX as u64) as i64,
+            (nanoseconds % 1_000_000_000) as i64,
+        ]
+    });
+    let time_pointer = time.as_ref().map_or(0, |time| time.as_ptr() as usize);
+    // SAFETY: `futex` reads the borrowed word and, with a timeout, one `struct timespec` from
+    // the borrowed local.
+    unsafe {
+        syscall(
+            number::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAIT_PRIVATE,
+                expected as usize,
+                time_pointer,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+/// Sleeps while the 32-bit word holds `expected`, as a shared futex: the kind the kernel wakes
+/// when it clears a thread's `CLONE_CHILD_CLEARTID` word.
+pub fn futex_wait_shared(word: &core::sync::atomic::AtomicU32, expected: u32) {
+    // SAFETY: `futex` reads the borrowed word.
+    let _ = unsafe {
+        syscall(
+            number::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAIT,
+                expected as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+}
+
+/// Wakes at most `count` threads sleeping on the 32-bit word.
+pub fn futex_wake(word: &core::sync::atomic::AtomicU32, count: u32) {
+    // SAFETY: a wake touches no memory.
+    let _ = unsafe {
+        syscall(
+            number::FUTEX,
+            [
+                word.as_ptr() as usize,
+                FUTEX_WAKE_PRIVATE,
+                count as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+}
+
+const THREAD_FLAGS: usize =
+    0x100 | 0x200 | 0x400 | 0x800 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x10_0000 | 0x20_0000;
+
+/// Starts a thread of this process on `stack_top`, with `thread_pointer` as its thread
+/// pointer, that calls `entry(argument)`; `id_word` holds its id from before this returns until
+/// the thread has ended and no longer uses its stack, when the kernel clears it.
+///
+/// # Safety
+/// `stack_top` must be the 16-byte aligned end of memory only the new thread uses, for as long
+/// as `id_word` is not 0; `id_word` must stay valid as long too.
+pub unsafe fn spawn_thread(
+    stack_top: usize,
+    thread_pointer: usize,
+    id_word: *mut u32,
+    entry: extern "C" fn(usize) -> !,
+    argument: usize,
+) -> Result<usize, Errno> {
+    let result: isize;
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: Linux's x86_64 `clone`: the caller's registers and memory are as before but
+    // `rax`, `rcx` and `r11`; the child starts on its own stack and never comes back here.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "test rax, rax",
+            "jnz 2f",
+            "mov rdi, r13",
+            "call r12",
+            "ud2",
+            "2:",
+            inlateout("rax") number::CLONE as isize => result,
+            in("rdi") THREAD_FLAGS, in("rsi") stack_top, in("rdx") id_word,
+            in("r10") id_word, in("r8") thread_pointer, in("r12") entry, in("r13") argument,
+            lateout("rcx") _, lateout("r11") _,
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: Linux's aarch64 `clone`: the caller's registers and memory are as before but
+    // `x0`; the child starts on its own stack and never comes back here.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            "cbnz x0, 2f",
+            "mov x0, x10",
+            "blr x9",
+            "brk #0",
+            "2:",
+            inlateout("x0") THREAD_FLAGS as isize => result,
+            in("x1") stack_top, in("x2") id_word, in("x3") thread_pointer, in("x4") id_word,
+            in("x8") number::CLONE, in("x9") entry, in("x10") argument,
+        );
+    }
+    Errno::result(result)
+}
+
+/// Points the calling thread's thread pointer (`tpidr_el0`, or the FS base) at `address`.
+///
+/// # Safety
+/// Nothing else in the process may use the thread pointer.
+pub unsafe fn set_thread_pointer(address: usize) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the caller's promise; writing `tpidr_el0` touches no memory.
+    unsafe {
+        core::arch::asm!("msr tpidr_el0, {}", in(reg) address, options(nostack, nomem));
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the caller's promise; `arch_prctl(ARCH_SET_FS)` touches no memory.
+    let _ = unsafe { syscall(number::ARCH_PRCTL, [0x1002, address, 0, 0, 0, 0]) };
+}
+
+/// Ends the calling thread only.
+pub fn exit_thread() -> ! {
+    loop {
+        // SAFETY: `exit` ends the calling thread; the rest of the process goes on.
+        let _ = unsafe { syscall(number::EXIT, [0; 6]) };
+    }
 }
 
 pub fn exit(status: i32) -> ! {

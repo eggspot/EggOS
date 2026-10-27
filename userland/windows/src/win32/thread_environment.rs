@@ -384,10 +384,13 @@ extern "win64" fn fls_free(index: u32) -> Bool {
     let Some(slot) = fls_slot(index) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
-    if FLS_SLOTS_IN_USE.fetch_and(!(1 << index), Ordering::AcqRel) & 1 << index == 0 {
+    if FLS_SLOTS_IN_USE.load(Ordering::Acquire) & 1 << index == 0 {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
     let callback = FLS_CALLBACKS[index as usize].swap(0, Ordering::AcqRel);
+    if FLS_SLOTS_IN_USE.fetch_and(!(1 << index), Ordering::AcqRel) & 1 << index == 0 {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
     // SAFETY: `slot` is inside the current thread's TEB.
     let value = unsafe { slot.read() };
     // SAFETY: as above.

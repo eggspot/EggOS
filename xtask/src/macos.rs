@@ -11,7 +11,12 @@ pub const LAYER_PATH: &str = "usr/lib/eggos/macos";
 pub const CONSOLE_PACKAGE: &str = "eggos-macos-console";
 pub const PROGRAMS_VARIABLE: &str = "EGGOS_MACOS_PROGRAMS";
 pub const DEPLOYMENT_TARGET: &str = "13.0";
-pub const PROGRAMS: [&str; 2] = ["macos-console", "macos-unsupported"];
+pub const PROGRAMS: [&str; 4] = [
+    "macos-console",
+    "macos-unsupported",
+    "macos-tools",
+    "macos-std",
+];
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;
@@ -26,6 +31,17 @@ pub fn target(arch: &str) -> Option<(&'static str, &'static str)> {
         "aarch64" => Some(("arm64", "aarch64-apple-darwin")),
         "x86_64" => Some(("x86_64", "x86_64-apple-darwin")),
         _ => None,
+    }
+}
+
+/// The QEMU arguments the macOS programs boot test adds on `arch`: arm64 macOS programs are
+/// compiled for Apple's M1 and later (ARMv8.4-A and more: LSE atomics, RCPC loads), which the
+/// other boot tests' Cortex-A72 (ARMv8.0-A) lacks, so aarch64 boots on QEMU's `max` CPU; a
+/// later `-cpu` replaces the machine's.
+pub fn qemu_cpu_args(arch: &str) -> &'static [&'static str] {
+    match arch {
+        "aarch64" => &["-cpu", "max"],
+        _ => &[],
     }
 }
 

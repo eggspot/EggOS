@@ -78,6 +78,59 @@ pub fn linux_open_flags(flags: u32, layout: LinuxLayout) -> Option<u32> {
     )
 }
 
+/// Linux's `mmap` flags for Darwin's, or `None` for a flag Linux has no match for. Darwin's
+/// hints `MAP_NOEXTEND`, `MAP_HASSEMAPHORE`, `MAP_NOCACHE` and `MAP_JIT` are dropped.
+pub fn linux_map_flags(flags: u32) -> Option<usize> {
+    const SHARED: u32 = 0x1;
+    const PRIVATE: u32 = 0x2;
+    const FIXED: u32 = 0x10;
+    const NORESERVE: u32 = 0x40;
+    const HINTS: u32 = 0x100 | 0x200 | 0x400 | 0x800;
+    const ANONYMOUS: u32 = 0x1000;
+    let known = SHARED | PRIVATE | FIXED | NORESERVE | HINTS | ANONYMOUS;
+    if flags & !known != 0 || (flags & (SHARED | PRIVATE)).count_ones() != 1 {
+        return None;
+    }
+    let pairs = [
+        (SHARED, 0x1),
+        (PRIVATE, 0x2),
+        (FIXED, 0x10),
+        (NORESERVE, 0x4000),
+        (ANONYMOUS, 0x20),
+    ];
+    Some(
+        pairs
+            .iter()
+            .filter(|(darwin, _)| flags & darwin != 0)
+            .fold(0, |linux, (_, bit)| linux | bit),
+    )
+}
+
+/// Darwin's file status flags (`F_GETFL`) for Linux's: the access mode, `O_NONBLOCK` and
+/// `O_APPEND`.
+pub fn darwin_status_flags(linux: usize) -> u32 {
+    (linux as u32 & open::ACCESS_MODE)
+        | if linux & 0o4000 != 0 {
+            open::NONBLOCK
+        } else {
+            0
+        }
+        | if linux & 0o2000 != 0 { open::APPEND } else { 0 }
+}
+
+/// Linux's file status flags (`F_SETFL`) for Darwin's `O_NONBLOCK` and `O_APPEND`.
+pub fn linux_status_flags(darwin: u32) -> usize {
+    (if darwin & open::NONBLOCK != 0 {
+        0o4000
+    } else {
+        0
+    }) | if darwin & open::APPEND != 0 {
+        0o2000
+    } else {
+        0
+    }
+}
+
 pub const ENOSYS: i32 = 78;
 pub const EINVAL: i32 = 22;
 pub const ENOMEM: i32 = 12;
