@@ -40,6 +40,8 @@ pub mod size {
     pub const COMMIT: usize = 136;
     pub const DESTROY: usize = 4;
     pub const GET_WORK_AREA: usize = 20;
+    pub const LIST_WINDOW: usize = 96;
+    pub const MANAGE_WINDOW: usize = 16;
     /// The largest argument.
     pub const LARGEST: usize = COMMIT;
 }
@@ -59,6 +61,8 @@ pub mod request {
     pub const COMMIT: u32 = encode(WRITE, 8, size::COMMIT);
     pub const DESTROY: u32 = encode(WRITE, 9, size::DESTROY);
     pub const GET_WORK_AREA: u32 = encode(READ, 10, size::GET_WORK_AREA);
+    pub const LIST_WINDOW: u32 = encode(READ | WRITE, 11, size::LIST_WINDOW);
+    pub const MANAGE_WINDOW: u32 = encode(WRITE, 12, size::MANAGE_WINDOW);
 }
 
 /// The flags `Create` takes.
@@ -184,6 +188,8 @@ pub enum WindowError {
     TableFull,
     /// Something this version does not do yet (`EOPNOTSUPP`).
     Unsupported,
+    /// No window at that place in the list (`ENOENT`).
+    NoSuchWindow,
 }
 
 /// A request and its arguments, as the caller wrote them.
@@ -233,6 +239,15 @@ pub enum Request {
         window: u32,
     },
     GetWorkArea,
+    ListWindow {
+        index: u32,
+    },
+    ManageWindow {
+        window: u32,
+        action: u32,
+        a: i32,
+        b: i32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -265,6 +280,8 @@ impl Request {
             request::COMMIT => size::COMMIT,
             request::DESTROY => size::DESTROY,
             request::GET_WORK_AREA => size::GET_WORK_AREA,
+            request::LIST_WINDOW => size::LIST_WINDOW,
+            request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             _ => return None,
         })
     }
@@ -330,6 +347,13 @@ impl Request {
                 }
             }
             request::DESTROY => Self::Destroy { window: at(0) },
+            request::LIST_WINDOW => Self::ListWindow { index: at(0) },
+            request::MANAGE_WINDOW => Self::ManageWindow {
+                window: at(0),
+                action: at(4),
+                a: at(8) as i32,
+                b: at(12) as i32,
+            },
             _ => Self::GetWorkArea,
         })
     }
@@ -349,6 +373,53 @@ pub mod set_size_reply {
     pub const WIDTH: usize = 4;
     pub const HEIGHT: usize = 8;
     pub const OFFSET: usize = 16;
+}
+
+/// Where `ListWindow` writes the window at the index it was given: its id, state, outside
+/// rectangle on the screen, client (`u16::MAX` for the kernel's), and title.
+pub mod list_reply {
+    pub const WINDOW: usize = 0;
+    pub const STATE: usize = 4;
+    pub const X: usize = 8;
+    pub const Y: usize = 12;
+    pub const WIDTH: usize = 16;
+    pub const HEIGHT: usize = 20;
+    pub const CLIENT: usize = 24;
+    pub const TITLE_LENGTH: usize = 28;
+    pub const TITLE: usize = 32;
+}
+
+/// What `ManageWindow` does to the window it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    /// Raise and focus it, restoring it if it is minimised.
+    Focus,
+    Minimise,
+    Maximise,
+    /// Restore it from minimised or maximised.
+    Restore,
+    /// Send it a close request, as its close control does.
+    Close,
+    /// Move its outside top-left to (`a`, `b`) on the screen, kept in the work area.
+    Move,
+    /// Give it a content of `a` by `b`, clamped as the user's resizing is.
+    Size,
+}
+
+impl WindowAction {
+    /// The action numbered `value`, 0 to 6 in the order above.
+    pub const fn from_value(value: u32) -> Option<Self> {
+        Some(match value {
+            0 => Self::Focus,
+            1 => Self::Minimise,
+            2 => Self::Maximise,
+            3 => Self::Restore,
+            4 => Self::Close,
+            5 => Self::Move,
+            6 => Self::Size,
+            _ => return None,
+        })
+    }
 }
 
 /// One event record: `kind`, `window`, `time_ms` (the monotonic clock), then `a`, `b`, `c`,

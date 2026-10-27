@@ -8,11 +8,14 @@ use eggos_runtime::syscall::{call, number, write_all};
 
 const CREATE: usize = 0xc020_7701;
 const SET_TITLE: usize = 0x4048_7702;
+const SET_SIZE: usize = 0xc018_7703;
 const COMMIT: usize = 0x4088_7708;
 const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
 
 const CLOSE_REQUEST: u16 = 9;
+const RESIZE: u16 = 10;
+const STATE_CHANGED: u16 = 11;
 const RECORD: usize = 32;
 const RECORDS_READ: usize = 8;
 
@@ -158,31 +161,23 @@ pub fn run(startup: &Startup) -> i32 {
     if private != EACCES {
         return fail(title, b"a private mapping of the window was not refused");
     }
-    // SAFETY: as above.
-    let pixels = unsafe {
-        call(
-            number::MMAP,
-            [0, length, PROT_READ_WRITE, MAP_SHARED, fd, offset],
-        )
+    let mut surface = Surface {
+        fd,
+        window,
+        title,
+        pixels: 0,
+        width,
+        height,
     };
-    if pixels < 0 {
+    if !surface.map(offset) {
         return fail(title, b"cannot map the window's pixels");
     }
-    let colours = pattern::colours(title);
-    for y in 0..height {
-        for x in 0..width {
-            let at = (pixels as usize as *mut u32).wrapping_add((y * width + x) as usize);
-            // SAFETY: the mapping is `width * height` pixels, writable, and this program's.
-            unsafe { at.write_volatile(pattern::pixel(colours, x, y)) };
-        }
-    }
+    surface.draw();
     let mut set_title = [0u8; 72];
     put(&mut set_title, 0, window);
     put(&mut set_title, 4, title.len() as u32);
     set_title[8..8 + title.len()].copy_from_slice(title);
-    let mut commit = [0u8; 136];
-    put(&mut commit, 0, window);
-    if ioctl(fd, SET_TITLE, &mut set_title) != 0 || ioctl(fd, COMMIT, &mut commit) != 0 {
+    if ioctl(fd, SET_TITLE, &mut set_title) != 0 || !surface.commit() {
         return fail(title, b"cannot show the window");
     }
     let mut small = [0u8; RECORD - 1];
@@ -200,10 +195,115 @@ pub fn run(startup: &Startup) -> i32 {
     if options.signal_output {
         write_all(STANDARD_OUTPUT, b"shown\n");
     }
-    serve(fd, window, title)
+    serve(&mut surface)
 }
 
-fn serve(fd: usize, window: u32, title: &[u8]) -> i32 {
+struct Surface<'a> {
+    fd: usize,
+    window: u32,
+    title: &'a [u8],
+    pixels: usize,
+    width: u32,
+    height: u32,
+}
+
+impl Surface<'_> {
+    fn length(&self) -> usize {
+        (self.width * self.height * 4) as usize
+    }
+
+    fn map(&mut self, offset: usize) -> bool {
+        // SAFETY: a new mapping, of memory nothing else in the program uses.
+        let pixels = unsafe {
+            call(
+                number::MMAP,
+                [
+                    0,
+                    self.length(),
+                    PROT_READ_WRITE,
+                    MAP_SHARED,
+                    self.fd,
+                    offset,
+                ],
+            )
+        };
+        self.pixels = pixels as usize;
+        pixels >= 0
+    }
+
+    fn unmap(&mut self) {
+        // SAFETY: the mapping is this program's, made by `map`, and nothing uses it after.
+        unsafe { call(number::MUNMAP, [self.pixels, self.length(), 0, 0, 0, 0]) };
+    }
+
+    fn draw(&self) {
+        let colours = pattern::colours(self.title);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let at = (self.pixels as *mut u32).wrapping_add((y * self.width + x) as usize);
+                // SAFETY: the mapping is `width * height` pixels, writable, and this
+                // program's.
+                unsafe { at.write_volatile(pattern::pixel(colours, x, y)) };
+            }
+        }
+    }
+
+    fn commit(&self) -> bool {
+        let mut commit = [0u8; 136];
+        put(&mut commit, 0, self.window);
+        ioctl(self.fd, COMMIT, &mut commit) == 0
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> bool {
+        let mut set_size = [0u8; 24];
+        put(&mut set_size, 0, self.window);
+        put(&mut set_size, 4, width);
+        put(&mut set_size, 8, height);
+        if ioctl(self.fd, SET_SIZE, &mut set_size) != 0 {
+            return false;
+        }
+        let offset = u64::from_ne_bytes(set_size[16..24].try_into().unwrap_or([0; 8])) as usize;
+        self.unmap();
+        self.width = word(&set_size, 4);
+        self.height = word(&set_size, 8);
+        if !self.map(offset) {
+            return false;
+        }
+        self.draw();
+        self.commit()
+    }
+}
+
+fn say_size(title: &[u8], width: u32, height: u32) {
+    let mut text = [0u8; 32];
+    let mut length = 0;
+    for (index, value) in [width, height].into_iter().enumerate() {
+        if index == 1 {
+            text[length] = b'x';
+            length += 1;
+        }
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        let mut rest = value;
+        while count == 0 || rest > 0 {
+            digits[count] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+            count += 1;
+        }
+        for &digit in digits[..count].iter().rev() {
+            text[length] = digit;
+            length += 1;
+        }
+    }
+    let mut line = [0u8; 48];
+    let prefix = b"resized ";
+    line[..prefix.len()].copy_from_slice(prefix);
+    line[prefix.len()..prefix.len() + length].copy_from_slice(&text[..length]);
+    say(title, &line[..prefix.len() + length]);
+}
+
+fn serve(surface: &mut Surface<'_>) -> i32 {
+    let (fd, window, title) = (surface.fd, surface.window, surface.title);
     let mut records = [0u8; RECORD * RECORDS_READ];
     loop {
         // SAFETY: `read` writes at most `records.len()` bytes into `records`, owned here.
@@ -219,7 +319,25 @@ fn serve(fd: usize, window: u32, title: &[u8]) -> i32 {
         for record in records[..read as usize].as_chunks::<RECORD>().0 {
             let kind = u16::from_ne_bytes([record[0], record[1]]);
             let target = u16::from_ne_bytes([record[2], record[3]]);
-            if kind == CLOSE_REQUEST && u32::from(target) == window {
+            if u32::from(target) != window {
+                continue;
+            }
+            if kind == RESIZE {
+                let (width, height) = (word(record, 8), word(record, 12));
+                if !surface.resize(width, height) {
+                    return fail(title, b"cannot resize the window");
+                }
+                say_size(title, surface.width, surface.height);
+            }
+            if kind == STATE_CHANGED {
+                let state: &[u8] = match word(record, 8) {
+                    0 => b"state normal",
+                    1 => b"state minimised",
+                    _ => b"state maximised",
+                };
+                say(title, state);
+            }
+            if kind == CLOSE_REQUEST {
                 say(title, b"close request");
                 let mut destroy = window.to_ne_bytes();
                 if ioctl(fd, DESTROY, &mut destroy) != 0 {

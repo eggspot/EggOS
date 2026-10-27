@@ -17,11 +17,12 @@ use crate::terminal::with_windows;
 use crate::window::{self, Connection, PixelBuffer, ServerError};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
+use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, create_reply,
-    put_double_word, put_word, request, set_size_reply, size,
+    list_reply, put_double_word, put_word, request, set_size_reply, size,
 };
-use eggos_drivers::desktop::{Desktop, WindowId, clamp_content_size};
+use eggos_drivers::desktop::{Desktop, WindowId};
 use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
@@ -37,6 +38,7 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::NotAllowed) => Errno::EPERM,
         ServerError::Refused(WindowError::TableFull) => Errno::ENOSPC,
         ServerError::Refused(WindowError::Unsupported) => Errno::EOPNOTSUPP,
+        ServerError::Refused(WindowError::NoSuchWindow) => Errno::ENOENT,
         ServerError::NoServer => Errno::ENXIO,
         ServerError::NoClientSlot => Errno::ENFILE,
         ServerError::OutOfMemory => Errno::ENOMEM,
@@ -75,6 +77,19 @@ pub fn ioctl<P: Platform>(
     }
     let request = Request::parse(number, bytes).ok_or(Errno::ENOTTY)?;
     let client = connection.client().id();
+    let manages = matches!(
+        request,
+        Request::ListWindow { .. } | Request::ManageWindow { .. }
+    );
+    if manages
+        && !process
+            .credentials_and_limits()
+            .lock()
+            .credentials
+            .is_privileged()
+    {
+        return Err(Errno::EPERM);
+    }
     match request {
         Request::Create {
             role,
@@ -84,7 +99,7 @@ pub fn ioctl<P: Platform>(
             flags,
         } => {
             let (window, offset, width, height) =
-                create::<P>(client, role, parent, width, height, flags)?;
+                create::<P>(connection, role, parent, width, height, flags)?;
             put_word(bytes, create_reply::WIDTH, width);
             put_word(bytes, create_reply::HEIGHT, height);
             put_word(bytes, create_reply::WINDOW, u32::from(window));
@@ -113,7 +128,7 @@ pub fn ioctl<P: Platform>(
             width,
             height,
         } => {
-            let (offset, width, height) = set_size::<P>(client, window, width, height)?;
+            let (offset, width, height) = set_size::<P>(connection, window, width, height)?;
             put_word(bytes, set_size_reply::WIDTH, width);
             put_word(bytes, set_size_reply::HEIGHT, height);
             put_double_word(bytes, set_size_reply::OFFSET, offset);
@@ -134,9 +149,9 @@ pub fn ioctl<P: Platform>(
         Request::SetState { window, state } => on_windows::<P, _>(|desktop, _, damage, events| {
             desktop.set_state(client, window, state, damage, events)
         })?,
-        Request::SetPointer { window, shape } => {
-            on_windows::<P, _>(|desktop, _, _, _| desktop.set_pointer(client, window, shape))?
-        }
+        Request::SetPointer { window, shape } => on_windows::<P, _>(|desktop, _, damage, _| {
+            desktop.set_pointer(client, window, shape, damage)
+        })?,
         Request::Commit {
             window,
             count,
@@ -172,6 +187,36 @@ pub fn ioctl<P: Platform>(
                 .write_user_memory(argument, bytes)
                 .map_err(|_| Errno::EFAULT)?;
         }
+        Request::ListWindow { index } => {
+            let info =
+                on_windows::<P, _>(|desktop, _, _, _| desktop.listed_window(index as usize))?;
+            bytes.fill(0);
+            for (offset, value) in [
+                (list_reply::WINDOW, u32::from(info.id)),
+                (list_reply::STATE, info.state.value()),
+                (list_reply::X, info.rect.x),
+                (list_reply::Y, info.rect.y),
+                (list_reply::WIDTH, info.rect.width),
+                (list_reply::HEIGHT, info.rect.height),
+                (list_reply::CLIENT, u32::from(info.client)),
+                (list_reply::TITLE_LENGTH, info.title_length as u32),
+            ] {
+                put_word(bytes, offset, value);
+            }
+            bytes[list_reply::TITLE..list_reply::TITLE + info.title.len()]
+                .copy_from_slice(&info.title);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ManageWindow {
+            window,
+            action,
+            a,
+            b,
+        } => on_windows::<P, _>(|desktop, _, damage, events| {
+            desktop.manage(window, action, a, b, damage, events)
+        })?,
     }
     Ok(0)
 }
@@ -189,29 +234,25 @@ fn on_windows<P: Platform, R>(
         .map_err(refused)
 }
 
-fn screen_size() -> Result<(u32, u32), Errno> {
-    crate::display::mode()
-        .map(|mode| (mode.width, mode.height))
-        .ok_or(Errno::ENXIO)
-}
+const SIZE_ATTEMPTS: usize = 4;
 
 fn create<P: Platform>(
-    client: u16,
+    connection: &Connection,
     role: u32,
     parent: u32,
     width: u32,
     height: u32,
     flags: u32,
 ) -> Result<(WindowId, u64, u32, u32), Errno> {
-    let (screen_width, screen_height) = screen_size()?;
-    let (content_width, content_height) =
-        clamp_content_size(screen_width, screen_height, width, height);
-    let buffer = PixelBuffer::new(content_width, content_height).ok_or(Errno::ENOMEM)?;
+    let client = connection.client().id();
+    let size = with_windows::<P, _>(|desktop, _, _, _| desktop.created_size(width, height))
+        .ok_or(Errno::ENXIO)?;
+    let buffer = PixelBuffer::new(size.0, size.1, connection.client()).ok_or(Errno::ENOMEM)?;
     with_windows::<P, _>(|desktop, buffers, _, _| {
-        let created = desktop.create(client, role, parent, width, height, flags)?;
-        if buffer.size() != (created.width, created.height) {
+        if desktop.created_size(width, height) != buffer.size() {
             return Err(WindowError::Invalid);
         }
+        let created = desktop.create(client, role, parent, width, height, flags)?;
         let offset = buffers.attach(created.window, buffer);
         Ok((created.window, offset, created.width, created.height))
     })
@@ -220,26 +261,34 @@ fn create<P: Platform>(
 }
 
 fn set_size<P: Platform>(
-    client: u16,
+    connection: &Connection,
     window: u32,
     width: u32,
     height: u32,
 ) -> Result<(u64, u32, u32), Errno> {
-    let size =
-        with_windows::<P, _>(|desktop, _, _, _| desktop.size_for(client, window, width, height))
-            .ok_or(Errno::ENXIO)?
-            .map_err(refused)?;
-    let buffer = PixelBuffer::new(size.0, size.1).ok_or(Errno::ENOMEM)?;
-    with_windows::<P, _>(|desktop, buffers, damage, _| {
-        let resized = desktop.set_size(client, window, width, height, damage)?;
-        if resized != buffer.size() {
-            return Err(WindowError::Invalid);
+    let client = connection.client().id();
+    let id = WindowId::try_from(window).map_err(|_| Errno::EINVAL)?;
+    for _ in 0..SIZE_ATTEMPTS {
+        let size = with_windows::<P, _>(|desktop, _, _, _| {
+            desktop.size_for(client, window, width, height)
+        })
+        .ok_or(Errno::ENXIO)?
+        .map_err(refused)?;
+        let buffer = PixelBuffer::new(size.0, size.1, connection.client()).ok_or(Errno::ENOMEM)?;
+        let attached = with_windows::<P, _>(|desktop, buffers, damage, events| {
+            if desktop.size_for(client, window, width, height)? != buffer.size() {
+                return Ok(None);
+            }
+            let resized = desktop.set_size(client, window, width, height, damage, events)?;
+            Ok(Some((buffers.attach(id, buffer), resized.0, resized.1)))
+        })
+        .ok_or(Errno::ENXIO)?
+        .map_err(refused)?;
+        if let Some(attached) = attached {
+            return Ok(attached);
         }
-        let id = WindowId::try_from(window).map_err(|_| WindowError::Invalid)?;
-        Ok((buffers.attach(id, buffer), resized.0, resized.1))
-    })
-    .ok_or(Errno::ENXIO)?
-    .map_err(refused)
+    }
+    Err(Errno::EAGAIN)
 }
 
 /// The `poll` events `connection` reports of `requested`: `POLLIN` while an event waits.
@@ -298,6 +347,13 @@ fn read_or_wait<P: Platform>(
         let wanted = room.min(READ_RECORDS as u64) as usize;
         let taken = client.take_events(&mut records[..wanted]);
         if taken > 0 {
+            if records[..taken]
+                .iter()
+                .any(|record| record.kind == record_kind::CLOSE_REQUEST)
+            {
+                let id = client.id();
+                with_windows::<P, _>(|desktop, _, damage, _| desktop.close_answered(id, damage));
+            }
             return ControlFlow::Continue(Some(copy_out(process, buffers, &records[..taken])));
         }
         if file.is_nonblocking() {

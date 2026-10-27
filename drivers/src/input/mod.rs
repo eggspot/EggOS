@@ -49,10 +49,15 @@ pub mod key {
     pub const MINUS: u16 = 12;
     pub const BACKSPACE: u16 = 14;
     pub const TAB: u16 = 15;
+    pub const W: u16 = 17;
     pub const ENTER: u16 = 28;
     pub const LEFT_CTRL: u16 = 29;
     pub const A: u16 = 30;
+    pub const D: u16 = 32;
+    pub const H: u16 = 35;
     pub const LEFT_SHIFT: u16 = 42;
+    pub const X: u16 = 45;
+    pub const M: u16 = 50;
     pub const RIGHT_SHIFT: u16 = 54;
     pub const LEFT_ALT: u16 = 56;
     pub const SPACE: u16 = 57;

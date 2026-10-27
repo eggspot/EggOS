@@ -296,6 +296,9 @@ impl<P: Platform> Memory<P> {
                 index += 1;
                 continue;
             }
+            if lent.try_reserve(1).is_err() {
+                return Err(RegionError::OutOfMemory);
+            }
             self.space
                 .unmap_pages(from, to - from, |_| ())
                 .map_err(|_| RegionError::Invalid)?;
@@ -1160,6 +1163,10 @@ impl<P: Platform> Process<P> {
             return Err(RegionError::Invalid);
         }
         let mut regions = memory.regions.lock();
+        let lent_refused = attributes.is_none_or(|attributes| attributes.executable);
+        if lent_refused && memory.lends_in(start, end) {
+            return Err(RegionError::Invalid);
+        }
         let mut changed_end = start;
         let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
         if changed_end > start {
@@ -2532,5 +2539,158 @@ mod tests {
             // SAFETY: allocated above and never used.
             unsafe { memory::FRAMES.lock().as_mut().unwrap().free(frame) };
         }
+    }
+
+    struct TestLentFrames {
+        physical: u64,
+        order: u32,
+        drops: Arc<AtomicU64>,
+    }
+
+    impl TestLentFrames {
+        fn new(pages: u64, drops: &Arc<AtomicU64>) -> Arc<Self> {
+            let order = pages.next_power_of_two().trailing_zeros();
+            let physical = memory::FRAMES
+                .lock()
+                .as_mut()
+                .unwrap()
+                .allocate_contiguous(order)
+                .unwrap();
+            Arc::new(Self {
+                physical,
+                order,
+                drops: Arc::clone(drops),
+            })
+        }
+    }
+
+    impl LentFrames for TestLentFrames {
+        fn physical(&self) -> u64 {
+            self.physical
+        }
+
+        fn length(&self) -> u64 {
+            FRAME_SIZE << self.order
+        }
+    }
+
+    impl Drop for TestLentFrames {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+            let mut frames = memory::FRAMES.lock();
+            // SAFETY: allocated by `new` with this order, and this is its last holder.
+            unsafe {
+                frames
+                    .as_mut()
+                    .unwrap()
+                    .free_contiguous(self.physical, self.order)
+            };
+        }
+    }
+
+    #[test]
+    fn lent_frames_are_mapped_split_replaced_and_kept_until_the_process_ends() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free();
+        let drops = Arc::new(AtomicU64::new(0));
+        {
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            let lent = TestLentFrames::new(4, &drops);
+            let physical = lent.physical;
+            let length = 4 * FRAME_SIZE;
+            assert_eq!(
+                process.map_lent_frames(
+                    Placement::Exactly(DATA),
+                    length,
+                    Attributes::USER_READ_WRITE,
+                    Arc::clone(&lent) as Arc<dyn LentFrames>,
+                ),
+                Ok(DATA)
+            );
+            let at = |virt| {
+                process
+                    .address_space()
+                    .translate(virt)
+                    .map(|(phys, _)| phys)
+            };
+            for page in 0..4 {
+                assert_eq!(
+                    at(DATA + page * FRAME_SIZE),
+                    Some(physical + page * FRAME_SIZE)
+                );
+            }
+            assert_eq!(
+                process.protect_range(DATA, DATA + FRAME_SIZE, None),
+                Err(RegionError::Invalid)
+            );
+            assert_eq!(
+                process.protect_range(DATA, DATA + FRAME_SIZE, Some(Attributes::USER_TEXT)),
+                Err(RegionError::Invalid)
+            );
+            assert_eq!(
+                process.protect_range(DATA, DATA + FRAME_SIZE, Some(Attributes::USER_READ_ONLY)),
+                Ok(())
+            );
+            assert_eq!(
+                process.remap_region(
+                    DATA,
+                    FRAME_SIZE,
+                    2 * FRAME_SIZE,
+                    Remap::InPlace {
+                        top: DATA + 8 * FRAME_SIZE
+                    },
+                    false
+                ),
+                Err(RegionError::Invalid)
+            );
+            assert_eq!(
+                process.discard_pages(DATA, DATA + FRAME_SIZE),
+                Err(RegionError::Invalid)
+            );
+            assert_eq!(
+                process.new_child(ChildMemory::Copied).err(),
+                Some(NewChildError::SharedAnonymousMemory)
+            );
+            process
+                .unmap_range(DATA + FRAME_SIZE, DATA + 3 * FRAME_SIZE)
+                .unwrap();
+            assert_eq!(at(DATA), Some(physical));
+            assert_eq!(at(DATA + FRAME_SIZE), None);
+            assert_eq!(at(DATA + 2 * FRAME_SIZE), None);
+            assert_eq!(at(DATA + 3 * FRAME_SIZE), Some(physical + 3 * FRAME_SIZE));
+            assert_eq!(
+                process.discard_pages(DATA + FRAME_SIZE, DATA + 3 * FRAME_SIZE),
+                Err(RegionError::NotCovered),
+                "the unmapped middle is no longer lent"
+            );
+            assert_eq!(
+                process.map_region(
+                    Placement::Replace(DATA + 3 * FRAME_SIZE),
+                    FRAME_SIZE,
+                    Some(Attributes::USER_READ_WRITE)
+                ),
+                Ok(DATA + 3 * FRAME_SIZE)
+            );
+            assert_eq!(
+                at(DATA + 3 * FRAME_SIZE),
+                None,
+                "MAP_FIXED unmapped the lent page"
+            );
+            assert_eq!(
+                process.discard_pages(DATA + 3 * FRAME_SIZE, DATA + 4 * FRAME_SIZE),
+                Ok(())
+            );
+            drop(lent);
+            assert_eq!(
+                drops.load(Ordering::Relaxed),
+                0,
+                "the process still maps a page"
+            );
+            assert_eq!(at(DATA), Some(physical));
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(free(), before, "every frame went back exactly once");
     }
 }

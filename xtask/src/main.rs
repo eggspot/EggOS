@@ -225,9 +225,9 @@ const TMP_PATH: &str = "tmp";
 
 const HOME_PATH: &str = "home";
 
-const COREUTILS: [&str; 22] = [
+const COREUTILS: [&str; 23] = [
     "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
-    "ps", "reboot", "rm", "sleep", "tail", "touch", "true", "uname", "uptime", "wc",
+    "ps", "reboot", "rm", "sleep", "tail", "touch", "true", "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";

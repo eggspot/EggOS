@@ -1,7 +1,8 @@
-//! One client's event queue (D127): a ring of [`QUEUE_CAPACITY`] records. When it is full, a
-//! pointer motion replaces the newest record if that is a motion of the same window too;
-//! otherwise the oldest record is dropped and counted, and the next record taken is
-//! `Overflow` with the count.
+//! One client's event queue (D127, D128): a ring of [`QUEUE_CAPACITY`] records. A `Resize`
+//! replaces a `Resize` of the same window still waiting, so only the latest size is pending.
+//! When it is full, a pointer motion replaces the newest record if that is a motion of the
+//! same window too; otherwise the oldest record is dropped and counted, and the next record
+//! taken is `Overflow` with the count.
 
 use super::protocol::{EventRecord, QUEUE_CAPACITY, event};
 use alloc::boxed::Box;
@@ -42,6 +43,17 @@ impl EventQueue {
 
     /// Adds `record` at the end, making room as the module documentation says.
     pub fn push(&mut self, record: EventRecord) {
+        if record.kind == event::RESIZE
+            && let Some(waiting) = (0..self.length)
+                .map(|index| (self.start + index) % QUEUE_CAPACITY)
+                .find(|&at| {
+                    self.records[at].kind == event::RESIZE
+                        && self.records[at].window == record.window
+                })
+        {
+            self.records[waiting] = record;
+            return;
+        }
         if self.length == QUEUE_CAPACITY {
             let newest = (self.start + self.length - 1) % QUEUE_CAPACITY;
             let last = self.records[newest];
@@ -152,6 +164,21 @@ mod tests {
         assert_eq!(rest.len(), QUEUE_CAPACITY - 1);
         assert_eq!(rest[QUEUE_CAPACITY - 2], record(event::BUTTON, 1, 1002));
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn a_resize_replaces_the_one_of_its_window_still_waiting() {
+        let mut queue = EventQueue::new().unwrap();
+        queue.push(record(event::RESIZE, 1, 100));
+        queue.push(record(event::KEY, 1, 7));
+        queue.push(record(event::RESIZE, 2, 300));
+        queue.push(record(event::RESIZE, 1, 200));
+        assert_eq!(queue.pop(), Some(record(event::RESIZE, 1, 200)));
+        assert_eq!(queue.pop(), Some(record(event::KEY, 1, 7)));
+        assert_eq!(queue.pop(), Some(record(event::RESIZE, 2, 300)));
+        assert!(queue.is_empty());
+        queue.push(record(event::RESIZE, 1, 400));
+        assert_eq!(queue.pop(), Some(record(event::RESIZE, 1, 400)));
     }
 
     #[test]

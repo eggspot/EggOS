@@ -1,0 +1,275 @@
+use crate::output::{FAILURE, Output};
+use crate::system::System;
+use core::ffi::CStr;
+use eggos_runtime::errno::Errno;
+
+pub const DEVICE: &CStr = c"/dev/window";
+pub const LIST_WINDOW: u32 = 0xc060_770b;
+pub const MANAGE_WINDOW: u32 = 0x4010_770c;
+pub const LIST_SIZE: usize = 96;
+pub const MANAGE_SIZE: usize = 16;
+pub const KERNEL_CLIENT: u32 = 0xffff;
+pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
+
+const USAGE_STATUS: i32 = 2;
+const TITLE_AT: usize = 32;
+const TITLE_CAPACITY: usize = 64;
+
+const ACTIONS: [(&[u8], u32, usize); 7] = [
+    (b"focus", 0, 0),
+    (b"minimise", 1, 0),
+    (b"maximise", 2, 0),
+    (b"restore", 3, 0),
+    (b"close", 4, 0),
+    (b"move", 5, 2),
+    (b"size", 6, 2),
+];
+
+fn word(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_ne_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+fn number(text: &[u8]) -> Option<i32> {
+    let (negative, digits) = match text {
+        [b'-', rest @ ..] => (true, rest),
+        _ => (false, text),
+    };
+    if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let value = digits
+        .iter()
+        .fold(0i32, |value, &digit| value * 10 + i32::from(digit - b'0'));
+    Some(if negative { -value } else { value })
+}
+
+fn usage<S: System>(output: &mut Output<S>) -> i32 {
+    output.error(&[
+        b"usage: wm list | wm focus|minimise|maximise|restore|close <id> | \
+          wm move <id> <x> <y> | wm size <id> <width> <height>",
+    ]);
+    USAGE_STATUS
+}
+
+fn state_name(state: u32) -> &'static [u8] {
+    match state {
+        1 => b"minimised",
+        2 => b"maximised",
+        _ => b"normal",
+    }
+}
+
+fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
+    output.write(HEADER);
+    for index in 0.. {
+        let mut entry = [0u8; LIST_SIZE];
+        entry[..4].copy_from_slice(&(index as u32).to_ne_bytes());
+        match output
+            .system
+            .device_control(device, LIST_WINDOW, &mut entry)
+        {
+            Ok(()) => {}
+            Err(Errno::ENOENT) => break,
+            Err(errno) => {
+                output.error(&[b"cannot list the windows: ", errno.message()]);
+                return FAILURE;
+            }
+        }
+        for (field, offset) in [(0, 0), (1, 8), (2, 12), (3, 16), (4, 20)] {
+            if field == 1 {
+                output.write(state_name(word(&entry, 4)));
+                output.write(b" ");
+            }
+            output.write_number(u64::from(word(&entry, offset)), 0);
+            output.write(b" ");
+        }
+        match word(&entry, 24) {
+            KERNEL_CLIENT => output.write(b"kernel"),
+            client => output.write_number(u64::from(client), 0),
+        }
+        output.write(b" ");
+        let length = (word(&entry, 28) as usize).min(TITLE_CAPACITY);
+        output.write(&entry[TITLE_AT..TITLE_AT + length]);
+        output.write(b"\n");
+    }
+    0
+}
+
+pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    let arguments: [&[u8]; 4] = core::array::from_fn(|index| {
+        arguments
+            .get(index)
+            .map_or(&b""[..], |argument| argument.to_bytes())
+    });
+    let given = arguments
+        .iter()
+        .filter(|argument| !argument.is_empty())
+        .count();
+    let command = arguments[0];
+    let action = ACTIONS.iter().find(|(name, _, _)| *name == command);
+    let valid = match action {
+        Some(&(_, _, extra)) => given == 2 + extra,
+        None => command == b"list" && given == 1,
+    };
+    if !valid {
+        return usage(output);
+    }
+    let device = match output.system.open(DEVICE) {
+        Ok(device) => device,
+        Err(errno) => {
+            output.file_error(DEVICE, errno);
+            return FAILURE;
+        }
+    };
+    let status = match action {
+        None => list(output, device),
+        Some(&(_, code, _)) => manage(output, device, code, &arguments[1..]),
+    };
+    output.system.close(device);
+    status
+}
+
+fn manage<S: System>(
+    output: &mut Output<S>,
+    device: usize,
+    action: u32,
+    operands: &[&[u8]],
+) -> i32 {
+    let mut values = [0i32; 3];
+    for (value, operand) in values.iter_mut().zip(operands) {
+        if operand.is_empty() {
+            continue;
+        }
+        let Some(parsed) = number(operand) else {
+            output.error(&[b"invalid number '", operand, b"'"]);
+            return USAGE_STATUS;
+        };
+        *value = parsed;
+    }
+    let mut request = [0u8; MANAGE_SIZE];
+    for (index, value) in [values[0] as u32, action, values[1] as u32, values[2] as u32]
+        .into_iter()
+        .enumerate()
+    {
+        request[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    match output
+        .system
+        .device_control(device, MANAGE_WINDOW, &mut request)
+    {
+        Ok(()) => 0,
+        Err(errno) => {
+            output.error(&[operands[0], b": ", errno.message()]);
+            FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fake::{Fake, FakeWindow};
+
+    fn run(arguments: &[&CStr], fake: Fake) -> (i32, Fake) {
+        let mut output = Output::new(fake, b"wm");
+        let status = wm(&mut output, arguments);
+        let status = output.finish(status);
+        (status, output.system)
+    }
+
+    fn windows() -> Fake {
+        let mut fake = Fake::default();
+        fake.windows = vec![
+            FakeWindow {
+                id: 64,
+                state: 0,
+                rect: [311, 192, 658, 458],
+                client: KERNEL_CLIENT,
+                title: b"Terminal".to_vec(),
+            },
+            FakeWindow {
+                id: 129,
+                state: 2,
+                rect: [0, 28, 1280, 772],
+                client: 67,
+                title: b"first".to_vec(),
+            },
+        ];
+        fake
+    }
+
+    #[test]
+    fn list_writes_each_window_s_id_state_geometry_client_and_title() {
+        let (status, fake) = run(&[c"list"], windows());
+        assert_eq!(status, 0);
+        assert_eq!(
+            fake.output(),
+            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
+             64 normal 311 192 658 458 kernel Terminal\n\
+             129 maximised 0 28 1280 772 67 first\n"
+        );
+    }
+
+    #[test]
+    fn each_action_asks_the_server_with_its_number_and_operands() {
+        let mut fake = windows();
+        for (arguments, expected) in [
+            (&[c"focus", c"129"][..], [129, 0, 0, 0]),
+            (&[c"minimise", c"129"][..], [129, 1, 0, 0]),
+            (&[c"maximise", c"129"][..], [129, 2, 0, 0]),
+            (&[c"restore", c"129"][..], [129, 3, 0, 0]),
+            (&[c"close", c"129"][..], [129, 4, 0, 0]),
+            (
+                &[c"move", c"129", c"-10", c"40"][..],
+                [129, 5, -10i32 as u32, 40],
+            ),
+            (&[c"size", c"129", c"500", c"300"][..], [129, 6, 500, 300]),
+        ] {
+            let status;
+            (status, fake) = run(arguments, fake);
+            assert_eq!(status, 0);
+            assert_eq!(fake.managed.last(), Some(&expected));
+        }
+        assert_eq!(fake.errors(), "");
+    }
+
+    #[test]
+    fn a_refused_request_is_reported_with_the_window() {
+        let (status, fake) = run(&[c"close", c"7"], windows());
+        assert_eq!(status, 1);
+        assert_eq!(fake.errors(), "wm: 7: Invalid argument\n");
+    }
+
+    #[test]
+    fn bad_commands_and_operands_are_usage_errors() {
+        for arguments in [
+            &[][..],
+            &[c"list", c"x"][..],
+            &[c"close"][..],
+            &[c"move", c"1", c"2"][..],
+            &[c"frobnicate", c"1"][..],
+        ] {
+            let (status, fake) = run(arguments, windows());
+            assert_eq!(status, 2, "{arguments:?}");
+            assert!(fake.errors().starts_with("wm: usage: wm list"));
+            assert!(fake.managed.is_empty());
+        }
+        let (status, fake) = run(&[c"close", c"x1"], windows());
+        assert_eq!(status, 2);
+        assert_eq!(fake.errors(), "wm: invalid number 'x1'\n");
+    }
+
+    #[test]
+    fn without_a_window_server_the_device_cannot_be_opened() {
+        let mut fake = windows();
+        fake.window_server = false;
+        let (status, fake) = run(&[c"list"], fake);
+        assert_eq!(status, 1);
+        assert!(fake.errors().starts_with("wm: /dev/window: "));
+    }
+}

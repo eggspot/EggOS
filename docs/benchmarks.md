@@ -104,7 +104,9 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
   damage it makes and the band copied from the window's buffer to the framebuffer, through the
   compositor's fast path.
 - `window_hit_test`: the pointer moving between two points over eight overlapping windows
-  (D127): the top window under it found, and its enter, leave and motion events made.
+  (D127): the top window under it found, and its enter, leave and motion events made; since
+  D128 in the same walk its resize zones and the control under the pointer, then the pointer's
+  shape chosen and its old and new rectangles damaged.
 - `device_tree_walk`: every node of QEMU 10.2's aarch64 `virt` device tree (the host tests'
   fixture, embedded in benchmark kernels only, so all three architectures walk the same 63
   nodes): the header checked, the token stream read, each node's context and the properties

@@ -28,10 +28,13 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::EventSink;
-use eggos_drivers::desktop::{Action, Contents, Desktop, GRID_SIZE, WindowId, colour};
+use eggos_drivers::desktop::{
+    Action, Contents, Desktop, GRID_SIZE, Profile, WindowId, colour, shortcut,
+};
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::input::button;
+use eggos_drivers::input::keymap::Modifiers;
 use eggos_drivers::terminal::{REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea};
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
@@ -137,13 +140,23 @@ pub fn keys_go_to_console() -> bool {
     !is_active() || KEYS_TO_TERMINAL.load(Ordering::Relaxed)
 }
 
+/// The desktop's layout profile: the controls' side and the shortcuts (D128).
+pub const DESKTOP_PROFILE: Profile = Profile::Macos;
+
+/// Whether key `code` pressed with `modifiers` is a shortcut the desktop takes from the
+/// terminal, which takes every Ctrl key: its bytes do not go to the console.
+pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
+    is_active() && shortcut(code, modifiers, DESKTOP_PROFILE, true).is_some()
+}
+
 /// Draws the desktop with the terminal's window, blank, over the whole display, and from then
 /// on mirrors the console's output on it; returns the window's grid. The display shows it at
 /// the next [`show`], the drawing thread's. `None`, and nothing made, without a display, when
 /// the window does not fit on it, or without memory for it.
 pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mode = display::mode()?;
-    let desktop = Desktop::new(mode.width, mode.height)?;
+    let mut desktop = Desktop::new(mode.width, mode.height)?;
+    desktop.set_profile(DESKTOP_PROFILE, &mut Damage::new());
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
     terminal.set_onlcr(true);
@@ -206,6 +219,7 @@ pub fn with_windows<P: Platform, R>(
         } = &mut **screen.as_mut()?;
         let mut queues = Queues::new(clients, time_ms);
         let mut damage = Damage::new();
+        desktop.set_time(time_ms);
         let result = change(desktop, buffers, &mut damage, &mut queues);
         compose(desktop, terminal_pixels, buffers, framebuffer, &damage);
         KEYS_TO_TERMINAL.store(desktop.keys_go_to_terminal(), Ordering::Relaxed);
@@ -294,9 +308,14 @@ fn request_render<P: Platform>() {
 fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> (Action, bool) {
     let mut action = Action::None;
     let Screen {
-        desktop, clients, ..
+        desktop,
+        clients,
+        buffers,
+        ..
     } = screen;
-    let mut queues = Queues::new(clients, window::time_ms::<P>());
+    let now = window::time_ms::<P>();
+    let mut queues = Queues::new(clients, now);
+    desktop.set_time(now);
     while let Some(event) = input::next_event() {
         let asked = match event {
             InputEvent::PointerMove { x, y } => {
@@ -327,6 +346,9 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> (Action
         if asked != Action::None {
             action = asked;
         }
+    }
+    if desktop.tick(now, damage, &mut queues) {
+        buffers.release_unused(desktop);
     }
     let sent = queues.sent();
     let second = P::clock_ticks() / P::clock_frequency().max(1);
@@ -438,7 +460,7 @@ pub const TEST_SCREEN: &str = "eggsh:/# echo EggOS\nEggOS\n\x1b[1;31mred \x1b[32
 
 /// The [`display::pixel_hash`] of a 1280x800 display after the desktop's terminal showed
 /// [`TEST_SCREEN`] in a [`Session::SelfTest`].
-pub const TEST_SCREEN_HASH_1280X800: u64 = 0x3832_d9da_93f3_eeef;
+pub const TEST_SCREEN_HASH_1280X800: u64 = 0x3d75_5962_33a8_0c57;
 
 #[cfg(test)]
 mod tests {

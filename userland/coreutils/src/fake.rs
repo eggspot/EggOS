@@ -16,6 +16,15 @@ pub enum Node {
 }
 
 #[derive(Debug, Clone)]
+pub struct FakeWindow {
+    pub id: u32,
+    pub state: u32,
+    pub rect: [u32; 4],
+    pub client: u32,
+    pub title: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
 struct OpenFile {
     path: Vec<u8>,
     position: usize,
@@ -36,6 +45,9 @@ pub struct Fake {
     pub reboot_error: Option<Errno>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
+    pub windows: Vec<FakeWindow>,
+    pub managed: Vec<[u32; 4]>,
+    pub window_server: bool,
     open: Vec<Option<OpenFile>>,
 }
 
@@ -69,6 +81,9 @@ impl Default for Fake {
             reboot_error: Some(Errno::EPERM),
             cross_device: Vec::new(),
             now: 1_700_000_000,
+            windows: Vec::new(),
+            managed: Vec::new(),
+            window_server: true,
             open: Vec::new(),
         }
     }
@@ -206,8 +221,12 @@ impl System for Fake {
     }
 
     fn open(&mut self, path: &CStr) -> Result<usize, Errno> {
+        let window_device = path == crate::wm::DEVICE;
+        if window_device && !self.window_server {
+            return Err(Errno::ENXIO);
+        }
         let path = path.to_bytes().to_vec();
-        if !self.nodes.contains_key(&path) {
+        if !window_device && !self.nodes.contains_key(&path) {
             return Err(Errno::ENOENT);
         }
         self.open.push(Some(OpenFile { path, position: 0 }));
@@ -374,6 +393,53 @@ impl System for Fake {
         let (_, status) = self.nodes.get_mut(path.to_bytes()).ok_or(Errno::ENOENT)?;
         status.modified = self.now;
         Ok(())
+    }
+
+    fn device_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Result<(), Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        let word = |bytes: &[u8], at: usize| {
+            u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        match (request, argument.len()) {
+            (crate::wm::LIST_WINDOW, crate::wm::LIST_SIZE) => {
+                let window = self
+                    .windows
+                    .get(word(argument, 0) as usize)
+                    .ok_or(Errno::ENOENT)?;
+                let [x, y, width, height] = window.rect;
+                let words = [
+                    window.id,
+                    window.state,
+                    x,
+                    y,
+                    width,
+                    height,
+                    window.client,
+                    window.title.len() as u32,
+                ];
+                for (index, value) in words.into_iter().enumerate() {
+                    argument[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+                }
+                argument[32..32 + window.title.len()].copy_from_slice(&window.title);
+                Ok(())
+            }
+            (crate::wm::MANAGE_WINDOW, crate::wm::MANAGE_SIZE) => {
+                let request = [0, 4, 8, 12].map(|at| word(argument, at));
+                if !self.windows.iter().any(|window| window.id == request[0]) {
+                    return Err(Errno::EINVAL);
+                }
+                self.managed.push(request);
+                Ok(())
+            }
+            _ => Err(Errno::ENOTTY),
+        }
     }
 }
 

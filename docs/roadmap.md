@@ -230,13 +230,17 @@ apps in windows on the desktop; console programs alone are not enough. In this o
 items 22 and 23; the design of 30-31 and 34-37 is Claude Fable's (docs/ux/desktop-v0.3-gui.md,
 D16):
 
-30. **in progress** — several windows from programs: the window server, `/dev/window` (D127):
+30. **done** — several windows from programs: the window server, `/dev/window` (D127):
     programs open their own windows (shared pixel buffers, commits, input events), the
     terminal is one window among them; click to raise and focus, move by the title bar,
     minimise to a chip, the close control asks the program to close.
-31. window management: resize from the edges, maximise and restore, drawn pointer shapes,
-    Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu, snap, keyboard operation, the
-    `wm` command.
+31. **done** — users can now resize, maximise, restore, close and switch between windows with
+    the mouse and keyboard (D128): edge and corner resizing, maximise and restore (the green
+    control, a double-click on the title bar, Super+Up/Down), snap to halves, the drawn pointer
+    and its shapes, Alt+Tab and the switcher, Alt+F4 and Cmd+W, the window menu (Alt+Space),
+    show desktop, the 2 s rule for a program that does not answer a close request, and the
+    `wm` command. Next: windows partly off screen, a profile setting (item 34), `wm`'s MCP
+    tools (with the MCP server).
 32. Windows GUI apps, part 1: a Windows program's windows on the desktop (user32 and gdi32 over
     `/dev/window`).
 33. a host apps folder: a virtio-blk driver and a FAT32 reader, so `cargo xtask run --apps

@@ -7,10 +7,11 @@
 //! ([`EventQueue`]); closing its last descriptor destroys its windows. A window's pixels are a
 //! [`PixelBuffer`]: physically contiguous frames the server owns, zeroed, which the client maps
 //! with `mmap` at the offset `Create` and `SetSize` return ([`Process::map_lent_frames`]) and
-//! the compositor reads through the direct map. `Commit` composes the rectangles it names into
-//! the framebuffer during the call, under the display's and the screen's locks, and has the
-//! drawing thread flush them. Requests, reads and polls never allocate but for a window's
-//! buffer and a client's queue; composing never does.
+//! the compositor reads through the direct map. A client's buffers, those its windows show and
+//! those its process still maps, hold at most [`CLIENT_PIXEL_LIMIT`] bytes together. `Commit`
+//! composes the rectangles it names into the framebuffer during the call, under the display's
+//! and the screen's locks, and has the drawing thread flush them. Requests, reads and polls
+//! never allocate but for a window's buffer and a client's queue; composing never does.
 //!
 //! [`Process::map_lent_frames`]: crate::process::Process::map_lent_frames
 
@@ -19,22 +20,30 @@ use crate::process::LentFrames;
 use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
 use core::ptr;
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{
     EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
 };
-use eggos_drivers::desktop::{Desktop, EventQueue, WindowId, slot_of};
+use eggos_drivers::desktop::{Desktop, EventQueue, KERNEL_CLIENT, WindowId, colour, slot_of};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
+/// The most bytes of pixel buffers one client holds at once: those its windows show and those
+/// its process still maps after a resize or a destroy (32 MiB, eight buffers of a maximised
+/// window on a 1280x800 screen).
+pub const CLIENT_PIXEL_LIMIT: u64 = 32 << 20;
+
 /// The pixels of one window: `width` by `height` `0x00RRGGBB` pixels, rows packed, in
 /// physically contiguous frames the server owns, freed when the last holder lets go (the
-/// window and every process that maps them).
+/// window and every process that maps them), counted against its client's
+/// [`CLIENT_PIXEL_LIMIT`] until then.
 pub struct PixelBuffer {
     physical: u64,
     order: u32,
     width: u32,
     height: u32,
     frame_offset: usize,
+    owner: Arc<Client>,
 }
 
 impl core::fmt::Debug for PixelBuffer {
@@ -49,19 +58,29 @@ impl core::fmt::Debug for PixelBuffer {
 }
 
 impl PixelBuffer {
-    /// A zeroed buffer of `width` by `height` pixels; `None` without contiguous frames for it
-    /// (at most 4 MiB, the frame allocator's largest block).
-    pub fn new(width: u32, height: u32) -> Option<Arc<Self>> {
+    /// A zeroed buffer of `width` by `height` pixels for `owner`; `None` without contiguous
+    /// frames for it (at most 4 MiB, the frame allocator's largest block) or when it would take
+    /// `owner` past [`CLIENT_PIXEL_LIMIT`].
+    pub fn new(width: u32, height: u32, owner: &Arc<Client>) -> Option<Arc<Self>> {
         let bytes = u64::from(width) * u64::from(height) * 4;
         let frames = bytes.div_ceil(FRAME_SIZE).max(1);
         let order = frames.next_power_of_two().trailing_zeros();
-        let (physical, frame_offset) = {
+        let block = FRAME_SIZE << order;
+        if !owner.pin(block) {
+            return None;
+        }
+        let allocated = {
             let mut allocator = FRAMES.lock();
-            let allocator = allocator.as_mut()?;
-            (
-                allocator.allocate_contiguous(order)?,
-                allocator.physical_memory_offset(),
-            )
+            allocator.as_mut().and_then(|allocator| {
+                Some((
+                    allocator.allocate_contiguous(order)?,
+                    allocator.physical_memory_offset(),
+                ))
+            })
+        };
+        let Some((physical, frame_offset)) = allocated else {
+            owner.unpin(block);
+            return None;
         };
         let buffer = Self {
             physical,
@@ -69,6 +88,7 @@ impl PixelBuffer {
             width,
             height,
             frame_offset,
+            owner: Arc::clone(owner),
         };
         // SAFETY: the block was just allocated, so nothing else uses it, and the allocator
         // reaches it through `frame_offset`, the direct map's offset.
@@ -85,13 +105,15 @@ impl PixelBuffer {
         (self.width, self.height)
     }
 
-    /// Copies pixels `x..x + out.len()` of row `y` into `out`; what lies outside the buffer
-    /// is left as it is.
+    /// Copies pixels `x..x + out.len()` of row `y` into `out`; what lies outside the buffer is
+    /// the window background.
     pub fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {
         if y >= self.height || x >= self.width {
+            out.fill(colour::WINDOW_BACKGROUND);
             return;
         }
         let count = out.len().min((self.width - x) as usize);
+        out[count..].fill(colour::WINDOW_BACKGROUND);
         let at = y as usize * self.width as usize + x as usize;
         // SAFETY: row `y`, columns `x..x + count`, are inside the buffer's frames, which stay
         // allocated while `self` lives. A program that maps them may write them meanwhile:
@@ -120,21 +142,44 @@ impl Drop for PixelBuffer {
         // SAFETY: the block came from `allocate_contiguous` with this order on this allocator
         // (`new`), and this is the last holder: no window shows it and no process maps it.
         unsafe { allocator.free_contiguous(self.physical, self.order) };
+        self.owner.unpin(FRAME_SIZE << self.order);
     }
 }
 
-/// One client of the server: an open description of `/dev/window`, its number and its event
-/// queue.
+/// One client of the server: an open description of `/dev/window`, its number, its event
+/// queue and the bytes of pixel buffers it holds.
 #[derive(Debug)]
 pub struct Client {
     id: u16,
     queue: LeafSpinLock<EventQueue>,
+    pinned: AtomicU64,
 }
 
 impl Client {
-    /// Its number, the one the desktop knows it by.
+    /// Its number, the one the desktop knows it by: its slot in the low bits, and above them a
+    /// generation that grows with every client the kernel connects, so no later client, even
+    /// after the desktop restarts, has the number of one still connected.
     pub fn id(&self) -> u16 {
         self.id
+    }
+
+    /// The bytes of pixel buffers it holds.
+    pub fn pinned_bytes(&self) -> u64 {
+        self.pinned.load(Ordering::Relaxed)
+    }
+
+    fn pin(&self, bytes: u64) -> bool {
+        self.pinned
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pinned| {
+                pinned
+                    .checked_add(bytes)
+                    .filter(|&total| total <= CLIENT_PIXEL_LIMIT)
+            })
+            .is_ok()
+    }
+
+    fn unpin(&self, bytes: u64) {
+        self.pinned.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     /// Whether an event waits to be read.
@@ -160,7 +205,7 @@ impl Client {
 /// descriptor on it disconnects.
 pub struct Connection {
     client: Arc<Client>,
-    disconnect: fn(u16),
+    disconnect: fn(&Arc<Client>),
 }
 
 impl Connection {
@@ -189,7 +234,7 @@ impl Eq for Connection {}
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        (self.disconnect)(self.client.id);
+        (self.disconnect)(&self.client);
     }
 }
 
@@ -277,6 +322,21 @@ pub struct Clients {
     slots: [Option<Arc<Client>>; MAX_CLIENTS],
 }
 
+const CLIENT_SLOT_BITS: u32 = MAX_CLIENTS.trailing_zeros();
+const CLIENT_GENERATIONS: u16 = (KERNEL_CLIENT >> CLIENT_SLOT_BITS) + 1;
+
+static NEXT_CLIENT_GENERATION: AtomicU16 = AtomicU16::new(0);
+
+fn client_number(slot: usize) -> u16 {
+    let generation =
+        NEXT_CLIENT_GENERATION.fetch_add(1, Ordering::Relaxed) % (CLIENT_GENERATIONS - 1);
+    generation << CLIENT_SLOT_BITS | slot as u16
+}
+
+fn client_slot(id: u16) -> usize {
+    usize::from(id) & (MAX_CLIENTS - 1)
+}
+
 impl Clients {
     /// None.
     pub const fn new() -> Self {
@@ -286,18 +346,31 @@ impl Clients {
     }
 
     fn add(&mut self, queue: EventQueue) -> Option<Arc<Client>> {
-        let id = self.slots.iter().position(Option::is_none)?;
+        let slot = self.slots.iter().position(Option::is_none)?;
         let client = Arc::new(Client {
-            id: id as u16,
+            id: client_number(slot),
             queue: LeafSpinLock::new_leaf(queue),
+            pinned: AtomicU64::new(0),
         });
-        self.slots[id] = Some(Arc::clone(&client));
+        self.slots[slot] = Some(Arc::clone(&client));
         Some(client)
     }
 
-    fn remove(&mut self, id: u16) {
-        if let Some(slot) = self.slots.get_mut(usize::from(id)) {
-            *slot = None;
+    fn get(&self, id: u16) -> Option<&Arc<Client>> {
+        self.slots[client_slot(id)]
+            .as_ref()
+            .filter(|client| client.id == id)
+    }
+
+    /// Whether `client` is one of these clients (not one of a desktop that stopped).
+    pub fn has(&self, client: &Arc<Client>) -> bool {
+        self.get(client.id)
+            .is_some_and(|known| Arc::ptr_eq(known, client))
+    }
+
+    fn remove(&mut self, client: &Arc<Client>) {
+        if self.has(client) {
+            self.slots[client_slot(client.id)] = None;
         }
     }
 }
@@ -334,7 +407,7 @@ impl<'a> Queues<'a> {
 
 impl EventSink for Queues<'_> {
     fn send(&mut self, client: u16, mut record: EventRecord) {
-        if let Some(Some(target)) = self.clients.slots.get(usize::from(client)) {
+        if let Some(target) = self.clients.get(client) {
             record.time_ms = self.time_ms;
             target.queue.lock().push(record);
             self.sent = true;
@@ -366,9 +439,8 @@ impl From<WindowError> for ServerError {
     }
 }
 
-/// Connects a new client; `disconnect` is called with its number when its last descriptor
-/// closes.
-pub fn connect(disconnect: fn(u16)) -> Result<Connection, ServerError> {
+/// Connects a new client; `disconnect` is called with it when its last descriptor closes.
+pub fn connect(disconnect: fn(&Arc<Client>)) -> Result<Connection, ServerError> {
     let queue = EventQueue::new().ok_or(ServerError::OutOfMemory)?;
     let client = crate::terminal::with_clients(|clients| clients.add(queue))
         .ok_or(ServerError::NoServer)?
@@ -376,11 +448,152 @@ pub fn connect(disconnect: fn(u16)) -> Result<Connection, ServerError> {
     Ok(Connection { client, disconnect })
 }
 
-/// Destroys client `id`'s windows and forgets it.
-pub fn disconnect<P: Platform>(id: u16) {
+/// Destroys `client`'s windows and forgets it; nothing if it was a client of a desktop that
+/// stopped since, whose windows went with it.
+pub fn disconnect<P: Platform>(client: &Arc<Client>) {
+    let current = crate::terminal::with_clients(|clients| clients.has(client)).unwrap_or(false);
+    if !current {
+        return;
+    }
     crate::terminal::with_windows::<P, _>(|desktop, buffers, damage, events| {
-        desktop.destroy_client(id, damage, events);
+        desktop.destroy_client(client.id, damage, events);
         buffers.release_unused(desktop);
     });
-    crate::terminal::with_clients(|clients| clients.remove(id));
+    crate::terminal::with_clients(|clients| clients.remove(client));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread::host::frames_for_test;
+
+    fn free() -> u64 {
+        FRAMES.lock().as_ref().unwrap().free_frames()
+    }
+
+    fn client(clients: &mut Clients) -> Arc<Client> {
+        clients.add(EventQueue::new().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_buffer_reads_its_rows_and_the_window_background_outside_them() {
+        let _frames = frames_for_test();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let buffer = PixelBuffer::new(4, 2, &owner).unwrap();
+        assert_eq!(buffer.size(), (4, 2));
+        assert_eq!(buffer.length(), FRAME_SIZE);
+        let mut row = [7u32; 6];
+        buffer.copy_row(2, 1, &mut row);
+        assert_eq!(
+            row,
+            [
+                0,
+                0,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND,
+                colour::WINDOW_BACKGROUND
+            ]
+        );
+        let mut row = [7u32; 3];
+        buffer.copy_row(0, 2, &mut row);
+        assert_eq!(row, [colour::WINDOW_BACKGROUND; 3]);
+        buffer.copy_row(9, 0, &mut row);
+        assert_eq!(row, [colour::WINDOW_BACKGROUND; 3]);
+    }
+
+    #[test]
+    fn a_client_s_buffers_are_capped_and_counted_until_their_last_holder_lets_go() {
+        let _frames = frames_for_test();
+        let before = free();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let other = client(&mut clients);
+        assert!(owner.pin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE));
+        let first = PixelBuffer::new(32, 32, &owner).unwrap();
+        let second = PixelBuffer::new(32, 32, &owner).unwrap();
+        assert_eq!(owner.pinned_bytes(), CLIENT_PIXEL_LIMIT);
+        assert!(PixelBuffer::new(1, 1, &owner).is_none());
+        let theirs = PixelBuffer::new(1, 1, &other).unwrap();
+        assert_eq!(other.pinned_bytes(), FRAME_SIZE);
+        let kept = Arc::clone(&first);
+        drop(first);
+        assert!(
+            PixelBuffer::new(1, 1, &owner).is_none(),
+            "a mapping still holds it"
+        );
+        drop(kept);
+        let third = PixelBuffer::new(1, 1, &owner).unwrap();
+        drop((second, third, theirs));
+        owner.unpin(CLIENT_PIXEL_LIMIT - 2 * FRAME_SIZE);
+        assert_eq!((owner.pinned_bytes(), other.pinned_bytes()), (0, 0));
+        assert!(!owner.pin(CLIENT_PIXEL_LIMIT + 1));
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn buffers_are_found_by_their_window_and_offset_until_replaced_or_released() {
+        let _frames = frames_for_test();
+        let before = free();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let mut desktop = Desktop::new(1280, 800).unwrap();
+        let created = desktop.create(owner.id(), 0, 0, 10, 10, 0).unwrap();
+        let mut buffers = Buffers::new();
+        let first = PixelBuffer::new(created.width, created.height, &owner).unwrap();
+        let first_offset = buffers.attach(created.window, Arc::clone(&first));
+        let second = PixelBuffer::new(created.width, created.height, &owner).unwrap();
+        let second_offset = buffers.attach(created.window, Arc::clone(&second));
+        assert_ne!(first_offset, second_offset);
+        assert!(buffers.at_offset(first_offset).is_none(), "replaced");
+        let (window, found) = buffers.at_offset(second_offset).unwrap();
+        assert_eq!(window, created.window);
+        assert!(Arc::ptr_eq(&found, &second));
+        assert!(buffers.at_offset(second_offset + 1).is_none());
+        assert!(buffers.at_offset(second_offset + FRAME_SIZE).is_none());
+        assert!(core::ptr::eq(buffers.of(created.window).unwrap(), &*second));
+        assert!(
+            buffers.of(created.window + (1 << 6)).is_none(),
+            "another generation"
+        );
+        drop((first, found, second));
+        buffers.release_unused(&desktop);
+        assert!(
+            buffers.of(created.window).is_some(),
+            "the window still has it"
+        );
+        desktop
+            .destroy(
+                owner.id(),
+                u32::from(created.window),
+                &mut eggos_drivers::display::Damage::new(),
+                &mut eggos_drivers::desktop::protocol::DiscardEvents,
+            )
+            .unwrap();
+        buffers.release_unused(&desktop);
+        assert!(buffers.of(created.window).is_none());
+        assert_eq!(owner.pinned_bytes(), 0);
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn client_numbers_carry_a_generation_so_a_restarted_desktop_never_reuses_one() {
+        let mut first = Clients::new();
+        let old = client(&mut first);
+        let mut restarted = Clients::new();
+        let new = client(&mut restarted);
+        assert_eq!(client_slot(old.id()), client_slot(new.id()));
+        assert_ne!(old.id(), new.id());
+        assert!(restarted.has(&new) && !restarted.has(&old));
+        restarted.remove(&old);
+        assert!(
+            restarted.has(&new),
+            "an old client's going leaves the new one"
+        );
+        let ids: alloc::vec::Vec<u16> = (0..3000).map(client_number).collect();
+        assert!(ids.iter().all(|&id| id != KERNEL_CLIENT));
+        restarted.remove(&new);
+        assert!(!restarted.has(&new));
+    }
 }

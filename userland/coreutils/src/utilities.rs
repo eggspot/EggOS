@@ -11,6 +11,7 @@ use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
 use crate::uname::uname;
 use crate::wc::wc;
+use crate::wm::wm;
 use core::ffi::CStr;
 
 pub const MAX_ARGUMENTS: usize = 256;
@@ -43,10 +44,11 @@ pub enum Utility {
     Uname,
     Uptime,
     Wc,
+    Wm,
 }
 
 impl Utility {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Cat,
         Self::Cp,
         Self::Echo,
@@ -69,6 +71,7 @@ impl Utility {
         Self::Uname,
         Self::Uptime,
         Self::Wc,
+        Self::Wm,
     ];
 
     pub fn name(self) -> &'static [u8] {
@@ -95,6 +98,7 @@ impl Utility {
             Self::Uname => b"uname",
             Self::Uptime => b"uptime",
             Self::Wc => b"wc",
+            Self::Wm => b"wm",
         }
     }
 
@@ -126,6 +130,7 @@ impl Utility {
             Self::Uname => uname(output, arguments),
             Self::Uptime => uptime(output, arguments),
             Self::Wc => wc(output, arguments),
+            Self::Wm => wm(output, arguments),
         }
     }
 }

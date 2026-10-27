@@ -98,6 +98,12 @@ pub trait System {
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno>;
     fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno>;
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno>;
+    fn device_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Result<(), Errno>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -160,6 +166,15 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
         (**self).set_modified_now(path)
+    }
+
+    fn device_control(
+        &mut self,
+        descriptor: usize,
+        request: u32,
+        argument: &mut [u8],
+    ) -> Result<(), Errno> {
+        (**self).device_control(descriptor, request, argument)
     }
 }
 
