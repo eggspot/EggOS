@@ -1900,8 +1900,6 @@ fn check_program_windows(
     windows_test.manage(first, second)
 }
 
-/// The window-management steps of the program windows test (D128), each sent to QEMU through
-/// QMP and applied to the host's desktop, whose render the display must match after each.
 struct WindowSteps<'a> {
     arch: &'a Arch,
     qmp: &'a mut Qmp,

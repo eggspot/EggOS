@@ -713,7 +713,6 @@ impl Desktop {
         self.pointer_drawn = drawn;
     }
 
-    /// The control under `hit`, if one is and nothing holds the pointer: its window and which.
     fn control_under(&self, hit: Hit) -> Option<(usize, Part)> {
         if self.drag.is_some() || self.resize.is_some() || self.grab.is_some() {
             return None;
