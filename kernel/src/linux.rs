@@ -179,6 +179,8 @@ pub mod number {
         pub const GETDENTS64: u64 = 217;
         pub const OPENAT: u64 = 257;
         pub const GETCPU: u64 = 309;
+        pub const SCHED_GETPARAM: u64 = 143;
+        pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
         pub const DUP3: u64 = 292;
         pub const GETRANDOM: u64 = 318;
@@ -255,6 +257,8 @@ pub mod number {
         pub const SETRLIMIT: u64 = 164;
         pub const PRCTL: u64 = 167;
         pub const GETCPU: u64 = 168;
+        pub const SCHED_GETSCHEDULER: u64 = 120;
+        pub const SCHED_GETPARAM: u64 = 121;
         pub const SCHED_GETAFFINITY: u64 = 123;
         pub const GETTIMEOFDAY: u64 = 169;
         pub const SETTIMEOFDAY: u64 = 170;
@@ -330,6 +334,8 @@ pub mod number {
             GET_ROBUST_LIST,
             SCHED_YIELD,
             GETCPU,
+            SCHED_GETSCHEDULER,
+            SCHED_GETPARAM,
             SCHED_GETAFFINITY,
             #[cfg(target_arch = "x86_64")]
             ARCH_PRCTL,
@@ -878,6 +884,8 @@ fn out_of_line_result<P: Platform>(
         number::SCHED_GETAFFINITY => {
             identity::sched_getaffinity(process, thread, first, second, third)
         }
+        number::SCHED_GETSCHEDULER => identity::sched_getscheduler(process, thread, first),
+        number::SCHED_GETPARAM => identity::sched_getparam(process, thread, first, second),
         number::GETRLIMIT => limits::getrlimit(process, first, second),
         number::SETRLIMIT => limits::setrlimit(process, first, second),
         number::PRLIMIT64 => limits::prlimit64(process, first, second, third, fourth),
@@ -6463,6 +6471,37 @@ mod tests {
         assert_eq!(getcpu(0, node_word), 0);
         assert_eq!(getcpu(8, 0), Errno::EFAULT.result());
         assert_eq!(getcpu(cpu_word, 8), Errno::EFAULT.result());
+    }
+
+    #[test]
+    fn the_scheduling_policy_is_sched_other_with_priority_0_for_the_caller_only() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let (process, _) = process_with_stacks(&kernel);
+        let pid = u64::from(process.id().get());
+        let other = u64::from(i32::MAX as u32);
+        let negative = u64::MAX;
+        for asked in [0, pid] {
+            assert_eq!(
+                call(&process, number::SCHED_GETSCHEDULER, [asked, 0, 0, 0, 0, 0]),
+                0
+            );
+            process.write_user_memory(SCRATCH, &[0xff; 8]).unwrap();
+            let param = [asked, SCRATCH, 0, 0, 0, 0];
+            assert_eq!(call(&process, number::SCHED_GETPARAM, param), 0);
+            assert_eq!(
+                read_bytes(&process, SCRATCH, 8),
+                [0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]
+            );
+        }
+        let scheduler = |pid| call(&process, number::SCHED_GETSCHEDULER, [pid, 0, 0, 0, 0, 0]);
+        let param = |pid, at| call(&process, number::SCHED_GETPARAM, [pid, at, 0, 0, 0, 0]);
+        assert_eq!(scheduler(negative), Errno::EINVAL.result());
+        assert_eq!(scheduler(other), Errno::ESRCH.result());
+        assert_eq!(param(0, 0), Errno::EINVAL.result());
+        assert_eq!(param(negative, SCRATCH), Errno::EINVAL.result());
+        assert_eq!(param(other, SCRATCH), Errno::ESRCH.result());
+        assert_eq!(param(0, u64::MAX - 1), Errno::EFAULT.result());
     }
 
     #[test]

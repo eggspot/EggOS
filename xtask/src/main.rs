@@ -531,7 +531,11 @@ pub fn build_release_image(
     let mut members = image::members(added);
     members.extend(layer.iter().map(|layer| layer.member()));
     if added.iter().any(|file| android::is_program(&file.host)) {
-        members.extend(android::system_members(SHELL_PATH));
+        members.extend(
+            android::system_members(SHELL_PATH)
+                .into_iter()
+                .filter(|(path, _)| !added.iter().any(|file| file.path == *path)),
+        );
     }
     let initramfs = release_initramfs(
         arch,
