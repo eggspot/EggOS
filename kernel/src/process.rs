@@ -765,6 +765,7 @@ impl<P: Platform> Process<P> {
         Ok(start)
     }
 
+    #[inline(always)]
     fn place_locked(
         memory: &Memory<P>,
         regions: &mut Regions,

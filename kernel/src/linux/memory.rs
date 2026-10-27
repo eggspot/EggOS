@@ -218,6 +218,7 @@ pub fn mmap_file<P: Platform>(
     map_memory(process, address, length, prot, flags, Some(file), offset)
 }
 
+#[inline(always)]
 fn map_memory<P: Platform>(
     process: &Process<P>,
     address: u64,

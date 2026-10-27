@@ -112,7 +112,9 @@ impl<'a> Canvas<'a> {
         bottom: bool,
         colour: u32,
     ) {
-        for offset in 0..rect.height {
+        let first = self.clip.y.saturating_sub(rect.y).min(rect.height);
+        let end = self.clip.bottom().saturating_sub(rect.y).min(rect.height);
+        for offset in first..end {
             let from_bottom = rect.height - 1 - offset;
             let inset = match () {
                 () if top && (offset as usize) < insets.len() => insets[offset as usize],
@@ -144,14 +146,17 @@ impl<'a> Canvas<'a> {
             let bottom = rect.bottom() - 1 + ring;
             let left = rect.x.checked_sub(ring);
             let right = rect.right() - 1 + ring;
-            for y in top..=bottom {
+            let clip = self.clip;
+            for y in top.max(clip.y)..=bottom.min(clip.bottom() - 1) {
                 if let Some(left) = left {
                     self.darken(left, y, darkening);
                 }
                 self.darken(right, y, darkening);
             }
-            for x in rect.x.saturating_sub(ring - 1)..right {
-                self.darken(x, bottom, darkening);
+            if bottom >= clip.y && bottom < clip.bottom() {
+                for x in rect.x.saturating_sub(ring - 1).max(clip.x)..right.min(clip.right()) {
+                    self.darken(x, bottom, darkening);
+                }
             }
         }
     }
