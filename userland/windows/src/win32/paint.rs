@@ -5,7 +5,7 @@
 //! `eggos_windows_gui`.
 
 use super::gui::{self, try_with, with};
-use super::user32::WindowRect;
+use super::user32::Win32Rect;
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::gui::message;
 use crate::gui::objects::{self, DeviceContext, Object, ObjectTable};
@@ -23,7 +23,7 @@ const TEXT_CELLS: usize = 2048;
 struct PaintStruct {
     context: usize,
     erase: Bool,
-    paint: WindowRect,
+    paint: Win32Rect,
     restore: Bool,
     include_update: Bool,
     reserved: [u8; 32],
@@ -41,7 +41,7 @@ struct Point {
     y: i32,
 }
 
-fn rect_of(rect: &WindowRect) -> Rect {
+fn rect_of(rect: &Win32Rect) -> Rect {
     Rect::new(rect.left, rect.top, rect.right, rect.bottom)
 }
 
@@ -163,7 +163,7 @@ unsafe extern "efiapi" fn begin_paint(window: usize, paint: *mut PaintStruct) ->
         paint.write(PaintStruct {
             context: hdc,
             erase: Bool::from(unerased),
-            paint: WindowRect {
+            paint: Win32Rect {
                 left: region.left,
                 top: region.top,
                 right: region.right,
@@ -206,7 +206,7 @@ extern "efiapi" fn release_dc(_window: usize, hdc: usize) -> i32 {
 
 unsafe extern "efiapi" fn invalidate_rect(
     window: usize,
-    rect: *const WindowRect,
+    rect: *const Win32Rect,
     erase: Bool,
 ) -> Bool {
     let rect = match rect.is_null() {
@@ -233,7 +233,7 @@ unsafe extern "efiapi" fn invalidate_rect(
     }
 }
 
-unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const WindowRect, brush: usize) -> i32 {
+unsafe extern "efiapi" fn fill_rect(hdc: usize, rect: *const Win32Rect, brush: usize) -> i32 {
     // SAFETY: the caller passes a readable `RECT`.
     let rect = rect_of(unsafe { &*rect });
     let filled = draw(hdc, |surface, _, objects| {
@@ -263,7 +263,7 @@ unsafe extern "efiapi" fn draw_text_w(
     hdc: usize,
     text: *const u16,
     count: i32,
-    rect: *mut WindowRect,
+    rect: *mut Win32Rect,
     format: u32,
 ) -> i32 {
     // SAFETY: the caller passes `count` units, or a NUL-terminated string when it is -1.

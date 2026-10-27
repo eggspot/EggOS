@@ -93,8 +93,9 @@ struct Msg {
     private: u32,
 }
 
+/// Win32's `RECT`, as programs pass it.
 #[repr(C)]
-pub struct WindowRect {
+pub struct Win32Rect {
     pub left: i32,
     pub top: i32,
     pub right: i32,
@@ -416,7 +417,7 @@ extern "efiapi" fn update_window(handle: usize) -> Bool {
     }
 }
 
-unsafe extern "efiapi" fn get_client_rect(handle: usize, rect: *mut WindowRect) -> Bool {
+unsafe extern "efiapi" fn get_client_rect(handle: usize, rect: *mut Win32Rect) -> Bool {
     match try_with(|gui| {
         gui.window(handle)
             .map(|window| (window.width, window.height))
@@ -424,7 +425,7 @@ unsafe extern "efiapi" fn get_client_rect(handle: usize, rect: *mut WindowRect) 
         Ok((width, height)) => {
             // SAFETY: the caller passes a writable `RECT`.
             unsafe {
-                rect.write(WindowRect {
+                rect.write(Win32Rect {
                     left: 0,
                     top: 0,
                     right: width as i32,
@@ -438,7 +439,7 @@ unsafe extern "efiapi" fn get_client_rect(handle: usize, rect: *mut WindowRect) 
 }
 
 unsafe extern "efiapi" fn adjust_window_rect_ex(
-    rect: *mut WindowRect,
+    rect: *mut Win32Rect,
     _style: u32,
     _menu: Bool,
     _ex_style: u32,
@@ -452,11 +453,7 @@ unsafe extern "efiapi" fn adjust_window_rect_ex(
     TRUE
 }
 
-unsafe extern "efiapi" fn adjust_window_rect(
-    rect: *mut WindowRect,
-    style: u32,
-    menu: Bool,
-) -> Bool {
+unsafe extern "efiapi" fn adjust_window_rect(rect: *mut Win32Rect, style: u32, menu: Bool) -> Bool {
     // SAFETY: the caller's duty, passed on.
     unsafe { adjust_window_rect_ex(rect, style, menu, 0) }
 }

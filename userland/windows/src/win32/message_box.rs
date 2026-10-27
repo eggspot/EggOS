@@ -25,7 +25,7 @@ const HELP_FOR_WINDOW: i32 = 1;
 const CHROME: (i32, i32) = (2, 30);
 const RESTORED: u32 = 0;
 
-struct BoxState {
+struct MessageBoxState {
     controller: Controller,
     cells: *const Cell,
     cell_count: usize,
@@ -109,7 +109,7 @@ unsafe extern "efiapi" fn message_box_w(
             (work.height() - layout.height - CHROME.1) / 2,
         );
     }
-    let mut state = BoxState {
+    let mut state = MessageBoxState {
         controller: Controller::new(layout),
         cells: cells.as_ptr(),
         cell_count: filled,
@@ -141,7 +141,7 @@ unsafe extern "efiapi" fn message_box_w(
     result
 }
 
-fn run(state: *mut BoxState) -> i32 {
+fn run(state: *mut MessageBoxState) -> i32 {
     loop {
         // SAFETY: the state lives in the `MessageBoxW` frame that runs this loop, and no
         // reference to it is alive between messages.
@@ -166,7 +166,7 @@ fn run(state: *mut BoxState) -> i32 {
     }
 }
 
-fn repaint(state: &BoxState) {
+fn repaint(state: &MessageBoxState) {
     // SAFETY: the cells are the `MessageBoxW` frame's, alive while its box is.
     let cells = unsafe { core::slice::from_raw_parts(state.cells, state.cell_count) };
     let shown = with(|gui| {
@@ -194,7 +194,7 @@ fn repaint(state: &BoxState) {
 pub fn handle_event(state: usize, record: &Record) {
     // SAFETY: a box's state lives in the frame of the `MessageBoxW` call whose loop reads this
     // record, and that loop holds no reference to it meanwhile.
-    let state = unsafe { &mut *(state as *mut BoxState) };
+    let state = unsafe { &mut *(state as *mut MessageBoxState) };
     let controller = &mut state.controller;
     let outcome = match record.kind {
         kind::POINTER_ENTER | kind::POINTER_MOVE => controller.pointer_moved(record.a, record.b),

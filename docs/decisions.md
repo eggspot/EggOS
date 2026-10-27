@@ -7358,7 +7358,7 @@ the license, by an explicit instruction recorded here.
   instead of passing 0..3000 as slots; `wm`'s `device_control` refuses an argument whose length
   is not the size the request encodes; the 2 s rule compares the time since a close request as a
   signed difference, so a clock behind the request is no time waited.
-- **Cost.** Nothing for console programs but three words of static data (no state, no
+- **Cost.** Nothing for console programs but four words of static data (no state, no
   connection). A Win32 call is a
   function call; the message path makes no system call when a message waits, one `read` per
   batch of 16 server records, and `ppoll` only to sleep; a paint is one `COMMIT` of its region.
