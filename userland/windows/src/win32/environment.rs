@@ -140,7 +140,7 @@ unsafe fn utf8_name(name: *const u16, out: &mut [u8; NAME_CAPACITY]) -> Option<u
     (consumed == name.len()).then_some(written)
 }
 
-unsafe extern "win64" fn get_environment_variable_w(
+unsafe extern "efiapi" fn get_environment_variable_w(
     name: *const u16,
     buffer: *mut u16,
     size: u32,
@@ -167,7 +167,7 @@ unsafe extern "win64" fn get_environment_variable_w(
     })
 }
 
-unsafe extern "win64" fn get_environment_variable_a(
+unsafe extern "efiapi" fn get_environment_variable_a(
     name: *const u8,
     buffer: *mut u8,
     size: u32,
@@ -190,7 +190,7 @@ unsafe extern "win64" fn get_environment_variable_a(
     })
 }
 
-unsafe extern "win64" fn set_environment_variable_w(name: *const u16, value: *const u16) -> Bool {
+unsafe extern "efiapi" fn set_environment_variable_w(name: *const u16, value: *const u16) -> Bool {
     let mut name_bytes = [0u8; NAME_CAPACITY];
     // SAFETY: `SetEnvironmentVariableW`'s contract: a NUL-terminated UTF-16 name.
     let Some(name_length) = (unsafe { utf8_name(name, &mut name_bytes) }) else {
@@ -209,7 +209,7 @@ unsafe extern "win64" fn set_environment_variable_w(name: *const u16, value: *co
     set(&name_bytes[..name_length], Some(&bytes[..written]))
 }
 
-unsafe extern "win64" fn set_environment_variable_a(name: *const u8, value: *const u8) -> Bool {
+unsafe extern "efiapi" fn set_environment_variable_a(name: *const u8, value: *const u8) -> Bool {
     if name.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
@@ -253,15 +253,15 @@ fn write_bytes(bytes: &[u8], out: &mut [u8]) -> usize {
     bytes.len()
 }
 
-extern "win64" fn get_environment_strings_w() -> *mut u16 {
+extern "efiapi" fn get_environment_strings_w() -> *mut u16 {
     environment_block(text::utf16_length, text::write_utf16)
 }
 
-extern "win64" fn get_environment_strings_a() -> *mut u8 {
+extern "efiapi" fn get_environment_strings_a() -> *mut u8 {
     environment_block(<[u8]>::len, write_bytes)
 }
 
-unsafe extern "win64" fn free_environment_strings(block: *mut u8) -> Bool {
+unsafe extern "efiapi" fn free_environment_strings(block: *mut u8) -> Bool {
     // SAFETY: `FreeEnvironmentStrings`' contract: a block `GetEnvironmentStrings` returned.
     unsafe { heap::free(block) };
     TRUE

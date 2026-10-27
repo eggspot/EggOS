@@ -45,7 +45,7 @@ aarch64 process_switch_round_trip 487.27
 aarch64 process_syscall_round_trip 117.40
 aarch64 random_fill_16 1323.00
 aarch64 random_fill_4096 87816.16
-aarch64 release_image_bytes 701672.00
+aarch64 release_image_bytes 701728.00
 aarch64 syscall_round_trip 106.17
 aarch64 term_feed_line 6046.56
 aarch64 term_scroll_line 540783.08

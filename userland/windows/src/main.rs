@@ -1,43 +1,46 @@
 //! The Windows layer (D118), at `/usr/lib/eggos/windows`: the kernel starts it for a file that
-//! starts with `MZ`, and it runs that Windows console program natively on x86_64. The PE
-//! format, the image's layout, relocations and imports, UTF-16 text and the command line are
-//! pure logic with host tests; `start.rs` loads the program and `win32/` implements the Win32
-//! functions it imports.
+//! starts with `MZ`, and it runs that Windows console program natively on x86_64 (x64 programs)
+//! and aarch64 (ARM64 programs, D124). The PE format, the image's layout, relocations and
+//! imports, UTF-16 text and the command line are pure logic with host tests; `start.rs` loads
+//! the program and `win32/` implements the Win32 functions it imports.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod calendar;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod command_line;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod errors;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod find;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod image;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod library;
-#[cfg(all(target_env = "musl", target_arch = "x86_64"))]
+#[cfg(runs_windows_programs)]
 mod linux;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod pe;
-#[cfg(all(target_env = "musl", target_arch = "x86_64"))]
+#[cfg(runs_windows_programs)]
 mod start;
-#[cfg(any(test, all(target_env = "musl", target_arch = "x86_64")))]
+#[cfg(any(test, runs_windows_programs))]
 mod text;
-#[cfg(all(target_env = "musl", target_arch = "x86_64"))]
+#[cfg(runs_windows_programs)]
 mod win32;
 
-#[cfg(all(target_env = "musl", target_arch = "x86_64"))]
+#[cfg(runs_windows_programs)]
 eggos_runtime::main!(start::run);
 
-#[cfg(all(target_env = "musl", not(target_arch = "x86_64")))]
+#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
 eggos_runtime::main!(unsupported);
 
-#[cfg(all(target_env = "musl", not(target_arch = "x86_64")))]
+#[cfg(all(target_env = "musl", not(runs_windows_programs)))]
 fn unsupported(_: &eggos_runtime::startup::Startup) -> i32 {
-    eggos_runtime::syscall::write_all(2, b"windows: Windows programs run on x86_64 only\n");
+    eggos_runtime::syscall::write_all(
+        2,
+        b"windows: Windows programs run on x86_64 and aarch64 only\n",
+    );
     126
 }
 

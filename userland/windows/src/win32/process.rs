@@ -102,34 +102,34 @@ fn wide_copy(bytes: &[u8]) -> Option<&'static [u16]> {
     Some(wide)
 }
 
-extern "win64" fn get_command_line_w() -> *const u16 {
+extern "efiapi" fn get_command_line_w() -> *const u16 {
     process().command_line_wide.as_ptr()
 }
 
-extern "win64" fn get_command_line_a() -> *const u8 {
+extern "efiapi" fn get_command_line_a() -> *const u8 {
     process().command_line.as_ptr()
 }
 
-extern "win64" fn exit_process(code: u32) -> ! {
+extern "efiapi" fn exit_process(code: u32) -> ! {
     linux::exit(code)
 }
 
-extern "win64" fn terminate_process(process: usize, code: u32) -> super::Bool {
+extern "efiapi" fn terminate_process(process: usize, code: u32) -> super::Bool {
     if process == CURRENT_PROCESS {
         linux::exit(code);
     }
     super::fail(super::error::ACCESS_DENIED, super::FALSE)
 }
 
-extern "win64" fn get_current_process() -> usize {
+extern "efiapi" fn get_current_process() -> usize {
     CURRENT_PROCESS
 }
 
-extern "win64" fn get_current_thread() -> usize {
+extern "efiapi" fn get_current_thread() -> usize {
     CURRENT_THREAD
 }
 
-extern "win64" fn get_current_process_id() -> u32 {
+extern "efiapi" fn get_current_process_id() -> u32 {
     linux::process_id()
 }
 

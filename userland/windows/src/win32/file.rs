@@ -65,7 +65,7 @@ pub fn write_bytes(handle: usize, bytes: &[u8]) -> bool {
     }
 }
 
-unsafe extern "win64" fn read_file(
+unsafe extern "efiapi" fn read_file(
     handle: usize,
     buffer: *mut u8,
     length: u32,
@@ -86,7 +86,7 @@ unsafe extern "win64" fn read_file(
     TRUE
 }
 
-unsafe extern "win64" fn write_file(
+unsafe extern "efiapi" fn write_file(
     handle: usize,
     buffer: *const u8,
     length: u32,
@@ -108,7 +108,7 @@ unsafe extern "win64" fn write_file(
     TRUE
 }
 
-extern "win64" fn close_handle(handle: usize) -> Bool {
+extern "efiapi" fn close_handle(handle: usize) -> Bool {
     if handle >= super::CURRENT_THREAD {
         return TRUE;
     }
@@ -165,7 +165,7 @@ fn create_file(path: &[u8], access: u32, disposition: u32) -> usize {
     handle_of(fd)
 }
 
-unsafe extern "win64" fn create_file_w(
+unsafe extern "efiapi" fn create_file_w(
     name: *const u16,
     access: u32,
     _share: u32,
@@ -183,7 +183,7 @@ unsafe extern "win64" fn create_file_w(
     }
 }
 
-unsafe extern "win64" fn create_file_a(
+unsafe extern "efiapi" fn create_file_a(
     name: *const u8,
     access: u32,
     _share: u32,
@@ -225,7 +225,7 @@ fn file_size(handle: usize) -> Option<u64> {
     }
 }
 
-unsafe extern "win64" fn get_file_size(handle: usize, high: *mut u32) -> u32 {
+unsafe extern "efiapi" fn get_file_size(handle: usize, high: *mut u32) -> u32 {
     let Some(size) = file_size(handle) else {
         return u32::MAX;
     };
@@ -237,7 +237,7 @@ unsafe extern "win64" fn get_file_size(handle: usize, high: *mut u32) -> u32 {
     size as u32
 }
 
-unsafe extern "win64" fn get_file_size_ex(handle: usize, size: *mut i64) -> Bool {
+unsafe extern "efiapi" fn get_file_size_ex(handle: usize, size: *mut i64) -> Bool {
     let Some(value) = file_size(handle) else {
         return FALSE;
     };
@@ -260,7 +260,7 @@ fn seek(handle: usize, distance: i64, method: u32) -> Option<u64> {
     }
 }
 
-unsafe extern "win64" fn set_file_pointer(
+unsafe extern "efiapi" fn set_file_pointer(
     handle: usize,
     low: i32,
     high: *mut i32,
@@ -282,7 +282,7 @@ unsafe extern "win64" fn set_file_pointer(
     position as u32
 }
 
-unsafe extern "win64" fn set_file_pointer_ex(
+unsafe extern "efiapi" fn set_file_pointer_ex(
     handle: usize,
     distance: i64,
     position: *mut i64,
@@ -298,7 +298,7 @@ unsafe extern "win64" fn set_file_pointer_ex(
     TRUE
 }
 
-extern "win64" fn get_file_type(handle: usize) -> u32 {
+extern "efiapi" fn get_file_type(handle: usize) -> u32 {
     let Some(fd) = fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FILE_TYPE_UNKNOWN);
     };
@@ -314,7 +314,7 @@ extern "win64" fn get_file_type(handle: usize) -> u32 {
     }
 }
 
-extern "win64" fn flush_file_buffers(handle: usize) -> Bool {
+extern "efiapi" fn flush_file_buffers(handle: usize) -> Bool {
     match fd_of(handle) {
         Some(_) => TRUE,
         None => fail(error::INVALID_HANDLE, FALSE),

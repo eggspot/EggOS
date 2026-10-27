@@ -13,28 +13,28 @@ const NANOSECONDS_PER_TICK: u64 = 100;
 const FILETIME_EPOCH_OFFSET_SECONDS: u64 = 11_644_473_600;
 const INFINITE: u32 = u32::MAX;
 
-extern "win64" fn get_tick_count64() -> u64 {
+extern "efiapi" fn get_tick_count64() -> u64 {
     linux::clock_nanoseconds(CLOCK_MONOTONIC) / 1_000_000
 }
 
-extern "win64" fn get_tick_count() -> u32 {
+extern "efiapi" fn get_tick_count() -> u32 {
     get_tick_count64() as u32
 }
 
-unsafe extern "win64" fn query_performance_counter(counter: *mut i64) -> Bool {
+unsafe extern "efiapi" fn query_performance_counter(counter: *mut i64) -> Bool {
     let ticks = linux::clock_nanoseconds(CLOCK_MONOTONIC) / NANOSECONDS_PER_TICK;
     // SAFETY: the caller passes a writable `LARGE_INTEGER`.
     unsafe { counter.write(ticks as i64) };
     TRUE
 }
 
-unsafe extern "win64" fn query_performance_frequency(frequency: *mut i64) -> Bool {
+unsafe extern "efiapi" fn query_performance_frequency(frequency: *mut i64) -> Bool {
     // SAFETY: the caller passes a writable `LARGE_INTEGER`.
     unsafe { frequency.write(PERFORMANCE_FREQUENCY) };
     TRUE
 }
 
-unsafe extern "win64" fn get_system_time_as_file_time(time: *mut u64) {
+unsafe extern "efiapi" fn get_system_time_as_file_time(time: *mut u64) {
     let intervals = now();
     // SAFETY: the caller passes a writable `FILETIME`: two `DWORD`s, low first, which is a
     // little-endian 64-bit value at 4-byte alignment.
@@ -46,13 +46,13 @@ fn now() -> u64 {
     nanoseconds / NANOSECONDS_PER_TICK + FILETIME_EPOCH_OFFSET_SECONDS * 10_000_000
 }
 
-unsafe extern "win64" fn get_system_time(time: *mut u8) {
+unsafe extern "efiapi" fn get_system_time(time: *mut u8) {
     let calendar = calendar::system_time(now()).unwrap_or_default();
     // SAFETY: the caller passes a writable `SYSTEMTIME` (16 bytes).
     unsafe { time.copy_from_nonoverlapping(calendar.to_bytes().as_ptr(), 16) };
 }
 
-unsafe extern "win64" fn file_time_to_system_time(file_time: *const u64, time: *mut u8) -> Bool {
+unsafe extern "efiapi" fn file_time_to_system_time(file_time: *const u64, time: *mut u8) -> Bool {
     // SAFETY: the caller passes a readable `FILETIME` (4-byte aligned).
     let value = unsafe { file_time.read_unaligned() };
     let Some(calendar) = calendar::system_time(value).filter(|_| value <= i64::MAX as u64) else {
@@ -63,7 +63,7 @@ unsafe extern "win64" fn file_time_to_system_time(file_time: *const u64, time: *
     TRUE
 }
 
-unsafe extern "win64" fn system_time_to_file_time(time: *const u8, file_time: *mut u64) -> Bool {
+unsafe extern "efiapi" fn system_time_to_file_time(time: *const u8, file_time: *mut u64) -> Bool {
     let mut bytes = [0u8; 16];
     // SAFETY: the caller passes a readable `SYSTEMTIME`.
     unsafe { bytes.as_mut_ptr().copy_from_nonoverlapping(time, 16) };
@@ -75,7 +75,7 @@ unsafe extern "win64" fn system_time_to_file_time(time: *const u8, file_time: *m
     TRUE
 }
 
-unsafe extern "win64" fn file_time_to_local_file_time(from: *const u64, to: *mut u64) -> Bool {
+unsafe extern "efiapi" fn file_time_to_local_file_time(from: *const u64, to: *mut u64) -> Bool {
     // SAFETY: the caller passes a readable `FILETIME`.
     let time = unsafe { from.read_unaligned() };
     // SAFETY: and a writable one.
@@ -83,7 +83,7 @@ unsafe extern "win64" fn file_time_to_local_file_time(from: *const u64, to: *mut
     TRUE
 }
 
-extern "win64" fn sleep(milliseconds: u32) {
+extern "efiapi" fn sleep(milliseconds: u32) {
     match milliseconds {
         0 => linux::yield_now(),
         INFINITE => loop {
@@ -93,7 +93,7 @@ extern "win64" fn sleep(milliseconds: u32) {
     }
 }
 
-extern "win64" fn sleep_ex(milliseconds: u32, _alertable: Bool) -> u32 {
+extern "efiapi" fn sleep_ex(milliseconds: u32, _alertable: Bool) -> u32 {
     sleep(milliseconds);
     0
 }

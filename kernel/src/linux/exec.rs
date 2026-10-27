@@ -702,7 +702,8 @@ impl Signature {
     }
 }
 
-/// The Windows layer (D118): PE executables (`MZ`) run on x86_64 only.
+/// The Windows layer (D118): PE executables (`MZ`), on x86_64 (x64 programs) and aarch64
+/// (ARM64 programs, D124).
 pub const WINDOWS_LAYER: Interpreter = Interpreter {
     signature: Signature::Prefix(b"MZ"),
     path: b"/usr/lib/eggos/windows",
@@ -723,10 +724,8 @@ pub const MACOS_FAT_LAYER: Interpreter = Interpreter {
 
 const MACOS_LAYER_PATH: &[u8] = b"/usr/lib/eggos/macos";
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INTERPRETERS: &[Interpreter] = &[WINDOWS_LAYER, MACOS_LAYER, MACOS_FAT_LAYER];
-#[cfg(target_arch = "aarch64")]
-const INTERPRETERS: &[Interpreter] = &[MACOS_LAYER, MACOS_FAT_LAYER];
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const INTERPRETERS: &[Interpreter] = &[];
 const ANY_INTERPRETER: bool = !INTERPRETERS.is_empty();
@@ -1464,9 +1463,9 @@ mod tests {
     }
 
     #[test]
-    fn windows_programs_start_through_the_windows_layer_on_x86_64_only() {
+    fn windows_programs_start_through_the_windows_layer_on_x86_64_and_aarch64() {
         let windows = interpreter_for(b"MZ\x90\0rest of the file");
-        match cfg!(target_arch = "x86_64") {
+        match cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
             true => assert_eq!(windows, Some(WINDOWS_LAYER)),
             false => assert_eq!(windows, None),
         }

@@ -1,12 +1,13 @@
 //! Starting a Windows program: the kernel runs the layer as `windows <program> <arguments>`
 //! for a file that starts with `MZ` (D118). The layer reads the file, checks it, maps the image
 //! at its preferred base (or relocates it), binds its imports to the layer's own functions,
-//! protects each section, builds the TEB and PEB, points GS at the TEB and calls the entry
-//! point, whose return value is the exit code.
+//! protects each section, builds the TEB and PEB, points the thread's TEB register at the TEB
+//! (GS on x86_64; `tpidr_el0` on aarch64, from which `x18` is loaded for the program's code) and
+//! calls the entry point, whose return value is the exit code.
 
 use crate::image::{self, BindError};
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
-use crate::pe::{InvalidPe, Pe};
+use crate::pe::{InvalidPe, Machine, Pe};
 use crate::win32::{self, thread_environment};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -15,6 +16,10 @@ const STANDARD_ERROR: usize = 2;
 const CANNOT_EXECUTE: i32 = 126;
 const STACK_RESERVE: usize = 8 << 20;
 const DLL_PROCESS_ATTACH: u32 = 1;
+#[cfg(target_arch = "x86_64")]
+const THIS_COMPUTER: Machine = Machine::X64;
+#[cfg(target_arch = "aarch64")]
+const THIS_COMPUTER: Machine = Machine::Arm64;
 
 enum Failure {
     Usage,
@@ -119,6 +124,9 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let path = startup.arguments().nth(1).ok_or(Failure::Usage)?;
     let file = read_file(path.to_bytes_with_nul())?;
     let pe = Pe::parse(file).map_err(Failure::Invalid)?;
+    if let Some(refusal) = pe.machine.refusal_on(THIS_COMPUTER) {
+        return Err(Failure::Invalid(refusal));
+    }
     let size = pe.mapped_size() as usize;
     let read_write = PROT_READ | PROT_WRITE;
     let base = match linux::map_anonymous(pe.image_base as usize, size, read_write, true) {
@@ -172,14 +180,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     protect(&pe, base)?;
     // SAFETY: the file's copy is not used after this: the image holds everything it needs.
     let _ = unsafe { linux::unmap(file.as_ptr() as usize, file.len().max(1)) };
-    // SAFETY: GS gets the TEB this process's Win32 functions read through it.
-    unsafe { linux::set_gs_base(teb) }.map_err(|_| Failure::Memory)?;
+    // SAFETY: the thread's TEB register gets the TEB this process's Win32 functions read
+    // through it.
+    unsafe { linux::set_thread_environment_block(teb) }.map_err(|_| Failure::Memory)?;
     thread_environment::run_tls_callbacks(DLL_PROCESS_ATTACH);
     // SAFETY: `entry` is the checked entry point inside an executable section of the image,
     // laid out, relocated and bound, and Windows calls it as a function without arguments
     // that returns the exit code.
-    let entry: extern "win64" fn() -> u32 = unsafe { core::mem::transmute(entry) };
-    win32::end_thread(entry())
+    let code = unsafe { win32::call_program(entry, [0; 4]) };
+    win32::end_thread(code as u32)
 }
 
 fn read_file(path: &[u8]) -> Result<&'static [u8], Failure> {

@@ -364,15 +364,15 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32) -> u32 {
     }
 }
 
-extern "win64" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
+extern "efiapi" fn wait_for_single_object(handle: usize, milliseconds: u32) -> u32 {
     wait(&[handle], false, milliseconds)
 }
 
-extern "win64" fn wait_for_single_object_ex(handle: usize, milliseconds: u32, _: Bool) -> u32 {
+extern "efiapi" fn wait_for_single_object_ex(handle: usize, milliseconds: u32, _: Bool) -> u32 {
     wait(&[handle], false, milliseconds)
 }
 
-unsafe extern "win64" fn wait_for_multiple_objects(
+unsafe extern "efiapi" fn wait_for_multiple_objects(
     count: u32,
     handles: *const usize,
     wait_all: Bool,
@@ -386,7 +386,7 @@ unsafe extern "win64" fn wait_for_multiple_objects(
     wait(handles, wait_all != FALSE, milliseconds)
 }
 
-unsafe extern "win64" fn wait_for_multiple_objects_ex(
+unsafe extern "efiapi" fn wait_for_multiple_objects_ex(
     count: u32,
     handles: *const usize,
     wait_all: Bool,
@@ -405,7 +405,7 @@ fn new_object(kind: Kind) -> usize {
     handle
 }
 
-extern "win64" fn create_event_w(_: usize, manual_reset: Bool, initial: Bool, _: usize) -> usize {
+extern "efiapi" fn create_event_w(_: usize, manual_reset: Bool, initial: Bool, _: usize) -> usize {
     new_object(Kind::Event {
         manual_reset: manual_reset != FALSE,
         signaled: initial != FALSE,
@@ -416,7 +416,7 @@ const CREATE_EVENT_MANUAL_RESET: u32 = 1;
 const CREATE_EVENT_INITIAL_SET: u32 = 2;
 const CREATE_MUTEX_INITIAL_OWNER: u32 = 1;
 
-extern "win64" fn create_event_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
+extern "efiapi" fn create_event_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
     new_object(Kind::Event {
         manual_reset: flags & CREATE_EVENT_MANUAL_RESET != 0,
         signaled: flags & CREATE_EVENT_INITIAL_SET != 0,
@@ -437,11 +437,11 @@ fn set_event_state(handle: usize, state: bool) -> Bool {
     }
 }
 
-extern "win64" fn set_event(handle: usize) -> Bool {
+extern "efiapi" fn set_event(handle: usize) -> Bool {
     set_event_state(handle, true)
 }
 
-extern "win64" fn reset_event(handle: usize) -> Bool {
+extern "efiapi" fn reset_event(handle: usize) -> Bool {
     set_event_state(handle, false)
 }
 
@@ -457,15 +457,15 @@ fn create_mutex(initial_owner: bool) -> usize {
     })
 }
 
-extern "win64" fn create_mutex_w(_: usize, initial_owner: Bool, _: usize) -> usize {
+extern "efiapi" fn create_mutex_w(_: usize, initial_owner: Bool, _: usize) -> usize {
     create_mutex(initial_owner != FALSE)
 }
 
-extern "win64" fn create_mutex_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
+extern "efiapi" fn create_mutex_ex_w(_: usize, _: usize, flags: u32, _access: u32) -> usize {
     create_mutex(flags & CREATE_MUTEX_INITIAL_OWNER != 0)
 }
 
-extern "win64" fn release_mutex(handle: usize) -> Bool {
+extern "efiapi" fn release_mutex(handle: usize) -> Bool {
     let caller = thread_environment::thread_id();
     let result = change(handle, |kind| match kind {
         Kind::Mutex { owner, recursion } if *owner == caller && *recursion > 0 => {
@@ -485,7 +485,7 @@ extern "win64" fn release_mutex(handle: usize) -> Bool {
     }
 }
 
-extern "win64" fn create_semaphore_w(_: usize, initial: i32, maximum: i32, _: usize) -> usize {
+extern "efiapi" fn create_semaphore_w(_: usize, initial: i32, maximum: i32, _: usize) -> usize {
     if maximum <= 0 || initial < 0 || initial > maximum {
         return fail(error::INVALID_PARAMETER, 0);
     }
@@ -495,7 +495,7 @@ extern "win64" fn create_semaphore_w(_: usize, initial: i32, maximum: i32, _: us
     })
 }
 
-extern "win64" fn create_semaphore_ex_w(
+extern "efiapi" fn create_semaphore_ex_w(
     _: usize,
     initial: i32,
     maximum: i32,
@@ -506,7 +506,7 @@ extern "win64" fn create_semaphore_ex_w(
     create_semaphore_w(0, initial, maximum, 0)
 }
 
-unsafe extern "win64" fn release_semaphore(
+unsafe extern "efiapi" fn release_semaphore(
     handle: usize,
     release: i32,
     previous: *mut i32,
@@ -602,12 +602,12 @@ mod critical_section {
 
 const DEFAULT_SPINS: u32 = 64;
 
-unsafe extern "win64" fn initialize_critical_section(section: *mut u8) {
+unsafe extern "efiapi" fn initialize_critical_section(section: *mut u8) {
     // SAFETY: `InitializeCriticalSection`'s contract: a writable `CRITICAL_SECTION`.
     unsafe { section.write_bytes(0, critical_section::SIZE) };
 }
 
-unsafe extern "win64" fn initialize_critical_section_and_spin_count(
+unsafe extern "efiapi" fn initialize_critical_section_and_spin_count(
     section: *mut u8,
     spins: u32,
 ) -> Bool {
@@ -620,7 +620,7 @@ unsafe extern "win64" fn initialize_critical_section_and_spin_count(
     TRUE
 }
 
-unsafe extern "win64" fn initialize_critical_section_ex(
+unsafe extern "efiapi" fn initialize_critical_section_ex(
     section: *mut u8,
     spins: u32,
     _flags: u32,
@@ -649,7 +649,7 @@ unsafe fn critical(section: *mut u8) -> CriticalSection {
     }
 }
 
-unsafe extern "win64" fn enter_critical_section(section: *mut u8) {
+unsafe extern "efiapi" fn enter_critical_section(section: *mut u8) {
     // SAFETY: `EnterCriticalSection`'s contract: an initialized `CRITICAL_SECTION`.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -664,7 +664,7 @@ unsafe extern "win64" fn enter_critical_section(section: *mut u8) {
     unsafe { section.recursion.write(1) };
 }
 
-unsafe extern "win64" fn try_enter_critical_section(section: *mut u8) -> Bool {
+unsafe extern "efiapi" fn try_enter_critical_section(section: *mut u8) -> Bool {
     // SAFETY: `TryEnterCriticalSection`'s contract: an initialized `CRITICAL_SECTION`.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -686,7 +686,7 @@ unsafe extern "win64" fn try_enter_critical_section(section: *mut u8) -> Bool {
     TRUE
 }
 
-unsafe extern "win64" fn leave_critical_section(section: *mut u8) {
+unsafe extern "efiapi" fn leave_critical_section(section: *mut u8) {
     // SAFETY: `LeaveCriticalSection`'s contract: a `CRITICAL_SECTION` the caller entered.
     let section = unsafe { critical(section) };
     let caller = u64::from(thread_environment::thread_id());
@@ -703,7 +703,7 @@ unsafe extern "win64" fn leave_critical_section(section: *mut u8) {
     }
 }
 
-unsafe extern "win64" fn delete_critical_section(_section: *mut u8) {}
+unsafe extern "efiapi" fn delete_critical_section(_section: *mut u8) {}
 
 const SRW_WRITER: u32 = 0x4000_0000;
 const SRW_WAITERS: u32 = 0x8000_0000;
@@ -750,11 +750,11 @@ fn srw_lock(address: usize) -> &'static AtomicU32 {
     word(address)
 }
 
-extern "win64" fn initialize_srw_lock(lock: usize) {
+extern "efiapi" fn initialize_srw_lock(lock: usize) {
     srw_lock(lock).store(0, Ordering::Relaxed);
 }
 
-extern "win64" fn acquire_srw_lock_exclusive(lock: usize) {
+extern "efiapi" fn acquire_srw_lock_exclusive(lock: usize) {
     let lock = srw_lock(lock);
     while let Some(state) = srw_try_exclusive(lock) {
         if state & !SRW_WAITERS != 0 {
@@ -763,7 +763,7 @@ extern "win64" fn acquire_srw_lock_exclusive(lock: usize) {
     }
 }
 
-extern "win64" fn acquire_srw_lock_shared(lock: usize) {
+extern "efiapi" fn acquire_srw_lock_shared(lock: usize) {
     let lock = srw_lock(lock);
     while let Some(state) = srw_try_shared(lock) {
         if state & SRW_WRITER != 0 {
@@ -772,11 +772,11 @@ extern "win64" fn acquire_srw_lock_shared(lock: usize) {
     }
 }
 
-extern "win64" fn try_acquire_srw_lock_exclusive(lock: usize) -> u8 {
+extern "efiapi" fn try_acquire_srw_lock_exclusive(lock: usize) -> u8 {
     u8::from(srw_try_exclusive(srw_lock(lock)).is_none())
 }
 
-extern "win64" fn try_acquire_srw_lock_shared(lock: usize) -> u8 {
+extern "efiapi" fn try_acquire_srw_lock_shared(lock: usize) -> u8 {
     u8::from(srw_try_shared(srw_lock(lock)).is_none())
 }
 
@@ -786,13 +786,13 @@ fn srw_wake(lock: &AtomicU32, previous: u32) {
     }
 }
 
-extern "win64" fn release_srw_lock_exclusive(lock: usize) {
+extern "efiapi" fn release_srw_lock_exclusive(lock: usize) {
     let lock = srw_lock(lock);
     let previous = lock.fetch_and(!(SRW_WRITER | SRW_WAITERS), Ordering::Release);
     srw_wake(lock, previous);
 }
 
-extern "win64" fn release_srw_lock_shared(lock: usize) {
+extern "efiapi" fn release_srw_lock_shared(lock: usize) {
     let lock = srw_lock(lock);
     let previous = lock.fetch_sub(1, Ordering::Release);
     if previous & SRW_READERS == 1 {
@@ -801,7 +801,7 @@ extern "win64" fn release_srw_lock_shared(lock: usize) {
     }
 }
 
-extern "win64" fn initialize_condition_variable(variable: usize) {
+extern "efiapi" fn initialize_condition_variable(variable: usize) {
     word(variable).store(0, Ordering::Relaxed);
 }
 
@@ -815,7 +815,7 @@ fn sleep_on_condition(variable: usize, milliseconds: u32, unlock: impl FnOnce())
     }
 }
 
-unsafe extern "win64" fn sleep_condition_variable_cs(
+unsafe extern "efiapi" fn sleep_condition_variable_cs(
     variable: usize,
     section: *mut u8,
     milliseconds: u32,
@@ -831,7 +831,7 @@ unsafe extern "win64" fn sleep_condition_variable_cs(
 
 const CONDITION_VARIABLE_LOCKMODE_SHARED: u32 = 1;
 
-extern "win64" fn sleep_condition_variable_srw(
+extern "efiapi" fn sleep_condition_variable_srw(
     variable: usize,
     lock: usize,
     milliseconds: u32,
@@ -849,12 +849,12 @@ extern "win64" fn sleep_condition_variable_srw(
     result
 }
 
-extern "win64" fn wake_condition_variable(variable: usize) {
+extern "efiapi" fn wake_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
     linux::futex_wake(variable, 1);
 }
 
-extern "win64" fn wake_all_condition_variable(variable: usize) {
+extern "efiapi" fn wake_all_condition_variable(variable: usize) {
     word(variable).fetch_add(1, Ordering::Release);
     linux::futex_wake(variable, i32::MAX as u32);
 }
@@ -909,11 +909,11 @@ fn complete_once(once: usize, context: u64, failed: bool) {
     linux::futex_wake(once, i32::MAX as u32);
 }
 
-extern "win64" fn init_once_initialize(once: usize) {
+extern "efiapi" fn init_once_initialize(once: usize) {
     once_word(once).store(0, Ordering::Relaxed);
 }
 
-unsafe extern "win64" fn init_once_execute_once(
+unsafe extern "efiapi" fn init_once_execute_once(
     once: usize,
     function: usize,
     parameter: usize,
@@ -930,9 +930,10 @@ unsafe extern "win64" fn init_once_execute_once(
         Some(Begin::Pending) => {
             let mut value = 0u64;
             // SAFETY: `InitOnceExecuteOnce`'s contract: `function` is a `PINIT_ONCE_FN`.
-            let function: extern "win64" fn(usize, usize, *mut u64) -> Bool =
-                unsafe { core::mem::transmute(function) };
-            let succeeded = function(once, parameter, &mut value) != FALSE;
+            let result = unsafe {
+                super::call_program(function, [once, parameter, (&raw mut value) as usize, 0])
+            };
+            let succeeded = result as Bool != FALSE;
             complete_once(once, value, !succeeded);
             if succeeded && !context.is_null() {
                 // SAFETY: as above.
@@ -944,7 +945,7 @@ unsafe extern "win64" fn init_once_execute_once(
     }
 }
 
-unsafe extern "win64" fn init_once_begin_initialize(
+unsafe extern "efiapi" fn init_once_begin_initialize(
     once: usize,
     flags: u32,
     pending: *mut Bool,
@@ -967,7 +968,7 @@ unsafe extern "win64" fn init_once_begin_initialize(
     TRUE
 }
 
-extern "win64" fn init_once_complete(once: usize, flags: u32, context: u64) -> Bool {
+extern "efiapi" fn init_once_complete(once: usize, flags: u32, context: u64) -> Bool {
     if once_word(once).load(Ordering::Acquire) & ONCE_STATE != ONCE_RUNNING {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
@@ -975,7 +976,7 @@ extern "win64" fn init_once_complete(once: usize, flags: u32, context: u64) -> B
     TRUE
 }
 
-unsafe extern "win64" fn wait_on_address(
+unsafe extern "efiapi" fn wait_on_address(
     address: usize,
     compare: usize,
     size: usize,
@@ -1013,18 +1014,18 @@ unsafe extern "win64" fn wait_on_address(
 
 const WIDE_VALUE_RECHECK: u64 = 1_000_000;
 
-extern "win64" fn wake_by_address_single(address: usize) {
+extern "efiapi" fn wake_by_address_single(address: usize) {
     linux::futex_wake(address & !3, 1);
 }
 
-extern "win64" fn wake_by_address_all(address: usize) {
+extern "efiapi" fn wake_by_address_all(address: usize) {
     linux::futex_wake(address & !3, i32::MAX as u32);
 }
 
 const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "win64" fn duplicate_handle(
+unsafe extern "efiapi" fn duplicate_handle(
     source_process: usize,
     source: usize,
     target_process: usize,

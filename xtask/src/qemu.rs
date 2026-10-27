@@ -124,11 +124,13 @@ pub enum Expect {
     /// command must write its lines in order before the next prompt; the shell exits with 7 and
     /// init powers off (D117).
     LinuxPrograms,
-    /// The release kernel with two Windows console programs built for `x86_64-pc-windows-msvc`
-    /// added as `cargo xtask image --add` adds them (with the Windows layer on x86_64), boots to
-    /// the shell's prompt; the test types a line at each prompt that runs one, and each command
-    /// must write its lines in order before the next prompt: on x86_64 the programs' checks,
-    /// exit codes and the refusal of an unsupported import, elsewhere `ENOEXEC` (D118).
+    /// The release kernel with Windows console programs built for this CPU's Windows target
+    /// (`x86_64-pc-windows-msvc` or `aarch64-pc-windows-msvc`, x64's on riscv64) and one built
+    /// for the other CPU's, added as `cargo xtask image --add` adds them (with the Windows layer
+    /// on x86_64 and aarch64), boots to the shell's prompt; the test types a line at each prompt
+    /// that runs one, and each command must write its lines in order before the next prompt: on
+    /// x86_64 and aarch64 the programs' checks, exit codes, the refusal of an unsupported import
+    /// and of the other CPU's program, on riscv64 `ENOEXEC` (D118, D124).
     WindowsPrograms,
     /// The release kernel with a static Android console program, linked by the Android NDK
     /// against bionic, added as `cargo xtask image --add` adds it (with `/system/bin/sh`), boots
@@ -181,10 +183,11 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
     b"exit 7\r",
 ];
 
-const WINDOWS_PROGRAM_SESSION: [&[u8]; 8] = [
+const WINDOWS_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi windows-console.exe a 'b c'; echo WINDOWS-CONSOLE status $?\r",
     b"/bin/windows-console.exe exit 300; echo WINDOWS-CONSOLE status $?\r",
     b"windows-unsupported.exe; echo WINDOWS-CONSOLE status $?\r",
+    b"other-cpu.exe; echo WINDOWS-CONSOLE status $?\r",
     b"windows-tools.exe dir 'C:\\bin\\windows-*.exe' 'C:\\bin\\windows-?ools.exe' \
       'C:\\usr\\share\\windows-tools\\*' 'C:\\nope\\*' 'C:\\bin\\*.zzz'; \
       echo WINDOWS-TOOLS status $?\r",
@@ -366,30 +369,46 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             .collect()
     };
     let end = whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]);
-    if arch != "x86_64" {
-        let refused = |name: &str| {
-            vec![
-                Line::Whole(format!("eggsh: {name}: Exec format error")),
-                Line::Whole("WINDOWS-CONSOLE status 126".into()),
-            ]
-        };
-        let tools = || {
-            vec![
-                Line::Whole("eggsh: windows-tools.exe: Exec format error".into()),
-                Line::Whole("WINDOWS-TOOLS status 126".into()),
-            ]
-        };
-        return [
-            refused("windows-console.exe"),
-            refused("/bin/windows-console.exe"),
-            refused("windows-unsupported.exe"),
-            tools(),
-            tools(),
-            tools(),
-            tools(),
-            end,
-        ];
-    }
+    let (architecture, other_cpu) = match arch {
+        "x86_64" => (
+            9,
+            "other-cpu.exe: an ARM64 program, and this computer runs x64 programs",
+        ),
+        "aarch64" => (
+            12,
+            "other-cpu.exe: an x64 program, and this computer runs ARM64 programs \
+             (EggOS does not translate x64 programs for Arm yet)",
+        ),
+        _ => {
+            let refused = |name: &str| {
+                vec![
+                    Line::Whole(format!("eggsh: {name}: Exec format error")),
+                    Line::Whole("WINDOWS-CONSOLE status 126".into()),
+                ]
+            };
+            let tools = || {
+                vec![
+                    Line::Whole("eggsh: windows-tools.exe: Exec format error".into()),
+                    Line::Whole("WINDOWS-TOOLS status 126".into()),
+                ]
+            };
+            return [
+                refused("windows-console.exe"),
+                refused("/bin/windows-console.exe"),
+                refused("windows-unsupported.exe"),
+                refused("other-cpu.exe"),
+                tools(),
+                tools(),
+                tools(),
+                tools(),
+                end,
+            ];
+        }
+    };
+    let system = format!(
+        "WINDOWS-TOOLS system arch {architecture} page 4096 granularity 65536 cpus some \
+         version 10.0.26100 module C:\\bin\\windows-tools.exe"
+    );
     [
         whole(&[
             "WINDOWS-CONSOLE windows-console.exe args a|b c",
@@ -412,6 +431,10 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
                 "windows-unsupported.exe: needs CreateProcessW from kernel32.dll, \
                  which EggOS does not provide yet",
             ),
+            Line::Whole("WINDOWS-CONSOLE status 126".into()),
+        ],
+        vec![
+            Line::Around("windows: ", other_cpu),
             Line::Whole("WINDOWS-CONSOLE status 126".into()),
         ],
         whole(&[
@@ -450,10 +473,7 @@ fn windows_program_output(arch: &str) -> [Vec<Line>; WINDOWS_PROGRAM_SESSION.len
             "WINDOWS-TOOLS message 2 The system cannot find the file specified.",
             "WINDOWS-TOOLS text grüße 🥚 Ελληνικά units 17 bytes 29 round trip ok invalid 1 1113 \
              unpaired 1 1113 ordinal ok",
-            concat!(
-                "WINDOWS-TOOLS system arch 9 page 4096 granularity 65536 cpus some version ",
-                r"10.0.26100 module C:\bin\windows-tools.exe"
-            ),
+            &system,
             "WINDOWS-TOOLS time epoch 1970-1-1 weekday 4 now ok",
             concat!(
                 r"WINDOWS-TOOLS cwd C:\etc full C:\etc\hostname part hostname relative ",
@@ -1921,7 +1941,7 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_programs_session_expects_the_checks_on_x86_64_and_enoexec_elsewhere() {
+    fn the_windows_programs_session_runs_the_checks_where_the_layer_runs_and_enoexec_elsewhere() {
         for arch in ["x86_64", "aarch64", "riscv64"] {
             let ok = windows_programs_console(arch);
             assert!(
@@ -1934,8 +1954,17 @@ mod tests {
         let x86 = windows_programs_console("x86_64");
         let refused = x86.replace("WINDOWS-CONSOLE heap ok", "WINDOWS-CONSOLE heap failed");
         assert!(verdict("x86_64", Expect::WindowsPrograms, true, &refused).is_err());
-        let elsewhere = windows_programs_console("aarch64");
-        assert!(verdict("x86_64", Expect::WindowsPrograms, true, &elsewhere).is_err());
+        for (arch, other) in [
+            ("x86_64", "aarch64"),
+            ("aarch64", "x86_64"),
+            ("x86_64", "riscv64"),
+        ] {
+            let elsewhere = windows_programs_console(other);
+            assert!(verdict(arch, Expect::WindowsPrograms, true, &elsewhere).is_err());
+        }
+        let arm = windows_programs_console("aarch64");
+        assert!(arm.contains("system arch 12 "));
+        assert!(arm.contains("other-cpu.exe: an x64 program"));
     }
 
     fn linux_programs_console() -> String {

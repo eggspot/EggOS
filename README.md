@@ -54,12 +54,13 @@ cargo xtask image --arch all --add path/to/hello       # writes target/image/egg
 ```
 
 ### Run Windows console programs
-On x86_64, Windows console programs run natively through EggOS's own Windows layer, threads,
-waits and directory listing included
+On x86_64 (x64 programs) and aarch64 (ARM64 programs), Windows console programs run natively
+through EggOS's own Windows layer, threads, waits and directory listing included
 ([docs/windows-programs.md](docs/windows-programs.md) lists what they may use):
 
 ```
 cargo xtask run --arch x86_64 --add path/to/hello.exe  # boots with /bin/hello.exe
+cargo xtask run --arch aarch64 --add path/to/hello-arm64.exe
 ```
 
 ### Run Android console programs

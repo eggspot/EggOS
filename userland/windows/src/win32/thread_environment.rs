@@ -1,7 +1,8 @@
 //! The thread environment block (TEB) and process environment block (PEB), at the offsets
 //! Microsoft's public headers give (`NT_TIB` in `winnt.h`, `TEB` and `PEB` in `winternl.h`) and
-//! its debugger documentation names: a program finds its TEB at `gs:[0x30]` and its PEB at
-//! `gs:[0x60]`. The last error and the TLS slots live in the TEB, so each thread has its own;
+//! its debugger documentation names: an x64 program finds its TEB at `gs:[0x30]` and its PEB
+//! at `gs:[0x60]`, an ARM64 program its TEB in `x18` (the layer keeps it in `tpidr_el0`, D124);
+//! the layout is the same on both. The last error and the TLS slots live in the TEB, so each thread has its own;
 //! past the documented TEB (0x1838 bytes) the layer keeps each thread's fiber-local storage
 //! slots and its thread object. Every thread gets a TEB and a copy of the image's static TLS.
 
@@ -133,9 +134,7 @@ pub fn run_tls_callbacks(reason: u32) {
             return;
         }
         // SAFETY: as above; Windows calls each callback as `PIMAGE_TLS_CALLBACK`.
-        let callback: extern "win64" fn(usize, u32, usize) =
-            unsafe { core::mem::transmute(callback as usize) };
-        callback(base, reason, 0);
+        unsafe { super::call_program(callback as usize, [base, reason as usize, 0, 0]) };
         at += 8;
     }
 }
@@ -198,14 +197,14 @@ pub fn create_for_thread(
     Ok(teb)
 }
 
-/// Starts the calling thread on its TEB: points GS at it, records the thread's id in it and
+/// Starts the calling thread on its TEB: points the thread's TEB register at it, records the thread's id in it and
 /// runs the TLS callbacks with `DLL_THREAD_ATTACH`.
 ///
 /// # Safety
 /// `teb` must be the TEB [`create_for_thread`] made for the calling thread.
 pub unsafe fn enter(teb: usize) {
-    // SAFETY: the caller's duty: GS gets this thread's own TEB.
-    let _ = unsafe { linux::set_gs_base(teb) };
+    // SAFETY: the caller's duty: the TEB register gets this thread's own TEB.
+    let _ = unsafe { linux::set_thread_environment_block(teb) };
     // SAFETY: the TEB is mapped and writable, the field 8-byte aligned, and only this thread
     // writes it.
     unsafe { ((teb + teb::THREAD_ID) as *mut u64).write(u64::from(linux::thread_id())) };
@@ -227,8 +226,7 @@ pub fn leave() {
             // SAFETY: as above.
             unsafe { slot.write(0) };
             // SAFETY: `FlsAlloc` was given this callback, a `PFLS_CALLBACK_FUNCTION`.
-            let callback: extern "win64" fn(u64) = unsafe { core::mem::transmute(callback) };
-            callback(value);
+            unsafe { super::call_program(callback, [value as usize, 0, 0, 0]) };
         }
     }
     run_tls_callbacks(DLL_THREAD_DETACH);
@@ -256,6 +254,7 @@ pub unsafe fn set_thread_local_storage(teb: usize, slots: usize) {
     unsafe { ((teb + teb::THREAD_LOCAL_STORAGE_POINTER) as *mut u64).write(slots as u64) }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn current() -> usize {
     let teb: usize;
     // SAFETY: the loader sets GS to the TEB before the program runs, and the TEB's `Self` field
@@ -271,6 +270,22 @@ fn current() -> usize {
     teb
 }
 
+#[cfg(target_arch = "aarch64")]
+fn current() -> usize {
+    let teb: usize;
+    // SAFETY: the loader and each thread's start set `tpidr_el0` to the thread's TEB before the
+    // program runs; reading it touches no memory.
+    unsafe {
+        core::arch::asm!(
+            "mrs {teb}, tpidr_el0",
+            teb = out(reg) teb,
+            options(nostack, nomem, preserves_flags),
+        )
+    };
+    teb
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn set_last_error(code: u32) {
     // SAFETY: the last error is the current thread's TEB field, which only this thread writes.
     unsafe {
@@ -283,7 +298,15 @@ pub fn set_last_error(code: u32) {
     };
 }
 
-extern "win64" fn get_last_error() -> u32 {
+#[cfg(target_arch = "aarch64")]
+pub fn set_last_error(code: u32) {
+    // SAFETY: the last error is the current thread's TEB field, 4-byte aligned, which only this
+    // thread writes.
+    unsafe { ((current() + teb::LAST_ERROR) as *mut u32).write(code) };
+}
+
+#[cfg(target_arch = "x86_64")]
+extern "efiapi" fn get_last_error() -> u32 {
     let code: u32;
     // SAFETY: as in `set_last_error`; reading the current thread's TEB field.
     unsafe {
@@ -297,7 +320,13 @@ extern "win64" fn get_last_error() -> u32 {
     code
 }
 
-extern "win64" fn set_last_error_export(code: u32) {
+#[cfg(target_arch = "aarch64")]
+extern "efiapi" fn get_last_error() -> u32 {
+    // SAFETY: as in `set_last_error`; reading the current thread's TEB field.
+    unsafe { ((current() + teb::LAST_ERROR) as *const u32).read() }
+}
+
+extern "efiapi" fn set_last_error_export(code: u32) {
     set_last_error(code);
 }
 
@@ -306,7 +335,7 @@ fn slot(index: u32) -> Option<*mut u64> {
     (index < teb::TLS_SLOT_COUNT).then(|| (current() + teb::TLS_SLOTS + index * 8) as *mut u64)
 }
 
-extern "win64" fn tls_alloc() -> u32 {
+extern "efiapi" fn tls_alloc() -> u32 {
     let mut used = TLS_SLOTS_IN_USE.load(Ordering::Relaxed);
     loop {
         let free = (!used).trailing_zeros();
@@ -325,7 +354,7 @@ extern "win64" fn tls_alloc() -> u32 {
     }
 }
 
-extern "win64" fn tls_free(index: u32) -> Bool {
+extern "efiapi" fn tls_free(index: u32) -> Bool {
     let Some(slot) = slot(index) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
@@ -335,7 +364,7 @@ extern "win64" fn tls_free(index: u32) -> Bool {
     TRUE
 }
 
-extern "win64" fn tls_get_value(index: u32) -> u64 {
+extern "efiapi" fn tls_get_value(index: u32) -> u64 {
     let Some(slot) = slot(index) else {
         return fail(error::INVALID_PARAMETER, 0);
     };
@@ -344,7 +373,7 @@ extern "win64" fn tls_get_value(index: u32) -> u64 {
     unsafe { slot.read() }
 }
 
-extern "win64" fn tls_set_value(index: u32, value: u64) -> Bool {
+extern "efiapi" fn tls_set_value(index: u32, value: u64) -> Bool {
     let Some(slot) = slot(index) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
@@ -358,7 +387,7 @@ fn fls_slot(index: u32) -> Option<*mut u64> {
     (index < teb::FLS_SLOT_COUNT).then(|| (current() + teb::FLS_SLOTS + index * 8) as *mut u64)
 }
 
-extern "win64" fn fls_alloc(callback: usize) -> u32 {
+extern "efiapi" fn fls_alloc(callback: usize) -> u32 {
     let mut used = FLS_SLOTS_IN_USE.load(Ordering::Relaxed);
     loop {
         let free = (!used).trailing_zeros();
@@ -380,7 +409,7 @@ extern "win64" fn fls_alloc(callback: usize) -> u32 {
     }
 }
 
-extern "win64" fn fls_free(index: u32) -> Bool {
+extern "efiapi" fn fls_free(index: u32) -> Bool {
     let Some(slot) = fls_slot(index) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };
@@ -397,13 +426,12 @@ extern "win64" fn fls_free(index: u32) -> Bool {
     unsafe { slot.write(0) };
     if callback != 0 && value != 0 {
         // SAFETY: `FlsAlloc` was given this callback, a `PFLS_CALLBACK_FUNCTION`.
-        let callback: extern "win64" fn(u64) = unsafe { core::mem::transmute(callback) };
-        callback(value);
+        unsafe { super::call_program(callback, [value as usize, 0, 0, 0]) };
     }
     TRUE
 }
 
-extern "win64" fn fls_get_value(index: u32) -> u64 {
+extern "efiapi" fn fls_get_value(index: u32) -> u64 {
     let Some(slot) = fls_slot(index) else {
         return fail(error::INVALID_PARAMETER, 0);
     };
@@ -412,7 +440,7 @@ extern "win64" fn fls_get_value(index: u32) -> u64 {
     unsafe { slot.read() }
 }
 
-extern "win64" fn fls_set_value(index: u32, value: u64) -> Bool {
+extern "efiapi" fn fls_set_value(index: u32, value: u64) -> Bool {
     let Some(slot) = fls_slot(index) else {
         return fail(error::INVALID_PARAMETER, FALSE);
     };

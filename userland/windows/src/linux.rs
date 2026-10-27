@@ -1,8 +1,9 @@
-//! The Linux system calls the Windows layer makes on x86_64.
+//! The Linux system calls the Windows layer makes, on x86_64 and aarch64.
 
 use eggos_runtime::errno::Errno;
 use eggos_runtime::syscall::call;
 
+#[cfg(target_arch = "x86_64")]
 pub mod number {
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
@@ -34,6 +35,37 @@ pub mod number {
     pub const UNLINKAT: usize = 263;
 }
 
+#[cfg(target_arch = "aarch64")]
+pub mod number {
+    pub const GETCWD: usize = 17;
+    pub const IOCTL: usize = 29;
+    pub const MKDIRAT: usize = 34;
+    pub const UNLINKAT: usize = 35;
+    pub const CHDIR: usize = 49;
+    pub const OPENAT: usize = 56;
+    pub const CLOSE: usize = 57;
+    pub const GETDENTS64: usize = 61;
+    pub const LSEEK: usize = 62;
+    pub const READ: usize = 63;
+    pub const WRITE: usize = 64;
+    pub const NEWFSTATAT: usize = 79;
+    pub const FSTAT: usize = 80;
+    pub const EXIT: usize = 93;
+    pub const EXIT_GROUP: usize = 94;
+    pub const FUTEX: usize = 98;
+    pub const CLOCK_GETTIME: usize = 113;
+    pub const CLOCK_NANOSLEEP: usize = 115;
+    pub const SCHED_GETAFFINITY: usize = 123;
+    pub const SCHED_YIELD: usize = 124;
+    pub const GETPID: usize = 172;
+    pub const GETTID: usize = 178;
+    pub const MUNMAP: usize = 215;
+    pub const CLONE: usize = 220;
+    pub const MMAP: usize = 222;
+    pub const MPROTECT: usize = 226;
+    pub const MADVISE: usize = 233;
+}
+
 pub const PAGE_SIZE: usize = 4096;
 pub const AT_FDCWD: usize = -100isize as usize;
 pub const O_RDONLY: usize = 0;
@@ -42,7 +74,10 @@ pub const O_RDWR: usize = 2;
 pub const O_CREAT: usize = 0o100;
 pub const O_EXCL: usize = 0o200;
 pub const O_TRUNC: usize = 0o1000;
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: usize = 0o200_000;
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: usize = 0o40_000;
 pub const O_CLOEXEC: usize = 0o2_000_000;
 pub const AT_REMOVEDIR: usize = 0x200;
 pub const FUTEX_WAIT_PRIVATE: usize = 128;
@@ -55,17 +90,16 @@ pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 pub const MADV_DONTNEED: usize = 4;
+#[cfg(target_arch = "x86_64")]
 pub const ARCH_SET_GS: usize = 0x1001;
 pub const CLOCK_REALTIME: usize = 0;
 pub const CLOCK_MONOTONIC: usize = 1;
 pub const TCGETS: usize = 0x5401;
 pub const TERMIOS_SIZE: usize = 60;
 pub const STAT_WORDS: usize = 18;
-pub const STAT_MODE_WORD: usize = 3;
 pub const STAT_SIZE_WORD: usize = 6;
 pub const STAT_DEVICE_WORD: usize = 0;
 pub const STAT_INODE_WORD: usize = 1;
-pub const STAT_LINKS_WORD: usize = 2;
 pub const STAT_ACCESS_TIME_WORD: usize = 9;
 pub const STAT_MODIFY_TIME_WORD: usize = 11;
 pub const STAT_CHANGE_TIME_WORD: usize = 13;
@@ -141,17 +175,33 @@ pub fn close(fd: usize) -> Result<usize, Errno> {
     unsafe { syscall(number::CLOSE, [fd, 0, 0, 0, 0, 0]) }
 }
 
-/// The file's `stat` words: its mode is [`STAT_MODE_WORD`]'s low half, its size
-/// [`STAT_SIZE_WORD`].
+/// The file's `stat` words: its mode is [`file_mode`], its size [`STAT_SIZE_WORD`].
 pub fn fstat(fd: usize) -> Result<[u64; STAT_WORDS], Errno> {
     let mut words = [0u64; STAT_WORDS];
-    // SAFETY: `fstat` writes one `struct stat` (144 bytes on x86_64) into the borrowed words.
+    // SAFETY: `fstat` writes one `struct stat` (144 bytes on x86_64, 128 on aarch64) into the
+    // borrowed words.
     unsafe { syscall(number::FSTAT, [fd, words.as_mut_ptr() as usize, 0, 0, 0, 0]) }?;
     Ok(words)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn file_mode(words: &[u64; STAT_WORDS]) -> u32 {
-    words[STAT_MODE_WORD] as u32
+    words[3] as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn file_mode(words: &[u64; STAT_WORDS]) -> u32 {
+    words[2] as u32
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn file_links(words: &[u64; STAT_WORDS]) -> u32 {
+    words[2] as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn file_links(words: &[u64; STAT_WORDS]) -> u32 {
+    (words[2] >> 32) as u32
 }
 
 pub fn lseek(fd: usize, offset: i64, whence: usize) -> Result<usize, Errno> {
@@ -254,11 +304,22 @@ pub fn thread_id() -> u32 {
     unsafe { syscall(number::GETTID, [0; 6]) }.unwrap_or(0) as u32
 }
 
+/// Points the calling thread's register for its thread environment block at `address`: GS's
+/// base on x86_64, `tpidr_el0` on aarch64 (the layer's own copy, from which it loads `x18`
+/// before it calls into the program, D124).
+///
 /// # Safety
-/// `address` must be the thread environment block every Win32 function finds through GS.
-pub unsafe fn set_gs_base(address: usize) -> Result<usize, Errno> {
+/// `address` must be the thread environment block every Win32 function finds through it.
+pub unsafe fn set_thread_environment_block(address: usize) -> Result<(), Errno> {
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: the caller's duty; `arch_prctl(ARCH_SET_GS)` touches no memory.
-    unsafe { syscall(number::ARCH_PRCTL, [ARCH_SET_GS, address, 0, 0, 0, 0]) }
+    unsafe { syscall(number::ARCH_PRCTL, [ARCH_SET_GS, address, 0, 0, 0, 0]) }?;
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the caller's duty; writing `tpidr_el0` touches no memory.
+    unsafe {
+        core::arch::asm!("msr tpidr_el0, {}", in(reg) address, options(nostack, nomem));
+    }
+    Ok(())
 }
 
 /// The `stat` words of the NUL-terminated `path`, relative to directory `directory_fd`
@@ -432,6 +493,7 @@ pub unsafe fn spawn_thread(
     argument: usize,
 ) -> Result<usize, Errno> {
     let result: isize;
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: Linux's x86_64 `clone`: the caller's registers and memory are as before but
     // `rax`, `rcx` and `r11`; the child starts on its own stack and never comes back here.
     unsafe {
@@ -447,6 +509,22 @@ pub unsafe fn spawn_thread(
             in("rdi") THREAD_FLAGS, in("rsi") stack_top, in("rdx") id_word,
             in("r10") id_word, in("r8") 0usize, in("r12") entry, in("r13") argument,
             lateout("rcx") _, lateout("r11") _,
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: Linux's aarch64 `clone`: the caller's registers and memory are as before but
+    // `x0`; the child starts on its own stack and never comes back here.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            "cbnz x0, 2f",
+            "mov x0, x10",
+            "blr x9",
+            "brk #0",
+            "2:",
+            inlateout("x0") THREAD_FLAGS as isize => result,
+            in("x1") stack_top, in("x2") id_word, in("x3") 0usize, in("x4") id_word,
+            in("x8") number::CLONE, in("x9") entry, in("x10") argument,
         );
     }
     Errno::result(result)
@@ -465,4 +543,13 @@ pub fn exit(status: u32) -> ! {
         // SAFETY: `exit_group` ends the process.
         let _ = unsafe { syscall(number::EXIT_GROUP, [status as usize, 0, 0, 0, 0, 0]) };
     }
+}
+
+/// The CPU features Linux's auxiliary vector reports, which compiler-builtins' aarch64 atomics
+/// ask for: none, so they use load-exclusive and store-exclusive pairs, which every Armv8 CPU
+/// has.
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn getauxval(_: core::ffi::c_ulong) -> core::ffi::c_ulong {
+    0
 }

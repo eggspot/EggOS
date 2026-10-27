@@ -1,9 +1,10 @@
 //! The PE32+ executable format (Microsoft's "PE Format" specification): a checked parser of
-//! the headers and section table of an x86_64 Windows console executable. Every offset and size
-//! read from the file is checked against the file and the image before it is used, so a
-//! malformed file is refused with a reason, never a panic.
+//! the headers and section table of an x64 or ARM64 Windows console executable. Every offset
+//! and size read from the file is checked against the file and the image before it is used, so
+//! a malformed file is refused with a reason, never a panic.
 
 pub const MACHINE_AMD64: u16 = 0x8664;
+pub const MACHINE_ARM64: u16 = 0xaa64;
 pub const OPTIONAL_HEADER_MAGIC_PE32_PLUS: u16 = 0x20b;
 pub const SUBSYSTEM_WINDOWS_CONSOLE: u16 = 3;
 pub const PAGE_SIZE: u64 = 4096;
@@ -73,10 +74,45 @@ impl Section {
     }
 }
 
-/// A checked PE32+ executable for x86_64 with the console subsystem.
+/// The CPU a program's machine code is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Machine {
+    /// x64 (`IMAGE_FILE_MACHINE_AMD64`), which runs on x86_64.
+    X64,
+    /// ARM64 (`IMAGE_FILE_MACHINE_ARM64`), which runs on aarch64.
+    Arm64,
+}
+
+impl Machine {
+    fn from_field(machine: u16) -> Option<Self> {
+        match machine {
+            MACHINE_AMD64 => Some(Self::X64),
+            MACHINE_ARM64 => Some(Self::Arm64),
+            _ => None,
+        }
+    }
+
+    /// Why a program for this CPU cannot run on a computer whose CPU is `computer`, if it
+    /// cannot: the layer runs each program's code directly, never emulated (D17).
+    pub fn refusal_on(self, computer: Machine) -> Option<InvalidPe> {
+        match (self, computer) {
+            (Self::X64, Self::X64) | (Self::Arm64, Self::Arm64) => None,
+            (Self::X64, Self::Arm64) => Some(InvalidPe(
+                "an x64 program, and this computer runs ARM64 programs \
+                 (EggOS does not translate x64 programs for Arm yet)",
+            )),
+            (Self::Arm64, Self::X64) => Some(InvalidPe(
+                "an ARM64 program, and this computer runs x64 programs",
+            )),
+        }
+    }
+}
+
+/// A checked PE32+ executable for x64 or ARM64 with the console subsystem.
 #[derive(Debug, Clone, Copy)]
 pub struct Pe<'a> {
     pub file: &'a [u8],
+    pub machine: Machine,
     pub characteristics: u16,
     pub entry: u32,
     pub image_base: u64,
@@ -103,9 +139,8 @@ impl<'a> Pe<'a> {
         let section_count = usize::from(read_u16(file, coff + 2)?);
         let optional_size = usize::from(read_u16(file, coff + 16)?);
         let characteristics = read_u16(file, coff + 18)?;
-        if machine != MACHINE_AMD64 {
-            return Err(InvalidPe("not an x86_64 program"));
-        }
+        let machine =
+            Machine::from_field(machine).ok_or(InvalidPe("not an x64 or ARM64 program"))?;
         if characteristics & characteristics::EXECUTABLE_IMAGE == 0 {
             return Err(InvalidPe("not an executable image"));
         }
@@ -186,6 +221,7 @@ impl<'a> Pe<'a> {
         }
         let pe = Self {
             file,
+            machine,
             characteristics,
             entry,
             image_base,
@@ -423,6 +459,25 @@ pub mod tests {
         assert!(Pe::parse(&relocatable.file).unwrap().relocatable());
     }
 
+    #[test]
+    fn x64_and_arm64_programs_are_read_and_run_only_on_their_own_cpu() {
+        let x64 = Builder::new();
+        let arm64 = Builder::new().with(|f| put(f, PE_OFFSET + 4, &MACHINE_ARM64.to_le_bytes()));
+        let x64 = Pe::parse(&x64.file).unwrap().machine;
+        let arm64 = Pe::parse(&arm64.file).unwrap().machine;
+        assert_eq!((x64, arm64), (Machine::X64, Machine::Arm64));
+        assert_eq!(x64.refusal_on(Machine::X64), None);
+        assert_eq!(arm64.refusal_on(Machine::Arm64), None);
+        let x64_on_arm = x64.refusal_on(Machine::Arm64).unwrap().0;
+        assert!(x64_on_arm.starts_with("an x64 program, and this computer runs ARM64 programs"));
+        assert!(x64_on_arm.contains("does not translate"));
+        let arm64_on_x64 = arm64.refusal_on(Machine::X64).unwrap().0;
+        assert_eq!(
+            arm64_on_x64,
+            "an ARM64 program, and this computer runs x64 programs"
+        );
+    }
+
     fn refused(change: impl FnOnce(&mut Vec<u8>)) -> &'static str {
         let builder = Builder::new().with(change);
         Pe::parse(&builder.file).unwrap_err().0
@@ -437,8 +492,10 @@ pub mod tests {
         assert!(refused(|f| f.truncate(10)).contains("MZ"));
         assert!(refused(|f| put_u32(f, 0x3c, u32::MAX)).contains("PE signature"));
         assert!(refused(|f| put_u32(f, 0x3c, 0x3fe)).contains("PE signature"));
-        assert!(refused(|f| put(f, PE_OFFSET + 4, &0x14cu16.to_le_bytes())).contains("x86_64"));
-        assert!(refused(|f| put(f, PE_OFFSET + 4, &0xaa64u16.to_le_bytes())).contains("x86_64"));
+        for machine in [0x14cu16, 0x1c4, 0xa641, 0x5064, 0] {
+            let reason = refused(|f| put(f, PE_OFFSET + 4, &machine.to_le_bytes()));
+            assert_eq!(reason, "not an x64 or ARM64 program", "{machine:#x}");
+        }
         assert!(refused(|f| put(f, PE_OFFSET + 22, &0x2022u16.to_le_bytes())).contains("DLL"));
         assert!(refused(|f| put(f, PE_OFFSET + 22, &0u16.to_le_bytes())).contains("executable"));
         assert!(refused(|f| put(f, PE_OFFSET + 6, &0u16.to_le_bytes())).contains("sections"));

@@ -55,7 +55,7 @@ unsafe fn find_library_ansi(name: *const u8) -> usize {
     find_library(unsafe { core::ffi::CStr::from_ptr(name.cast()) }.to_bytes())
 }
 
-unsafe extern "win64" fn get_module_handle_w(name: *const u16) -> usize {
+unsafe extern "efiapi" fn get_module_handle_w(name: *const u16) -> usize {
     match name.is_null() {
         true => process().image_base as usize,
         // SAFETY: `GetModuleHandleW`'s contract: a NUL-terminated UTF-16 name.
@@ -63,7 +63,7 @@ unsafe extern "win64" fn get_module_handle_w(name: *const u16) -> usize {
     }
 }
 
-unsafe extern "win64" fn get_module_handle_a(name: *const u8) -> usize {
+unsafe extern "efiapi" fn get_module_handle_a(name: *const u8) -> usize {
     match name.is_null() {
         true => process().image_base as usize,
         // SAFETY: `GetModuleHandleA`'s contract: a NUL-terminated name.
@@ -71,7 +71,7 @@ unsafe extern "win64" fn get_module_handle_a(name: *const u8) -> usize {
     }
 }
 
-unsafe extern "win64" fn load_library_w(name: *const u16) -> usize {
+unsafe extern "efiapi" fn load_library_w(name: *const u16) -> usize {
     if name.is_null() {
         return fail(error::INVALID_PARAMETER, 0);
     }
@@ -79,7 +79,7 @@ unsafe extern "win64" fn load_library_w(name: *const u16) -> usize {
     unsafe { find_library_wide(name) }
 }
 
-unsafe extern "win64" fn load_library_a(name: *const u8) -> usize {
+unsafe extern "efiapi" fn load_library_a(name: *const u8) -> usize {
     if name.is_null() {
         return fail(error::INVALID_PARAMETER, 0);
     }
@@ -87,24 +87,24 @@ unsafe extern "win64" fn load_library_a(name: *const u8) -> usize {
     unsafe { find_library_ansi(name) }
 }
 
-unsafe extern "win64" fn load_library_ex_w(name: *const u16, _file: usize, _flags: u32) -> usize {
+unsafe extern "efiapi" fn load_library_ex_w(name: *const u16, _file: usize, _flags: u32) -> usize {
     // SAFETY: the same contract as `LoadLibraryW`'s.
     unsafe { load_library_w(name) }
 }
 
-unsafe extern "win64" fn load_library_ex_a(name: *const u8, _file: usize, _flags: u32) -> usize {
+unsafe extern "efiapi" fn load_library_ex_a(name: *const u8, _file: usize, _flags: u32) -> usize {
     // SAFETY: the same contract as `LoadLibraryA`'s.
     unsafe { load_library_a(name) }
 }
 
-extern "win64" fn free_library(module: usize) -> Bool {
+extern "efiapi" fn free_library(module: usize) -> Bool {
     match library_of(module) {
         Some(_) => TRUE,
         None => fail(error::INVALID_HANDLE, FALSE),
     }
 }
 
-unsafe extern "win64" fn get_proc_address(module: usize, name: *const u8) -> usize {
+unsafe extern "efiapi" fn get_proc_address(module: usize, name: *const u8) -> usize {
     let Some(library) = library_of(module) else {
         return fail(error::PROC_NOT_FOUND, 0);
     };
@@ -125,7 +125,11 @@ unsafe extern "win64" fn get_proc_address(module: usize, name: *const u8) -> usi
     }
 }
 
-unsafe extern "win64" fn get_module_file_name_w(module: usize, buffer: *mut u16, size: u32) -> u32 {
+unsafe extern "efiapi" fn get_module_file_name_w(
+    module: usize,
+    buffer: *mut u16,
+    size: u32,
+) -> u32 {
     if module != 0 && module != process().image_base as usize {
         return fail(error::MOD_NOT_FOUND, 0);
     }

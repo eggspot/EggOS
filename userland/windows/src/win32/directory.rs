@@ -77,7 +77,7 @@ pub fn entry(words: &[u64; STAT_WORDS]) -> Entry {
         last_write_time: time_word(words, linux::STAT_MODIFY_TIME_WORD),
         size: words[linux::STAT_SIZE_WORD],
         volume: words[linux::STAT_DEVICE_WORD] as u32,
-        links: words[linux::STAT_LINKS_WORD] as u32,
+        links: linux::file_links(words),
         index: words[linux::STAT_INODE_WORD],
     }
 }
@@ -119,7 +119,7 @@ fn next_match(search: &mut Search, data: &mut [u8; find::FIND_DATA_SIZE]) -> boo
     }
 }
 
-unsafe extern "win64" fn find_first_file_w(name: *const u16, data: *mut u8) -> usize {
+unsafe extern "efiapi" fn find_first_file_w(name: *const u16, data: *mut u8) -> usize {
     if data.is_null() {
         return fail(error::INVALID_PARAMETER, INVALID_HANDLE_VALUE);
     }
@@ -172,7 +172,7 @@ unsafe extern "win64" fn find_first_file_w(name: *const u16, data: *mut u8) -> u
     search as usize
 }
 
-unsafe extern "win64" fn find_first_file_ex_w(
+unsafe extern "efiapi" fn find_first_file_ex_w(
     name: *const u16,
     _level: u32,
     data: *mut u8,
@@ -197,7 +197,7 @@ fn registered(handle: usize) -> bool {
     handle != 0 && SEARCHES.with(|searches| searches.contains(&handle))
 }
 
-unsafe extern "win64" fn find_next_file_w(handle: usize, data: *mut u8) -> Bool {
+unsafe extern "efiapi" fn find_next_file_w(handle: usize, data: *mut u8) -> Bool {
     if !registered(handle) || data.is_null() {
         return fail(error::INVALID_HANDLE, FALSE);
     }
@@ -212,7 +212,7 @@ unsafe extern "win64" fn find_next_file_w(handle: usize, data: *mut u8) -> Bool 
     }
 }
 
-extern "win64" fn find_close(handle: usize) -> Bool {
+extern "efiapi" fn find_close(handle: usize) -> Bool {
     let removed = SEARCHES.with(|searches| {
         let slot = searches
             .iter_mut()
@@ -236,7 +236,7 @@ unsafe fn stat_path(name: *const u16) -> Result<[u64; STAT_WORDS], u32> {
     linux::stat_at(AT_FDCWD, &path[..length]).map_err(|errno| path_error(&path[..length], errno))
 }
 
-unsafe extern "win64" fn get_file_attributes_w(name: *const u16) -> u32 {
+unsafe extern "efiapi" fn get_file_attributes_w(name: *const u16) -> u32 {
     // SAFETY: `GetFileAttributesW`'s contract: a NUL-terminated name.
     match unsafe { stat_path(name) } {
         Ok(words) => find::attributes(linux::file_mode(&words)),
@@ -244,7 +244,7 @@ unsafe extern "win64" fn get_file_attributes_w(name: *const u16) -> u32 {
     }
 }
 
-unsafe extern "win64" fn get_file_attributes_ex_w(
+unsafe extern "efiapi" fn get_file_attributes_ex_w(
     name: *const u16,
     level: u32,
     out: *mut u8,
@@ -265,7 +265,7 @@ unsafe extern "win64" fn get_file_attributes_ex_w(
     }
 }
 
-unsafe extern "win64" fn get_file_information_by_handle(handle: usize, out: *mut u8) -> Bool {
+unsafe extern "efiapi" fn get_file_information_by_handle(handle: usize, out: *mut u8) -> Bool {
     let Some(fd) = super::file::fd_of(handle) else {
         return fail(error::INVALID_HANDLE, FALSE);
     };
@@ -291,7 +291,7 @@ fn read_only_error(errno: Errno) -> u32 {
     }
 }
 
-unsafe extern "win64" fn create_directory_w(name: *const u16, _security: usize) -> Bool {
+unsafe extern "efiapi" fn create_directory_w(name: *const u16, _security: usize) -> Bool {
     let mut path = [0u8; text::PATH_CAPACITY];
     // SAFETY: `CreateDirectoryW`'s contract: a NUL-terminated name.
     let Some(length) = (unsafe { eggos_path(name, &mut path) }) else {
@@ -336,12 +336,12 @@ unsafe fn remove(name: *const u16, directory: bool) -> Bool {
     }
 }
 
-unsafe extern "win64" fn delete_file_w(name: *const u16) -> Bool {
+unsafe extern "efiapi" fn delete_file_w(name: *const u16) -> Bool {
     // SAFETY: `DeleteFileW`'s contract: a NUL-terminated name.
     unsafe { remove(name, false) }
 }
 
-unsafe extern "win64" fn remove_directory_w(name: *const u16) -> Bool {
+unsafe extern "efiapi" fn remove_directory_w(name: *const u16) -> Bool {
     // SAFETY: `RemoveDirectoryW`'s contract: a NUL-terminated name.
     unsafe { remove(name, true) }
 }
@@ -363,7 +363,7 @@ fn working_directory(out: &mut [u8; text::PATH_CAPACITY]) -> Option<usize> {
     Some(length.saturating_sub(1))
 }
 
-unsafe extern "win64" fn get_current_directory_w(size: u32, buffer: *mut u16) -> u32 {
+unsafe extern "efiapi" fn get_current_directory_w(size: u32, buffer: *mut u16) -> u32 {
     let mut directory = [0u8; text::PATH_CAPACITY];
     let Some(length) = working_directory(&mut directory) else {
         return fail(error::NOT_ENOUGH_MEMORY, 0);
@@ -379,7 +379,7 @@ unsafe extern "win64" fn get_current_directory_w(size: u32, buffer: *mut u16) ->
     }
 }
 
-unsafe extern "win64" fn set_current_directory_w(name: *const u16) -> Bool {
+unsafe extern "efiapi" fn set_current_directory_w(name: *const u16) -> Bool {
     let mut path = [0u8; text::PATH_CAPACITY];
     // SAFETY: `SetCurrentDirectoryW`'s contract: a NUL-terminated name.
     let Some(length) = (unsafe { eggos_path(name, &mut path) }) else {
@@ -392,7 +392,7 @@ unsafe extern "win64" fn set_current_directory_w(name: *const u16) -> Bool {
     }
 }
 
-unsafe extern "win64" fn get_full_path_name_w(
+unsafe extern "efiapi" fn get_full_path_name_w(
     name: *const u16,
     size: u32,
     buffer: *mut u16,

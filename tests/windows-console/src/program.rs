@@ -308,11 +308,23 @@ fn environment() {
 
 fn environment_blocks() -> Result<(), &'static str> {
     let (teb, peb): (usize, usize);
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: Windows keeps the TEB's own address at gs:[0x30] and the PEB's at gs:[0x60].
     unsafe {
         core::arch::asm!(
             "mov {teb}, gs:[0x30]",
             "mov {peb}, gs:[0x60]",
+            teb = out(reg) teb,
+            peb = out(reg) peb,
+            options(nostack, readonly, preserves_flags),
+        )
+    };
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: Windows keeps the TEB's address in x18 and the PEB's at [x18 + 0x60].
+    unsafe {
+        core::arch::asm!(
+            "mov {teb}, x18",
+            "ldr {peb}, [x18, #0x60]",
             teb = out(reg) teb,
             peb = out(reg) peb,
             options(nostack, readonly, preserves_flags),

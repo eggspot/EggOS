@@ -178,7 +178,7 @@ pub unsafe fn free(pointer: *mut u8) {
 const LMEM_ZEROINIT: u32 = 0x40;
 const LMEM_MOVEABLE: u32 = 0x2;
 
-extern "win64" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
+extern "efiapi" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
     if flags & LMEM_MOVEABLE != 0 {
         return fail(error::NOT_SUPPORTED, ptr::null_mut());
     }
@@ -189,7 +189,7 @@ extern "win64" fn local_alloc(flags: u32, size: usize) -> *mut u8 {
     block
 }
 
-unsafe extern "win64" fn local_free(pointer: *mut u8) -> *mut u8 {
+unsafe extern "efiapi" fn local_free(pointer: *mut u8) -> *mut u8 {
     if pointer.is_null() {
         return pointer;
     }
@@ -203,15 +203,15 @@ unsafe extern "win64" fn local_free(pointer: *mut u8) -> *mut u8 {
     }
 }
 
-extern "win64" fn get_process_heap() -> usize {
+extern "efiapi" fn get_process_heap() -> usize {
     process_heap()
 }
 
-extern "win64" fn heap_alloc(_heap: usize, flags: u32, size: usize) -> *mut u8 {
+extern "efiapi" fn heap_alloc(_heap: usize, flags: u32, size: usize) -> *mut u8 {
     allocate_with(size, flags & HEAP_ZERO_MEMORY != 0)
 }
 
-unsafe extern "win64" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) -> Bool {
+unsafe extern "efiapi" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) -> Bool {
     if pointer.is_null() {
         return TRUE;
     }
@@ -225,7 +225,7 @@ unsafe extern "win64" fn heap_free(_heap: usize, _flags: u32, pointer: *mut u8) 
     }
 }
 
-unsafe extern "win64" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) -> usize {
+unsafe extern "efiapi" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) -> usize {
     // SAFETY: `HeapSize`'s contract: a block `HeapAlloc` or `HeapReAlloc` returned.
     match unsafe { block_of(pointer) } {
         Some(block) => block.size,
@@ -233,7 +233,7 @@ unsafe extern "win64" fn heap_size(_heap: usize, _flags: u32, pointer: *mut u8) 
     }
 }
 
-unsafe extern "win64" fn heap_realloc(
+unsafe extern "efiapi" fn heap_realloc(
     _heap: usize,
     flags: u32,
     pointer: *mut u8,
@@ -274,11 +274,11 @@ unsafe extern "win64" fn heap_realloc(
     moved
 }
 
-extern "win64" fn heap_create(_options: u32, _initial: usize, _maximum: usize) -> usize {
+extern "efiapi" fn heap_create(_options: u32, _initial: usize, _maximum: usize) -> usize {
     process_heap()
 }
 
-extern "win64" fn heap_destroy(_heap: usize) -> Bool {
+extern "efiapi" fn heap_destroy(_heap: usize) -> Bool {
     TRUE
 }
 
