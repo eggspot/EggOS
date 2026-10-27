@@ -7720,9 +7720,11 @@ the license, by an explicit instruction recorded here.
   bytes), shared by the kernel and the program; `drivers` could not be, since userland cannot
   link a crate that uses `alloc`.
 - **Saved by the program, read by the kernel before the first frame** (decided by research).
-  `settings set` and a card click write the file first (a temporary file, synced, renamed over
-  the old one), then apply it live; the file is the source of truth, and a failed write still
-  applies the change for the session. The kernel reads the file after mounting the disks and
+  `settings set` writes the file first (a temporary file, synced, renamed over the old one),
+  then applies it live; the file is the source of truth, and a failed write still applies the
+  change for the session. A card click applies first and saves right after the window's next
+  frame, so the card and the desktop change in the same frame, as the design asks, and the
+  disk's sync never delays them. The kernel reads the file after mounting the disks and
   before starting the desktop, so the first frame is already in the saved profile: no flash.
   Without a disk `/home` is in memory, so the same write lasts the session; the window says so,
   telling a disk from memory by `/home`'s device (a major number of 0 is a memory file system).

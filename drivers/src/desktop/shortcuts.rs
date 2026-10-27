@@ -6,7 +6,8 @@ use crate::input::key;
 use crate::input::keymap::Modifiers;
 
 /// Whose habits the desktop follows: where the window controls are and which keys close and
-/// switch windows. Every profile's shortcuts that do not clash work in every profile.
+/// switch windows. Alt+Tab, Alt+F4 and the Super keys work in every profile; Cmd+Tab, Cmd+W
+/// and Cmd+M only in the macOS profile, Ctrl+W in the others, Super+H in the Linux profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// Controls on the right, Ctrl as the primary modifier.

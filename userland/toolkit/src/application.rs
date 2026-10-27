@@ -23,7 +23,8 @@ pub trait Application<const N: usize> {
         None
     }
 
-    /// Called at or after the time [`Self::deadline`] gave.
+    /// Called at or after the time [`Self::deadline`] gave, once the window shows what the
+    /// last input changed.
     fn tick(&mut self, _now_ms: u32) {}
 }
 
@@ -111,6 +112,14 @@ pub fn run<const N: usize>(
         );
         let timeout = deadline.map(|deadline| (deadline.wrapping_sub(now) as i32).max(0) as u32);
         let read = window.read_events(&mut records, timeout)?;
+        let now = now_ms();
+        application.tree().tick(now);
+        if application
+            .deadline(now)
+            .is_some_and(|deadline| deadline.wrapping_sub(now) as i32 <= 0)
+        {
+            application.tick(now);
+        }
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
             let Some(event) = input::decode(record) else {
                 continue;
@@ -135,14 +144,6 @@ pub fn run<const N: usize>(
                     application.respond(response, event.time_ms);
                 }
             }
-        }
-        let now = now_ms();
-        application.tree().tick(now);
-        if application
-            .deadline(now)
-            .is_some_and(|deadline| deadline.wrapping_sub(now) as i32 <= 0)
-        {
-            application.tick(now);
         }
     }
 }

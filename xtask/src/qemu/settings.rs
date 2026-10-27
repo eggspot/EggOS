@@ -23,6 +23,7 @@ use eggos_toolkit::input::{Input, MouseButton};
 
 const SETTINGS_TIMEOUT: Duration = Duration::from_secs(180);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
+const FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_DISK_BYTES: u64 = 64 << 20;
 const CLIENT: u16 = 0;
 const ROLE_NORMAL: u32 = 0;
@@ -394,13 +395,13 @@ fn settings_round(
     screen.check(
         boot,
         &format!("the {profile_name} profile chosen in Settings"),
-        TERMINAL_FRAME_TIMEOUT,
+        FRAME_TIMEOUT,
     )?;
     screen.close_settings(arch)?;
     screen.check(
         boot,
         &format!("Settings closed in the {profile_name} profile"),
-        TERMINAL_FRAME_TIMEOUT,
+        FRAME_TIMEOUT,
     )
 }
 
@@ -515,7 +516,7 @@ fn after_the_reboot(
     screen.check(
         &mut boot,
         "the macOS profile set by `settings set`",
-        TERMINAL_FRAME_TIMEOUT,
+        FRAME_TIMEOUT,
     )?;
     for _ in 2..SESSION_AFTER_THE_REBOOT.len() {
         boot.type_next(&SESSION_AFTER_THE_REBOOT)?;
@@ -544,4 +545,44 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     after_the_reboot(arch, kernel, &disk, &image)?;
     eprintln!("xtask: {}: settings boot test passed", arch.name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_profiles_are_numbered_alike_by_the_desktop_and_the_settings_file() {
+        let names = eggos_settings_file::PROFILES;
+        assert_eq!(names.len(), Profile::ALL.len());
+        for (number, profile) in Profile::ALL.iter().enumerate() {
+            assert_eq!(profile.number() as usize, number);
+            assert_eq!(Profile::from_number(number as u32), Some(*profile));
+        }
+        assert_eq!(names[Profile::Macos.number() as usize], "macos");
+        assert_eq!(names[Profile::default().number() as usize], "macos");
+        assert_eq!(Profile::from_number(3), None);
+    }
+
+    #[test]
+    fn the_host_draws_settings_with_and_without_the_caret() {
+        let mut screen_contents = Vec::new();
+        let settings = SettingsWindow::new(Facts::example());
+        let (width, height) = DEFAULT_SIZE;
+        for caret_shown in [true, false] {
+            let mut tree = settings.widgets().clone();
+            if !caret_shown {
+                tree.tick(CARET_HIDDEN_MS);
+            }
+            let mut pixels = vec![0; (width * height) as usize];
+            tree.render(&mut pixels, width, height, 1);
+            screen_contents.push(pixels);
+        }
+        assert_ne!(screen_contents[0], screen_contents[1]);
+        assert_eq!(
+            screen_contents[0][0],
+            eggos_toolkit::colour::DOCK,
+            "the sidebar starts at the content's left edge"
+        );
+    }
 }

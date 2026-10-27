@@ -268,12 +268,16 @@ fn say_error(parts: &[&[u8]]) {
     write_all(STANDARD_ERROR, line.as_str().as_bytes());
 }
 
-fn save_then_apply_profile(index: usize, device: Option<&Device>) -> bool {
+fn save_profile(index: usize) -> bool {
     let name = settings_file::PROFILES[index];
     let saved = save_through_a_temporary_file(settings_file::SHELL_PROFILE, name);
     if let Err(error) = saved {
         say_error(&[PATH.as_bytes(), b": ", error.message()]);
     }
+    saved.is_ok()
+}
+
+fn apply_profile(index: usize, device: Option<&Device>) -> bool {
     let opened;
     let device = match device {
         Some(device) => Some(device),
@@ -289,11 +293,11 @@ fn save_then_apply_profile(index: usize, device: Option<&Device>) -> bool {
     if let Err(error) = applied {
         say_error(&[
             settings_file::SHELL_PROFILE.as_bytes(),
-            b": saved but not applied: ",
+            b": not applied: ",
             error.message(),
         ]);
     }
-    saved.is_ok() && applied.is_ok()
+    applied.is_ok()
 }
 
 fn print_line(parts: &[&str]) {
@@ -327,7 +331,8 @@ fn command(arguments: &[&str]) -> i32 {
         },
         ["set", name, value] => match keys::change(name, value) {
             Ok((_, Change::Profile(index))) => {
-                match save_then_apply_profile(index, device.as_ref()) {
+                let saved = save_profile(index);
+                match apply_profile(index, device.as_ref()) && saved {
                     true => 0,
                     false => 1,
                 }
@@ -363,6 +368,7 @@ struct Settings {
     window: SettingsWindow,
     uptime_from_ms: u32,
     uptime_at_start: u64,
+    unsaved_profile: Option<usize>,
 }
 
 const ABOUT_PANE: usize = 5;
@@ -376,17 +382,21 @@ impl Application<CAPACITY> for Settings {
     fn respond(&mut self, response: Response, now_ms: u32) {
         match self.window.respond(response, now_ms) {
             Some(Request::SetProfile(index)) => {
-                save_then_apply_profile(index, None);
+                apply_profile(index, None);
+                self.unsaved_profile = Some(index);
             }
             None => {
                 if self.window.pane() == ABOUT_PANE {
-                    self.tick(now_ms);
+                    self.show_uptime(now_ms);
                 }
             }
         }
     }
 
     fn deadline(&self, now_ms: u32) -> Option<u32> {
+        if self.unsaved_profile.is_some() {
+            return Some(now_ms);
+        }
         if self.window.pane() != ABOUT_PANE {
             return None;
         }
@@ -395,6 +405,17 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn tick(&mut self, now_ms: u32) {
+        if let Some(index) = self.unsaved_profile.take() {
+            save_profile(index);
+        }
+        if self.window.pane() == ABOUT_PANE {
+            self.show_uptime(now_ms);
+        }
+    }
+}
+
+impl Settings {
+    fn show_uptime(&mut self, now_ms: u32) {
         let elapsed = u64::from(now_ms.wrapping_sub(self.uptime_from_ms) / SECOND_MS);
         self.window.show_uptime(self.uptime_at_start + elapsed);
     }
@@ -414,6 +435,7 @@ fn open_window() -> i32 {
         window: SettingsWindow::new(facts),
         uptime_from_ms: now_ms(),
         uptime_at_start: facts.uptime_s,
+        unsaved_profile: None,
     };
     match application::run(&mut window, &mut settings) {
         Ok(()) => 0,
