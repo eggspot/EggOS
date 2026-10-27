@@ -650,7 +650,9 @@ land (`files ls|rm|mv|mkdir|info`); in 0.3.0 the core utilities are that CLI.
 
 An "app" in 0.3.0 is a console program from another system that EggOS runs natively
 (D17-D19): a Windows `.exe` (x86_64 or ARM64 PE32+), a macOS Mach-O tool or an `.app` bundle
-whose `Contents/MacOS/<name>` is a console tool, or a Linux static ELF. Installing copies it
+whose `Contents/MacOS/<name>` is a console tool, or a Linux static ELF. (Superseded by D133:
+an app is installed in `/Applications/<name>/` with its catalogue entry `app.manifest` beside it,
+docs/apps.md.) Installing copies it
 to `/home/<user>/Apps/<name>/` with the files beside it (an `.app` whole), records it in the
 catalogue (`/home/<user>/.config/eggos/apps/<name>` holding name, source, architecture, the
 path to run and synonyms: a plain `key=value` file, no format of our own to parse beyond

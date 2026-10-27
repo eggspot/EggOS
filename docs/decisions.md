@@ -7823,7 +7823,8 @@ the license, by an explicit instruction recorded here.
   `settings.tmp.<pid>`, so two writers never share a temporary file; `control_hover` is cleared
   by a profile switch; the open Settings window re-reads the profile when it gets the focus, so
   it follows `settings set`; Settings keeps one extra connection for the whole session instead
-  of one per click.
+  of one per click; a signal interrupting the toolkit's wait for events no longer ends the
+  program (`EINTR` reads as no events).
 - **Lightness and speed (D24).** No buffer, thread or process is added; the shell's state is a
   few hundred bytes plus the catalogue (at most 32 entries of about 450 bytes, allocated only
   while apps are installed). The panels are composed with the windows from the same damage

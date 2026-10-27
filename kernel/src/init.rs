@@ -115,8 +115,11 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
         return Outcome::NotStarted("/init is not a program this machine runs");
     };
     let process = Arc::new(process);
-    let beside = Arc::clone(&process);
-    apps::set_starter(Arc::new(move |path: &[u8]| apps::start::<P>(&beside, path)));
+    let beside = Arc::downgrade(&process);
+    apps::set_starter(Arc::new(move |path: &[u8]| {
+        let beside = beside.upgrade().ok_or("init has ended")?;
+        apps::start::<P>(&beside, path)
+    }));
     {
         let mut table = process_table::TABLE.lock();
         table.set_init(process.id().get());

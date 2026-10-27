@@ -61,4 +61,6 @@ apps are listed, sorted by name ignoring case.
 | An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation). |
 
 The kernel reads the catalogue when the desktop starts and each time the launcher opens,
-never otherwise (D18).
+never otherwise (D18). A command is typed into the terminal as a keyboard would type it: if a
+program is running in the terminal, or a line is half typed at the prompt, that program or line
+receives it.

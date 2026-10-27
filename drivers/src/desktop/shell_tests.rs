@@ -590,3 +590,91 @@ fn what_the_shell_damages_is_all_that_changes_on_screen() {
     screen.click("Activities again", activities);
     screen.point("the pointer on the wallpaper", 600, 700, None);
 }
+
+#[test]
+fn a_window_destroyed_under_its_tooltip_leaves_no_stale_item() {
+    let mut screen = Screen::new(Profile::Windows);
+    let test = window(&mut screen.desktop, "Test");
+    screen.pixels = painted(&screen.desktop);
+    let item = screen.desktop.window_entry(test).unwrap();
+    screen.point("the pointer on Test's item", item.x + 4, item.y + 4, None);
+    screen.step("Test's tooltip", |desktop, damage| {
+        desktop.tick(TOOLTIP_DELAY_MS, damage, &mut DiscardEvents);
+    });
+    assert!(screen.desktop.tooltip_rect().is_some());
+    screen.step("Test destroyed", |desktop, damage| {
+        desktop
+            .destroy(CLIENT, u32::from(test), damage, &mut DiscardEvents)
+            .unwrap();
+    });
+    assert_eq!(screen.desktop.tooltip_rect(), None);
+    screen.step("the clock ticks on", |desktop, damage| {
+        desktop.tick(10 * TOOLTIP_DELAY_MS, damage, &mut DiscardEvents);
+    });
+}
+
+#[derive(Default)]
+struct Focus(Vec<u16>);
+
+impl protocol::EventSink for Focus {
+    fn send(&mut self, _client: u16, record: protocol::EventRecord) {
+        if matches!(
+            record.kind,
+            protocol::event::FOCUS_IN | protocol::event::FOCUS_OUT
+        ) {
+            self.0.push(record.kind);
+        }
+    }
+}
+
+#[test]
+fn a_window_shown_while_the_launcher_is_open_gets_one_focus_in() {
+    let mut desktop = desktop(Profile::Macos);
+    super_alone(&mut desktop);
+    let mut focus = Focus::default();
+    let created = desktop.create(CLIENT, 0, 0, 400, 300, 0).unwrap();
+    let mut damage = Damage::new();
+    desktop
+        .commit(
+            CLIENT,
+            u32::from(created.window),
+            &[],
+            &mut damage,
+            &mut focus,
+        )
+        .unwrap();
+    desktop.key(
+        key::ESC,
+        true,
+        Modifiers::from_bits(0),
+        &mut damage,
+        &mut focus,
+    );
+    assert_eq!(focus.0, [protocol::event::FOCUS_IN]);
+    assert_eq!(desktop.focused_window(), Some(created.window));
+}
+
+#[test]
+fn a_window_too_large_for_the_new_work_area_shrinks_into_it() {
+    let mut desktop = desktop(Profile::Linux);
+    let test = window(&mut desktop, "Test");
+    let mut damage = Damage::new();
+    desktop
+        .manage(u32::from(test), 5, 0, 28, &mut damage, &mut DiscardEvents)
+        .unwrap();
+    desktop
+        .manage(
+            u32::from(test),
+            6,
+            1200,
+            740,
+            &mut damage,
+            &mut DiscardEvents,
+        )
+        .unwrap();
+    assert_eq!(desktop.window_rect(test).unwrap().height, 770);
+    desktop.set_profile(Profile::Macos, &mut damage, &mut DiscardEvents);
+    let rect = desktop.window_rect(test).unwrap();
+    let work = desktop.work_area();
+    assert!(rect.height <= work.height && rect.y >= work.y && rect.bottom() <= work.bottom());
+}

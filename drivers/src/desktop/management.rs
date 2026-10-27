@@ -198,6 +198,17 @@ impl Desktop {
                 let (x, y) = self.clamped(slot, i64::from(before.x), i64::from(before.y));
                 self.window_mut(slot).before_maximised = Some(Geometry { x, y, ..before });
             }
+            let outside = window.outside();
+            let too_large = outside.width > work.width || outside.height > work.height;
+            if too_large && window.is_resizable() {
+                let geometry = Geometry {
+                    x: window.x,
+                    y: window.y,
+                    content_width: outside.width.min(work.width) - windows::CHROME.0,
+                    content_height: outside.height.min(work.height) - windows::CHROME.1,
+                };
+                self.apply_geometry(slot, geometry, window.with_shadow(), damage, events);
+            }
             self.move_window(slot, i64::from(window.x), i64::from(window.y), damage);
         }
         damage.add(self.screen());

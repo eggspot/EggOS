@@ -106,7 +106,8 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   blink in the launcher's search field, keyboard focus in the Linux launcher's dash, and the
   launcher's `Install from host share...` row and `Uninstall...` (item 36) (D133);
 - closing the terminal (its close control is disabled) and a second terminal: launching
-  Terminal focuses the one console terminal, and installed console apps run in it;
+  Terminal focuses the one console terminal, and installed console apps are typed into it, so
+  they reach whatever reads the console at that moment (docs/apps.md);
 - Settings is the one program with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); its Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs open windows

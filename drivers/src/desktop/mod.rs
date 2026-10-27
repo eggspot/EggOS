@@ -400,6 +400,15 @@ impl Desktop {
         if catalogue == self.catalogue {
             return;
         }
+        if let Some(menu) = self.icons.menu.as_mut() {
+            let name = self.catalogue.name(menu.app);
+            if let Some(app) = catalogue
+                .desktop_apps()
+                .find(|&app| catalogue.name(app) == name)
+            {
+                menu.app = app;
+            }
+        }
         self.catalogue = catalogue;
         self.icons_changed(damage);
         self.refilter_launcher(damage);
@@ -1033,6 +1042,7 @@ impl Desktop {
             damage.add(self.window_at(slot).with_shadow());
         }
         self.damage_window_list(damage);
+        self.forget_in_panels(slot, damage);
         let focused = self.focus == Some(slot);
         if self.drag.is_some_and(|drag| drag.window == slot) {
             self.drag = None;
@@ -1237,15 +1247,18 @@ impl Desktop {
             self.set_desktop_focused(false, damage);
         }
         self.damage_focus_in_window_list(damage);
+        let quiet = self.popup_open();
         if let Some(old) = self.focus {
             if self.is_visible(old) {
                 damage.add(self.window_at(old).outside());
             }
-            self.send(
-                old,
-                EventRecord::new(event::FOCUS_OUT, 0, 0, 0, 0, 0),
-                events,
-            );
+            if !quiet {
+                self.send(
+                    old,
+                    EventRecord::new(event::FOCUS_OUT, 0, 0, 0, 0, 0),
+                    events,
+                );
+            }
         }
         self.focus = focus;
         if let Some(new) = focus {
@@ -1254,11 +1267,13 @@ impl Desktop {
             let serial = self.focus_serial;
             self.window_mut(top).focus_serial = serial;
             damage.add(self.window_at(new).outside());
-            self.send(
-                new,
-                EventRecord::new(event::FOCUS_IN, 0, 0, 0, 0, 0),
-                events,
-            );
+            if !quiet {
+                self.send(
+                    new,
+                    EventRecord::new(event::FOCUS_IN, 0, 0, 0, 0, 0),
+                    events,
+                );
+            }
         }
     }
 
@@ -1885,10 +1900,15 @@ impl Desktop {
     }
 
     fn content_holding(&self, clip: Rect) -> Option<usize> {
-        let tooltip = self.tooltip_rect().is_some_and(|rect| rect.overlaps(&clip));
+        let tooltip = self
+            .panels
+            .tooltip_area
+            .is_some_and(|rect| rect.overlaps(&clip));
+        let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
             || self.popups_overlap(clip)
             || tooltip
+            || panels
         {
             return None;
         }

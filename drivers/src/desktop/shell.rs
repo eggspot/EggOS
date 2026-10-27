@@ -86,6 +86,7 @@ pub(super) struct PanelState {
     pub pressed: Option<PanelItem>,
     pub tooltip: Option<PanelItem>,
     pub tooltip_spent: bool,
+    pub tooltip_area: Option<Rect>,
     pub moved: bool,
 }
 
@@ -211,13 +212,21 @@ impl Desktop {
     pub(super) fn dock_rect(&self) -> Option<Rect> {
         let band = self.layout.dock_band?;
         let entries = self.dock_entries();
-        let width = self.dock_width(&entries, entries.length);
+        let width = self.dock_width(&entries, self.dock_shown(&entries));
         Some(Rect::new(
             (self.width.saturating_sub(width)) / 2,
             band.y,
             width,
             band.height,
         ))
+    }
+
+    fn dock_shown(&self, entries: &DockEntries) -> usize {
+        let mut shown = entries.length;
+        while shown > 0 && self.dock_width(entries, shown) > self.width {
+            shown -= 1;
+        }
+        shown
     }
 
     fn dock_width(&self, entries: &DockEntries, shown: usize) -> u32 {
@@ -317,10 +326,7 @@ impl Desktop {
             return;
         };
         let entries = self.dock_entries();
-        let mut shown = entries.length;
-        while shown > 0 && self.dock_width(&entries, shown) > self.width {
-            shown -= 1;
-        }
+        let shown = self.dock_shown(&entries);
         let width = self.dock_width(&entries, shown);
         let mut x = self.width.saturating_sub(width) / 2 + DOCK_PADDING;
         for (index, &entry) in entries.items[..shown].iter().enumerate() {
@@ -416,6 +422,11 @@ impl Desktop {
     /// item under the pointer is looked for again after the event.
     pub(super) fn damage_window_list(&mut self, damage: &mut Damage) {
         self.panels.moved = true;
+        self.hide_tooltip(damage);
+        self.panels.tooltip_spent = true;
+        if self.launcher.is_some() {
+            damage.add(super::launcher::launcher_with_shadow(self.layout.launcher));
+        }
         match self.profile {
             Profile::Linux => damage.add(self.chips_area()),
             Profile::Windows => {
@@ -433,9 +444,6 @@ impl Desktop {
                     ));
                 }
             }
-        }
-        if let Some(rect) = self.tooltip_rect() {
-            damage.add(rect);
         }
     }
 
@@ -627,10 +635,32 @@ impl Desktop {
     }
 
     pub(super) fn hide_tooltip(&mut self, damage: &mut Damage) {
-        if let Some(rect) = self.tooltip_rect() {
+        if let Some(rect) = self.panels.tooltip_area.take() {
             damage.add(rect);
         }
         self.panels.tooltip = None;
+    }
+
+    /// Window `slot` is going away: no panel item of its stays hovered, pressed or tipped.
+    pub(super) fn forget_in_panels(&mut self, slot: usize, damage: &mut Damage) {
+        let slot = slot as u8;
+        let names = |item: Option<PanelItem>| {
+            matches!(
+                item,
+                Some(
+                    PanelItem::Chip(at) | PanelItem::TaskbarWindow(at) | PanelItem::DockWindow(at)
+                ) if at == slot
+            )
+        };
+        if names(self.panels.tooltip) {
+            self.hide_tooltip(damage);
+        }
+        if names(self.panels.hover) {
+            self.panels.hover = None;
+        }
+        if names(self.panels.pressed) {
+            self.panels.pressed = None;
+        }
     }
 
     /// The clock reached `now_ms`: the hovered item's tooltip shows once the pointer has
@@ -645,7 +675,8 @@ impl Desktop {
             return;
         }
         self.panels.tooltip = Some(hover);
-        if let Some(rect) = self.tooltip_rect() {
+        self.panels.tooltip_area = self.tooltip_place();
+        if let Some(rect) = self.panels.tooltip_area {
             damage.add(rect);
         }
     }
@@ -655,15 +686,21 @@ impl Desktop {
             (PanelItem::Start, _) => Some(START_TOOLTIP),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),
-            (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => {
-                Some(self.window_at(usize::from(slot)).title())
-            }
+            (PanelItem::TaskbarWindow(slot) | PanelItem::DockWindow(slot), _) => self
+                .windows
+                .get(usize::from(slot))
+                .and_then(Option::as_ref)
+                .map(|window| window.title()),
             _ => None,
         }
     }
 
     /// The tooltip shown now, its rectangle.
     pub fn tooltip_rect(&self) -> Option<Rect> {
+        self.panels.tooltip.and(self.panels.tooltip_area)
+    }
+
+    fn tooltip_place(&self) -> Option<Rect> {
         let item = self.panels.tooltip?;
         let text = self.tooltip_text(item)?;
         let anchor = self.panel_item_rect(item)?;

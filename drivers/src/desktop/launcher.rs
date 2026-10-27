@@ -251,6 +251,10 @@ pub(super) struct Notice {
     pub until_ms: u32,
 }
 
+pub(super) fn launcher_with_shadow(rect: Rect) -> Rect {
+    with_shadow(rect)
+}
+
 fn with_shadow(rect: Rect) -> Rect {
     Rect::new(
         rect.x.saturating_sub(SHADOW_RINGS),
@@ -617,14 +621,14 @@ impl Desktop {
                 self.set_launcher(launcher, damage);
                 Some(Action::None)
             }
-            Some(Spot::Row(index)) => {
+            Some(Spot::Row(index)) if code == crate::input::button::LEFT => {
                 let app = launcher.apps()[index];
                 Some(self.launch_from_launcher(app, damage, events))
             }
-            Some(Spot::Dash(index)) if !right => {
+            Some(Spot::Dash(index)) if code == crate::input::button::LEFT => {
                 Some(self.launch_from_launcher(DASH_APPS[index], damage, events))
             }
-            Some(Spot::Chip(slot)) if !right => {
+            Some(Spot::Chip(slot)) if code == crate::input::button::LEFT => {
                 self.close_launcher(damage, events);
                 self.activate(usize::from(slot), damage, events);
                 Some(Action::None)
