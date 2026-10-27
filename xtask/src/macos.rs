@@ -18,8 +18,6 @@ const FAT_MAGIC: u32 = 0xcafe_babe;
 const FAT_MAGIC_64: u32 = 0xcafe_babf;
 const MAX_FAT_ARCHITECTURES: u32 = 32;
 const FAT_ALIGNMENT_SHIFT: u32 = 14;
-const CPU_TYPE_X86_64: u32 = 0x0100_0007;
-const CPU_TYPE_ARM64: u32 = 0x0100_000c;
 
 /// The macOS CPU name (`arm64`, `x86_64`) and Rust target of the architecture named `arch`, if
 /// macOS has one.
@@ -188,6 +186,9 @@ fn build_programs(target_directory: &Path, target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CPU_TYPE_X86_64: u32 = 0x0100_0007;
+    const CPU_TYPE_ARM64: u32 = 0x0100_000c;
 
     fn thin(cputype: u32, length: usize) -> Vec<u8> {
         let mut bytes = MH_MAGIC_64.to_vec();
