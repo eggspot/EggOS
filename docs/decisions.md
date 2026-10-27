@@ -6372,8 +6372,10 @@ the license, by an explicit instruction recorded here.
     ABI.
   - x86_64 CPU features: the NDK's x86_64 ABI requires SSSE3, SSE4.1, SSE4.2 and POPCNT, and
     bionic's `arc4random` (ChaCha) used them, an invalid opcode on QEMU's `qemu64`. QEMU's
-    x86_64 machine now adds `+ssse3,+sse4.1,+sse4.2,+popcnt` (every x86_64 CPU since 2008
-    has them); the kernel itself does not use them.
+    x86_64 machine now adds `+ssse3,+sse4.1,+sse4.2,+popcnt` (x86-64-v2: Intel Nehalem
+    (2008) and newer, AMD Bulldozer (2011) and newer have them), superseding D56's
+    `-cpu qemu64,+rdrand,+rdseed` for the tests and benchmarks; the kernel itself does not use
+    them.
   - `sh -c -- command`: bionic's `system()` ends the shell's options with `--`; `eggsh -c` now
     accepts it, as POSIX's `sh -c [--]` does.
   `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)`, with which bionic names its mappings, keeps
@@ -6416,9 +6418,9 @@ the license, by an explicit instruction recorded here.
   calls in every kernel and always ignores the top byte on arm64; gating the calls by
   architecture would save a few hundred bytes at the cost of D23's one codebase (bionic needs
   them everywhere, riscv64 Android included), and D117 accepted `sched_getaffinity` at the
-  same size. Those three baseline lines are updated. CI's check job gains about 30 seconds
-  (two links and two boots of about 15 seconds each) and the toolchain step 2 seconds for the
-  two Android targets until the CI image is rebuilt.
+  same size. Those three baseline lines are updated. CI's check job gained 22 seconds on
+  `main` (9 min 21 s to 9 min 43 s: two links and two boots) and the toolchain step 2 seconds
+  for the two Android targets until the CI image is rebuilt.
 - **Not yet.** Android apps (`.apk`, ART, the framework), dynamically linked programs
   (`linker64`), system properties, `logd`, binder, `/dev`, `/proc` and `/sys`, pipes (so
   `popen`), app user ids (processes run as root), riscv64, Rust std programs for Android.

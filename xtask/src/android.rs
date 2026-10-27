@@ -36,10 +36,21 @@ pub fn target(arch: &str) -> Option<&'static str> {
 /// The API level in the `.note.android.ident` note of a 64-bit little-endian ELF file (the
 /// note the NDK's start-up objects put in every Android program), `None` without one.
 pub fn api_level(elf: &[u8]) -> Option<u32> {
-    let u16_at = |at: usize| Some(u16::from_le_bytes(elf.get(at..at + 2)?.try_into().ok()?));
-    let u32_at =
-        |bytes: &[u8], at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
-    let u64_at = |at: usize| Some(u64::from_le_bytes(elf.get(at..at + 8)?.try_into().ok()?));
+    let u16_at = |at: usize| {
+        Some(u16::from_le_bytes(
+            elf.get(at..at.checked_add(2)?)?.try_into().ok()?,
+        ))
+    };
+    let u32_at = |bytes: &[u8], at: usize| {
+        Some(u32::from_le_bytes(
+            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let u64_at = |at: usize| {
+        Some(u64::from_le_bytes(
+            elf.get(at..at.checked_add(8)?)?.try_into().ok()?,
+        ))
+    };
     if elf.get(..6)? != b"\x7fELF\x02\x01" {
         return None;
     }
@@ -50,8 +61,8 @@ pub fn api_level(elf: &[u8]) -> Option<u32> {
         if u32_at(elf, header)? != NOTE_SEGMENT {
             return None;
         }
-        let offset = usize::try_from(u64_at(header + 8)?).ok()?;
-        let size = usize::try_from(u64_at(header + 32)?).ok()?;
+        let offset = usize::try_from(u64_at(header.checked_add(8)?)?).ok()?;
+        let size = usize::try_from(u64_at(header.checked_add(32)?)?).ok()?;
         android_ident(elf.get(offset..offset.checked_add(size)?)?, u32_at)
     })
 }
@@ -62,9 +73,9 @@ fn android_ident(mut notes: &[u8], u32_at: impl Fn(&[u8], usize) -> Option<u32>)
         let owner_length = u32_at(notes, 0)?;
         let description_length = u32_at(notes, 4)?;
         let kind = u32_at(notes, 8)?;
-        let description_start = 12 + padded(owner_length)?;
+        let description_start = padded(owner_length)?.checked_add(12)?;
         let end = description_start.checked_add(padded(description_length)?)?;
-        let owner = notes.get(12..12 + usize::try_from(owner_length).ok()?)?;
+        let owner = notes.get(12..usize::try_from(owner_length).ok()?.checked_add(12)?)?;
         if owner == NOTE_OWNER && kind == NOTE_TYPE_IDENT && description_length >= 4 {
             return u32_at(notes, description_start);
         }

@@ -21,8 +21,8 @@ cargo xtask run --arch x86_64 --add path/to/hello      # build that image and bo
 added file is an Android program (it carries the `.note.android.ident` note the NDK puts in
 every Android program), the image also gets `/system/bin/sh`, another name for `eggsh`, which
 bionic's `system()` and `popen()` run (unless you add your own file there with `--as`). Images
-without an Android program are unchanged: no
-`/system` and no extra bytes (D18). At the prompt, type `hello` and its arguments; the shell
+without an Android program get no `/system` and no Android files (D18); only the kernel grew,
+by 176 to 344 bytes, for the calls bionic needs (D119's "Cost"). At the prompt, type `hello` and its arguments; the shell
 reports the exit status in `$?`, and an abort as `Aborted` and `134`.
 
 ## Build a program that runs
@@ -61,8 +61,8 @@ it at one: `ANDROID_NDK_HOME`, or `ANDROID_HOME` with the NDK in its `ndk/` fold
 skips it. There is no Rust Android target with a prebuilt library for riscv64, so riscv64 has
 no Android test.
 
-On x86_64 the NDK's ABI requires SSSE3, SSE4.1, SSE4.2 and POPCNT, which every x86_64 CPU
-since 2008 has; `cargo xtask run` and the release's run scripts give QEMU's CPU them. On
+On x86_64 the NDK's ABI requires SSSE3, SSE4.1, SSE4.2 and POPCNT (x86-64-v2: Intel Nehalem
+(2008) and newer, AMD Bulldozer (2011) and newer); `cargo xtask run` and the release's run scripts give QEMU's CPU them. On
 AArch64, programs may keep a tag in a pointer's top byte, as Linux's arm64 ABI allows (bionic's
 allocator does).
 
