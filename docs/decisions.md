@@ -7378,7 +7378,7 @@ the license, by an explicit instruction recorded here.
   `PeekMessageW`, the click, the key, the box's answer, `WM_DESTROY`, `WM_QUIT`) and its status
   0 follow; riscv64 refuses it with `ENOEXEC`.
 - **Not yet.** Child windows and the system's controls (buttons, edits; item 42), menus, dialogs
-  from resources, timers, `CreateFontW` and every font but Egg Mono, text beyond ASCII and the
+  from resources, timers, `CreateFontW`, `GetTextMetricsW` and every font but Egg Mono, text beyond ASCII and the
   font's extras (drawn as `?`), double-click messages, `WM_MOUSEWHEEL` and `MSG.pt` in screen
   coordinates (client ones today), `TrackMouseEvent`, `SetCursor`, `GetWindowRect` and window
   moves from the program (`MoveWindow`, `SetWindowPos`), `SW_HIDE`, regions and clipping beyond

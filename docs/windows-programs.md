@@ -182,7 +182,8 @@ size needed, as each function documents.
   gdi32 (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
   own) or a function they lack is refused. Imports by ordinal are refused.
 - **GUI programs beyond part 1** (D129): child windows and the system's controls (buttons,
-  edits, list boxes), menus, dialogs from resources, timers, fonts other than Egg Mono and text
+  edits, list boxes), menus, dialogs from resources, timers, `GetTextMetricsW`, fonts other
+  than Egg Mono and text
   beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
   `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows
   from the program, `SW_HIDE`, bitmaps and `BitBlt`, dashed pens, raster operations and
