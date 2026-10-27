@@ -9,7 +9,9 @@ the MCP server (D21).
 
 ## The window
 
-Type `settings` at the prompt. The window has a sidebar with a search field and the panes
+Open it from the dock (macOS profile), the launcher (Super, Cmd+Space or Start, then type
+`settings`, `control panel` or `preferences`), its desktop icon, or type `settings` at the
+prompt (D133). The window has a sidebar with a search field and the panes
 `Appearance`, `Display`, `Keyboard`, `Mouse`, `Components` and `About`; typing in the search
 field keeps the panes whose name, synonyms (`Control Panel`, `Preferences`, `theme`, `HiDPI`,
 ...) or settings match. Tab moves between the search, the sidebar and the pane's controls;
@@ -19,8 +21,10 @@ Down in the search goes to the sidebar.
 `Linux`: click one, or move to it with the arrows and press Enter or Space. The desktop changes
 at once: the window controls move to the right (Windows, Linux) or the left (macOS) on every
 window, and the profile's shortcuts apply (Cmd+W and Cmd+M in the macOS profile, Ctrl+W in the
-others, Super+H to minimise in the Linux profile; docs/windows.md). Until the shell (item 35)
-there are no panels per profile, so Windows and Linux look the same. The pane shows the
+others, Super+H to minimise in the Linux profile; docs/windows.md), and the shell changes with
+it: the taskbar (Windows), the top bar and the dock (macOS) or the top bar with `Activities`
+(Linux). An open Settings window follows a profile set with `settings set` the next time it is
+focused. The pane shows the
 profile's primary modifier and control side. The choice is saved and the desktop starts in it
 at the next boot; without a disk the pane says `No disk attached: this choice lasts until
 power-off.`
@@ -55,7 +59,7 @@ and in memory for the session otherwise; in `root`'s home until there are accoun
 text file: the line `eggos-settings 1`, then `key=value` lines. A file of another version, a
 longer one than 4 KiB or garbage holds nothing, so every setting takes its default; unknown
 keys are kept when the file is written, and the last line of a key wins. A change is written to
-`settings.tmp` beside it, synced, and renamed over it, so a failure leaves the old file whole.
+`settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole.
 The kernel reads `shell.profile` from it after mounting the disks and before the desktop starts,
 so the first frame is already in the saved profile. The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.

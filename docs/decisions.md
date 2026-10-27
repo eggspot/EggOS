@@ -7756,3 +7756,95 @@ the license, by an explicit instruction recorded here.
   per-user settings, 2x, the Mouse and Components panes, key repeat, the MCP tools, text
   selection and the clipboard in the toolkit, and an `-icount` benchmark of the toolkit (its
   code runs in user space; the benchmark harness runs kernel code).
+
+## D133 The desktop shell: panels per profile, the launcher, desktop icons, the icon set and the app catalogue (v0.3.0 item 35) — Decided by the build loop (the design is Claude Fable's, D16; the placement, the catalogue's place and format, and the launching decided by research)
+- **What.** Users can now use the desktop like the system they came from. The Windows profile
+  has a taskbar at the bottom with a Start button, one item per window and the clock; the
+  macOS profile has the top bar and a dock with Terminal, Files and Settings pinned, running
+  apps and minimised windows; the Linux profile has the top bar with `Activities` and the
+  minimised windows' chips. The launcher opens with Super alone, Cmd+Space (macOS profile),
+  Start, the system item or `Activities`; typing filters it by name and synonym (`Control
+  Panel`, `Preferences`, `Finder`, `cmd`, ...), Enter or a click launches. Desktop icons sit on
+  the wallpaper (Terminal, Files, Settings, `Host share` while `/media/host` is mounted, and
+  installed apps); a click selects, a double-click or Enter launches, a right-click or Shift+F10
+  opens the app's menu. Settings now opens from the dock, the launcher and the desktop, which
+  closes item 34's gap; a profile switch lays the whole shell out again at once.
+- **Design (Claude Fable, D16).** Sections 6, 7 and 11 of `docs/ux/desktop-v0.3-gui.md`; the
+  details the brief left open (unnamed windows' icon, the notice, tooltips, context menus, the
+  Linux dash, keys on the desktop, overflow, the `Minimised:` line) are Fable's addendum,
+  section 6.4.
+- **In the window server, laid out by one function** (decided by research, over a userland
+  `/bin/desktop` with `Panel` and `Background` role windows). The brief already places the
+  shell in the server for 0.3.0 (sections 3.1 and 6); the server draws every pixel of the
+  panels, the launcher and the icons in the same compose pass as the windows, so no panel
+  buffer exists, no second process runs and nothing new crosses `/dev/window`, which stays the
+  contract. A userland shell would have needed role grants, work-area reservation, a window
+  list for clients and about 4 MiB of buffers, too much to deliver soundly before the freeze.
+  The path stays open: `drivers/src/desktop/layout.rs` is a pure function of `(screen width,
+  height, scale, profile)` returning the panels, the work area, the launcher's place and the
+  icons' side, the catalogue and the icon set are separate modules, and launches leave the
+  server as an action naming an app, not as drawing code. Moving the shell out later means
+  granting the roles and adding those requests; the layout and the launch stay.
+- **The work area follows the profile.** At 1280x800: Windows y 0..759, macOS y 28..727 (the
+  dock floats 8 px above the bottom), Linux y 28..799. Everything that assumed "below the 28 px
+  bar" (placement, clamps, sizes, `SET_POSITION`, `GET_WORK_AREA`, hit tests) uses the layout's
+  work area. `set_profile` closes the shell's popups, re-lays out, fits maximised windows to the
+  new work area and shrinks resizable windows larger than it (their clients get `Resize`),
+  moves every window into it, and redraws the screen. A launch of Settings or Files is not
+  repeated while the first is still starting (2 s, or until its window shows).
+- **The catalogue** (decided by research): an installed app is a folder
+  `/Applications/<name>/` holding its program and `app.manifest`, a small text file of the
+  crate `eggos-app-manifest` (`app-manifest/`, no_std, no heap): the line `eggos-app 1`, then
+  `name=` (the folder's name), `source=windows|macos|linux`, `run=` (absolute, or relative to the
+  folder with no `..`), optional `architecture=`, `synonyms=` (comma-separated) and `icon=`
+  (reserved). A file longer than 1 KiB, of another version, naming another folder or missing a
+  required key is no app; garbage is skipped, never fatal; at most 32 apps are listed,
+  alphabetically. This replaces section 9's `/home/<user>/Apps` and
+  `/home/<user>/.config/eggos/apps/<name>`: one place per app, on the disk (D131), with no
+  second file to go stale; item 36 writes the manifest last, so a half-installed app is
+  invisible. The format is in `docs/apps.md`.
+- **Read only when needed (D18).** The kernel reads the catalogue when the desktop starts
+  (an empty `/Applications` costs one directory read) and each time the launcher opens; never
+  on a timer. Self-test sessions do not read it, so their picture stays fixed.
+- **Launching** (decided by research). Terminal focuses the console terminal's window. Settings
+  and Files focus their window if they have one, else the kernel starts `/bin/settings` or
+  `/bin/files` as a process of its own (`Process::new_beside`, beside init, root as every
+  process today) from the drawing thread once it has let go of the screen; Files says
+  `Files is not in this build yet.` in a notice until item 37 ships it. The host share and
+  installed apps (console programs in 0.3.0) are typed into the terminal as if the user had,
+  the program's path single-quoted when it holds more than letters, digits and `/._-+`.
+  A window belongs to an app by its title (the terminal's window is Terminal's); the taskbar,
+  the dock and the switcher show its app's icon, else the generic tile of its title.
+- **The icon set** (`drivers/src/desktop/icons.rs`): Terminal, Files, Settings, Host share and
+  the generic app tile with its source badge, at 48x48 and 32x32, tables of shapes drawn with
+  the desktop's primitives (rects, rounded rects, circles, 1x and doubled glyphs), no bitmaps;
+  host tests hash every icon at both sizes.
+- **Follow-ups from #130 folded in.** Settings saves a choice still pending when the window
+  closes in the same batch of events; `settings set` and the window write
+  `settings.tmp.<pid>`, so two writers never share a temporary file; `control_hover` is cleared
+  by a profile switch; the open Settings window re-reads the profile when it gets the focus, so
+  it follows `settings set`; Settings keeps one extra connection for the whole session instead
+  of one per click; a signal interrupting the toolkit's wait for events no longer ends the
+  program (`EINTR` reads as no events).
+- **Lightness and speed (D24).** No buffer, thread or process is added; the shell's state is a
+  few hundred bytes plus the catalogue (at most 32 entries of about 450 bytes, allocated only
+  while apps are installed). The panels are composed with the windows from the same damage
+  rects; a commit inside a window's content still skips everything below it. Focus changes
+  damage the taskbar only in the Windows profile. The kernel image grows by the shell's code
+  (reported in the PR from CI's numbers).
+- **Testing.** Host: the layout at seven sizes and both scales in every profile (work areas,
+  panels on screen, no overlaps), the catalogue (order, synonyms, garbage, the limit, launch
+  commands and quoting), the manifest parser with 400 random files, every icon's hash at both
+  sizes, the dock, taskbar, top bar, launcher, desktop icons, menus, notice and tooltip by
+  pointer and keys, a profile switch with a maximised window, drawing in rects equal to drawing
+  the whole screen, and pinned pictures of each profile with and without the launcher. QEMU on
+  all three architectures, frames compared with the host's render: the shell writes a manifest;
+  the dock's Settings opens Settings; Cmd+Space opens the launcher, which lists the new app,
+  `pref` filters it and Enter starts Settings; the Windows card brings the taskbar, Start opens
+  the launcher above it and the items switch between the terminal and Settings; the Linux card
+  brings `Activities`; a double-click on the app's icon runs it in the terminal; the terminal
+  minimises to its chip and comes back. The existing window tests restore from the dock.
+- **Not yet.** The phone layout (section 12), 2x, the caret's blink in the launcher's field (it
+  stays drawn, so the picture is steady), dragging icons, `Uninstall...` (item 36), the
+  launcher's `Install from host share...` row, a second terminal, keyboard focus for the Linux
+  dash, the MCP tools for launching.

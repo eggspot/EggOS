@@ -481,6 +481,27 @@ impl<P: Platform> Process<P> {
         }
     }
 
+    /// A process the kernel starts, as [`Self::new`] makes one (a new id, the default
+    /// credentials and limits, no signal actions, no threads), with an empty address space
+    /// beside this one's ([`AddressSpace::new_owning_frames_beside`]): what the desktop's
+    /// launcher starts an app in from a thread that holds no page tables.
+    pub fn new_beside(&self) -> Result<Self, &'static str> {
+        let space = self
+            .memory
+            .space
+            .new_owning_frames_beside()
+            .map_err(|error| error.description())?;
+        let id = ProcessId::allocate().ok_or("out of process ids")?;
+        let futex_space = allocate_futex_space().ok_or("out of futex spaces")?;
+        Ok(Self::with_memory(
+            Arc::new(Memory::new(space, self.memory.frame_offset, futex_space)),
+            Arc::new(SpinLock::new(PidRecord::new(id, false))),
+            id,
+            CredentialsAndLimits::default(),
+            Signals::new(),
+        ))
+    }
+
     /// A process for the program `execve` starts in this one's place: an empty address space
     /// beside this one's ([`AddressSpace::new_owning_frames_beside`]), the same id, place in
     /// the process table and record of how it ends, a copy of the credentials and resource

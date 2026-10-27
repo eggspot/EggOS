@@ -13,7 +13,9 @@ behaviour. A UX regression is treated like a performance regression.
   pointer).
 - `desktop-v0.3-gui.md`: the v0.3.0 multi-window desktop (D126): the window server's
   `/dev/window` contract, window roles, stacking, chrome, move, resize, the switcher and
-  keyboard operation (items 30-31), and later the shell, the installer, Files and Settings.
+  keyboard operation (items 30-31), the shell (item 35: panels per profile, the launcher, desktop
+  icons, the icon set, and section 6.4, Fable's details settled while it was built), and
+  later the installer and Files.
 - `windows-gui-v0.3.md`: Windows GUI programs on the v0.3.0 desktop (item 32): the Win32 message
   box as an EggOS dialog, the Win32 system colours inside a program's client area, and the
   `IDC_*` pointer mapping.

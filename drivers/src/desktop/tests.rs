@@ -59,19 +59,19 @@ fn click(desktop: &mut Desktop, x: u32, y: u32) -> Action {
 #[test]
 fn the_window_starts_centred_in_the_work_area_as_the_design_places_it() {
     let desktop = Desktop::new(1280, 800).unwrap();
-    assert_eq!(desktop.window(), Rect::new(311, 199, 658, 430));
+    assert_eq!(desktop.window(), Rect::new(311, 163, 658, 430));
     assert_eq!(
         desktop.text_area(),
         TextArea {
             x: 320,
-            y: 236,
+            y: 200,
             columns: 80,
             rows: 24
         }
     );
     assert_eq!(
         Desktop::new(1024, 768).unwrap().window(),
-        Rect::new(183, 183, 658, 430)
+        Rect::new(183, 147, 658, 430)
     );
     assert!(Desktop::new(640, 400).is_none());
 }
@@ -87,14 +87,14 @@ fn the_wallpaper_bar_and_window_show_their_tokens() {
     assert_eq!(at(&pixels, 100, 10), colour::BAR);
     assert_eq!(at(&pixels, 100, 27), colour::BAR_EDGE);
     assert_eq!(at(&pixels, 17, 14), colour::ACCENT);
-    assert_eq!(at(&pixels, 311 + 4, 199), colour::BORDER_ACTIVE);
-    assert_eq!(at(&pixels, 311 + 3, 199), gradient_pixel(199, 800));
-    assert_eq!(at(&pixels, 400, 210), colour::TITLE_ACTIVE);
-    assert_eq!(at(&pixels, 311 + 12 + 6, 199 + 14), colour::BUTTON_INACTIVE);
-    assert_eq!(at(&pixels, 311 + 32 + 6, 199 + 14), colour::BUTTON_MINIMISE);
-    assert_eq!(at(&pixels, 330, 240), TERM_BACKGROUND);
-    let below = at(&pixels, 500, 629);
-    assert_eq!(below, half(gradient_pixel(629, 800)), "{below:#x}");
+    assert_eq!(at(&pixels, 311 + 4, 163), colour::BORDER_ACTIVE);
+    assert_eq!(at(&pixels, 311 + 3, 163), gradient_pixel(163, 800));
+    assert_eq!(at(&pixels, 400, 174), colour::TITLE_ACTIVE);
+    assert_eq!(at(&pixels, 311 + 12 + 6, 163 + 14), colour::BUTTON_INACTIVE);
+    assert_eq!(at(&pixels, 311 + 32 + 6, 163 + 14), colour::BUTTON_MINIMISE);
+    assert_eq!(at(&pixels, 330, 204), TERM_BACKGROUND);
+    let below = at(&pixels, 500, 593);
+    assert_eq!(below, half(gradient_pixel(593, 800)), "{below:#x}");
     assert!(desktop.clock_text().contains("up 0:00"));
 }
 
@@ -108,7 +108,7 @@ fn the_default_desktop_s_hash_is_pinned() {
     assert_eq!(fnv(&pixels), DEFAULT_DESKTOP_HASH, "{:#x}", fnv(&pixels));
 }
 
-const DEFAULT_DESKTOP_HASH: u64 = 0x1304_854e_60c2_d4d1;
+const DEFAULT_DESKTOP_HASH: u64 = 0x29d1_2c5b_4a5f_d053;
 
 #[test]
 fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
@@ -127,10 +127,10 @@ fn drawing_a_rect_is_the_same_as_drawing_the_whole_screen() {
 fn dragging_the_title_bar_moves_the_window_within_the_screen() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
-    desktop.pointer_moved(600, 210, &mut damage, &mut DiscardEvents);
+    desktop.pointer_moved(600, 174, &mut damage, &mut DiscardEvents);
     desktop.left_button(true, &mut damage, &mut DiscardEvents);
-    desktop.pointer_moved(700, 260, &mut damage, &mut DiscardEvents);
-    assert_eq!(desktop.window(), Rect::new(411, 249, 658, 430));
+    desktop.pointer_moved(700, 224, &mut damage, &mut DiscardEvents);
+    assert_eq!(desktop.window(), Rect::new(411, 213, 658, 430));
     assert!(!damage.is_empty());
     desktop.pointer_moved(5000, 0, &mut damage, &mut DiscardEvents);
     assert_eq!(desktop.window(), Rect::new(1280 - 658, 28, 658, 430));
@@ -151,6 +151,7 @@ fn a_click_outside_the_window_takes_focus_and_inside_gives_it_back() {
 #[test]
 fn minimise_hides_the_window_behind_a_chip_that_restores_it() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
+    desktop.set_profile(Profile::Linux, &mut Damage::new(), &mut DiscardEvents);
     let control = desktop.minimise_control();
     click(&mut desktop, control.x + 5, control.y + 10);
     assert!(desktop.minimised() && !desktop.terminal_shown());
@@ -161,17 +162,17 @@ fn minimise_hides_the_window_behind_a_chip_that_restores_it() {
     let chip = desktop.chip();
     click(&mut desktop, chip.x + 10, chip.y + 10);
     assert!(!desktop.minimised() && desktop.focused() && desktop.terminal_shown());
-    assert_eq!(desktop.window(), Rect::new(311, 199, 658, 430));
+    assert_eq!(desktop.window(), Rect::new(311, 163, 658, 430));
 }
 
 #[test]
 fn the_close_control_is_disabled() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let mut damage = Damage::new();
-    desktop.pointer_moved(311 + 15, 199 + 10, &mut damage, &mut DiscardEvents);
+    desktop.pointer_moved(311 + 15, 163 + 10, &mut damage, &mut DiscardEvents);
     desktop.left_button(true, &mut damage, &mut DiscardEvents);
-    desktop.pointer_moved(311 + 100, 199 + 100, &mut damage, &mut DiscardEvents);
-    assert_eq!(desktop.window(), Rect::new(311, 199, 658, 430));
+    desktop.pointer_moved(311 + 100, 163 + 100, &mut damage, &mut DiscardEvents);
+    assert_eq!(desktop.window(), Rect::new(311, 163, 658, 430));
     assert!(!desktop.minimised());
 }
 

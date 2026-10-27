@@ -515,6 +515,72 @@ the background is focused (a click on the wallpaper focuses it); right-click ope
 context menu (`Open`, and for an installed app `Uninstall...`). No dragging or arranging in
 0.3.0; the order is fixed (built-ins, share, installed alphabetically).
 
+### 6.4 Details settled during item 35
+
+Addendum by Claude Fable (D16) while item 35 was built; everything above stands. Numbers are
+at 1x and double at 2x.
+
+1. **Windows the catalogue cannot name.** A window whose title matches no catalogue app (a
+   program run from the shell such as `win-paint.exe`, a test program titled `Test`) shows the
+   generic 32x32 tile with no source badge: `icon.tile`, 1 px `icon.tile.border`, r4, the
+   title's first ASCII letter or digit upper-cased at (6, 6) in `text`; an empty title or
+   another first character draws `?`. Taskbar items, dock icons and switcher rows use this one
+   function.
+2. **The notice popup.** One primitive, `notice(text)`: a `Popup` 320x40, `menu.bg`, popup
+   chrome, the text in `text` centred, glyph top at row 12; centred on the work area's width,
+   top at the work area's top + 16. It closes after 3000 ms, on any key, or on a button-down
+   anywhere (delivered normally); any other popup replaces it. Launching Files closes the
+   launcher and shows `Files is not in this build yet.`
+3. **Tooltips**, on the taskbar and the dock only: `menu.bg`, 1 px `menu.border`, r4, no
+   shadow, 24 tall, width = glyphs x 8 + 16, text at x + 8, glyph top at row 4; after 600 ms of
+   hover; hidden on leave, on button-down, and while a popup is open. Drawn above the panels
+   but not a `Popup`: it takes no keys and closes nothing. Its bottom is at the panel's (or
+   the dock's) top - 4, centred on the item, clamped 8 px inside the screen. Texts: `Start`,
+   `Power`, the app's name for dock pinned and running icons, the window's title for taskbar
+   items, minimised-window icons and unnamed apps.
+4. **Context menus.** The power menu's chrome (160 wide, items 32 tall, text at x + 12,
+   `menu.hover`, Up/Down/Enter/Esc). Built-ins and `Host share`: `Open` only (34 tall).
+   Installed apps: `Open`, `Uninstall...` (66 tall); until item 36, `Uninstall...` is
+   `text.dim`, skipped by the arrows and ignored by a click. At the pointer; Shift+F10 in the
+   launcher: left at the row's x + 48, top at its bottom; on a desktop icon: left at the cell's
+   x + 24, top at its y + 64; clamped to the screen's width - 8 and the work area's bottom - 8.
+   The launcher's menu is drawn by the launcher itself (clamped inside it), so the launcher
+   stays open and Esc returns the keys to the list.
+5. **The Linux dash column.** x 0..63 with a 1 px `menu.border` line at x 64, border to border.
+   Icons 48x48 at x 8, tops at y 12, 68, 124 (pitch 56). Hover `bar.hover` r6 56x56 at
+   (4, y - 4); pressed `bar.pressed`. Running mark 4x4 `text` at x 30..33, rows y + 50..53.
+   Pointer only in 0.3.0. The search field and the rows start at x 76 (field 392 wide).
+6. **No egg in the dock.** The dock holds apps and windows only; "the dock's egg (the system
+   item)" in 6.2 is the top bar's system item.
+7. **Desktop icon focus and keys.** The background is focused by a click on bare wallpaper
+   (which clears the selection) or when no window is left. Up/Down move within a column,
+   Left/Right to the same index in the neighbouring column (clamped), Home/End to the first and
+   last, Enter launches, Shift+F10 and the Menu key open the context menu, Esc clears the
+   selection; other keys do nothing. With nothing selected any arrow selects the first icon.
+   The `selection` fill stays when focus leaves; the focus ring is drawn only with focus.
+8. **Open and pressed states.** Taskbar: the Start item is `bar.pressed` while the launcher is
+   open, the power button while its menu is. Dock: hover `bar.hover`, pressed `bar.pressed`,
+   each an r6 52x52 tile at (icon x - 2, 0) of the dock, rows 0..51.
+9. **Launcher rows.** Built-ins show nothing at the right edge; installed apps' source ends at
+   the row's right - 8. No match: row 1 holds `No apps match` in `text.dim` at x + 48, glyph top
+   at the row's y + 12, nothing selected, Enter does nothing.
+10. **Host share without Files.** Opening it focuses the Terminal window and runs
+    `ls /media/host` as if typed. No notice.
+11. **The Linux top bar's `Activities` item.** No egg mark in the Linux profile: `Activities`
+    at x 12 (ending at x 92), glyph top at row 6; hit target 0..96; chips still from x 104.
+12. **The dock separator** is drawn only when at least one icon follows it. The pinned-only
+    dock is 176 wide; the separator adds 17 px (8 + 1 + 8) before the first following icon.
+13. **Taskbar overflow.** The room is x 8 to the clock's left - 16 (width - 152; 1128 at 1280).
+    The group is centred while it fits; otherwise it starts at x 8 and items whose right edge
+    would pass the limit are not drawn. Their windows stay reachable through the switcher.
+14. **Desktop icon labels** hold 11 glyphs, not 12: with 4 px of padding each side, 12 glyphs
+    (104 px) do not fit the 96 px cell (found while building; the cut with `...` is unchanged).
+15. **The launcher's `Minimised:` line**, shown with at least one minimised window and at most
+    7 rows: top at the last row's bottom + 8, 20 tall; `Minimised:` in `text.dim` at x 12
+    (76 with the dash), glyph top at + 2; chips from the label's right + 8 with the top bar's
+    chip metrics (hover `bar.pressed`); a chip passing x 468 is dropped with those after it.
+    A click restores the window, focused, and closes the launcher.
+
 ## 7. The icon set (item 35)
 
 Six icons at 48x48 and 32x32, drawn with `fill_rect`, `fill_rounded_rect` (`INSET_R6`,
@@ -586,7 +652,9 @@ land (`files ls|rm|mv|mkdir|info`); in 0.3.0 the core utilities are that CLI.
 
 An "app" in 0.3.0 is a console program from another system that EggOS runs natively
 (D17-D19): a Windows `.exe` (x86_64 or ARM64 PE32+), a macOS Mach-O tool or an `.app` bundle
-whose `Contents/MacOS/<name>` is a console tool, or a Linux static ELF. Installing copies it
+whose `Contents/MacOS/<name>` is a console tool, or a Linux static ELF. (Superseded by D133:
+an app is installed in `/Applications/<name>/` with its catalogue entry `app.manifest` beside it,
+docs/apps.md.) Installing copies it
 to `/home/<user>/Apps/<name>/` with the files beside it (an `.app` whole), records it in the
 catalogue (`/home/<user>/.config/eggos/apps/<name>` holding name, source, architecture, the
 path to run and synonyms: a plain `key=value` file, no format of our own to parse beyond

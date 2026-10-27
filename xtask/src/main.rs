@@ -180,6 +180,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-drivers",
     "eggos-font",
     "eggos-settings-file",
+    "eggos-app-manifest",
 ];
 
 const USER_CRATES: &[&str] = &[
@@ -602,6 +603,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let kernel = build_kernel(arch, None)?;
     qemu::persistent::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
+    qemu::shell::check(arch, &kernel)?;
     qemu::boot_test(
         arch,
         &kernel,

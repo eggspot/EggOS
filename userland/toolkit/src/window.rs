@@ -313,7 +313,7 @@ impl Window {
     }
 
     /// Waits up to `timeout_ms` (for ever when `None`) for event records and reads as many as
-    /// fit `records`; how many bytes, 0 when the time ran out.
+    /// fit `records`; how many bytes, 0 when the time ran out or a signal interrupted the wait.
     pub fn read_events(&self, records: &mut [u8], timeout_ms: Option<u32>) -> Result<usize, Errno> {
         let mut poll = [0u8; 8];
         poll[0..4].copy_from_slice(&(self.server.fd as i32).to_ne_bytes());
@@ -328,8 +328,10 @@ impl Window {
                 [poll.as_mut_ptr() as usize, 1, timeout_pointer, 0, 8, 0],
             )
         };
-        if result(ready)? == 0 {
-            return Ok(0);
+        match result(ready) {
+            Ok(0) | Err(Errno::EINTR) => return Ok(0),
+            Ok(_) => {}
+            Err(error) => return Err(error),
         }
         let length = records.len() / RECORD_SIZE * RECORD_SIZE;
         // SAFETY: `read` writes at most `length` bytes into `records`, owned by the caller and
@@ -347,7 +349,10 @@ impl Window {
                 ],
             )
         };
-        result(read)
+        match result(read) {
+            Err(Errno::EINTR) => Ok(0),
+            read => read,
+        }
     }
 
     /// The window's id, as event records name it.

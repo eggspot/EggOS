@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod address_space;
+pub mod apps;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
 pub mod block;

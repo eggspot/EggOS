@@ -26,6 +26,10 @@ pub trait Application<const N: usize> {
     /// Called at or after the time [`Self::deadline`] gave, once the window shows what the
     /// last input changed.
     fn tick(&mut self, _now_ms: u32) {}
+
+    /// Called when the window gets the keyboard focus, after its widgets saw it: the moment to
+    /// pick up what changed outside the program meanwhile.
+    fn focused(&mut self, _now_ms: u32) {}
 }
 
 fn draw<const N: usize>(
@@ -142,6 +146,9 @@ pub fn run<const N: usize>(
                         .tree()
                         .handle(in_scale_1(other, scale as i32), event.time_ms);
                     application.respond(response, event.time_ms);
+                    if other == Input::FocusIn {
+                        application.focused(event.time_ms);
+                    }
                 }
             }
         }

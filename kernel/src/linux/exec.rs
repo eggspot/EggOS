@@ -771,13 +771,15 @@ fn read_interpreter<P: Platform>(
 
 const SIGNATURE_BYTES: u64 = 64;
 
-enum ProgramBytes {
+/// A program's bytes: lent by a file system that holds them in memory, else copied.
+pub(crate) enum ProgramBytes {
     Lent(&'static [u8]),
     Copied(Vec<u8>),
 }
 
 impl ProgramBytes {
-    fn read(node: Node, size: u64, at_most: u64) -> Result<Self, Errno> {
+    /// The first `at_most` of the `size` bytes of `node`.
+    pub(crate) fn read(node: Node, size: u64, at_most: u64) -> Result<Self, Errno> {
         let file_system = node.file_system();
         if !file_system.copies_contents() {
             return Ok(Self::Lent(node.read(0, size as usize)));
@@ -798,7 +800,8 @@ impl ProgramBytes {
         Ok(Self::Copied(bytes))
     }
 
-    fn bytes(&self) -> &[u8] {
+    /// The bytes.
+    pub(crate) fn bytes(&self) -> &[u8] {
         match self {
             Self::Lent(bytes) => bytes,
             Self::Copied(bytes) => bytes,

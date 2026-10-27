@@ -58,15 +58,15 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `SET_SIZE` | `0xc0187703` (RW) | 24 | 0: window, 4: width (in/out), 8: height (in/out), 16: new buffer offset (64, out) | A new, zeroed buffer at the new size, clamped to the minimum size and the whole work area (less the chrome); its content shows the window background until the next commit. The answer to a `Resize`: while one is unanswered (the user is still dragging), only the buffer changes and the window keeps the size the user gave it, the buffer shown clipped. Otherwise the window takes the size, keeping its top-left corner, and a maximised window becomes normal (`StateChanged` 0). Map the new offset; the old mapping stays valid until unmapped. `EAGAIN` if the window's size kept changing under four attempts. |
 | `SET_MINIMUM_SIZE` | `0x400c7704` (W) | 12 | 0: window, 4: width, 8: height | The smallest content `SET_SIZE` and the user's resizing may give it. |
 | `SET_POSITION` | `0x400c7705` (W) | 12 | 0: window, 4: x, 8: y (signed, work-area coordinates of the window's outside top-left) | Clamped so the whole window is in the work area; applied when it is first shown if it is not yet. |
-| `SET_STATE` | `0x40087706` (W) | 8 | 0: window, 4: state | 0 normal (restores from minimised and from maximised), 1 minimised (to a chip in the top bar), 2 maximised (fills the work area; `EINVAL` for a dialog or a `FIXED_SIZE` window). Dialogs cannot be minimised (`EINVAL`). |
+| `SET_STATE` | `0x40087706` (W) | 8 | 0: window, 4: state | 0 normal (restores from minimised and from maximised), 1 minimised (to the window list: the taskbar, the dock or a chip in the top bar), 2 maximised (fills the work area; `EINVAL` for a dialog or a `FIXED_SIZE` window). Dialogs cannot be minimised (`EINVAL`). |
 | `SET_POINTER` | `0x40087707` (W) | 8 | 0: window, 4: shape | The pointer drawn over the window's content: 0 arrow, 1 I-beam, 2 north-south, 3 east-west, 4 north-west-south-east, 5 north-east-south-west. |
 | `COMMIT` | `0x40887708` (W) | 136 | 0: window, 4: count (at most 8), 8: rects, each 16 bytes: x, y, width, height in content coordinates | Shows the window on its first commit; copies the rects, clipped to the content, or all of it when count is 0 (or after `SET_SIZE`). |
 | `DESTROY` | `0x40047709` (W) | 4 | 0: window | Unshows and frees it (its buffer once no mapping holds it), and its dialogs. |
-| `GET_WORK_AREA` | `0x8014770a` (R) | 20 | 0: x, 4: y, 8: width, 12: height, 16: scale | Where windows go (the screen below the top bar, what a maximised window fills) and the scale, 1 in 0.3.0. |
+| `GET_WORK_AREA` | `0x8014770a` (R) | 20 | 0: x, 4: y, 8: width, 12: height, 16: scale | Where windows go (the screen less the profile's panels: above the taskbar, or between the top bar and the dock, or below the top bar; what a maximised window fills) and the scale, 1 in 0.3.0. |
 | `LIST_WINDOW` | `0xc060770b` (RW) | 96 | 0: index (in); 0: window, 4: state, 8: x, 12: y, 16: width, 20: height (the outside rectangle on the screen), 24: client (65535 the kernel's), 28: title length, 32: title (64 bytes) (out) | The window at that index among the shown and minimised windows, oldest first; `ENOENT` past the last. Root only (`EPERM`); what `wm list` reads. |
 | `MANAGE_WINDOW` | `0x4010770c` (W) | 16 | 0: window, 4: action, 8: a, 12: b (signed) | Any client's window: 0 focus (restoring it if minimised), 1 minimise, 2 maximise, 3 restore, 4 close (sends `CloseRequest`; `EPERM` for the terminal), 5 move its outside top-left to (a, b) on the screen, 6 give it content a by b (sends `Resize`). Root only (`EPERM`); what `wm`'s other commands make. |
 | `GET_PROFILE` | `0x8004770d` (R) | 4 | 0: profile (out) | The desktop's layout profile (D132): 0 Windows habits, 1 macOS habits, 2 Linux habits. Any client. |
-| `SET_PROFILE` | `0x4004770e` (W) | 4 | 0: profile | Makes it the desktop's at once: every window's controls move to the profile's side (left for macOS, right for the others) and its shortcuts apply; windows keep their sizes and buffers, only their title bars are drawn again. The profile is not saved: Settings and `settings set` save it in the settings file, which the kernel reads at boot (D132). Root only, for now the active user's session (`EPERM`); `EINVAL` for another number. |
+| `SET_PROFILE` | `0x4004770e` (W) | 4 | 0: profile | Makes it the desktop's at once: the shell's panels and work area change (D133), every window's controls move to the profile's side (left for macOS, right for the others) and its shortcuts apply; windows are moved into the new work area, maximised ones fill it and resizable ones larger than it shrink to fit (their clients get `Resize`); the others keep their size and buffer. The profile is not saved: Settings and `settings set` save it in the settings file, which the kernel reads at boot (D132). Root only, for now the active user's session (`EPERM`); `EINVAL` for another number. |
 
 Errors: a window that is not the client's, an unknown role, state, shape or action, unknown
 flags, a title too long or not UTF-8, more than 8 rects: `EINVAL`; a role the client may not
@@ -112,7 +112,8 @@ corners, where the pointer shows the resize shape. The three controls are close 
 minimise (yellow) and maximise (green), from the left edge in the default macOS-habits profile,
 and close, maximise, minimise from the right edge in the Windows and Linux profiles; hovering
 one shows its glyph, and a maximised window's green control restores it. The yellow control
-minimises the window to a chip in the top bar, which restores it; the red one, on the focused
+minimises the window to the window list (its taskbar item, an icon on the dock after the
+separator, or a chip in the Linux top bar), which restores it; the red one, on the focused
 window, sends `CloseRequest`. A double-click on the title bar maximises or restores.
 
 Keys the desktop takes before the focused window (D128): Alt+Tab (Cmd+Tab in the macOS
@@ -139,8 +140,17 @@ maximises, restores, closes, moves and sizes them; it uses `LIST_WINDOW` and `MA
 so it needs root. Its MCP tools come with the MCP server: there is no capability or MCP
 framework yet (D21, D22).
 
+## The shell around the windows
+
+The window server also draws the shell (D133, [apps](apps.md)): the taskbar (Windows
+profile), the top bar and the dock (macOS), or the top bar with `Activities` (Linux); the
+launcher (Super alone, Cmd+Space in the macOS profile, Start, the system item or
+`Activities`); the desktop icons on the wallpaper. Panels, popups and the background stay the
+server's in 0.3.0 (`CREATE` refuses those roles with `EPERM`); a window belongs to an app by its
+title, which picks the icon its taskbar item, dock icon and switcher row show.
+
 ## Not yet
 
-Windows partly off screen, the launcher (Super alone), F11, the `Hand` and
+Windows partly off screen, F11, the `Hand` and
 `Busy` pointer shapes, `wm screenshot` and `wm`'s MCP tools, key repeat as `Key` records with
 value 2, scales other than 1, buffers over 4 MiB, the server in user space.

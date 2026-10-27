@@ -87,6 +87,8 @@ pub enum Shortcut {
     ShowDesktop,
     /// Open the power menu.
     PowerMenu,
+    /// Open the launcher, or close it.
+    Launcher,
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -127,6 +129,7 @@ pub fn shortcut(
         key::H if only(super_key) && profile == Profile::Linux => Shortcut::Minimise,
         key::D if only(super_key) => Shortcut::ShowDesktop,
         key::X if only(super_key) => Shortcut::PowerMenu,
+        key::SPACE if only(super_key) && profile == Profile::Macos => Shortcut::Launcher,
         _ => return None,
     })
 }

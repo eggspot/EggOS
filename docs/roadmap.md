@@ -275,7 +275,14 @@ D16):
     `/home/root/.config/eggos/settings` before the desktop's first frame. Next: the shell's
     panels per profile and a launcher entry (item 35), the MCP tools, 2x, the Mouse and
     Components panes.
-35. the desktop shell: taskbar or dock, the launcher, desktop icons.
+35. **done** — users can now use the desktop like the system they came from (D133,
+    docs/apps.md): the taskbar with Start, the windows and the clock (Windows profile), the
+    top bar and the dock (macOS), the top bar with `Activities` (Linux), all laid out by one
+    function of the screen and the profile and switched live; the launcher (Super, Cmd+Space,
+    Start, `Activities`) with search by name and synonym; desktop icons; Claude Fable's icon
+    set; the app catalogue in `/Applications/<name>/app.manifest`; Settings from the dock, the
+    launcher and the desktop. Next: install and uninstall (item 36), Files (item 37), the
+    phone layout, 2x.
 36. install, open and uninstall of `.exe`, `.app` and ELF programs.
 37. the Files app.
 38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.

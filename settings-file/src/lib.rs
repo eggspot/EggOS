@@ -20,8 +20,33 @@ pub const DIRECTORIES: [&str; 3] = [
     "/home/root/.config/eggos",
 ];
 
-/// The name a new version is written under before it is renamed over [`PATH`].
-pub const TEMPORARY_PATH: &str = "/home/root/.config/eggos/settings.tmp";
+/// The start of the name a new version is written under, before it is renamed over [`PATH`]:
+/// [`temporary_path`] ends it with the writer's process id, so two writers never share one.
+pub const TEMPORARY_PREFIX: &str = "/home/root/.config/eggos/settings.tmp.";
+
+/// The longest name [`temporary_path`] writes.
+pub const TEMPORARY_PATH_CAPACITY: usize = TEMPORARY_PREFIX.len() + 10;
+
+/// The temporary file's name for the process `process_id`, written into `out`.
+pub fn temporary_path(process_id: u32, out: &mut [u8; TEMPORARY_PATH_CAPACITY]) -> &str {
+    let prefix = TEMPORARY_PREFIX.as_bytes();
+    out[..prefix.len()].copy_from_slice(prefix);
+    let mut digits = [0u8; 10];
+    let mut count = 0;
+    let mut rest = process_id;
+    loop {
+        digits[count] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        count += 1;
+        if rest == 0 {
+            break;
+        }
+    }
+    for (at, digit) in digits[..count].iter().rev().enumerate() {
+        out[prefix.len() + at] = *digit;
+    }
+    core::str::from_utf8(&out[..prefix.len() + count]).unwrap_or(TEMPORARY_PREFIX)
+}
 
 /// The file's first line: its format and version.
 pub const HEADER: &[u8] = b"eggos-settings 1";
@@ -267,6 +292,23 @@ mod tests {
         assert_eq!(
             with_value(b"", SHELL_PROFILE, b"x", &mut tiny),
             Err(Refused::TooLarge)
+        );
+    }
+
+    #[test]
+    fn each_process_writes_its_own_temporary_file() {
+        let mut out = [0u8; TEMPORARY_PATH_CAPACITY];
+        assert_eq!(
+            temporary_path(42, &mut out),
+            "/home/root/.config/eggos/settings.tmp.42"
+        );
+        assert_eq!(
+            temporary_path(0, &mut out),
+            "/home/root/.config/eggos/settings.tmp.0"
+        );
+        assert_eq!(
+            temporary_path(u32::MAX, &mut out),
+            "/home/root/.config/eggos/settings.tmp.4294967295"
         );
     }
 

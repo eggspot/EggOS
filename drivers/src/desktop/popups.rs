@@ -4,6 +4,7 @@
 //! is open it takes the keys; the focused window gets `FocusOut` when it opens and `FocusIn`
 //! when it closes.
 
+use super::icons::{IconSize, draw_icon};
 use super::paint::{self, Canvas};
 use super::protocol::{EventRecord, EventSink, MAX_WINDOWS, PointerShape, Role, event};
 use super::shortcuts::Held;
@@ -25,6 +26,7 @@ pub const SWITCHER_ROW_HEIGHT: u32 = 32;
 pub const SWITCHER_ROWS: usize = 12;
 const SWITCHER_PADDING: u32 = 8;
 const SWITCHER_TEXT_X: u32 = 48;
+const SWITCHER_ICON_X: u32 = 8;
 const SWITCHER_GLYPHS: usize = 40;
 const FOCUS_RING_INSET: u32 = 2;
 const FOCUS_RING_WIDTH: u32 = 2;
@@ -158,7 +160,7 @@ impl WindowMenu {
     }
 }
 
-fn with_shadow(rect: Rect) -> Rect {
+pub(super) fn with_shadow(rect: Rect) -> Rect {
     Rect::new(
         rect.x.saturating_sub(SHADOW_RINGS),
         rect.y,
@@ -204,10 +206,13 @@ impl Desktop {
     }
 
     pub(super) fn popup_open(&self) -> bool {
-        self.switcher.is_some() || self.window_menu.is_some()
+        self.switcher.is_some()
+            || self.window_menu.is_some()
+            || self.launcher.is_some()
+            || self.icons.menu.is_some()
     }
 
-    fn begin_popup(&mut self, events: &mut dyn EventSink) {
+    pub(super) fn begin_popup(&mut self, events: &mut dyn EventSink) {
         if let Some(focus) = self.focus.filter(|&slot| self.is_visible(slot)) {
             self.send(
                 focus,
@@ -217,7 +222,7 @@ impl Desktop {
         }
     }
 
-    fn end_popup(
+    pub(super) fn end_popup(
         &mut self,
         target: Option<usize>,
         damage: &mut Damage,
@@ -250,6 +255,8 @@ impl Desktop {
             damage.add(with_shadow(self.window_menu_rect(&menu)));
             self.end_popup(None, damage, events);
         }
+        self.close_launcher(damage, events);
+        self.close_icon_menu(damage, events);
     }
 
     /// Window `slot` is going away: the switcher stops listing it and its window menu closes.
@@ -546,6 +553,9 @@ impl Desktop {
         if let Some(menu) = self.window_menu.filter(|menu| menu.mode == MenuMode::Items) {
             self.draw_window_menu(canvas, &menu);
         }
+        self.draw_launcher(canvas);
+        self.draw_icon_menu(canvas);
+        self.draw_notice(canvas);
     }
 
     pub(super) fn popups_overlap(&self, clip: Rect) -> bool {
@@ -556,9 +566,12 @@ impl Desktop {
                 .window_menu
                 .filter(|menu| menu.mode == MenuMode::Items)
                 .is_some_and(|menu| with_shadow(self.window_menu_rect(&menu)).overlaps(&clip))
+            || self.launcher_overlaps(clip)
+            || self.icon_menu_overlaps(clip)
+            || self.notice_overlaps(clip)
     }
 
-    fn draw_popup_surface(canvas: &mut Canvas<'_>, rect: Rect, surface: u32) {
+    pub(super) fn draw_popup_surface(canvas: &mut Canvas<'_>, rect: Rect, surface: u32) {
         canvas.shadow(rect);
         canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
         canvas.rounded(
@@ -597,7 +610,15 @@ impl Desktop {
                     colour::BAR_PRESSED,
                 );
             }
-            let window = self.window_at(usize::from(switcher.entries[index]));
+            let slot = usize::from(switcher.entries[index]);
+            draw_icon(
+                canvas,
+                self.window_icon(slot),
+                IconSize::Small,
+                row.x - 1 + SWITCHER_ICON_X,
+                row.y,
+            );
+            let window = self.window_at(slot);
             let text_colour = match window.minimised {
                 true => colour::TEXT_DIM,
                 false => colour::TEXT,

@@ -4,6 +4,7 @@ use crate::font::{self, GLYPH_HEIGHT, GLYPH_WIDTH};
 pub(super) const INSET_R6: [u32; 6] = [4, 2, 1, 1, 0, 0];
 pub(super) const INSET_INSIDE_R6: [u32; 5] = [3, 1, 1, 0, 0];
 pub(super) const INSET_R4: [u32; 4] = [2, 1, 0, 0];
+pub(super) const INSET_INSIDE_R4: [u32; 1] = [1];
 
 const SHADOW_DARKENING: [fn(u32) -> u32; 4] = [half, quarter, quarter, eighth];
 
@@ -170,6 +171,41 @@ impl<'a> Canvas<'a> {
                 colour,
             );
         }
+    }
+
+    pub(super) fn circle(&mut self, centre_x: u32, centre_y: u32, radius: u32, colour: u32) {
+        let diameter_squared = 4 * radius * radius;
+        for row in centre_y.saturating_sub(radius)..centre_y + radius {
+            let from_centre = (2 * row + 1).abs_diff(2 * centre_y);
+            let squared = from_centre * from_centre;
+            if squared >= diameter_squared {
+                continue;
+            }
+            let half = isqrt(diameter_squared - squared);
+            let left = (2 * centre_x).saturating_sub(half).div_ceil(2);
+            let right = (2 * centre_x + half).div_ceil(2);
+            self.row(row, left, right, colour);
+        }
+    }
+
+    pub(super) fn glyph_doubled(&mut self, x: u32, y: u32, id: u8, colour: u32) {
+        let cell = Rect::new(x, y, 2 * GLYPH_WIDTH as u32, 2 * GLYPH_HEIGHT as u32);
+        if !cell.overlaps(&self.clip) || id == b' ' {
+            return;
+        }
+        for (row, &bits) in font::rows(id).iter().enumerate() {
+            for column in 0..GLYPH_WIDTH {
+                if bits & (0x80 >> column) != 0 {
+                    let (left, top) = (x + 2 * column as u32, y + 2 * row as u32);
+                    self.row(top, left, left + 2, colour);
+                    self.row(top + 1, left, left + 2, colour);
+                }
+            }
+        }
+    }
+
+    pub(super) fn glyph_at(&mut self, x: u32, y: u32, id: u8, colour: u32) {
+        self.glyph(x, y, id, colour);
     }
 
     fn glyph(&mut self, x: u32, y: u32, id: u8, colour: u32) {
