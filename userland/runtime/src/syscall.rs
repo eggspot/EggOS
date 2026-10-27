@@ -53,6 +53,7 @@ pub mod number {
     pub const UTIMENSAT: usize = 280;
     pub const RENAMEAT2: usize = 316;
     pub const SYNC: usize = 162;
+    pub const SCHED_GETAFFINITY: usize = 204;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -105,6 +106,7 @@ pub mod number {
     pub const UTIMENSAT: usize = 88;
     pub const RENAMEAT2: usize = 276;
     pub const SYNC: usize = 81;
+    pub const SCHED_GETAFFINITY: usize = 123;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

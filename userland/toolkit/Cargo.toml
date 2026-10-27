@@ -1,0 +1,13 @@
+[package]
+name = "eggos-toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eggos-font = { path = "../../font" }
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true
