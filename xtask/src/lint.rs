@@ -67,6 +67,8 @@ fn read_if_present(path: &Path) -> Result<Option<String>, String> {
 
 fn tracked_files(root: &Path) -> Result<Vec<String>, String> {
     let output = std::process::Command::new("git")
+        .arg("-c")
+        .arg(format!("safe.directory={}", root.display()))
         .arg("-C")
         .arg(root)
         .args(["ls-files", "-z"])
