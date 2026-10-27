@@ -7,6 +7,10 @@ name = "eggos-android-console"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-app-manifest"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-coreutils"
 version = "0.2.0"
 dependencies = [
