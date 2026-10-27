@@ -1,17 +1,20 @@
 # Running Windows programs
 
-EggOS runs unmodified Windows console programs natively: x64 programs on x86_64 and ARM64
-programs on aarch64. The program's own machine code runs directly on the CPU, with no emulator
+EggOS runs unmodified Windows console and GUI programs natively: x64 programs on x86_64 and
+ARM64 programs on aarch64. The program's own machine code runs directly on the CPU, with no emulator
 and no virtual machine (D17). The Windows layer
 (D118), an optional component at `/usr/lib/eggos/windows`, loads the program's PE32+ file,
-binds the functions it imports from `kernel32.dll` and `ntdll.dll` to its own implementations,
-written in Rust on EggOS's system calls, and calls the program's entry point. A Win32 call is a
+binds the functions it imports from `kernel32.dll`, `ntdll.dll`, `user32.dll` and `gdi32.dll`
+to its own implementations, written in Rust on EggOS's system calls and window server, and calls
+the program's entry point. A Win32 call is a
 plain function call; no system call happens unless the function needs the kernel (a write to
 the console, a file read), and the heap allocates without one.
 
 Part 1 (D118) brought console programs; part 2a (D121) brings what small real tools use:
 threads and waits, locks, error codes as Windows reports them, UTF-16 strings and directory
-listing; part 2b (D124) brings all of it to ARM64 programs on aarch64. Programs built with a C
+listing; part 2b (D124) brings all of it to ARM64 programs on aarch64; GUI programs, part 1
+(D129), bring windows: a GUI program's windows open on the desktop, it paints them with GDI,
+gets the mouse and keyboard as Win32 messages and shows message boxes. Programs built with a C
 or C++ runtime (MSVC's or MinGW's) or with Rust's standard
 library import more than this and are refused with the name of the first missing function.
 
@@ -53,6 +56,9 @@ RUSTFLAGS="-C linker=rust-lld -C link-arg=/NODEFAULTLIB -C link-arg=/SUBSYSTEM:C
 (`cargo xtask` passes the same flags when it builds EggOS's test programs; they are not in
 `.cargo/config.toml`, where they would also apply to programs built for a Windows host.)
 
+A GUI program links with `/SUBSYSTEM:WINDOWS` and its entry `WinMainCRTStartup` (the layer
+calls the entry the PE names, with no arguments, as Windows does).
+
 The program is `#![no_std]` and `#![no_main]`, defines `mainCRTStartup`, and declares its
 imports with `#[link(name = "kernel32", kind = "raw-dylib")]` (and `ntdll` for `memcpy`,
 `memset`, `memmove`, `memcmp`, `strlen` and `__chkstk`, which the compiler calls), so the
@@ -70,7 +76,42 @@ runs four worker threads joined with `WaitForMultipleObjects` over a shared coun
 section, a mutex and an SRW lock, plus events, a semaphore, one-time initialisation, TLS and
 FLS slots and the last error per thread, a suspended thread and `ExitThread`, the error codes,
 UTF-8 round trips with non-ASCII text, the system, version, clock, path and environment
-functions.
+functions. `win-paint.exe` (`tests/windows-gui`) is a GUI program: it registers a class,
+creates a window, paints a scene of GDI shapes and text, recolours its ellipse on a click
+through `GetDC`, adds a typed letter, opens a message box on Space and ends when its window is
+closed; the Windows GUI boot test drives it through QEMU's input and compares every frame with
+the host's render of the same scene (D129).
+
+## GUI programs
+
+Run one from `eggsh` like any program; the shell waits for it to end. Its windows open on the
+desktop with EggOS's chrome (title bar, controls, the user's moving, resizing, maximising,
+minimising and closing, D128) around the content the program paints. A GUI program has no
+console: its standard handles are null where they would be the terminal, as on Windows, and
+the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp/log`).
+
+- **Sizes.** `CreateWindowExW` takes the outside size; the content is that less EggOS's 1 px
+  border and 28 px title bar (2 by 30). `GetSystemMetrics` reports that chrome
+  (`SM_CYCAPTION` 28, borders and frames 1), so `AdjustWindowRect(Ex)` gives the same answer.
+  `CW_USEDEFAULT` places the window by the desktop's cascade and makes it three quarters of
+  the work area. Without `WS_THICKFRAME` the window cannot be resized or maximised.
+- **Painting.** A window appears once its first `WM_PAINT` has ended, painted; until then and
+  after a resize the desktop shows `window.bg`. `BeginPaint` sends `WM_ERASEBKGND`, which
+  `DefWindowProcW` answers with the class brush; `EndPaint` shows the region it painted,
+  `ReleaseDC` what a `GetDC` context drew. GDI follows Win32's pixel rules (a shape's right and
+  bottom edges are outside it, a null pen makes rectangles and ellipses one pixel smaller,
+  `LineTo` leaves out its end point); a wide pen's outline is inside the shape. Every font is
+  Egg Mono 8x16 (`GetTextExtentPoint32W` gives 8 by 16 a character). The system colours are
+  Windows' light defaults (`docs/ux/windows-gui-v0.3.md` section 2).
+- **Messages.** One queue per process: posted messages, then the mouse and keyboard, then
+  `WM_QUIT`, then `WM_PAINT`. The close control, Alt+F4 and the window menu's `Close` send
+  `WM_SYSCOMMAND` with `SC_CLOSE`, a resize `WM_SIZE`, focus `WM_SETFOCUS` and `WM_KILLFOCUS`;
+  keys have Windows' virtual-key codes, and `TranslateMessage` posts `WM_CHAR` with the
+  character of the US layout.
+- **Message boxes.** `MessageBoxW` shows the box of `docs/ux/windows-gui-v0.3.md` section 1, a
+  dialog of its owner's window, with every `MB_` button set, the four icons, the default
+  button, Enter, Esc, Tab, the arrows and the underlined mnemonics; it returns the button's
+  `ID` value.
 
 ## What the layer provides
 
@@ -83,12 +124,16 @@ functions.
 | Environment | `GetEnvironmentVariableW`/`A`, `GetEnvironmentStrings`, `GetEnvironmentStringsW`/`A`, `FreeEnvironmentStringsW`/`A` |
 | Time | `GetTickCount`, `GetTickCount64`, `QueryPerformanceCounter`, `QueryPerformanceFrequency` (10 MHz), `GetSystemTimeAsFileTime`, `GetSystemTimePreciseAsFileTime`, `Sleep`, `SleepEx` |
 | Errors and TLS | `GetLastError`, `SetLastError`, `TlsAlloc`, `TlsFree`, `TlsGetValue`, `TlsSetValue`, and a program's static TLS (its TLS directory and callbacks) |
-| Modules | `GetModuleHandleW`/`A`, `GetModuleFileNameW` (the program's full path in Windows' form), `LoadLibraryW`/`A`, `LoadLibraryExW`/`A`, `FreeLibrary`, `GetProcAddress` (kernel32, ntdll, shell32, user32; `api-ms-win-core-*` names resolve to kernel32) |
+| Modules | `GetModuleHandleW`/`A`, `GetModuleFileNameW` (the program's full path in Windows' form), `LoadLibraryW`/`A`, `LoadLibraryExW`/`A`, `FreeLibrary`, `GetProcAddress` (kernel32, ntdll, shell32, user32, gdi32; `api-ms-win-core-*` names resolve to kernel32) |
 | Threads | `CreateThread` (with `CREATE_SUSPENDED`), `ExitThread`, `ResumeThread`, `GetExitCodeThread`, `GetThreadId`, `GetCurrentThreadId`, `SwitchToThread`, `SetThreadPriority`, `GetThreadPriority`, `SetThreadDescription`; each thread has its own TEB, last error, TLS slots and copy of the program's static TLS (callbacks get `DLL_THREAD_ATTACH` and `DETACH`), and the process ends when its last thread does (returning from the entry point ends only the first thread) |
 | Waits and objects | `WaitForSingleObject`(`Ex`), `WaitForMultipleObjects`(`Ex`) (any or all, timeouts) on threads, events, mutexes and semaphores; `CreateEventW`/`A`/`ExW`, `SetEvent`, `ResetEvent`, `CreateMutexW`/`A`/`ExW`, `ReleaseMutex`, `CreateSemaphoreW`/`A`/`ExW`, `ReleaseSemaphore`, `DuplicateHandle`, `CloseHandle` |
 | Locks | `InitializeCriticalSection`(`AndSpinCount`, `Ex`), `EnterCriticalSection`, `TryEnterCriticalSection`, `LeaveCriticalSection`, `DeleteCriticalSection`; SRW locks (`AcquireSRWLockExclusive`/`Shared`, `TryAcquire...`, `Release...`); condition variables (`SleepConditionVariableCS`/`SRW`, `WakeConditionVariable`, `WakeAllConditionVariable`); `InitOnceExecuteOnce`, `InitOnceBeginInitialize`, `InitOnceComplete`; `WaitOnAddress`, `WakeByAddressSingle`/`All`. Interlocked operations are the compiler's own atomic instructions (lock-prefixed on x64, exclusive or LSE on ARM64) and need nothing from the layer |
 | Fiber-local storage | `FlsAlloc` (callbacks run when a thread ends), `FlsFree`, `FlsGetValue`, `FlsSetValue` |
 | Directories | `FindFirstFileW`, `FindFirstFileExW`, `FindNextFileW`, `FindClose` (`*` and `?`, names compared ignoring ASCII case, `*.*` matches everything, `.` and `..` listed), `GetFileAttributesW`, `GetFileAttributesExW`, `GetFileInformationByHandle`, `CreateDirectoryW`, `DeleteFileW`, `RemoveDirectoryW`, `GetCurrentDirectoryW`, `SetCurrentDirectoryW`, `GetFullPathNameW` |
+| Windows (user32) | `RegisterClassExW`, `RegisterClassW`, `UnregisterClassW`, `CreateWindowExW`, `DestroyWindow`, `IsWindow`, `ShowWindow`, `UpdateWindow`, `GetClientRect`, `AdjustWindowRect`(`Ex`), `GetWindowLongW`, `SetWindowLongW`, `GetWindowLongPtrW`, `SetWindowLongPtrW` (the window procedure, instance, parent, id, styles, user data and the extra bytes), `DefWindowProcW`, `GetSystemMetrics`, `LoadCursorW`, `LoadIconW`, `MessageBoxW` |
+| Messages (user32) | `GetMessageW`, `PeekMessageW` (`PM_REMOVE`), `TranslateMessage`, `DispatchMessageW`, `PostMessageW`, `PostQuitMessage`, `SendMessageW`; `WM_NCCREATE`, `WM_CREATE`, `WM_SHOWWINDOW`, `WM_SIZE`, `WM_PAINT`, `WM_ERASEBKGND`, `WM_SETFOCUS`, `WM_KILLFOCUS`, `WM_SYSCOMMAND`, `WM_CLOSE`, `WM_DESTROY`, `WM_NCDESTROY`, `WM_QUIT`, `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`/`UP`, `WM_RBUTTONDOWN`/`UP`, `WM_MBUTTONDOWN`/`UP`, `WM_MOUSEWHEEL`, `WM_KEYDOWN`/`UP`, `WM_SYSKEYDOWN`/`UP`, `WM_CHAR`, `WM_SYSCHAR`, `WM_HELP` |
+| Painting (user32) | `BeginPaint`, `EndPaint`, `GetDC`, `ReleaseDC`, `InvalidateRect`, `FillRect`, `DrawTextW` (left, centre, right; top, centre, bottom on one line; `DT_WORDBREAK`, `DT_NOPREFIX`, `DT_EXPANDTABS`, `DT_NOCLIP`, `DT_CALCRECT`, `DT_END_ELLIPSIS`), `GetSysColor`, `GetSysColorBrush` |
+| GDI (gdi32) | `CreateSolidBrush`, `CreatePen` (solid or `PS_NULL`), `GetStockObject`, `SelectObject`, `DeleteObject`, `SetTextColor`, `SetBkColor`, `SetBkMode`, `MoveToEx`, `LineTo`, `Rectangle`, `Ellipse`, `SetPixel`, `TextOutW`, `GetTextExtentPoint32W` |
 | Strings | `MultiByteToWideChar`, `WideCharToMultiByte` (`CP_UTF8`, and `CP_ACP`/`CP_OEMCP`, which are UTF-8 too; `MB_ERR_INVALID_CHARS`, `WC_ERR_INVALID_CHARS`), `lstrlenW`/`A`, `lstrcmpW`, `lstrcmpiW`, `CompareStringOrdinal`, `CompareStringW`/`Ex` (ordinal, `NORM_IGNORECASE`), `FormatMessageW` (system messages, `FORMAT_MESSAGE_ALLOCATE_BUFFER`), user32's `CharUpperW` and `CharLowerW`, shell32's `CommandLineToArgvW` |
 | Environment, more | `SetEnvironmentVariableW`/`A`; `GetEnvironmentStrings*` return a copy that reflects changes |
 | System and time, more | `GetSystemInfo`, `GetNativeSystemInfo` (`PROCESSOR_ARCHITECTURE_AMD64`, 9, on x86_64; `PROCESSOR_ARCHITECTURE_ARM64`, 12, on aarch64), `GetVersionExW`, `GetVersion`, ntdll's `RtlGetVersion` (Windows 11: 10.0, build 26100), `GetSystemTime`, `GetLocalTime` (UTC), `FileTimeToSystemTime`, `SystemTimeToFileTime`, `FileTimeToLocalFileTime`, `LocalFileTimeToFileTime`, `LocalAlloc`/`LocalFree`, `GlobalAlloc`/`GlobalFree` (fixed blocks) |
@@ -133,10 +178,16 @@ size needed, as each function documents.
 - **Time zones**: local time is UTC.
 - **Structured exception handling**: a fault ends the program as a signal would end a Linux
   one; no `__try`/`__except`, no vectored handlers, no unwinding.
-- **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`) and user32 (its
-  character functions); a program that imports another DLL (gdi32, ws2_32, its own) or a
-  function they lack is refused. Imports by ordinal are refused.
-- **GUI programs** (subsystem `WINDOWS`), 32-bit programs (x86 and 32-bit Arm).
+- **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32 and
+  gdi32 (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
+  own) or a function they lack is refused. Imports by ordinal are refused.
+- **GUI programs beyond part 1** (D129): child windows and the system's controls (buttons,
+  edits, list boxes), menus, dialogs from resources, timers, fonts other than Egg Mono and text
+  beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
+  `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows
+  from the program, `SW_HIDE`, bitmaps and `BitBlt`, dashed pens, raster operations and
+  clipping beyond one rectangle, a message queue per thread. 32-bit programs (x86 and 32-bit
+  Arm).
 - **Writing files**: the file system is read-only, so `CreateFileW` for writing fails with
   `ERROR_ACCESS_DENIED`.
 - **Exit codes** above 255 reach the shell as their low 8 bits.

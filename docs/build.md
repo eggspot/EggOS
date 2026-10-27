@@ -96,6 +96,15 @@ holds what used to be written in them.
   on x86_64 each `WINDOWS-CONSOLE` line, the exit codes 0 and 44 (`ExitProcess(300)`) and the
   refusal of the unsupported import with status 126 must appear in order; on aarch64 and
   riscv64, `Exec format error` and 126 (D118).
+- **The Windows GUI boot test** adds `tests/windows-gui`'s `win-paint.exe`, built for this
+  CPU's Windows target (x64's on riscv64) with `rust-lld`, `/SUBSYSTEM:WINDOWS` and
+  `/ENTRY:WinMainCRTStartup` in a target directory of its own, as `/bin/win-paint.exe` with the
+  Windows layer, boots with the display and runs it with its output redirected to
+  `/tmp/win-paint.log`. On x86_64 and aarch64 it compares the display with the host's render
+  (the desktop, and the program's scene and the message box painted by `eggos-windows-gui`)
+  as the window appears, after a click on its ellipse, a key, Space (the message box), Enter
+  and a click on the close control, then checks `WIN-PAINT status 0` and the program's lines
+  in the file; on riscv64, `Exec format error` and 126 (D129).
 - **The Android programs boot test** (aarch64 and x86_64) builds `tests/android-console`, a
   `no_std` static library defining `main`, for `aarch64-linux-android` or
   `x86_64-linux-android`, links it with the Android NDK's clang (`--target=<triple>29 -static`,

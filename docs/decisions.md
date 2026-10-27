@@ -7287,3 +7287,101 @@ the license, by an explicit instruction recorded here.
   screenshot`; the client's process id in `wm list` (it shows the client's number); key repeat
   as `Key` records. `COMMIT` still composes under the display's and the screen's locks, so a
   console write on another CPU waits for a large commit.
+## D129 Windows GUI programs, part 1: user32 and gdi32 over `/dev/window`, the message box, Egg Mono as its own crate and the Windows GUI boot test (v0.3.0 item 32) — Decided by the build loop (the design is Claude Fable's, D16; the ambiguities decided by research)
+- **What.** Users can now run Windows GUI programs (PE32+ with subsystem `WINDOWS`, x64 on
+  x86_64 and ARM64 on aarch64) from `eggsh` and see their windows on the EggOS desktop: the
+  Windows layer implements the user32 and gdi32 functions a classic window needs as Rust over
+  `/dev/window` (D127): window classes, windows with the server's chrome, the message loop fed by
+  the server's events, window procedures, painting with GDI's brushes, pens, shapes and text,
+  and `MessageBoxW` as a modal dialog the layer draws. The visible design is Claude Fable's
+  (`docs/ux/windows-gui-v0.3.md`: the message box, the Win32 system colours, the pointer
+  mapping); everything else visible is the desktop's own (`desktop-v0.3-gui.md`).
+- **Placement.** The font moves from `eggos-drivers` to a crate of its own, `eggos-font`
+  (top-level `font/`), which the drivers re-export, so the layer draws text without the
+  drivers' allocator. What the layer draws is pure logic in `eggos-windows-gui`
+  (`userland/windows-gui`): GDI's shapes and text with Win32's pixel rules, the system colours,
+  and the message box's layout, painting and input, shared with the host's render in the boot
+  test. The layer keeps its own tables as pure, host-tested modules (`gui/`: handle slots with
+  generations, classes, windows, the queue, GDI objects and device contexts, the server's
+  records as Win32 messages) and puts them to work in `win32/` (`window_device.rs` the
+  connection, `gui.rs` the state and the message path, `user32.rs`, `paint.rs`,
+  `message_box.rs`). A console program never pays for any of it: the state (about 52 KB) is one
+  heap block made when the program first uses a class, a window, a message or a GDI object, and
+  `/dev/window` is opened at the first window (or the first `GetSystemMetrics`).
+- **Contract with programs.** `CreateWindowExW`'s size is the outside size: the content is that
+  less EggOS's chrome (2 by 30), and `GetSystemMetrics` reports the chrome so Windows' own
+  formulas (`AdjustWindowRectEx`: 1, 29, 1, 1) give the same answer; `CW_USEDEFAULT` leaves the
+  position to the server's cascade and makes the window three quarters of the work area; a
+  window without `WS_THICKFRAME` is `FIXED_SIZE`; child windows (`WS_CHILD`) are refused with
+  `ERROR_NOT_SUPPORTED`. A window appears once, painted: its buffer is filled with `window.bg`,
+  `ShowWindow` invalidates it, and its first commit is the end of its first paint
+  (`EndPaint`, or `DefWindowProcW`'s `WM_PAINT`, which erases with the class brush); after that
+  each `EndPaint` commits its region and each `ReleaseDC` what the context drew. The region to
+  paint is one bounding rectangle. Messages: one queue per process, posted messages before the
+  server's input before `WM_QUIT` before `WM_PAINT`, as Windows orders them; mouse moves
+  coalesce; the server's close request is `WM_SYSCOMMAND`/`SC_CLOSE` (so `DefWindowProcW` sends
+  `WM_CLOSE` and then destroys), `Resize` a new buffer and `WM_SIZE`, focus `WM_SETFOCUS` and
+  `WM_KILLFOCUS`, all sent to the window procedure during `GetMessageW` as Windows sends them;
+  keys are `WM_KEYDOWN`/`UP` (`WM_SYSKEYDOWN`/`UP` with Alt) with Windows' virtual keys and
+  `lParam` bits, and `TranslateMessage` posts the character the server gave with the press.
+  `GetMessageW` reads the server's records without blocking and sleeps in `ppoll` on the device
+  and a pipe that a post from another thread writes to only when a thread sleeps. GDI follows
+  Win32's documented pixel rules (right and bottom edges excluded, a null pen one pixel smaller,
+  `LineTo` without its end point, an ellipse's pixels by their centres); the outline of a wide
+  pen is inside the shape. Every font is Egg Mono 8x16. Win32's system colours are Windows'
+  light defaults (Fable's decision; `GetSysColor` and `COLOR_x + 1` brushes), the stock objects
+  and a fresh device context Win32's own. A GUI program's standard handles are null where they
+  would be the terminal and the shell's files or pipes otherwise, as on Windows.
+- **ARM64.** `CreateWindowExW` takes twelve arguments, four on the stack under the Arm64
+  procedure call standard, so its aarch64 entry (`four_stack_arguments`) copies four stack
+  words below the saved `x18`; `stack_arguments` becomes `two_stack_arguments`.
+- **Message box.** A window of the layer's own (its procedure is the layer's), a `Dialog` of the
+  owner's window or a `FIXED_SIZE` normal window at the work area's centre without one, painted
+  with `eggos_windows_gui::message_box` exactly as Fable's brief lays it out, run by a modal
+  loop that dispatches the program's other messages meanwhile; a button's answer posts
+  `WM_NULL` to wake the loop; `WM_QUIT` during the loop is posted again and the box answers as
+  Esc would.
+- **Decided by research.** The font as its own crate (`eggos-font`, top-level), not the layer
+  depending on the drivers with an allocator. The shared drawing as its own crate
+  (`eggos-windows-gui`) that xtask also uses, and the test program's scene as data both sides
+  paint (`tests/windows-gui`'s library), so the boot test compares whole frames as the window
+  tests do. GUI programs get null standard handles where the terminal would be (Windows' rule),
+  and `eggsh` waits for them as for any program; the test redirects the program's output to a
+  file. The outside size less the chrome, and the metrics that make Windows' formulas agree;
+  `CW_USEDEFAULT` as three quarters of the work area. `ppoll` on the device and a self-pipe, one
+  process queue for part 1. No lock held while the program's code runs: the tables copy out what
+  a call into the program needs, and handles carry a generation, so a window destroyed during a
+  callback is a stale handle. From Fable's brief: a dialog's surface is `menu.bg`; the message
+  box's metrics, icons, buttons, keys and close behaviour; the light system colours; the
+  pointer mapping (everything the server has no shape for is the arrow).
+- **Review fixes (from #126's review).** The client-number test asks for the highest slot
+  instead of passing 0..3000 as slots; `wm`'s `device_control` refuses an argument whose length
+  is not the size the request encodes; the 2 s rule compares the time since a close request as a
+  signed difference, so a clock behind the request is no time waited.
+- **Cost.** Nothing for console programs but three words of static data (no state, no
+  connection). A Win32 call is a
+  function call; the message path makes no system call when a message waits, one `read` per
+  batch of 16 server records, and `ppoll` only to sleep; a paint is one `COMMIT` of its region.
+  The shapes and text clip per row and write rows with slice fills. The layer's image grows by
+  user32, gdi32 and the drawing crate; CI's size report and benchmark deltas are in the PR.
+- **Testing.** Host tests: the shapes' pixels (rectangle edges, the null pen, wide pens,
+  ellipse spans and symmetry, lines), text (decoding, prefixes, tabs, wrapping, alignment,
+  clipping, `DT_CALCRECT`, the ellipsis), the system colours, the message box's worked example
+  pixel by pixel, every type's buttons, wrapping and the 24-line cut, its keys and clicks; in the
+  layer, the handle slots, classes, the queue's order, filters and coalescing, window values,
+  GDI objects and contexts, the cursor mapping, and the server's records as messages. QEMU: the
+  Windows GUI boot test runs `win-paint.exe` (built from our own source for both CPUs) and
+  compares the display with the host's render as the window appears painted, a click recolours
+  its ellipse (through `GetDC`), a key adds a letter, Space opens the message box, Enter answers
+  it with OK and the close control ends the program; the program's lines (class, creation, the
+  client size and caption height, extra bytes, `SendMessageW`, `PostMessageW` and
+  `PeekMessageW`, the click, the key, the box's answer, `WM_DESTROY`, `WM_QUIT`) and its status
+  0 follow; riscv64 refuses it with `ENOEXEC`.
+- **Not yet.** Child windows and the system's controls (buttons, edits; item 42), menus, dialogs
+  from resources, timers, `CreateFontW` and every font but Egg Mono, text beyond ASCII and the
+  font's extras (drawn as `?`), double-click messages, `WM_MOUSEWHEEL` and `MSG.pt` in screen
+  coordinates (client ones today), `TrackMouseEvent`, `SetCursor`, `GetWindowRect` and window
+  moves from the program (`MoveWindow`, `SetWindowPos`), `SW_HIDE`, regions and clipping beyond
+  one rectangle, dashed pens, raster operations, bitmaps and `BitBlt`, a message queue per
+  thread (`SendMessageW` from another thread calls the procedure on the caller's thread), and
+  the C runtime's GUI start-up (item 43).
