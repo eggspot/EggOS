@@ -37,8 +37,13 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
   system properties (all read as unset), no `logd` or binder, no riscv64.
-- **Other foreign apps are not in yet.** macOS and iOS apps (D17) do not run in this
-  release.
+- **macOS: console programs on aarch64 and x86_64 only, part 1.** Mach-O console programs
+  (thin or fat, built for macOS 13 or later) that link only libSystem and use the functions
+  the macOS layer provides run natively, arm64 programs on aarch64 and x86_64 programs on
+  x86_64, added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120).
+  Programs on Rust's std, Objective-C or Swift, threads, signal handlers, `mmap`, other
+  libraries and frameworks, `.app` bundles and riscv64 do not run yet.
+- **iOS apps are not in yet** (D17).
 - **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
   of every capability (D22) and the component manager (D18) come later.
 - **One user, root.** Processes start as root; there are no logins or permissions to manage

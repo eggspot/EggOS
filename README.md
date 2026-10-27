@@ -70,6 +70,15 @@ what works):
 cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello and /system/bin/sh
 ```
 
+### Run macOS console programs
+On aarch64 (arm64 programs) and x86_64 (x86_64 programs), macOS console programs that link
+only libSystem run natively through EggOS's own macOS layer, part 1
+([docs/macos-programs.md](docs/macos-programs.md) lists what they may use):
+
+```
+cargo xtask run --arch aarch64 --add path/to/hello     # a thin or fat Mach-O file
+```
+
 ## Layout
 | Path | What |
 |------|------|
@@ -77,7 +86,7 @@ cargo xtask run --arch aarch64 --add path/to/hello     # boots with /bin/hello a
 | `hal/` | hardware abstraction layer: the `Platform` trait and one module per architecture |
 | `drivers/` | device drivers behind one driver model |
 | `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md) and the runtime they share |
-| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)), and `android-console`, a static Android console program linked against bionic ([Android programs](docs/android-programs.md)) |
+| `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)), `android-console`, a static Android console program linked against bionic ([Android programs](docs/android-programs.md)), and `macos-console`, macOS console programs linked by Apple's linker ([macOS programs](docs/macos-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
 | `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 

@@ -6424,3 +6424,159 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Android apps (`.apk`, ART, the framework), dynamically linked programs
   (`linker64`), system properties, `logd`, binder, `/dev`, `/proc` and `/sys`, pipes (so
   `popen`), app user ids (processes run as root), riscv64, Rust std programs for Android.
+
+## D120 The macOS layer, part 1: a Mach-O loader with chained fixups and a libSystem subset for console programs on aarch64 and x86_64, owner's exception to the D17/D34 order for v0.3.0 (owner, 2026-10-26) — Decided by the build loop (CI's artifact hand-off and riscv64's refusal decided by research)
+- **What.** v0.3.0 item 20: a macOS console program, a 64-bit Mach-O executable that links only
+  libSystem, runs from `eggsh`, arm64 programs on aarch64 and x86_64 programs on x86_64, thin
+  or fat (universal). Its machine code runs directly on the CPU; the libSystem functions it
+  imports are our own Rust implementations, called directly through the pointers the layer
+  binds (D17). Guide and exact function list: docs/macos-programs.md.
+- **Order.** The owner's exception to the D17/D34 compatibility order for v0.3.0 (owner,
+  2026-10-26), like D118's for Windows and D119's for Android: macOS console programs come in
+  v0.3.0, item 20, right after Windows and Android part 1.
+- **Clean room.** Implemented only from Apple's public documentation of the Mach-O format
+  (the "Mach-O File Format Reference" and the `mach-o/loader.h`, `mach-o/fat.h` and
+  `mach-o/fixup-chains.h` structure layouts in the public SDK, read for field names, sizes and
+  constants), the C standard and POSIX for the functions' behaviour, Apple's man pages
+  (`stat(2)`, `dirent(5)`, `errno(2)`, `open(2)`, `clock_gettime(3)`, `mach_absolute_time`), the
+  "Writing ARM64 code for Apple platforms" ABI notes, the System V AMD64 ABI, and the observed
+  behaviour of programs we built ourselves (the boot test's program was first run on a Mac to
+  record the output it must match). No dyld, libSystem, Libc, xnu (APSL) or GPL/LGPL code was
+  read or copied.
+- **Where it lives.** As D118's Windows layer: a user-mode interpreter, a static PIE on our
+  Linux ABI (`userland/macos`), started by the kernel's `execve` for a matching file as
+  `<layer> <program as execve was given it> <program's argv...>`. The interpreter table
+  (`linux::exec::Interpreter`) gains a `Signature`: a byte prefix (`MZ`; `cf fa ed fe`, a
+  64-bit Mach-O file) or `MachOFat`: `ca fe ba be` or `ca fe ba bf` followed by an
+  architecture count from 1 to 32, so a Java class file (the same magic, then a class-file
+  version of at least 45) is not taken for one. aarch64 gets the two macOS entries, x86_64 the
+  Windows one and the two macOS ones.
+- **riscv64 (decided by research).** No entry: a Mach-O file there fails with `ENOEXEC`
+  (`Exec format error`, status 126), as a Windows program does outside x86_64 and a missing
+  `binfmt_misc` handler does on Linux; the table stays empty there, so the hook keeps folding
+  away and riscv64's image does not grow for programs that cannot exist for it. The layer itself
+  builds for riscv64 and says macOS programs need aarch64 or x86_64.
+- **Optional component.** `cargo xtask image` (and `run`) installs the layer at
+  `/usr/lib/eggos/macos` in an aarch64 or x86_64 image when an added file is a Mach-O or fat
+  file; release images and images without one do not carry it (D18).
+- **The loader.** Architecture-independent and host-tested: a checked parser of the fat
+  header (`FAT_MAGIC` and `FAT_MAGIC_64`, each slice inside the file and after the table) and
+  of the 64-bit Mach-O header and load commands: `MH_EXECUTE` only, every command inside
+  `sizeofcmds` and a multiple of 8, `LC_SEGMENT_64` (sections inside the command; `__PAGEZERO`
+  left unmapped; segments page-aligned, in order, not overlapping, their data inside the file,
+  never writable and executable, the image at most 1 GiB), `LC_MAIN` (the entry point inside an
+  executable segment's file data), `LC_LOAD_DYLIB` and its weak, re-export, lazy and upward
+  kinds, `LC_LOAD_DYLINKER`, `LC_DYLD_CHAINED_FIXUPS` (inside a segment), `LC_DYLD_EXPORTS_TRIE`,
+  `LC_RPATH`; `LC_ENCRYPTION_INFO_64` with a non-zero `cryptid`, `LC_UNIXTHREAD` and unknown
+  commands marked `LC_REQ_DYLD` are refused with a message; `LC_UUID`, `LC_BUILD_VERSION`,
+  `LC_SOURCE_VERSION`, `LC_FUNCTION_STARTS`, `LC_DATA_IN_CODE`, `LC_CODE_SIGNATURE`,
+  `LC_SYMTAB` and `LC_DYSYMTAB` are ignored. The slice is the one whose CPU type is
+  `CPU_TYPE_ARM64` (not arm64e, subtype 2) on aarch64 or `CPU_TYPE_X86_64` on x86_64; a file
+  without one is refused with the CPUs it has (`has code only for x86_64, not for this arm64
+  machine`, status 126). Every library must be `/usr/lib/libSystem.B.dylib` or weak; another is
+  refused by name before any code runs (`needs /usr/lib/libz.1.dylib, which EggOS does not
+  provide yet`, status 126).
+- **Chained fixups.** The header (version 0, uncompressed names), the imports in all three
+  formats (`DYLD_CHAINED_IMPORT`, `_ADDEND`, `_ADDEND64`; library ordinals, the self, main,
+  flat and weak lookups, the weak flag), and each segment's chain starts. The pointer formats
+  are `DYLD_CHAINED_PTR_64` (rebase targets are unslid addresses) and
+  `DYLD_CHAINED_PTR_64_OFFSET` (offsets from the header), with their 8-bit high byte and bind
+  addend; arm64e's formats and the 32-bit ones are refused. A chain moves forward by its
+  4-byte stride and must stay inside its page and the image, so a malformed one ends with an
+  error, never a loop; a bind to an import that does not exist is refused. Host tests cover a
+  synthetic executable in both formats, a fat file, a Java class file, a chain that runs out of
+  its page, a missing import, each layout check, every truncation and a sweep of single-byte
+  changes to the headers, the chain and the fixups table (refused or loaded, never a panic).
+- **Binding.** Each import is looked up by its symbol name in the layer's table (a `match` on
+  byte strings, which compiles to compares), with Darwin's ABI-variant suffixes (`$INODE64`,
+  `$UNIX2003`, `$DARWIN_EXTSN`, `$NOCANCEL`) stripped, since the layer implements only the
+  current ABI of each function. Functions and variables (`__stdoutp`, `__stack_chk_guard`,
+  `environ`) both bind. A missing weak import binds to 0; a missing strong one to one of 256
+  stubs that prints `eggos-macos: unimplemented libSystem function <name>` and exits with
+  127 when called, so a program whose unused imports are missing still runs (a program with
+  more than 256 missing imports is refused). There is no lazy binding: with chained fixups
+  every bind is applied at load, as dyld does.
+- **Mapping and the slide.** A position-independent program (`MH_PIE`) is mapped wherever the
+  kernel places one anonymous mapping of its segments' span; the slide is that address minus
+  `__TEXT`'s, and rebases add it. A fixed-address program is mapped at its own addresses
+  (`MAP_FIXED_NOREPLACE`) or refused. Segments are copied in, fixed up, then protected as
+  their `initprot` says, `__DATA_CONST` (`SG_READ_ONLY`) read-only after its fixups.
+- **16 KiB pages.** arm64 macOS's pages are 16 KiB, EggOS's 4 KiB. Segments keep their own
+  addresses and file offsets, so every 16 KiB boundary of the layout is also a 4 KiB one and
+  each segment's protection applies to whole 4 KiB pages; nothing needs 16 KiB granularity.
+  `getpagesize` reports 4096.
+- **Starting `main`.** `main(argc, argv, envp, apple)` with the program's own `argv` (the
+  kernel's argument list without the layer's two), `envp` and `apple[]` holding
+  `executable_path=<path>`; its return value goes to `exit`, which runs the `atexit` handlers
+  and flushes stdio, as libSystem's start-up does. The layer's own stack is the program's.
+- **The calling conventions.** Non-variadic functions are plain `extern "C"` functions: on
+  x86_64 Darwin's convention is System V's; on arm64 Apple's differences from AAPCS64 that
+  touch a callee (the caller extends small arguments; arguments past the eighth packed on the
+  stack, which no implemented function has) need nothing, and `x18`, reserved on Apple
+  platforms, is never used by the program, so the layer's use of it is harmless. Variadic
+  functions (the `printf` family, `open`) get a short assembly entry each: on arm64, where
+  Apple passes every variadic argument on the stack in 8-byte slots and `va_list` is a pointer
+  to the next slot, it passes the stack pointer as the `va_list`; on x86_64 it saves the six
+  argument registers and `xmm0`-`xmm7` in a System V register save area, builds a `va_list`
+  over it and the caller's stack, and calls the Rust function that takes a `va_list`, which
+  `vprintf` and its kin share.
+- **libSystem's state.** `errno` and the process-wide state (the heap's free lists, `atexit`
+  handlers, the environment) assume one thread, which is all a program can have until
+  `pthread_create` exists; the cell around them (`Exclusive`) uses plain atomic loads and
+  stores, because an atomic compare-and-swap on aarch64 would pull in compiler-builtins'
+  outline atomics, which need `getauxval` from a C library. The heap is D118's design (power-of-
+  two classes from 32 bytes to 64 KiB carved from 1 MiB chunks, larger blocks a mapping each,
+  16-byte headers that refuse foreign pointers and double frees) with `posix_memalign` on top.
+  stdio buffers 4 KiB per stream, standard output by line on a terminal, standard error not at
+  all. Darwin's numbers are translated at each call: `open` flags, error numbers, clocks,
+  signals, `struct stat` (from either Linux layout) and `struct dirent` (from `getdents64`).
+- **The boot test.** `tests/macos-console` is a `no_std` Rust program for the official
+  `aarch64-apple-darwin` and `x86_64-apple-darwin` targets (pinned in `rust-toolchain.toml`),
+  linked by Apple's linker against libSystem with `MACOSX_DEPLOYMENT_TARGET=13.0`, the first
+  version whose x86_64 programs get chained fixups (arm64 ones have them from 12.0);
+  `macos-unsupported` also links `libz`. `cargo xtask qemu` adds this CPU's program, the
+  unsupported one, the other CPU's program and a fat file of both that xtask writes itself
+  (16 KiB-aligned slices, as `lipo` writes them), boots, and types a session: the program's
+  checks by name, `exit 42` by path, the fat file's `exit 3`, `abort`, an unimplemented
+  function, and the two refusals; on riscv64 every line must give `Exec format error` and 126.
+  `cargo xtask macos-programs` builds the programs (macOS hosts only); elsewhere
+  `EGGOS_MACOS_PROGRAMS` names a folder holding them. Without either the test is skipped with a
+  message, except in CI, where it fails.
+- **CI (decided by research).** A new `macos-programs` job on `macos-latest` (free for this
+  public repository) builds the programs and uploads them as an artifact (kept one day); it
+  has no `needs`, so it runs alongside the check job, whose format, clippy, docs and host-test
+  steps take about six minutes. Right before its QEMU step, the check job waits for the
+  artifact (polling the run's artifacts every 5 seconds, failing at once if the macOS job
+  failed, was cancelled or skipped, and after 10 minutes) and downloads it. Research compared a
+  `needs:` on the macOS job (adds its queue and run time, 1 to 3 minutes, to every run) and
+  making the existing `hosts` job a prerequisite (worse: it runs after check by design); the
+  wait adds nothing to the wall-clock time when the macOS job finishes first.
+- **Verified where.** The parser, fixups, fat selection, `printf`'s formatter, Darwin's
+  translations, the xtask helpers and the session's verdict: host tests on every host. The
+  programs: on the development Mac (QEMU 10.2.2) on aarch64 and x86_64, with riscv64's
+  refusal, and in CI.
+- **Cost (accepted by research, D78).** The layer is in images only with a Mach-O file, so only
+  the kernel changes. On aarch64 the interpreter table is no longer empty, so the path D118
+  let fold away there (the layer's lookup and permission check, the interpreter's argument
+  list) is live: `release_image_bytes` +1,080 bytes (700,592 to 701,672), the price of the hook
+  that D118 paid on x86_64 (+752); the two entries themselves are a 4-byte prefix and the fat
+  check that keeps Java class files out. x86_64's image shrank by 384 bytes (603,904 to
+  603,520) with the table's `Signature`, and riscv64's is unchanged. `linux_exec_load` is
+  identical to `main`'s on all three, `linux_execve` too on aarch64 and riscv64 and 20 ns
+  (0.05%) slower on x86_64, which now compares three entries; system-call round trips are
+  unchanged. Linux keeps its `binfmt_misc` table in every kernel, and XNU and NT build their
+  executable-format dispatch into theirs. The aarch64 and x86_64 `release_image_bytes` lines
+  are updated (x86_64's tightened). CI gains a parallel macOS job (about 1 to 2 minutes, not on
+  the check job's path) and the check job one boot per architecture (about 15 seconds each)
+  and the toolchain step the two Apple targets.
+- **Not yet.** Programs on Rust's standard library (it imports about 80 functions: thread-local
+  variables through `_tlv_bootstrap`, pthread mutexes and thread ids, `sigaction`,
+  `sigaltstack`, `mmap`, libdispatch semaphores, the unwinder), threads, signal handlers,
+  `mmap`, `fork`/`exec`/`posix_spawn`, pipes, `scanf`, locales, Objective-C and Swift runtimes,
+  libc++, frameworks (CoreFoundation, Foundation, Cocoa), `dlopen`, the dyld shared cache,
+  other dylibs, Mach ports and calls, programs without chained fixups (`LC_DYLD_INFO`
+  opcodes, macOS 12 and earlier), `LC_UNIXTHREAD`, 32-bit, arm64e and encrypted programs,
+  `.app` bundles and `.dmg`/`.pkg` installers, x86_64 programs on aarch64 through
+  ahead-of-time translation. A benchmark of program start and of the hot libSystem calls
+  against macOS on the same hardware needs a way to run a macOS program inside the benchmark
+  kernel; it comes with part 2.

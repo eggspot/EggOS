@@ -96,6 +96,18 @@ holds what used to be written in them.
   `ANDROID_NDK_ROOT` or the newest version under `$ANDROID_HOME/ndk` (or `ANDROID_SDK_ROOT`);
   without one the test is skipped with a message, but fails when `CI` is set. CI mounts the
   runner's NDKs into the check job's container and sets `ANDROID_HOME` (D119).
+- **The macOS programs boot test** adds `tests/macos-console`'s programs, linked by Apple's
+  linker for `aarch64-apple-darwin` and `x86_64-apple-darwin` (`MACOSX_DEPLOYMENT_TARGET=13.0`,
+  chained fixups), as `/bin/macos-console` (this CPU's), `/bin/macos-unsupported` (links
+  `libz`), `/bin/macos-other` (the other CPU's) and `/bin/macos-fat` (a fat file of both,
+  written by xtask), with the macOS layer on aarch64 and x86_64, and types seven commands:
+  each `MACOS-CONSOLE` line, the statuses 0, 42 and 3, `Aborted` and 134, the unimplemented
+  function's message and 127, and the two refusals with 126 must appear in order; on riscv64,
+  `Exec format error` and 126. The programs come from `EGGOS_MACOS_PROGRAMS` (a folder of
+  `<program>-<cpu>` files) or, on a macOS host, `cargo xtask macos-programs` builds them;
+  otherwise the test is skipped with a message, but fails when `CI` is set. CI builds them in
+  its `macos-programs` job, and the check job waits for that artifact before its QEMU step
+  (D120).
 - **`cargo xtask image`** builds the release image with the `--add <file> [--as <path>]` files in
   its initramfs (`/bin/<name>` by default, mode `0755`; a path already in the image, under a file,
   with an empty, `.` or `..` part, a name over 255 bytes or a path of 4096 bytes or more is
@@ -104,7 +116,9 @@ holds what used to be written in them.
   `MZ`) to an x86_64 image installs the Windows layer at `/usr/lib/eggos/windows` with it
   ([Windows programs](windows-programs.md), D118). Adding an Android program (an ELF file with
   the `.note.android.ident` note) adds `/system/bin/sh`, another name for `eggsh`
-  ([Android programs](android-programs.md), D119).
+  ([Android programs](android-programs.md), D119). Adding a macOS program (a 64-bit Mach-O or
+  fat file) to an aarch64 or x86_64 image installs the macOS layer at `/usr/lib/eggos/macos`
+  ([macOS programs](macos-programs.md), D120).
 - **What the runner matches.** The lines it looks for are the ones the kernel and the test
   programs write, and must be changed with them: the self-tests' `EGGOS-SELFTEST: PASS` and
   `FAIL` markers and `EGGOS-CONSOLE: input ready` (`eggos_kernel::selftest`,
