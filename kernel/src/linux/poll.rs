@@ -80,6 +80,7 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
             requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
         }
         Some(FileKind::Path(_)) => event::NVAL,
+        Some(FileKind::Pipe(end)) => end.events(requested),
     }
 }
 
@@ -375,11 +376,14 @@ fn poll_fds<P: Platform>(
     let watches_input = entries.iter().any(|entry| {
         let (fd, requested) = pollfd(entry);
         fd >= 0
-            && requested & INPUT_EVENTS != 0
             && thread
                 .files()
                 .file(fd as u64)
-                .is_ok_and(|file| *file.kind() == FileKind::Console)
+                .is_ok_and(|file| match file.kind() {
+                    FileKind::Console => requested & INPUT_EVENTS != 0,
+                    FileKind::Pipe(_) => true,
+                    _ => false,
+                })
     });
     let readable = watches_input && console::input_ready();
     let mut ready = fill_in_events(entries, thread.files(), readable);
@@ -412,6 +416,17 @@ fn sleep<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, deadline: 
     false
 }
 
+fn any_pipe_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
+    entries.iter().any(|entry| {
+        let (fd, requested) = pollfd(entry);
+        fd >= 0
+            && files.file(fd as u64).is_ok_and(|file| match file.kind() {
+                FileKind::Pipe(end) => end.events(requested) != 0,
+                _ => false,
+            })
+    })
+}
+
 fn wait_for_input<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -419,7 +434,9 @@ fn wait_for_input<P: Platform>(
     deadline: Deadline,
 ) -> (bool, u64) {
     loop {
-        match terminal::wait_for_input::<P>(process, thread, deadline, console::input_ready) {
+        let files = thread.files().share();
+        let ready = || console::input_ready() || any_pipe_ready(entries, &files);
+        match terminal::wait_for_input::<P>(process, thread, deadline, ready) {
             ControlFlow::Break(()) | ControlFlow::Continue(Waited::TimedOut) => return (false, 0),
             ControlFlow::Continue(Waited::Signalled) => return (true, 0),
             ControlFlow::Continue(Waited::Ready) => {

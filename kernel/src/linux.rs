@@ -53,6 +53,7 @@ pub mod identity;
 pub mod job_control;
 pub mod limits;
 pub mod memory;
+pub mod pipe;
 pub mod poll;
 pub mod process_table;
 pub mod random;
@@ -183,6 +184,8 @@ pub mod number {
         pub const SCHED_GETSCHEDULER: u64 = 145;
         pub const SCHED_GETAFFINITY: u64 = 204;
         pub const DUP3: u64 = 292;
+        pub const PIPE: u64 = 22;
+        pub const PIPE2: u64 = 293;
         pub const GETRANDOM: u64 = 318;
         pub const EXECVEAT: u64 = 322;
         pub const STATX: u64 = 332;
@@ -201,6 +204,7 @@ pub mod number {
         pub const FCHDIR: u64 = 50;
         pub const OPENAT: u64 = 56;
         pub const CLOSE: u64 = 57;
+        pub const PIPE2: u64 = 59;
         pub const GETDENTS64: u64 = 61;
         pub const LSEEK: u64 = 62;
         pub const READ: u64 = 63;
@@ -302,6 +306,9 @@ pub mod number {
             DUP3,
             FCNTL,
             CLOSE_RANGE,
+            #[cfg(target_arch = "x86_64")]
+            PIPE,
+            PIPE2,
             EXIT,
             EXIT_GROUP,
             CLONE,
@@ -478,8 +485,10 @@ impl Errno {
     pub const EMFILE: Self = Self(24);
     /// Not a terminal: here, an `ioctl` request the console does not answer.
     pub const ENOTTY: Self = Self(25);
-    /// Not seekable: here, the console (`lseek`).
+    /// Not seekable: here, the console or a pipe (`lseek`, `pread64`).
     pub const ESPIPE: Self = Self(29);
+    /// A write to a pipe that no reader has open any more.
+    pub const EPIPE: Self = Self(32);
     /// A path longer than `PATH_MAX`, or a component longer than `NAME_MAX`.
     pub const ENAMETOOLONG: Self = Self(36);
     /// No such system call.
@@ -699,7 +708,10 @@ fn syscall<P: Platform>(
         return ControlFlow::Continue(());
     }
     let result = match number {
-        number::WRITE => write::<P>(process, thread.files(), first, second, third),
+        number::WRITE => match write::<P>(process, thread.files(), first, second, third) {
+            Err(ON_A_PIPE) => return out_of_line_call::<P>(process, thread, number, context),
+            result => result,
+        },
         number::EXIT | number::EXIT_GROUP => return exit(process, thread, number, first),
         number::BRK | number::MMAP | number::MUNMAP | number::MPROTECT => {
             memory_call::<P>(process, number, context.syscall_arguments())
@@ -752,6 +764,8 @@ fn out_of_line_call<P: Platform>(
         number::PAUSE => signals::pause(process, thread, context),
         number::READ => read::<P>(process, thread, context, Buffers::One),
         number::READV => read::<P>(process, thread, context, Buffers::Vectors),
+        number::WRITE => write_that_may_wait::<P>(process, thread, context, Buffers::One),
+        number::WRITEV => write_that_may_wait::<P>(process, thread, context, Buffers::Vectors),
         number::PPOLL => match poll::ppoll::<P>(process, thread, context) {
             ControlFlow::Continue(()) => signals::deliver(process, thread, context),
             ended => ended,
@@ -850,13 +864,15 @@ fn out_of_line_result<P: Platform>(
     use credentials::Kind::{Group, User};
     let [first, second, third, fourth, fifth, _] = context.syscall_arguments();
     match number {
-        number::WRITEV => writev::<P>(process, thread.files(), first, second, third),
         number::CLOSE => descriptors::close(thread.files(), first),
         number::DUP => descriptors::dup(process, thread.files(), first),
         #[cfg(target_arch = "x86_64")]
         number::DUP2 => descriptors::dup2(process, thread.files(), first, second),
         number::DUP3 => descriptors::dup3(process, thread.files(), first, second, third),
         number::FCNTL => descriptors::fcntl(process, thread.files(), first, second, third),
+        number::PIPE2 => pipe::pipe2::<P>(process, thread, first, second),
+        #[cfg(target_arch = "x86_64")]
+        number::PIPE => pipe::pipe2::<P>(process, thread, first, 0),
         number::CLOSE_RANGE => {
             let own = descriptors::close_range(thread.files(), first, second, third)?;
             if let Some(own) = own {
@@ -1093,6 +1109,7 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
+        FileKind::Pipe(_) => return Err(ON_A_PIPE),
         _ => return Err(Errno::EBADF),
     };
     if written == 0 && count > 0 {
@@ -1119,6 +1136,9 @@ fn writev<P: Platform>(
     count: u64,
 ) -> Result<u64, Errno> {
     let file = writable_file(files, fd)?;
+    if matches!(file.kind(), FileKind::Pipe(_)) {
+        return Err(ON_A_PIPE);
+    }
     let iovecs = Iovecs::read(process, buffers, count)?;
     let mut written = 0;
     for entry in iovecs.entries() {
@@ -1138,6 +1158,43 @@ fn writev<P: Platform>(
         }
     }
     Ok(written)
+}
+
+const ON_A_PIPE: Errno = Errno(u16::MAX);
+
+#[inline(never)]
+fn write_that_may_wait<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    buffers: Buffers,
+) -> ControlFlow<()> {
+    let [fd, address, count, ..] = context.syscall_arguments();
+    let prepared = writable_file(thread.files(), fd).and_then(|file| {
+        let iovecs = match buffers {
+            Buffers::One if !ends_in_user_space::<P>(address, count) => Err(Errno::EFAULT),
+            Buffers::One => Ok(Iovecs::one(address, count)),
+            Buffers::Vectors => Iovecs::read(process, address, count),
+        }?;
+        Ok((file, iovecs))
+    });
+    match prepared {
+        Ok((file, iovecs)) => match file.kind() {
+            FileKind::Pipe(end) => pipe::write(process, thread, context, &file, end, &iovecs),
+            _ => {
+                let result = match buffers {
+                    Buffers::One => write::<P>(process, thread.files(), fd, address, count),
+                    Buffers::Vectors => writev::<P>(process, thread.files(), fd, address, count),
+                };
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
+        },
+        Err(error) => {
+            context.set_syscall_result(error.result());
+            ControlFlow::Continue(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1168,6 +1225,7 @@ fn read<P: Platform>(
     match prepared {
         Ok((file, iovecs)) => match file.kind() {
             FileKind::Console => terminal::read(process, thread, context, &file, &iovecs),
+            FileKind::Pipe(end) => pipe::read(process, thread, context, &file, end, &iovecs),
             kind => {
                 let result = match kind {
                     FileKind::Regular(node) => {
@@ -1205,6 +1263,13 @@ fn ioctl<P: Platform>(
     }
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
+        FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
+            let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
+            process
+                .write_user_memory(argument, &available.to_ne_bytes())
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
         _ => Err(Errno::ENOTTY),
     }
 }
@@ -1212,7 +1277,7 @@ fn ioctl<P: Platform>(
 fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
-        FileKind::Console => terminal::lseek(whence),
+        FileKind::Console | FileKind::Pipe(_) => terminal::lseek(whence),
         _ => files::lseek_node(&file, offset, whence),
     }
 }

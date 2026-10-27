@@ -343,7 +343,7 @@ pub fn pread64<P: Platform>(
     if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
         return Err(Errno::EBADF);
     }
-    if matches!(file.kind(), FileKind::Console) {
+    if matches!(file.kind(), FileKind::Console | FileKind::Pipe(_)) {
         return Err(Errno::ESPIPE);
     }
     if !super::ends_in_user_space::<P>(buffer, count) {
@@ -377,7 +377,7 @@ pub fn lseek_node(file: &OpenFile, offset: u64, whence: u64) -> Result<u64, Errn
     let (node, directory) = match file.kind() {
         FileKind::Regular(node) => (*node, false),
         FileKind::Directory(node) => (*node, true),
-        FileKind::Path(_) | FileKind::Console => return Err(Errno::EBADF),
+        FileKind::Path(_) | FileKind::Console | FileKind::Pipe(_) => return Err(Errno::EBADF),
     };
     let offset = offset as i64;
     let size = node.attributes().size as i64;
