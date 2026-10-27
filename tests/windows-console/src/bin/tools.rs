@@ -186,6 +186,35 @@ mod tool {
         fn GetVersionExW(info: *mut [u32; 71]) -> i32;
         fn FileTimeToSystemTime(file_time: *const u64, time: *mut [u16; 8]) -> i32;
         fn GetLocalTime(time: *mut [u16; 8]);
+        fn GetCurrentThread() -> Handle;
+        fn InitializeConditionVariable(variable: *mut usize);
+        fn SleepConditionVariableCS(
+            variable: *mut usize,
+            section: *mut [u64; 5],
+            milliseconds: u32,
+        ) -> i32;
+        fn WakeConditionVariable(variable: *mut usize);
+        fn AcquireSRWLockShared(lock: *mut usize);
+        fn ReleaseSRWLockShared(lock: *mut usize);
+        fn TryAcquireSRWLockShared(lock: *mut usize) -> u8;
+        fn TryAcquireSRWLockExclusive(lock: *mut usize) -> u8;
+        fn InitOnceBeginInitialize(
+            once: *mut usize,
+            flags: u32,
+            pending: *mut i32,
+            context: *mut usize,
+        ) -> i32;
+    }
+
+    #[link(name = "api-ms-win-core-synch-l1-2-0", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn WaitOnAddress(
+            address: *const c_void,
+            compare: *const c_void,
+            size: usize,
+            milliseconds: u32,
+        ) -> i32;
+        fn WakeByAddressSingle(address: *const c_void);
     }
 
     #[link(name = "shell32", kind = "raw-dylib")]
@@ -321,6 +350,8 @@ mod tool {
             dir(rest)
         } else if wide_eq(command, "cat") {
             cat(rest)
+        } else if wide_eq(command, "detach") {
+            detach()
         } else {
             checks()
         };
@@ -1098,8 +1129,181 @@ mod tool {
         line.print();
     }
 
+    struct SyncState {
+        flag: AtomicU32,
+        ready: AtomicU32,
+        condition: UnsafeCell<usize>,
+        section: UnsafeCell<[u64; 5]>,
+        lock: UnsafeCell<usize>,
+        shared_taken: AtomicU32,
+        exclusive_refused: AtomicU32,
+    }
+
+    // SAFETY: the cells are the Win32 objects' own memory, which only their functions touch.
+    unsafe impl Sync for SyncState {}
+
+    static SYNC: SyncState = SyncState {
+        flag: AtomicU32::new(0),
+        ready: AtomicU32::new(0),
+        condition: UnsafeCell::new(0),
+        section: UnsafeCell::new([0; 5]),
+        lock: UnsafeCell::new(0),
+        shared_taken: AtomicU32::new(0),
+        exclusive_refused: AtomicU32::new(0),
+    };
+
+    const SIGNAL_ADDRESS: usize = 0;
+    const SIGNAL_CONDITION: usize = 1;
+    const TRY_SHARED_LOCK: usize = 2;
+
+    extern "system" fn helper(mode: usize) -> u32 {
+        match mode {
+            SIGNAL_ADDRESS => {
+                // SAFETY: sleeps, then wakes a thread waiting on the flag's address.
+                unsafe { Sleep(20) };
+                SYNC.flag.store(1, Ordering::Release);
+                // SAFETY: as above.
+                unsafe { WakeByAddressSingle((&raw const SYNC.flag).cast()) };
+            }
+            SIGNAL_CONDITION => {
+                // SAFETY: the critical section and condition variable `sync` initialized.
+                unsafe {
+                    Sleep(20);
+                    EnterCriticalSection(SYNC.section.get());
+                    SYNC.ready.store(1, Ordering::Release);
+                    LeaveCriticalSection(SYNC.section.get());
+                    WakeConditionVariable(SYNC.condition.get());
+                }
+            }
+            _ => {
+                // SAFETY: the SRW lock, which the main thread holds shared.
+                unsafe {
+                    if TryAcquireSRWLockShared(SYNC.lock.get()) != 0 {
+                        SYNC.shared_taken.store(1, Ordering::Release);
+                        ReleaseSRWLockShared(SYNC.lock.get());
+                    }
+                    if TryAcquireSRWLockExclusive(SYNC.lock.get()) == 0 {
+                        SYNC.exclusive_refused.store(1, Ordering::Release);
+                    }
+                }
+            }
+        }
+        0
+    }
+
+    fn run_helper(mode: usize) -> bool {
+        let mut id = 0;
+        // SAFETY: `helper` is a thread start routine; `id` is a local.
+        let thread = unsafe { CreateThread(core::ptr::null_mut(), 0, helper, mode, 0, &mut id) };
+        if thread == 0 {
+            return false;
+        }
+        // SAFETY: the helper's handle.
+        let joined = unsafe { WaitForSingleObject(thread, 10_000) } == WAIT_OBJECT_0;
+        // SAFETY: as above.
+        unsafe { CloseHandle(thread) };
+        joined
+    }
+
+    fn start_helper(mode: usize) -> Handle {
+        let mut id = 0;
+        // SAFETY: `helper` is a thread start routine; `id` is a local.
+        unsafe { CreateThread(core::ptr::null_mut(), 0, helper, mode, 0, &mut id) }
+    }
+
+    fn join(thread: Handle) -> bool {
+        // SAFETY: the helper's handle.
+        let joined = thread != 0 && unsafe { WaitForSingleObject(thread, 10_000) } == WAIT_OBJECT_0;
+        // SAFETY: as above.
+        unsafe { CloseHandle(thread) };
+        joined
+    }
+
+    fn sync() {
+        let zero = 0u32;
+        let flag = (&raw const SYNC.flag).cast::<c_void>();
+        let compare = (&raw const zero).cast::<c_void>();
+        // SAFETY: the flag and the comparand are 4-byte values that live for the call.
+        let timed_out = unsafe { WaitOnAddress(flag, compare, 4, 10) } == 0;
+        let timeout_error = last_error();
+        let waiter = start_helper(SIGNAL_ADDRESS);
+        while SYNC.flag.load(Ordering::Acquire) == 0 {
+            // SAFETY: as above.
+            unsafe { WaitOnAddress(flag, compare, 4, INFINITE) };
+        }
+        let address_ok = timed_out && join(waiter);
+        // SAFETY: the condition variable and critical section are `SYNC`'s; the main thread
+        // holds the section while it waits, as `SleepConditionVariableCS` requires.
+        let condition_ok = unsafe {
+            InitializeConditionVariable(SYNC.condition.get());
+            InitializeCriticalSection(SYNC.section.get());
+            EnterCriticalSection(SYNC.section.get());
+            let signaler = start_helper(SIGNAL_CONDITION);
+            while SYNC.ready.load(Ordering::Acquire) == 0 {
+                SleepConditionVariableCS(SYNC.condition.get(), SYNC.section.get(), INFINITE);
+            }
+            LeaveCriticalSection(SYNC.section.get());
+            join(signaler)
+        };
+        // SAFETY: the SRW lock is `SYNC`'s.
+        unsafe { AcquireSRWLockShared(SYNC.lock.get()) };
+        let tried = run_helper(TRY_SHARED_LOCK);
+        // SAFETY: as above; the main thread holds it shared.
+        unsafe { ReleaseSRWLockShared(SYNC.lock.get()) };
+        // SAFETY: as above; nobody holds it now.
+        let exclusive = unsafe { TryAcquireSRWLockExclusive(SYNC.lock.get()) } != 0;
+        if exclusive {
+            // SAFETY: as above; the main thread holds it exclusively.
+            unsafe { ReleaseSRWLockExclusive(SYNC.lock.get()) };
+        }
+        let shared_ok = tried
+            && exclusive
+            && SYNC.shared_taken.load(Ordering::Acquire) == 1
+            && SYNC.exclusive_refused.load(Ordering::Acquire) == 1;
+        let mut once = 0usize;
+        let mut pending = 0;
+        let mut context = 0;
+        // SAFETY: the one-time initialisation, flag and context are locals.
+        let check_only =
+            unsafe { InitOnceBeginInitialize(&mut once, 1, &mut pending, &mut context) };
+        let mut code = 0;
+        // SAFETY: the pseudo-handle of the calling thread; `code` is a local.
+        unsafe { GetExitCodeThread(GetCurrentThread(), &mut code) };
+        let verdict = |ok: bool| if ok { "ok" } else { "failed" };
+        let mut line = Line::new();
+        line.text("sync wait-on-address ").text(verdict(address_ok));
+        line.text(" timeout ").number(u64::from(timeout_error));
+        line.text(" condition ").text(verdict(condition_ok));
+        line.text(" shared-srw ").text(verdict(shared_ok));
+        line.text(" check-only ").number(check_only as u64);
+        line.text(" current-thread ").number(u64::from(code));
+        line.print();
+    }
+
+    extern "system" fn last_one(_: usize) -> u32 {
+        // SAFETY: sleeps past the main thread's return.
+        unsafe { Sleep(100) };
+        Line::new()
+            .text("detach the last thread ran after the first one returned")
+            .print();
+        5
+    }
+
+    fn detach() -> u32 {
+        let mut id = 0;
+        // SAFETY: `last_one` is a thread start routine; `id` is a local.
+        let thread = unsafe { CreateThread(core::ptr::null_mut(), 0, last_one, 0, 0, &mut id) };
+        // SAFETY: the thread's handle, which this thread no longer needs.
+        unsafe { CloseHandle(thread) };
+        Line::new()
+            .text("detach the first thread returns 0")
+            .print();
+        0
+    }
+
     fn checks() -> u32 {
         threads();
+        sync();
         errors();
         text();
         system();
