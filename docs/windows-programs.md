@@ -42,6 +42,14 @@ and this computer runs ARM64 programs (EggOS does not translate x64 programs for
 Without the layer, and on riscv64, a Windows program is refused with `Exec format error` and
 status 126.
 
+## Install a program as an app
+
+On an image with the layer, `app install /media/host/hello.exe` installs a program from the
+host share (or anywhere) into `/Applications/hello/`, with a launcher row and a desktop icon;
+a double-click opens it (a GUI program's window appears, a console program runs in the
+terminal) and `app uninstall hello` removes it. `--window` shows the installer's dialogs.
+See [Apps](apps.md) (D134).
+
 ## Build a program that runs
 
 Rust, from our own source, with the official target and the toolchain's own linker (no Windows
