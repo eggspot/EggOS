@@ -54,6 +54,15 @@ pub struct Window {
     pub update: Rect,
     pub erase: bool,
     pub destroying: bool,
+    pub thread: u32,
+}
+
+/// A window's pixel buffer: the address it is mapped at and its size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pixels {
+    pub address: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Window {
@@ -82,6 +91,15 @@ impl Window {
             update: Rect::default(),
             erase: false,
             destroying: false,
+            thread: 0,
+        }
+    }
+
+    pub fn pixels(&self) -> Pixels {
+        Pixels {
+            address: self.pixels,
+            width: self.width,
+            height: self.height,
         }
     }
 
@@ -178,12 +196,33 @@ pub fn by_server(table: &WindowTable, server: u32) -> Option<usize> {
         .map(|(handle, _)| handle)
 }
 
-/// The first window of `filter` (any when 0) with a region to paint.
-pub fn needing_paint(table: &WindowTable, filter: usize) -> Option<usize> {
+/// The first window of `filter` (any when 0) and of `thread` (any when 0) with a region to
+/// paint.
+pub fn needing_paint(table: &WindowTable, filter: usize, thread: u32) -> Option<usize> {
     table
         .iter()
-        .find(|(handle, window)| (filter == 0 || filter == *handle) && window.needs_paint())
+        .find(|(handle, window)| {
+            (filter == 0 || filter == *handle)
+                && (thread == 0 || thread == window.thread)
+                && window.needs_paint()
+        })
         .map(|(handle, _)| handle)
+}
+
+/// Gives `handle` the new buffer `new`, all of it to paint, and returns the buffer nothing
+/// draws on any more, for the caller to unmap after the table's lock: the window's old one, or
+/// `new` itself when the window is gone. The table never holds an unmapped buffer.
+pub fn replace_pixels(table: &mut WindowTable, handle: usize, new: Pixels) -> Pixels {
+    let Some(window) = table.get_mut(handle) else {
+        return new;
+    };
+    let old = window.pixels();
+    window.pixels = new.address;
+    window.width = new.width;
+    window.height = new.height;
+    window.update = Rect::default();
+    window.invalidate(None, true);
+    old
 }
 
 #[cfg(test)]
@@ -235,6 +274,48 @@ mod tests {
     }
 
     #[test]
+    fn a_new_buffer_replaces_the_old_one_which_is_given_back_to_unmap() {
+        let mut table = new_table();
+        let handle = table.insert(window()).unwrap();
+        let new = Pixels {
+            address: 0x9000,
+            width: 500,
+            height: 360,
+        };
+        let old = replace_pixels(&mut table, handle, new);
+        assert_eq!(
+            old,
+            Pixels {
+                address: 0,
+                width: 400,
+                height: 300
+            }
+        );
+        let window = table.get(handle).unwrap();
+        assert_eq!(window.pixels(), new);
+        assert_eq!(window.update, Rect::new(0, 0, 500, 360));
+        assert!(window.erase);
+        table.remove(handle);
+        let newer = Pixels {
+            address: 0xa000,
+            ..new
+        };
+        assert_eq!(replace_pixels(&mut table, handle, newer), newer);
+    }
+
+    #[test]
+    fn paint_waits_only_for_the_windows_thread() {
+        let mut table = new_table();
+        let mut other = window();
+        other.thread = 7;
+        other.invalidate(None, false);
+        let other = table.insert(other).unwrap();
+        assert_eq!(needing_paint(&table, 0, 8), None);
+        assert_eq!(needing_paint(&table, 0, 7), Some(other));
+        assert_eq!(needing_paint(&table, 0, 0), Some(other));
+    }
+
+    #[test]
     fn windows_are_found_by_server_id_and_by_paint() {
         let mut table = new_table();
         let first = table.insert(window()).unwrap();
@@ -243,22 +324,22 @@ mod tests {
         let second = table.insert(second).unwrap();
         assert_eq!(by_server(&table, 9), Some(second));
         assert_eq!(by_server(&table, 8), None);
-        assert_eq!(needing_paint(&table, 0), None);
+        assert_eq!(needing_paint(&table, 0, 0), None);
         table.get_mut(second).unwrap().invalidate(None, true);
-        assert_eq!(needing_paint(&table, 0), Some(second));
-        assert_eq!(needing_paint(&table, first), None);
+        assert_eq!(needing_paint(&table, 0, 0), Some(second));
+        assert_eq!(needing_paint(&table, first, 0), None);
         table.get_mut(second).unwrap().destroying = true;
-        assert_eq!(needing_paint(&table, 0), None);
+        assert_eq!(needing_paint(&table, 0, 0), None);
         let mut hidden = window();
         hidden.shown = false;
         hidden.invalidate(None, false);
         let hidden = table.insert(hidden).unwrap();
-        assert_eq!(needing_paint(&table, hidden), None);
-        assert_eq!(needing_paint(&table, usize::MAX), None);
+        assert_eq!(needing_paint(&table, hidden, 0), None);
+        assert_eq!(needing_paint(&table, usize::MAX, 0), None);
         let mut message_box = window();
         message_box.procedure = Procedure::MessageBox(0x1000);
         message_box.invalidate(None, true);
         let message_box = table.insert(message_box).unwrap();
-        assert_eq!(needing_paint(&table, message_box), None);
+        assert_eq!(needing_paint(&table, message_box, 0), None);
     }
 }

@@ -125,24 +125,23 @@ impl Device {
         }
     }
 
-    /// Gives `buffer`'s window a new buffer of `width` by `height` (as the server clamps it),
-    /// mapped in place of the old one.
-    pub fn resize(&self, buffer: &mut Buffer, width: u32, height: u32) -> Result<(), Errno> {
+    /// Gives `window` a new buffer of `width` by `height` (as the server clamps it) and maps
+    /// it; the old buffer stays mapped (the server keeps it valid until it is unmapped) for the
+    /// caller to unmap once nothing draws on it.
+    pub fn resize(&self, window: u32, width: u32, height: u32) -> Result<Buffer, Errno> {
         let mut set_size = [0u8; 24];
-        put(&mut set_size, 0, buffer.window);
+        put(&mut set_size, 0, window);
         put(&mut set_size, 4, width);
         put(&mut set_size, 8, height);
         self.request(SET_SIZE, &mut set_size)?;
         let (width, height) = (word(&set_size, 4), word(&set_size, 8));
         let pixels = self.map(offset(&set_size, 16), width, height)?;
-        unmap(buffer);
-        *buffer = Buffer {
-            window: buffer.window,
+        Ok(Buffer {
+            window,
             width,
             height,
             pixels,
-        };
-        Ok(())
+        })
     }
 
     /// Sets `window`'s title to `title`, cut to the server's 64 bytes at a character boundary.
@@ -199,9 +198,13 @@ impl Device {
     }
 
     /// Destroys `buffer`'s window and unmaps its pixels.
-    pub fn destroy(&self, buffer: &Buffer) {
+    ///
+    /// # Safety
+    /// As [`unmap`]: no window in the program's table holds the buffer.
+    pub unsafe fn destroy(&self, buffer: &Buffer) {
         let _ = self.request(DESTROY, &mut buffer.window.to_ne_bytes());
-        unmap(buffer);
+        // SAFETY: the caller's duty.
+        unsafe { unmap(buffer) };
     }
 
     /// Reads the waiting event records into `records`; 0 when none waits.
@@ -213,8 +216,12 @@ impl Device {
     }
 }
 
-fn unmap(buffer: &Buffer) {
-    // SAFETY: the mapping is the window's buffer, which nothing uses once its window is gone or
-    // has a new one.
+/// Unmaps `buffer`'s pixels.
+///
+/// # Safety
+/// No window in the program's table may hold the buffer: every drawing reaches a buffer only
+/// through the table, under its lock, so then nothing draws on it any more.
+pub unsafe fn unmap(buffer: &Buffer) {
+    // SAFETY: the caller's duty.
     let _ = unsafe { linux::unmap(buffer.pixels, buffer_length(buffer.width, buffer.height)) };
 }

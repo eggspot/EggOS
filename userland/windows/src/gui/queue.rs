@@ -2,7 +2,8 @@
 //! `PostMessageW`, then input from the window server, then `WM_QUIT` once `PostQuitMessage` asked
 //! for it, as Windows orders them (`WM_PAINT` comes from the windows' update regions, after all
 //! of these). Mouse moves coalesce: a move replaces the newest input when that is a move of the
-//! same window.
+//! same window. Every message belongs to a thread, the one that made its window or posted it to
+//! no window, and only that thread reads it, as each Windows thread reads only its own queue.
 
 use super::message;
 
@@ -10,6 +11,8 @@ use super::message;
 pub const POSTED_CAPACITY: usize = 256;
 /// The most input messages waiting at once; past it the oldest is dropped.
 pub const INPUT_CAPACITY: usize = 256;
+/// The most threads with a `WM_QUIT` waiting at once.
+pub const QUIT_CAPACITY: usize = 8;
 
 /// One message, as `MSG` holds it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,15 +23,18 @@ pub struct Message {
     pub lparam: usize,
     pub time: u32,
     pub point: (i32, i32),
+    pub thread: u32,
 }
 
-/// Which messages a read takes: those of `window` (any when 0, only those posted to no window
-/// when [`THREAD_MESSAGES`]) numbered `first..=last` (any when both are 0).
+/// Which messages a read takes: those of `thread` (any when 0) and of `window` (any when 0,
+/// only those posted to no window when [`THREAD_MESSAGES`]) numbered `first..=last` (any when
+/// both are 0).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Filter {
     pub window: usize,
     pub first: u32,
     pub last: u32,
+    pub thread: u32,
 }
 
 /// The window filter `-1`: messages posted to the thread, not to a window.
@@ -45,7 +51,8 @@ impl Filter {
             THREAD_MESSAGES => message.window == 0,
             window => window == message.window,
         };
-        window && self.accepts_number(message.message)
+        let thread = self.thread == 0 || self.thread == message.thread;
+        window && thread && self.accepts_number(message.message)
     }
 }
 
@@ -66,6 +73,7 @@ impl<const N: usize> Ring<N> {
                 lparam: 0,
                 time: 0,
                 point: (0, 0),
+                thread: 0,
             }; N],
             start: 0,
             length: 0,
@@ -116,7 +124,7 @@ impl<const N: usize> Ring<N> {
 pub struct Queue {
     posted: Ring<POSTED_CAPACITY>,
     input: Ring<INPUT_CAPACITY>,
-    quit: Option<usize>,
+    quits: [Option<(u32, usize)>; QUIT_CAPACITY],
 }
 
 impl Default for Queue {
@@ -130,7 +138,7 @@ impl Queue {
         Self {
             posted: Ring::new(),
             input: Ring::new(),
-            quit: None,
+            quits: [None; QUIT_CAPACITY],
         }
     }
 
@@ -155,9 +163,17 @@ impl Queue {
         }
     }
 
-    /// `PostQuitMessage(code)`: `WM_QUIT` comes once nothing posted or input is left.
-    pub fn quit(&mut self, code: usize) {
-        self.quit = Some(code);
+    /// `PostQuitMessage(code)` on `thread`: its `WM_QUIT` comes once nothing posted or input
+    /// is left for it. A thread asking again replaces its code; past [`QUIT_CAPACITY`] threads
+    /// the oldest request is replaced.
+    pub fn quit(&mut self, thread: u32, code: usize) {
+        let slot = self
+            .quits
+            .iter()
+            .position(|quit| quit.is_some_and(|(asking, _)| asking == thread))
+            .or_else(|| self.quits.iter().position(Option::is_none))
+            .unwrap_or(0);
+        self.quits[slot] = Some((thread, code));
     }
 
     /// The first message `filter` accepts, taken out of the queue when `remove` says so.
@@ -174,13 +190,20 @@ impl Queue {
                 false => *self.input.at(index),
             });
         }
-        let code = self.quit.filter(|_| filter.accepts_number(message::QUIT))?;
+        if !filter.accepts_number(message::QUIT) {
+            return None;
+        }
+        let slot = self.quits.iter().position(|quit| {
+            quit.is_some_and(|(thread, _)| filter.thread == 0 || filter.thread == thread)
+        })?;
+        let (thread, code) = self.quits[slot]?;
         if remove {
-            self.quit = None;
+            self.quits[slot] = None;
         }
         Some(Message {
             message: message::QUIT,
             wparam: code,
+            thread,
             ..Message::default()
         })
     }
@@ -217,12 +240,13 @@ mod tests {
         window: 0,
         first: 0,
         last: 0,
+        thread: 0,
     };
 
     #[test]
     fn posted_messages_come_before_input_and_quit_comes_last() {
         let mut queue = Box::new(Queue::new());
-        queue.quit(3);
+        queue.quit(0, 3);
         queue.post_input(message(1, message::KEY_DOWN, 65));
         queue.post(message(1, 0x400, 1));
         queue.post(message(2, 0x401, 2));
@@ -254,13 +278,47 @@ mod tests {
             window: 0,
             first: 0x500,
             last: 0x5ff,
+            thread: 0,
         };
         assert_eq!(queue.take(&range, true).unwrap().wparam, 3);
         assert_eq!(queue.take(&range, true), None);
-        queue.quit(0);
+        queue.quit(0, 0);
         assert_eq!(queue.take(&range, true), None);
         assert_eq!(queue.take(&ANY, true).unwrap().wparam, 1);
         assert_eq!(queue.take(&ANY, true).unwrap().message, message::QUIT);
+    }
+
+    #[test]
+    fn each_thread_reads_only_its_own_messages_and_quit() {
+        let mut queue = Box::new(Queue::new());
+        let mine = |thread| Filter { thread, ..ANY };
+        queue.post(Message {
+            thread: 5,
+            ..message(1, 0x400, 1)
+        });
+        queue.post_input(Message {
+            thread: 6,
+            ..message(2, message::KEY_DOWN, 2)
+        });
+        queue.quit(6, 9);
+        queue.quit(6, 7);
+        assert_eq!(queue.take(&mine(6), true).unwrap().wparam, 2);
+        let quit = queue.take(&mine(6), true).unwrap();
+        assert_eq!(
+            (quit.message, quit.wparam, quit.thread),
+            (message::QUIT, 7, 6)
+        );
+        assert_eq!(queue.take(&mine(6), true), None);
+        assert_eq!(queue.take(&mine(5), true).unwrap().wparam, 1);
+        for thread in 1..=QUIT_CAPACITY as u32 + 1 {
+            queue.quit(thread, thread as usize);
+        }
+        assert_eq!(
+            queue.take(&mine(1), true),
+            None,
+            "the oldest request was replaced"
+        );
+        assert_eq!(queue.take(&mine(9), true).unwrap().wparam, 9);
     }
 
     #[test]

@@ -250,8 +250,8 @@ unsafe extern "efiapi" fn create_window_ex_w(
     let buffer = match device.create(
         ROLE_NORMAL,
         0,
-        (outside_width - 2 * FRAME).max(1) as u32,
-        (outside_height - CAPTION - 2 * FRAME).max(1) as u32,
+        outside_width.saturating_sub(2 * FRAME).max(1) as u32,
+        outside_height.saturating_sub(CAPTION + 2 * FRAME).max(1) as u32,
         flags,
     ) {
         Ok(buffer) => buffer,
@@ -260,7 +260,11 @@ unsafe extern "efiapi" fn create_window_ex_w(
     let mut title_bytes = [0u8; TITLE_BYTES];
     let _ = device.set_title(buffer.window, title(window_name, &mut title_bytes));
     if x != CW_USE_DEFAULT {
-        let _ = device.set_position(buffer.window, x - work.left, y - work.top);
+        let _ = device.set_position(
+            buffer.window,
+            x.saturating_sub(work.left),
+            y.saturating_sub(work.top),
+        );
     }
     let shape = objects::pointer_shape(class_of.cursor);
     if shape != 0 {
@@ -281,8 +285,10 @@ unsafe extern "efiapi" fn create_window_ex_w(
     window.owner = parent;
     window.extra_length = class_of.window_extra as usize;
     window.background = class_of.background;
+    window.thread = thread_environment::thread_id();
     let Some(Some(handle)) = with(|gui| gui.windows.insert(window)) else {
-        device.destroy(&buffer);
+        // SAFETY: the window never reached the table, so nothing holds its buffer.
+        unsafe { device.destroy(&buffer) };
         return fail(error::NOT_ENOUGH_MEMORY, 0);
     };
     let create = CreateStruct {
@@ -332,7 +338,8 @@ pub fn remove_window(handle: usize) {
     })
     .flatten();
     if let Some((device, buffer)) = removed {
-        device.destroy(&buffer);
+        // SAFETY: the window is out of the table, so nothing draws on its buffer any more.
+        unsafe { device.destroy(&buffer) };
     }
 }
 
@@ -446,10 +453,10 @@ unsafe extern "efiapi" fn adjust_window_rect_ex(
 ) -> Bool {
     // SAFETY: the caller passes a readable and writable `RECT`.
     let rect = unsafe { &mut *rect };
-    rect.left -= FRAME;
-    rect.top -= CAPTION + FRAME;
-    rect.right += FRAME;
-    rect.bottom += FRAME;
+    rect.left = rect.left.saturating_sub(FRAME);
+    rect.top = rect.top.saturating_sub(CAPTION + FRAME);
+    rect.right = rect.right.saturating_add(FRAME);
+    rect.bottom = rect.bottom.saturating_add(FRAME);
     TRUE
 }
 
@@ -555,6 +562,7 @@ unsafe fn read_message(message: *const Msg) -> Message {
         lparam: message.lparam,
         time: message.time,
         point: (message.x, message.y),
+        thread: thread_environment::thread_id(),
     }
 }
 
@@ -567,6 +575,7 @@ fn filter(handle: usize, first: u32, last: u32) -> Result<Filter, u32> {
             window: handle,
             first,
             last,
+            thread: 0,
         }),
         false => Err(error::INVALID_WINDOW_HANDLE),
     }
@@ -659,9 +668,10 @@ extern "efiapi" fn post_message_w(
     lparam: usize,
 ) -> Bool {
     let posted = try_with(|gui| {
-        if handle != 0 {
-            gui.window(handle)?;
-        }
+        let thread = match handle {
+            0 => thread_environment::thread_id(),
+            handle => gui.window(handle)?.thread,
+        };
         let message = Message {
             window: handle,
             message: number,
@@ -669,6 +679,7 @@ extern "efiapi" fn post_message_w(
             lparam,
             time: now_ms(),
             point: (0, 0),
+            thread,
         };
         match gui.queue.post(message) {
             true => Ok(()),
@@ -685,7 +696,8 @@ extern "efiapi" fn post_message_w(
 }
 
 extern "efiapi" fn post_quit_message(code: i32) {
-    with(|gui| gui.queue.quit(code as isize as usize));
+    let thread = thread_environment::thread_id();
+    with(|gui| gui.queue.quit(thread, code as isize as usize));
     gui::wake();
 }
 

@@ -1,6 +1,5 @@
 //! Win32's message numbers and the values some of them carry.
 
-pub const NULL: u32 = 0x0000;
 pub const CREATE: u32 = 0x0001;
 pub const DESTROY: u32 = 0x0002;
 pub const SIZE: u32 = 0x0005;
