@@ -92,16 +92,13 @@ Every change is judged against it:
 - **Measure, don't guess.** Every hot path (syscalls, scheduling, interrupts, page faults, IPC, I/O,
   memory allocation, graphics, the compatibility layers' translation paths) gets a benchmark when it is
   written. A PR that touches a hot path states before/after numbers from the same machine.
-- **Never merge a performance regression without a reason that holds up.** A slower result blocks the
-  PR until it is fixed, or until a research subagent concludes the cost is unavoidable. That means the
-  price of correctness, security or a feature EggOS must have, already cut to the minimum, and compared
-  with how Linux, Windows and macOS pay for the same thing. Then:
-  - the PR records the reasoning under "Decided by research";
-  - docs/decisions.md records the accepted cost;
-  - the baseline lines for exactly the affected benchmarks are updated in the same PR;
-  - the PR merges.
-
-  This doesn't wait for the owner, who can overrule it later. (D78)
+- **Performance is enforced once a week, not per PR (D122, replaces D78's per-PR block).** CI measures
+  every benchmark on each PR and push to `main` and only reports the change against the baseline (job
+  summary, plus the results kept as an artifact for 90 days). Only a slowdown of more than 2x on any
+  benchmark blocks a PR. The weekly performance pass runs the exact gate (`cargo xtask bench --arch all`),
+  traces each regression to its PR through the kept results, fixes it or accepts its cost by research
+  (D78's test: unavoidable, already minimal, compared with Linux, Windows and macOS), and updates the
+  baseline. The owner can overrule any accepted cost later.
 - **Design for speed from the start**, not as a later optimisation pass: choose data structures and
   algorithms for their real cost (cache misses, allocations, locks, copies, context switches), avoid
   allocation and locking on hot paths, prefer zero-copy, and keep per-CPU state per-CPU.
@@ -144,7 +141,12 @@ them.
 - Development hosts are Windows and macOS; changes must build and be testable on both.
 - Build/test: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
 - CI follows the global billing rules: Linux runners by default; macOS (10x cost) and Windows (2x) jobs
-  only on PRs into main.
+  only on PRs into main. Its jobs run in parallel (fast checks, QEMU boot tests and benchmarks per
+  architecture) and a final job named exactly `check` fails if any of them failed or was cancelled; it is
+  the only check `main` requires.
+- `cargo xtask lint` (part of `cargo xtask ci` and CI's fast job) fails on a disallowed comment in a
+  tracked `.rs`, `.toml` or `.yml` file beyond the counts in `xtask/lint-legacy-files.txt`, which only
+  shrinks (`cargo xtask lint --shrink` after a cleanup).
 
 ## Pull requests: review, then merge automatically
 The owner does not merge PRs by hand. After opening a PR, in the same session:
@@ -160,8 +162,8 @@ The owner does not merge PRs by hand. After opening a PR, in the same session:
 An open question is never a reason to leave a PR unmerged: answer it with a research subagent (see
 "Open questions" below), record the answer in the PR under "Decided by research", and merge.
 Never auto-merge a PR that needs the owner: one that touches credentials or money, or goes against a
-rule the owner stated. Those wait for the owner's OK. A performance or UX regression does not need
-the owner: settle it with research as "Never merge a performance regression" says. A PR that
+rule the owner stated. Those wait for the owner's OK. A performance regression under 2x does not
+block a PR (D122) and a UX regression does not need the owner: settle it with research (D78). A PR that
 changes the license is never merged at all (see License).
 
 ## Releases: ship every major feature, don't ask

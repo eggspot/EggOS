@@ -15,27 +15,14 @@ permissions:
   pull-requests: read
 
 jobs:
-  check:
+  changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
-      packages: read
-      actions: read
-    container:
-      image: ghcr.io/eggspot/eggos-ci:main
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      volumes:
-        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
-    timeout-minutes: 25
     outputs:
       code: ${{ steps.changes.outputs.code }}
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: "0"
-      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - name: Detect code changes
         id: changes
@@ -52,44 +39,104 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"; echo "Docs-only change: skipping checks."
           fi
 
+  fast:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
       - uses: actions/checkout@v7
-        if: steps.changes.outputs.code == 'true'
         with:
           fetch-depth: 1
 
       - name: Install pinned toolchain (rust-toolchain.toml)
-        if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
 
       - uses: actions/cache/restore@v6
-        if: steps.changes.outputs.code == 'true'
         with:
           path: target
-          key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
-          restore-keys: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          key: target-${{ runner.os }}-fast-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-fast-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
       - name: Format
-        if: steps.changes.outputs.code == 'true'
         run: cargo fmt --all --check
 
+      - name: Lint (comments the repository rules disallow)
+        run: cargo xtask lint
+
       - name: Clippy (host)
-        if: steps.changes.outputs.code == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (kernel targets)
-        if: steps.changes.outputs.code == 'true'
         run: cargo xtask clippy-targets
 
       - name: Docs (rustdoc, warnings as errors)
-        if: steps.changes.outputs.code == 'true'
         run: cargo xtask docs
 
       - name: Unit tests (host)
-        if: steps.changes.outputs.code == 'true'
         run: cargo test --workspace
 
+      - uses: actions/cache/save@v6
+        if: github.event_name == 'push'
+        with:
+          path: target
+          key: target-${{ runner.os }}-fast-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
+
+  qemu:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /usr/local/lib/android/sdk/ndk:/usr/local/lib/android/sdk/ndk:ro
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      ANDROID_HOME: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
       - name: Wait for the Mach-O test programs
-        if: steps.changes.outputs.code == 'true' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -108,21 +155,77 @@ jobs:
           done
           echo "macos-programs: no artifact after 10 minutes"; exit 1
 
-      - name: QEMU boot tests (every architecture)
-        if: steps.changes.outputs.code == 'true'
+      - name: QEMU boot tests
         env:
           EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
-        run: cargo xtask qemu --arch all
-
-      - name: Benchmarks against the baseline (every architecture)
-        if: steps.changes.outputs.code == 'true'
-        run: cargo xtask bench --arch all
+        run: cargo xtask qemu --arch ${{ matrix.arch }}
 
       - uses: actions/cache/save@v6
-        if: steps.changes.outputs.code == 'true' && github.event_name == 'push'
+        if: github.event_name == 'push'
         with:
           path: target
-          key: target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
+
+  bench:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-bench-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-bench-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Benchmarks against the baseline (report only, a result over 2x slower fails)
+        run: cargo xtask bench --arch ${{ matrix.arch }} --report-only
+
+      - name: Report the benchmarks in the job summary
+        if: always()
+        run: |
+          if [ -f target/bench/report.md ]; then cat target/bench/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Keep the benchmark results of this commit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('main-{0}', github.sha) }}-${{ matrix.arch }}
+          path: |
+            target/bench/report.json
+            target/bench/report.md
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - uses: actions/cache/save@v6
+        if: github.event_name == 'push'
+        with:
+          path: target
+          key: target-${{ runner.os }}-bench-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
 
   macos-programs:
     if: github.event_name == 'pull_request'
@@ -162,8 +265,8 @@ jobs:
           if-no-files-found: error
 
   hosts:
-    needs: check
-    if: github.event_name == 'pull_request' && needs.check.outputs.code == 'true'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
@@ -185,3 +288,18 @@ jobs:
       - name: Build the kernel for every architecture
         shell: bash
         run: for arch in aarch64 riscv64 x86_64; do cargo xtask build --arch "$arch"; done
+
+  check:
+    if: always()
+    needs: [changes, fast, qemu, bench, macos-programs, hosts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) exit 1;;
+          esac

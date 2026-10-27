@@ -12,7 +12,8 @@ Thanks for helping build EggOS. A few rules keep the project fast, clean and fre
   thing you are writing, say so in the PR.
 - **Performance first.** A PR that touches a hot path includes before/after numbers from the same
   machine, and a new hot path adds its benchmark to `kernel/src/bench.rs` (`cargo xtask bench`,
-  D27). Performance, memory, install-size and boot-time regressions are not merged.
+  D27). CI reports every benchmark's change against the baseline and blocks a PR only for a slowdown of
+  more than 2x; the weekly performance pass settles the rest (D122).
 - **Every feature has a GUI, a CLI command and an MCP tool** (see `docs/decisions.md`, D22).
 - **`unsafe` only where unavoidable**, each block with a `// SAFETY:` comment explaining why it is sound.
 
@@ -20,8 +21,8 @@ Thanks for helping build EggOS. A few rules keep the project fast, clean and fre
 ```
 cargo xtask ci
 ```
-This runs everything CI runs, cheapest first: formatting, clippy (host and every kernel target), host
-tests, QEMU boot tests on every architecture (a self-test boot and a fatal-exception boot each), and
+This runs everything CI runs, cheapest first: formatting, the comment lint, clippy (host and every
+kernel target), host tests, QEMU boot tests on every architecture (a self-test boot and a fatal-exception boot each), and
 the benchmarks against `benchmarks/baseline.txt`. It needs QEMU installed (`brew install qemu` on
 macOS; QEMU's Windows installer or MSYS2 on Windows; your distribution's `qemu-system-*` packages on
 Linux).

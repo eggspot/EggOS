@@ -6727,3 +6727,48 @@ the license, by an explicit instruction recorded here.
   of thread start, waits and locks against Windows on the same hardware needs a way to run a
   Windows program inside the benchmark kernel, as D118 noted; the kernel tests D118 left for
   the interpreter's refusal and the GS base across `fork`/`exec` remain open.
+
+## D122 Performance is enforced once a week; CI reports benchmarks and blocks only a 2x slowdown; parallel CI jobs with a final `check`; `cargo xtask lint` — Decided (owner, 2026-10-27, performance and CI); the lint decided by the build loop; supersedes D78's per-PR block
+- **The owner's decision.** Performance is enforced once a week, in a weekly performance pass, not
+  on every PR. A feature PR is measured and its benchmark changes are reported, and it is blocked
+  only by a slowdown of more than 2x on any benchmark. D78's "a slower result blocks the PR until
+  it is fixed or accepted by research" no longer applies to PRs; its test for accepting a cost
+  (unavoidable, already cut to the minimum, compared with Linux, Windows and macOS) is what the
+  weekly pass applies to the regressions it finds. The size, memory, boot and install budgets
+  (D24, D69) are measured the same way: reported per PR, enforced weekly.
+- **What CI does.** `cargo xtask bench --arch <arch> --report-only` (one `bench` job per
+  architecture, on PRs and on pushes to `main`, so the baseline never blocks a merge) compares
+  every result with `benchmarks/baseline.txt`, writes a table to the job summary and
+  `target/bench/report.json` and `report.md`, and fails only for a result above twice its baseline
+  (plus the 0.5 ns allowance that keeps a few instructions on a tiny result from counting). New and
+  removed benchmarks, an unreadable firmware version and a different firmware or QEMU are noted,
+  not failed. Image sizes (`release_image_bytes`) follow the same rule, which also covers the few
+  hundred bytes between a Linux and a Mac build. The exact gate (any slowdown beyond 1% + 0.5 ns,
+  any size growth) stays the default of `cargo xtask bench` and `cargo xtask ci`, which is what the
+  weekly pass runs before it updates the baseline.
+- **Per-PR results are kept.** Each `bench` job uploads its `report.json` and `report.md` as
+  `bench-pr-<number>-<head sha>-<arch>` (`bench-main-<sha>-<arch>` on `main`) with 90 days of
+  retention, so a regression the weekly pass finds can be traced to the PR that caused it.
+- **CI structure.** `changes` (docs-only detection), then in parallel `fast` (format, lint, clippy
+  on the host and the kernel targets, docs, host tests), `qemu` and `bench` (one job per
+  architecture each), `macos-programs` and, on PRs, `hosts`; a final job named exactly `check`
+  runs after all of them (`if: always()`) and fails if any failed or was cancelled, skipped jobs
+  passing. `check` is the only status check the `main` ruleset requires, which auto-merge relies
+  on. The workflow still always runs, so docs-only PRs report. Jobs restore a `target/` cache of
+  their own kind (falling back to the previous shared cache) and only pushes to `main` save one.
+  Runners are free for this public repository, so the aim is wall-clock time, not billed minutes.
+- **`cargo xtask lint`.** Scans every tracked `.rs`, `.toml` and `.yml` file for the comments the
+  rules disallow (CLAUDE.md, "No other comments in code"): in Rust a plain `//` comment, a `/* */`
+  comment, and a `///` comment that is not on a `pub` item (or a field, variant or method of a
+  `pub` struct, enum or trait); `// SAFETY:` with its continuation lines and `//!` are allowed; in
+  TOML and YAML a `#` comment outside strings and YAML block scalars, except
+  `# yaml-language-server:` and a version comment after `uses:`. Files that still have such
+  comments are listed with their counts in `xtask/lint-legacy-files.txt` (76 files, 2188
+  comments when it was introduced, none in TOML or YAML): the lint fails for any violation in an
+  unlisted file and for a count above a listed one, and also for a count below it, so the list only
+  shrinks (`cargo xtask lint --shrink` lowers it after a cleanup, and refuses to raise it). It runs
+  in the `fast` job and in `cargo xtask ci`.
+- **Decided by the build loop.** The 2x block is one fixed factor with the existing absolute
+  allowance, not per-benchmark. `main` pushes are report-only like PRs. The shell comments inside
+  YAML `run:` blocks are not scanned (they are values for the lint). `hosts` no longer waits for
+  the Linux job: it starts with the others, the runners being free.

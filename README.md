@@ -98,6 +98,7 @@ Requires [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.to
 cargo xtask ci                   # everything CI runs, cheapest first
 cargo xtask qemu --arch all      # boot every architecture in QEMU headless, check the verdict
 cargo xtask bench --arch all     # benchmarks (instruction counts), checked against benchmarks/baseline.txt
+cargo xtask lint                 # comments the repository rules disallow (beyond xtask/lint-legacy-files.txt)
 cargo xtask run --arch aarch64   # boot interactively: display in a window, console here (quit: Ctrl-A then X)
 cargo xtask release              # the release files in target/release-dist/: images, SHA256SUMS, run scripts, notes
 cargo xtask screenshot --arch aarch64   # docs/images/desktop.png from the release image's display

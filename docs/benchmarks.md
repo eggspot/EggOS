@@ -2,7 +2,9 @@
 
 What some of the boot-time benchmarks in `kernel/src/bench.rs` measure, and why they are built
 the way they are. `cargo xtask bench` runs every benchmark under QEMU `-icount shift=0`, so each
-result is an instruction count per iteration (D27), gated against `benchmarks/baseline.txt`.
+result is an instruction count per iteration (D27), compared with `benchmarks/baseline.txt`: gated
+exactly by default (what `cargo xtask ci` and the weekly performance pass run), report-only with
+`--report-only` (CI's mode: every change reported, a result more than 2x slower fails, D122).
 
 ## Timers
 
