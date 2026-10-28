@@ -63,19 +63,27 @@ impl NotRunnable {
 }
 
 fn u16_le(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(at..at.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn u64_le(bytes: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        bytes.get(at..at.checked_add(8)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_be(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 mod pe {
@@ -187,7 +195,10 @@ fn foreign(
 
 fn windows(head: &[u8], machine: Architecture) -> Result<Program, NotRunnable> {
     let header = u32_le(head, pe::NEW_HEADER_OFFSET).ok_or(NotRunnable::NotAProgram)? as usize;
-    if head.get(header..header + pe::SIGNATURE.len()) != Some(pe::SIGNATURE) {
+    let signature_end = header
+        .checked_add(pe::SIGNATURE.len())
+        .ok_or(NotRunnable::NotAProgram)?;
+    if head.get(header..signature_end) != Some(pe::SIGNATURE) {
         return Err(NotRunnable::NotAProgram);
     }
     let field = |offset: usize| {
@@ -517,6 +528,52 @@ mod tests {
                 let _ = recognise(&file, machine);
             }
         }
+        let extremes = [
+            0u64,
+            1,
+            u64::MAX,
+            u64::MAX - 3,
+            u64::MAX - 7,
+            u64::from(u32::MAX),
+            0x8000_0000,
+        ];
+        let fields: [(usize, usize, usize, bool); 6] = [
+            (0, 0x3c, 4, false),
+            (1, 32, 8, false),
+            (1, 54, 2, false),
+            (1, 56, 2, false),
+            (3, 4, 4, true),
+            (2, 4, 4, false),
+        ];
+        for (seed, at, width, big_endian) in fields {
+            for value in extremes {
+                let mut file = seeds[seed].clone();
+                let bytes = match big_endian {
+                    true => value.to_be_bytes(),
+                    false => value.to_le_bytes(),
+                };
+                let bytes = match big_endian {
+                    true => &bytes[8 - width..],
+                    false => &bytes[..width],
+                };
+                file[at..at + width].copy_from_slice(bytes);
+                for machine in [X86_64, Aarch64, Riscv64] {
+                    let _ = recognise(&file, machine);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn program_headers_or_a_pe_header_past_the_end_of_memory_are_no_program() {
+        for offset in [u64::MAX, u64::MAX - 3] {
+            let mut file = linux_program(62);
+            file[32..40].copy_from_slice(&offset.to_le_bytes());
+            assert_eq!(recognise(&file, X86_64), Err(NotRunnable::NotAProgram));
+        }
+        let mut file = windows_program(0x8664);
+        file[0x3c..0x40].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        assert_eq!(recognise(&file, X86_64), Err(NotRunnable::NotAProgram));
     }
 
     #[test]

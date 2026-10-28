@@ -142,11 +142,6 @@ fn saved_settings(file: &mut [u8; LARGEST + 1]) -> usize {
 }
 
 fn remove_stale_temporary_files(own: u32) {
-    let mut ps = [0u8; PS_CAPACITY];
-    let listed = match read_file("/proc/ps", &mut ps) {
-        Ok(length) if length < ps.len() => &ps[..length],
-        _ => return,
-    };
     let directory = CPath::new(DIRECTORIES[2]);
     let Ok(fd) = syscall(
         number::OPENAT,
@@ -184,7 +179,6 @@ fn remove_stale_temporary_files(own: u32) {
             let name = &raw[..raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len())];
             if let Some(owner) = settings_file::temporary_owner(name)
                 && owner != own
-                && !settings_file::is_listed(listed, owner)
                 && count < stale.len()
             {
                 stale[count] = owner;
@@ -194,7 +188,15 @@ fn remove_stale_temporary_files(own: u32) {
         }
     }
     close(fd);
-    for owner in &stale[..count] {
+    let mut ps = [0u8; PS_CAPACITY];
+    let running = match read_file("/proc/ps", &mut ps) {
+        Ok(length) if length < ps.len() => &ps[..length],
+        _ => return,
+    };
+    for owner in stale[..count]
+        .iter()
+        .filter(|&&owner| !settings_file::is_listed(running, owner))
+    {
         let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
         let path = CPath::new(settings_file::temporary_path(*owner, &mut temporary));
         let _ = syscall(number::UNLINKAT, [AT_FDCWD, path.pointer(), 0, 0, 0, 0]);

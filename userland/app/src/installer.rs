@@ -81,7 +81,7 @@ pub fn layer_path(source: Source) -> Option<&'static [u8]> {
 /// A name as typed or derived, kept for messages even when it is no valid app name.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Name {
-    bytes: [u8; 64],
+    bytes: [u8; Name::CAPACITY],
     length: usize,
 }
 
@@ -92,15 +92,23 @@ impl core::fmt::Debug for Name {
 }
 
 impl Name {
-    /// `bytes`, its first 64 bytes kept.
+    /// The most bytes a name keeps.
+    pub const CAPACITY: usize = 64;
+
+    /// `bytes`, its first [`Self::CAPACITY`] bytes kept: for messages.
     pub fn new(bytes: &[u8]) -> Self {
-        let length = bytes.len().min(64);
+        let length = bytes.len().min(Self::CAPACITY);
         let mut name = Self {
-            bytes: [0; 64],
+            bytes: [0; Self::CAPACITY],
             length,
         };
         name.bytes[..length].copy_from_slice(&bytes[..length]);
         name
+    }
+
+    /// `bytes` whole; `None` when they do not fit, so a name that names a file is never cut.
+    pub fn whole(bytes: &[u8]) -> Option<Self> {
+        (bytes.len() <= Self::CAPACITY).then(|| Self::new(bytes))
     }
 
     /// The bytes.

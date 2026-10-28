@@ -233,6 +233,13 @@ fn names_come_from_the_file_name_or_from_the_caller_and_must_be_valid() {
     );
     assert_eq!(derived_name(b"/a/.hidden").as_str(), ".hidden");
     assert_eq!(derived_name(b"Paint.app/").as_str(), "Paint");
+    let long = [b'x'; Name::CAPACITY + 1];
+    assert!(Name::whole(&long).is_none());
+    assert_eq!(Name::new(&long).as_bytes().len(), Name::CAPACITY);
+    assert_eq!(
+        Name::whole(&long[..Name::CAPACITY]).unwrap().as_bytes(),
+        &long[..Name::CAPACITY]
+    );
 }
 
 #[test]

@@ -88,12 +88,12 @@ fn programs_in(
         if !wanted {
             continue;
         }
-        match count < dialog::MAX_CHOICES {
-            true => {
-                names[count] = Name::new(entry);
+        match (count < dialog::MAX_CHOICES, Name::whole(entry)) {
+            (true, Some(whole)) => {
+                names[count] = whole;
                 count += 1;
             }
-            false => more += 1,
+            _ => more += 1,
         }
     }
     (names, count, more)

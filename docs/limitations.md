@@ -107,6 +107,10 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - installing a missing Windows or macOS layer, `app install --force`, Files' `Install...`
   (item 37) and the MCP tools `app_install`, `app_uninstall` and `app_list` (with the MCP
   server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
+- `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
+  `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
+  chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
+  <path>` installs any);
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);
