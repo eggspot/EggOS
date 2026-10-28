@@ -46,8 +46,9 @@ pub mod size {
     pub const SET_PROFILE: usize = 4;
     pub const APPS_CHANGED: usize = 0;
     pub const OPEN_APP: usize = 68;
+    pub const TYPE_IN_TERMINAL: usize = 260;
     /// The largest argument.
-    pub const LARGEST: usize = COMMIT;
+    pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
 
 /// The request numbers, Linux's `_IOC` encoding: direction, argument size, [`IOCTL_TYPE`] and
@@ -71,10 +72,13 @@ pub mod request {
     pub const SET_PROFILE: u32 = encode(WRITE, 14, size::SET_PROFILE);
     pub const APPS_CHANGED: u32 = encode(0, 15, size::APPS_CHANGED);
     pub const OPEN_APP: u32 = encode(WRITE, 16, size::OPEN_APP);
+    pub const TYPE_IN_TERMINAL: u32 = encode(WRITE, 17, size::TYPE_IN_TERMINAL);
 }
 
 /// The longest app name `OpenApp` carries, in bytes.
 pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
+/// The longest line `TypeInTerminal` carries, in bytes.
+pub const TERMINAL_LINE_CAPACITY: usize = size::TYPE_IN_TERMINAL - 4;
 
 /// The flags `Create` takes.
 pub mod flags {
@@ -268,6 +272,10 @@ pub enum Request {
         length: u32,
         name: [u8; APP_NAME_CAPACITY],
     },
+    TypeInTerminal {
+        length: u32,
+        line: [u8; TERMINAL_LINE_CAPACITY],
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -306,6 +314,7 @@ impl Request {
             request::SET_PROFILE => size::SET_PROFILE,
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
+            request::TYPE_IN_TERMINAL => size::TYPE_IN_TERMINAL,
             _ => return None,
         })
     }
@@ -387,6 +396,14 @@ impl Request {
                 Self::OpenApp {
                     length: at(0),
                     name,
+                }
+            }
+            request::TYPE_IN_TERMINAL => {
+                let mut line = [0; TERMINAL_LINE_CAPACITY];
+                line.copy_from_slice(&bytes[4..4 + TERMINAL_LINE_CAPACITY]);
+                Self::TypeInTerminal {
+                    length: at(0),
+                    line,
                 }
             }
             _ => Self::GetWorkArea,

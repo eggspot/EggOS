@@ -144,6 +144,8 @@ pub fn keys_go_to_console() -> bool {
 static CHOSEN_PROFILE: AtomicU8 = AtomicU8::new(NO_PROFILE_CHOSEN);
 
 const NO_PROFILE_CHOSEN: u8 = 0;
+const KILL_LINE: u8 = 0x15;
+const TYPED_LINE_CAPACITY: usize = 260;
 
 /// The desktop's layout profile: the controls' side and the shortcuts (D128): the one the
 /// settings file holds, read at boot ([`load_saved_profile`]), or the last one set through
@@ -554,6 +556,31 @@ pub fn open_app<P: Platform>(name: &[u8]) -> bool {
         }
         None => false,
     }
+}
+
+/// Types `line` in the terminal window as a keyboard would, after Ctrl-U erases a half-typed
+/// line and with Enter after it, and focuses the terminal (`TYPE_IN_TERMINAL`, D135); `false`
+/// when there is no interactive desktop or the line does not fit.
+pub fn type_in_terminal<P: Platform>(line: &[u8]) -> bool {
+    if !is_interactive() {
+        return false;
+    }
+    let mut typed = [0u8; TYPED_LINE_CAPACITY];
+    let Some(end) = line.len().checked_add(2).filter(|&end| end <= typed.len()) else {
+        return false;
+    };
+    typed[0] = KILL_LINE;
+    typed[1..end - 1].copy_from_slice(line);
+    typed[end - 1] = b'\r';
+    let focused = with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.launch(AppId::Terminal, damage, events)
+    });
+    if focused.is_none() {
+        return false;
+    }
+    move_view::<P>(ViewMove::Live);
+    console::receive_from_keyboard::<P>(&typed[..end]);
+    true
 }
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed

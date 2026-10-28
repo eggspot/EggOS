@@ -20,8 +20,8 @@ use crate::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use crate::input::key;
 use crate::input::keymap::Modifiers;
 
-/// What launching Files says while the build has no Files app.
-pub const FILES_MISSING: &str = "Files is not in this build yet.";
+/// What launching Files says while it is not installed (D18).
+pub const FILES_MISSING: &str = "Files is not installed.";
 /// What the notice says when the kernel could not start an app.
 pub const LAUNCH_FAILED: &str = "The app could not start.";
 /// One launcher row's height.

@@ -364,10 +364,11 @@ impl Catalogue {
     }
 
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their
-    /// programs, and `Install from host share...` the installer on the share; the host share
-    /// and installed apps are typed in the terminal (the program's path, single-quoted when it
-    /// holds more than letters, digits and `/._-+`), after Ctrl-U so a half-typed line does
-    /// not run with it; the terminal is only focused, which the desktop does itself.
+    /// programs, `Install from host share...` the installer on the share, and the host share
+    /// Files on it (D135); without Files the share's listing and installed apps are typed in
+    /// the terminal (the program's path, single-quoted when it holds more than letters, digits
+    /// and `/._-+`), after Ctrl-U so a half-typed line does not run with it; the terminal is
+    /// only focused, which the desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal => None,
@@ -376,6 +377,9 @@ impl Catalogue {
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
+            }
+            AppId::HostShare if self.files_present => {
+                Command::program(FILES_PROGRAM, &[HOST_SHARE.as_bytes()]).map(Launch::Start)
             }
             AppId::HostShare => {
                 let mut line = Command::new();
@@ -532,6 +536,8 @@ mod tests {
         assert_eq!(start(AppId::Files), b"/bin/files");
         assert_eq!(catalogue.launch(AppId::Terminal), None);
         assert_eq!(typed(AppId::HostShare), b"\x15ls /media/host\r");
+        catalogue.set_files_present(true);
+        assert_eq!(start(AppId::HostShare), b"/bin/files\0/media/host");
         let paint = catalogue.installed_named("Paint").unwrap();
         assert_eq!(typed(paint), b"\x15/Applications/Paint/paint.exe\r");
         let zebra = catalogue.installed_named("zebra").unwrap();
