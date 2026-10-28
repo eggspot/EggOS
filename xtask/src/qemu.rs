@@ -221,7 +221,7 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 6] = [
     b"exit 7\r",
 ];
 
-const LINUX_SOCKETS_LINES: [&str; 9] = [
+const LINUX_SOCKETS_LINES: [&str; 10] = [
     "LINUX-SOCKETS errors ENOENT ECONNREFUSED ECONNREFUSED EADDRINUSE EAFNOSUPPORT \
      ESOCKTNOSUPPORT",
     "LINUX-SOCKETS pair ping poll timeout EAGAIN hangup eof EPIPE",
@@ -229,6 +229,7 @@ const LINUX_SOCKETS_LINES: [&str; 9] = [
     "LINUX-SOCKETS accepted peer pid ok name /tmp/eggos-sockets.sock peer /tmp/eggos-sockets.sock",
     "LINUX-SOCKETS poll woken by the client",
     "LINUX-SOCKETS rights pipe through a passed pipe",
+    "LINUX-SOCKETS memfd shared both ways size 65536 seal EPERM private ENODEV",
     "LINUX-SOCKETS large 1048576 bytes ok",
     "LINUX-SOCKETS peer closed eof EPIPE child 0",
     "LINUX-SOCKETS status 0",

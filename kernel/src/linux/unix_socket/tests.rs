@@ -274,7 +274,7 @@ fn connections_left_in_a_closed_listener_s_backlog_are_reset() {
 }
 
 #[test]
-fn a_connect_that_loses_a_race_with_listen_gives_up_its_connection() {
+fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connection_resets() {
     let _serial = tests_lock();
     let listener = UnixSocket::new(no_wake);
     listener
@@ -282,15 +282,27 @@ fn a_connect_that_loses_a_race_with_listen_gives_up_its_connection() {
         .unwrap();
     listener.listen(4, ME).unwrap();
     let racer = UnixSocket::new(no_wake);
-    let own = racer.begin_connect().unwrap();
     racer
         .set_bound(Address::Abstract(Arc::from(&b"racer"[..])))
         .unwrap();
-    racer.listen(1, ME).unwrap();
+    let own = racer.begin_connect().unwrap();
+    assert_eq!(racer.begin_connect(), Err(Errno::EALREADY));
+    assert_eq!(racer.listen(1, ME), Err(Errno::EINVAL));
+    assert_eq!(racer.check_unbound(), Err(Errno::EINVAL));
+    let (carrier, _carrier_peer) = pair();
+    let (carrying, carrying_side) = connection_of(&carrier);
+    let mut passed = rights(vec![socket_file(Arc::clone(&racer))]);
+    assert_eq!(
+        carrying.send_passing(carrying_side, b"x", &mut passed),
+        Err(Errno::ETOOMANYREFS)
+    );
+    drop(passed);
     let connection = Connection::new(own, ME);
     assert_eq!(listener.queue(&connection), Ok(true));
+    racer.abandon_connect();
     assert_eq!(racer.finish_connect(&connection), Err(Errno::EINVAL));
     release_rights(connection.abort(Side::First));
+    assert_eq!(racer.listen(1, ME), Ok(()));
     let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap(), no_wake);
     let (back, side) = connection_of(&accepted);
     let mut buffer = [0u8; 4];
@@ -325,6 +337,7 @@ fn two_sockets_connecting_to_each_other_at_once_both_get_refused() {
                 let connection = Connection::new(own, ME);
                 assert_eq!(target.queue(&connection), Err(Errno::ECONNREFUSED));
                 assert!(target.can_queue());
+                socket.abandon_connect();
             }
         })
     };

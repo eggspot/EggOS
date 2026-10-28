@@ -120,7 +120,7 @@ pub mod request {
 
 /// What an open file description names: the console, a node of the file system (D102), an
 /// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), or a
-/// socket (D138).
+/// socket (D138), or a memory file (D139).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
@@ -141,6 +141,8 @@ pub enum FileKind {
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
     Socket(Arc<super::unix_socket::UnixSocket>),
+    /// A memory file (`memfd_create`, D139).
+    MemoryFile(Arc<super::memfd::MemoryFile>),
 }
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
@@ -160,7 +162,8 @@ impl FileKind {
             | Self::Pipe(_)
             | Self::Window(_)
             | Self::AgentChannel(_)
-            | Self::Socket(_) => None,
+            | Self::Socket(_)
+            | Self::MemoryFile(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }
@@ -622,6 +625,7 @@ fn duplicate_to<P: Platform>(
 ///   set are ignored);
 /// - `F_GETFL` and `F_SETFL`: the open file description's access mode and status flags, of
 ///   which `F_SETFL` changes `O_APPEND` and `O_NONBLOCK` and ignores the rest;
+/// - `F_ADD_SEALS` and `F_GET_SEALS` on a memory file (D139, [`super::memfd::seal_command`]);
 /// - any other command: `EINVAL`.
 ///
 /// `fd`, `command` and `argument` are 32-bit: the commands answered take an `int`, and C
@@ -674,6 +678,13 @@ pub fn fcntl<P: Platform>(
             }
             file.set_status_flags(argument);
             Ok(0)
+        }
+        command @ (super::memfd::command::ADD_SEALS | super::memfd::command::GET_SEALS) => {
+            let file = files.file(u64::from(fd))?;
+            if file.is_location_only() {
+                return Err(Errno::EBADF);
+            }
+            super::memfd::seal_command(&file, command, argument)
         }
         _ => {
             let table = files.lock();

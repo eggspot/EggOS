@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PREFIX: &str = "LINUX-SOCKETS";
 const PROGRAM: &str = "/bin/linux-sockets";
@@ -36,6 +36,21 @@ const EAFNOSUPPORT: i32 = 97;
 const EADDRINUSE: i32 = 98;
 const ECONNREFUSED: i32 = 111;
 const CMSG_HEADER: usize = 16;
+const ENODEV: i32 = 19;
+const EPERM: i32 = 1;
+const PROT_READ: c_int = 1;
+const PROT_WRITE: c_int = 2;
+const MAP_SHARED: c_int = 1;
+const MAP_PRIVATE: c_int = 2;
+const MFD_CLOEXEC: u32 = 1;
+const MFD_ALLOW_SEALING: u32 = 2;
+const F_ADD_SEALS: c_int = 1033;
+const F_SEAL_SHRINK: c_int = 2;
+const MEMFD_SIZE: usize = 64 * 1024;
+const HALF: usize = MEMFD_SIZE / 2;
+const PAGE: usize = 4096;
+const CLIENT_TEXT: &[u8] = b"written by the client";
+const SERVER_TEXT: &[u8] = b"written by the server";
 
 #[repr(C)]
 struct IoVec {
@@ -75,6 +90,72 @@ unsafe extern "C" {
         length: *mut u32,
     ) -> c_int;
     fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+    fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> c_int;
+    fn posix_fallocate(fd: c_int, offset: i64, length: i64) -> c_int;
+    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+    fn mmap(
+        address: *mut c_void,
+        length: usize,
+        protection: c_int,
+        flags: c_int,
+        fd: c_int,
+        offset: i64,
+    ) -> *mut c_void;
+    fn munmap(address: *mut c_void, length: usize) -> c_int;
+}
+
+struct Mapping {
+    address: *mut u8,
+    length: usize,
+}
+
+impl Mapping {
+    fn new(file: &File, length: usize, protection: c_int, flags: c_int) -> Result<Self, i32> {
+        // SAFETY: a new mapping chosen by the kernel, of `file`'s descriptor, which is open.
+        let address = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                length,
+                protection,
+                flags,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if address as isize == -1 {
+            return Err(errno(&std::io::Error::last_os_error()));
+        }
+        Ok(Self {
+            address: address.cast(),
+            length,
+        })
+    }
+
+    fn read(&self, offset: usize, length: usize) -> Vec<u8> {
+        (offset..offset + length)
+            .map(|index| {
+                let at = self.address.wrapping_add(index);
+                // SAFETY: `at` is inside the mapping, which stays mapped while `self` lives;
+                // another process may write it, so it is read as volatile.
+                unsafe { at.read_volatile() }
+            })
+            .collect()
+    }
+
+    fn write(&self, offset: usize, bytes: &[u8]) {
+        for (index, &byte) in bytes.iter().enumerate() {
+            let at = self.address.wrapping_add(offset + index);
+            // SAFETY: as in `read`, and the mapping is writable.
+            unsafe { at.write_volatile(byte) };
+        }
+    }
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: the mapping came from `mmap` with this length, and nothing uses it any more.
+        unsafe { munmap(self.address.cast(), self.length) };
+    }
 }
 
 type Checked<T> = Result<T, String>;
@@ -308,13 +389,15 @@ fn conversation() -> Checked<()> {
     stream
         .write_all(b"g")
         .map_err(|error| failed("go", error))?;
+    let started = Instant::now();
     let (woken, events) = poll_one(&stream, POLLIN, 5000)?;
+    let waited = started.elapsed();
     let mut byte = [0u8; 1];
     stream
         .read_exact(&mut byte)
         .map_err(|error| failed("read", error))?;
-    if woken != 1 || events & POLLIN == 0 || &byte != b"w" {
-        return Err(format!("woken {woken} {events:#x} {byte:?}"));
+    if woken != 1 || events & POLLIN == 0 || &byte != b"w" || waited < Duration::from_millis(50) {
+        return Err(format!("woken {woken} {events:#x} {byte:?} after {waited:?}"));
     }
     println!("{PREFIX} poll woken by the client");
 
@@ -330,6 +413,8 @@ fn conversation() -> Checked<()> {
         "{PREFIX} rights pipe {}",
         String::from_utf8_lossy(PIPE_TEXT).trim_end()
     );
+
+    shared_memory(&mut stream)?;
 
     let mut large = vec![0u8; LARGE];
     stream
@@ -453,6 +538,26 @@ fn client(path: &str) -> Checked<()> {
         .map_err(|error| failed("write the pipe", error))?;
     drop(writer);
 
+    let memory = create_shared_memory()?;
+    let mapping = Mapping::new(&memory, MEMFD_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED)
+        .map_err(|error| format!("client mmap {error}"))?;
+    mapping.write(0, CLIENT_TEXT);
+    send_descriptor(&stream, memory.as_raw_fd(), b'm')?;
+    let mut turn = [0u8; 1];
+    stream
+        .read_exact(&mut turn)
+        .map_err(|error| failed("the server's turn", error))?;
+    let seen = mapping.read(HALF, SERVER_TEXT.len());
+    let answer = match &turn == b"s" && seen == SERVER_TEXT {
+        true => b"c",
+        false => b"x",
+    };
+    stream
+        .write_all(answer)
+        .map_err(|error| failed("confirm", error))?;
+    drop(mapping);
+    drop(memory);
+
     stream
         .write_all(&pattern())
         .map_err(|error| failed("write 1 MiB", error))?;
@@ -463,5 +568,71 @@ fn client(path: &str) -> Checked<()> {
     if &bye != b"bye" {
         return Err(format!("bye {bye:?}"));
     }
+    Ok(())
+}
+
+fn create_shared_memory() -> Checked<File> {
+    // SAFETY: the name is a NUL-terminated string that lives for the call.
+    let fd = unsafe { memfd_create(c"eggos-sockets".as_ptr(), MFD_CLOEXEC | MFD_ALLOW_SEALING) };
+    if fd < 0 {
+        return Err(failed("memfd_create", std::io::Error::last_os_error()));
+    }
+    // SAFETY: the call just opened `fd`, and nothing else owns it.
+    let memory = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    // SAFETY: `posix_fallocate` takes no pointers.
+    let allocated = unsafe { posix_fallocate(memory.as_raw_fd(), 0, MEMFD_SIZE as i64) };
+    if allocated != 0 {
+        return Err(format!("posix_fallocate {allocated}"));
+    }
+    // SAFETY: `F_ADD_SEALS` takes an `int`, passed as one.
+    let sealed = unsafe { fcntl(memory.as_raw_fd(), F_ADD_SEALS, F_SEAL_SHRINK) };
+    if sealed != 0 {
+        return Err(failed("F_ADD_SEALS", std::io::Error::last_os_error()));
+    }
+    Ok(memory)
+}
+
+fn shared_memory(stream: &mut UnixStream) -> Checked<()> {
+    let memory = File::from(receive_descriptor(stream)?);
+    let size = memory
+        .metadata()
+        .map_err(|error| failed("fstat", error))?
+        .len();
+    let mapping = Mapping::new(&memory, MEMFD_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED)
+        .map_err(|error| format!("server mmap {error}"))?;
+    let seen = mapping.read(0, CLIENT_TEXT.len());
+    if seen != CLIENT_TEXT {
+        return Err(format!("the server saw {seen:?}"));
+    }
+    mapping.write(HALF, SERVER_TEXT);
+    stream
+        .write_all(b"s")
+        .map_err(|error| failed("the server's turn", error))?;
+    let mut confirmed = [0u8; 1];
+    stream
+        .read_exact(&mut confirmed)
+        .map_err(|error| failed("confirm", error))?;
+    let private = Mapping::new(&memory, PAGE, PROT_READ, MAP_PRIVATE)
+        .map_err(|error| format!("private mmap {error}"))?;
+    let private_seen = private.read(0, CLIENT_TEXT.len());
+    let writable_private = match Mapping::new(&memory, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE) {
+        Ok(_) => 0,
+        Err(error) => error,
+    };
+    let shrink = match memory.set_len(PAGE as u64) {
+        Ok(()) => 0,
+        Err(error) => errno(&error),
+    };
+    if &confirmed != b"c"
+        || size != MEMFD_SIZE as u64
+        || private_seen != CLIENT_TEXT
+        || writable_private != ENODEV
+        || shrink != EPERM
+    {
+        return Err(format!(
+            "memfd {confirmed:?} {size} {private_seen:?} {writable_private} {shrink}"
+        ));
+    }
+    println!("{PREFIX} memfd shared both ways size {MEMFD_SIZE} seal EPERM private ENODEV");
     Ok(())
 }

@@ -124,8 +124,8 @@ impl PixelBuffer {
 }
 
 impl LentFrames for PixelBuffer {
-    fn physical(&self) -> u64 {
-        self.physical
+    fn frame_at(&self, offset: u64) -> u64 {
+        self.physical + offset
     }
 
     fn length(&self) -> u64 {

@@ -76,8 +76,10 @@ that aborts it.
   in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
 - **The wall clock** reads 1970 without an RTC driver.
 - **Networking and `mmap` of files** are not implemented (`mmap` takes anonymous memory
-  only). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
-  with `SCM_RIGHTS` (D138); datagram sockets and `epoll` do not yet.
+  only, and memfds, D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and
+  descriptors passed with `SCM_RIGHTS` (D138), and so does memory shared between programs
+  with `memfd_create` and `mmap(MAP_SHARED)` (D139); datagram sockets and `epoll` do not
+  yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

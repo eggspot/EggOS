@@ -23,7 +23,9 @@ use super::unix_socket::{
     self, Address, BindingKey, Connection, NotConnected, OutgoingRights, PeerCredentials, Side,
     Taken, UnixSocket,
 };
-use super::{Errno, Iovecs, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number};
+use super::{
+    Errno, Iovecs, MAX_IOVECS, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number,
+};
 use crate::console;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind, Refused};
@@ -870,12 +872,16 @@ fn connect<P: Platform>(
                 Waited::TimedOut => break Err(Errno::EAGAIN),
                 Waited::Signalled => {
                     if signals::deliver_interrupting(process, thread, context, interrupted)? {
+                        socket.abandon_connect();
                         return ControlFlow::Continue(());
                     }
                 }
             },
         }
     };
+    if result.is_err() {
+        socket.abandon_connect();
+    }
     finish(process, thread, context, result)
 }
 
@@ -961,6 +967,9 @@ fn sendmsg<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let header = read_header(process, header)?;
+        if header.buffer_count > MAX_IOVECS {
+            return Err(Errno::EMSGSIZE);
+        }
         let buffers = Iovecs::read(process, header.buffers, header.buffer_count)?;
         check_destination(&socket, header.name_length != 0)?;
         let rights = read_rights(process, thread, header.control, header.control_length)?;
@@ -1114,6 +1123,9 @@ fn send_or_wait<P: Platform>(
         Ok(connected) => connected,
         Err(_) => return ControlFlow::Continue(Some(Err(Errno::ENOTCONN))),
     };
+    if connection.write_shut(side) {
+        return ControlFlow::Continue(Some(Err(Errno::EPIPE)));
+    }
     let total = send.buffers.total().min(MAX_RW_COUNT);
     if total == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
@@ -1250,6 +1262,9 @@ fn recvmsg<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let header = read_header(process, header_at)?;
+        if header.buffer_count > MAX_IOVECS {
+            return Err(Errno::EMSGSIZE);
+        }
         let buffers = Iovecs::read(process, header.buffers, header.buffer_count)?;
         Ok((
             header,

@@ -44,6 +44,9 @@ pub enum RegionError {
     NoRoom,
     /// No frame for a page table (`Process::remap_region`).
     OutOfMemory,
+    /// The range holds frames lent read-only, which cannot be made writable (`mprotect` of a
+    /// private memfd mapping, D139).
+    NotWritable,
 }
 
 /// A process's regions, sorted and disjoint. See the module documentation.

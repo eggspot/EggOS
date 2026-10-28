@@ -301,6 +301,15 @@ fn a_pair_moves_bytes_both_ways_and_reports_epipe_once_one_end_closes() {
         ),
         Errno::EAGAIN.result()
     );
+    let quiet = u64::from(message::NOSIGNAL);
+    assert_eq!(
+        call(&process, &mut thread, number::SHUTDOWN, [a, 1, 0, 0, 0, 0]),
+        0
+    );
+    assert_eq!(
+        call(&process, &mut thread, number::SENDTO, [a, SEND_DATA, 0, quiet, 0, 0]),
+        Errno::EPIPE.result()
+    );
     assert_eq!(
         call(&process, &mut thread, number::CLOSE, [b, 0, 0, 0, 0, 0]),
         0
@@ -395,6 +404,11 @@ fn scm_rights_installs_new_descriptors_on_the_same_open_files() {
         Errno::ETOOMANYREFS.result()
     );
     assert_eq!(unix_socket::in_flight(), 0);
+    store(&process, SEND_HEADER, &header(0, 0, SEND_IOV, 1025, 0, 0));
+    assert_eq!(
+        call(&process, &mut thread, number::SENDMSG, [a, SEND_HEADER, 0, 0, 0, 0]),
+        Errno::EMSGSIZE.result()
+    );
 }
 
 #[test]
