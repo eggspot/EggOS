@@ -8646,14 +8646,17 @@ the license, by an explicit instruction recorded here.
   KiB (`ClientSlot`: 8 KiB of requests, 16 KiB of events with 512 bytes kept for the
   `wl_display.error`, 64 received descriptors, 4 to send, 1024 object ids, 16 surfaces, 64
   buffers, 8 pools), made when it connects and given back when it goes; eggway's statics are a
-  few hundred bytes, since `.bss` gets frames at `exec`. There is no allocator. Pools are
+  few KiB (data and `.bss`: 4.3 KiB on aarch64, 6.4 on riscv64, 6.8 on x86_64), since `.bss`
+  gets frames at `exec`. There is no allocator. Pools are
   mapped `PROT_READ`, `MAP_SHARED`: at most 32 MiB each, 32 MiB per client and 48 MiB for all
   clients (the test machines have 128 MiB, and D139 maps a memfd's whole range at once);
   `ENOMEM` from `mmap` is `no_memory`, never a panic. A client that shrinks its memory file
   under a pool cannot hurt eggway only because D139 maps the pages past the end and reads them
   as zeros (no `SIGBUS`); a host test copies from a shrunken pool. A pool keeps its descriptor
   until it is destroyed, since `resize` maps it again, and maps the new range before it unmaps
-  the old one (lent ranges refuse `mremap`, D139).
+  the old one (lent ranges refuse `mremap`, D139); the caps count only a resize's growth, since
+  the second mapping takes no new frames, only page tables. A client's memory is unmapped after
+  the call that gives it back, once no reference to it is alive.
 - **The copy.** A commit copies the damaged rows' bounding rectangle (all of it for a new
   window or size) from the client's pool into the window's buffer, then `COMMIT`s that
   rectangle; `wl_buffer.release` follows at once, so eggway never holds a buffer. Each pixel is
@@ -8713,8 +8716,9 @@ the license, by an explicit instruction recorded here.
   `eggway: running on /run/user/0/wayland-0` (status 0) or `eggway: not running` (1).
 - **Lightness (D24).** eggway is one process asleep in `ppoll`: no CPU while idle and no
   `/dev/window` connection until a client has a window; its memory is its code, its stack and
-  its few statics (measured in the PR), plus about 42 KiB per connected client. The image grows
-  by eggway's code (measured in the PR); the kernel by `START_MOVE_OR_RESIZE`'s few lines.
+  its few KiB of statics, plus about 42 KiB per connected client. The release image grows by
+  79 to 99 KB per architecture, nearly all of it eggway's program (70 to 87 KB); the kernel by
+  `START_MOVE_OR_RESIZE`'s few lines.
 - **Performance.** `wayland_blit_rows` copies a 656x16 band (the size `window_commit_line`
   commits) from a client's pixels to a window's, with the alpha byte cleared: the work per
   damaged band eggway adds before the window server's own commit. The kernel targets have no
@@ -8730,16 +8734,23 @@ the license, by an explicit instruction recorded here.
   serials, resize edges, frame pacing, descriptors across reads and a truncated batch, the
   keymap's descriptor held over `EAGAIN`, 17 clients, a client that reads nothing, fifteen
   protocol errors each leaving nothing open, pool caps, a pool's growth and a shrunken file,
-  a late output, a keyboard made while a window has focus, version inheritance, every window
-  unmapped when its client goes) and 300 fuzzed sessions, a third of them in the protocol's
-  order so they make windows; `cargo xtask fuzz wayland` runs more (60 s: 363,500 sessions,
-  121,162 windows, nothing left open). QEMU on aarch64, riscv64 and x86_64 (`Expect::LinuxGui`): `linux-paint`'s window with the
-  desktop's chrome, a click, a key, a title-bar drag, the handle's move with the frame proving
-  the request was made before any motion, a stale move that changes nothing, maximise and close,
-  each frame compared with the host's render, then the program's lines and its status.
+  a late output, a keyboard or a pointer made while a window has focus or the pointer, a gone
+  surface's callbacks ended, a pool grown to the client's cap and refused past it, version
+  inheritance, every window unmapped when its client goes) and 300 fuzzed sessions, a third
+  of them in the protocol's order so they make windows; `cargo xtask fuzz wayland` runs more
+  (60 s: 363,500 sessions, 121,162 windows, nothing left open). QEMU on aarch64, riscv64 and
+  x86_64 (`Expect::LinuxGui`): `linux-paint`'s window with the desktop's chrome, a click, a
+  key, a title-bar drag, the handle's move with the frame proving the request was made before
+  any motion, a stale move that changes nothing, maximise and close, each frame compared with
+  the host's render, then the program's lines and its status.
 - **Not yet.** Socket activation; the manifest key and launching apps beside init;
   xdg-decoration; opening the window menu at a point; popups' placement; subsurfaces, the
   clipboard and drag and drop, touch, cursor surfaces; alpha, window-geometry cropping, buffer
   scale and transform applied, a real fullscreen; several seats or outputs, `global_remove`;
   `ping`; key repeat beyond `repeat_info`; `/run/user/<uid>` for several users; per-connection
-  wake-ups; a screen-size request; and what real toolkits need (docs/linux-programs.md).
+  wake-ups; a screen-size request; clippy's `indexing_slicing`, `unwrap_used` and `panic`
+  denied on the codec and the compositor, as on eggmcpd's parsers (the fuzz target and the
+  bounded tables cover them for now); a QEMU step sending a stale serial during a new press (a
+  host test covers eggway's serial check); asking the window server for the work area once
+  instead of opening `/dev/window` at each `wl_output` bind; and what real toolkits need
+  (docs/linux-programs.md).
