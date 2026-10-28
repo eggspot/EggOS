@@ -292,7 +292,19 @@ D16):
     `Install from host share...` and the icon menus' `Uninstall...`; the launcher and icons
     follow at once (`APPS_CHANGED`). Next: Files (item 37), the MCP tools with the MCP
     server, installing a missing layer with the component manager.
-37. the Files app.
+37. **done** — users can now browse their folders and the host share in a graphical file
+    manager (D135, docs/ux/desktop-v0.3-gui.md section 8.1): `/bin/files`, from the dock, the
+    launcher, the desktop's Files icon and its `Host share` icon, with places (Home and its
+    folders, tmp, the share, Apps, System, Trash), a list of names, sizes and times, back, up
+    and a path field; a double-click runs a Linux program in the Terminal window, offers a
+    Windows or macOS program to the installer (item 36), opens an installed app and shows a
+    text file with `cat`; copy, cut and paste (Ctrl or Cmd with C, X, V, and the context menu)
+    within and across file systems, out of the read-only share too, in steps with a progress
+    dialog; new folders, rename in place, Properties; a real Trash in the freedesktop.org layout
+    (`Move to Trash`, Restore, `Empty Trash`, permanent delete after a question); and the same
+    on the command line: `cp -r`, `mv` of folders across file systems, and `trash` with
+    `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`. Next: the MCP tools with the MCP server, free
+    space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
 38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
 39. a Wayland server, `eggway`, for Linux GUI apps.
 40. the macOS Objective-C runtime and the core of Foundation.
