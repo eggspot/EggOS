@@ -1,7 +1,7 @@
 use crate::agent_server::{AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, RESTARTED_ARGUMENT};
-use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
+use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
 use core::ptr;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{self, number};
@@ -369,9 +369,9 @@ fn notice_end(services: &mut Services, ended: isize) {
     }
     match services.display.ended(ended as usize, now_ms()) {
         Some(AfterEnd::Restart) => start_display_server(&mut services.display),
-        Some(AfterEnd::GiveUp) => say(&[
-            b"init: eggway keeps ending; Wayland programs cannot open windows\n",
-        ]),
+        Some(AfterEnd::GiveUp) => {
+            say(&[b"init: eggway keeps ending; Wayland programs cannot open windows\n"])
+        }
         None => {}
     }
 }

@@ -186,7 +186,14 @@ fn someone_listens() -> bool {
     let (address, length) = address_of(SOCKET_PATH);
     let connected = call(
         number::CONNECT,
-        [socket as usize, &raw const address as usize, length, 0, 0, 0],
+        [
+            socket as usize,
+            &raw const address as usize,
+            length,
+            0,
+            0,
+            0,
+        ],
     )
     .is_ok();
     close(socket);
@@ -214,9 +221,21 @@ fn listen() -> Result<Fd, Errno> {
     let (address, length) = address_of(SOCKET_PATH);
     let bound = call(
         number::BIND,
-        [socket as usize, &raw const address as usize, length, 0, 0, 0],
+        [
+            socket as usize,
+            &raw const address as usize,
+            length,
+            0,
+            0,
+            0,
+        ],
     )
-    .and_then(|_| call(number::LISTEN, [socket as usize, LISTEN_BACKLOG, 0, 0, 0, 0]));
+    .and_then(|_| {
+        call(
+            number::LISTEN,
+            [socket as usize, LISTEN_BACKLOG, 0, 0, 0, 0],
+        )
+    });
     if let Err(error) = bound {
         close(socket);
         return Err(error);
@@ -359,7 +378,13 @@ fn accept(compositor: &mut Compositor, system: &mut Linux, listener: Fd) {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Linux;
 
-fn map(length: usize, protection: usize, flags: usize, descriptor: usize, offset: usize) -> Result<usize, Errno> {
+fn map(
+    length: usize,
+    protection: usize,
+    flags: usize,
+    descriptor: usize,
+    offset: usize,
+) -> Result<usize, Errno> {
     // SAFETY: a new mapping at an address the kernel chooses, so it replaces nothing the
     // program uses; nothing refers to it until this returns.
     Errno::result(unsafe {
@@ -453,22 +478,23 @@ impl System for Linux {
             ],
         )?;
         let mut control_bytes = [0u8; CONTROL_WORDS * 8];
-        for (chunk, word) in control_bytes.chunks_exact_mut(8).zip(control) {
-            chunk.copy_from_slice(&word.to_ne_bytes());
+        for (chunk, word) in control_bytes.as_chunks_mut::<8>().0.iter_mut().zip(control) {
+            *chunk = word.to_ne_bytes();
         }
         let control = &control_bytes[..header.control_length.min(CONTROL_BYTES)];
         let mut taken = 0;
         let mut at = 0;
         while at + CMSG_HEADER <= control.len() {
-            let length = u64::from_ne_bytes(control[at..at + 8].try_into().unwrap_or([0; 8])) as usize;
+            let length =
+                u64::from_ne_bytes(control[at..at + 8].try_into().unwrap_or([0; 8])) as usize;
             let level = word(control, at + 8) as i32;
             let kind = word(control, at + 12) as i32;
             if length < CMSG_HEADER || at + length > control.len() {
                 break;
             }
             if level == SOL_SOCKET && kind == SCM_RIGHTS {
-                for chunk in control[at + CMSG_HEADER..at + length].chunks_exact(4) {
-                    let descriptor = word(chunk, 0) as Fd;
+                for chunk in control[at + CMSG_HEADER..at + length].as_chunks::<4>().0 {
+                    let descriptor = i32::from_ne_bytes(*chunk);
                     match descriptors.get_mut(taken) {
                         Some(slot) => {
                             *slot = descriptor;
@@ -508,8 +534,8 @@ impl System for Linux {
             }
         };
         let mut aligned = [0u64; (CMSG_HEADER + 4 * 4) / 8];
-        for (word, chunk) in aligned.iter_mut().zip(control.chunks_exact(8)) {
-            *word = u64::from_ne_bytes(chunk.try_into().unwrap_or([0; 8]));
+        for (word, chunk) in aligned.iter_mut().zip(control.as_chunks::<8>().0) {
+            *word = u64::from_ne_bytes(*chunk);
         }
         let mut header = MessageHeader {
             name: 0,
@@ -774,7 +800,14 @@ impl System for Linux {
 fn ioctl(device: Fd, request: usize, argument: &mut [u8]) -> Result<(), Errno> {
     call(
         number::IOCTL,
-        [device as usize, request, argument.as_mut_ptr() as usize, 0, 0, 0],
+        [
+            device as usize,
+            request,
+            argument.as_mut_ptr() as usize,
+            0,
+            0,
+            0,
+        ],
     )
     .map(|_| ())
 }

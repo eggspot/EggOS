@@ -100,7 +100,12 @@ mod program {
     }
 
     impl Mapping {
-        fn new(file: &File, length: usize, protection: c_int, flags: c_int) -> Result<Self, String> {
+        fn new(
+            file: &File,
+            length: usize,
+            protection: c_int,
+            flags: c_int,
+        ) -> Result<Self, String> {
             // SAFETY: a new mapping chosen by the kernel, of `file`'s descriptor, which is open.
             let address = unsafe {
                 mmap(
@@ -277,8 +282,8 @@ mod program {
                     break;
                 }
                 if level == SOL_SOCKET && kind == SCM_RIGHTS {
-                    for chunk in control[at + CMSG_HEADER..at + length].chunks_exact(4) {
-                        let fd = RawFd::from_ne_bytes(chunk.try_into().unwrap());
+                    for chunk in control[at + CMSG_HEADER..at + length].as_chunks::<4>().0 {
+                        let fd = RawFd::from_ne_bytes(*chunk);
                         // SAFETY: the kernel just installed `fd` for this message, and nothing
                         // else owns it.
                         self.descriptors.push(unsafe { OwnedFd::from_raw_fd(fd) });
@@ -324,7 +329,11 @@ mod program {
             };
             scene.paint(frame.mapping.pixels(), size.0);
             let buffer = frame.buffer;
-            self.send(SURFACE, 1, &[Value::Object(buffer), Value::Int(0), Value::Int(0)])?;
+            self.send(
+                SURFACE,
+                1,
+                &[Value::Object(buffer), Value::Int(0), Value::Int(0)],
+            )?;
             self.send(
                 SURFACE,
                 9,
@@ -388,7 +397,9 @@ mod program {
         }
 
         fn check_keymap(&mut self, body: &[u8]) -> Result<(), String> {
-            let word = |index: usize| u32::from_ne_bytes(body[index * 4..index * 4 + 4].try_into().unwrap());
+            let word = |index: usize| {
+                u32::from_ne_bytes(body[index * 4..index * 4 + 4].try_into().unwrap())
+            };
             let (format, size) = (word(0), word(1) as usize);
             if self.descriptors.is_empty() {
                 return Err("keymap without a descriptor".to_owned());
@@ -444,8 +455,10 @@ mod program {
                     let (width, height) = (values[0].int(), values[1].int());
                     let states = values[2].bytes();
                     self.maximized = states
-                        .chunks_exact(4)
-                        .any(|state| u32::from_ne_bytes(state.try_into().unwrap()) == STATE_MAXIMIZED);
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|state| u32::from_ne_bytes(*state) == STATE_MAXIMIZED);
                     if width > 0 && height > 0 {
                         self.wanted = (width as u32, height as u32);
                     }
@@ -461,7 +474,10 @@ mod program {
                     if first {
                         say("configured");
                     }
-                    let resized = self.frame.as_ref().is_some_and(|frame| frame.size != self.wanted);
+                    let resized = self
+                        .frame
+                        .as_ref()
+                        .is_some_and(|frame| frame.size != self.wanted);
                     if first || resized {
                         self.draw()?;
                     }
@@ -479,7 +495,10 @@ mod program {
                     self.after_frame()?;
                 }
                 (Interface::Pointer, 0) => {
-                    self.pointer = (wire::fixed_to_int(values[2].int()), wire::fixed_to_int(values[3].int()));
+                    self.pointer = (
+                        wire::fixed_to_int(values[2].int()),
+                        wire::fixed_to_int(values[3].int()),
+                    );
                     if let Some(serial) = self.move_serial.filter(|_| !self.stale_sent) {
                         self.send(TOPLEVEL, 5, &[Value::Object(SEAT), Value::Uint(serial)])?;
                         self.stale_sent = true;
@@ -489,10 +508,14 @@ mod program {
                     }
                 }
                 (Interface::Pointer, 2) => {
-                    self.pointer = (wire::fixed_to_int(values[1].int()), wire::fixed_to_int(values[2].int()));
+                    self.pointer = (
+                        wire::fixed_to_int(values[1].int()),
+                        wire::fixed_to_int(values[2].int()),
+                    );
                 }
                 (Interface::Pointer, 3) => {
-                    let (serial, button, state) = (values[0].uint(), values[2].uint(), values[3].uint());
+                    let (serial, button, state) =
+                        (values[0].uint(), values[2].uint(), values[3].uint());
                     let (x, y) = self.pointer;
                     if button == BTN_LEFT && state == 1 {
                         if Scene::on_target(x, y) && !self.scene.clicked {
@@ -522,11 +545,15 @@ mod program {
         }
 
         fn after_frame(&mut self) -> Result<(), String> {
-            let size_changed = self.frame.as_ref().is_some_and(|frame| frame.size != self.scene.size);
+            let size_changed = self
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.size != self.scene.size);
             if self.dirty || size_changed {
                 self.draw()?;
             }
-            let maximised = self.maximized && self.scene.size == self.wanted && self.wanted != CLIENT_SIZE;
+            let maximised =
+                self.maximized && self.scene.size == self.wanted && self.wanted != CLIENT_SIZE;
             if !self.busy && !self.frame_pending && maximised && !self.maximised_said {
                 say(&format!("maximised {}x{}", self.wanted.0, self.wanted.1));
                 self.maximised_said = true;
@@ -545,7 +572,8 @@ mod program {
                 }
                 if object == REGISTRY && opcode == 0 {
                     let mut values = [Value::None; MAX_ARGUMENTS];
-                    let signature = protocol::event_signature(Interface::Registry, 0).unwrap_or(&[]);
+                    let signature =
+                        protocol::event_signature(Interface::Registry, 0).unwrap_or(&[]);
                     wire::decode(&body, signature, &mut values)
                         .map_err(|error| format!("global: {error:?}"))?;
                     let name = values[0].uint();
@@ -558,7 +586,9 @@ mod program {
                         ("wl_output", OUTPUT, 3),
                         ("xdg_wm_base", WM_BASE, 3),
                     ];
-                    if let Some(&(_, id, ours)) = wanted.iter().find(|(known, ..)| *known == interface) {
+                    if let Some(&(_, id, ours)) =
+                        wanted.iter().find(|(known, ..)| *known == interface)
+                    {
                         self.send(
                             REGISTRY,
                             0,
@@ -585,7 +615,11 @@ mod program {
             self.send(SEAT, 0, &[Value::NewId(POINTER)])?;
             self.send(SEAT, 1, &[Value::NewId(KEYBOARD)])?;
             self.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)])?;
-            self.send(WM_BASE, 2, &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)])?;
+            self.send(
+                WM_BASE,
+                2,
+                &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+            )?;
             self.send(XDG_SURFACE, 1, &[Value::NewId(TOPLEVEL)])?;
             self.send(TOPLEVEL, 2, &[Value::String(TITLE.as_bytes())])?;
             self.send(TOPLEVEL, 3, &[Value::String(APP_ID.as_bytes())])?;

@@ -23,8 +23,6 @@ pub const KEYBOARD_STEP: u32 = 8;
 
 const LEFT_BUTTON_BIT: u8 = 1;
 
-/// Whether `edges` names an edge or a corner: some of [`edge`]'s bits, never two opposite
-/// edges, nothing else.
 fn valid_edges(edges: u32) -> bool {
     let all = u32::from(edge::LEFT | edge::RIGHT | edge::TOP | edge::BOTTOM);
     let both = |first: u8, second: u8| {

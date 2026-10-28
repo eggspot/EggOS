@@ -4,7 +4,10 @@ use crate::protocol::{self, Interface};
 use crate::wire::{self, Arg, Header, MAX_ARGUMENTS, Value, WireError, decode, encode};
 
 fn words(values: &[u32]) -> Vec<u8> {
-    values.iter().flat_map(|value| value.to_ne_bytes()).collect()
+    values
+        .iter()
+        .flat_map(|value| value.to_ne_bytes())
+        .collect()
 }
 
 fn decoded<'a>(
@@ -63,7 +66,10 @@ fn a_string_of_four_bytes_takes_a_whole_extra_word_for_its_nul() {
     let mut out = [0u8; 64];
     let size = encode(&mut out, 1, 0, &[Value::String(b"seat")]).unwrap();
     assert_eq!(size, 8 + 4 + 8);
-    assert_eq!(&out[8..20], &[&5u32.to_ne_bytes()[..], b"seat", &[0; 4]].concat()[..]);
+    assert_eq!(
+        &out[8..20],
+        &[&5u32.to_ne_bytes()[..], b"seat", &[0; 4]].concat()[..]
+    );
 }
 
 #[test]
@@ -97,15 +103,17 @@ fn arrays_fixed_point_and_descriptors_round_trip() {
         &mut out,
         7,
         0,
-        &[Value::Int(-5), Value::Array(&states), Value::Fd, Value::Fixed(wire::fixed(3))],
+        &[
+            Value::Int(-5),
+            Value::Array(&states),
+            Value::Fd,
+            Value::Fixed(wire::fixed(3)),
+        ],
     )
     .unwrap();
     assert_eq!(size, 8 + 4 + 4 + 8 + 4);
-    let (values, descriptors) = decoded(
-        &out[8..size],
-        &[Arg::Int, Arg::Array, Arg::Fd, Arg::Fixed],
-    )
-    .unwrap();
+    let (values, descriptors) =
+        decoded(&out[8..size], &[Arg::Int, Arg::Array, Arg::Fd, Arg::Fixed]).unwrap();
     assert_eq!(descriptors, 1);
     assert_eq!(values[0].int(), -5);
     assert_eq!(values[1].bytes(), &states[..]);
@@ -257,7 +265,12 @@ fn the_keymap_is_balanced_small_and_defines_every_key_it_maps() {
         let kind = line.split('"').nth(1).unwrap();
         assert!(rest.contains(&format!("type \"{kind}\" {{")), "{kind}");
     }
-    for (name, code) in [("<AC01>", 38), ("<ESC>", 9), ("<SPCE>", 65), ("<LWIN>", 133)] {
+    for (name, code) in [
+        ("<AC01>", 38),
+        ("<ESC>", 9),
+        ("<SPCE>", 65),
+        ("<LWIN>", 133),
+    ] {
         assert!(keycodes.contains(&format!("{name} = {code};")), "{name}");
     }
     assert!(US_KEYMAP.contains("modifier_map Mod4 { <LWIN>, <RWIN> };"));
@@ -266,8 +279,14 @@ fn the_keymap_is_balanced_small_and_defines_every_key_it_maps() {
 #[test]
 fn window_modifier_bits_become_xkb_masks() {
     assert_eq!(keymap::modifier_masks(0), (0, 0));
-    assert_eq!(keymap::modifier_masks(1 | 2), (keymap::SHIFT | keymap::CONTROL, 0));
-    assert_eq!(keymap::modifier_masks(4 | 8), (keymap::MOD1 | keymap::MOD4, 0));
+    assert_eq!(
+        keymap::modifier_masks(1 | 2),
+        (keymap::SHIFT | keymap::CONTROL, 0)
+    );
+    assert_eq!(
+        keymap::modifier_masks(4 | 8),
+        (keymap::MOD1 | keymap::MOD4, 0)
+    );
     assert_eq!(keymap::modifier_masks(16), (0, keymap::LOCK));
 }
 

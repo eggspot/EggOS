@@ -792,7 +792,9 @@ fn a_move_or_resize_needs_the_client_s_own_window_holding_a_left_press() {
         start(&mut desktop, CLIENT, window, MOVE, 0, &mut events),
         Err(WindowError::Invalid)
     );
-    let fixed = desktop.create(CLIENT, 0, 0, 300, 200, flags::FIXED_SIZE).unwrap();
+    let fixed = desktop
+        .create(CLIENT, 0, 0, 300, 200, flags::FIXED_SIZE)
+        .unwrap();
     let fixed = fixed.window;
     desktop
         .commit(
@@ -815,7 +817,10 @@ fn a_move_or_resize_needs_the_client_s_own_window_holding_a_left_press() {
         ),
         Err(WindowError::Invalid)
     );
-    assert_eq!(start(&mut desktop, CLIENT, fixed, MOVE, 0, &mut events), Ok(()));
+    assert_eq!(
+        start(&mut desktop, CLIENT, fixed, MOVE, 0, &mut events),
+        Ok(())
+    );
 }
 
 #[test]
@@ -844,13 +849,14 @@ fn a_started_move_follows_the_pointer_and_no_release_reaches_the_client() {
             .all(|(_, record)| record.kind != event::BUTTON)
     );
     let content = desktop.content_rect(window).unwrap();
-    desktop.pointer_moved(content.x + 5, content.y + 5, &mut Damage::new(), &mut events);
-    assert_eq!(events.0.last().unwrap().1.kind, event::POINTER_MOVE);
-    assert!(
-        events
-            .kinds()
-            .contains(&(CLIENT, event::POINTER_ENTER))
+    desktop.pointer_moved(
+        content.x + 5,
+        content.y + 5,
+        &mut Damage::new(),
+        &mut events,
     );
+    assert_eq!(events.0.last().unwrap().1.kind, event::POINTER_MOVE);
+    assert!(events.kinds().contains(&(CLIENT, event::POINTER_ENTER)));
 }
 
 #[test]

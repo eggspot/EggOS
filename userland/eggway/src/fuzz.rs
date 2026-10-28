@@ -32,7 +32,7 @@ impl Generator {
     }
 
     /// The next number.
-    pub fn next(&mut self) -> u64 {
+    pub fn next_number(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -43,7 +43,7 @@ impl Generator {
     pub fn below(&mut self, bound: u64) -> u64 {
         match bound {
             0 => 0,
-            bound => self.next() % bound,
+            bound => self.next_number() % bound,
         }
     }
 }
@@ -63,7 +63,12 @@ fn corpus(size: i32) -> Vec<Vec<u8>> {
             ],
         )
     };
-    let rect = [Value::Int(0), Value::Int(0), Value::Int(size), Value::Int(size)];
+    let rect = [
+        Value::Int(0),
+        Value::Int(0),
+        Value::Int(size),
+        Value::Int(size),
+    ];
     vec![
         message(1, 1, &[Value::NewId(2)]),
         bind(1, b"wl_compositor", 4, 3),
@@ -79,7 +84,11 @@ fn corpus(size: i32) -> Vec<Vec<u8>> {
         message(12, 2, &[Value::String(b"fuzz")]),
         message(10, 6, &[]),
         message(11, 4, &[Value::Uint(1)]),
-        message(4, 0, &[Value::NewId(13), Value::Fd, Value::Int(size * size * 4)]),
+        message(
+            4,
+            0,
+            &[Value::NewId(13), Value::Fd, Value::Int(size * size * 4)],
+        ),
         message(
             13,
             0,
@@ -103,7 +112,11 @@ fn corpus(size: i32) -> Vec<Vec<u8>> {
         message(12, 8, &[Value::Int(size), Value::Int(size)]),
         message(13, 2, &[Value::Int(size * size * 8)]),
         message(7, 1, &[Value::NewId(16)]),
-        message(11, 2, &[Value::NewId(17), Value::Object(0), Value::Object(16)]),
+        message(
+            11,
+            2,
+            &[Value::NewId(17), Value::Object(0), Value::Object(16)],
+        ),
         message(14, 0, &[]),
         message(12, 0, &[]),
         message(11, 0, &[]),
@@ -127,13 +140,13 @@ fn mutate(generator: &mut Generator, mut bytes: Vec<u8>) -> Vec<u8> {
         }
         3 => {
             for _ in 0..generator.below(4) {
-                bytes.extend((generator.next() as u32).to_ne_bytes());
+                bytes.extend((generator.next_number() as u32).to_ne_bytes());
             }
         }
         4 => {
             let at = (4 + generator.below(4)) as usize;
             if let Some(byte) = bytes.get_mut(at) {
-                *byte = generator.next() as u8;
+                *byte = generator.next_number() as u8;
             }
         }
         _ => {}
@@ -145,7 +158,7 @@ fn descriptors(generator: &mut Generator, fake: &mut Fake, size: i32) -> Vec<Fd>
     (0..generator.below(3))
         .map(|_| match generator.below(3) {
             0 => fake.other_file(),
-            _ => fake.memory_file(vec![generator.next() as u32; (size * size) as usize]),
+            _ => fake.memory_file(vec![generator.next_number() as u32; (size * size) as usize]),
         })
         .collect()
 }
@@ -174,7 +187,9 @@ fn session(generator: &mut Generator) -> Result<(), Fault> {
             bytes.extend(mutate(generator, messages[index].clone()));
         }
         if generator.below(10) == 0 {
-            bytes = (0..generator.below(64)).map(|_| generator.next() as u8).collect();
+            bytes = (0..generator.below(64))
+                .map(|_| generator.next_number() as u8)
+                .collect();
         }
         let fds = descriptors(generator, &mut fake, size);
         let cut = generator.below(bytes.len() as u64 + 1) as usize;

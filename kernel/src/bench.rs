@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 55] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -114,6 +114,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
         ("linux_unix_stream_send_recv", |_, n| {
             linux_unix_stream_send_recv(n)
         }),
+        ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -145,7 +146,6 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
         }),
         ("window_commit_line", |_, n| window_commit_line(n)),
         ("window_hit_test", |_, n| window_hit_test(n)),
-        ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
     ]
 }
 

@@ -5,8 +5,8 @@
 //! the program's own scene.
 
 use super::{
-    Desktop, DiscardEvents, PointerStep, TERMINAL_FRAME_TIMEOUT, WindowContent,
-    apply_pointer_step, check_desktop_frame_within, click_steps, screen_size, send_pointer_step,
+    Desktop, DiscardEvents, PointerStep, TERMINAL_FRAME_TIMEOUT, WindowContent, apply_pointer_step,
+    check_desktop_frame_within, click_steps, screen_size, send_pointer_step,
 };
 use crate::Arch;
 use crate::qmp::{InputEvent, Qmp};
@@ -165,7 +165,10 @@ impl GuiSteps<'_> {
         self.step(grab.0, grab.1, Some(true))?;
         self.drag(grab, TITLE_DRAG)?;
         self.expect_moved(before, TITLE_DRAG, "the title-bar drag")?;
-        self.check("the window dragged by its title bar", TERMINAL_FRAME_TIMEOUT)
+        self.check(
+            "the window dragged by its title bar",
+            TERMINAL_FRAME_TIMEOUT,
+        )
     }
 
     fn handle_drag(&mut self) -> Result<(), String> {
@@ -192,9 +195,15 @@ impl GuiSteps<'_> {
         )?;
         self.drag(press, HANDLE_DRAG)?;
         self.expect_moved(content, HANDLE_DRAG, "the client's move")?;
-        self.check("the window moved by the client's request", TERMINAL_FRAME_TIMEOUT)?;
+        self.check(
+            "the window moved by the client's request",
+            TERMINAL_FRAME_TIMEOUT,
+        )?;
         let moved = self.content()?;
-        let back = (shifted(press.0, HANDLE_DRAG.0) + 4, shifted(press.1, HANDLE_DRAG.1) + 4);
+        let back = (
+            shifted(press.0, HANDLE_DRAG.0) + 4,
+            shifted(press.1, HANDLE_DRAG.1) + 4,
+        );
         self.step(back.0, back.1, None)?;
         self.scene.handle_moving = false;
         self.check(
@@ -210,7 +219,10 @@ impl GuiSteps<'_> {
             .desktop
             .control_of(window, Part::Maximise)
             .ok_or_else(|| format!("{}: no maximise control", self.arch.name))?;
-        self.click(control.x + control.width / 2, control.y + control.height / 2)?;
+        self.click(
+            control.x + control.width / 2,
+            control.y + control.height / 2,
+        )?;
         let content = self.content()?;
         let id = u32::from(window);
         self.desktop
@@ -227,7 +239,10 @@ impl GuiSteps<'_> {
             .commit(CLIENT, id, &[], &mut Damage::new(), &mut DiscardEvents)
             .map_err(|error| self.refused("a commit", error))?;
         self.scene.size = (content.width, content.height);
-        self.check("the window maximised and painted at its size", SLOW_FRAME_TIMEOUT)
+        self.check(
+            "the window maximised and painted at its size",
+            SLOW_FRAME_TIMEOUT,
+        )
     }
 
     fn close(&mut self) -> Result<(), String> {

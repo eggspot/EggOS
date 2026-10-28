@@ -1031,7 +1031,10 @@ fn release_initramfs(
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
-        (WAYLAND_SERVER_PATH, initramfs::Content::Program(&wayland_server)),
+        (
+            WAYLAND_SERVER_PATH,
+            initramfs::Content::Program(&wayland_server),
+        ),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),

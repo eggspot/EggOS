@@ -35,10 +35,8 @@ pub const MAX_TOTAL_POOL_BYTES: usize = 48 << 20;
 pub const MAX_BUFFER_BYTES: usize = 4 << 20;
 /// The most descriptors one read takes: libwayland's most per message batch.
 pub const MAX_RECEIVE_DESCRIPTORS: usize = 28;
-/// The output room a request may need for its answers; below it a client's requests wait.
 const ANSWER_ROOM: usize = 4096;
 
-/// `/dev/window`'s window flag for a window that keeps its size.
 const FIXED_SIZE: u32 = 1;
 /// `/dev/window`'s event record size.
 pub const RECORD_SIZE: usize = 32;
@@ -89,7 +87,6 @@ pub struct Watch {
     pub device: Option<Fd>,
 }
 
-/// The state every client shares.
 #[derive(Debug, Default)]
 struct Shared {
     serial: u32,
@@ -189,7 +186,11 @@ impl Compositor {
 
     /// Client `index`'s socket is readable or hung up: takes its requests.
     pub fn readable<S: System>(&mut self, system: &mut S, index: usize) {
-        let Some(client) = self.clients.get_mut(index).and_then(|slot| slot.as_deref_mut()) else {
+        let Some(client) = self
+            .clients
+            .get_mut(index)
+            .and_then(|slot| slot.as_deref_mut())
+        else {
             return;
         };
         let alive = receive(client, &mut self.shared, system);
@@ -200,11 +201,18 @@ impl Compositor {
 
     /// Client `index`'s socket has room: sends what waits.
     pub fn writable<S: System>(&mut self, system: &mut S, index: usize) {
-        if let Some(client) = self.clients.get_mut(index).and_then(|slot| slot.as_deref_mut()) {
+        if let Some(client) = self
+            .clients
+            .get_mut(index)
+            .and_then(|slot| slot.as_deref_mut())
+        {
             client.blocked = false;
         }
         self.flush_client(system, index);
-        if let Some(client) = self.clients.get_mut(index).and_then(|slot| slot.as_deref_mut())
+        if let Some(client) = self
+            .clients
+            .get_mut(index)
+            .and_then(|slot| slot.as_deref_mut())
             && !client.blocked
         {
             handle_requests(client, &mut self.shared, system);
@@ -227,7 +235,11 @@ impl Compositor {
 
     /// Client `index`'s window server connection has events.
     pub fn device_readable<S: System>(&mut self, system: &mut S, index: usize) {
-        let Some(client) = self.clients.get_mut(index).and_then(|slot| slot.as_deref_mut()) else {
+        let Some(client) = self
+            .clients
+            .get_mut(index)
+            .and_then(|slot| slot.as_deref_mut())
+        else {
             return;
         };
         let Some(device) = client.device else {
@@ -238,7 +250,7 @@ impl Compositor {
             let Ok(length) = system.read_events(device, &mut records) else {
                 break;
             };
-            for record in records[..length].chunks_exact(RECORD_SIZE) {
+            for record in records[..length].as_chunks::<RECORD_SIZE>().0 {
                 window_event(client, &mut self.shared, record);
             }
             if length < records.len() {
@@ -287,7 +299,11 @@ impl Compositor {
     }
 
     fn flush_client<S: System>(&mut self, system: &mut S, index: usize) {
-        let Some(client) = self.clients.get_mut(index).and_then(|slot| slot.as_deref_mut()) else {
+        let Some(client) = self
+            .clients
+            .get_mut(index)
+            .and_then(|slot| slot.as_deref_mut())
+        else {
             return;
         };
         let sent = flush(client, system);
@@ -517,7 +533,12 @@ fn object_index(client: &mut ClientSlot, id: u32, interface: Interface) -> Optio
     }
 }
 
-fn handle<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut S, message: &Message) {
+fn handle<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    message: &Message,
+) {
     match message.interface {
         Interface::Display => display_request(client, shared, message),
         Interface::Registry => bind(client, system, message),
@@ -608,7 +629,9 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
             let (width, height) = system.work_area();
             send_output(client, id, version, width, height);
             for index in 0..MAX_SURFACES {
-                if let Some(surface) = client.surfaces[index].filter(|surface| surface.window.is_some()) {
+                if let Some(surface) =
+                    client.surfaces[index].filter(|surface| surface.window.is_some())
+                {
                     client.post(surface.id, 1, surface::ENTER, &[Value::Object(id)]);
                 }
             }
@@ -681,7 +704,13 @@ fn shm_request<S: System>(
         client.protocol_error(object, code, text);
     };
     if size <= 0 {
-        return refuse(client, system, message.object, shm::INVALID_STRIDE, b"bad pool size");
+        return refuse(
+            client,
+            system,
+            message.object,
+            shm::INVALID_STRIDE,
+            b"bad pool size",
+        );
     }
     let length = size as usize;
     let Some(free) = client.pools.iter().position(Option::is_none) else {
@@ -712,7 +741,13 @@ fn shm_request<S: System>(
             new_object(client, id, Interface::ShmPool, message.version, free as u16);
         }
         Err(Errno::ENOMEM) => refuse(client, system, id, display::NO_MEMORY, b"no memory"),
-        Err(_) => refuse(client, system, message.object, shm::INVALID_FD, b"cannot map"),
+        Err(_) => refuse(
+            client,
+            system,
+            message.object,
+            shm::INVALID_FD,
+            b"cannot map",
+        ),
     }
 }
 
@@ -804,10 +839,15 @@ fn create_buffer(client: &mut ClientSlot, message: &Message, pool: Pool) {
         if offset < 0 || offset % 4 != 0 || width <= 0 || height <= 0 || stride <= 0 {
             return None;
         }
-        let (offset, width, height, stride) =
-            (offset as usize, width as usize, height as usize, stride as usize);
+        let (offset, width, height, stride) = (
+            offset as usize,
+            width as usize,
+            height as usize,
+            stride as usize,
+        );
         let row = width.checked_mul(4)?;
-        if stride < row || !stride.is_multiple_of(4) || row.checked_mul(height)? > MAX_BUFFER_BYTES {
+        if stride < row || !stride.is_multiple_of(4) || row.checked_mul(height)? > MAX_BUFFER_BYTES
+        {
             return None;
         }
         let end = offset.checked_add(stride.checked_mul(height)?)?;
@@ -836,7 +876,12 @@ fn create_buffer(client: &mut ClientSlot, message: &Message, pool: Pool) {
     }
 }
 
-fn destroy_buffer<S: System>(client: &mut ClientSlot, shared: &mut Shared, system: &mut S, index: u16) {
+fn destroy_buffer<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    index: u16,
+) {
     let Some(buffer) = client.buffers[usize::from(index)].take() else {
         return;
     };
@@ -887,15 +932,11 @@ fn surface_request<S: System>(
             }
         }
         6 => commit(client, shared, system, index),
-        7 => {
-            if !(0..=surface::LARGEST_TRANSFORM).contains(&message.int(0)) {
-                client.protocol_error(message.object, surface::INVALID_TRANSFORM, b"bad transform");
-            }
+        7 if !(0..=surface::LARGEST_TRANSFORM).contains(&message.int(0)) => {
+            client.protocol_error(message.object, surface::INVALID_TRANSFORM, b"bad transform");
         }
-        8 => {
-            if message.int(0) < 1 {
-                client.protocol_error(message.object, surface::INVALID_SCALE, b"bad scale");
-            }
+        8 if message.int(0) < 1 => {
+            client.protocol_error(message.object, surface::INVALID_SCALE, b"bad scale");
         }
         _ => {}
     }
@@ -961,10 +1002,16 @@ fn forget_focus(client: &mut ClientSlot, index: u16) {
     if client.keyboard_focus == Some(index) {
         client.keyboard_focus = None;
     }
-    if client.held_press.is_some_and(|(_, surface)| surface == index) {
+    if client
+        .held_press
+        .is_some_and(|(_, surface)| surface == index)
+    {
         client.held_press = None;
     }
-    if client.pending_motion.is_some_and(|motion| motion.0 == index) {
+    if client
+        .pending_motion
+        .is_some_and(|motion| motion.0 == index)
+    {
         client.pending_motion = None;
     }
 }
@@ -1082,7 +1129,9 @@ fn present<S: System>(
     let size = (buffer.width, buffer.height);
     let (window, everything) = match surface.window {
         None => {
-            let fixed = surface.minimum == surface.maximum && surface.minimum.0 > 0 && surface.minimum.1 > 0;
+            let fixed = surface.minimum == surface.maximum
+                && surface.minimum.0 > 0
+                && surface.minimum.1 > 0;
             let flags = if fixed { FIXED_SIZE } else { 0 };
             let Ok(window) = system.create_window(device, size.0, size.1, flags) else {
                 client.protocol_error(1, display::NO_MEMORY, b"no window");
@@ -1092,12 +1141,20 @@ fn present<S: System>(
                 let _ = system.set_title(device, window.id, &surface.title[..surface.title_length]);
             }
             if surface.minimum != (0, 0) {
-                let _ = system.set_minimum_size(device, window.id, surface.minimum.0, surface.minimum.1);
+                let _ = system.set_minimum_size(
+                    device,
+                    window.id,
+                    surface.minimum.0,
+                    surface.minimum.1,
+                );
             }
             (window, true)
         }
         Some(mut window) if size != surface.asked_size => {
-            if system.resize_window(device, &mut window, size.0, size.1).is_err() {
+            if system
+                .resize_window(device, &mut window, size.0, size.1)
+                .is_err()
+            {
                 client.protocol_error(1, display::NO_MEMORY, b"no window buffer");
                 return;
             }
@@ -1245,12 +1302,27 @@ fn send_keymap<S: System>(client: &mut ClientSlot, system: &mut S, id: u32, vers
 fn wm_base_request(client: &mut ClientSlot, message: &Message) {
     match message.opcode {
         0 => {
-            if client.surfaces.iter().flatten().any(|surface| surface.xdg_surface != 0) {
-                client.protocol_error(message.object, xdg_wm_base::DEFUNCT_SURFACES, b"surfaces left");
+            if client
+                .surfaces
+                .iter()
+                .flatten()
+                .any(|surface| surface.xdg_surface != 0)
+            {
+                client.protocol_error(
+                    message.object,
+                    xdg_wm_base::DEFUNCT_SURFACES,
+                    b"surfaces left",
+                );
             }
         }
         1 => {
-            new_object(client, message.uint(0), Interface::XdgPositioner, message.version, 0);
+            new_object(
+                client,
+                message.uint(0),
+                Interface::XdgPositioner,
+                message.version,
+                0,
+            );
         }
         2 => {
             let (id, surface_id) = (message.uint(0), message.uint(1));
@@ -1302,7 +1374,11 @@ fn xdg_surface_request(client: &mut ClientSlot, message: &Message) {
         1 => {
             let id = message.uint(0);
             if surface.toplevel != 0 {
-                client.protocol_error(message.object, xdg_surface::ALREADY_CONSTRUCTED, b"has a role");
+                client.protocol_error(
+                    message.object,
+                    xdg_surface::ALREADY_CONSTRUCTED,
+                    b"has a role",
+                );
                 return;
             }
             if new_object(client, id, Interface::XdgToplevel, message.version, index)
@@ -1490,7 +1566,11 @@ fn word(record: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn each_of(client: &mut ClientSlot, interface: Interface, mut post: impl FnMut(&mut ClientSlot, u32, u32)) {
+fn each_of(
+    client: &mut ClientSlot,
+    interface: Interface,
+    mut post: impl FnMut(&mut ClientSlot, u32, u32),
+) {
     let mut ids = [(0u32, 0u32); 8];
     let mut count = 0;
     for (id, version) in client.ids_of(interface) {
@@ -1592,7 +1672,11 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
         }
         record::BUTTON => {
             let serial = shared.next_serial();
-            let state = if d == 1 { pointer::PRESSED } else { pointer::RELEASED };
+            let state = if d == 1 {
+                pointer::PRESSED
+            } else {
+                pointer::RELEASED
+            };
             each_of(client, Interface::Pointer, |client, id, version| {
                 client.post(
                     id,
@@ -1621,7 +1705,10 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                     id,
                     version,
                     pointer::AXIS_DISCRETE,
-                    &[Value::Uint(pointer::VERTICAL_SCROLL), Value::Int(notches.saturating_neg())],
+                    &[
+                        Value::Uint(pointer::VERTICAL_SCROLL),
+                        Value::Int(notches.saturating_neg()),
+                    ],
                 );
                 let _ = client.queue(
                     id,
@@ -1630,7 +1717,9 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                     &[
                         Value::Uint(time),
                         Value::Uint(pointer::VERTICAL_SCROLL),
-                        Value::Fixed(wire::fixed(notches.saturating_neg().saturating_mul(WHEEL_STEP))),
+                        Value::Fixed(wire::fixed(
+                            notches.saturating_neg().saturating_mul(WHEEL_STEP),
+                        )),
                     ],
                 );
             });
@@ -1639,7 +1728,11 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
         record::KEY => {
             send_modifiers(client, shared, c);
             let serial = shared.next_serial();
-            let state = if b == 1 { keyboard::PRESSED } else { keyboard::RELEASED };
+            let state = if b == 1 {
+                keyboard::PRESSED
+            } else {
+                keyboard::RELEASED
+            };
             each_of(client, Interface::Keyboard, |client, id, version| {
                 client.post(
                     id,
@@ -1662,7 +1755,11 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
                     id,
                     version,
                     keyboard::ENTER,
-                    &[Value::Uint(serial), Value::Object(surface.id), Value::Array(&[])],
+                    &[
+                        Value::Uint(serial),
+                        Value::Object(surface.id),
+                        Value::Array(&[]),
+                    ],
                 );
             });
             let modifiers = client.modifiers;
@@ -1691,7 +1788,9 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
             configure(client, shared, index, current_size(&surface));
         }
         record::CLOSE_REQUEST => {
-            let version = client.object(surface.toplevel).map_or(1, |object| object.version);
+            let version = client
+                .object(surface.toplevel)
+                .map_or(1, |object| object.version);
             client.post(surface.toplevel, version, xdg_toplevel::CLOSE, &[]);
         }
         record::RESIZE => configure(client, shared, index, (clamp_to(a), clamp_to(b))),
@@ -1738,11 +1837,6 @@ fn post_modifiers(client: &mut ClientSlot, shared: &mut Shared, (depressed, lock
             ],
         );
     });
-}
-
-#[cfg(test)]
-pub(crate) fn client_of(compositor: &Compositor, index: usize) -> Option<&ClientSlot> {
-    compositor.clients.get(index)?.as_deref()
 }
 
 /// The size of a `WindowBuffer`'s pixels in bytes.

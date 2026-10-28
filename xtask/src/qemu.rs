@@ -4,11 +4,11 @@
 
 pub mod files;
 pub mod install;
+mod linux_gui;
 pub mod mcp;
 pub mod persistent;
 pub mod settings;
 pub mod shell;
-mod linux_gui;
 mod windows_gui;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};

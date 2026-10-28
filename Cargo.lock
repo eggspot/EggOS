@@ -49,6 +49,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-eggway"
+version = "0.2.0"
+dependencies = [
+ "eggos-runtime",
+ "eggos-wayland",
+]
+
+[[package]]
 name = "eggos-files"
 version = "0.2.0"
 dependencies = [
@@ -92,6 +100,14 @@ dependencies = [
  "eggos-eggfs",
  "eggos-hal",
  "eggos-settings-file",
+ "eggos-wayland",
+]
+
+[[package]]
+name = "eggos-linux-gui-tests"
+version = "0.2.0"
+dependencies = [
+ "eggos-wayland",
 ]
 
 [[package]]
@@ -159,6 +175,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-wayland"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-windows"
 version = "0.2.0"
 dependencies = [
@@ -189,11 +209,14 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-eggway",
  "eggos-files",
+ "eggos-linux-gui-tests",
  "eggos-mcp",
  "eggos-settings",
  "eggos-settings-file",
  "eggos-toolkit",
+ "eggos-wayland",
  "eggos-windows-gui",
  "eggos-windows-gui-tests",
 ]

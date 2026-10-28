@@ -153,7 +153,7 @@ fn next_word(body: &[u8], at: &mut usize) -> Result<u32, WireError> {
     Ok(value)
 }
 
-fn sized_bytes(body: &[u8], at: &mut usize) -> Result<(u32, &[u8]), WireError> {
+fn sized_bytes<'a>(body: &'a [u8], at: &mut usize) -> Result<(u32, &'a [u8]), WireError> {
     let length = word(body, *at).ok_or(WireError::Truncated)?;
     let start = *at + 4;
     let end = start
@@ -267,7 +267,12 @@ impl Writer<'_> {
 
 /// Writes the message for `object` with `opcode` and `values` at the start of `out`; its size
 /// in bytes. A [`Value::Fd`] writes nothing: its descriptor goes in the control data.
-pub fn encode(out: &mut [u8], object: u32, opcode: u16, values: &[Value]) -> Result<usize, WireError> {
+pub fn encode(
+    out: &mut [u8],
+    object: u32,
+    opcode: u16,
+    values: &[Value],
+) -> Result<usize, WireError> {
     let mut writer = Writer {
         out,
         at: HEADER_SIZE,
@@ -276,7 +281,9 @@ pub fn encode(out: &mut [u8], object: u32, opcode: u16, values: &[Value]) -> Res
         match *value {
             Value::None | Value::Fd => {}
             Value::Int(value) | Value::Fixed(value) => writer.word(value as u32)?,
-            Value::Uint(value) | Value::Object(value) | Value::NewId(value) => writer.word(value)?,
+            Value::Uint(value) | Value::Object(value) | Value::NewId(value) => {
+                writer.word(value)?
+            }
             Value::String(text) => writer.string(text)?,
             Value::UntypedNewId {
                 interface,

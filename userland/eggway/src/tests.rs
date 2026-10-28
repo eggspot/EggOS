@@ -134,9 +134,12 @@ impl Session {
     }
 
     fn configured_toplevel(&mut self) -> u32 {
-        self.globals();
         self.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
-        self.send(WM_BASE, 2, &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)]);
+        self.send(
+            WM_BASE,
+            2,
+            &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+        );
         self.send(XDG_SURFACE, 1, &[Value::NewId(TOPLEVEL)]);
         self.send(TOPLEVEL, 2, &[Value::String(b"linux-paint")]);
         self.send(SURFACE, 6, &[]);
@@ -178,7 +181,11 @@ impl Session {
     }
 
     fn show(&mut self, id: u32, damage: (i32, i32, i32, i32)) {
-        self.send(SURFACE, 1, &[Value::Object(id), Value::Int(0), Value::Int(0)]);
+        self.send(
+            SURFACE,
+            1,
+            &[Value::Object(id), Value::Int(0), Value::Int(0)],
+        );
         self.send(
             SURFACE,
             9,
@@ -193,8 +200,11 @@ impl Session {
     }
 
     fn shown(&mut self) -> u32 {
+        self.globals();
         self.configured_toplevel();
-        let pixels = (0..WIDTH * HEIGHT).map(|pixel| 0xff00_0000 | pixel).collect();
+        let pixels = (0..WIDTH * HEIGHT)
+            .map(|pixel| 0xff00_0000 | pixel)
+            .collect();
         self.pool(pixels);
         self.buffer(BUFFER, WIDTH, HEIGHT);
         self.show(BUFFER, (0, 0, WIDTH as i32, HEIGHT as i32));
@@ -262,7 +272,10 @@ fn binding_announces_formats_capabilities_and_the_output() {
         keymap.word(1) as usize,
         eggos_wayland::keymap::US_KEYMAP.len() + 1
     );
-    assert_eq!(session.fake.sockets[&session.socket].outgoing_descriptors, 1);
+    assert_eq!(
+        session.fake.sockets[&session.socket].outgoing_descriptors,
+        1
+    );
     assert_eq!(session.fake.keymaps, 1);
     session.end();
 }
@@ -275,7 +288,10 @@ fn a_toplevel_s_buffer_becomes_a_window_with_its_pixels_opaque() {
     assert_eq!((window.width, window.height), (WIDTH, HEIGHT));
     assert_eq!(window.title, b"linux-paint");
     assert_eq!(window.pixels[5], 5);
-    assert_eq!(window.pixels[(WIDTH * HEIGHT - 1) as usize], WIDTH * HEIGHT - 1);
+    assert_eq!(
+        window.pixels[(WIDTH * HEIGHT - 1) as usize],
+        WIDTH * HEIGHT - 1
+    );
     assert_eq!(window.commits, vec![Vec::new()]);
     assert_eq!(session.of(BUFFER, buffer::RELEASE.opcode).len(), 1);
     assert_eq!(session.of(SURFACE, surface::ENTER.opcode).len(), 1);
@@ -287,7 +303,11 @@ fn a_buffer_before_the_first_configure_is_an_error() {
     let mut session = Session::new();
     session.globals();
     session.send(COMPOSITOR, 0, &[Value::NewId(SURFACE)]);
-    session.send(WM_BASE, 2, &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)]);
+    session.send(
+        WM_BASE,
+        2,
+        &[Value::NewId(XDG_SURFACE), Value::Object(SURFACE)],
+    );
     session.send(XDG_SURFACE, 1, &[Value::NewId(TOPLEVEL)]);
     session.pool(vec![0; 64 * 64]);
     session.buffer(BUFFER, 64, 64);
@@ -382,7 +402,10 @@ fn focus_keys_and_close_reach_the_client() {
     session.record(record::KEY, [30, 1, 1, 0]);
     let key = *session.of(KEYBOARD, keyboard::KEY.opcode).last().unwrap();
     assert_eq!((key.word(2), key.word(3)), (30, keyboard::PRESSED));
-    let modifiers = *session.of(KEYBOARD, keyboard::MODIFIERS.opcode).last().unwrap();
+    let modifiers = *session
+        .of(KEYBOARD, keyboard::MODIFIERS.opcode)
+        .last()
+        .unwrap();
     assert_eq!(modifiers.word(1), eggos_wayland::keymap::SHIFT);
     session.record(record::CLOSE_REQUEST, [0; 4]);
     assert_eq!(session.of(TOPLEVEL, xdg_toplevel::CLOSE.opcode).len(), 1);
@@ -399,7 +422,11 @@ fn a_move_needs_the_held_press_s_serial() {
     assert_eq!(session.of(POINTER, pointer::MOTION.opcode).len(), 1);
     let press = *session.of(POINTER, pointer::BUTTON.opcode).last().unwrap();
     let serial = press.word(0);
-    session.send(TOPLEVEL, 5, &[Value::Object(SEAT), Value::Uint(serial + 99)]);
+    session.send(
+        TOPLEVEL,
+        5,
+        &[Value::Object(SEAT), Value::Uint(serial + 99)],
+    );
     session.pump();
     assert!(session.fake.windows[&id].drags.is_empty());
     session.send(TOPLEVEL, 5, &[Value::Object(SEAT), Value::Uint(serial)]);
@@ -414,7 +441,11 @@ fn a_move_needs_the_held_press_s_serial() {
     session.pump();
     assert_eq!(session.fake.windows[&id].drags.len(), 1);
     session.record(record::BUTTON, [5, 5, 0x111, 1]);
-    let right = session.of(POINTER, pointer::BUTTON.opcode).last().unwrap().word(0);
+    let right = session
+        .of(POINTER, pointer::BUTTON.opcode)
+        .last()
+        .unwrap()
+        .word(0);
     session.send(TOPLEVEL, 5, &[Value::Object(SEAT), Value::Uint(right)]);
     session.pump();
     assert_eq!(session.fake.windows[&id].drags.len(), 1);
@@ -426,7 +457,11 @@ fn a_resize_maps_xdg_edges_and_refuses_unknown_ones() {
     let mut session = Session::new();
     let id = session.shown();
     session.record(record::BUTTON, [5, 5, 0x110, 1]);
-    let serial = session.of(POINTER, pointer::BUTTON.opcode).last().unwrap().word(0);
+    let serial = session
+        .of(POINTER, pointer::BUTTON.opcode)
+        .last()
+        .unwrap()
+        .word(0);
     session.send(
         TOPLEVEL,
         6,
@@ -500,16 +535,22 @@ fn descriptors_queue_across_reads_and_a_truncated_batch_disconnects() {
     session
         .fake
         .push(session.socket, request[..8].to_vec(), vec![memory]);
-    session.fake.push(session.socket, request[8..].to_vec(), Vec::new());
+    session
+        .fake
+        .push(session.socket, request[8..].to_vec(), Vec::new());
     session.pump();
     assert!(session.alive());
     assert_eq!(session.compositor.pool_bytes(), 256);
     let many: Vec<Fd> = (0..28).map(|_| session.fake.other_file()).collect();
-    session.fake.push(session.socket, message(1, 0, &[Value::NewId(40)]), many);
+    session
+        .fake
+        .push(session.socket, message(1, 0, &[Value::NewId(40)]), many);
     session.pump();
     assert!(session.alive());
     let more: Vec<Fd> = (0..40).map(|_| session.fake.other_file()).collect();
-    session.fake.push(session.socket, message(1, 0, &[Value::NewId(41)]), more);
+    session
+        .fake
+        .push(session.socket, message(1, 0, &[Value::NewId(41)]), more);
     session.pump();
     assert!(!session.alive());
     assert!(session.fake.open.is_empty(), "{:?}", session.fake.open);
@@ -519,17 +560,38 @@ fn descriptors_queue_across_reads_and_a_truncated_batch_disconnects() {
 #[test]
 fn a_keymap_s_descriptor_waits_for_a_send_that_takes_bytes() {
     let mut session = Session::new();
-    session.fake.sockets.get_mut(&session.socket).unwrap().send_limit = Some(0);
+    session
+        .fake
+        .sockets
+        .get_mut(&session.socket)
+        .unwrap()
+        .send_limit = Some(0);
     session.globals();
     session.pump();
     assert!(session.alive());
     assert_eq!(session.fake.open.len(), 2);
-    assert_eq!(session.fake.sockets[&session.socket].outgoing_descriptors, 0);
-    session.fake.sockets.get_mut(&session.socket).unwrap().send_limit = Some(10);
+    assert_eq!(
+        session.fake.sockets[&session.socket].outgoing_descriptors,
+        0
+    );
+    session
+        .fake
+        .sockets
+        .get_mut(&session.socket)
+        .unwrap()
+        .send_limit = Some(10);
     session.compositor.writable(&mut session.fake, 0);
-    assert_eq!(session.fake.sockets[&session.socket].outgoing_descriptors, 1);
+    assert_eq!(
+        session.fake.sockets[&session.socket].outgoing_descriptors,
+        1
+    );
     assert_eq!(session.fake.open.len(), 1);
-    session.fake.sockets.get_mut(&session.socket).unwrap().send_limit = None;
+    session
+        .fake
+        .sockets
+        .get_mut(&session.socket)
+        .unwrap()
+        .send_limit = None;
     for id in 20..26 {
         session.send(SEAT, 1, &[Value::NewId(id)]);
     }
@@ -537,7 +599,10 @@ fn a_keymap_s_descriptor_waits_for_a_send_that_takes_bytes() {
     session.compositor.writable(&mut session.fake, 0);
     assert!(session.alive());
     assert_eq!(session.fake.keymaps, 7);
-    assert_eq!(session.fake.sockets[&session.socket].outgoing_descriptors, 7);
+    assert_eq!(
+        session.fake.sockets[&session.socket].outgoing_descriptors,
+        7
+    );
     session.end();
 }
 
@@ -562,7 +627,12 @@ fn a_seventeenth_client_is_closed_at_once() {
 #[test]
 fn a_client_that_reads_nothing_stops_being_read() {
     let mut session = Session::new();
-    session.fake.sockets.get_mut(&session.socket).unwrap().send_limit = Some(0);
+    session
+        .fake
+        .sockets
+        .get_mut(&session.socket)
+        .unwrap()
+        .send_limit = Some(0);
     session.send(1, 1, &[Value::NewId(REGISTRY)]);
     for id in 0..800 {
         session.send(1, 0, &[Value::NewId(100 + id)]);
@@ -571,7 +641,12 @@ fn a_client_that_reads_nothing_stops_being_read() {
     assert!(session.alive());
     let watch = session.compositor.watch(0).unwrap();
     assert!(!watch.wants_input && watch.wants_output);
-    session.fake.sockets.get_mut(&session.socket).unwrap().send_limit = None;
+    session
+        .fake
+        .sockets
+        .get_mut(&session.socket)
+        .unwrap()
+        .send_limit = None;
     for _ in 0..20 {
         session.compositor.writable(&mut session.fake, 0);
         session.compositor.readable(&mut session.fake, 0);
@@ -588,7 +663,8 @@ fn a_client_that_reads_nothing_stops_being_read() {
 
 #[test]
 fn protocol_errors_disconnect_and_close_everything() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut Session)>, (u32, u32))> = vec![
+    type Case = Box<dyn Fn(&mut Session)>;
+    let cases: Vec<(&str, Case, (u32, u32))> = vec![
         (
             "unknown object",
             Box::new(|session| session.send(77, 0, &[])),
@@ -736,7 +812,11 @@ fn protocol_errors_disconnect_and_close_everything() {
         session.pump();
         assert_eq!(session.error(), Some(expected), "{name}");
         assert!(!session.alive(), "{name}");
-        assert!(session.fake.open.is_empty(), "{name}: {:?}", session.fake.open);
+        assert!(
+            session.fake.open.is_empty(),
+            "{name}: {:?}",
+            session.fake.open
+        );
         assert_eq!(session.compositor.pool_bytes(), 0, "{name}");
     }
 }
@@ -792,7 +872,11 @@ fn pools_are_capped_per_client_and_for_everyone() {
             let request = message(
                 SHM,
                 0,
-                &[Value::NewId(POOL + pool as u32), Value::Fd, Value::Int(size)],
+                &[
+                    Value::NewId(POOL + pool as u32),
+                    Value::Fd,
+                    Value::Int(size),
+                ],
             );
             fake.push(socket, request, vec![memory]);
         }
@@ -802,19 +886,31 @@ fn pools_are_capped_per_client_and_for_everyone() {
         let socket = fake.connect();
         compositor.add_client(&mut fake, socket);
         pools(&mut fake, socket, &sizes[..1]);
-        compositor.readable(&mut fake, index);
-        compositor.tick(&mut fake);
+        for _ in 0..4 {
+            compositor.readable(&mut fake, index);
+            compositor.tick(&mut fake);
+        }
     }
-    assert_eq!(compositor.client_count(), 1, "the second 30 MiB pass the 48 MiB of all");
+    assert_eq!(
+        compositor.client_count(),
+        1,
+        "the second 30 MiB pass the 48 MiB of all"
+    );
     assert_eq!(compositor.pool_bytes(), thirty as usize);
     compositor.disconnect(&mut fake, 0);
     assert_eq!(compositor.pool_bytes(), 0);
     let socket = fake.connect();
     compositor.add_client(&mut fake, socket);
     pools(&mut fake, socket, &[20 << 20, 20 << 20]);
-    compositor.readable(&mut fake, 0);
-    compositor.tick(&mut fake);
-    assert_eq!(compositor.client_count(), 0, "40 MiB pass one client's 32 MiB");
+    for _ in 0..5 {
+        compositor.readable(&mut fake, 0);
+        compositor.tick(&mut fake);
+    }
+    assert_eq!(
+        compositor.client_count(),
+        0,
+        "40 MiB pass one client's 32 MiB"
+    );
     assert_eq!(compositor.pool_bytes(), 0);
     assert!(fake.open.is_empty());
 }

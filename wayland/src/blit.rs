@@ -70,7 +70,12 @@ impl Rect {
         let y = self.y.min(other.y);
         let right = self.right().max(other.right());
         let bottom = self.bottom().max(other.bottom());
-        Self::new(x, y, (right - u64::from(x)) as u32, (bottom - u64::from(y)) as u32)
+        Self::new(
+            x,
+            y,
+            (right - u64::from(x)) as u32,
+            (bottom - u64::from(y)) as u32,
+        )
     }
 
     /// The part of it inside a `width` by `height` area at the origin.

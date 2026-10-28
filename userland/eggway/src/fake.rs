@@ -246,6 +246,17 @@ impl System for Fake {
 
     fn close(&mut self, descriptor: Fd) {
         assert!(self.open.remove(&descriptor), "closed {descriptor} twice");
+        if let Some(end) = self.sockets.get_mut(&descriptor) {
+            let in_flight: Vec<Fd> = end
+                .incoming
+                .drain(..)
+                .filter(|chunk| chunk.taken == 0)
+                .flat_map(|chunk| chunk.descriptors)
+                .collect();
+            for descriptor in in_flight {
+                self.open.remove(&descriptor);
+            }
+        }
     }
 
     fn map_pool(&mut self, descriptor: Fd, length: usize) -> Result<usize, Errno> {
@@ -263,7 +274,11 @@ impl System for Fake {
 
     fn unmap_pool(&mut self, address: usize, length: usize) {
         let mapping = self.mappings.remove(&address);
-        assert_eq!(mapping.map(|(_, mapped)| mapped), Some(length), "unmapped {address:#x}");
+        assert_eq!(
+            mapping.map(|(_, mapped)| mapped),
+            Some(length),
+            "unmapped {address:#x}"
+        );
     }
 
     fn copy_rows(&mut self, from: PoolPixels, window: WindowBuffer, rect: Rect) {
@@ -439,8 +454,15 @@ impl SentEvent {
 impl Fake {
     /// Queues what a client sent on its connection `socket`.
     pub fn push(&mut self, socket: Fd, bytes: Vec<u8>, descriptors: Vec<Fd>) {
-        if let Some(end) = self.sockets.get_mut(&socket) {
-            end.incoming.push_back(Chunk::new(bytes, descriptors));
+        match self.sockets.get_mut(&socket) {
+            Some(end) if self.open.contains(&socket) => {
+                end.incoming.push_back(Chunk::new(bytes, descriptors));
+            }
+            _ => {
+                for descriptor in descriptors {
+                    self.open.remove(&descriptor);
+                }
+            }
         }
     }
 
