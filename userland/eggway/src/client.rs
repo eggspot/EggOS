@@ -185,6 +185,7 @@ pub struct ClientSlot {
     pub keyboard_focus: Option<u16>,
     pub held_press: Option<(u32, u16)>,
     pub pending_motion: Option<(u16, u32, i32, i32)>,
+    pub pointer_at: (i32, i32),
     pub modifiers: (u32, u32),
     /// A protocol error is queued: the client goes once it is sent.
     pub failed: bool,
@@ -223,6 +224,7 @@ impl ClientSlot {
             keyboard_focus: None,
             held_press: None,
             pending_motion: None,
+            pointer_at: (0, 0),
             modifiers: (0, 0),
             failed: false,
             blocked: false,

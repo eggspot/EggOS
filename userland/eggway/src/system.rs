@@ -53,7 +53,8 @@ pub trait System {
     /// A new client's state for the connection on `socket`, in memory of its own; `None` when
     /// there is no memory for it.
     fn new_client(&mut self, socket: Fd) -> Option<&'static mut ClientSlot>;
-    /// Gives a client's memory back; nothing uses it after.
+    /// Gives a client's memory back; nothing uses it after. It may be unmapped only after the
+    /// call, once no reference to it is alive.
     fn free_client(&mut self, client: &'static mut ClientSlot);
     /// Reads what `socket` holds into `bytes`, and the descriptors that came with it into
     /// `descriptors`, without waiting (`EAGAIN` when nothing is there).

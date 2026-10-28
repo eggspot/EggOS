@@ -1001,3 +1001,53 @@ fn a_keyboard_made_while_a_window_has_focus_is_entered_and_windows_go_with_the_c
     assert_eq!(session.of(40, keyboard::MODIFIERS.opcode).len(), 1);
     session.end();
 }
+
+#[test]
+fn a_pool_grows_up_to_the_client_s_cap_and_no_further() {
+    let mut session = Session::new();
+    session.globals();
+    let twenty = 20 << 20;
+    let memory = session.fake.memory_file(Vec::new());
+    session.send_with(
+        SHM,
+        0,
+        &[Value::NewId(POOL), Value::Fd, Value::Int(twenty)],
+        vec![memory],
+    );
+    session.send(POOL, 2, &[Value::Int(24 << 20)]);
+    session.pump();
+    assert!(session.alive(), "{:?}", session.error());
+    assert_eq!(session.compositor.pool_bytes(), 24 << 20);
+    session.send(POOL, 2, &[Value::Int(32 << 20)]);
+    session.pump();
+    assert!(session.alive(), "{:?}", session.error());
+    assert_eq!(session.compositor.pool_bytes(), 32 << 20);
+    session.send(POOL, 2, &[Value::Int((32 << 20) + 4096)]);
+    session.pump();
+    assert_eq!(session.error(), Some((POOL, display::NO_MEMORY)));
+    assert!(!session.alive());
+    assert!(session.fake.open.is_empty());
+}
+
+#[test]
+fn a_pointer_made_over_a_window_is_entered_and_a_gone_surface_s_callbacks_end() {
+    let mut session = Session::new();
+    session.shown();
+    session.record(record::POINTER_ENTER, [30, 40, 0, 0]);
+    session.record(record::POINTER_MOVE, [31, 42, 0, 0]);
+    session.send(SEAT, 0, &[Value::NewId(41)]);
+    session.pump();
+    let enter = session.of(41, pointer::ENTER.opcode);
+    assert_eq!(enter.len(), 1);
+    assert_eq!((enter[0].word(2) >> 8, enter[0].word(3) >> 8), (31, 42));
+    session.send(SURFACE, 3, &[Value::NewId(50)]);
+    session.send(SURFACE, 0, &[]);
+    session.pump();
+    assert_eq!(session.of(50, callback::DONE.opcode).len(), 1);
+    let deleted = session
+        .of(1, display::DELETE_ID.opcode)
+        .iter()
+        .any(|event| event.word(0) == 50);
+    assert!(deleted);
+    session.end();
+}

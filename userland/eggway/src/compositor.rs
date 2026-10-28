@@ -801,8 +801,8 @@ fn pool_request<S: System>(
                 return;
             }
             if length > MAX_POOL_BYTES
-                || client.pool_bytes + length > MAX_CLIENT_POOL_BYTES
-                || shared.pool_bytes + length > MAX_TOTAL_POOL_BYTES
+                || client.pool_bytes + growth > MAX_CLIENT_POOL_BYTES
+                || shared.pool_bytes + growth > MAX_TOTAL_POOL_BYTES
             {
                 client.protocol_error(message.object, display::NO_MEMORY, b"pool too large");
                 return;
@@ -987,6 +987,11 @@ fn destroy_surface<S: System>(client: &mut ClientSlot, system: &mut S, index: u1
     };
     if let (Some(window), Some(device)) = (surface.window, client.device) {
         system.destroy_window(device, window);
+    }
+    let pending = &surface.pending_frames[..surface.pending_frame_count];
+    for &id in surface.frames[..surface.frame_count].iter().chain(pending) {
+        client.post(id, 1, callback::DONE, &[Value::Uint(0)]);
+        destroy_object(client, id);
     }
     for object in client.objects.iter_mut() {
         let role = matches!(
@@ -1265,7 +1270,26 @@ fn seat_request<S: System>(
     let id = message.uint(0);
     match message.opcode {
         0 => {
-            new_object(client, id, Interface::Pointer, message.version, 0);
+            if !new_object(client, id, Interface::Pointer, message.version, 0) {
+                return;
+            }
+            if let Some(surface) = client.pointer_focus.and_then(|index| client.surface(index)) {
+                let surface = surface.id;
+                let (x, y) = client.pointer_at;
+                let serial = shared.next_serial();
+                client.post(
+                    id,
+                    message.version,
+                    pointer::ENTER,
+                    &[
+                        Value::Uint(serial),
+                        Value::Object(surface),
+                        Value::Fixed(wire::fixed(x)),
+                        Value::Fixed(wire::fixed(y)),
+                    ],
+                );
+                client.post(id, message.version, pointer::FRAME, &[]);
+            }
         }
         1 => {
             if !new_object(client, id, Interface::Keyboard, message.version, 0) {
@@ -1674,6 +1698,7 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
     match kind {
         record::POINTER_ENTER => {
             client.pointer_focus = Some(index);
+            client.pointer_at = (a, b);
             let serial = shared.next_serial();
             each_of(client, Interface::Pointer, |client, id, version| {
                 client.post(
@@ -1693,6 +1718,7 @@ fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {
         record::POINTER_MOVE => {
             if client.pointer_focus == Some(index) {
                 client.pending_motion = Some((index, time, a, b));
+                client.pointer_at = (a, b);
             }
         }
         record::POINTER_LEAVE => {

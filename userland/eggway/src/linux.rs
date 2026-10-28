@@ -287,7 +287,7 @@ pub fn run(startup: &Startup) -> i32 {
 }
 
 fn serve(listener: Fd) -> ! {
-    let mut system = Linux;
+    let mut system = Linux::default();
     let mut compositor = Compositor::new();
     let mut entries = [PollEntry {
         descriptor: -1,
@@ -359,6 +359,7 @@ fn serve(listener: Fd) -> ! {
             }
         }
         compositor.tick(&mut system);
+        system.unmap_freed_clients();
     }
 }
 
@@ -375,8 +376,22 @@ fn accept(compositor: &mut Compositor, system: &mut Linux, listener: Fd) {
 }
 
 /// The machine as Linux system calls reach it.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Linux;
+#[derive(Debug, Default)]
+pub struct Linux {
+    freed_clients: [usize; MAX_CLIENTS + 1],
+    freed_count: usize,
+}
+
+impl Linux {
+    /// Unmaps the memory of the clients the compositor gave back since the last call; nothing
+    /// refers to it any more.
+    pub fn unmap_freed_clients(&mut self) {
+        for &address in &self.freed_clients[..self.freed_count] {
+            unmap(address, pages(size_of::<ClientSlot>()));
+        }
+        self.freed_count = 0;
+    }
+}
 
 fn map(
     length: usize,
@@ -436,7 +451,11 @@ impl System for Linux {
 
     fn free_client(&mut self, client: &'static mut ClientSlot) {
         let address = client as *mut ClientSlot as usize;
-        unmap(address, pages(size_of::<ClientSlot>()));
+        if self.freed_count == self.freed_clients.len() {
+            self.unmap_freed_clients();
+        }
+        self.freed_clients[self.freed_count] = address;
+        self.freed_count += 1;
     }
 
     fn receive(
