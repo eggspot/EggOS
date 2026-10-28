@@ -111,6 +111,9 @@ fn an_app_bundle_is_copied_whole_and_runs_its_contents_macos_program() {
         "/media/host/Paint.app/Contents/Resources/icon.png",
         &[7; 300],
     );
+    let typed_with_a_slash = planned(&mut files, "/media/host/Paint.app/", Aarch64);
+    assert_eq!(typed_with_a_slash.source(), b"/media/host/Paint.app");
+    assert_eq!(typed_with_a_slash.run(), b"Paint.app/Contents/MacOS/Paint");
     let plan = planned(&mut files, "/media/host/Paint.app", Aarch64);
     assert_eq!(plan.name(), "Paint");
     assert_eq!(plan.run(), b"Paint.app/Contents/MacOS/Paint");

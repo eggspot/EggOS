@@ -533,6 +533,12 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_installer_s_window_holds_as_many_widgets_as_settings() {
+        assert_eq!(eggos_app::dialog::CAPACITY, CAPACITY);
+    }
+
     use super::*;
     use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 

@@ -265,6 +265,14 @@ fn measure(files: &mut impl Files, root: &Path) -> Result<u64, Problem> {
     Ok(total)
 }
 
+fn without_trailing_slashes(path: &[u8]) -> &[u8] {
+    let mut end = path.len();
+    while end > 1 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    &path[..end]
+}
+
 /// Checks that the file or `.app` folder at `source` can be installed on `machine` as `name`
 /// (else the name its file name gives) and works out how.
 pub fn plan(
@@ -273,6 +281,7 @@ pub fn plan(
     name: Option<&[u8]>,
     machine: Architecture,
 ) -> Result<Plan, Refused> {
+    let source = without_trailing_slashes(source);
     let file_name = files::file_name(source);
     let is_bundle_name = is_bundle_name(file_name);
     let name = name.map_or_else(|| derived_name(source), Name::new);

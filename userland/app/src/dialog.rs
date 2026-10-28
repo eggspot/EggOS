@@ -16,8 +16,9 @@ use eggos_toolkit::widget::{CONTROL_HEIGHT, Kind, Length, PROGRESS_DONE, Place};
 
 /// The window's content size at scale 1.
 pub const SIZE: (u32, u32) = (480, 240);
-/// The widgets one screen of the window holds at most.
-pub const CAPACITY: usize = 24;
+/// The widgets one screen of the window holds at most: Settings' capacity, so the program
+/// that serves both windows instantiates one widget tree type.
+pub const CAPACITY: usize = 48;
 /// The window's title while installing.
 pub const INSTALL_TITLE: &str = "Install";
 /// The window's title while uninstalling.

@@ -7943,6 +7943,17 @@ the license, by an explicit instruction recorded here.
   `settings.tmp.<pid>` files of writers that `/proc/ps` no longer lists (a crashed writer's),
   best effort; docs/limitations.md's minimum display is 658x530 (the macOS profile's panels)
   and the panels' hover looks are no longer listed as missing.
+- **Lightness (D24).** Nothing runs and nothing is allocated while no install or uninstall is
+  under way; the catalogue is read only on `APPS_CHANGED`, as on the launcher's opening. The
+  image grows by `/bin/app` (57, 59 and 62 KB on aarch64, riscv64 and x86_64: the recognition,
+  the copy and the messages, with `core::fmt`; its 64 KiB copy buffer is `.bss`) and by the
+  installer's window inside `/bin/settings` (measured against `main`'s: 116.5 to 209.3 KB on
+  aarch64, 108.7 to 199.9 KB on riscv64, 131.1 to 231.8 KB on x86_64; about 40 KB of it is the
+  window program with the toolkit's event loop inlined, the rest the same logic as `/bin/app`
+  and a second instantiation of some of the toolkit's tree code, generic per crate). A separate
+  toolkit program would have cost the toolkit and the font again on top; giving the dialogs
+  Settings' widget capacity saved 5 KB. The kernel grows by the two requests and the launch
+  arguments. CI reports the image's change; the baseline is the weekly pass's (D122).
 - **Not yet.** The MCP tools `app_install`, `app_uninstall` and `app_list` (D21; the MCP
   server comes after the release); installing a missing layer (the component manager, D18);
   `--force`; Files' `Install...` (item 37); reading a bundle's `Info.plist`; icons from the app
