@@ -4,8 +4,8 @@
 //! Anonymous mappings, `MAP_SHARED` mappings of a window's pixels on `/dev/window` (D127),
 //! whose pages map the window server's frames at once and are never the process's, and
 //! mappings of a memfd (D139, [`super::memfd`]), which map the file's frames the same way;
-//! mappings of other files come later (M7). An anonymous mapping is a region whose pages are mapped, zeroed, as
-//! the program first touches them. `MAP_SHARED` anonymous memory behaves
+//! mappings of other files come later (M7). An anonymous mapping is a region whose pages are
+//! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory behaves
 //! as private within one memory, which `CLONE_VM` children share; it marks the memory, and a
 //! `fork` that would copy it is refused with `ENOSYS` until copy-on-write (D104). Placement is top-down
 //! from below the stack's guard gap, as Linux places mappings; the break starts at the end of
