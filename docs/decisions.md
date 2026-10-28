@@ -8080,8 +8080,14 @@ the license, by an explicit instruction recorded here.
   The kernel gains `TYPE_IN_TERMINAL` and the share's launch, and the desktop's notice text.
 - **Lightness (D24).** Nothing runs and nothing is allocated while Files is closed; open, it
   holds its listing and a 64 KiB copy buffer on its stack, and its 720x480 window buffer
-  (1.3 MiB). The image grows by Files' code inside `/bin/settings` and the Trash and copy code
-  inside `/bin/coreutils`; the PR states the bytes from CI's numbers.
+  (1.3 MiB). The image grows by Files' code inside `/bin/settings` (209.3 to 340.4 KB on
+  aarch64, 199.9 to 328.0 KB on riscv64, 231.8 to 378.3 KB on x86_64: the window, its menus,
+  dialogs and painting, the listing, the Trash and the jobs, with `core::fmt` for its
+  messages) and by the Trash and copy code inside `/bin/coreutils` (87.2 to 128.1 KB on
+  riscv64, 99.4 to 145.5 KB on x86_64, 128.3 KB on aarch64), so about 170 to 190 KB per
+  architecture; a separate `/bin/files` would have added the toolkit and Egg Sans again. CI
+  reports the image's change against the baseline (D122); the weekly pass looks for what can be
+  trimmed (the window's messages without `core::fmt`, one copy of the listing's code).
 - **Testing.** Host: names, copies and new folders' names, times and dates both ways, what an
   entry is from its bytes and its place, the listing's order, kinds and limit, the Trash's put
   (records, numbering, other file systems, the Trash itself), restore (free names, a gone
