@@ -44,6 +44,7 @@ const DIRECTORY_BUFFER: usize = 1024;
 const DIRENT_LENGTH: usize = 16;
 const DIRENT_NAME: usize = 19;
 const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
+const FILES_PROGRAM_NAME: &[u8] = b"files";
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -548,8 +549,10 @@ fn open_window() -> i32 {
 /// installer's window instead (D134).
 pub fn run(startup: &Startup) -> i32 {
     let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
-    if eggos_app::files::file_name(started_as) == WINDOW_PROGRAM_NAME {
-        return eggos_app::window_program::run(startup);
+    match eggos_app::files::file_name(started_as) {
+        WINDOW_PROGRAM_NAME => return eggos_app::window_program::run(startup),
+        FILES_PROGRAM_NAME => return eggos_files::program::run(startup),
+        _ => {}
     }
     let mut arguments = [""; 4];
     let mut count = 0;

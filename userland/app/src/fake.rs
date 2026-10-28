@@ -129,16 +129,22 @@ impl Files for FakeFiles {
                 kind: Kind::File,
                 size: bytes.len() as u64,
                 permissions: *permissions,
+                modified: 0,
+                device: 0,
             }),
             Node::Directory => Ok(Status {
                 kind: Kind::Directory,
                 size: 0,
                 permissions: 0o755,
+                modified: 0,
+                device: 0,
             }),
             Node::Other => Ok(Status {
                 kind: Kind::Other,
                 size: 0,
                 permissions: 0o777,
+                modified: 0,
+                device: 0,
             }),
         }
     }
