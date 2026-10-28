@@ -54,7 +54,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
   dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
+  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
   sockets only (no datagrams or sequenced packets, no networking), socket files only in the
