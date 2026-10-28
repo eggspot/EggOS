@@ -1295,13 +1295,7 @@ fn build_linux_test_program(
     ));
     let target_dir = target_dir.to_string_lossy();
     let path = build_executable(
-        &[
-            "build",
-            "-p",
-            package,
-            "--target",
-            arch.user_target,
-        ],
+        &["build", "-p", package, "--target", arch.user_target],
         &[
             ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
             ("CARGO_TARGET_DIR", &target_dir),
