@@ -638,6 +638,19 @@ fn request_numbers_and_layouts_are_the_contract_s() {
     assert_eq!(request::GET_WORK_AREA, 0x8014_770a);
     assert_eq!(request::GET_PROFILE, 0x8004_770d);
     assert_eq!(request::SET_PROFILE, 0x4004_770e);
+    assert_eq!(request::APPS_CHANGED, 0x0000_770f);
+    assert_eq!(request::OPEN_APP, 0x4044_7710);
+    assert_eq!(
+        Request::parse(request::APPS_CHANGED, &[]),
+        Some(Request::AppsChanged)
+    );
+    let mut open = [0u8; 68];
+    open[..4].copy_from_slice(&5u32.to_ne_bytes());
+    open[4..9].copy_from_slice(b"Paint");
+    match Request::parse(request::OPEN_APP, &open) {
+        Some(Request::OpenApp { length: 5, name }) => assert_eq!(&name[..5], b"Paint"),
+        other => panic!("{other:?}"),
+    }
     assert_eq!(
         Request::parse(request::SET_PROFILE, &2u32.to_ne_bytes()),
         Some(Request::SetProfile { profile: 2 })

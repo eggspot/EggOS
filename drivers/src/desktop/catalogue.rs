@@ -1,8 +1,9 @@
 //! The apps the shell offers (docs/ux/desktop-v0.3-gui.md, sections 6.2 and 6.3, D133): the
 //! built-in Terminal, Files and Settings, the host's shared folder while it is mounted, and the
 //! apps installed under `/Applications`, read from their manifests by the kernel when the
-//! desktop starts and when the launcher opens. The launcher's search matches a name or one of
-//! its synonyms, case-insensitively.
+//! desktop starts, when the launcher opens and when the installer says the apps changed
+//! (D134); and, while the share is mounted, the launcher's `Install from host share...` row.
+//! The launcher's search matches a name or one of its synonyms, case-insensitively.
 
 use super::icons::{Icon, Source};
 use alloc::vec::Vec;
@@ -19,7 +20,16 @@ const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Prefe
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const FILES_PROGRAM: &str = "/bin/files";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
+const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
+const KILL_LINE: &[u8] = b"\x15";
+const INSTALL_FROM_HOST_SHARE: &str = "Install from host share...";
+
+/// The installer's window (D134): `app-window install <path>` and `app-window uninstall
+/// <name>`.
+pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
+/// What separates a started program's path and its arguments in a [`Command`].
+pub const ARGUMENT_SEPARATOR: u8 = 0;
 
 /// An app the shell can launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,6 +42,8 @@ pub enum AppId {
     Settings,
     /// The host's shared folder at `/media/host`.
     HostShare,
+    /// The launcher's row that opens the installer on the host's shared folder.
+    InstallFromHostShare,
     /// The installed app at this index of the catalogue.
     Installed(u8),
 }
@@ -39,7 +51,8 @@ pub enum AppId {
 /// What launching an app asks of the kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launch {
-    /// Start the program at this path as a process.
+    /// Start the program as a process: its path, then each argument, separated by
+    /// [`ARGUMENT_SEPARATOR`].
     Start(Command),
     /// Type this line in the terminal, as if the user had.
     Type(Command),
@@ -83,6 +96,23 @@ impl Command {
         let mut command = Self::new();
         command.push(part.as_bytes());
         command
+    }
+
+    fn program(path: &str, arguments: &[&[u8]]) -> Option<Self> {
+        let mut command = Self::from(path);
+        arguments
+            .iter()
+            .all(|argument| {
+                !argument.contains(&ARGUMENT_SEPARATOR)
+                    && command.push(&[ARGUMENT_SEPARATOR])
+                    && command.push(argument)
+            })
+            .then_some(command)
+    }
+
+    /// A started program's path and arguments, in order.
+    pub fn words(&self) -> impl Iterator<Item = &[u8]> {
+        self.as_bytes().split(|&byte| byte == ARGUMENT_SEPARATOR)
     }
 
     /// The bytes.
@@ -241,7 +271,7 @@ impl Catalogue {
     /// Whether `app` is in the catalogue now.
     pub fn has(&self, app: AppId) -> bool {
         match app {
-            AppId::HostShare => self.host_share,
+            AppId::HostShare | AppId::InstallFromHostShare => self.host_share,
             AppId::Installed(index) => self.installed(index).is_some(),
             AppId::Terminal | AppId::Files | AppId::Settings => true,
         }
@@ -262,6 +292,7 @@ impl Catalogue {
             AppId::Files => "Files",
             AppId::Settings => "Settings",
             AppId::HostShare => "Host share",
+            AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
         }
     }
@@ -280,17 +311,18 @@ impl Catalogue {
             AppId::Terminal => Icon::Terminal,
             AppId::Files => Icon::Files,
             AppId::Settings => Icon::Settings,
-            AppId::HostShare => Icon::HostShare,
+            AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(_) => Icon::named(self.name(app), self.source(app)),
         }
     }
 
     /// The apps the launcher lists, in its order: the built-ins, then the installed apps, each
-    /// alphabetically.
+    /// alphabetically, then `Install from host share...` while the share is mounted.
     pub fn launcher_apps(&self) -> impl Iterator<Item = AppId> + '_ {
         [AppId::Files, AppId::Settings, AppId::Terminal]
             .into_iter()
             .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
+            .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
 
     /// The apps the desktop shows icons for, in order: the built-ins, the host share while it
@@ -312,7 +344,7 @@ impl Catalogue {
             AppId::Terminal => &TERMINAL_SYNONYMS,
             AppId::Files => &FILES_SYNONYMS,
             AppId::Settings => &SETTINGS_SYNONYMS,
-            AppId::HostShare | AppId::Installed(_) => &[],
+            AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
             .iter()
@@ -332,18 +364,25 @@ impl Catalogue {
     }
 
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their
-    /// programs; the host share and installed apps are typed in the terminal (the program's
-    /// path, single-quoted when it holds more than letters, digits and `/._-+`); the terminal
-    /// is only focused, which the desktop does itself.
+    /// programs, and `Install from host share...` the installer on the share; the host share
+    /// and installed apps are typed in the terminal (the program's path, single-quoted when it
+    /// holds more than letters, digits and `/._-+`), after Ctrl-U so a half-typed line does
+    /// not run with it; the terminal is only focused, which the desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal => None,
             AppId::Files => Some(Launch::Start(Command::from(FILES_PROGRAM))),
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
+            AppId::InstallFromHostShare => {
+                Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
+                    .map(Launch::Start)
+            }
             AppId::HostShare => {
-                let mut line = Command::from(HOST_SHARE_LISTING);
-                line.push(b"\r");
-                Some(Launch::Type(line))
+                let mut line = Command::new();
+                let typed = line.push(KILL_LINE)
+                    && line.push(HOST_SHARE_LISTING.as_bytes())
+                    && line.push(b"\r");
+                typed.then_some(Launch::Type(line))
             }
             AppId::Installed(index) => {
                 let path = self.installed(index)?.program;
@@ -352,13 +391,24 @@ impl Catalogue {
                     .iter()
                     .all(|byte| byte.is_ascii_alphanumeric() || PLAIN_PATH_BYTES.contains(byte));
                 let mut line = Command::new();
-                let typed = match plain {
-                    true => line.push(path.as_bytes()) && line.push(b"\r"),
-                    false => line.push(b"'") && line.push(path.as_bytes()) && line.push(b"'\r"),
-                };
+                let typed = line.push(KILL_LINE)
+                    && match plain {
+                        true => line.push(path.as_bytes()) && line.push(b"\r"),
+                        false => line.push(b"'") && line.push(path.as_bytes()) && line.push(b"'\r"),
+                    };
                 typed.then_some(Launch::Type(line))
             }
         }
+    }
+
+    /// What uninstalling installed app `app` starts: the installer's window asking first; `None`
+    /// for an app that is not installed.
+    pub fn uninstall(&self, app: AppId) -> Option<Command> {
+        let AppId::Installed(index) = app else {
+            return None;
+        };
+        let name = self.installed(index)?.name();
+        Command::program(INSTALLER_PROGRAM, &[b"uninstall", name.as_bytes()])
     }
 }
 
@@ -481,17 +531,19 @@ mod tests {
         assert_eq!(start(AppId::Settings), b"/bin/settings");
         assert_eq!(start(AppId::Files), b"/bin/files");
         assert_eq!(catalogue.launch(AppId::Terminal), None);
-        assert_eq!(typed(AppId::HostShare), b"ls /media/host\r");
+        assert_eq!(typed(AppId::HostShare), b"\x15ls /media/host\r");
         let paint = catalogue.installed_named("Paint").unwrap();
-        assert_eq!(typed(paint), b"/Applications/Paint/paint.exe\r");
+        assert_eq!(typed(paint), b"\x15/Applications/Paint/paint.exe\r");
         let zebra = catalogue.installed_named("zebra").unwrap();
-        assert_eq!(typed(zebra), b"/usr/bin/zebra\r");
+        assert_eq!(typed(zebra), b"\x15/usr/bin/zebra\r");
         let hello = catalogue.installed_named("Hello World").unwrap();
         assert_eq!(
             typed(hello),
-            b"'/Applications/Hello World/Hello.app/Contents/MacOS/hello'\r"
+            b"\x15'/Applications/Hello World/Hello.app/Contents/MacOS/hello'\r"
         );
         assert_eq!(catalogue.launch(AppId::Installed(9)), None);
+        let installer = start(AppId::InstallFromHostShare);
+        assert_eq!(installer, b"/usr/libexec/app-window\0install\0/media/host");
     }
 
     #[test]
@@ -508,5 +560,50 @@ mod tests {
         assert_eq!(catalogue.source(paint).unwrap().label(), "Windows");
         assert_eq!(catalogue.source(AppId::Settings), None);
         assert_eq!(catalogue.icon(AppId::HostShare), Icon::HostShare);
+    }
+
+    #[test]
+    fn the_installer_row_follows_the_share_and_uninstall_starts_the_installer_s_window() {
+        let mut catalogue = catalogue();
+        assert!(!catalogue.has(AppId::InstallFromHostShare));
+        assert!(
+            !catalogue
+                .launcher_apps()
+                .any(|app| app == AppId::InstallFromHostShare)
+        );
+        catalogue.set_host_share(true);
+        assert_eq!(
+            catalogue.launcher_apps().last(),
+            Some(AppId::InstallFromHostShare)
+        );
+        assert!(
+            !catalogue
+                .desktop_apps()
+                .any(|app| app == AppId::InstallFromHostShare)
+        );
+        assert_eq!(
+            catalogue.name(AppId::InstallFromHostShare),
+            "Install from host share..."
+        );
+        assert!(catalogue.matches(AppId::InstallFromHostShare, "install"));
+        assert_eq!(catalogue.icon(AppId::InstallFromHostShare), Icon::HostShare);
+        let hello = catalogue.installed_named("Hello World").unwrap();
+        let command = catalogue.uninstall(hello).unwrap();
+        let words: Vec<&[u8]> = command.words().collect();
+        assert_eq!(
+            words,
+            [
+                &b"/usr/libexec/app-window"[..],
+                b"uninstall",
+                b"Hello World"
+            ]
+        );
+        assert_eq!(catalogue.uninstall(AppId::Settings), None);
+        assert_eq!(catalogue.uninstall(AppId::Installed(9)), None);
+        let settings = match catalogue.launch(AppId::Settings) {
+            Some(Launch::Start(command)) => command,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(settings.words().count(), 1);
     }
 }

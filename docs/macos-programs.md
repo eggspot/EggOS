@@ -34,6 +34,13 @@ program exists for it), and on images without the layer, a macOS program is refu
 `Exec format error` and status 126. A Java class file, which starts with the same bytes as a fat
 file, is not taken for one.
 
+## Install a program as an app
+
+On an image with the layer, `app install /media/host/Tool.app` installs an `.app` bundle whole
+(or `app install /media/host/tool` a Mach-O tool) into `/Applications/Tool/`, with a launcher
+row and a desktop icon that run its `Contents/MacOS` program in the terminal; `app uninstall
+Tool` removes it. See [Apps](apps.md) (D134).
+
 ## Build a program that runs
 
 C, Rust or any language whose program links only libSystem, with Apple's linker and a

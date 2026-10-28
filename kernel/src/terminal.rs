@@ -30,8 +30,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink};
 use eggos_drivers::desktop::{
-    Action, AppId, Contents, Desktop, GRID_SIZE, LAUNCH_FAILED, Launch, Profile, WindowId, colour,
-    shortcut,
+    Action, AppId, Contents, Desktop, GRID_SIZE, Launch, Profile, WindowId, colour, shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
@@ -218,7 +217,11 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
     let mut desktop = Desktop::new(mode.width, mode.height)?;
     desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
     if session == Session::Interactive {
-        desktop.set_catalogue(crate::apps::catalogue(), &mut Damage::new());
+        desktop.set_catalogue(
+            crate::apps::catalogue(),
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        );
     }
     let area = desktop.text_area();
     let mut terminal = Terminal::new(area.columns, area.rows)?;
@@ -481,17 +484,24 @@ fn launch_command(app: AppId) -> Option<Launch> {
         .and_then(|screen| screen.desktop.launch_command(app))
 }
 
+fn launch_failed<P: Platform>() {
+    with_windows::<P, _>(|desktop, _, damage, _| desktop.launch_failed(damage));
+}
+
 fn run_launch<P: Platform>(action: Action) {
     let launch = match action {
         Action::Start(app) | Action::Type(app) => launch_command(app),
+        Action::Uninstall(app) => SCREEN
+            .lock()
+            .as_ref()
+            .and_then(|screen| screen.desktop.uninstall_command(app))
+            .map(Launch::Start),
         _ => None,
     };
     match launch {
-        Some(Launch::Start(path)) => {
-            if crate::apps::start_program(path.as_bytes()).is_err() {
-                with_windows::<P, _>(|desktop, _, damage, _| {
-                    desktop.show_notice(LAUNCH_FAILED, damage)
-                });
+        Some(Launch::Start(command)) => {
+            if crate::apps::start_program(command.as_bytes()).is_err() {
+                launch_failed::<P>();
             }
         }
         Some(Launch::Type(line)) => {
@@ -504,7 +514,46 @@ fn run_launch<P: Platform>(action: Action) {
 
 fn read_catalogue_again<P: Platform>() {
     let catalogue = crate::apps::catalogue();
-    with_windows::<P, _>(|desktop, _, damage, _| desktop.set_catalogue(catalogue, damage));
+    with_windows::<P, _>(|desktop, _, damage, events| {
+        desktop.set_catalogue(catalogue, damage, events)
+    });
+}
+
+fn is_interactive() -> bool {
+    SCREEN
+        .lock()
+        .as_ref()
+        .is_some_and(|screen| screen.session == Session::Interactive)
+}
+
+/// The installed apps changed (`/dev/window`'s `APPS_CHANGED`, D134): the desktop reads the
+/// catalogue again, so its launcher and icons follow at once; nothing in a self-test session.
+pub fn reload_catalogue<P: Platform>() {
+    if is_interactive() {
+        read_catalogue_again::<P>();
+    }
+}
+
+/// Opens the installed app called `name` as a double-click on its icon does (`OPEN_APP`,
+/// D134), after reading the catalogue again; `false` when no such app is installed.
+pub fn open_app<P: Platform>(name: &[u8]) -> bool {
+    if !is_interactive() {
+        return false;
+    }
+    read_catalogue_again::<P>();
+    let action = with_windows::<P, _>(|desktop, _, damage, events| {
+        let name = core::str::from_utf8(name).ok()?;
+        let app = desktop.catalogue().installed_named(name)?;
+        Some(desktop.launch(app, damage, events))
+    })
+    .flatten();
+    match action {
+        Some(action) => {
+            run_launch::<P>(action);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed
@@ -525,7 +574,9 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     match drawn.map(|asked| asked.action) {
         Some(Action::PowerOff) => take_machine_down::<P>(reboot::Action::PowerOff),
         Some(Action::Restart) => take_machine_down::<P>(reboot::Action::Restart),
-        Some(action @ (Action::Start(_) | Action::Type(_))) => run_launch::<P>(action),
+        Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_))) => {
+            run_launch::<P>(action)
+        }
         Some(Action::None) | None => {}
     }
     if drawn.is_some_and(|asked| asked.catalogue) {

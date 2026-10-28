@@ -205,6 +205,18 @@ impl<const N: usize> WidgetTree<N> {
         self.keep_caret_visible(id);
     }
 
+    /// Shows progress bar `id` with `permille` of it done.
+    pub fn set_progress(&mut self, id: WidgetId, permille: u16) {
+        if matches!(self.kind(id), Some(Kind::Progress { permille: shown }) if *shown == permille) {
+            return;
+        }
+        self.change(id, |kind| {
+            if let Kind::Progress { permille: shown } = kind {
+                *shown = permille;
+            }
+        });
+    }
+
     /// The text of label, button, checkbox or text field `id`.
     pub fn text_of(&self, id: WidgetId) -> Option<&str> {
         match self.kind(id)? {

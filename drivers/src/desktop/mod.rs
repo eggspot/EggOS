@@ -9,8 +9,9 @@
 //! events and its clients' requests, it records the rectangles they change in a [`Damage`] and
 //! the events its clients get in an [`EventSink`], and [`Desktop::draw`] repaints any
 //! rectangle of a framebuffer from scratch, copying each window's content from its buffer
-//! through [`Contents`]. Every table is fixed ([`protocol::MAX_WINDOWS`]); nothing allocates
-//! after [`Desktop::new`].
+//! through [`Contents`]. Every window table is fixed ([`protocol::MAX_WINDOWS`]); after
+//! [`Desktop::new`] only the catalogue of installed apps allocates, when the kernel hands the
+//! desktop a new one ([`Desktop::set_catalogue`]).
 
 mod catalogue;
 mod desktop_icons;
@@ -36,7 +37,10 @@ mod tests;
 #[cfg(test)]
 mod window_tests;
 
-pub use catalogue::{AppId, COMMAND_CAPACITY, Catalogue, Command, Launch, MAX_INSTALLED};
+pub use catalogue::{
+    ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
+    MAX_INSTALLED,
+};
 pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
 pub use icons::{Icon, IconSize, Source};
@@ -202,6 +206,8 @@ pub enum Action {
     Start(AppId),
     /// Type the app's command in the terminal, as if the user had ([`Catalogue::launch`]).
     Type(AppId),
+    /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
+    Uninstall(AppId),
 }
 
 /// Where the desktop reads windows' pixels: the buffers the kernel keeps for them.
@@ -395,19 +401,28 @@ impl Desktop {
     }
 
     /// Makes `catalogue` the shell's, redrawing what lists apps if it differs from the one it
-    /// had.
-    pub fn set_catalogue(&mut self, catalogue: Catalogue, damage: &mut Damage) {
+    /// had; an open icon menu follows its app, and closes when the app is gone.
+    pub fn set_catalogue(
+        &mut self,
+        catalogue: Catalogue,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         if catalogue == self.catalogue {
             return;
         }
-        if let Some(menu) = self.icons.menu.as_mut() {
+        if let Some(menu) = self.icons.menu {
             let name = self.catalogue.name(menu.app);
             match catalogue
                 .desktop_apps()
                 .find(|&app| catalogue.name(app) == name)
             {
-                Some(app) => menu.app = app,
-                None => menu.app = AppId::Terminal,
+                Some(app) => {
+                    if let Some(open) = self.icons.menu.as_mut() {
+                        open.app = app;
+                    }
+                }
+                None => self.close_icon_menu(damage, events),
             }
         }
         self.catalogue = catalogue;
@@ -429,6 +444,11 @@ impl Desktop {
     /// name it.
     pub fn launch_command(&self, app: AppId) -> Option<Launch> {
         self.catalogue.launch(app)
+    }
+
+    /// What [`Action::Uninstall`] of `app` starts: the installer's window and its arguments.
+    pub fn uninstall_command(&self, app: AppId) -> Option<Command> {
+        self.catalogue.uninstall(app)
     }
 
     fn terminal(&self) -> &Window {

@@ -108,7 +108,7 @@ fn isqrt(value: i32) -> i32 {
 
 /// Draws the boot screen's egg and yolk (docs/ux/desktop-v0.3.md sections 1 and 3) as tall
 /// as `rect`, at its left.
-pub fn egg(canvas: &mut Canvas<'_>, rect: Rect) {
+pub fn egg(canvas: &mut Canvas<'_>, rect: Rect, _: u32) {
     let height = rect.height;
     let width = (72 * height + 50) / 100;
     let equator = ((58 * height + 50) / 100).max(1);
@@ -174,7 +174,7 @@ mod tests {
     fn the_egg_is_taller_above_its_equator_with_the_yolk_inside() {
         let mut pixels = vec![0u32; 48 * 48];
         let mut canvas = Canvas::new(&mut pixels, 48, 48, 1).unwrap();
-        egg(&mut canvas, Rect::new(0, 0, 48, 48));
+        egg(&mut canvas, Rect::new(0, 0, 48, 48), 0);
         let row_width = |y: usize| {
             pixels[y * 48..y * 48 + 48]
                 .iter()

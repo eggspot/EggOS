@@ -7848,3 +7848,143 @@ the license, by an explicit instruction recorded here.
   stays drawn, so the picture is steady), dragging icons, `Uninstall...` (item 36), the
   launcher's `Install from host share...` row, a second terminal, keyboard focus for the Linux
   dash, the MCP tools for launching.
+
+## D134 Install, open and uninstall: `app`, the installer's window, `APPS_CHANGED` and `OPEN_APP` (v0.3.0 item 36) — Decided by the build loop (the command's names, the text-only command, the missing layer, collisions, names, the program's place and the details decided by research)
+- **What.** Users can now install a Windows `.exe`, a macOS `.app` folder (or Mach-O tool) or a
+  static Linux program from the host share (or anywhere) with `app install <path>`, see it in
+  the launcher and as a desktop icon, double-click it to open it through the right layer (a
+  Windows GUI program's window appears; a console program runs in the terminal), and uninstall
+  it with `app uninstall <name>` or the icon's `Uninstall...`, leaving nothing behind (D18).
+  `app list` lists the installed apps. docs/apps.md is the reference.
+- **The command** (decided by research): one program, `/bin/app`, with `install`, `uninstall`
+  (`remove` is the same, the design's word) and `list`; no bare `/bin/install`, which would
+  shadow `install(1)` that Linux build scripts call (`install -m 755 src dst`), and no
+  `/bin/uninstall`. Text only, the same headless and with a display, and it asks nothing:
+  typing the command is the confirmation (D21 makes agents confirm destructive actions at the
+  MCP layer). `--window` shows the dialogs instead; the desktop and later Files start them.
+  Status 0, 1 for a refusal or failure, 2 for a usage error, as `settings` and `wm`.
+- **What a file is** (`eggos-app`, `userland/app`, from Microsoft's PE/COFF specification,
+  Apple's Mach-O reference and the System V ELF specification): its first 4 KiB, never its
+  name. `MZ` with a `PE\0\0` header whose optional header is PE32+ and whose characteristics
+  say an executable image and not a DLL is a Windows program of its COFF machine (`0x8664`
+  x86_64, `0xAA64` ARM64); `0xfeedfacf` with `MH_EXECUTE` a macOS program of its CPU type, a fat
+  header (1 to 32 architectures, so a Java class file is not one) the slice of this machine's
+  CPU; a little-endian ELF of type `EXEC` or `DYN` with program headers and no `PT_INTERP` a
+  static Linux program. An `.app` folder runs `Contents/MacOS/<bundle name>`, else the one file
+  there (reading `Info.plist` waits for the Foundation work, item 40).
+- **What is refused, before anything is written**, with the design's two forms: `EggOS cannot
+  run <file> on <arch>: <reason>` for the machine's reasons (a Windows or macOS program on
+  riscv64, where the layers do not run; another CPU's program, until ahead-of-time translation;
+  32-bit; a Linux program needing a dynamic loader) and `Could not install <name>: <reason>`
+  for the others (not a program, a library, a folder that is no `.app`, a bundle without its
+  program, a name or program path a manifest cannot hold, a name already installed).
+- **A missing layer refuses the install** (decided by research): with no component manager
+  yet nothing can install the Windows or macOS layer, and an app that can never open would
+  still get a launcher row and an icon; the refusal (`it needs the Windows layer, which is not
+  installed`) becomes the design's `Installs: the ... layer` line when the component manager
+  exists. Release images carry a layer only when built with such a program (D118, D120).
+- **Collisions** (decided by research): an app of that name already installed is refused
+  (`app uninstall` first; `--force` is not built); a folder of that name without a valid
+  manifest, which only a cut-short install or uninstall leaves and which nobody sees (D133),
+  is removed and replaced.
+- **Names** (decided by research): the file's name without its extension (`win-paint.exe`,
+  `Paint.app`), or `--name <name>`; a name that breaks the manifest's rules is refused with
+  them, never truncated or changed, since a silently changed name collides or surprises.
+- **The copy.** Into `/Applications/<name>/`: the program file (its permission bits kept), or
+  the bundle folder whole, walked depth-first holding no open directory (a path and an index
+  per level, at most 16 levels; symbolic links and devices refused, as EggFS has none to
+  write), each file synced; then the manifest (`name`, `source`, `run` relative to the folder,
+  `architecture`) written to `app.manifest.tmp`, synced and renamed over `app.manifest`, and
+  `sync`, so a cut at any point leaves either no app or the whole app. Uninstall removes the
+  manifest first, so the app leaves the catalogue at once, then the folder entry by entry from
+  the first (correct whatever a listing does under removals), then `sync`. A failure while
+  copying removes what was copied; `EROFS` (no disk: `/Applications` is the initramfs' empty
+  directory, D131) reads `/Applications is read-only because EggOS started without a disk`
+  and `ENOSPC` `not enough space on the disk (ENOSPC)`. The design's line about apps not
+  surviving a reboot is gone (decided by research: D131 made it false).
+- **The installer's window** (Claude Fable's section 9, D16, as built): one 480x240 window
+  titled `Install` or `Uninstall`, built with the toolkit: the prompt (the app's tile with its
+  source's badge, `Install <name>?`, its kind, `From:`, `To:`, `Adds:`, `Cancel` and `Install`),
+  the progress (the toolkit's new progress bar following the bytes, `Copying <name>...`,
+  `Registering...`; `Cancel` until the copy ends, then dimmed and ignored), the result
+  (`Installed <name>.` with `Close` and `Open`) or the reason, wrapped at spaces, with `Close`,
+  and `Uninstall <name>?` with what it removes, `Cancel` and `Uninstall`. Given a folder that
+  is not an `.app` (the launcher's `Install from host share...`), it lists the first four
+  programs in it as buttons, until Files exists (item 37). The copy runs in steps of 64 KiB,
+  16 per tick of the toolkit's loop, so the window answers Cancel between them; the installer
+  is its own process, so the desktop never waits for it. The toolkit gains `Kind::Progress`
+  and a data word for custom painters (the app tile's letter and badge).
+- **Where the window's code lives** (decided by research): the logic (recognition, the plan,
+  the steps, uninstall, the list, the messages) is the no-toolkit crate `eggos-app`, host-tested
+  against a fake file system; `/bin/app` links only it, so a headless image keeps the CLI
+  (D22); the dialogs are in the same crate behind its `window` feature and are served by the
+  Settings program under a second name, the hard link `/usr/libexec/app-window` (dispatch on
+  `argv[0]`, as the core utilities, D108), so the toolkit and Egg Sans are in the image once
+  instead of in a second 110 KiB program.
+- **The desktop's side.** `Uninstall...` in an installed app's menu (its icon's and its
+  launcher row's; Up and Down now move between the menu's items) asks the kernel
+  (`Action::Uninstall`) to start `/usr/libexec/app-window uninstall <name>`; the launcher's last
+  row while the share is mounted, `Install from host share...` (the host share's icon), starts
+  `app-window install /media/host`, behind the same 2 s guard as Settings. The kernel starts a
+  program with arguments now: a launch command is the path and its arguments separated by NUL
+  bytes. Two `/dev/window` requests (docs/windows.md): `APPS_CHANGED` (`_IO('w', 15)`, any
+  client) makes the shell read the catalogue again, which `app` sends after a change, so the
+  icon and the row appear and go at once (the catalogue is still read only on such an event,
+  D18); `OPEN_APP` (`0x40447710`, root, as `SET_PROFILE`) opens an installed app by name as its
+  icon does, which the result's `Open` sends, so a console app runs in the terminal as the
+  design asks. Opening an installed app already went through the right layer, because it is
+  typed in the terminal and `execve` picks the layer by the file's bytes (D118, D120).
+- **Follow-ups from #131's review.** A typed launch sends Ctrl-U first, so a half-typed command
+  line is erased instead of running with the app's path appended; a failed start clears the
+  2 s starting guard when it shows `The app could not start.`; an icon menu whose app left the
+  catalogue closes instead of turning into Terminal's (`set_catalogue` now takes the event
+  sink, to hand the focus back); the desktop module's documentation no longer claims nothing
+  allocates after `Desktop::new` (the catalogue does); Settings removes, before it writes, the
+  `settings.tmp.<pid>` files of writers that `/proc/ps` no longer lists (a crashed writer's),
+  best effort; docs/limitations.md's minimum display is 658x530 (the macOS profile's panels)
+  and the panels' hover looks are no longer listed as missing.
+- **Lightness (D24).** Nothing runs and nothing is allocated while no install or uninstall is
+  under way; the catalogue is read only on `APPS_CHANGED`, as on the launcher's opening. The
+  image grows by `/bin/app` (57, 59 and 62 KB on aarch64, riscv64 and x86_64: the recognition,
+  the copy and the messages, with `core::fmt`; its 64 KiB copy buffer is `.bss`) and by the
+  installer's window inside `/bin/settings` (measured against `main`'s: 116.5 to 209.3 KB on
+  aarch64, 108.7 to 199.9 KB on riscv64, 131.1 to 231.8 KB on x86_64; about 40 KB of it is the
+  window program with the toolkit's event loop inlined, the rest the same logic as `/bin/app`
+  and a second instantiation of some of the toolkit's tree code, generic per crate). A separate
+  toolkit program would have cost the toolkit and the font again on top; giving the dialogs
+  Settings' widget capacity saved 5 KB. The kernel grows by the two requests and the launch
+  arguments. CI reports the image's change; the baseline is the weekly pass's (D122).
+  Forced exception: the three `release_image_bytes` baseline lines were last set by item 20's
+  PR (#119) and the images of items 25 to 35 took `main` to 1.80x (aarch64, 1263512 bytes),
+  1.88x (riscv64, 1500288) and 1.955x (x86_64, 1180912) of them, so this item's growth (157880,
+  165816 and 173992 bytes on aarch64, riscv64 and x86_64) crossed the 2x block on every
+  architecture (CI: 1421392, 1666104 and 1354904 bytes). The cost is the accumulated required
+  features of the release plan, each reported in its own PR, not one regression; the three lines
+  are set to CI's measured values and nothing else in the baseline changes. The weekly pass
+  (2026-10-31) looks for what can be trimmed (making `/bin/app` a hard link to `/bin/settings`
+  would save 57 to 62 KB, at the price of the headless image keeping the toolkit) and resets
+  the rest.
+- **Not yet.** The MCP tools `app_install`, `app_uninstall` and `app_list` (D21; the MCP
+  server comes after the release); installing a missing layer (the component manager, D18);
+  `--force`; Files' `Install...` (item 37); reading a bundle's `Info.plist`; icons from the app
+  (`icon=` stays reserved); a command per app on the `PATH`, which the design's section 9 had
+  and EggFS cannot make without symbolic links.
+- **Testing.** Host: recognition of PE32+, PE32, DLLs, ELF (static, static-pie, dynamic,
+  32-bit, other CPUs), thin and fat Mach-O, Java class files and 2000 corrupted files without a
+  panic; the plan's refusals and names; installs of a program and of a bundle against the fake
+  file system, the manifest's bytes and that it comes last through the temporary file, the
+  progress, cancelling, a full disk and a read-only `/Applications` leaving nothing, a leftover
+  folder replaced, uninstall's order and that nothing is left, the listing; the command's
+  arguments; the dialogs' texts, buttons, keys, progress and pixels; the toolkit's progress bar
+  and custom data; the settings file's stale temporary names; the catalogue's row, uninstall
+  command, Ctrl-U and arguments; the menus' `Uninstall...` by pointer and keys, the closing
+  menu and the guard; the two requests' numbers and layouts. QEMU on all three architectures
+  (`xtask/src/qemu/install.rs`), on a blank disk with a host folder holding `win-paint.exe`
+  and the static Linux program: `app install` from `/media/host` (on riscv64 win-paint is
+  refused with the reason and the Linux program installed instead), `app list`, a second
+  install refused; the image read back holds the program and the manifest and no temporary
+  file; after a reboot on the same disk the icon and the launcher row are there, a
+  double-click opens win-paint's window (the Linux program runs in the terminal) and its close
+  control closes it, the icon menu's `Uninstall...` opens the installer's confirmation, Enter
+  uninstalls, and the frames show the window, icon and row gone; `ls /Applications` and `app
+  list` print nothing, and the image's `/Applications` is empty.

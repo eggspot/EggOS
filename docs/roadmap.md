@@ -283,7 +283,15 @@ D16):
     set; the app catalogue in `/Applications/<name>/app.manifest`; Settings from the dock, the
     launcher and the desktop. Next: install and uninstall (item 36), Files (item 37), the
     phone layout, 2x.
-36. install, open and uninstall of `.exe`, `.app` and ELF programs.
+36. **done** — users can now install, open and uninstall Windows, macOS and Linux apps (D134,
+    docs/apps.md): `app install <path>` recognises a PE32+ `.exe`, a Mach-O tool or `.app`
+    bundle, or a static ELF by its bytes, refuses what this machine cannot run with the
+    reason, and copies it into `/Applications/<name>/` with its manifest written last;
+    `app uninstall` and `app list`; the installer's window (prompt, progress, result,
+    uninstall confirmation, a chooser for the host share) from `--window`, the launcher's
+    `Install from host share...` and the icon menus' `Uninstall...`; the launcher and icons
+    follow at once (`APPS_CHANGED`). Next: Files (item 37), the MCP tools with the MCP
+    server, installing a missing layer with the component manager.
 37. the Files app.
 38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
 39. a Wayland server, `eggway`, for Linux GUI apps.

@@ -577,3 +577,44 @@ fn a_known_string_renders_to_the_same_pixels() {
         });
     assert_eq!(hash, 8151596901170438906);
 }
+
+fn tile(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
+    canvas.fill(rect, data);
+}
+
+#[test]
+fn a_progress_bar_fills_its_done_part_with_the_accent_and_a_custom_widget_gets_its_data() {
+    let mut tree = WidgetTree::<4>::new();
+    let bar = tree
+        .add(
+            None,
+            Place::at(10, 10, Length::Px(100), Length::Px(8)),
+            Kind::Progress { permille: 0 },
+        )
+        .unwrap();
+    tree.add(
+        None,
+        Place::at(0, 30, Length::Px(4), Length::Px(4)),
+        Kind::Custom {
+            painter: tile,
+            data: 0x0012_3456,
+        },
+    )
+    .unwrap();
+    tree.resize(120, 40);
+    let mut pixels = vec![0u32; 120 * 40];
+    tree.render(&mut pixels, 120, 40, 1);
+    assert_eq!(pixels[14 * 120 + 50], colour::PROGRESS_TRACK);
+    assert_eq!(pixels[31 * 120 + 1], 0x0012_3456);
+    tree.take_damage();
+    tree.set_progress(bar, 250);
+    assert!(!tree.take_damage().is_empty());
+    tree.set_progress(bar, 250);
+    assert!(tree.take_damage().is_empty());
+    tree.render(&mut pixels, 120, 40, 1);
+    assert_eq!(pixels[14 * 120 + 20], colour::ACCENT);
+    assert_eq!(pixels[14 * 120 + 50], colour::PROGRESS_TRACK);
+    tree.set_progress(bar, 4000);
+    tree.render(&mut pixels, 120, 40, 1);
+    assert_eq!(pixels[14 * 120 + 105], colour::ACCENT);
+}

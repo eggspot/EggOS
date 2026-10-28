@@ -48,6 +48,30 @@ pub fn temporary_path(process_id: u32, out: &mut [u8; TEMPORARY_PATH_CAPACITY]) 
     core::str::from_utf8(&out[..prefix.len() + count]).unwrap_or(TEMPORARY_PREFIX)
 }
 
+/// The writer process whose temporary file is called `name` in [`PATH`]'s directory, if
+/// `name` is one: [`temporary_path`]'s last component.
+pub fn temporary_owner(name: &[u8]) -> Option<u32> {
+    let prefix = &TEMPORARY_PREFIX.as_bytes()[DIRECTORIES[2].len() + 1..];
+    decimal(name.strip_prefix(prefix)?)
+}
+
+/// Whether `/proc/ps`'s text `ps` (one line per process, its id first) lists process `id`.
+pub fn is_listed(ps: &[u8], id: u32) -> bool {
+    ps.split(|&byte| byte == b'\n').any(|line| {
+        let first = line.split(|&byte| byte == b' ').next().unwrap_or(b"");
+        decimal(first) == Some(id)
+    })
+}
+
+fn decimal(digits: &[u8]) -> Option<u32> {
+    if digits.is_empty() || digits.len() > 10 || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    digits.iter().try_fold(0u32, |value, digit| {
+        value.checked_mul(10)?.checked_add(u32::from(digit - b'0'))
+    })
+}
+
 /// The file's first line: its format and version.
 pub const HEADER: &[u8] = b"eggos-settings 1";
 
@@ -336,5 +360,23 @@ mod tests {
             let mut out = [0u8; LARGEST];
             let _ = with_value(&file, SHELL_PROFILE, b"linux", &mut out);
         }
+    }
+
+    #[test]
+    fn stale_temporary_files_are_told_by_their_writer_s_id() {
+        let mut out = [0u8; TEMPORARY_PATH_CAPACITY];
+        let path = temporary_path(4021, &mut out);
+        let name = path.rsplit('/').next().unwrap();
+        assert_eq!(temporary_owner(name.as_bytes()), Some(4021));
+        assert_eq!(temporary_owner(b"settings"), None);
+        assert_eq!(temporary_owner(b"settings.tmp."), None);
+        assert_eq!(temporary_owner(b"settings.tmp.12x"), None);
+        assert_eq!(temporary_owner(b"settings.tmp.99999999999"), None);
+        let ps = b"1 0 1 1 R init\n7 1 7 7 R eggsh\n4021 7 7 7 R settings\n";
+        assert!(is_listed(ps, 4021));
+        assert!(is_listed(ps, 1));
+        assert!(!is_listed(ps, 402));
+        assert!(!is_listed(ps, 70));
+        assert!(!is_listed(b"", 1));
     }
 }

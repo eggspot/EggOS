@@ -37,6 +37,8 @@ impl Errno {
     pub const EXDEV: Self = Self(18);
     /// `EROFS`.
     pub const EROFS: Self = Self(30);
+    /// `ENOSPC`.
+    pub const ENOSPC: Self = Self(28);
     /// `ENOTEMPTY`.
     pub const ENOTEMPTY: Self = Self(39);
 

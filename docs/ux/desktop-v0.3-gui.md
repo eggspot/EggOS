@@ -650,6 +650,15 @@ land (`files ls|rm|mv|mkdir|info`); in 0.3.0 the core utilities are that CLI.
 
 ## 9. Install and uninstall (item 36)
 
+(As built, D134 and docs/apps.md supersede the details below: apps go to
+`/Applications/<name>/` with `app.manifest` (D133); the command is `app install`, `app
+uninstall` (`remove` too) and `app list`, text only, with `--window` for these dialogs; no
+`/home/<user>/.local/bin` command is made; a missing layer refuses the install until the
+component manager can install it; the result says nothing about reboots, since `/Applications`
+is on the disk (D131), and without a disk the install fails as `/Applications is read-only`;
+`Open` opens the app as its icon does; the launcher's `Install from host share...` opens the
+installer's chooser on the share until Files exists (item 37); the window is 480x240.)
+
 An "app" in 0.3.0 is a console program from another system that EggOS runs natively
 (D17-D19): a Windows `.exe` (x86_64 or ARM64 PE32+), a macOS Mach-O tool or an `.app` bundle
 whose `Contents/MacOS/<name>` is a console tool, or a Linux static ELF. (Superseded by D133:

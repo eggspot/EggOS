@@ -7,6 +7,15 @@ name = "eggos-android-console"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-app"
+version = "0.2.0"
+dependencies = [
+ "eggos-app-manifest",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-app-manifest"
 version = "0.2.0"
 
@@ -102,6 +111,7 @@ dependencies = [
 name = "eggos-settings"
 version = "0.2.0"
 dependencies = [
+ "eggos-app",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-toolkit",
@@ -150,6 +160,8 @@ version = "0.2.0"
 name = "xtask"
 version = "0.2.0"
 dependencies = [
+ "eggos-app",
+ "eggos-app-manifest",
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-settings",

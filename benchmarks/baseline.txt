@@ -49,7 +49,7 @@ aarch64 process_switch_round_trip 487.27
 aarch64 process_syscall_round_trip 117.40
 aarch64 random_fill_16 1323.00
 aarch64 random_fill_4096 87816.16
-aarch64 release_image_bytes 701728.00
+aarch64 release_image_bytes 1421392.00
 aarch64 syscall_round_trip 106.17
 aarch64 term_feed_line 6046.56
 aarch64 term_scroll_line 540783.08
@@ -100,7 +100,7 @@ riscv64 process_switch_round_trip 598.45
 riscv64 process_syscall_round_trip 156.39
 riscv64 random_fill_16 1998.00
 riscv64 random_fill_4096 131313.16
-riscv64 release_image_bytes 798392.00
+riscv64 release_image_bytes 1666104.00
 riscv64 syscall_round_trip 148.27
 riscv64 term_feed_line 6839.81
 riscv64 term_scroll_line 669769.34
@@ -151,7 +151,7 @@ x86_64 process_switch_round_trip 450.32
 x86_64 process_syscall_round_trip 117.66
 x86_64 random_fill_16 1237.00
 x86_64 random_fill_4096 79921.61
-x86_64 release_image_bytes 603992.00
+x86_64 release_image_bytes 1354904.00
 x86_64 syscall_round_trip 107.44
 x86_64 term_feed_line 5949.24
 x86_64 term_scroll_line 196729.62

@@ -98,21 +98,29 @@ on screen, in the shape of a resize zone or of what a program asks for. Settings
 (`settings`, [Settings](settings.md), D132) picks the layout profile, Windows, macOS or Linux
 habits (the controls' side and the shortcuts), kept on the disk across reboots. Not yet:
 - a boot screen with the logo and progress (the plain wallpaper shows until init starts);
-- hover highlights on the bar, the pressed look of the controls, and the `Hand` and `Busy`
-  pointer shapes;
+- the pressed look of the window controls, and the `Hand` and `Busy` pointer shapes (the
+  panels' items have hover and pressed looks since D133);
 - dragging a window partly off screen;
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
 - F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
-  blink in the launcher's search field, keyboard focus in the Linux launcher's dash, and the
-  launcher's `Install from host share...` row and `Uninstall...` (item 36) (D133);
+  blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
+- installing a missing Windows or macOS layer, `app install --force`, Files' `Install...`
+  (item 37) and the MCP tools `app_install`, `app_uninstall` and `app_list` (with the MCP
+  server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
+- `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
+  `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
+  chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
+  <path>` installs any);
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);
-- Settings is the one program with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); its Mouse and Components panes,
+- Settings and the installer's window (`app --window`, served by the same program, D134) are
+  the programs with a window in the image (the window tests' `hello-window`
+  and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs open windows
   (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
 - 3D graphics;
-- a terminal on a display smaller than 658x458: the window does not fit, and the display then
-  shows no terminal (the serial console still works);
+- a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
+  rows): the window does not fit every profile's work area, and the display then shows no
+  terminal (the serial console still works);
 - copy and paste, and scaling for high-density displays.

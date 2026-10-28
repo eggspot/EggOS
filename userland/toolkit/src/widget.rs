@@ -34,6 +34,10 @@ pub const CARD_LABEL_FROM_BOTTOM: i32 = 36;
 pub const MAX_OPTIONS: usize = 4;
 /// The most rows a list holds.
 pub const MAX_ROWS: usize = 32;
+/// Height of a progress bar.
+pub const PROGRESS_HEIGHT: i32 = 8;
+/// A progress bar's value when it is all done.
+pub const PROGRESS_DONE: u16 = 1000;
 
 /// Where a widget's left edge goes in its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +118,8 @@ pub enum Escape {
 /// Draws a card's art into its rectangle: the card picker's index of it, then where.
 pub type CardArt = fn(&mut Canvas<'_>, usize, Rect);
 
-/// Draws a custom widget into its rectangle.
-pub type Painter = fn(&mut Canvas<'_>, Rect);
+/// Draws a custom widget into its rectangle, given the widget's data word.
+pub type Painter = fn(&mut Canvas<'_>, Rect, u32);
 
 /// A text field's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -214,8 +218,10 @@ pub enum Kind {
     List(List),
     /// A single-line text field.
     TextField(Field),
-    /// Something the program draws itself.
-    Custom { painter: Painter },
+    /// A progress bar, `permille` of it done (docs/ux/desktop-v0.3-gui.md section 9).
+    Progress { permille: u16 },
+    /// Something the program draws itself, with a word of its own data.
+    Custom { painter: Painter, data: u32 },
 }
 
 impl Kind {
@@ -393,6 +399,7 @@ impl Kind {
             ),
             Self::List(list) => (0, list.content_height()),
             Self::TextField(_) => (BUTTON_MIN_WIDTH, CONTROL_HEIGHT),
+            Self::Progress { .. } => (BUTTON_MIN_WIDTH, PROGRESS_HEIGHT),
             Self::Panel { .. }
             | Self::Column { .. }
             | Self::ScrollView { .. }
@@ -804,6 +811,17 @@ fn paint_field(canvas: &mut Canvas<'_>, field: &Field, rect: Rect, look: Look) {
     }
 }
 
+fn paint_progress(canvas: &mut Canvas<'_>, rect: Rect, permille: u16) {
+    canvas.rounded(rect, &INSET_R4, colour::PROGRESS_TRACK);
+    let permille = i32::from(permille.min(PROGRESS_DONE));
+    let done = rect.width * permille / i32::from(PROGRESS_DONE);
+    if done > 0 {
+        let previous = canvas.narrow(Rect::new(rect.x, rect.y, done, rect.height));
+        canvas.rounded(rect, &INSET_R4, colour::ACCENT);
+        canvas.restore(previous);
+    }
+}
+
 /// Draws widget `kind` at `rect` as `look` says.
 pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
     match kind {
@@ -887,6 +905,7 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::Cards { .. } => paint_cards(canvas, kind, rect, look),
         Kind::List(list) => paint_list(canvas, list, rect, look),
         Kind::TextField(field) => paint_field(canvas, field, rect, look),
-        Kind::Custom { painter } => painter(canvas, rect),
+        Kind::Progress { permille } => paint_progress(canvas, rect, *permille),
+        Kind::Custom { painter, data } => painter(canvas, rect, *data),
     }
 }

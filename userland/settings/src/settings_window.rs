@@ -361,7 +361,10 @@ impl SettingsWindow {
                 Length::Px(EGG_HEIGHT),
                 Length::Px(EGG_HEIGHT),
             ),
-            Kind::Custom { painter: art::egg },
+            Kind::Custom {
+                painter: art::egg,
+                data: 0,
+            },
         );
         let mut title = Text::<64>::new();
         let _ = write!(title, "EggOS {}", facts.version);
@@ -530,6 +533,12 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_installer_s_window_holds_as_many_widgets_as_settings() {
+        assert_eq!(eggos_app::dialog::CAPACITY, CAPACITY);
+    }
+
     use super::*;
     use eggos_toolkit::input::{Input, Modifiers, MouseButton};
 

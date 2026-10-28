@@ -37,6 +37,13 @@ const AFFINITY_BYTES: usize = 128;
 const PATH_CAPACITY: usize = 128;
 const DEFAULT_PROFILE: usize = 1;
 const USAGE: &[u8] = b"usage: settings [get <key> | set <key> <value> | list]\n";
+const O_DIRECTORY: usize = 0o200_000;
+const PS_CAPACITY: usize = 4096;
+const STALE_CAPACITY: usize = 8;
+const DIRECTORY_BUFFER: usize = 1024;
+const DIRENT_LENGTH: usize = 16;
+const DIRENT_NAME: usize = 19;
+const WINDOW_PROGRAM_NAME: &[u8] = b"app-window";
 
 fn syscall(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
     // SAFETY: every caller passes buffers it owns and borrows for the call, sized as the call
@@ -134,6 +141,68 @@ fn saved_settings(file: &mut [u8; LARGEST + 1]) -> usize {
     read_file(PATH, file).unwrap_or(0)
 }
 
+fn remove_stale_temporary_files(own: u32) {
+    let directory = CPath::new(DIRECTORIES[2]);
+    let Ok(fd) = syscall(
+        number::OPENAT,
+        [
+            AT_FDCWD,
+            directory.pointer(),
+            O_RDONLY_CLOEXEC | O_DIRECTORY,
+            0,
+            0,
+            0,
+        ],
+    ) else {
+        return;
+    };
+    let mut stale = [0u32; STALE_CAPACITY];
+    let mut count = 0;
+    let mut entries = [0u8; DIRECTORY_BUFFER];
+    while let Ok(read) = syscall(
+        number::GETDENTS64,
+        [fd, entries.as_mut_ptr() as usize, entries.len(), 0, 0, 0],
+    ) {
+        if read == 0 || count == stale.len() {
+            break;
+        }
+        let mut offset = 0;
+        while offset + DIRENT_NAME < read.min(entries.len()) {
+            let length = usize::from(u16::from_ne_bytes([
+                entries[offset + DIRENT_LENGTH],
+                entries[offset + DIRENT_LENGTH + 1],
+            ]));
+            if length <= DIRENT_NAME || offset + length > read {
+                break;
+            }
+            let raw = &entries[offset + DIRENT_NAME..offset + length];
+            let name = &raw[..raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len())];
+            if let Some(owner) = settings_file::temporary_owner(name)
+                && owner != own
+                && count < stale.len()
+            {
+                stale[count] = owner;
+                count += 1;
+            }
+            offset += length;
+        }
+    }
+    close(fd);
+    let mut ps = [0u8; PS_CAPACITY];
+    let running = match read_file("/proc/ps", &mut ps) {
+        Ok(length) if length < ps.len() => &ps[..length],
+        _ => return,
+    };
+    for owner in stale[..count]
+        .iter()
+        .filter(|&&owner| !settings_file::is_listed(running, owner))
+    {
+        let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
+        let path = CPath::new(settings_file::temporary_path(*owner, &mut temporary));
+        let _ = syscall(number::UNLINKAT, [AT_FDCWD, path.pointer(), 0, 0, 0, 0]);
+    }
+}
+
 fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     for directory in DIRECTORIES {
         let directory = CPath::new(directory);
@@ -151,6 +220,7 @@ fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     let new_length = settings_file::with_value(&old[..length], key, value.as_bytes(), &mut new)
         .map_err(|_| Errno::E2BIG)?;
     let process_id = syscall(number::GETPID, [0; 6])? as u32;
+    remove_stale_temporary_files(process_id);
     let mut temporary = [0u8; TEMPORARY_PATH_CAPACITY];
     let temporary = settings_file::temporary_path(process_id, &mut temporary);
     write_file(temporary, &new[..new_length])?;
@@ -474,8 +544,13 @@ fn open_window() -> i32 {
     }
 }
 
-/// The program: see the crate's documentation.
+/// The program: see the crate's documentation. Started as `app-window`, it is the
+/// installer's window instead (D134).
 pub fn run(startup: &Startup) -> i32 {
+    let started_as = startup.arguments().next().map_or(&b""[..], CStr::to_bytes);
+    if eggos_app::files::file_name(started_as) == WINDOW_PROGRAM_NAME {
+        return eggos_app::window_program::run(startup);
+    }
     let mut arguments = [""; 4];
     let mut count = 0;
     for argument in startup.arguments().skip(1).map(CStr::to_bytes) {
