@@ -70,7 +70,8 @@ same command: run `run-eggos.sh --mcp` as a stdio MCP server.
   the folder you share with `--apps`: an agent with `write` and `install` cannot install
   something it wrote. Files `tee` writes are never executable.
 - **What `/home/root` holds.** The writing tools reach below `/home/root` (not the folder
-  itself, and never its Trash). They can change your settings file
+  itself, and never its Trash); with `write`, the server makes the folder if the disk has none
+  yet. They can change your settings file
   (`/home/root/.config/eggos/settings`) like any file there.
 
 ## The tools

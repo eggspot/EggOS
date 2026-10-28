@@ -8274,12 +8274,15 @@ the license, by an explicit instruction recorded here.
   `app` takes `--` now. Every command starts in `/home` with the fixed environment (`PATH=/bin`,
   `HOME=/home/root`, `TERM=dumb`), in a process group of its own, stopped whole (with every
   process it started) at its time limit or 128 KiB of output; the wait for its end always ends.
-  Errors are kept to 32 KiB (4 KiB in D136). Children keep root (decided by research): the
+  Errors are kept to 32 KiB (4 KiB in D136). `eggmcpd` ignores `SIGPIPE`, so a command that
+  ends before taking its input cannot end the server; `spawn` gives every child `SIGPIPE`'s
+  default action back, as a shell does. Children keep root (decided by research): the
   kernel does not enforce file permissions (D75), so another user would only break `app` and
   `reboot` while suggesting a boundary that does not exist; a user of its own comes with
   enforced permissions.
 - **Paths.** The writing tools reach strictly below `/home/root` in 0.3, the home whose Trash
-  `trash` and Files use, so whatever is trashed can be restored, and never the Trash itself
+  `trash` and Files use (`eggmcpd` makes the folder at start when `write` is granted, since a
+  blank disk has none), so whatever is trashed can be restored, and never the Trash itself
   (`/home/root/.local/share/Trash` and what is in it). What else under `/home` other parts read:
   the Trash's records (`Trash::restore` now refuses a record whose original is not a plain
   path strictly inside its home and outside the Trash: `RestoreError::OutsideHome`, which fixes
