@@ -97,7 +97,7 @@ mod program {
     fn buffer() -> &'static mut [u8] {
         // SAFETY: the program has one thread and calls this once, from `install`, so no other
         // reference to the buffer exists while this one lives.
-        unsafe { &mut *(&raw mut BUFFER) }
+        unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) }
     }
 
     fn install(path: &[u8], name: Option<&[u8]>) -> i32 {

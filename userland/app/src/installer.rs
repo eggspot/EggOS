@@ -24,7 +24,6 @@ pub const MAX_DEPTH: usize = 16;
 
 const BUNDLE_SUFFIX: &[u8] = b".app";
 const BUNDLE_PROGRAMS: &[u8] = b"Contents/MacOS";
-const FOLDER_PERMISSIONS: u32 = 0o755;
 const MANIFEST_PERMISSIONS: u32 = 0o644;
 
 /// Why an app could not be installed or uninstalled.
@@ -129,6 +128,13 @@ pub fn derived_name(path: &[u8]) -> Name {
         _ => file,
     };
     Name::new(stem)
+}
+
+/// Whether `file_name` names an `.app` bundle: it ends with `.app`, in any case, after
+/// something.
+pub fn is_bundle_name(file_name: &[u8]) -> bool {
+    file_name.len() > BUNDLE_SUFFIX.len()
+        && file_name[file_name.len() - BUNDLE_SUFFIX.len()..].eq_ignore_ascii_case(BUNDLE_SUFFIX)
 }
 
 /// Why installing failed, with the name it was for.
@@ -268,8 +274,7 @@ pub fn plan(
     machine: Architecture,
 ) -> Result<Plan, Refused> {
     let file_name = files::file_name(source);
-    let is_bundle_name = file_name.len() > BUNDLE_SUFFIX.len()
-        && file_name[file_name.len() - BUNDLE_SUFFIX.len()..].eq_ignore_ascii_case(BUNDLE_SUFFIX);
+    let is_bundle_name = is_bundle_name(file_name);
     let name = name.map_or_else(|| derived_name(source), Name::new);
     let refused = |problem| Refused { name, problem };
     let source = Path::from(source).ok_or(refused(Problem::PathTooLong))?;
@@ -349,8 +354,6 @@ pub fn plan(
     })
 }
 
-/// A pre-order walk of the tree under a folder, holding no open directory: the path from the
-/// root and each level's next index.
 #[derive(Debug, Clone, Copy)]
 struct Walk {
     relative: Path,
@@ -525,9 +528,8 @@ impl Installation {
     /// Runs every step; what the last one reports.
     pub fn run(&mut self, files: &mut impl Files, buffer: &mut [u8]) -> Progress {
         loop {
-            match self.step(files, buffer) {
-                done @ (Progress::Installed | Progress::Failed(_)) => return done,
-                _ => {}
+            if let done @ (Progress::Installed | Progress::Failed(_)) = self.step(files, buffer) {
+                return done;
             }
         }
     }

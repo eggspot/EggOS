@@ -201,10 +201,11 @@ fn macos_steps(shell: &mut Shell<'_>) -> Result<(), String> {
     shell.key("meta_l", key::LEFT_SUPER, true, command)?;
     shell.tap("spc", key::SPACE, command)?;
     shell.key("meta_l", key::LEFT_SUPER, false, Modifiers::NONE)?;
-    shell
-        .screen
-        .desktop
-        .set_catalogue(catalogue_with_the_app(), &mut Damage::new());
+    shell.screen.desktop.set_catalogue(
+        catalogue_with_the_app(),
+        &mut Damage::new(),
+        &mut DiscardEvents,
+    );
     shell.check("the launcher opened by Cmd+Space, the new app listed")?;
     for (qcode, code) in [("p", 25), ("r", 19), ("e", 18), ("f", 33)] {
         shell.tap(qcode, code, Modifiers::NONE)?;

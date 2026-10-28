@@ -356,7 +356,7 @@ pub(crate) mod samples {
         file
     }
 
-    pub fn fat(cpus: &[u32]) -> Vec<u8> {
+    pub fn fat_file(cpus: &[u32]) -> Vec<u8> {
         let mut file = vec![0u8; 8 + 20 * cpus.len()];
         file[..4].copy_from_slice(&0xcafe_babeu32.to_be_bytes());
         file[4..8].copy_from_slice(&(cpus.len() as u32).to_be_bytes());
@@ -467,7 +467,7 @@ mod tests {
             recognise(&mach_o(0x0100_000c, 6), Aarch64),
             Err(NotRunnable::Library)
         );
-        let universal = fat(&[0x0100_0007, 0x0100_000c]);
+        let universal = fat_file(&[0x0100_0007, 0x0100_000c]);
         assert_eq!(
             recognise(&universal, Aarch64),
             program(Source::Macos, Aarch64)
@@ -477,7 +477,7 @@ mod tests {
             program(Source::Macos, X86_64)
         );
         assert_eq!(
-            recognise(&fat(&[0x0100_0007]), Aarch64),
+            recognise(&fat_file(&[0x0100_0007]), Aarch64),
             Err(NotRunnable::OtherCpu(X86_64))
         );
         let java_class = [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52];
@@ -501,7 +501,7 @@ mod tests {
             windows_program(0x8664),
             linux_program(62),
             mach_o(0x0100_0007, 2),
-            fat(&[0x0100_0007, 7]),
+            fat_file(&[0x0100_0007, 7]),
         ];
         for round in 0..2000 {
             let mut file = seeds[round % seeds.len()].clone();

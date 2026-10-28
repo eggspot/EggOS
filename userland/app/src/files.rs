@@ -61,7 +61,7 @@ pub trait Files {
 }
 
 /// A path of at most [`PATH_CAPACITY`] bytes.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct Path {
     bytes: [u8; PATH_CAPACITY],
     length: usize,
@@ -72,6 +72,14 @@ impl core::fmt::Debug for Path {
         core::fmt::Debug::fmt(&self.as_bytes().escape_ascii(), formatter)
     }
 }
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for Path {}
 
 impl Default for Path {
     fn default() -> Self {
@@ -177,6 +185,7 @@ mod tests {
         assert_eq!(path.file_name(), b"Paint.app");
         path.pop();
         assert_eq!(path.as_bytes(), b"/Applications/Paint");
+        assert_eq!(path, Path::from(b"/Applications/Paint").unwrap());
         let mut relative = Path::new();
         assert!(relative.push(b"Contents"));
         assert_eq!(relative.as_bytes(), b"Contents");

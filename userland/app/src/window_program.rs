@@ -26,6 +26,7 @@ const SIGNATURE_BYTES: usize = 8;
 
 static mut BUFFER: [u8; COPY_BUFFER] = [0; COPY_BUFFER];
 
+#[allow(clippy::large_enum_variant)]
 enum Stage {
     Choosing {
         folder: Path,
@@ -80,7 +81,7 @@ fn programs_in(
             continue;
         };
         let wanted = match files.status(path.as_bytes()).map(|status| status.kind) {
-            Ok(Kind::Directory) => entry.len() > 4 && entry.to_ascii_lowercase().ends_with(b".app"),
+            Ok(Kind::Directory) => installer::is_bundle_name(entry),
             Ok(Kind::File) => is_program_file(files, path.as_bytes()),
             _ => false,
         };
@@ -277,9 +278,7 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
     match command {
         Command::Install { path, .. } => {
             let folder = Path::from(path).unwrap_or_default();
-            let is_plain_folder = !files::file_name(path)
-                .to_ascii_lowercase()
-                .ends_with(b".app")
+            let is_plain_folder = !installer::is_bundle_name(files::file_name(path))
                 && installer
                     .files
                     .status(path)
@@ -365,7 +364,8 @@ pub fn run(startup: &Startup) -> i32 {
     };
     // SAFETY: this program has one thread and takes the buffer once, here, so no other
     // reference to it exists while the installer holds it.
-    let buffer = unsafe { &mut *(&raw mut BUFFER) };
+    let buffer =
+        unsafe { core::slice::from_raw_parts_mut((&raw mut BUFFER).cast::<u8>(), COPY_BUFFER) };
     let mut installer = Installer {
         dialog: Dialog::message(AppIcon::of("?", None), ""),
         stage: Stage::Showing,
