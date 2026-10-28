@@ -141,7 +141,12 @@ pub fn is_inside(path: &str, root: &str) -> bool {
 
 /// The checks after resolution: when `strictly` is set, `resolved` must not be a root itself;
 /// it must not be in any of `excluded`.
-pub fn check_place(resolved: &str, roots: &[&str], strictly: bool, excluded: &[&str]) -> Result<(), PathRefusal> {
+pub fn check_place(
+    resolved: &str,
+    roots: &[&str],
+    strictly: bool,
+    excluded: &[&str],
+) -> Result<(), PathRefusal> {
     if strictly && roots.contains(&resolved) {
         return Err(PathRefusal::IsRoot);
     }
@@ -239,14 +244,30 @@ mod tests {
 
     #[test]
     fn writes_reach_strictly_below_the_home_folder_and_never_the_trash() {
-        assert_eq!(written("/home/root/note.txt"), Ok("/home/root/note.txt".into()));
+        assert_eq!(
+            written("/home/root/note.txt"),
+            Ok("/home/root/note.txt".into())
+        );
         assert_eq!(written("/home/root/a/../b"), Ok("/home/root/b".into()));
-        assert_eq!(written("/home/root/.local/x"), Ok("/home/root/.local/x".into()));
+        assert_eq!(
+            written("/home/root/.local/x"),
+            Ok("/home/root/.local/x".into())
+        );
         assert_eq!(written("/home/root"), Err(PathRefusal::IsRoot));
         assert_eq!(written("/home/root/"), Err(PathRefusal::IsRoot));
         assert_eq!(written("/home/root/x/.."), Err(PathRefusal::IsRoot));
-        for outside in ["/home", "/home/other/x", "/home/rootless", "/home/root/../../etc/x", "/var/log/agent-audit.log"] {
-            assert_eq!(written(outside), Err(PathRefusal::OutsideRoots), "{outside}");
+        for outside in [
+            "/home",
+            "/home/other/x",
+            "/home/rootless",
+            "/home/root/../../etc/x",
+            "/var/log/agent-audit.log",
+        ] {
+            assert_eq!(
+                written(outside),
+                Err(PathRefusal::OutsideRoots),
+                "{outside}"
+            );
         }
         for trash in [
             "/home/root/.local/share/Trash",

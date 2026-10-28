@@ -24,12 +24,7 @@ use eggos_hal::memory::FRAME_SIZE;
 
 const ROOT: u64 = 1;
 
-const FILES: [(&[u8], u64); 4] = [
-    (b"cmdline", 5),
-    (b"meminfo", 2),
-    (b"ps", 3),
-    (b"uptime", 4),
-];
+const FILES: [(&[u8], u64); 4] = [(b"cmdline", 5), (b"meminfo", 2), (b"ps", 3), (b"uptime", 4)];
 
 const MEMINFO: u64 = 2;
 

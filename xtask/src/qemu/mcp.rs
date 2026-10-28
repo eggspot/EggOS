@@ -59,12 +59,28 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
 /// Every changing tool, with arguments the first boot calls it with (refused for its grant)
 /// and the grant; the second boot runs each.
 pub const GRANTED_TOOLS: [(&str, &str, &str); 6] = [
-    ("tee", r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#, "write"),
-    ("trash", r#"{"path":"/home/root/x","confirm":true}"#, "write"),
+    (
+        "tee",
+        r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
+        "write",
+    ),
+    (
+        "trash",
+        r#"{"path":"/home/root/x","confirm":true}"#,
+        "write",
+    ),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
-    ("app_install", r#"{"path":"/media/host/win-paint.exe"}"#, "install"),
+    (
+        "app_install",
+        r#"{"path":"/media/host/win-paint.exe"}"#,
+        "install",
+    ),
     ("app_open", r#"{"name":"win-paint"}"#, "install"),
-    ("app_uninstall", r#"{"name":"win-paint","confirm":true}"#, "install"),
+    (
+        "app_uninstall",
+        r#"{"name":"win-paint","confirm":true}"#,
+        "install",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -227,19 +243,28 @@ impl Client {
             .as_bytes(),
         )?;
         let question = self.receive(ANSWER_TIMEOUT)?;
-        let value = json::parse(question.as_bytes()).map_err(|_| self.fail("not JSON"))?.value;
+        let value = json::parse(question.as_bytes())
+            .map_err(|_| self.fail("not JSON"))?
+            .value;
         let asked = value
             .get("method")
             .and_then(Value::as_str)
             .is_some_and(|method| method.equals("elicitation/create"));
-        let question_id = value.get("id").map(|id| String::from_utf8_lossy(id.raw()).into_owned());
+        let question_id = value
+            .get("id")
+            .map(|id| String::from_utf8_lossy(id.raw()).into_owned());
         match (asked, question_id) {
             (true, Some(question_id)) => Ok((id, question_id)),
             _ => Err(self.fail(format!("{tool} did not ask the user: {question}"))),
         }
     }
 
-    fn answer_question(&mut self, call: u64, question: &str, result: &str) -> Result<ToolResult, String> {
+    fn answer_question(
+        &mut self,
+        call: u64,
+        question: &str,
+        result: &str,
+    ) -> Result<ToolResult, String> {
         self.send(format!(r#"{{"jsonrpc":"2.0","id":{question},"result":{result}}}"#).as_bytes())?;
         let answer = self.receive(ANSWER_TIMEOUT)?;
         let parsed = json::parse(answer.as_bytes()).map_err(|_| self.fail("not JSON"))?;
@@ -318,7 +343,10 @@ fn prepare(
     std::fs::create_dir_all(&apps).map_err(|e| format!("{}: {e}", apps.display()))?;
     std::fs::write(apps.join("readme.txt"), README).map_err(|e| e.to_string())?;
     std::fs::write(apps.join("big.txt"), big_file()).map_err(|e| e.to_string())?;
-    for name in [super::install::WINDOWS_PROGRAM, super::install::LINUX_PROGRAM] {
+    for name in [
+        super::install::WINDOWS_PROGRAM,
+        super::install::LINUX_PROGRAM,
+    ] {
         let from = programs.join(name);
         std::fs::copy(&from, apps.join(name)).map_err(|e| format!("{}: {e}", from.display()))?;
     }
@@ -466,15 +494,15 @@ fn session(client: &mut Client) -> Result<(), String> {
                 && result.all().contains(&format!("needs the {grant} grant"))
                 && result.all().contains(&format!("--mcp-allow {grant}")),
             arch,
-            &format!("{tool} without grants was not refused naming {grant}: {}", result.all()),
+            &format!(
+                "{tool} without grants was not refused naming {grant}: {}",
+                result.all()
+            ),
         )?;
     }
     Ok(())
 }
 
-/// The app the second boot installs, opens and uninstalls: its file, its name and the title
-/// of the window it opens. `win-paint.exe` where the Windows layer runs; the static Linux
-/// program on riscv64 (as the install boot test does), which runs in the terminal.
 fn test_app(arch: &str) -> (&'static str, &'static str, Option<&'static str>) {
     match super::runs_windows_programs(arch) {
         true => (
@@ -482,16 +510,28 @@ fn test_app(arch: &str) -> (&'static str, &'static str, Option<&'static str>) {
             "win-paint",
             Some(eggos_windows_gui_tests::TITLE),
         ),
-        false => (super::install::LINUX_PROGRAM, super::install::LINUX_PROGRAM, None),
+        false => (
+            super::install::LINUX_PROGRAM,
+            super::install::LINUX_PROGRAM,
+            None,
+        ),
     }
 }
 
-fn succeeds(client: &mut Client, tool: &str, arguments: &str, wanted: &str) -> Result<ToolResult, String> {
+fn succeeds(
+    client: &mut Client,
+    tool: &str,
+    arguments: &str,
+    wanted: &str,
+) -> Result<ToolResult, String> {
     let result = client.call(tool, arguments)?;
     expect(
         !result.is_error && result.all().contains(wanted),
         client.arch,
-        &format!("{tool} {arguments} did not give `{wanted}`: {}", result.all()),
+        &format!(
+            "{tool} {arguments} did not give `{wanted}`: {}",
+            result.all()
+        ),
     )?;
     Ok(result)
 }
@@ -501,7 +541,10 @@ fn refused(client: &mut Client, tool: &str, arguments: &str, wanted: &str) -> Re
     expect(
         result.is_error && result.all().contains(wanted),
         client.arch,
-        &format!("{tool} {arguments} was not refused with `{wanted}`: {}", result.all()),
+        &format!(
+            "{tool} {arguments} was not refused with `{wanted}`: {}",
+            result.all()
+        ),
     )
 }
 
@@ -523,22 +566,61 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     succeeds(client, "tee", &first, "Wrote")?;
     let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);
     refused(client, "tee", &second, "confirm: true")?;
-    let confirmed = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
+    let confirmed =
+        format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
     succeeds(client, "tee", &confirmed, "Wrote")?;
-    succeeds(client, "cat", &format!(r#"{{"path":"{NOTE}"}}"#), &format!("{CONTENT_MARKER} second\n"))?;
-    refused(client, "cat", r#"{"path":"/home/../etc/eggos/init.conf"}"#, "outside /home and /media/host")?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        &format!("{CONTENT_MARKER} second\n"),
+    )?;
+    refused(
+        client,
+        "cat",
+        r#"{"path":"/home/../etc/eggos/init.conf"}"#,
+        "outside /home and /media/host",
+    )?;
     for (path, wanted) in [
         ("/home/../etc/x", "outside /home/root"),
         ("/home/root", "names /home/root itself"),
         ("/home/other/x", "outside /home/root"),
-        ("/home/root/.local/share/Trash/info/x.trashinfo", "in the Trash"),
+        (
+            "/home/root/.local/share/Trash/info/x.trashinfo",
+            "in the Trash",
+        ),
     ] {
-        refused(client, "tee", &format!(r#"{{"path":"{path}","content":"x","confirm":true}}"#), wanted)?;
+        refused(
+            client,
+            "tee",
+            &format!(r#"{{"path":"{path}","content":"x","confirm":true}}"#),
+            wanted,
+        )?;
     }
-    refused(client, "trash", &format!(r#"{{"path":"{NOTE}"}}"#), "confirm: true")?;
-    succeeds(client, "trash", &format!(r#"{{"path":"{NOTE}","confirm":true}}"#), "to the Trash")?;
-    refused(client, "cat", &format!(r#"{{"path":"{NOTE}"}}"#), "No such file")?;
-    succeeds(client, "run", r#"{"program":"/bin/uname","arguments":["-a"]}"#, "EggOS")?;
+    refused(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}","confirm":true}}"#),
+        "to the Trash",
+    )?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        "No such file",
+    )?;
+    succeeds(
+        client,
+        "run",
+        r#"{"program":"/bin/uname","arguments":["-a"]}"#,
+        "EggOS",
+    )?;
     succeeds(
         client,
         "run",
@@ -553,11 +635,16 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     )?;
     expect(
         result.is_error
-            && result.all().contains("did not finish in time and was stopped")
+            && result
+                .all()
+                .contains("did not finish in time and was stopped")
             && !result.all().contains("could not be stopped")
             && started.elapsed() < TIME_LIMIT_ANSWER,
         arch,
-        &format!("sleep 30 with a 1 s limit was not stopped in time: {}", result.all()),
+        &format!(
+            "sleep 30 with a 1 s limit was not stopped in time: {}",
+            result.all()
+        ),
     )?;
     let (file, name, title) = test_app(arch);
     succeeds(
@@ -567,7 +654,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "Installed",
     )?;
     succeeds(client, "app_list", "{}", name)?;
-    succeeds(client, "app_open", &format!(r#"{{"name":"{name}"}}"#), "Opened")?;
+    succeeds(
+        client,
+        "app_open",
+        &format!(r#"{{"name":"{name}"}}"#),
+        "Opened",
+    )?;
     let deadline = Instant::now() + WINDOW_TIMEOUT;
     loop {
         let result = succeeds(client, "wm_list", "{}", WM_LIST_HEADER)?;
@@ -584,7 +676,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         )?;
         std::thread::sleep(Duration::from_millis(500));
     }
-    refused(client, "app_uninstall", &format!(r#"{{"name":"{name}"}}"#), "confirm: true")?;
+    refused(
+        client,
+        "app_uninstall",
+        &format!(r#"{{"name":"{name}"}}"#),
+        "confirm: true",
+    )?;
     succeeds(
         client,
         "app_uninstall",
@@ -598,7 +695,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         ),
     )?;
     client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
-    succeeds(client, "tee", &format!(r#"{{"path":"{ELICITED}","content":"asked\n"}}"#), "Wrote")?;
+    succeeds(
+        client,
+        "tee",
+        &format!(r#"{{"path":"{ELICITED}","content":"asked\n"}}"#),
+        "Wrote",
+    )?;
     let (call, question) = client.call_asked("trash", &format!(r#"{{"path":"{ELICITED}"}}"#))?;
     let result = client.answer_question(call, &question, r#"{"action":"decline"}"#)?;
     expect(
@@ -606,7 +708,12 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         arch,
         &format!("a declined trash was not refused: {}", result.all()),
     )?;
-    succeeds(client, "cat", &format!(r#"{{"path":"{ELICITED}"}}"#), "asked")?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{ELICITED}"}}"#),
+        "asked",
+    )?;
     let (call, question) = client.call_asked("trash", &format!(r#"{{"path":"{ELICITED}"}}"#))?;
     let result = client.answer_question(
         call,
@@ -649,8 +756,6 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         "agentlog shows content a call wrote",
     )
 }
-
-
 
 /// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer)
 /// and the folder `programs` holding the test apps.
@@ -711,7 +816,11 @@ mod tests {
         for tool in &eggos_mcp::tools::TOOLS {
             let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name);
             let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);
-            assert!(read || granted.is_some(), "{} has no call in the MCP check", tool.name);
+            assert!(
+                read || granted.is_some(),
+                "{} has no call in the MCP check",
+                tool.name
+            );
             assert_eq!(read, tool.grant.is_none(), "{}", tool.name);
             if let (Some((_, _, grant)), Some(needed)) = (granted, tool.grant) {
                 assert_eq!(*grant, needed.name(), "{}", tool.name);

@@ -1041,7 +1041,7 @@ fn fuzz_mcp(seconds: u64) -> Result<(), String> {
             0 => Server::restarted(),
             _ => Server::new(),
         };
-        if seed % 3 != 0 {
+        if !seed.is_multiple_of(3) {
             server.set_grants(eggos_mcp::grants::Grants::ALL, Default::default());
         }
         run(
@@ -1663,7 +1663,10 @@ mod tests {
                     tool.name,
                 ),
                 eggos_mcp::tools::Program::FromArguments => {
-                    assert_eq!(tool.name, "run", "only run takes its program from its arguments")
+                    assert_eq!(
+                        tool.name, "run",
+                        "only run takes its program from its arguments"
+                    )
                 }
             }
         }

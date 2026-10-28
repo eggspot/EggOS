@@ -231,7 +231,8 @@ extern "C" fn start_child(request: usize) -> ! {
     if let Some(directory) = request.directory {
         // SAFETY: `chdir` reads the C string `request` names, which stays in place while the
         // parent sleeps.
-        let changed = unsafe { syscall::call(number::CHDIR, [directory.as_ptr() as usize, 0, 0, 0, 0, 0]) };
+        let changed =
+            unsafe { syscall::call(number::CHDIR, [directory.as_ptr() as usize, 0, 0, 0, 0, 0]) };
         if changed < 0 {
             request.exec_error.store(changed, Ordering::Release);
             syscall::exit(NOT_RUN)

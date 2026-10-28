@@ -15,7 +15,7 @@ use crate::server::{
 use crate::system::{Ended, FileState, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 
-const CORPUS: [&str; 22] = [
+const CORPUS: [&str; 21] = [
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"fuzz","version":"1"}}}"#,
     r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tee","arguments":{"path":"/home/root/a","content":"x\u0000y","append":true}}}"#,

@@ -50,10 +50,7 @@ pub enum Message<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
     /// The user accepted; whether the form's `confirm` was `true`.
-    Accept {
-        /// The form's `confirm`.
-        confirm: bool,
-    },
+    Accept { confirm: bool },
     /// The user declined.
     Decline,
     /// The user dismissed the question.
@@ -79,7 +76,9 @@ fn answer_of(object: Object<'_>) -> Answer {
     let action = result.get("action").and_then(Value::as_str);
     match action {
         Some(action) if action.equals("accept") => Answer::Accept {
-            confirm: result.get("content").and_then(|content| content.get("confirm"))
+            confirm: result
+                .get("content")
+                .and_then(|content| content.get("confirm"))
                 == Some(Value::Bool(true)),
         },
         Some(action) if action.equals("decline") => Answer::Decline,
@@ -269,11 +268,15 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(
-            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":true}}}"#),
+            answer(
+                r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":true}}}"#
+            ),
             Answer::Accept { confirm: true }
         );
         assert_eq!(
-            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":"true"}}}"#),
+            answer(
+                r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":"true"}}}"#
+            ),
             Answer::Accept { confirm: false }
         );
         assert_eq!(

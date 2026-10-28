@@ -25,8 +25,8 @@
 
 use super::Errno;
 use super::fault::Fault;
-use super::process_table;
 use super::futex::WaitSlot;
+use super::process_table;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
 use super::thread::LinuxThread;
@@ -1798,9 +1798,7 @@ pub fn init_takes(signal: u32, action: Option<Action>) -> bool {
 
 fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
     let credentials = process.credentials_and_limits().lock();
-    let ids = credentials
-        .credentials
-        .ids(super::credentials::Kind::User);
+    let ids = credentials.credentials.ids(super::credentials::Kind::User);
     SignalIds {
         privileged: credentials.credentials.is_privileged(),
         real: ids.real,
@@ -1897,8 +1895,7 @@ pub fn kill<P: Platform>(
     let sender = signal_ids(process);
     let mut reached = caller_included;
     for target in others {
-        if let Reached::Delivered = send_to_other::<P>(sender, target, init, number, info(number))
-        {
+        if let Reached::Delivered = send_to_other::<P>(sender, target, init, number, info(number)) {
             reached = true;
         }
     }

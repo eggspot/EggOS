@@ -16,7 +16,7 @@ const LOGS: [&CStr; 8] = [
     c"/var/log/agent-audit.log.2",
     c"/var/log/agent-audit.log.1",
     c"/var/log/agent-audit.log",
-]
+];
 const LINE_BYTES: usize = 4096;
 const CHUNK: usize = 4096;
 const HEADER: &[u8] = b"TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
@@ -324,15 +324,11 @@ mod tests {
 
     #[test]
     fn every_generation_is_read_oldest_first() {
-        let mut fake = Fake::default().with_file(LOG, 0o640, b"9\t0\t-\t-\tserver-start\t\tg0\n", 0);
+        let mut fake =
+            Fake::default().with_file(LOG, 0o640, b"9\t0\t-\t-\tserver-start\t\tg0\n", 0);
         for generation in 1..=7 {
             let record = format!("{generation}\t0\t-\t-\tserver-start\t\tg{generation}\n");
-            fake = fake.with_file(
-                &format!("{LOG}.{generation}"),
-                0o640,
-                record.as_bytes(),
-                0,
-            );
+            fake = fake.with_file(&format!("{LOG}.{generation}"), 0o640, record.as_bytes(), 0);
         }
         assert_eq!(run(&mut fake, &[]), 0);
         let output = fake.output();

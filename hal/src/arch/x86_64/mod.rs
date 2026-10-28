@@ -19,8 +19,8 @@ mod thread;
 mod timer;
 
 use crate::acpi::{self, RootTable};
-use crate::command_line::{self, CommandLineCopy};
 use crate::arch::boot_memory;
+use crate::command_line::{self, CommandLineCopy};
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
 use crate::paging::{self, KernelImage};
@@ -1074,14 +1074,8 @@ fn signature_of(root: RootTable) -> &'static [u8; 4] {
     }
 }
 
-/// The PVH loader's command line, copied by the first [`capture_command_line`]: the first call
-/// to `memory_map`, on the boot CPU, before the frame allocator exists.
 static COMMAND_LINE: CommandLineCopy = CommandLineCopy::new();
 
-/// Copies the command line `hvm_start_info.cmdline_paddr` names, once: from the low memory
-/// (QEMU's PVH option ROM keeps it there, outside every RAM entry) or a RAM entry of the
-/// loader's map, inside the boot direct map, up to its NUL and at most
-/// [`command_line::MAX_BYTES`]; an empty line when anything is wrong.
 fn capture_command_line() {
     if COMMAND_LINE.is_taken() {
         return;

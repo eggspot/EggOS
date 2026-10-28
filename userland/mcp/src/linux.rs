@@ -145,8 +145,6 @@ fn now_ms() -> u64 {
     time[0] as u64 * 1000 + time[1] as u64 / 1_000_000
 }
 
-/// The grants the kernel command line gives (D137): `/proc/cmdline`, which only the host sets;
-/// reading only when it cannot be read.
 fn read_grants(server: &mut Server) {
     let mut path = [0u8; 32];
     let Some(path) = c_path(COMMAND_LINE_PATH, &mut path) else {
@@ -158,7 +156,10 @@ fn read_grants(server: &mut Server) {
     let mut line = [0u8; COMMAND_LINE_BYTES];
     let mut length = 0;
     while let Some(free) = line.get_mut(length..).filter(|free| !free.is_empty()) {
-        match call(number::READ, [file, free.as_mut_ptr() as usize, free.len(), 0, 0, 0]) {
+        match call(
+            number::READ,
+            [file, free.as_mut_ptr() as usize, free.len(), 0, 0, 0],
+        ) {
             Ok(0) => break,
             Ok(count) => length += count,
             Err(Errno::EINTR) => continue,
@@ -170,8 +171,6 @@ fn read_grants(server: &mut Server) {
     server.set_grants(grants, unknown);
 }
 
-/// Waits until the channel has input or `deadline_ms` (on [`now_ms`]'s clock) passes; whether
-/// input waits.
 fn wait_for_channel(channel: usize, deadline_ms: u64) -> bool {
     let left = deadline_ms.saturating_sub(now_ms());
     if left == 0 {
@@ -374,7 +373,6 @@ fn status_of(status: i32) -> Ended {
     }
 }
 
-/// Waits for `child` until `deadline_ms`; `None` if it has not ended by then.
 fn wait_until(child: usize, deadline_ms: u64) -> Option<Ended> {
     loop {
         let mut status = 0i32;
@@ -394,7 +392,6 @@ fn wait_until(child: usize, deadline_ms: u64) -> Option<Ended> {
     }
 }
 
-/// Stops the process group `child` leads: `Ok` when it is gone or was already (`ESRCH`).
 fn stop_group(child: usize) -> Result<(), Errno> {
     let group = (child as isize).wrapping_neg() as usize;
     match call(number::KILL, [group, SIGKILL, 0, 0, 0, 0]) {
@@ -494,7 +491,9 @@ impl Linux {
             *used += word.len() + 1;
             Ok(())
         };
-        if invocation.program.contains('\0') || invocation.words.iter().any(|word| word.contains('\0')) {
+        if invocation.program.contains('\0')
+            || invocation.words.iter().any(|word| word.contains('\0'))
+        {
             return Err(Errno::EINVAL);
         }
         push(invocation.program, &mut count, &mut used)?;
@@ -508,8 +507,11 @@ impl Linux {
             push("--", &mut count, &mut used)?;
             push(operand, &mut count, &mut used)?;
         }
-        let program = CStr::from_bytes_until_nul(storage_prefix(&self.command_words[..], invocation.program.len() + 1))
-            .map_err(|_| Errno::EINVAL)?;
+        let program = CStr::from_bytes_until_nul(storage_prefix(
+            &self.command_words[..],
+            invocation.program.len() + 1,
+        ))
+        .map_err(|_| Errno::EINVAL)?;
         if count >= pointers.len() {
             return Err(Errno::E2BIG);
         }
@@ -685,8 +687,6 @@ impl Linux {
     }
 }
 
-/// Renames `from` to `to`; a missing `from` is no failure (a rotation a power cut stopped half
-/// way, or a log not yet that old).
 fn rename(from: &CStr, to: &CStr) -> Result<(), Errno> {
     match call(
         number::RENAMEAT2,

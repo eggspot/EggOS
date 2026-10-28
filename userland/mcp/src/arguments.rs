@@ -248,7 +248,11 @@ pub fn check(
         checked.path = Some(length);
     }
     if tool.kind == Kind::Tee {
-        checked.content = Some(content(get("content"), get("content_base64"), decoded.content)?);
+        checked.content = Some(content(
+            get("content"),
+            get("content_base64"),
+            decoded.content,
+        )?);
     }
     if tool.twin.operand == Operand::Name {
         checked.name = Some(match get("name") {
@@ -358,13 +362,18 @@ fn words(value: Option<Value<'_>>, buffer: &mut [u8]) -> Result<Words, ArgumentP
         if words.count == MAX_WORDS {
             return Err(ArgumentProblem::BadWords);
         }
-        let place = buffer.get_mut(used..room).ok_or(ArgumentProblem::BadWords)?;
+        let place = buffer
+            .get_mut(used..room)
+            .ok_or(ArgumentProblem::BadWords)?;
         let word = text.decode_into(place).ok_or(ArgumentProblem::BadWords)?;
         if word.contains('\0') {
             return Err(ArgumentProblem::BadWords);
         }
         used += word.len();
-        *words.ends.get_mut(words.count).ok_or(ArgumentProblem::BadWords)? = used;
+        *words
+            .ends
+            .get_mut(words.count)
+            .ok_or(ArgumentProblem::BadWords)? = used;
         words.count += 1;
     }
     Ok(words)
@@ -411,7 +420,7 @@ fn names_of(object: Object<'_>, out: &mut crate::json::JsonWriter<'_>, shown: us
 }
 
 /// The path or program in `buffer` that [`Checked::path`] measures.
-pub fn path_text(checked: &Checked, buffer: &[u8]) -> Option<&str> {
+pub fn path_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
     let length = checked.path?;
     let bytes = buffer.get(..length.min(MAX_PATH_BYTES + 1))?;
     core::str::from_utf8(bytes).ok()
@@ -467,26 +476,54 @@ mod tests {
         assert_eq!(result.content, Some(3));
         assert_eq!(&buffers.content[..3], b"hi\n");
         assert!(result.append && !result.confirm);
-        let (result, buffers) = checked("tee", r#"{"path":"/home/root/b","content_base64":"AP/+"}"#);
+        let (result, buffers) =
+            checked("tee", r#"{"path":"/home/root/b","content_base64":"AP/+"}"#);
         assert_eq!(result.unwrap().content, Some(3));
         assert_eq!(&buffers.content[..3], &[0, 0xff, 0xfe]);
         let (result, _) = checked("tee", r#"{"path":"/home/root/c"}"#);
         assert_eq!(result.unwrap().content, Some(0));
         for (arguments, problem) in [
             (r#"{"content":"x"}"#, ArgumentProblem::Missing("path")),
-            (r#"{"path":"/a","content":"x","content_base64":"eA=="}"#, ArgumentProblem::BothContents),
-            (r#"{"path":"/a","content_base64":"e A=="}"#, ArgumentProblem::BadBase64),
-            (r#"{"path":"/a","content_base64":"eA=x"}"#, ArgumentProblem::BadBase64),
-            (r#"{"path":"/a","content":1}"#, ArgumentProblem::WrongType("content")),
-            (r#"{"path":"/a","append":"yes"}"#, ArgumentProblem::WrongType("append")),
+            (
+                r#"{"path":"/a","content":"x","content_base64":"eA=="}"#,
+                ArgumentProblem::BothContents,
+            ),
+            (
+                r#"{"path":"/a","content_base64":"e A=="}"#,
+                ArgumentProblem::BadBase64,
+            ),
+            (
+                r#"{"path":"/a","content_base64":"eA=x"}"#,
+                ArgumentProblem::BadBase64,
+            ),
+            (
+                r#"{"path":"/a","content":1}"#,
+                ArgumentProblem::WrongType("content"),
+            ),
+            (
+                r#"{"path":"/a","append":"yes"}"#,
+                ArgumentProblem::WrongType("append"),
+            ),
             (r#"{"path":"/a","mode":"0777"}"#, ArgumentProblem::Unknown),
         ] {
             assert_eq!(checked("tee", arguments).0, Err(problem), "{arguments}");
         }
-        let long = format!(r#"{{"path":"/a","content":"{}"}}"#, "x".repeat(MAX_CONTENT_BYTES + 1));
-        assert_eq!(checked("tee", &long).0, Err(ArgumentProblem::ContentTooLong));
-        let exact = format!(r#"{{"path":"/a","content":"{}"}}"#, "x".repeat(MAX_CONTENT_BYTES));
-        assert_eq!(checked("tee", &exact).0.unwrap().content, Some(MAX_CONTENT_BYTES));
+        let long = format!(
+            r#"{{"path":"/a","content":"{}"}}"#,
+            "x".repeat(MAX_CONTENT_BYTES + 1)
+        );
+        assert_eq!(
+            checked("tee", &long).0,
+            Err(ArgumentProblem::ContentTooLong)
+        );
+        let exact = format!(
+            r#"{{"path":"/a","content":"{}"}}"#,
+            "x".repeat(MAX_CONTENT_BYTES)
+        );
+        assert_eq!(
+            checked("tee", &exact).0.unwrap().content,
+            Some(MAX_CONTENT_BYTES)
+        );
     }
 
     #[test]
@@ -505,7 +542,10 @@ mod tests {
         assert_eq!(decode("aGl="), Err(ArgumentProblem::BadBase64));
         assert_eq!(decode("aG=k"), Err(ArgumentProblem::BadBase64));
         assert_eq!(decode("aGk*"), Err(ArgumentProblem::BadBase64));
-        assert_eq!(decode(&"QUFB".repeat(8)), Err(ArgumentProblem::ContentTooLong));
+        assert_eq!(
+            decode(&"QUFB".repeat(8)),
+            Err(ArgumentProblem::ContentTooLong)
+        );
     }
 
     #[test]
@@ -523,22 +563,49 @@ mod tests {
         let result = result.unwrap();
         assert!(result.words.is_empty());
         assert_eq!(result.time_limit_ms, DEFAULT_TIME_LIMIT_MS);
-        let many = format!(r#"{{"program":"/bin/echo","arguments":[{}]}}"#, vec!["\"a\""; 33].join(","));
-        let big = format!(r#"{{"program":"/bin/echo","arguments":["{}"]}}"#, "a".repeat(WORDS_BYTES + 1));
+        let many = format!(
+            r#"{{"program":"/bin/echo","arguments":[{}]}}"#,
+            vec!["\"a\""; 33].join(",")
+        );
+        let big = format!(
+            r#"{{"program":"/bin/echo","arguments":["{}"]}}"#,
+            "a".repeat(WORDS_BYTES + 1)
+        );
         for (arguments, problem) in [
             (r#"{"arguments":[]}"#, ArgumentProblem::Missing("program")),
-            (r#"{"program":"/bin/x","arguments":"-a"}"#, ArgumentProblem::WrongType("arguments")),
-            (r#"{"program":"/bin/x","arguments":[1]}"#, ArgumentProblem::WrongType("arguments")),
-            (r#"{"program":"/bin/x","arguments":["a\u0000"]}"#, ArgumentProblem::BadWords),
-            (r#"{"program":"/bin/x","timeout_seconds":0}"#, ArgumentProblem::BadTimeout),
-            (r#"{"program":"/bin/x","timeout_seconds":61}"#, ArgumentProblem::BadTimeout),
-            (r#"{"program":"/bin/x","timeout_seconds":1.5}"#, ArgumentProblem::BadTimeout),
+            (
+                r#"{"program":"/bin/x","arguments":"-a"}"#,
+                ArgumentProblem::WrongType("arguments"),
+            ),
+            (
+                r#"{"program":"/bin/x","arguments":[1]}"#,
+                ArgumentProblem::WrongType("arguments"),
+            ),
+            (
+                r#"{"program":"/bin/x","arguments":["a\u0000"]}"#,
+                ArgumentProblem::BadWords,
+            ),
+            (
+                r#"{"program":"/bin/x","timeout_seconds":0}"#,
+                ArgumentProblem::BadTimeout,
+            ),
+            (
+                r#"{"program":"/bin/x","timeout_seconds":61}"#,
+                ArgumentProblem::BadTimeout,
+            ),
+            (
+                r#"{"program":"/bin/x","timeout_seconds":1.5}"#,
+                ArgumentProblem::BadTimeout,
+            ),
             (many.as_str(), ArgumentProblem::BadWords),
             (big.as_str(), ArgumentProblem::BadWords),
         ] {
             assert_eq!(checked("run", arguments).0, Err(problem), "{arguments}");
         }
-        let fill = format!(r#"{{"program":"/bin/echo","arguments":[{}]}}"#, vec!["\"aa\""; 32].join(","));
+        let fill = format!(
+            r#"{{"program":"/bin/echo","arguments":[{}]}}"#,
+            vec!["\"aa\""; 32].join(",")
+        );
         assert_eq!(checked("run", &fill).0.unwrap().words.len(), 32);
     }
 
@@ -550,12 +617,25 @@ mod tests {
         assert!(result.confirm);
         for name in [r#""""#, r#"".""#, r#""..""#, r#""a/b""#, r#""a\u0000""#] {
             let arguments = format!(r#"{{"name":{name}}}"#);
-            assert_eq!(checked("app_open", &arguments).0, Err(ArgumentProblem::BadName), "{name}");
+            assert_eq!(
+                checked("app_open", &arguments).0,
+                Err(ArgumentProblem::BadName),
+                "{name}"
+            );
         }
         let long = format!(r#"{{"name":"{}"}}"#, "n".repeat(MAX_NAME_BYTES + 1));
         assert_eq!(checked("app_open", &long).0, Err(ArgumentProblem::BadName));
-        assert_eq!(checked("app_open", "{}").0, Err(ArgumentProblem::Missing("name")));
-        assert_eq!(checked("app_install", r#"{"path":"/media/host/x.exe"}"#).0.unwrap().path, Some(18));
+        assert_eq!(
+            checked("app_open", "{}").0,
+            Err(ArgumentProblem::Missing("name"))
+        );
+        assert_eq!(
+            checked("app_install", r#"{"path":"/media/host/x.exe"}"#)
+                .0
+                .unwrap()
+                .path,
+            Some(17)
+        );
     }
 
     #[test]

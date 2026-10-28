@@ -73,7 +73,9 @@ impl Grants {
     /// These grants and `grant`, with what it implies: `run` brings `write` and `install`.
     pub fn with(self, grant: Grant) -> Self {
         match grant {
-            Grant::Run => Grants(self.0 | Grant::Run.bit() | Grant::Write.bit() | Grant::Install.bit()),
+            Grant::Run => {
+                Grants(self.0 | Grant::Run.bit() | Grant::Write.bit() | Grant::Install.bit())
+            }
             grant => Grants(self.0 | grant.bit()),
         }
     }
@@ -149,7 +151,10 @@ pub fn from_command_line(line: &[u8]) -> (Grants, Unknown) {
     else {
         return (grants, unknown);
     };
-    for name in value.split(|&byte| byte == b',').filter(|name| !name.is_empty()) {
+    for name in value
+        .split(|&byte| byte == b',')
+        .filter(|name| !name.is_empty())
+    {
         match Grant::named(name) {
             Some(grant) => grants = grants.with(grant),
             None => unknown.push(name),
@@ -172,7 +177,12 @@ mod tests {
 
     #[test]
     fn no_parameter_means_reading_only() {
-        for line in [&b""[..], b"console=ttyS0", b"eggos.mcp_allowx=run", b"xeggos.mcp_allow=run"] {
+        for line in [
+            &b""[..],
+            b"console=ttyS0",
+            b"eggos.mcp_allowx=run",
+            b"xeggos.mcp_allow=run",
+        ] {
             let (grants, unknown) = from_command_line(line);
             assert_eq!(grants, Grants::NONE, "{line:?}");
             assert_eq!(unknown.as_bytes(), b"");

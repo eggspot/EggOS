@@ -114,9 +114,12 @@ mod tests {
     }
 
     fn home() -> Fake {
-        Fake::default()
-            .with_directory("/home", 0)
-            .with_file("/home/note.txt", 0o644, b"old text\n", 0)
+        Fake::default().with_directory("/home", 0).with_file(
+            "/home/note.txt",
+            0o644,
+            b"old text\n",
+            0,
+        )
     }
 
     #[test]
@@ -141,7 +144,11 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_written_is_reported_and_the_rest_written() {
-        let (status, fake) = run(home(), b"text", &[c"/nowhere/x", c"/home", c"/home/note.txt"]);
+        let (status, fake) = run(
+            home(),
+            b"text",
+            &[c"/nowhere/x", c"/home", c"/home/note.txt"],
+        );
         assert_eq!(status, 1);
         assert_eq!(fake.contents("/home/note.txt"), b"text");
         assert_eq!(fake.standard_output, b"text");
@@ -152,7 +159,10 @@ mod tests {
     #[test]
     fn no_file_copies_standard_input_and_bad_options_are_refused() {
         let (status, fake) = run(home(), b"only out", &[]);
-        assert_eq!((status, fake.standard_output.as_slice()), (0, &b"only out"[..]));
+        assert_eq!(
+            (status, fake.standard_output.as_slice()),
+            (0, &b"only out"[..])
+        );
         let (status, fake) = run(home(), b"x", &[c"-i", c"/home/note.txt"]);
         assert_eq!(status, 1);
         assert_eq!(fake.contents("/home/note.txt"), b"old text\n");

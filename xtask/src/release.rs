@@ -805,7 +805,9 @@ mod tests {
         }
         assert!(shell.contains("printf '%s\\n' \"$*\" >&2"));
         assert!(shell.contains("--mcp) mcp=yes ;;"));
-        assert!(shell.contains("if [ -n \"$no_window\" ] && [ -z \"$mcp\" ]; then"));
+        assert!(
+            shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then")
+        );
         assert!(shell.contains("qemu-io -f raw -c quit \"$disk\""));
         assert!(shell.contains("another EggOS is using the disk image $disk"));
         let powershell = powershell_script(&arches);
@@ -847,7 +849,9 @@ mod tests {
         let shell = shell_script(&arches);
         let powershell = powershell_script(&arches);
         assert!(shell.contains("    --mcp-allow)\n"));
-        assert!(shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then"));
+        assert!(
+            shell.contains("if [ -n \"$no_window$mcp_allow_given\" ] && [ -z \"$mcp\" ]; then")
+        );
         assert!(shell.contains("    *,,*)\n"));
         assert!(shell.contains("      write | run | install) ;;\n"));
         assert!(shell.contains("set -f\n"));
@@ -861,13 +865,27 @@ mod tests {
         assert!(powershell.contains(
             "if ($McpAllowList) {\n    $QemuArgs += @(\"-append\", \"eggos.mcp_allow=$McpAllowList\")\n"
         ));
-        assert!(powershell.contains("    }} elseif ($argument -eq '--mcp-allow'".replace("}}", "}").as_str()));
+        assert!(
+            powershell.contains(
+                "    }} elseif ($argument -eq '--mcp-allow'"
+                    .replace("}}", "}")
+                    .as_str()
+            )
+        );
         assert_eq!(
             qemu::grant_args("write,run"),
             ["-append", "eggos.mcp_allow=write,run"]
         );
         assert_eq!(qemu::check_grants("write,run,install"), Ok(()));
-        for wrong in ["", "write,", ",run", "Write", "exec", "write,,run", "write run"] {
+        for wrong in [
+            "",
+            "write,",
+            ",run",
+            "Write",
+            "exec",
+            "write,,run",
+            "write run",
+        ] {
             assert!(qemu::check_grants(wrong).is_err(), "{wrong}");
         }
     }

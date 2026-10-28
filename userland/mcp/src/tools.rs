@@ -509,7 +509,10 @@ mod tests {
         for tool in &TOOLS {
             assert_eq!(tool.grant.is_none(), tool.hints.read_only, "{}", tool.name);
             if let Some(grant) = tool.grant {
-                assert!(tool.description.contains(&format!("{} grant", grant.name())));
+                assert!(
+                    tool.description
+                        .contains(&format!("{} grant", grant.name()))
+                );
             }
             if tool.confirmation != Confirmation::Never {
                 assert!(tool.hints.destructive, "{}", tool.name);

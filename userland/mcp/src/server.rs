@@ -39,7 +39,8 @@ pub const ERROR_OUTPUT_LIMIT: usize = 32 * 1024;
 pub const ERROR_RESERVE: usize = 1024 + rpc::MAX_ID_BYTES;
 /// The answer buffer's size: every byte of the output and errors escaped as `\u00XX`, and the
 /// rest.
-pub const RESPONSE_BYTES: usize = 6 * (OUTPUT_LIMIT + ERROR_OUTPUT_LIMIT) + 64 * 1024 + ERROR_RESERVE;
+pub const RESPONSE_BYTES: usize =
+    6 * (OUTPUT_LIMIT + ERROR_OUTPUT_LIMIT) + 64 * 1024 + ERROR_RESERVE;
 /// The buffer the arguments are written into for the audit log.
 pub const ARGUMENTS_BYTES: usize = 1024;
 /// How long a CLI twin may run before it is stopped (`run` sets its own).
@@ -111,7 +112,6 @@ impl IdCopy {
     }
 }
 
-/// A destructive call waiting for the user's answer to `elicitation/create`.
 #[derive(Debug, Clone, Copy)]
 struct Pending {
     call: u64,
@@ -163,7 +163,6 @@ struct Reply {
     main_start: usize,
 }
 
-/// What a call is about to run, once checked.
 struct Prepared<'p> {
     number: u64,
     tool: &'static Tool,
@@ -260,7 +259,12 @@ impl Server {
     /// next client starts with `initialize`.
     pub fn disconnected(&mut self, system: &mut impl System, scratch: &mut Scratch<'_>) {
         if let Some(pending) = self.pending.take() {
-            self.record_pending(system, scratch, &pending, b"the client left before the user answered");
+            self.record_pending(
+                system,
+                scratch,
+                &pending,
+                b"the client left before the user answered",
+            );
         }
         let client = self.session.client();
         let client = client.as_str().as_bytes();
@@ -338,7 +342,12 @@ impl Server {
             return 0;
         };
         self.pending = None;
-        self.record_pending(system, scratch, &pending, b"no answer from the user in 120 s");
+        self.record_pending(
+            system,
+            scratch,
+            &pending,
+            b"no answer from the user in 120 s",
+        );
         let mut writer = JsonWriter::new(out);
         self.cancel_question(&pending, "no answer in 120 s", &mut writer);
         refused(
@@ -402,7 +411,12 @@ impl Server {
         }
         if name == "initialize" {
             if let Some(pending) = self.pending.take() {
-                self.record_pending(system, scratch, &pending, b"the client started a new session");
+                self.record_pending(
+                    system,
+                    scratch,
+                    &pending,
+                    b"the client started a new session",
+                );
                 self.cancel_question(&pending, "a new session started", out);
                 refused(
                     out,
@@ -616,9 +630,6 @@ impl Server {
         );
     }
 
-    /// Records a call stopped before it runs (one record, only argument names when
-    /// `arguments` is unchecked) and answers it: `refusal` as an `isError` result, or an
-    /// error with `code`.
     #[allow(clippy::too_many_arguments)]
     fn stop(
         &mut self,
@@ -859,8 +870,6 @@ impl Server {
         self.execute(id, &prepared, system, &mut buffers, out);
     }
 
-    /// Resolves and checks what `tool` acts on: the path (into `scratch.resolved`) or the app,
-    /// and what is there.
     fn target(
         &mut self,
         tool: &Tool,
@@ -878,8 +887,13 @@ impl Server {
             let mut is_link = |prefix: &str| system.is_link(prefix);
             let resolved = paths::resolve(path, scratch.resolved, argument.roots, &mut is_link)
                 .and_then(|resolved| {
-                    paths::check_place(resolved, argument.roots, argument.strictly, argument.excluded)
-                        .map(|()| resolved)
+                    paths::check_place(
+                        resolved,
+                        argument.roots,
+                        argument.strictly,
+                        argument.excluded,
+                    )
+                    .map(|()| resolved)
                 });
             let resolved = match resolved {
                 Ok(resolved) => resolved,
@@ -938,7 +952,11 @@ impl Server {
         out: &mut JsonWriter<'_>,
     ) {
         let Some(id_copy) = IdCopy::of(id) else {
-            refused(out, id, "Refused: the request id is too long to wait for the user.");
+            refused(
+                out,
+                id,
+                "Refused: the request id is too long to wait for the user.",
+            );
             return;
         };
         self.questions += 1;
@@ -1122,7 +1140,12 @@ impl Server {
             return Some(pending.id);
         }
         if !self.unchanged(&pending, system, scratch) {
-            self.record_pending(system, scratch, &pending, b"the target changed while waiting");
+            self.record_pending(
+                system,
+                scratch,
+                &pending,
+                b"the target changed while waiting",
+            );
             refused(
                 out,
                 pending.id.as_bytes(),
@@ -1153,7 +1176,12 @@ impl Server {
         Some(pending.id)
     }
 
-    fn unchanged(&self, pending: &Pending, system: &mut impl System, scratch: &mut Scratch<'_>) -> bool {
+    fn unchanged(
+        &self,
+        pending: &Pending,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+    ) -> bool {
         match pending.tool.twin.operand {
             Operand::Path(argument) => {
                 let held = scratch
@@ -1208,26 +1236,24 @@ impl Server {
             prepared.arguments,
             detail.get(..detail_length).unwrap_or_default(),
         ) {
-            refused(out, id, "The call was not run: the audit log could not be written.");
+            refused(
+                out,
+                id,
+                "The call was not run: the audit log could not be written.",
+            );
             return;
         }
         let mut words: [&str; MAX_COMMAND_WORDS] = [""; MAX_COMMAND_WORDS];
         let mut count = 0;
-        let mut push = |word: &str, count: &mut usize| {
-            if let Some(slot) = words.get_mut(*count) {
-                *slot = word;
-                *count += 1;
-            }
-        };
         for word in tool.twin.words {
-            push(word, &mut count);
+            push_word(&mut words, &mut count, word);
         }
         if tool.kind == Kind::Tee && prepared.checked.append {
-            push("-a", &mut count);
+            push_word(&mut words, &mut count, "-a");
         }
         if tool.kind == Kind::Run {
             for word in prepared.checked.words.each(buffers.words) {
-                push(word, &mut count);
+                push_word(&mut words, &mut count, word);
             }
         }
         let name = prepared.checked.name;
@@ -1270,7 +1296,11 @@ impl Server {
             buffers.record,
             prepared.number,
             tool.name.as_bytes(),
-            if succeeded { Outcome::Ok } else { Outcome::Error },
+            if succeeded {
+                Outcome::Ok
+            } else {
+                Outcome::Error
+            },
             prepared.arguments,
             detail.get(..detail_length).unwrap_or_default(),
         ) {
@@ -1322,6 +1352,13 @@ impl Problem {
     }
 }
 
+fn push_word<'w>(words: &mut [&'w str], count: &mut usize, word: &'w str) {
+    if let Some(slot) = words.get_mut(*count) {
+        *slot = word;
+        *count += 1;
+    }
+}
+
 fn text_prefix(bytes: &[u8], length: usize) -> &str {
     bytes
         .get(..length)
@@ -1329,7 +1366,7 @@ fn text_prefix(bytes: &[u8], length: usize) -> &str {
         .unwrap_or("")
 }
 
-fn target_text(tool: &Tool, buffer: &[u8], length: usize) -> Option<&str> {
+fn target_text<'b>(tool: &Tool, buffer: &'b [u8], length: usize) -> Option<&'b str> {
     match (tool.kind, tool.twin.operand) {
         (Kind::Run, _) | (_, Operand::Path(_)) => buffer
             .get(..length)
@@ -1364,8 +1401,10 @@ fn missing_grant(tool: &Tool, grant: Grant, out: &mut [u8]) -> usize {
     text.put(tool.name);
     text.put(" needs the ");
     text.put(grant.name());
-    text.put(" grant, which this machine was not started with. The user can start EggOS \
-               with run-eggos.sh --mcp --mcp-allow ");
+    text.put(
+        " grant, which this machine was not started with. The user can start EggOS \
+               with run-eggos.sh --mcp --mcp-allow ",
+    );
     text.put(grant.name());
     text.put(" (run-eggos.ps1 -Mcp -McpAllow ");
     text.put(grant.name());
@@ -1381,12 +1420,20 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::Trash => "trash moves the file to the Trash",
         _ => "app_uninstall removes the app",
     });
-    text.put(", and this client cannot ask the user. Call again with confirm: true once the \
-               user agreed; it is a guard against accidents, not the user's approval.");
+    text.put(
+        ", and this client cannot ask the user. Call again with confirm: true once the \
+               user agreed; it is a guard against accidents, not the user's approval.",
+    );
     text.length
 }
 
-fn question_text(tool: &Tool, checked: &Checked, state: FileState, target: &str, out: &mut [u8]) -> usize {
+fn question_text(
+    tool: &Tool,
+    checked: &Checked,
+    state: FileState,
+    target: &str,
+    out: &mut [u8],
+) -> usize {
     let mut shown = [0u8; MAX_PATH_BYTES * 2];
     let shown_length = audit::display_into(target.as_bytes(), &mut shown);
     let shown = text_prefix(&shown, shown_length);
@@ -1429,13 +1476,15 @@ fn question_text(tool: &Tool, checked: &Checked, state: FileState, target: &str,
     text.length
 }
 
-/// Writes the arguments of a checked call as the audit log keeps them: every argument the tool
-/// takes, but `tee`'s content as its size only.
 fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &mut [u8]) -> usize {
     let mut writer = JsonWriter::new(out);
     writer.begin_object();
     if let Some(path) = arguments::path_text(checked, scratch.decoded) {
-        writer.key(if tool.kind == Kind::Run { "program" } else { "path" });
+        writer.key(if tool.kind == Kind::Run {
+            "program"
+        } else {
+            "path"
+        });
         writer.string(path);
     }
     if let Some(name) = checked.name {
@@ -1711,7 +1760,9 @@ fn answer_with_output(out: &mut JsonWriter<'_>, answer: &Answered<'_>) {
                     out.end_object();
                 }
             }
-        } else if !answer.stdout.is_empty() || (!failed && !matches!(tool.kind, Kind::Tee | Kind::Trash)) {
+        } else if !answer.stdout.is_empty()
+            || (!failed && !matches!(tool.kind, Kind::Tee | Kind::Trash))
+        {
             out.begin_object();
             out.key("type");
             out.string("text");

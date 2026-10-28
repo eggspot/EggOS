@@ -24,10 +24,14 @@ pub fn region(
         return None;
     }
     let inside = |range: &PhysicalRange| range.start <= address && address < range.end;
-    let holder = match inside(&low) {
-        true => low,
-        false => ram.find(inside)?,
-    };
+    let mut holder = inside(&low).then_some(low);
+    for range in ram {
+        if holder.is_some() {
+            break;
+        }
+        holder = inside(&range).then_some(range);
+    }
+    let holder = holder?;
     let end = holder
         .end
         .min(map_end)
@@ -132,7 +136,10 @@ mod tests {
     fn the_line_may_be_in_low_memory_or_in_ram_and_is_clipped_to_its_holder() {
         assert_eq!(region_of(0), None);
         let in_rom = region_of(0xc_2000).unwrap();
-        assert_eq!((in_rom.start, in_rom.end), (0xc_2000, 0xc_2000 + MAX_BYTES as u64));
+        assert_eq!(
+            (in_rom.start, in_rom.end),
+            (0xc_2000, 0xc_2000 + MAX_BYTES as u64)
+        );
         let at_edge = region_of(0xf_ff00).unwrap();
         assert_eq!(at_edge.end, 0x10_0000);
         let in_ram = region_of(0x20_0000).unwrap();
@@ -146,7 +153,10 @@ mod tests {
 
     #[test]
     fn the_line_ends_at_its_nul_or_at_the_last_whole_word() {
-        assert_eq!(prefix(b"eggos.mcp_allow=write\0junk"), b"eggos.mcp_allow=write");
+        assert_eq!(
+            prefix(b"eggos.mcp_allow=write\0junk"),
+            b"eggos.mcp_allow=write"
+        );
         assert_eq!(prefix(b"\0eggos.mcp_allow=run"), b"");
         assert_eq!(prefix(b"a=1 eggos.mcp_allow=wr"), b"a=1");
         assert_eq!(prefix(b"eggos.mcp_allow=write"), b"");

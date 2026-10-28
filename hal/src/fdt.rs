@@ -559,7 +559,10 @@ pub fn boot_arguments(blob: &[u8]) -> Option<&[u8]> {
     })
     .ok()?;
     let value = found?;
-    let end = value.iter().position(|&byte| byte == 0).unwrap_or(value.len());
+    let end = value
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(value.len());
     value.get(..end)
 }
 
@@ -1175,7 +1178,11 @@ pub(crate) mod tests {
             Some(&b"eggos.mcp_allow=write"[..])
         );
         let mut b = Builder::default();
-        b.begin("").begin("chosen").prop("stdout-path", b"x\0").end().end();
+        b.begin("")
+            .begin("chosen")
+            .prop("stdout-path", b"x\0")
+            .end()
+            .end();
         assert_eq!(boot_arguments(&b.build()), None);
         let mut b = Builder::default();
         b.begin("").begin("chosen").prop("bootargs", b"cut");
