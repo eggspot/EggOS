@@ -2106,6 +2106,10 @@ impl FilesWindow {
                 "Cannot restore {}: the Trash has no record of where it was.",
                 Shown(name.as_bytes())
             )),
+            Err(RestoreError::OutsideHome) => self.show_notice(format_args!(
+                "Cannot restore {}: its record points outside the home folder.",
+                Shown(name.as_bytes())
+            )),
             Err(RestoreError::Failed(error)) => self.show_notice(format_args!(
                 "Could not move {} ({}).",
                 Shown(name.as_bytes()),

@@ -35,10 +35,13 @@ the app appears there and on the desktop.
 `app` is the command; the installer's window is the same capability with dialogs (D22, D134).
 
 ```
-app install [--name <name>] [--window] <path>
-app uninstall [--window] <name>        (app remove is the same)
+app install [--name <name>] [--window] [--] <path>
+app uninstall [--window] [--] <name>   (app remove is the same)
+app open [--] <name>
 app list
 ```
+
+`--` ends the options: the word after it is the path or name even if it starts with `-`.
 
 - **`app install <path>`** installs a Windows program (a PE32+ `.exe`, x86_64 or ARM64), a
   macOS program (a 64-bit Mach-O or fat file, or an `.app` folder whose `Contents/MacOS` holds
@@ -66,6 +69,10 @@ app list
 - **`app uninstall <name>`** removes the app: its manifest, so it leaves the launcher and the
   desktop at once, then its folder; nothing of it is left (D18). The layer it ran through
   stays. `app: could not uninstall <name>: it is not installed` otherwise.
+- **`app open <name>`** opens an installed app as a double-click on its icon does
+  (`OPEN_APP`, D137): through its layer, a console app in a terminal. It prints `Opened
+  <name>.`; `app: <name> is not installed`, or `app: could not open <name>: <error>` without a
+  desktop. It is the MCP tool `app_open`'s twin.
 - **`app list`** prints one line per installed app, in `/Applications`' order: its name,
   source, architecture and program path, separated by tabs.
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`

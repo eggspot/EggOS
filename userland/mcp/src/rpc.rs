@@ -36,10 +36,55 @@ pub enum Message<'a> {
         params: Option<Object<'a>>,
         nested_duplicate: bool,
     },
-    /// A notification (its method): no answer.
-    Notification { method: Str<'a> },
-    /// An answer to a request of ours.
-    Response,
+    /// A notification (its method and parameters): no answer.
+    Notification {
+        method: Str<'a>,
+        params: Option<Object<'a>>,
+    },
+    /// An answer to a request of ours (`elicitation/create`, D137): its id as written, and
+    /// what it said.
+    Response { id: &'a [u8], answer: Answer },
+}
+
+/// What a client answered to `elicitation/create`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// The user accepted; whether the form's `confirm` was `true`.
+    Accept { confirm: bool },
+    /// The user declined.
+    Decline,
+    /// The user dismissed the question.
+    Cancel,
+    /// The client answered with an error (its code).
+    Error(i64),
+    /// The answer is neither.
+    Malformed,
+}
+
+fn answer_of(object: Object<'_>) -> Answer {
+    if let Some(error) = object.get("error") {
+        let code = error
+            .get("code")
+            .and_then(|code| core::str::from_utf8(code.raw()).ok())
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        return Answer::Error(code);
+    }
+    let Some(result) = object.get("result") else {
+        return Answer::Malformed;
+    };
+    let action = result.get("action").and_then(Value::as_str);
+    match action {
+        Some(action) if action.equals("accept") => Answer::Accept {
+            confirm: result
+                .get("content")
+                .and_then(|content| content.get("confirm"))
+                == Some(Value::Bool(true)),
+        },
+        Some(action) if action.equals("decline") => Answer::Decline,
+        Some(action) if action.equals("cancel") => Answer::Cancel,
+        _ => Answer::Malformed,
+    }
 }
 
 /// Why a message is refused, and the id to answer with if it had a usable one.
@@ -112,10 +157,14 @@ pub fn classify(line: &[u8]) -> Result<Message<'_>, Refusal<'_>> {
     let method = match object.get("method") {
         Some(Value::Str(method)) => method,
         Some(_) => return Err(refuse(id, INVALID_REQUEST, "a method is a string")),
-        None if id.is_some()
-            && (object.get("result").is_some() || object.get("error").is_some()) =>
-        {
-            return Ok(Message::Response);
+        None if object.get("result").is_some() || object.get("error").is_some() => {
+            return match id {
+                Some(id) => Ok(Message::Response {
+                    id,
+                    answer: answer_of(object),
+                }),
+                None => Err(refuse(None, INVALID_REQUEST, "the message has no method")),
+            };
         }
         None => return Err(refuse(id, INVALID_REQUEST, "the message has no method")),
     };
@@ -131,7 +180,7 @@ pub fn classify(line: &[u8]) -> Result<Message<'_>, Refusal<'_>> {
             params,
             nested_duplicate: parsed.nested_duplicate,
         }),
-        None => Ok(Message::Notification { method }),
+        None => Ok(Message::Notification { method, params }),
     }
 }
 
@@ -199,7 +248,10 @@ mod tests {
         ));
         assert_eq!(
             classify(br#"{"jsonrpc":"2.0","id":3,"result":{}}"#),
-            Ok(Message::Response)
+            Ok(Message::Response {
+                id: b"3",
+                answer: Answer::Malformed
+            })
         );
         let Ok(Message::Request { nested_duplicate, .. }) = classify(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"p":1,"p":2}}}"#,
@@ -207,6 +259,56 @@ mod tests {
             panic!("a request");
         };
         assert!(nested_duplicate);
+    }
+
+    #[test]
+    fn answers_to_our_questions_are_read() {
+        let answer = |line: &str| match classify(line.as_bytes()) {
+            Ok(Message::Response { answer, .. }) => answer,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            answer(
+                r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":true}}}"#
+            ),
+            Answer::Accept { confirm: true }
+        );
+        assert_eq!(
+            answer(
+                r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept","content":{"confirm":"true"}}}"#
+            ),
+            Answer::Accept { confirm: false }
+        );
+        assert_eq!(
+            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"accept"}}"#),
+            Answer::Accept { confirm: false }
+        );
+        assert_eq!(
+            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"decline"}}"#),
+            Answer::Decline
+        );
+        assert_eq!(
+            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"cancel"}}"#),
+            Answer::Cancel
+        );
+        assert_eq!(
+            answer(r#"{"jsonrpc":"2.0","id":"q","error":{"code":-32602,"message":"no"}}"#),
+            Answer::Error(-32602)
+        );
+        assert_eq!(
+            answer(r#"{"jsonrpc":"2.0","id":"q","result":{"action":"maybe"}}"#),
+            Answer::Malformed
+        );
+        let Ok(Message::Notification { params, .. }) = classify(
+            br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}"#,
+        ) else {
+            panic!("a notification");
+        };
+        assert!(params.unwrap().get("requestId").is_some());
+        assert_eq!(
+            error_of(r#"{"jsonrpc":"2.0","result":{}}"#),
+            (None, INVALID_REQUEST)
+        );
     }
 
     #[test]

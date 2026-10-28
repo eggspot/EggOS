@@ -47,6 +47,7 @@ pub mod number {
     pub const GETDENTS64: usize = 217;
     pub const STATX: usize = 332;
     pub const DUP3: usize = 292;
+    pub const FCNTL: usize = 72;
     pub const PIPE2: usize = 293;
     pub const MKDIRAT: usize = 258;
     pub const UNLINKAT: usize = 263;
@@ -102,6 +103,7 @@ pub mod number {
     pub const GETDENTS64: usize = 61;
     pub const STATX: usize = 291;
     pub const DUP3: usize = 24;
+    pub const FCNTL: usize = 25;
     pub const PIPE2: usize = 59;
     pub const MKDIRAT: usize = 34;
     pub const UNLINKAT: usize = 35;

@@ -9,6 +9,7 @@
 
 pub mod acpi;
 pub mod arch;
+pub mod command_line;
 pub mod cpu;
 mod exception;
 pub mod fdt;
@@ -154,6 +155,15 @@ pub trait Platform: 'static {
     /// The kernel only reads it.
     fn device_tree() -> Option<&'static [u8]> {
         None
+    }
+
+    /// Hands `line` the kernel command line the machine was started with (QEMU's `-append`):
+    /// `/chosen/bootargs` of the device tree by default, on x86_64 the PVH loader's, copied at
+    /// boot. Nothing when there is none. Only the host sets it; nothing in the machine can.
+    fn command_line(line: &mut dyn FnMut(&[u8])) {
+        if let Some(arguments) = Self::device_tree().and_then(fdt::boot_arguments) {
+            line(arguments);
+        }
     }
 
     /// The ACPI table with `signature` the firmware's root table lists (x86_64), its length and

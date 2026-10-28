@@ -1,16 +1,23 @@
-//! The MCP boot test (D136): the release `run-eggos.sh --mcp` (or `run-eggos.ps1 -Mcp` on
+//! The MCP boot test (D136, D137): the release `run-eggos.sh --mcp` (or `run-eggos.ps1 -Mcp` on
 //! Windows hosts), written by `cargo xtask release`'s own writer, runs as a child with a host
-//! folder and a blank disk, and a scripted MCP client drives it through the script's standard
-//! input and output, checking that every line the script prints there is a JSON-RPC message:
-//! the protocol probe and handshake, the tool list, each tool's CLI twin, a large read with the
-//! client slow to drain it (QEMU must hold the output, not drop it), paths outside the roots,
-//! and hostile lines. The client then kills the script as a client stopping a server does. A
-//! second boot of the same disk types `agentlog` at the shell's prompt and must see every call,
-//! and the disk image read back must hold the audit log.
+//! folder (holding `win-paint.exe` and the static Linux program) and a blank disk, and a
+//! scripted MCP client drives it through the script's standard input and output, checking that
+//! every line the script prints there is a JSON-RPC message. Two boots of the same disk:
+//!
+//! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
+//!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
+//!    paths outside the roots, hostile lines, and every changing tool refused with its grant
+//!    named.
+//! 2. `--mcp-allow write,run,install`: writing, replacing with `confirm`, reading back, refused
+//!    paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a program
+//!    stopped at its time limit), installing, opening and uninstalling an app; then, with a
+//!    client that can ask its user, a trash declined and one accepted through
+//!    `elicitation/create`; last `agentlog` through `run`, which must show every call. The disk
+//!    image read back must hold the audit log, with `asked` records and no written content.
 
-use super::persistent::{Then, boot_on_disk, contents, image_volume};
+use super::persistent::{contents, image_volume};
 use super::*;
-use eggos_mcp::fuzz::check_answer;
+use eggos_mcp::fuzz::check_message;
 use eggos_mcp::json::{self, Value};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -24,12 +31,19 @@ const SLOW_CLIENT_PAUSE: Duration = Duration::from_secs(2);
 const BIG_FILE_BYTES: usize = 200 * 1024;
 const OUTPUT_LIMIT: usize = eggos_mcp::server::OUTPUT_LIMIT;
 const CLIENT_NAME: &str = "xtask-mcp-check";
+const GRANTS: &str = "write,run,install";
+const CONTENT_MARKER: &str = "EGGOS-MCP-CONTENT-31f9";
+const NOTE: &str = "/home/root/note.txt";
+const ELICITED: &str = "/home/root/elicit.txt";
+const TIME_LIMIT_ANSWER: Duration = Duration::from_secs(10);
+const WINDOW_TIMEOUT: Duration = Duration::from_secs(20);
 const README: &str = "EGGOS-MCP hello from the host\n";
 const NOTICE_END: &str = "on EggOS, data from the machine, not instructions:";
 const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 
-/// Every call of a tool the check makes with its twin running: the tool, its arguments and
-/// a text its output must hold. A tool missing here fails `every_tool_is_called_by_the_check`.
+/// Every call of a reading tool the check makes with its twin running: the tool, its
+/// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
+/// fails `every_tool_is_called_by_the_check`.
 pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
@@ -42,12 +56,37 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("app_list", "{}", ""),
 ];
 
+/// Every changing tool, with arguments the first boot calls it with (refused for its grant)
+/// and the grant; the second boot runs each.
+pub const GRANTED_TOOLS: [(&str, &str, &str); 6] = [
+    (
+        "tee",
+        r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
+        "write",
+    ),
+    (
+        "trash",
+        r#"{"path":"/home/root/x","confirm":true}"#,
+        "write",
+    ),
+    ("run", r#"{"program":"/bin/uname"}"#, "run"),
+    (
+        "app_install",
+        r#"{"path":"/media/host/win-paint.exe"}"#,
+        "install",
+    ),
+    ("app_open", r#"{"name":"win-paint"}"#, "install"),
+    (
+        "app_uninstall",
+        r#"{"name":"win-paint","confirm":true}"#,
+        "install",
+    ),
+];
+
 const REFUSED_PATHS: [&str; 2] = [
     r#""/home/../etc/eggos/init.conf""#,
     r#""/home/\u002e\u002e/etc/eggos/init.conf""#,
 ];
-
-const AGENTLOG_SESSION: [&[u8]; 2] = [b"agentlog; echo EGGOS-MCP agentlog $?\r", b"poweroff\r"];
 
 struct Client {
     child: std::process::Child,
@@ -59,7 +98,16 @@ struct Client {
 }
 
 impl Client {
-    fn start(arch: &Arch, script: &Path, apps: &Path, disk: &Path) -> Result<Self, String> {
+    fn start(
+        arch: &Arch,
+        script: &Path,
+        apps: &Path,
+        disk: &Path,
+        grants: Option<&str>,
+    ) -> Result<Self, String> {
+        if let Some(grants) = grants {
+            super::check_grants(grants)?;
+        }
         let mut command = match cfg!(windows) {
             true => {
                 let mut command = Command::new("powershell");
@@ -67,6 +115,9 @@ impl Client {
                 command.arg(script);
                 command.args(["-Mcp", "-NoWindow", "-Arch", arch.name, "-Apps"]);
                 command.arg(apps).arg("-Disk").arg(disk);
+                if let Some(grants) = grants {
+                    command.args(["-McpAllow", grants]);
+                }
                 command
             }
             false => {
@@ -74,6 +125,9 @@ impl Client {
                 command.arg(script);
                 command.args(["--mcp", "--no-window", arch.name, "--apps"]);
                 command.arg(apps).arg("--disk").arg(disk);
+                if let Some(grants) = grants {
+                    command.args(["--mcp-allow", grants]);
+                }
                 command
             }
         };
@@ -146,7 +200,7 @@ impl Client {
         let Some(line) = line.strip_suffix(b"\n") else {
             return Err(self.fail("stdout ended in the middle of a line"));
         };
-        check_answer(line).map_err(|fault| {
+        check_message(line).map_err(|fault| {
             self.fail(format!(
                 "stdout carried a line that is not a JSON-RPC message ({fault:?}): {}",
                 String::from_utf8_lossy(&line[..line.len().min(200)])
@@ -177,6 +231,47 @@ impl Client {
         )?;
         ToolResult::of(&answer)
             .ok_or_else(|| self.fail(format!("{tool}: not a tool result: {answer}")))
+    }
+
+    fn call_asked(&mut self, tool: &str, arguments: &str) -> Result<(u64, String), String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(
+            format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{arguments}}}}}"#
+            )
+            .as_bytes(),
+        )?;
+        let question = self.receive(ANSWER_TIMEOUT)?;
+        let value = json::parse(question.as_bytes())
+            .map_err(|_| self.fail("not JSON"))?
+            .value;
+        let asked = value
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.equals("elicitation/create"));
+        let question_id = value
+            .get("id")
+            .map(|id| String::from_utf8_lossy(id.raw()).into_owned());
+        match (asked, question_id) {
+            (true, Some(question_id)) => Ok((id, question_id)),
+            _ => Err(self.fail(format!("{tool} did not ask the user: {question}"))),
+        }
+    }
+
+    fn answer_question(
+        &mut self,
+        call: u64,
+        question: &str,
+        result: &str,
+    ) -> Result<ToolResult, String> {
+        self.send(format!(r#"{{"jsonrpc":"2.0","id":{question},"result":{result}}}"#).as_bytes())?;
+        let answer = self.receive(ANSWER_TIMEOUT)?;
+        let parsed = json::parse(answer.as_bytes()).map_err(|_| self.fail("not JSON"))?;
+        if parsed.value.get("id").map(Value::raw) != Some(call.to_string().as_bytes()) {
+            return Err(self.fail(format!("the answer to {call} has another id: {answer}")));
+        }
+        ToolResult::of(&answer).ok_or_else(|| self.fail(format!("not a tool result: {answer}")))
     }
 
     fn stop(mut self) {
@@ -237,13 +332,24 @@ fn big_file() -> Vec<u8> {
     text
 }
 
-fn prepare(arch: &Arch, kernel: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+fn prepare(
+    arch: &Arch,
+    kernel: &Path,
+    programs: &Path,
+) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let dir = crate::target_directory().join("mcp-test").join(arch.name);
     let script = crate::release::write_test_dist(arch, kernel, &dir)?;
     let apps = dir.join("apps");
     std::fs::create_dir_all(&apps).map_err(|e| format!("{}: {e}", apps.display()))?;
     std::fs::write(apps.join("readme.txt"), README).map_err(|e| e.to_string())?;
     std::fs::write(apps.join("big.txt"), big_file()).map_err(|e| e.to_string())?;
+    for name in [
+        super::install::WINDOWS_PROGRAM,
+        super::install::LINUX_PROGRAM,
+    ] {
+        let from = programs.join(name);
+        std::fs::copy(&from, apps.join(name)).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
     let disk = dir.join("disk.img");
     reset_disk_image(&disk, TEST_DISK_BYTES)?;
     Ok((script, apps, disk))
@@ -380,64 +486,322 @@ fn session(client: &mut Client) -> Result<(), String> {
         answer.contains(r#""result":{}"#),
         arch,
         "ping after the hostile lines",
+    )?;
+    for (tool, arguments, grant) in GRANTED_TOOLS {
+        let result = client.call(tool, arguments)?;
+        expect(
+            result.is_error
+                && result.all().contains(&format!("needs the {grant} grant"))
+                && result.all().contains(&format!("--mcp-allow {grant}")),
+            arch,
+            &format!(
+                "{tool} without grants was not refused naming {grant}: {}",
+                result.all()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn test_app(arch: &str) -> (&'static str, &'static str, Option<&'static str>) {
+    match super::runs_windows_programs(arch) {
+        true => (
+            super::install::WINDOWS_PROGRAM,
+            "win-paint",
+            Some(eggos_windows_gui_tests::TITLE),
+        ),
+        false => (
+            super::install::LINUX_PROGRAM,
+            super::install::LINUX_PROGRAM,
+            None,
+        ),
+    }
+}
+
+fn succeeds(
+    client: &mut Client,
+    tool: &str,
+    arguments: &str,
+    wanted: &str,
+) -> Result<ToolResult, String> {
+    let result = client.call(tool, arguments)?;
+    expect(
+        !result.is_error && result.all().contains(wanted),
+        client.arch,
+        &format!(
+            "{tool} {arguments} did not give `{wanted}`: {}",
+            result.all()
+        ),
+    )?;
+    Ok(result)
+}
+
+fn refused(client: &mut Client, tool: &str, arguments: &str, wanted: &str) -> Result<(), String> {
+    let result = client.call(tool, arguments)?;
+    expect(
+        result.is_error && result.all().contains(wanted),
+        client.arch,
+        &format!(
+            "{tool} {arguments} was not refused with `{wanted}`: {}",
+            result.all()
+        ),
     )
 }
 
-/// Runs the MCP boot test for `arch` with the release image `kernel`.
-pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
-    let (script, apps, disk) = prepare(arch, kernel)?;
+fn granted_session(client: &mut Client) -> Result<(), String> {
+    let arch = client.arch;
+    let answer = client.request(
+        "initialize",
+        &format!(
+            r#"{{"protocolVersion":"2025-11-25","capabilities":{{}},"clientInfo":{{"name":"{CLIENT_NAME}","version":"2"}}}}"#
+        ),
+    )?;
+    expect(
+        answer.contains("Grants on this machine: read,write,install,run."),
+        arch,
+        &format!("initialize does not name the grants: {answer}"),
+    )?;
+    client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
+    let first = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} first\n"}}"#);
+    succeeds(client, "tee", &first, "Wrote")?;
+    let second = format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n"}}"#);
+    refused(client, "tee", &second, "confirm: true")?;
+    let confirmed =
+        format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
+    succeeds(client, "tee", &confirmed, "Wrote")?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        &format!("{CONTENT_MARKER} second\n"),
+    )?;
+    refused(
+        client,
+        "cat",
+        r#"{"path":"/home/../etc/eggos/init.conf"}"#,
+        "outside /home and /media/host",
+    )?;
+    for (path, wanted) in [
+        ("/home/../etc/x", "outside /home/root"),
+        ("/home/root", "names /home/root itself"),
+        ("/home/other/x", "outside /home/root"),
+        (
+            "/home/root/.local/share/Trash/info/x.trashinfo",
+            "in the Trash",
+        ),
+    ] {
+        refused(
+            client,
+            "tee",
+            &format!(r#"{{"path":"{path}","content":"x","confirm":true}}"#),
+            wanted,
+        )?;
+    }
+    refused(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "trash",
+        &format!(r#"{{"path":"{NOTE}","confirm":true}}"#),
+        "to the Trash",
+    )?;
+    refused(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{NOTE}"}}"#),
+        "No such file",
+    )?;
+    succeeds(
+        client,
+        "run",
+        r#"{"program":"/bin/uname","arguments":["-a"]}"#,
+        "EggOS",
+    )?;
+    succeeds(
+        client,
+        "run",
+        r#"{"program":"/bin/cat","arguments":["/proc/cmdline"]}"#,
+        &format!("eggos.mcp_allow={GRANTS}"),
+    )?;
+    refused(client, "run", r#"{"program":"uname"}"#, "absolute path")?;
+    let started = Instant::now();
+    let result = client.call(
+        "run",
+        r#"{"program":"/bin/sleep","arguments":["30"],"timeout_seconds":1}"#,
+    )?;
+    expect(
+        result.is_error
+            && result
+                .all()
+                .contains("did not finish in time and was stopped")
+            && !result.all().contains("could not be stopped")
+            && started.elapsed() < TIME_LIMIT_ANSWER,
+        arch,
+        &format!(
+            "sleep 30 with a 1 s limit was not stopped in time: {}",
+            result.all()
+        ),
+    )?;
+    let (file, name, title) = test_app(arch);
+    succeeds(
+        client,
+        "app_install",
+        &format!(r#"{{"path":"/media/host/{file}"}}"#),
+        "Installed",
+    )?;
+    succeeds(client, "app_list", "{}", name)?;
+    succeeds(
+        client,
+        "app_open",
+        &format!(r#"{{"name":"{name}"}}"#),
+        "Opened",
+    )?;
+    let deadline = Instant::now() + WINDOW_TIMEOUT;
+    loop {
+        let result = succeeds(client, "wm_list", "{}", WM_LIST_HEADER)?;
+        let Some(title) = title else {
+            break;
+        };
+        if result.all().contains(title) {
+            break;
+        }
+        expect(
+            Instant::now() < deadline,
+            arch,
+            &format!("{title}'s window never appeared: {}", result.all()),
+        )?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    refused(
+        client,
+        "app_uninstall",
+        &format!(r#"{{"name":"{name}"}}"#),
+        "confirm: true",
+    )?;
+    succeeds(
+        client,
+        "app_uninstall",
+        &format!(r#"{{"name":"{name}","confirm":true}}"#),
+        "Uninstalled",
+    )?;
+    client.request(
+        "initialize",
+        &format!(
+            r#"{{"protocolVersion":"2025-11-25","capabilities":{{"elicitation":{{}}}},"clientInfo":{{"name":"{CLIENT_NAME}","version":"3"}}}}"#
+        ),
+    )?;
+    client.send(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
+    succeeds(
+        client,
+        "tee",
+        &format!(r#"{{"path":"{ELICITED}","content":"asked\n"}}"#),
+        "Wrote",
+    )?;
+    let (call, question) = client.call_asked("trash", &format!(r#"{{"path":"{ELICITED}"}}"#))?;
+    let result = client.answer_question(call, &question, r#"{"action":"decline"}"#)?;
+    expect(
+        result.is_error && result.all().contains("declined"),
+        arch,
+        &format!("a declined trash was not refused: {}", result.all()),
+    )?;
+    succeeds(
+        client,
+        "cat",
+        &format!(r#"{{"path":"{ELICITED}"}}"#),
+        "asked",
+    )?;
+    let (call, question) = client.call_asked("trash", &format!(r#"{{"path":"{ELICITED}"}}"#))?;
+    let result = client.answer_question(
+        call,
+        &question,
+        r#"{"action":"accept","content":{"confirm":true}}"#,
+    )?;
+    expect(
+        !result.is_error && result.all().contains("to the Trash"),
+        arch,
+        &format!("an accepted trash did not run: {}", result.all()),
+    )?;
+    let log = succeeds(client, "run", r#"{"program":"/bin/agentlog"}"#, "TIME")?;
+    let log = log.all();
+    for wanted in [
+        "  tee  refused  ".to_owned(),
+        "  run  refused  ".to_owned(),
+        "  app_install  refused  ".to_owned(),
+        "  tee  ok  ".to_owned(),
+        "  trash  ok  ".to_owned(),
+        "  run  ok  ".to_owned(),
+        "  run  error  ".to_owned(),
+        "  app_install  ok  ".to_owned(),
+        "  app_open  ok  ".to_owned(),
+        "  app_uninstall  ok  ".to_owned(),
+        "  wm_list  ok  ".to_owned(),
+        "the user declined".to_owned(),
+        "  cat  ok  {\"path\":\"/media/host/big.txt\"}".to_owned(),
+        "server-start".to_owned(),
+        "grants=read,write,install,run".to_owned(),
+    ] {
+        expect(
+            log.contains(&wanted),
+            arch,
+            &format!("agentlog does not show `{wanted}`: {log}"),
+        )?;
+    }
+    expect(
+        !log.contains(CONTENT_MARKER),
+        arch,
+        "agentlog shows content a call wrote",
+    )
+}
+
+/// Runs the MCP boot test for `arch` with the release image `kernel` (with the Windows layer)
+/// and the folder `programs` holding the test apps.
+pub fn check(arch: &Arch, kernel: &Path, programs: &Path) -> Result<(), String> {
+    let (script, apps, disk) = prepare(arch, kernel, programs)?;
     eprintln!("xtask: {}: running {} --mcp", arch.name, script.display());
-    let mut client = Client::start(arch, &script, &apps, &disk)?;
+    let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
     client.stop();
     outcome?;
-    let disk_args = disk_args(arch, &disk.to_string_lossy());
-    let second = boot_on_disk(arch, kernel, &disk_args, &AGENTLOG_SESSION, Then::Nothing)?;
-    let rows: Vec<&str> = second
-        .console
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| line.contains(&format!("  {CLIENT_NAME}  ")))
-        .collect();
-    let mut wanted: Vec<String> = TWIN_CALLS
-        .iter()
-        .map(|(tool, _, _)| format!("  {tool}  ok  "))
-        .collect();
-    wanted.push("  cat  ok  {\"path\":\"/media/host/big.txt\"}".into());
-    wanted.push("  cat  refused  {\"path\":\"/home/../etc/eggos/init.conf\"}".into());
-    wanted.push("  -  initialize  ".into());
-    for wanted in &wanted {
-        expect(
-            rows.iter().any(|row| row.contains(wanted.as_str())),
-            arch.name,
-            &format!("agentlog does not show `{wanted}`"),
-        )?;
-    }
-    let refused = rows
-        .iter()
-        .filter(|row| row.contains("  cat  refused  "))
-        .count();
-    expect(
-        refused == 2,
+    eprintln!(
+        "xtask: {}: running {} --mcp --mcp-allow {GRANTS}",
         arch.name,
-        "agentlog does not show both refused reads",
-    )?;
-    expect(
-        has_line(&second.console, "EGGOS-MCP agentlog 0") && second.clean_exit,
-        arch.name,
-        "agentlog failed or the machine did not power off",
-    )?;
+        script.display()
+    );
+    let mut client = Client::start(arch, &script, &apps, &disk, Some(GRANTS))?;
+    let probe = client
+        .send(br#"{"jsonrpc":"2.0","id":"probe","method":"ping"}"#)
+        .and_then(|()| client.receive(FIRST_ANSWER_TIMEOUT));
+    let outcome = probe.and_then(|_| granted_session(&mut client));
+    client.stop();
+    outcome?;
     let mut volume = image_volume(&disk)?;
     let log = contents(&mut volume, "/var/log/agent-audit.log")?
         .ok_or_else(|| format!("{}: MCP check: the disk holds no audit log", arch.name))?;
-    let records = log
+    let records: Vec<eggos_mcp::audit::Record<'_>> = log
         .split(|&byte| byte == b'\n')
         .filter_map(eggos_mcp::audit::parse_line)
-        .count();
+        .collect();
     expect(
-        records >= 15,
+        records.len() >= 60,
         arch.name,
         "the audit log on the disk is missing records",
+    )?;
+    expect(
+        records
+            .iter()
+            .any(|record| record.outcome == eggos_mcp::audit::Outcome::Asked),
+        arch.name,
+        "the audit log on the disk holds no question to the user",
+    )?;
+    expect(
+        !log.windows(CONTENT_MARKER.len())
+            .any(|window| window == CONTENT_MARKER.as_bytes()),
+        arch.name,
+        "the audit log on the disk holds content a call wrote",
     )?;
     eprintln!("xtask: {}: MCP boot test passed", arch.name);
     Ok(())
@@ -450,11 +814,25 @@ mod tests {
     #[test]
     fn every_tool_is_called_by_the_check() {
         for tool in &eggos_mcp::tools::TOOLS {
+            let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name);
+            let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);
             assert!(
-                TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name),
+                read || granted.is_some(),
                 "{} has no call in the MCP check",
                 tool.name
             );
+            assert_eq!(read, tool.grant.is_none(), "{}", tool.name);
+            if let (Some((_, _, grant)), Some(needed)) = (granted, tool.grant) {
+                assert_eq!(*grant, needed.name(), "{}", tool.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_granted_boot_asks_for_every_grant() {
+        assert_eq!(super::super::check_grants(GRANTS), Ok(()));
+        for grant in super::super::GRANT_NAMES {
+            assert!(GRANTS.split(',').any(|name| name == grant));
         }
     }
 

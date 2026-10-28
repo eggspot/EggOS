@@ -931,6 +931,11 @@ impl<'b> JsonWriter<'b> {
         self.before_value();
         self.put(json);
     }
+
+    /// Ends a message with a newline, as the stdio transport frames messages.
+    pub fn end_line(&mut self) {
+        self.put(b"\n");
+    }
 }
 
 #[cfg(test)]

@@ -547,6 +547,25 @@ impl<'a> Fdt<'a> {
     }
 }
 
+/// The kernel command line in `/chosen/bootargs` of the tree at the start of `blob`, up to its
+/// first NUL; `None` without one, or for a tree that is invalid or malformed anywhere.
+pub fn boot_arguments(blob: &[u8]) -> Option<&[u8]> {
+    let tree = Fdt::new(blob).ok()?;
+    let mut found = None;
+    tree.chosen(&mut |name, value| {
+        if name == b"bootargs" && found.is_none() {
+            found = Some(value);
+        }
+    })
+    .ok()?;
+    let value = found?;
+    let end = value
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(value.len());
+    value.get(..end)
+}
+
 const SEED_PROPERTIES: [(&[u8], SeedSource); 2] = [
     (b"rng-seed", SeedSource::DeviceTreeRngSeed),
     (b"kaslr-seed", SeedSource::DeviceTreeKaslrSeed),
@@ -1140,6 +1159,35 @@ pub(crate) mod tests {
             .map(|(name, _)| name)
             .collect();
         assert_eq!(names, [&b"rng-seed"[..], b"bootargs", b"kaslr-seed"]);
+    }
+
+    #[test]
+    fn the_command_line_is_chosen_s_bootargs_up_to_its_nul() {
+        assert_eq!(boot_arguments(&with_seeds()), Some(&b"console=ttyS0"[..]));
+        let mut b = Builder::default();
+        b.begin("")
+            .begin("chosen")
+            .prop("bootargs", b"eggos.mcp_allow=write")
+            .end()
+            .begin("other")
+            .prop("bootargs", b"not this")
+            .end()
+            .end();
+        assert_eq!(
+            boot_arguments(&b.build()),
+            Some(&b"eggos.mcp_allow=write"[..])
+        );
+        let mut b = Builder::default();
+        b.begin("")
+            .begin("chosen")
+            .prop("stdout-path", b"x\0")
+            .end()
+            .end();
+        assert_eq!(boot_arguments(&b.build()), None);
+        let mut b = Builder::default();
+        b.begin("").begin("chosen").prop("bootargs", b"cut");
+        assert_eq!(boot_arguments(&b.build()), None);
+        assert_eq!(boot_arguments(b"not a tree"), None);
     }
 
     #[test]

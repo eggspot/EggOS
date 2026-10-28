@@ -305,14 +305,17 @@ D16):
     on the command line: `cp -r`, `mv` of folders across file systems, and `trash` with
     `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`. Next: the MCP tools with the MCP server, free
     space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
-28. **28a done** — users can now connect Claude Code or any MCP client to EggOS and let it
-    read files, processes, windows and apps (D136, docs/mcp.md): `run-eggos.sh --mcp`
-    (`run-eggos.ps1 -Mcp`, `--no-window` for headless hosts) wires a named virtio console port
-    to the script's stdio; init starts `eggmcpd` when `/dev/agent` exists; the tools `ls`,
-    `cat`, `ps`, `wm_list` and `app_list` run their CLI twins in `/home` and `/media/host`;
-    every call goes to `/var/log/agent-audit.log`, which `agentlog` shows. Next (28b): grants
-    from the host (`--mcp-allow write,run,install`), writing and deleting files, running
-    programs, installing, opening and uninstalling apps, confirmation of destructive calls.
+28. **Done** — users can now connect Claude Code or any MCP client to EggOS and let it work
+    with files, programs and apps under the grants they set (D136, D137, docs/mcp.md):
+    `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` for headless hosts) wires a named
+    virtio console port to the script's stdio; init starts `eggmcpd` when `/dev/agent` exists;
+    the tools `ls`, `cat`, `ps`, `wm_list` and `app_list` read; with `--mcp-allow
+    write,run,install` (kernel command line, `/proc/cmdline`) `tee` and `trash` write below
+    `/home/root`, `run` runs a program (full control), `app_install`, `app_open` and
+    `app_uninstall` manage apps; destructive calls ask the user through elicitation or need
+    `confirm: true`; every call goes to `/var/log/agent-audit.log` (seven generations, a budget
+    per run, content never logged), which `agentlog` shows; `kill` reaches other processes and
+    groups, init excepted. Next: per-agent grants, network MCP, the log in Settings.
 38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
 39. a Wayland server, `eggway`, for Linux GUI apps.
 40. the macOS Objective-C runtime and the core of Foundation.

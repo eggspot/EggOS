@@ -220,6 +220,14 @@ fn restore<S: System>(output: &mut Output<S>, trash: &Trash, names: &[&CStr]) ->
                 output.error(&[b"cannot restore '", bytes, b"': it is not in the Trash"]);
                 status = FAILURE;
             }
+            Err(RestoreError::OutsideHome) => {
+                output.error(&[
+                    b"cannot restore '",
+                    bytes,
+                    b"': its record points outside the home folder",
+                ]);
+                status = FAILURE;
+            }
             Err(RestoreError::Failed(error)) => {
                 output.error(&[b"cannot restore '", bytes, b"': ", error.message()]);
                 status = FAILURE;

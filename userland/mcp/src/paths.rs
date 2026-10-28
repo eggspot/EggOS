@@ -14,6 +14,22 @@
 /// The roots the read-only tools reach.
 pub const READ_ROOTS: [&str; 2] = ["/home", "/media/host"];
 
+/// The home folder, the one place the write tools reach in 0.3 (D137): its Trash is the one
+/// `trash` and Files use, so whatever is trashed can be restored.
+pub const HOME: &str = "/home/root";
+
+/// The roots `tee` and `trash` reach: strictly below the home folder.
+pub const WRITE_ROOTS: [&str; 1] = [HOME];
+
+/// The home folder's Trash, which belongs to `trash` and Files: the write tools never reach it.
+pub const TRASH: &str = "/home/root/.local/share/Trash";
+
+/// The roots `app_install` installs from: the host's shared folder, which the user fills.
+pub const INSTALL_ROOTS: [&str; 1] = ["/media/host"];
+
+/// Every path: the root.
+pub const ANYWHERE: [&str; 1] = ["/"];
+
 /// The longest path taken, in bytes.
 pub const MAX_PATH_BYTES: usize = 4095;
 
@@ -30,6 +46,10 @@ pub enum PathRefusal {
     Link,
     /// Resolved, it is outside every root.
     OutsideRoots,
+    /// Resolved, it is a root itself where something strictly inside one is needed.
+    IsRoot,
+    /// Resolved, it is in a place the tool never reaches (the Trash).
+    Excluded,
 }
 
 impl PathRefusal {
@@ -41,6 +61,8 @@ impl PathRefusal {
             PathRefusal::TooLong => "the path is longer than 4095 bytes",
             PathRefusal::Link => "the path goes through a symbolic link",
             PathRefusal::OutsideRoots => "the path is outside the folders this tool may reach",
+            PathRefusal::IsRoot => "the path names the folder itself, not something inside it",
+            PathRefusal::Excluded => "the path is in the Trash, which belongs to trash and Files",
         }
     }
 }
@@ -109,10 +131,29 @@ fn text(out: &[u8], length: usize) -> &str {
         .unwrap_or("")
 }
 
-/// Whether `path` (resolved) is `root` or inside it.
+/// Whether `path` (resolved) is `root` or inside it; everything is inside `/`.
 pub fn is_inside(path: &str, root: &str) -> bool {
-    path.strip_prefix(root)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    root == "/"
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The checks after resolution: when `strictly` is set, `resolved` must not be a root itself;
+/// it must not be in any of `excluded`.
+pub fn check_place(
+    resolved: &str,
+    roots: &[&str],
+    strictly: bool,
+    excluded: &[&str],
+) -> Result<(), PathRefusal> {
+    if strictly && roots.contains(&resolved) {
+        return Err(PathRefusal::IsRoot);
+    }
+    if excluded.iter().any(|place| is_inside(resolved, place)) {
+        return Err(PathRefusal::Excluded);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -190,5 +231,60 @@ mod tests {
         assert!(is_inside("/home/x", "/home"));
         assert!(!is_inside("/homex", "/home"));
         assert!(!is_inside("/hom", "/home"));
+        assert!(is_inside("/bin/uname", "/"));
+        assert!(is_inside("/", "/"));
+    }
+
+    fn written(path: &str) -> Result<String, PathRefusal> {
+        let mut out = [0u8; MAX_PATH_BYTES + 1];
+        let resolved = resolve(path, &mut out, &WRITE_ROOTS, &mut |_| false)?;
+        check_place(resolved, &WRITE_ROOTS, true, &[TRASH])?;
+        Ok(resolved.to_owned())
+    }
+
+    #[test]
+    fn writes_reach_strictly_below_the_home_folder_and_never_the_trash() {
+        assert_eq!(
+            written("/home/root/note.txt"),
+            Ok("/home/root/note.txt".into())
+        );
+        assert_eq!(written("/home/root/a/../b"), Ok("/home/root/b".into()));
+        assert_eq!(
+            written("/home/root/.local/x"),
+            Ok("/home/root/.local/x".into())
+        );
+        assert_eq!(written("/home/root"), Err(PathRefusal::IsRoot));
+        assert_eq!(written("/home/root/"), Err(PathRefusal::IsRoot));
+        assert_eq!(written("/home/root/x/.."), Err(PathRefusal::IsRoot));
+        for outside in [
+            "/home",
+            "/home/other/x",
+            "/home/rootless",
+            "/home/root/../../etc/x",
+            "/var/log/agent-audit.log",
+        ] {
+            assert_eq!(
+                written(outside),
+                Err(PathRefusal::OutsideRoots),
+                "{outside}"
+            );
+        }
+        for trash in [
+            "/home/root/.local/share/Trash",
+            "/home/root/.local/share/Trash/info/x.trashinfo",
+            "/home/root/.local/share/Trash/files/../info/y",
+            "/home/root/.local/share/./Trash/files",
+        ] {
+            assert_eq!(written(trash), Err(PathRefusal::Excluded), "{trash}");
+        }
+        let mut out = [0u8; 64];
+        assert_eq!(
+            resolve("/bin/../bin/uname", &mut out, &ANYWHERE, &mut |_| false),
+            Ok("/bin/uname")
+        );
+        assert_eq!(
+            resolve("uname", &mut out, &ANYWHERE, &mut |_| false),
+            Err(PathRefusal::NotAbsolute)
+        );
     }
 }

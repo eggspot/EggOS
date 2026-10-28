@@ -65,7 +65,8 @@ fn note_traffic<P: Platform>() {
     LAST_TRAFFIC.store(P::clock_ticks(), Ordering::Relaxed);
 }
 
-fn next_poll<P: Platform>() -> u64 {
+/// When a wait for the channel looks at the device again: soon after traffic, later when idle.
+pub(super) fn next_poll<P: Platform>() -> u64 {
     let now = P::clock_ticks();
     let frequency = P::clock_frequency();
     let window = mul_div_ceil(ACTIVE_WINDOW_MS, frequency, 1000);

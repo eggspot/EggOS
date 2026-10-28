@@ -1,7 +1,8 @@
 //! The MCP session's life cycle (the 2025-11-25 specification's "Lifecycle"): the client's
 //! `initialize` names the protocol version it wants and itself; the server answers with that
 //! version when it implements it, otherwise its newest. A server init started again begins
-//! initialized ([`Session::restarted`]), because its client never repeats `initialize`.
+//! initialized ([`Session::restarted`]), because its client never repeats `initialize`. The
+//! client's capabilities say whether it can ask its user a question (elicitation, D137).
 
 /// The protocol versions this server implements, newest first.
 pub const SUPPORTED_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
@@ -15,6 +16,21 @@ pub const MAX_CLIENT_VERSION_BYTES: usize = 64;
 pub const UNNAMED_CLIENT: &str = "unnamed client";
 /// The client's name for a server that started again.
 pub const RESTARTED_CLIENT: &str = "unknown (restarted)";
+
+/// The first protocol version with elicitation.
+pub const FIRST_ELICITATION_VERSION: &str = "2025-06-18";
+
+/// Whether a client whose `capabilities.elicitation` is `capability` can ask its user in a
+/// form: an object that is empty (2025-06-18's form, and 2025-11-25's for form only) or names
+/// `form`; one naming only `url` cannot.
+pub fn elicits_forms(capability: Option<crate::json::Value<'_>>) -> bool {
+    match capability {
+        Some(crate::json::Value::Object(object)) => {
+            object.members().next().is_none() || object.get("form").is_some()
+        }
+        _ => false,
+    }
+}
 
 /// The version answered to a client asking for `requested`.
 pub fn negotiate(requested: &str) -> &'static str {
@@ -76,6 +92,7 @@ pub struct Session {
     version: &'static str,
     client_name: Bounded<MAX_CLIENT_NAME_BYTES>,
     client_version: Bounded<MAX_CLIENT_VERSION_BYTES>,
+    elicitation: bool,
 }
 
 impl Default for Session {
@@ -85,6 +102,7 @@ impl Default for Session {
             version: SUPPORTED_VERSIONS[0],
             client_name: Bounded::new(UNNAMED_CLIENT),
             client_version: Bounded::new(""),
+            elicitation: false,
         }
     }
 }
@@ -100,11 +118,19 @@ impl Session {
         }
     }
 
-    /// Starts the session again for a client that asked for `requested` and named itself;
-    /// returns the version answered.
-    pub fn initialize(&mut self, requested: &str, name: &str, version: &str) -> &'static str {
+    /// Starts the session again for a client that asked for `requested`, named itself and
+    /// said whether it can ask its user (`elicitation`, honoured from
+    /// [`FIRST_ELICITATION_VERSION`] on); returns the version answered.
+    pub fn initialize(
+        &mut self,
+        requested: &str,
+        name: &str,
+        version: &str,
+        elicitation: bool,
+    ) -> &'static str {
         self.state = State::Initialized;
         self.version = negotiate(requested);
+        self.elicitation = elicitation && self.version >= FIRST_ELICITATION_VERSION;
         self.client_name = Bounded::new(if name.is_empty() {
             UNNAMED_CLIENT
         } else {
@@ -127,6 +153,11 @@ impl Session {
     /// The protocol version in use.
     pub fn version(&self) -> &'static str {
         self.version
+    }
+
+    /// Whether the client can ask its user a question (`elicitation/create`).
+    pub fn elicits(&self) -> bool {
+        self.elicitation
     }
 
     /// A copy of the client's name, which outlives a borrow of the session.
@@ -163,20 +194,37 @@ mod tests {
         let mut session = Session::default();
         assert!(!session.is_initialized());
         assert_eq!(
-            session.initialize("2025-06-18", "claude-code", "2.1"),
+            session.initialize("2025-06-18", "claude-code", "2.1", true),
             "2025-06-18"
         );
         assert!(session.is_initialized());
+        assert!(session.elicits());
         assert_eq!(session.client_name(), "claude-code");
         assert_eq!(session.client_version(), "2.1");
-        assert_eq!(session.initialize("x", "", ""), "2025-11-25");
+        assert_eq!(session.initialize("x", "", "", false), "2025-11-25");
         assert_eq!(session.client_name(), UNNAMED_CLIENT);
+        assert!(!session.elicits());
         session.end();
         assert_eq!(session, Session::default());
         let restarted = Session::restarted();
         assert!(restarted.is_initialized());
         assert_eq!(restarted.client_name(), RESTARTED_CLIENT);
         assert_eq!(restarted.version(), SUPPORTED_VERSIONS[0]);
+        assert!(!restarted.elicits());
+    }
+
+    #[test]
+    fn forms_are_asked_for_with_an_empty_or_form_capability() {
+        let capability = |text: &str| {
+            let parsed = crate::json::parse(text.as_bytes()).unwrap();
+            elicits_forms(Some(parsed.value))
+        };
+        assert!(capability("{}"));
+        assert!(capability(r#"{"form":{},"url":{}}"#));
+        assert!(capability(r#"{"form":{}}"#));
+        assert!(!capability(r#"{"url":{}}"#));
+        assert!(!capability("true"));
+        assert!(!elicits_forms(None));
     }
 
     #[test]

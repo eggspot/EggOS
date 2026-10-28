@@ -218,8 +218,10 @@ device adds), waits for its name and opens it; the kernel's `CONSOLE_DRIVER` (fe
 `virtio-console`, default) installs a port named `org.eggos.mcp` as the agent channel,
 `kernel/src/agent_channel.rs`, which `/dev/agent` (240:1) hands to one privileged opener at a
 time. A read waits by polling the device (every 4 ms while bytes moved within the last second,
-every 32 ms otherwise) until device interrupts arrive (issue #97); a write waits while QEMU
-holds the transmit buffer because the host has not read it. QEMU's arguments are
+every 32 ms otherwise) until device interrupts arrive (issue #97); `poll` reports `POLLIN` while
+bytes or the host's end wait and `POLLOUT` always, and a `poll` waiting for input looks at the
+device again at the same intervals (D137); a write waits while QEMU holds the transmit buffer
+because the host has not read it. QEMU's arguments are
 `qemu::agent_channel_args`: `-device virtio-serial-device,id=agent` (`virtio-serial-pci,
 disable-legacy=on` on q35) and `-device virtserialport,bus=agent.0,nr=1,chardev=<chardev>,
 name=org.eggos.mcp`. On riscv64 `virt`, which has 8 virtio-mmio slots, a boot with the host

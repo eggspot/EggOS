@@ -102,6 +102,8 @@ pub extern "C" fn restore_after_signal() -> ! {
 pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 
 const SIGCHLD: usize = 17;
+const SIGPIPE: usize = 13;
+const SIGNAL_SET_BYTES: usize = 8;
 const NOT_RUN: i32 = 127;
 
 /// The stack a child started by [`spawn`] runs on until its `execve`. [`spawn`] borrows it
@@ -133,13 +135,16 @@ impl core::fmt::Debug for ChildStack {
 }
 
 /// What [`spawn`] starts: the program, its arguments and environment (each a null-ended
-/// array of C strings), and the descriptors that become its standard input, output and error.
+/// array of C strings), the descriptors that become its standard input, output and error, and
+/// optionally the folder it starts in and a process group of its own.
 #[derive(Debug)]
 pub struct Spawn<'a> {
     program: &'a CStr,
     arguments: &'a [*const u8],
     environment: &'a [*const u8],
     streams: [usize; 3],
+    directory: Option<&'a CStr>,
+    own_group: bool,
     exec_error: AtomicIsize,
 }
 
@@ -157,13 +162,35 @@ impl<'a> Spawn<'a> {
             arguments,
             environment,
             streams,
+            directory: None,
+            own_group: false,
             exec_error: AtomicIsize::new(0),
+        }
+    }
+
+    /// The same request, with the child starting in `directory`; when it cannot, the child
+    /// ends and its error comes back as `execve`'s would.
+    pub fn in_directory(self, directory: &'a CStr) -> Self {
+        Self {
+            directory: Some(directory),
+            ..self
+        }
+    }
+
+    /// The same request, with the child leading a process group of its own, so the whole
+    /// group (its own children too) can be signalled at once with `kill(-child, ..)`.
+    pub fn in_own_process_group(self) -> Self {
+        Self {
+            own_group: true,
+            ..self
         }
     }
 }
 
 /// Starts `request`'s program as a child on `stack`, sharing this process's memory until the
 /// child's `execve` (`CLONE_VM | CLONE_VFORK`), so nothing is copied; returns its process id.
+/// The child starts with `SIGPIPE`'s default action, as a shell's children do, whatever this
+/// process does with it.
 /// `EINVAL` for an array without its null end; when `execve` fails, the child ends, is reaped,
 /// and its error comes back.
 pub fn spawn(stack: &mut ChildStack, request: &Spawn<'_>) -> Result<usize, Errno> {
@@ -201,6 +228,36 @@ extern "C" fn start_child(request: usize) -> ! {
     // atomic error word while this child runs on the parent's memory: the parent's thread
     // sleeps until the child runs `execve` or ends.
     let request = unsafe { &*(request as *const Spawn<'_>) };
+    let default_action = [0u64; 4];
+    // SAFETY: `rt_sigaction` reads the zeroed action, which lives on this child's stack for the
+    // call, and changes only this child's own action table (no `CLONE_SIGHAND`).
+    unsafe {
+        syscall::call(
+            number::RT_SIGACTION,
+            [
+                SIGPIPE,
+                default_action.as_ptr() as usize,
+                0,
+                SIGNAL_SET_BYTES,
+                0,
+                0,
+            ],
+        )
+    };
+    if request.own_group {
+        // SAFETY: `setpgid` touches no memory.
+        unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };
+    }
+    if let Some(directory) = request.directory {
+        // SAFETY: `chdir` reads the C string `request` names, which stays in place while the
+        // parent sleeps.
+        let changed =
+            unsafe { syscall::call(number::CHDIR, [directory.as_ptr() as usize, 0, 0, 0, 0, 0]) };
+        if changed < 0 {
+            request.exec_error.store(changed, Ordering::Release);
+            syscall::exit(NOT_RUN)
+        }
+    }
     for (target, &from) in request.streams.iter().enumerate() {
         if from != target {
             // SAFETY: `dup3` touches no memory.

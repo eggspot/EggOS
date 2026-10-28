@@ -9,6 +9,8 @@ impl Errno {
     pub const EPERM: Self = Self(1);
     /// `ENOENT`.
     pub const ENOENT: Self = Self(2);
+    /// `ESRCH`.
+    pub const ESRCH: Self = Self(3);
     /// `EINTR`.
     pub const EINTR: Self = Self(4);
     /// `EIO`.
@@ -41,6 +43,8 @@ impl Errno {
     pub const EXDEV: Self = Self(18);
     /// `EROFS`.
     pub const EROFS: Self = Self(30);
+    /// `EPIPE`.
+    pub const EPIPE: Self = Self(32);
     /// `ENOSPC`.
     pub const ENOSPC: Self = Self(28);
     /// `ENOTEMPTY`.

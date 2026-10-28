@@ -275,10 +275,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 26] = [
+const COREUTILS: [&str; 27] = [
     "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv",
-    "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "trash", "true", "uname",
-    "uptime", "wc", "wm",
+    "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch", "trash", "true",
+    "uname", "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -636,7 +636,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
-    qemu::mcp::check(arch, &kernel)?;
+    qemu::mcp::check(arch, &install_kernel, &install_folder)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -1041,6 +1041,9 @@ fn fuzz_mcp(seconds: u64) -> Result<(), String> {
             0 => Server::restarted(),
             _ => Server::new(),
         };
+        if !seed.is_multiple_of(3) {
+            server.set_grants(eggos_mcp::grants::Grants::ALL, Default::default());
+        }
         run(
             &mut server,
             &mut system,
@@ -1653,12 +1656,19 @@ mod tests {
             .chain([format!("/{APP_PATH}")])
             .collect();
         for tool in &eggos_mcp::tools::TOOLS {
-            assert!(
-                programs.iter().any(|program| program == tool.twin.program),
-                "{}'s twin {} is not in the release image",
-                tool.name,
-                tool.twin.program
-            );
+            match tool.twin.program {
+                eggos_mcp::tools::Program::Fixed(twin) => assert!(
+                    programs.iter().any(|program| program == twin),
+                    "{}'s twin {twin} is not in the release image",
+                    tool.name,
+                ),
+                eggos_mcp::tools::Program::FromArguments => {
+                    assert_eq!(
+                        tool.name, "run",
+                        "only run takes its program from its arguments"
+                    )
+                }
+            }
         }
     }
 

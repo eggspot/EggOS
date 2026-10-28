@@ -909,7 +909,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "var",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 27 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 28 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -933,7 +933,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
-        whole(&["meminfo", "ps", "uptime", "/proc", "/", "3"]),
+        whole(&["cmdline", "meminfo", "ps", "uptime", "/proc", "/", "3"]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
             "               total        used        free      shared  buff/cache   available",
@@ -2673,6 +2673,29 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
     ]
 }
 
+/// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
+pub const GRANT_NAMES: [&str; 3] = ["write", "run", "install"];
+
+/// Checks a `--mcp-allow` list: names from [`GRANT_NAMES`], lowercase, separated by single
+/// commas, none empty.
+pub fn check_grants(list: &str) -> Result<(), String> {
+    for name in list.split(',') {
+        if !GRANT_NAMES.contains(&name) {
+            return Err(format!(
+                "--mcp-allow: unknown grant '{name}' (write, run or install, separated by commas)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// QEMU's arguments that hand the grants `list` (checked, or a script's variable holding it)
+/// to EggOS's built-in MCP server on the kernel command line, which only the host sets and the
+/// server reads in `/proc/cmdline` (D137). `-append` takes a plain string: commas stay single.
+pub fn grant_args(list: &str) -> Vec<String> {
+    vec!["-append".into(), format!("eggos.mcp_allow={list}")]
+}
+
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
 /// agent channel on QEMU's standard input and output, which then carry nothing else, the
 /// console in the file `console_log` (commas doubled), no monitor, and the display in a window
@@ -3341,7 +3364,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 27 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 28 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
