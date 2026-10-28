@@ -508,6 +508,15 @@ fn an_abstract_listener_accepts_a_connection_with_its_peer_s_credentials() {
         ),
         Errno::EISCONN.result()
     );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::CONNECT,
+            [client, DATA + 0x200, 9, 0, 0, 0]
+        ),
+        Errno::ECONNREFUSED.result()
+    );
     store(&process, SEND_DATA, b"hi");
     assert_eq!(
         call(

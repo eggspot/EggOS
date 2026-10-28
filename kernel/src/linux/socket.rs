@@ -838,8 +838,8 @@ fn connect<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let target = read_address(process, address, length)?;
-        let own = socket.begin_connect()?;
         let target = find_target(thread, &target)?;
+        let own = socket.begin_connect()?;
         Ok((file, socket, own, target))
     });
     let (file, socket, own, target) = match prepared {
