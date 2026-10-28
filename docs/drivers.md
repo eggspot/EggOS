@@ -191,7 +191,7 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
 - At boot, before `/tmp` and `/home` get their memory file systems, the kernel reads what
   each disk holds, never relying on their order (D131): EggFS (or a blank writable disk, which
   it formats) is mounted at `/home` and `/Applications` (`vfs::eggfs`), printing `vfs: EggFS
-  disk mounted at /home and /Applications (...)`; a FAT volume on the whole disk or its first
+  disk mounted at /home, /Applications and /var (...)`; a FAT volume on the whole disk or its first
   MBR partition read-only at `/media/host` (`vfs::fat::Fat::mount`), printing `vfs: FAT16
   disk "QEMU VVFAT" mounted read-only at /media/host`; anything else is left untouched and
   reported. Both file systems hold their disk under a `SleepLock`, so a thread waiting for a
@@ -206,6 +206,24 @@ it. Only devices with coherent DMA are driven: a probe refuses the others.
   on the `virt` machines, `virtio-blk-pci,disable-legacy=on` on q35; `qemu::host_folder_args`).
   `vvfat` presents a 504 MiB disk with an MBR and a FAT16 volume with long names; its limits
   are in docs/limitations.md.
+
+## The agent channel
+
+`eggos_drivers::virtio::console` (D136) drives a virtio console device with multiple ports
+(virtio 1.2, 5.3, `VIRTIO_CONSOLE_F_MULTIPORT` required), polled like the others: the control
+queues (2 and 3) and port 1's receive and transmit queues (4 and 5), four 4 KiB receive
+buffers and one 8 KiB transmit buffer in one 32 KiB DMA region allocated only when the device
+exists. At probe the driver says it is ready, readies port 1 (refusing any other port the
+device adds), waits for its name and opens it; the kernel's `CONSOLE_DRIVER` (feature
+`virtio-console`, default) installs a port named `org.eggos.mcp` as the agent channel,
+`kernel/src/agent_channel.rs`, which `/dev/agent` (240:1) hands to one privileged opener at a
+time. A read waits by polling the device (every 4 ms while bytes moved within the last second,
+every 32 ms otherwise) until device interrupts arrive (issue #97); a write waits while QEMU
+holds the transmit buffer because the host has not read it. QEMU's arguments are
+`qemu::agent_channel_args`: `-device virtio-serial-device,id=agent` (`virtio-serial-pci,
+disable-legacy=on` on q35) and `-device virtserialport,bus=agent.0,nr=1,chardev=<chardev>,
+name=org.eggos.mcp`. On riscv64 `virt`, which has 8 virtio-mmio slots, a boot with the host
+folder, the disk and the channel uses all 8.
 
 ## The display
 

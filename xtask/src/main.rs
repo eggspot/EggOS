@@ -50,7 +50,7 @@ commands:
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
                          the host's folder read-only at /media/host; the disk image
                          target/image/eggos-<arch>-disk.img (or --disk's), made empty and
-                         1 GiB sparse if missing, holds /home and /Applications across
+                         1 GiB sparse if missing, holds /home, /Applications and /var across
                          boots (--no-disk: none, /home in memory); --format-disk empties
                          it first, erasing everything on it; with --add, the release image
                          with those files, as `image` builds it
@@ -67,6 +67,9 @@ commands:
   screenshot --arch <arch>
                          boot the release image headless and save its desktop to
                          docs/images/desktop.png
+  fuzz mcp [--seconds <n>]
+                         hand the MCP server's message handling hostile lines for <n>
+                         seconds (default 60) and fail on a panic or a wrong answer
   macos-programs         build the macOS programs boot test's Mach-O programs with Apple's
                          linker (macOS hosts only) into target/macos-console/programs and
                          print that folder, which EGGOS_MACOS_PROGRAMS can name elsewhere
@@ -90,6 +93,8 @@ pub struct Arch {
     pub input_args: &'static [&'static str],
     /// The virtio block device a host folder is attached as (D130).
     pub disk_device: &'static str,
+    /// The virtio console device the agent channel's port sits on (D136).
+    pub agent_bus_device: &'static str,
 }
 
 /// Every architecture brought up so far, cheapest to test first.
@@ -112,6 +117,7 @@ pub const ARCHES: &[Arch] = &[
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
         disk_device: MMIO_DISK_DEVICE,
+        agent_bus_device: "virtio-serial-device",
     },
     Arch {
         name: "riscv64",
@@ -131,6 +137,7 @@ pub const ARCHES: &[Arch] = &[
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
         disk_device: MMIO_DISK_DEVICE,
+        agent_bus_device: "virtio-serial-device",
     },
     Arch {
         name: "x86_64",
@@ -160,6 +167,7 @@ pub const ARCHES: &[Arch] = &[
             "virtio-mouse-pci,disable-legacy=on",
         ],
         disk_device: "virtio-blk-pci,disable-legacy=on",
+        agent_bus_device: "virtio-serial-pci,disable-legacy=on",
     },
 ];
 
@@ -192,6 +200,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-toolkit",
     "eggos-settings",
     "eggos-app",
+    "eggos-mcp",
     "eggos-files",
     "eggos-selftest",
     "eggos-std-selftest",
@@ -246,6 +255,10 @@ const APP_PATH: &str = "bin/app";
 
 const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 
+const MCP_SERVER_PATH: &str = "usr/libexec/eggmcpd";
+
+const VAR_PATH: &str = "var";
+
 const FILES_PATH: &str = "bin/files";
 
 const PROC_PATH: &str = "proc";
@@ -262,8 +275,8 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 25] = [
-    "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
+const COREUTILS: [&str; 26] = [
+    "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
     "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "trash", "true", "uname", "uptime",
     "wc", "wm",
 ];
@@ -357,6 +370,13 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("release") if args.len() == 1 => release::run(),
+        Some("fuzz") => match &args[1..] {
+            [target] if target == "mcp" => fuzz_mcp(60),
+            [target, flag, seconds] if target == "mcp" && flag == "--seconds" => {
+                fuzz_mcp(seconds.parse().map_err(|_| USAGE.to_owned())?)
+            }
+            _ => Err(USAGE.into()),
+        },
         Some("screenshot") => {
             let arches = arch_option(&args[1..])?;
             let [arch] = arches.as_slice() else {
@@ -449,7 +469,7 @@ fn prepare_disk_image(
         .into_os_string()
         .into_string()
         .map_err(|_| format!("`{}` is not valid Unicode", disk.display()))?;
-    eprintln!("xtask: {absolute} holds /home and /Applications in EggOS");
+    eprintln!("xtask: {absolute} holds /home, /Applications and /var in EggOS");
     Ok(qemu::disk_args(arch, &absolute))
 }
 
@@ -616,6 +636,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
+    qemu::mcp::check(arch, &kernel)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -973,6 +994,7 @@ fn release_initramfs(
     let coreutils = build_runtime_program(arch, "eggos-coreutils")?;
     let settings = build_runtime_program(arch, "eggos-settings")?;
     let app = build_runtime_program(arch, "eggos-app")?;
+    let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
@@ -982,12 +1004,14 @@ fn release_initramfs(
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
+        (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
         (HOME_PATH, initramfs::Content::Directory),
         (APPLICATIONS_PATH, initramfs::Content::Directory),
         (HOST_FOLDER_PATH, initramfs::Content::Directory),
+        (VAR_PATH, initramfs::Content::Directory),
     ];
     members.extend(
         links
@@ -996,6 +1020,34 @@ fn release_initramfs(
     );
     members.extend_from_slice(extra);
     initramfs::build(&members, file_name)
+}
+
+fn fuzz_mcp(seconds: u64) -> Result<(), String> {
+    use eggos_mcp::fuzz::{Generator, StandIn, Workspace, run};
+    use eggos_mcp::server::Server;
+    static WORKSPACE: std::sync::Mutex<Workspace> = std::sync::Mutex::new(Workspace::new());
+    let mut workspace = WORKSPACE
+        .lock()
+        .map_err(|_| "the fuzz workspace is poisoned".to_owned())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    let mut system = StandIn::default();
+    let mut lines = 0u64;
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |time| time.as_nanos() as u64);
+    while std::time::Instant::now() < deadline {
+        let mut generator = Generator::new(seed);
+        let mut server = match seed % 2 {
+            0 => Server::restarted(),
+            _ => Server::new(),
+        };
+        run(&mut server, &mut system, &mut generator, &mut workspace, 10_000)
+            .map_err(|(fault, index)| format!("fuzz mcp: seed {seed}, line {index}: {fault:?}"))?;
+        lines += 10_000;
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    }
+    println!("fuzz mcp: {lines} hostile lines in {seconds} s, every answer valid");
+    Ok(())
 }
 
 fn build_release_kernel(
@@ -1583,7 +1635,26 @@ pub fn cargo_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::{arch_option, host_folder, json_string_field, with_value, without_flag};
+    use super::{
+        APP_PATH, COREUTILS, arch_option, host_folder, json_string_field, with_value, without_flag,
+    };
+
+    #[test]
+    fn every_mcp_tool_has_a_cli_twin_in_the_release_image() {
+        let programs: Vec<String> = COREUTILS
+            .iter()
+            .map(|name| format!("/bin/{name}"))
+            .chain([format!("/{APP_PATH}")])
+            .collect();
+        for tool in &eggos_mcp::tools::TOOLS {
+            assert!(
+                programs.iter().any(|program| program == tool.twin.program),
+                "{}'s twin {} is not in the release image",
+                tool.name,
+                tool.twin.program
+            );
+        }
+    }
 
     #[test]
     fn a_flag_is_taken_out_wherever_it_is() {

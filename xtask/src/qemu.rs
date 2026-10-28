@@ -4,6 +4,7 @@
 
 pub mod files;
 pub mod install;
+pub mod mcp;
 pub mod persistent;
 pub mod settings;
 pub mod shell;
@@ -905,9 +906,10 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "proc",
             "tmp",
             "usr",
+            "var",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 26 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 27 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -2654,6 +2656,54 @@ pub fn interactive_args(arch: &Arch, window: bool) -> Vec<String> {
         .chain(console.iter().copied())
         .map(str::to_owned)
         .collect()
+}
+
+/// The name the agent channel's port has, which the kernel looks for (D136).
+pub const AGENT_PORT_NAME: &str = "org.eggos.mcp";
+
+/// QEMU's arguments that add the agent channel (D136): a virtio console device with one named
+/// port (`virtserialport`, port 1, which QEMU throttles instead of dropping output the host
+/// has not read) on the character device `chardev`.
+pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
+    vec![
+        "-device".into(),
+        format!("{},id=agent", arch.agent_bus_device),
+        "-device".into(),
+        format!("virtserialport,bus=agent.0,nr=1,chardev={chardev},name={AGENT_PORT_NAME}"),
+    ]
+}
+
+/// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
+/// agent channel on QEMU's standard input and output, which then carry nothing else, the
+/// console in the file `console_log` (commas doubled), no monitor, and the display in a window
+/// when `window` says so.
+pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
+    let cpus = TEST_CPUS.to_string();
+    let mut args: Vec<String> = arch
+        .machine_args
+        .iter()
+        .chain(arch.display_args)
+        .chain(arch.input_args)
+        .chain(COMMON_ARGS)
+        .copied()
+        .chain(["-smp", cpus.as_str(), "-no-reboot"])
+        .map(str::to_owned)
+        .collect();
+    if !window {
+        args.extend(["-display".into(), "none".into()]);
+    }
+    args.extend([
+        "-chardev".into(),
+        format!("file,id=console,path={console_log}"),
+        "-serial".into(),
+        "chardev:console".into(),
+        "-monitor".into(),
+        "none".into(),
+        "-chardev".into(),
+        "stdio,id=mcp,signal=off".into(),
+    ]);
+    args.extend(agent_channel_args(arch, "mcp"));
+    args
 }
 
 const SCREENSHOT_SESSION: [&[u8]; 2] = [b"uname -a\r", b"ls /bin\r"];

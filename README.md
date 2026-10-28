@@ -48,6 +48,14 @@ sh run-eggos.sh --apps ~/eggos-apps                  # macOS, Linux
 cargo xtask run --arch aarch64 --apps ~/eggos-apps    # from a checkout
 ```
 
+To let Claude Code, or any MCP client, work with EggOS through its built-in MCP server (read
+files in `/home` and `/media/host`, list processes, windows and apps; every call is logged and
+`agentlog` shows it), add the script as a server ([docs/mcp.md](docs/mcp.md)):
+
+```
+claude mcp add eggos -- /path/to/run-eggos.sh --mcp
+```
+
 The window shows the desktop: the top bar with the uptime and a power menu, and the `eggsh`
 shell in a terminal window you can move, focus and minimise with the mouse. Type at the
 `eggsh:/#` prompt there or on the terminal the script runs in: `ls`, `cat`, `echo`, `uname`,
