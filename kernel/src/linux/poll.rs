@@ -8,11 +8,14 @@
 //! input without waiting for more (D100, superseding D61's "never readable"): a whole line in
 //! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
 //! descriptor is closed (`POLLNVAL`). Pipes report what their ends allow (D125), and
-//! `/dev/window` reports `POLLIN` while an event waits (D127). A call that finds nothing ready
-//! waits until its timeout, or for good without one, unless `ppoll`'s signal mask lets a pending
-//! signal interrupt it first (D71); one that asks for the console's input, or watches a pipe or
-//! a window, is woken when the console's input, a pipe or a window's events change, and looks
-//! again only at what it watches.
+//! `/dev/window` reports `POLLIN` while an event waits (D127); `/dev/agent` reports `POLLIN`
+//! while bytes from the host or its end wait, and is always writable (D137). A call that finds
+//! nothing ready waits until its timeout, or for good without one, unless `ppoll`'s signal mask
+//! lets a pending signal interrupt it first (D71); one that asks for the console's input, or
+//! watches a pipe or a window, is woken when the console's input, a pipe or a window's events
+//! change, and looks again only at what it watches; one that asks for `/dev/agent`'s input
+//! looks at the device again at the channel's polling interval, as it has no interrupt yet
+//! (issue #97).
 
 use super::descriptors::{Descriptors, FileKind, OpenFile};
 use super::terminal::{self, Waited};
@@ -85,11 +88,21 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
         Some(FileKind::Path(_)) => event::NVAL,
         Some(FileKind::Pipe(end)) => end.events(requested),
         Some(FileKind::Window(connection)) => super::window::events(connection, requested),
-        Some(FileKind::AgentChannel(_)) => event::ERR,
+        Some(FileKind::AgentChannel(_)) => agent_events(requested),
     }
 }
 
 const INPUT_EVENTS: u16 = event::IN | event::RDNORM;
+
+const OUTPUT_EVENTS: u16 = event::OUT | event::WRNORM;
+
+fn agent_events(requested: u16) -> u16 {
+    let input = match requested & INPUT_EVENTS != 0 && crate::agent_channel::ready_to_receive() {
+        true => requested & INPUT_EVENTS,
+        false => 0,
+    };
+    input | requested & OUTPUT_EVENTS
+}
 
 fn pollfd(entry: &[u8; POLLFD_SIZE]) -> (i32, u16) {
     (
@@ -390,13 +403,14 @@ fn poll_fds<P: Platform>(
         match file.kind() {
             FileKind::Console => watches.console_input |= requested & INPUT_EVENTS != 0,
             FileKind::Pipe(_) | FileKind::Window(_) => watches.devices = true,
+            FileKind::AgentChannel(_) => watches.agent |= requested & INPUT_EVENTS != 0,
             _ => {}
         }
     }
     let mut ready = fill_in_events(entries, thread.files(), console::input_ready());
     let mut interrupted = ready == 0 && signals::is_due(thread);
     if !interrupted && let Some(deadline) = deadline.filter(|_| ready == 0) {
-        (interrupted, ready) = match watches.console_input || watches.devices {
+        (interrupted, ready) = match watches.console_input || watches.devices || watches.agent {
             true => wait_for_input::<P>(process, thread, entries, deadline, watches),
             false => (sleep::<P>(process, thread, deadline), 0),
         };
@@ -427,6 +441,7 @@ fn sleep<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, deadline: 
 struct Watches {
     console_input: bool,
     devices: bool,
+    agent: bool,
 }
 
 fn any_device_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool {
@@ -458,8 +473,19 @@ fn wait_for_input<P: Platform>(
         let ready = || {
             (watches.console_input && console::input_ready())
                 || (watches.devices && any_device_ready(entries, &files))
+                || (watches.agent && crate::agent_channel::ready_to_receive())
         };
-        match terminal::wait_for_input::<P>(process, thread, deadline, ready) {
+        let look_again = match watches.agent {
+            true => deadline.min(super::agent_channel::next_poll::<P>()),
+            false => deadline,
+        };
+        match terminal::wait_for_input::<P>(process, thread, look_again, ready) {
+            ControlFlow::Continue(Waited::TimedOut) if look_again < deadline => {
+                let ready = fill_in_events(entries, thread.files(), console::input_ready());
+                if ready > 0 {
+                    return (false, ready);
+                }
+            }
             ControlFlow::Break(()) | ControlFlow::Continue(Waited::TimedOut) => return (false, 0),
             ControlFlow::Continue(Waited::Signalled) => return (true, 0),
             ControlFlow::Continue(Waited::Ready) => {
@@ -475,6 +501,18 @@ fn wait_for_input<P: Platform>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_channel_is_writable_and_readable_only_with_bytes_or_its_end_waiting() {
+        let _serial = crate::agent_channel::tests_lock();
+        crate::agent_channel::install_fake();
+        let both = event::IN | event::OUT;
+        assert_eq!(agent_events(both), event::OUT);
+        assert_eq!(agent_events(event::IN), 0);
+        assert_eq!(agent_events(event::WRNORM), event::WRNORM);
+        crate::agent_channel::uninstall();
+        assert_eq!(agent_events(both), both);
+    }
 
     #[test]
     fn negative_descriptors_are_skipped_and_closed_ones_report_pollnval() {
