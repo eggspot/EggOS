@@ -1385,7 +1385,9 @@ fn write_out_of_line<P: Platform>(
             FileKind::AgentChannel(_) => {
                 agent_channel::write(process, thread, context, &file, &iovecs)
             }
-            FileKind::Socket(socket) => socket::write(process, thread, context, &file, socket, iovecs),
+            FileKind::Socket(socket) => {
+                socket::write(process, thread, context, &file, socket, iovecs)
+            }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1433,7 +1435,9 @@ fn read<P: Platform>(
             FileKind::AgentChannel(_) => {
                 agent_channel::read(process, thread, context, &file, &iovecs)
             }
-            FileKind::Socket(socket) => socket::read(process, thread, context, &file, socket, iovecs),
+            FileKind::Socket(socket) => {
+                socket::read(process, thread, context, &file, socket, iovecs)
+            }
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {

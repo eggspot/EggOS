@@ -64,7 +64,10 @@ fn bytes_come_out_in_order_and_the_queue_stops_at_its_capacity() {
     let mut part = vec![0u8; 1000];
     assert!(matches!(
         back.receive(back_side, &mut part, true),
-        Taken::Bytes { count: 1000, rights: None }
+        Taken::Bytes {
+            count: 1000,
+            rights: None
+        }
     ));
     assert_eq!(part, big[..1000]);
     assert_eq!(send(&first, &big[QUEUE_CAPACITY..]), Ok(100));
@@ -87,7 +90,10 @@ fn a_peek_leaves_the_bytes_and_a_read_stops_before_the_next_descriptors() {
     let mut buffer = [0u8; 8];
     assert!(matches!(
         back.peek(back_side, 0, &mut buffer, true),
-        Taken::Bytes { count: 2, rights: None }
+        Taken::Bytes {
+            count: 2,
+            rights: None
+        }
     ));
     assert!(matches!(
         back.peek(back_side, 2, &mut buffer, false),
@@ -95,11 +101,17 @@ fn a_peek_leaves_the_bytes_and_a_read_stops_before_the_next_descriptors() {
     ));
     assert!(matches!(
         back.peek(back_side, 2, &mut buffer, true),
-        Taken::Bytes { count: 2, rights: None }
+        Taken::Bytes {
+            count: 2,
+            rights: None
+        }
     ));
     assert!(matches!(
         back.receive(back_side, &mut buffer, true),
-        Taken::Bytes { count: 2, rights: None }
+        Taken::Bytes {
+            count: 2,
+            rights: None
+        }
     ));
     assert_eq!(&buffer[..2], b"ab");
     assert!(matches!(
@@ -136,7 +148,10 @@ fn closing_ends_the_peer_s_reads_resets_it_after_unread_bytes_and_breaks_its_wri
         back.receive(side, &mut buffer, true),
         Taken::Bytes { count: 4, .. }
     ));
-    assert!(matches!(back.receive(side, &mut buffer, true), Taken::Ended));
+    assert!(matches!(
+        back.receive(side, &mut buffer, true),
+        Taken::Ended
+    ));
     assert_eq!(send(&second, b"x"), Err(Errno::EPIPE));
     let events = back.events(side, u16::MAX);
     let expected = event::IN | event::RDNORM | event::RDHUP | event::HUP | event::OUT;
@@ -177,7 +192,10 @@ fn shutting_down_ends_reads_on_one_side_and_writes_on_the_other() {
         Taken::Ended
     ));
     let events = back.events(back_side, u16::MAX);
-    assert_eq!(events & (event::IN | event::RDHUP), event::IN | event::RDHUP);
+    assert_eq!(
+        events & (event::IN | event::RDHUP),
+        event::IN | event::RDHUP
+    );
     assert_eq!(events & event::HUP, 0);
     assert_eq!(send(&second, b"still"), Ok(5));
     back.shutdown(back_side, true, false);
@@ -194,10 +212,7 @@ fn poll_events_follow_the_state() {
     let (first, second) = pair();
     assert_eq!(first.events(all), event::OUT | event::WRNORM);
     send(&first, b"x").unwrap();
-    assert_eq!(
-        second.events(event::IN),
-        event::IN
-    );
+    assert_eq!(second.events(event::IN), event::IN);
     assert_eq!(second.events(event::OUT), event::OUT);
 }
 
@@ -279,7 +294,10 @@ fn a_connect_that_loses_a_race_with_listen_gives_up_its_connection() {
     let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap(), no_wake);
     let (back, side) = connection_of(&accepted);
     let mut buffer = [0u8; 4];
-    assert!(matches!(back.receive(side, &mut buffer, true), Taken::Reset));
+    assert!(matches!(
+        back.receive(side, &mut buffer, true),
+        Taken::Reset
+    ));
     assert_eq!(send(&accepted, b"x"), Err(Errno::EPIPE));
     let other = UnixSocket::new(no_wake);
     let connection = Connection::new(other.begin_connect().unwrap(), ME);
@@ -382,7 +400,10 @@ fn passing_a_socket_that_would_make_a_cycle_is_refused_and_every_socket_is_freed
     let (c, c_peer) = pair();
     let (connection_c, side_c) = connection_of(&c);
     let mut a_into_c = rights(vec![Arc::clone(&a_file)]);
-    assert_eq!(connection_c.send_passing(side_c, b"x", &mut a_into_c), Ok(1));
+    assert_eq!(
+        connection_c.send_passing(side_c, b"x", &mut a_into_c),
+        Ok(1)
+    );
     let c_file = socket_file(Arc::clone(&c));
     let mut c_into_a = rights(vec![Arc::clone(&c_file)]);
     assert_eq!(
@@ -417,9 +438,12 @@ fn passing_a_socket_that_would_make_a_cycle_is_refused_and_every_socket_is_freed
 #[test]
 fn a_long_chain_of_passed_sockets_is_freed_without_recursing() {
     let _serial = tests_lock();
-    const CHAIN: usize = 10_000;
+    const CHAIN: usize = MAX_IN_FLIGHT as usize;
     let pairs: Vec<(Arc<UnixSocket>, Arc<UnixSocket>)> = (0..CHAIN).map(|_| pair()).collect();
-    let watched: Vec<Weak<UnixSocket>> = pairs.iter().map(|(first, _)| Arc::downgrade(first)).collect();
+    let watched: Vec<Weak<UnixSocket>> = pairs
+        .iter()
+        .map(|(first, _)| Arc::downgrade(first))
+        .collect();
     let mut files: Vec<Option<Arc<OpenFile>>> = pairs
         .iter()
         .map(|(first, _)| Some(socket_file(Arc::clone(first))))
@@ -432,7 +456,8 @@ fn a_long_chain_of_passed_sockets_is_freed_without_recursing() {
     }
     assert_eq!(in_flight(), (CHAIN - 1) as u32);
     let head = files[0].take().unwrap();
-    let seconds: Vec<Arc<UnixSocket>> = pairs.iter().map(|(_, second)| Arc::clone(second)).collect();
+    let seconds: Vec<Arc<UnixSocket>> =
+        pairs.iter().map(|(_, second)| Arc::clone(second)).collect();
     drop(pairs);
     drop(seconds);
     assert!(watched[CHAIN - 1].strong_count() > 0);
@@ -453,7 +478,10 @@ fn descriptors_in_flight_are_capped_in_all_and_per_direction() {
     );
     for (first, _) in &pairs[..4] {
         let (connection, side) = connection_of(first);
-        assert_eq!(connection.send(side, b"x", &mut many(MAX_QUEUED_RIGHTS)), Ok(1));
+        assert_eq!(
+            connection.send(side, b"x", &mut many(MAX_QUEUED_RIGHTS)),
+            Ok(1)
+        );
     }
     assert_eq!(in_flight(), MAX_IN_FLIGHT);
     let (last, last_side) = connection_of(&pairs[4].0);
@@ -464,7 +492,9 @@ fn descriptors_in_flight_are_capped_in_all_and_per_direction() {
     let (back, back_side) = connection_of(&pairs[0].1);
     let mut buffer = [0u8; 1];
     let taken = back.receive(back_side, &mut buffer, true);
-    assert!(matches!(&taken, Taken::Bytes { rights: Some(files), .. } if files.len() == MAX_QUEUED_RIGHTS));
+    assert!(
+        matches!(&taken, Taken::Bytes { rights: Some(files), .. } if files.len() == MAX_QUEUED_RIGHTS)
+    );
     drop(taken);
     assert_eq!(last.send(last_side, b"x", &mut many(1)), Ok(1));
     drop(pairs);

@@ -155,7 +155,9 @@ fn errors() -> Checked<()> {
     if got != expected {
         return Err(format!("errors {got:?}, expected {expected:?}"));
     }
-    println!("{PREFIX} errors ENOENT ECONNREFUSED ECONNREFUSED EADDRINUSE EAFNOSUPPORT ESOCKTNOSUPPORT");
+    println!(
+        "{PREFIX} errors ENOENT ECONNREFUSED ECONNREFUSED EADDRINUSE EAFNOSUPPORT ESOCKTNOSUPPORT"
+    );
     Ok(())
 }
 
@@ -174,7 +176,8 @@ fn poll_one(fd: &impl AsRawFd, events: i16, milliseconds: c_int) -> Checked<(c_i
 }
 
 fn pair() -> Checked<()> {
-    let (mut first, mut second) = UnixStream::pair().map_err(|error| failed("socketpair", error))?;
+    let (mut first, mut second) =
+        UnixStream::pair().map_err(|error| failed("socketpair", error))?;
     first
         .write_all(b"ping")
         .map_err(|error| failed("write", error))?;
@@ -203,7 +206,9 @@ fn pair() -> Checked<()> {
     if closed != 1 || events & hung_up != hung_up {
         return Err(format!("poll after a close: {closed} {events:#x}"));
     }
-    let end = second.read(&mut ping).map_err(|error| failed("read", error))?;
+    let end = second
+        .read(&mut ping)
+        .map_err(|error| failed("read", error))?;
     let broken = match second.write(b"x") {
         Err(error) => errno(&error),
         Ok(written) => return Err(format!("a write after a close wrote {written}")),
@@ -300,7 +305,9 @@ fn conversation() -> Checked<()> {
     if quiet != 0 {
         return Err("the client wrote before go".into());
     }
-    stream.write_all(b"g").map_err(|error| failed("go", error))?;
+    stream
+        .write_all(b"g")
+        .map_err(|error| failed("go", error))?;
     let (woken, events) = poll_one(&stream, POLLIN, 5000)?;
     let mut byte = [0u8; 1];
     stream
@@ -333,8 +340,12 @@ fn conversation() -> Checked<()> {
     }
     println!("{PREFIX} large {LARGE} bytes ok");
 
-    stream.write_all(b"bye").map_err(|error| failed("bye", error))?;
-    let end = stream.read(&mut byte).map_err(|error| failed("read", error))?;
+    stream
+        .write_all(b"bye")
+        .map_err(|error| failed("bye", error))?;
+    let end = stream
+        .read(&mut byte)
+        .map_err(|error| failed("read", error))?;
     let status = child.wait().map_err(|error| failed("wait", error))?;
     let broken = match stream.write(b"x") {
         Err(error) => errno(&error),
@@ -430,7 +441,9 @@ fn client(path: &str) -> Checked<()> {
         .read_exact(&mut go)
         .map_err(|error| failed("go", error))?;
     std::thread::sleep(Duration::from_millis(100));
-    stream.write_all(b"w").map_err(|error| failed("wake", error))?;
+    stream
+        .write_all(b"w")
+        .map_err(|error| failed("wake", error))?;
 
     let (reader, mut writer) = std::io::pipe().map_err(|error| failed("pipe", error))?;
     send_descriptor(&stream, reader.as_raw_fd(), b'r')?;

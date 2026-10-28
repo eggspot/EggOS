@@ -548,10 +548,12 @@ impl FileSystem for Tmpfs {
             socket: kind == NodeKind::Socket,
             contents: match kind {
                 NodeKind::Directory => Contents::Directory(Vec::new()),
-                NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::Socket => Contents::File {
-                    pages: Vec::new(),
-                    size: 0,
-                },
+                NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::Socket => {
+                    Contents::File {
+                        pages: Vec::new(),
+                        size: 0,
+                    }
+                }
             },
         };
         let slot = match state.free.pop() {
@@ -961,9 +963,7 @@ mod tests {
     fn socket_nodes_have_their_kind_in_their_number_and_go_like_files() {
         let fs = tmpfs(1 << 20);
         let root = fs.root();
-        let socket = fs
-            .create(root, b"s", NodeKind::Socket, 0o755, 3)
-            .unwrap();
+        let socket = fs.create(root, b"s", NodeKind::Socket, 0o755, 3).unwrap();
         assert_eq!(fs.kind(socket), NodeKind::Socket);
         assert_eq!(fs.lookup(root, b"s"), Some(socket));
         let attributes = fs.attributes(socket);

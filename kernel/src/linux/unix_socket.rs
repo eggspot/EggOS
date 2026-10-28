@@ -321,12 +321,9 @@ impl Connection {
             if direction.queued_rights + files > MAX_QUEUED_RIGHTS {
                 return Err(Errno::ETOOMANYREFS);
             }
-            direction
-                .rights
-                .try_reserve(1)
-                .map_err(|_| Errno::ENOMEM)?;
+            direction.rights.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
             IN_FLIGHT
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |in_flight| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |in_flight| {
                     in_flight
                         .checked_add(files as u32)
                         .filter(|&total| total <= MAX_IN_FLIGHT)
@@ -543,9 +540,14 @@ struct Listening {
 
 #[derive(Debug)]
 enum SocketState {
-    Open { address: Address },
+    Open {
+        address: Address,
+    },
     Listening(Listening),
-    Connected { connection: Arc<Connection>, side: Side },
+    Connected {
+        connection: Arc<Connection>,
+        side: Side,
+    },
 }
 
 /// A socket's options (`setsockopt`): kept and reported, the timeouts acted on.
@@ -762,7 +764,10 @@ impl UnixSocket {
     /// for it; `false` if it no longer listens.
     pub fn put_back(&self, connection: Arc<Connection>) -> bool {
         match &mut *self.state.lock() {
-            SocketState::Listening(listening) if listening.backlog.try_reserve(1).is_ok() => {
+            SocketState::Listening(listening) => {
+                if listening.backlog.try_reserve(1).is_err() {
+                    return false;
+                }
                 listening.backlog.push_front(connection);
                 true
             }
@@ -933,14 +938,13 @@ struct BoundSockets {
 pub fn register(key: BindingKey, socket: &Arc<UnixSocket>) -> Result<(), Errno> {
     let mut bound = BOUND_SOCKETS.lock();
     let sockets = bound.get_or_insert_with(Box::default);
-    sockets.entries.retain(|(_, socket)| socket.strong_count() > 0);
+    sockets
+        .entries
+        .retain(|(_, socket)| socket.strong_count() > 0);
     if sockets.entries.iter().any(|(bound, _)| *bound == key) {
         return Err(Errno::EADDRINUSE);
     }
-    sockets
-        .entries
-        .try_reserve(1)
-        .map_err(|_| Errno::ENOMEM)?;
+    sockets.entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
     sockets.entries.push((key, Arc::downgrade(socket)));
     Ok(())
 }
@@ -950,7 +954,9 @@ pub fn register(key: BindingKey, socket: &Arc<UnixSocket>) -> Result<(), Errno> 
 pub fn register_autobound(socket: &Arc<UnixSocket>) -> Result<Arc<[u8]>, Errno> {
     let mut bound = BOUND_SOCKETS.lock();
     let sockets = bound.get_or_insert_with(Box::default);
-    sockets.entries.retain(|(_, socket)| socket.strong_count() > 0);
+    sockets
+        .entries
+        .retain(|(_, socket)| socket.strong_count() > 0);
     for _ in 0..AUTOBIND_NAMES {
         let number = sockets.next_autobind % AUTOBIND_NAMES;
         sockets.next_autobind = (number + 1) % AUTOBIND_NAMES;
@@ -959,10 +965,7 @@ pub fn register_autobound(socket: &Arc<UnixSocket>) -> Result<Arc<[u8]>, Errno> 
         if sockets.entries.iter().any(|(bound, _)| *bound == key) {
             continue;
         }
-        sockets
-            .entries
-            .try_reserve(1)
-            .map_err(|_| Errno::ENOMEM)?;
+        sockets.entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         sockets.entries.push((key, Arc::downgrade(socket)));
         return Ok(name);
     }
@@ -971,9 +974,8 @@ pub fn register_autobound(socket: &Arc<UnixSocket>) -> Result<Arc<[u8]>, Errno> 
 
 fn autobind_name(number: u32) -> Arc<[u8]> {
     let digits = *b"0123456789abcdef";
-    let name: [u8; 5] = core::array::from_fn(|index| {
-        digits[(number >> (4 * (4 - index)) & 0xf) as usize]
-    });
+    let name: [u8; 5] =
+        core::array::from_fn(|index| digits[(number >> (4 * (4 - index)) & 0xf) as usize]);
     Arc::from(&name[..])
 }
 
@@ -1009,9 +1011,9 @@ pub fn unregister_key(key: &BindingKey, socket: &UnixSocket) {
     let Some(sockets) = bound.as_mut() else {
         return;
     };
-    sockets.entries.retain(|(bound, entry)| {
-        !(bound == key && core::ptr::eq(Weak::as_ptr(entry), socket))
-    });
+    sockets
+        .entries
+        .retain(|(bound, entry)| !(bound == key && core::ptr::eq(Weak::as_ptr(entry), socket)));
     if sockets.entries.is_empty() {
         *bound = None;
     }
@@ -1028,6 +1030,10 @@ pub fn in_flight() -> u32 {
 }
 
 struct Releasing {
+    #[expect(
+        clippy::box_collection,
+        reason = "a null box keeps the static all zeros, in .bss"
+    )]
     files: Option<Box<Vec<Arc<OpenFile>>>>,
     draining: bool,
 }

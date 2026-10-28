@@ -167,11 +167,21 @@ pub fn call<P: Platform>(
         }
         number::CONNECT => return connect::<P>(process, thread, context, first, second, third),
         number::SENDTO => {
-            return sendto::<P>(process, thread, context, [first, second, third, fourth, fifth, sixth]);
+            return sendto::<P>(
+                process,
+                thread,
+                context,
+                [first, second, third, fourth, fifth, sixth],
+            );
         }
         number::SENDMSG => return sendmsg::<P>(process, thread, context, first, second, third),
         number::RECVFROM => {
-            return recvfrom::<P>(process, thread, context, [first, second, third, fourth, fifth, sixth]);
+            return recvfrom::<P>(
+                process,
+                thread,
+                context,
+                [first, second, third, fourth, fifth, sixth],
+            );
         }
         number::RECVMSG => return recvmsg::<P>(process, thread, context, first, second, third),
         _ => Err(Errno::ENOSYS),
@@ -208,8 +218,6 @@ fn deadline<P: Platform>(timeout: u64) -> u64 {
     }
 }
 
-/// The type bits of `socket` and `socketpair` checked in Linux's order: the flags they may
-/// carry (`SOCK_NONBLOCK`, `SOCK_CLOEXEC`).
 fn checked_type(domain: u64, kind: u64, protocol: u64) -> Result<u32, Errno> {
     let kind = kind as u32;
     let flags = kind & SOCKET_FLAGS;
@@ -274,13 +282,9 @@ pub fn socketpair<P: Platform>(
     let limit = open_file_limit(process);
     let files = thread.files();
     let (first, second) = (open_socket(first, flags), open_socket(second, flags));
-    let first_fd = files
-        .lock()
-        .open(Arc::clone(&first), close_on_exec, limit);
+    let first_fd = files.lock().open(Arc::clone(&first), close_on_exec, limit);
     let second_fd = match first_fd {
-        Ok(_) => files
-            .lock()
-            .open(Arc::clone(&second), close_on_exec, limit),
+        Ok(_) => files.lock().open(Arc::clone(&second), close_on_exec, limit),
         Err(error) => Err(error),
     };
     let (first_fd, second_fd) = match (first_fd, second_fd) {
@@ -324,7 +328,10 @@ pub fn parse_address(bytes: &[u8]) -> Result<Address, Errno> {
         None => Address::Unnamed,
         Some(0) => Address::Abstract(Arc::from(&path[1..])),
         Some(_) => {
-            let end = path.iter().position(|&byte| byte == 0).unwrap_or(path.len());
+            let end = path
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(path.len());
             Address::Path(Arc::from(&path[..end]))
         }
     })
@@ -367,10 +374,6 @@ fn read_address<P: Platform>(
     parse_address(&bytes[..length])
 }
 
-/// Writes `address` to the program's `address`, at most the `int` at `length_at` bytes of it,
-/// and its whole length back there, as `accept`, `getsockname` and `recvfrom` do: nothing for
-/// a null `address`; `EINVAL` for a negative length, `EFAULT` for memory that is not the
-/// program's.
 fn write_address<P: Platform>(
     process: &Process<P>,
     address: u64,
@@ -443,10 +446,11 @@ pub fn bind<P: Platform>(
 
 fn make_socket_file<P: Platform>(thread: &LinuxThread, path: &[u8]) -> Result<Node, Errno> {
     let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
-    let (directory, name) = parent_and_name(root, start, path, false).map_err(|error| match error {
-        Errno::EBUSY => Errno::EADDRINUSE,
-        error => error,
-    })?;
+    let (directory, name) =
+        parent_and_name(root, start, path, false).map_err(|error| match error {
+            Errno::EBUSY => Errno::EADDRINUSE,
+            error => error,
+        })?;
     if directory.lookup(name).is_ok() {
         return Err(Errno::EADDRINUSE);
     }
@@ -583,7 +587,10 @@ pub fn setsockopt<P: Platform>(
     let options = socket.options();
     let name = name as u32;
     match name {
-        option::RCVTIMEO_OLD | option::RCVTIMEO_NEW | option::SNDTIMEO_OLD | option::SNDTIMEO_NEW => {
+        option::RCVTIMEO_OLD
+        | option::RCVTIMEO_NEW
+        | option::SNDTIMEO_OLD
+        | option::SNDTIMEO_NEW => {
             if length < TIMEVAL_SIZE {
                 return Err(Errno::EINVAL);
             }
@@ -615,7 +622,9 @@ pub fn setsockopt<P: Platform>(
             };
             kept.store(doubled, Ordering::Relaxed);
         }
-        option::PASSCRED => options.pass_credentials.store(number != 0, Ordering::Relaxed),
+        option::PASSCRED => options
+            .pass_credentials
+            .store(number != 0, Ordering::Relaxed),
         _ => options.reuse_address.store(number != 0, Ordering::Relaxed),
     }
     Ok(0)
@@ -675,12 +684,14 @@ pub fn getsockopt<P: Platform>(
             bytes[8..12].copy_from_slice(&credentials.gid.to_ne_bytes());
             (bytes, UCRED_SIZE)
         }
-        option::RCVTIMEO_OLD | option::RCVTIMEO_NEW => {
-            (timeval(options.receive_timeout.load(Ordering::Relaxed)), TIMEVAL_SIZE)
-        }
-        option::SNDTIMEO_OLD | option::SNDTIMEO_NEW => {
-            (timeval(options.send_timeout.load(Ordering::Relaxed)), TIMEVAL_SIZE)
-        }
+        option::RCVTIMEO_OLD | option::RCVTIMEO_NEW => (
+            timeval(options.receive_timeout.load(Ordering::Relaxed)),
+            TIMEVAL_SIZE,
+        ),
+        option::SNDTIMEO_OLD | option::SNDTIMEO_NEW => (
+            timeval(options.send_timeout.load(Ordering::Relaxed)),
+            TIMEVAL_SIZE,
+        ),
         _ => return Err(Errno::ENOPROTOOPT),
     };
     let written = size.min(room as usize);
@@ -743,7 +754,9 @@ fn accept<P: Platform>(
             Err(error) => break Err(error),
             Ok(Some(connection)) => {
                 socket.changed();
-                break install_accepted::<P>(process, thread, &socket, connection, address, length_at, flags);
+                break install_accepted::<P>(
+                    process, thread, &socket, connection, address, length_at, flags,
+                );
             }
             Ok(None) if file.is_nonblocking() => break Err(Errno::EAGAIN),
             Ok(None) => match wait_for_input(process, thread, deadline, || socket.can_accept())? {
@@ -866,7 +879,6 @@ fn connect<P: Platform>(
     finish(process, thread, context, result)
 }
 
-/// A send's parsed arguments.
 struct Send {
     file: Arc<OpenFile>,
     socket: Arc<UnixSocket>,
@@ -910,7 +922,6 @@ fn check_destination(socket: &UnixSocket, named: bool) -> Result<(), Errno> {
     }
 }
 
-/// A `struct msghdr` as the program wrote it.
 #[derive(Debug, Clone, Copy)]
 struct MessageHeader {
     name: u64,
@@ -967,11 +978,6 @@ fn sendmsg<P: Platform>(
     }
 }
 
-/// The descriptors a control buffer of `length` bytes at `control` passes, as Linux reads
-/// it: `ENOBUFS` past 20480 bytes, `EINVAL` for a message whose length is short or overruns
-/// the buffer, for another socket-level message (`SCM_CREDENTIALS`) or for more than
-/// [`unix_socket::MAX_RIGHTS_PER_MESSAGE`] descriptors, `EBADF` for one not open. Messages of
-/// other levels are skipped.
 fn read_rights<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -1006,8 +1012,11 @@ fn read_rights<P: Platform>(
     Ok(Some(OutgoingRights::new(files)))
 }
 
-/// The descriptor numbers in the `SCM_RIGHTS` messages of a control buffer (see
-/// [`read_rights`]).
+/// The descriptor numbers in the `SCM_RIGHTS` messages of a control buffer, as Linux reads
+/// them: `EINVAL` for a message whose length is short or overruns the buffer, for another
+/// socket-level message (`SCM_CREDENTIALS`), or for more than
+/// [`unix_socket::MAX_RIGHTS_PER_MESSAGE`] descriptors in all. Messages of other levels are
+/// skipped.
 pub fn parse_rights(bytes: &[u8]) -> Result<Vec<i32>, Errno> {
     let mut descriptors = Vec::new();
     let mut offset = 0usize;
@@ -1029,12 +1038,12 @@ pub fn parse_rights(bytes: &[u8]) -> Result<Vec<i32>, Errno> {
             if descriptors.len() + count > unix_socket::MAX_RIGHTS_PER_MESSAGE {
                 return Err(Errno::EINVAL);
             }
-            descriptors
-                .try_reserve(count)
-                .map_err(|_| Errno::ENOMEM)?;
+            descriptors.try_reserve(count).map_err(|_| Errno::ENOMEM)?;
             descriptors.extend(
-                data.chunks_exact(4)
-                    .map(|fd| i32::from_ne_bytes(fd.try_into().unwrap())),
+                data.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|fd| i32::from_ne_bytes(*fd)),
             );
         }
         offset += length.next_multiple_of(8);
@@ -1080,7 +1089,12 @@ fn send_message<P: Platform>(
             }
         }
     };
-    unix_socket::release_rights(send.rights.take().map(|rights| rights.files).unwrap_or_default());
+    unix_socket::release_rights(
+        send.rights
+            .take()
+            .map(|rights| rights.files)
+            .unwrap_or_default(),
+    );
     if result == Err(Errno::EPIPE) && send.flags & message::NOSIGNAL == 0 {
         signals::send_from_kernel_to_self(process, thread, super::signal::SIGPIPE);
     }
@@ -1125,10 +1139,11 @@ fn send_or_wait<P: Platform>(
             }
             let mut sent = 0;
             while sent < size {
-                let pushed = match connection.send_passing(side, &chunk[sent..size], &mut send.rights) {
-                    Ok(pushed) => pushed,
-                    Err(error) => return ControlFlow::Continue(Some(partial(written, error))),
-                };
+                let pushed =
+                    match connection.send_passing(side, &chunk[sent..size], &mut send.rights) {
+                        Ok(pushed) => pushed,
+                        Err(error) => return ControlFlow::Continue(Some(partial(written, error))),
+                    };
                 if pushed > 0 {
                     send.socket.changed();
                     sent += pushed;
@@ -1157,7 +1172,6 @@ fn send_or_wait<P: Platform>(
     ControlFlow::Continue(Some(Ok(written)))
 }
 
-/// A receive's parsed arguments, and what it got besides the bytes.
 struct Receive {
     file: Arc<OpenFile>,
     socket: Arc<UnixSocket>,
@@ -1357,7 +1371,13 @@ fn complete_header<P: Platform>(
 ) -> Result<(), Errno> {
     let had_rights = !rights.is_empty();
     let installed = match had_rights {
-        true => install_rights(process, thread, rights, header.control_length, close_on_exec),
+        true => install_rights(
+            process,
+            thread,
+            rights,
+            header.control_length,
+            close_on_exec,
+        ),
         false => Installed {
             descriptors: Vec::new(),
             used: 0,
@@ -1420,7 +1440,11 @@ fn receive_message<P: Platform>(
     context: &mut UserContext,
     receive: &mut Receive,
 ) -> ControlFlow<(), Option<Result<u64, Errno>>> {
-    let timeout = receive.socket.options().receive_timeout.load(Ordering::Relaxed);
+    let timeout = receive
+        .socket
+        .options()
+        .receive_timeout
+        .load(Ordering::Relaxed);
     let interrupted = interrupted(context, timeout);
     let deadline = deadline::<P>(timeout);
     loop {
@@ -1491,7 +1515,9 @@ fn receive_or_wait<P: Platform>(
                             _ => Ok(copied),
                         }));
                     }
-                    match wait_for_input(process, thread, deadline, || connection.can_receive(side))? {
+                    match wait_for_input(process, thread, deadline, || {
+                        connection.can_receive(side)
+                    })? {
                         Waited::Ready => continue,
                         Waited::TimedOut => {
                             return ControlFlow::Continue(Some(match copied {

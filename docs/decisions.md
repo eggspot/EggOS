@@ -8456,7 +8456,7 @@ the license, by an explicit instruction recorded here.
   count, so a program holding 4096 unread blocks others' passing until it reads or ends,
   accepted for the single-user v0.3.0. Descriptors leaving a queue go through
   `release_rights`, which drops them one at a time from a list, so a chain of passed sockets
-  of any length is freed with the stack of one drop (a host test frees 10,000).
+  of any length is freed with the stack of one drop (a host test frees 4096).
 - **Wake-ups** (decided by research). Every socket change wakes through the console's input
   key, as pipes do (`UnixSocket::changed`), so one `poll` waits for the console, pipes,
   windows and sockets together, and a `poll` asleep in one process wakes when another writes.
@@ -8473,7 +8473,7 @@ the license, by an explicit instruction recorded here.
 - **Testing.** Host: the ring, peeks, descriptor boundaries, ends and resets, shutdown, the
   backlog, a closed listener's backlog, `connect` racing `listen`, two sockets connecting to
   each other on two threads, the registry and autobind, `/proc/net/unix`, cycles refused and
-  every socket freed, a 10,000-long chain, the in-flight caps, readiness under the descriptor
+  every socket freed, a 4096-long chain, the in-flight caps, readiness under the descriptor
   table's lock, tmpfs socket nodes and the wrapping generation, and through the system-call
   layer `socket`'s errors and flags, a pair, `SCM_RIGHTS` with `MSG_CMSG_CLOEXEC` and
   `MSG_CTRUNC`, an abstract listener with `SO_PEERCRED`, addresses, control messages, the
