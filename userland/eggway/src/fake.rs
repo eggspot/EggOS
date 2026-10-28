@@ -84,7 +84,11 @@ pub struct Fake {
     pub work_area: (u32, u32),
     pub clients: usize,
     pub keymaps: usize,
-    spare: Vec<&'static mut ClientSlot>,
+}
+
+std::thread_local! {
+    static SPARE_CLIENTS: std::cell::RefCell<Vec<&'static mut ClientSlot>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl Default for Fake {
@@ -106,7 +110,6 @@ impl Default for Fake {
             work_area: (1280, 732),
             clients: 0,
             keymaps: 0,
-            spare: Vec::new(),
         }
     }
 }
@@ -170,7 +173,7 @@ impl System for Fake {
 
     fn new_client(&mut self, socket: Fd) -> Option<&'static mut ClientSlot> {
         self.clients += 1;
-        match self.spare.pop() {
+        match SPARE_CLIENTS.with_borrow_mut(Vec::pop) {
             Some(slot) => {
                 *slot = ClientSlot::new(socket);
                 Some(slot)
@@ -181,7 +184,7 @@ impl System for Fake {
 
     fn free_client(&mut self, client: &'static mut ClientSlot) {
         self.clients -= 1;
-        self.spare.push(client);
+        SPARE_CLIENTS.with_borrow_mut(|spare| spare.push(client));
     }
 
     fn receive(
