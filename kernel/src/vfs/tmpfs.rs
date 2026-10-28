@@ -5,6 +5,9 @@
 //! file systems sharing it draw on; a write past it fails with [`Refused::NoSpace`], and
 //! removing a file gives its pages back at once.
 //!
+//! A socket file (`NodeKind::Socket`, D138) is a node with no contents that `bind` makes: its
+//! kind is in its number, as a directory's is.
+//!
 //! Everything is behind one leaf lock, held only while the file system's own memory is read or
 //! changed: never while a program's memory is copied, so reads and writes go through the
 //! caller's buffer. A node's number holds its slot, its kind and the slot's generation, which
@@ -109,6 +112,7 @@ struct Inode {
     name: Vec<u8>,
     permissions: u32,
     modified: u64,
+    socket: bool,
     contents: Contents,
 }
 
@@ -126,12 +130,23 @@ struct State {
 
 const DIRECTORY_BIT: u64 = 1 << 32;
 
-fn number(slot: u32, generation: u32, directory: bool) -> u64 {
-    u64::from(generation) << 33 | u64::from(directory) << 32 | u64::from(slot)
+const SOCKET_BIT: u64 = 1 << 33;
+
+const GENERATION_SHIFT: u32 = 34;
+
+const GENERATION_MASK: u32 = (1 << (64 - GENERATION_SHIFT)) - 1;
+
+fn number(slot: u32, generation: u32, kind: NodeKind) -> u64 {
+    let kind = match kind {
+        NodeKind::Directory => DIRECTORY_BIT,
+        NodeKind::Socket => SOCKET_BIT,
+        NodeKind::Regular | NodeKind::CharacterDevice => 0,
+    };
+    u64::from(generation & GENERATION_MASK) << GENERATION_SHIFT | kind | u64::from(slot)
 }
 
 fn slot_of(node: u64) -> (usize, u32) {
-    (node as u32 as usize, (node >> 33) as u32)
+    (node as u32 as usize, (node >> GENERATION_SHIFT) as u32)
 }
 
 /// A memory file system: see the module documentation.
@@ -156,6 +171,7 @@ impl Tmpfs {
                 name: Vec::new(),
                 permissions,
                 modified: 0,
+                socket: false,
                 contents: Contents::Directory(Vec::new()),
             }),
         });
@@ -188,11 +204,15 @@ impl State {
 
     fn number_of(&self, slot: u32) -> u64 {
         let entry = &self.slots[slot as usize];
-        let directory = matches!(
-            entry.inode.as_ref().map(|inode| &inode.contents),
-            Some(Contents::Directory(_))
-        );
-        number(slot, entry.generation, directory)
+        let kind = match entry.inode.as_ref() {
+            Some(Inode {
+                contents: Contents::Directory(_),
+                ..
+            }) => NodeKind::Directory,
+            Some(Inode { socket: true, .. }) => NodeKind::Socket,
+            _ => NodeKind::Regular,
+        };
+        number(slot, entry.generation, kind)
     }
 
     fn children(&self, directory: u64) -> Result<&[u32], Refused> {
@@ -247,7 +267,7 @@ impl State {
             };
             budget.give_back(pages + NODE_COST + inode.name.len());
         }
-        entry.generation = entry.generation.wrapping_add(1);
+        entry.generation = entry.generation.wrapping_add(1) & GENERATION_MASK;
         if self.free.try_reserve(1).is_ok() {
             self.free.push(slot);
         }
@@ -279,9 +299,12 @@ impl FileSystem for Tmpfs {
     }
 
     fn kind(&self, node: u64) -> NodeKind {
-        match node & DIRECTORY_BIT != 0 {
-            true => NodeKind::Directory,
-            false => NodeKind::Regular,
+        if node & DIRECTORY_BIT != 0 {
+            NodeKind::Directory
+        } else if node & SOCKET_BIT != 0 {
+            NodeKind::Socket
+        } else {
+            NodeKind::Regular
         }
     }
 
@@ -522,9 +545,10 @@ impl FileSystem for Tmpfs {
             name: stored,
             permissions: permissions & 0o7777,
             modified: now,
+            socket: kind == NodeKind::Socket,
             contents: match kind {
                 NodeKind::Directory => Contents::Directory(Vec::new()),
-                NodeKind::Regular | NodeKind::CharacterDevice => Contents::File {
+                NodeKind::Regular | NodeKind::CharacterDevice | NodeKind::Socket => Contents::File {
                     pages: Vec::new(),
                     size: 0,
                 },
@@ -931,5 +955,49 @@ mod tests {
         fs.rename(a, b"b", root, b"longer name", false, 0).unwrap();
         assert_eq!(fs.parent(b), root);
         assert_eq!(fs.name(b).as_bytes(), b"longer name");
+    }
+
+    #[test]
+    fn socket_nodes_have_their_kind_in_their_number_and_go_like_files() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let socket = fs
+            .create(root, b"s", NodeKind::Socket, 0o755, 3)
+            .unwrap();
+        assert_eq!(fs.kind(socket), NodeKind::Socket);
+        assert_eq!(fs.lookup(root, b"s"), Some(socket));
+        let attributes = fs.attributes(socket);
+        assert_eq!((attributes.kind, attributes.size), (NodeKind::Socket, 0));
+        assert_eq!(fs.entry(root, 0).unwrap().kind, NodeKind::Socket);
+        assert_eq!(
+            fs.create(root, b"s", NodeKind::Socket, 0o755, 3),
+            Err(Refused::Exists)
+        );
+        assert_eq!(fs.remove(root, b"s", true, 4), Err(Refused::NotDirectory));
+        fs.remove(root, b"s", false, 4).unwrap();
+        assert_eq!(fs.lookup(root, b"s"), None);
+        let again = fs.create(root, b"s", NodeKind::Socket, 0o755, 5).unwrap();
+        assert_ne!(again, socket);
+        assert_eq!(fs.attributes(socket).links, 0);
+    }
+
+    #[test]
+    fn a_slot_s_generation_wraps_within_its_bits_and_its_last_number_no_longer_matches() {
+        let fs = tmpfs(1 << 20);
+        let root = fs.root();
+        let first = fs.create(root, b"f", NodeKind::Regular, 0o644, 0).unwrap();
+        let (slot, _) = slot_of(first);
+        fs.state.lock().slots[slot].generation = GENERATION_MASK;
+        let last = fs.state.lock().number_of(slot as u32);
+        assert_eq!(slot_of(last), (slot, GENERATION_MASK));
+        assert_eq!(fs.kind(last), NodeKind::Regular);
+        assert_eq!(fs.attributes(last).links, 1);
+        fs.remove(root, b"f", false, 0).unwrap();
+        let wrapped = fs.create(root, b"g", NodeKind::Socket, 0o644, 0).unwrap();
+        assert_eq!(slot_of(wrapped), (slot, 0));
+        assert_eq!(fs.kind(wrapped), NodeKind::Socket);
+        assert_eq!(fs.attributes(wrapped).links, 1);
+        assert_eq!(fs.attributes(last).links, 0);
+        assert_ne!(wrapped, first);
     }
 }

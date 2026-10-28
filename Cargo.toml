@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "hal", "drivers", "font", "eggfs", "settings-file", "app-manifest", "userland/runtime", "userland/init", "userland/eggsh", "userland/coreutils", "userland/hello-window", "userland/toolkit", "userland/settings", "userland/app", "userland/files", "userland/mcp", "userland/selftest", "userland/std-selftest", "userland/windows", "userland/windows-gui", "userland/macos", "tests/linux-static", "tests/windows-console", "tests/windows-gui", "tests/android-console", "tests/macos-console", "xtask"]
+members = ["kernel", "hal", "drivers", "font", "eggfs", "settings-file", "app-manifest", "userland/runtime", "userland/init", "userland/eggsh", "userland/coreutils", "userland/hello-window", "userland/toolkit", "userland/settings", "userland/app", "userland/files", "userland/mcp", "userland/selftest", "userland/std-selftest", "userland/windows", "userland/windows-gui", "userland/macos", "tests/linux-static", "tests/linux-sockets", "tests/windows-console", "tests/windows-gui", "tests/android-console", "tests/macos-console", "xtask"]
 
 [workspace.package]
 version = "0.2.0"

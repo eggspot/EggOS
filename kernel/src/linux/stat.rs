@@ -113,6 +113,12 @@ pub const S_IFDIR: u32 = 0o040000;
 /// A regular file's file type bits (`S_IFREG`).
 pub const S_IFREG: u32 = 0o100000;
 
+/// A socket's file type bits (`S_IFSOCK`).
+pub const S_IFSOCK: u32 = 0o140000;
+
+/// The device Linux's sockets report (`st_dev`): the anonymous device of its socket file system.
+pub const SOCKETS: Device = Device { major: 0, minor: 8 };
+
 /// The status of `node`: its attributes, on its file system's device, in blocks of the page
 /// size as a memory file system reports them.
 pub fn node_status(node: Node) -> Status {
@@ -122,6 +128,7 @@ pub fn node_status(node: Node) -> Status {
         NodeKind::Directory => S_IFDIR,
         NodeKind::Regular => S_IFREG,
         NodeKind::CharacterDevice => S_IFCHR,
+        NodeKind::Socket => S_IFSOCK,
     };
     let (represented_major, represented_minor) = node.character_device().unwrap_or((0, 0));
     Status {
@@ -307,6 +314,16 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
         FileKind::Window(_) => Ok(WINDOW),
         FileKind::AgentChannel(_) => Ok(AGENT),
+        FileKind::Socket(socket) => Ok(Status {
+            device: SOCKETS,
+            inode: socket.inode(),
+            mode: S_IFSOCK | 0o777,
+            links: 1,
+            represented_device: Device { major: 0, minor: 0 },
+            size: 0,
+            blocks: 0,
+            ..CONSOLE
+        }),
     }
 }
 

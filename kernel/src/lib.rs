@@ -128,8 +128,12 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 3] =
-    [(b"/tmp", (0, 30)), (b"/home", (0, 31)), (b"/var", (0, 32))];
+const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 4] = [
+    (b"/tmp", (0, 30)),
+    (b"/home", (0, 31)),
+    (b"/var", (0, 32)),
+    (b"/run", (0, 33)),
+];
 
 fn mount_system_file_systems<P: Platform>() {
     use alloc::boxed::Box;

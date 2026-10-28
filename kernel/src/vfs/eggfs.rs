@@ -366,7 +366,7 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         let kind = match kind {
             NodeKind::Directory => Kind::Directory,
             NodeKind::Regular => Kind::Regular,
-            NodeKind::CharacterDevice => return Err(Refused::InvalidArgument),
+            NodeKind::CharacterDevice | NodeKind::Socket => return Err(Refused::InvalidArgument),
         };
         self.changing(|volume| volume.create(directory, name, kind, permissions, now))
     }

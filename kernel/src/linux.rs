@@ -38,7 +38,8 @@
 //! children waited for with `wait4` and `waitid` ([`wait`], D105) and process groups,
 //! sessions and the console's foreground group ([`job_control`], D105), and the machine
 //! powered off, halted or reset with `reboot` ([`reboot`], D106), and changes put on the
-//! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131). Every
+//! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131), and `AF_UNIX`
+//! stream sockets with `SCM_RIGHTS` ([`socket`], [`unix_socket`], D138). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -64,12 +65,14 @@ pub mod random;
 pub mod reboot;
 pub mod signal_frame;
 pub mod signals;
+pub mod socket;
 pub mod stat;
 pub mod terminal;
 pub mod thread;
 pub mod thread_pointer;
 pub mod time;
 pub mod trampoline;
+pub mod unix_socket;
 pub mod wait;
 pub mod window;
 
@@ -210,6 +213,22 @@ pub mod number {
         pub const EXECVEAT: u64 = 322;
         pub const STATX: u64 = 332;
         pub const CLOSE_RANGE: u64 = 436;
+        pub const SOCKET: u64 = 41;
+        pub const CONNECT: u64 = 42;
+        pub const ACCEPT: u64 = 43;
+        pub const SENDTO: u64 = 44;
+        pub const RECVFROM: u64 = 45;
+        pub const SENDMSG: u64 = 46;
+        pub const RECVMSG: u64 = 47;
+        pub const SHUTDOWN: u64 = 48;
+        pub const BIND: u64 = 49;
+        pub const LISTEN: u64 = 50;
+        pub const GETSOCKNAME: u64 = 51;
+        pub const GETPEERNAME: u64 = 52;
+        pub const SOCKETPAIR: u64 = 53;
+        pub const SETSOCKOPT: u64 = 54;
+        pub const GETSOCKOPT: u64 = 55;
+        pub const ACCEPT4: u64 = 288;
         /// The highest number above.
         pub const LAST: u64 = CLOSE_RANGE;
     }
@@ -320,6 +339,22 @@ pub mod number {
         pub const EXECVEAT: u64 = 281;
         pub const STATX: u64 = 291;
         pub const CLOSE_RANGE: u64 = 436;
+        pub const SOCKET: u64 = 198;
+        pub const SOCKETPAIR: u64 = 199;
+        pub const BIND: u64 = 200;
+        pub const LISTEN: u64 = 201;
+        pub const ACCEPT: u64 = 202;
+        pub const CONNECT: u64 = 203;
+        pub const GETSOCKNAME: u64 = 204;
+        pub const GETPEERNAME: u64 = 205;
+        pub const SENDTO: u64 = 206;
+        pub const RECVFROM: u64 = 207;
+        pub const SETSOCKOPT: u64 = 208;
+        pub const GETSOCKOPT: u64 = 209;
+        pub const SHUTDOWN: u64 = 210;
+        pub const SENDMSG: u64 = 211;
+        pub const RECVMSG: u64 = 212;
+        pub const ACCEPT4: u64 = 242;
         /// The highest number above.
         pub const LAST: u64 = CLOSE_RANGE;
     }
@@ -452,6 +487,22 @@ pub mod number {
             SETFSUID,
             SETFSGID,
             SETGROUPS,
+            SOCKET,
+            SOCKETPAIR,
+            BIND,
+            LISTEN,
+            ACCEPT,
+            ACCEPT4,
+            CONNECT,
+            GETSOCKNAME,
+            GETPEERNAME,
+            SENDTO,
+            RECVFROM,
+            SENDMSG,
+            RECVMSG,
+            SHUTDOWN,
+            SETSOCKOPT,
+            GETSOCKOPT,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -563,8 +614,35 @@ impl Errno {
     /// Timed out: a wait's deadline came first (`futex`).
     pub const ETIMEDOUT: Self = Self(110);
     /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`), or a clock
-    /// `clock_nanosleep` cannot sleep on.
+    /// `clock_nanosleep` cannot sleep on, or out-of-band data or another option level on a
+    /// socket (D138).
     pub const EOPNOTSUPP: Self = Self(95);
+    /// Out of the domain: a timeout's microseconds out of range (`setsockopt`).
+    pub const EDOM: Self = Self(33);
+    /// Not a socket: a socket call on another descriptor.
+    pub const ENOTSOCK: Self = Self(88);
+    /// No such option (`getsockopt`, `setsockopt`).
+    pub const ENOPROTOOPT: Self = Self(92);
+    /// A protocol the family does not have (`socket`).
+    pub const EPROTONOSUPPORT: Self = Self(93);
+    /// A socket type the family does not have (`socket`): datagrams and sequenced packets.
+    pub const ESOCKTNOSUPPORT: Self = Self(94);
+    /// An address family there is no socket for (`socket`): every one but `AF_UNIX`.
+    pub const EAFNOSUPPORT: Self = Self(97);
+    /// The address is taken (`bind`).
+    pub const EADDRINUSE: Self = Self(98);
+    /// The peer closed with bytes it had not read (`recv`, `SO_ERROR`).
+    pub const ECONNRESET: Self = Self(104);
+    /// No room for the control buffer (`sendmsg`).
+    pub const ENOBUFS: Self = Self(105);
+    /// The socket is connected already (`connect`, `sendto` with an address).
+    pub const EISCONN: Self = Self(106);
+    /// The socket is not connected (`send`, `recv`, `getpeername`, `shutdown`).
+    pub const ENOTCONN: Self = Self(107);
+    /// Too many descriptors in flight, or a socket that would make a cycle (`sendmsg`).
+    pub const ETOOMANYREFS: Self = Self(109);
+    /// Nothing listens there (`connect`).
+    pub const ECONNREFUSED: Self = Self(111);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {
@@ -855,6 +933,22 @@ fn out_of_line_call<P: Platform>(
         number::WAIT4 => wait::wait4(process, thread, context),
         number::WAITID => wait::waitid(process, thread, context),
         number::EXECVEAT => exec::execveat(process, thread, context),
+        number::SOCKET
+        | number::SOCKETPAIR
+        | number::BIND
+        | number::LISTEN
+        | number::ACCEPT
+        | number::ACCEPT4
+        | number::CONNECT
+        | number::GETSOCKNAME
+        | number::GETPEERNAME
+        | number::SENDTO
+        | number::RECVFROM
+        | number::SENDMSG
+        | number::RECVMSG
+        | number::SHUTDOWN
+        | number::SETSOCKOPT
+        | number::GETSOCKOPT => socket::call(process, thread, number, context),
         _ => {
             let result = match number {
                 number::CLONE => {
@@ -1205,7 +1299,10 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
-        FileKind::Pipe(_) | FileKind::Regular(_) | FileKind::AgentChannel(_) => {
+        FileKind::Pipe(_)
+        | FileKind::Regular(_)
+        | FileKind::AgentChannel(_)
+        | FileKind::Socket(_) => {
             return Err(NOT_THE_CONSOLE);
         }
         FileKind::Window(_) => return Err(Errno::EINVAL),
@@ -1288,6 +1385,7 @@ fn write_out_of_line<P: Platform>(
             FileKind::AgentChannel(_) => {
                 agent_channel::write(process, thread, context, &file, &iovecs)
             }
+            FileKind::Socket(socket) => socket::write(process, thread, context, &file, socket, iovecs),
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1335,6 +1433,7 @@ fn read<P: Platform>(
             FileKind::AgentChannel(_) => {
                 agent_channel::read(process, thread, context, &file, &iovecs)
             }
+            FileKind::Socket(socket) => socket::read(process, thread, context, &file, socket, iovecs),
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {
@@ -1373,6 +1472,9 @@ fn ioctl<P: Platform>(
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
         FileKind::Window(connection) => window::ioctl(process, connection, request, argument),
+        FileKind::Socket(socket) => {
+            socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
+        }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
@@ -1387,9 +1489,11 @@ fn ioctl<P: Platform>(
 fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) | FileKind::Window(_) | FileKind::AgentChannel(_) => {
-            terminal::lseek(whence)
-        }
+        FileKind::Console
+        | FileKind::Pipe(_)
+        | FileKind::Window(_)
+        | FileKind::AgentChannel(_)
+        | FileKind::Socket(_) => terminal::lseek(whence),
         _ => files::lseek_node(&file, offset, whence),
     }
 }

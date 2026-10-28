@@ -22,7 +22,7 @@ pub const AT_REMOVEDIR: u64 = 0x200;
 /// `renameat2`'s flag that refuses to replace an existing name (`RENAME_NOREPLACE`).
 pub const RENAME_NOREPLACE: u64 = 1;
 
-const UMASK: u32 = 0o022;
+pub(super) const UMASK: u32 = 0o022;
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
@@ -50,7 +50,7 @@ pub fn refused(refused: Refused) -> Errno {
     }
 }
 
-fn parent_and_name(
+pub(super) fn parent_and_name(
     root: Node,
     start: Node,
     path: &[u8],
@@ -231,7 +231,7 @@ pub fn pwrite64<P: Platform>(
         return Err(Errno::EBADF);
     }
     let node = match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) => return Err(Errno::ESPIPE),
+        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_) => return Err(Errno::ESPIPE),
         FileKind::Regular(node) => *node,
         _ => return Err(Errno::EBADF),
     };

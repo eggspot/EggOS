@@ -212,12 +212,26 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"exit 7\r",
 ];
 
-const LINUX_PROGRAM_SESSION: [&[u8]; 5] = [
+const LINUX_PROGRAM_SESSION: [&[u8]; 6] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
     b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
     b"linux-static exit 42; echo LINUX-STATIC status $?\r",
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
+    b"linux-sockets; echo LINUX-SOCKETS status $?\r",
     b"exit 7\r",
+];
+
+const LINUX_SOCKETS_LINES: [&str; 9] = [
+    "LINUX-SOCKETS errors ENOENT ECONNREFUSED ECONNREFUSED EADDRINUSE EAFNOSUPPORT \
+     ESOCKTNOSUPPORT",
+    "LINUX-SOCKETS pair ping poll timeout EAGAIN hangup eof EPIPE",
+    "LINUX-SOCKETS abstract ok",
+    "LINUX-SOCKETS accepted peer pid ok name /tmp/eggos-sockets.sock peer /tmp/eggos-sockets.sock",
+    "LINUX-SOCKETS poll woken by the client",
+    "LINUX-SOCKETS rights pipe through a passed pipe",
+    "LINUX-SOCKETS large 1048576 bytes ok",
+    "LINUX-SOCKETS peer closed eof EPIPE child 0",
+    "LINUX-SOCKETS status 0",
 ];
 
 const HOST_FOLDER_SESSION: [&[u8]; 7] = [
@@ -740,6 +754,10 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
             Line::Whole("Aborted".into()),
             Line::Whole("LINUX-STATIC status 134".into()),
         ],
+        LINUX_SOCKETS_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
         vec![
             Line::Whole(SHELL_EXIT_LINE.into()),
             Line::Whole(POWER_DOWN_LINE.into()),
@@ -904,6 +922,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "init",
             "media",
             "proc",
+            "run",
             "tmp",
             "usr",
             "var",
@@ -933,7 +952,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
-        whole(&["cmdline", "meminfo", "ps", "uptime", "/proc", "/", "3"]),
+        whole(&["cmdline", "meminfo", "net", "ps", "uptime", "/proc", "/", "3"]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
             "               total        used        free      shared  buff/cache   available",
@@ -3157,7 +3176,13 @@ mod tests {
         let ok = linux_programs_console();
         assert!(verdict("riscv64", Expect::LinuxPrograms, true, &ok).is_ok());
         assert!(verdict("riscv64", Expect::LinuxPrograms, false, &ok).is_err());
-        for missing in ["LINUX-STATIC status 42", "Aborted", "LINUX-STATIC stderr"] {
+        for missing in [
+            "LINUX-STATIC status 42",
+            "Aborted",
+            "LINUX-STATIC stderr",
+            "LINUX-SOCKETS poll woken by the client",
+            "LINUX-SOCKETS status 0",
+        ] {
             let without = ok.replacen(&format!("{missing}\r\n"), "", 1);
             assert!(
                 verdict("riscv64", Expect::LinuxPrograms, true, &without).is_err(),

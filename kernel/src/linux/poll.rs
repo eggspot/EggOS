@@ -9,7 +9,8 @@
 //! canonical mode, otherwise `VMIN` bytes (at least one; one when `VTIME` is set). Every other
 //! descriptor is closed (`POLLNVAL`). Pipes report what their ends allow (D125), and
 //! `/dev/window` reports `POLLIN` while an event waits (D127); `/dev/agent` reports `POLLIN`
-//! while bytes from the host or its end wait, and is always writable (D137). A call that finds
+//! while bytes from the host or its end wait, and is always writable (D137); sockets report
+//! what their state allows (D138, [`super::unix_socket`]). A call that finds
 //! nothing ready waits until its timeout, or for good without one, unless `ppoll`'s signal mask
 //! lets a pending signal interrupt it first (D71); one that asks for the console's input, or
 //! watches a pipe or a window, is woken when the console's input, a pipe or a window's events
@@ -51,6 +52,8 @@ pub mod event {
     pub const WRNORM: u16 = 0x100;
     /// Room to write priority data.
     pub const WRBAND: u16 = 0x200;
+    /// The peer shut down writing or closed (a socket).
+    pub const RDHUP: u16 = 0x2000;
 
     #[cfg(not(any(
         target_arch = "aarch64",
@@ -89,6 +92,7 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
         Some(FileKind::Pipe(end)) => end.events(requested),
         Some(FileKind::Window(connection)) => super::window::events(connection, requested),
         Some(FileKind::AgentChannel(_)) => agent_events(requested),
+        Some(FileKind::Socket(socket)) => socket.events(requested),
     }
 }
 
@@ -402,7 +406,9 @@ fn poll_fds<P: Platform>(
         };
         match file.kind() {
             FileKind::Console => watches.console_input |= requested & INPUT_EVENTS != 0,
-            FileKind::Pipe(_) | FileKind::Window(_) => watches.devices = true,
+            FileKind::Pipe(_) | FileKind::Window(_) | FileKind::Socket(_) => {
+                watches.devices = true;
+            }
             FileKind::AgentChannel(_) => watches.agent |= requested & INPUT_EVENTS != 0,
             _ => {}
         }
@@ -456,6 +462,7 @@ fn any_device_ready(entries: &[[u8; POLLFD_SIZE]], files: &Descriptors) -> bool 
                     FileKind::Window(connection) => {
                         super::window::events(connection, requested) != 0
                     }
+                    FileKind::Socket(socket) => socket.events(requested) != 0,
                     _ => false,
                 })
     })
@@ -557,6 +564,43 @@ mod tests {
             &files
         ));
         assert_eq!(Arc::strong_count(&reading), 2);
+    }
+
+    #[test]
+    fn socket_readiness_is_read_under_the_table_s_lock_without_a_reference_to_drop() {
+        use super::super::descriptors::open_flag;
+        use super::super::unix_socket::{self, PeerCredentials, Side, UnixSocket};
+        fn no_wake() {}
+        let _serial = unix_socket::tests_lock();
+        let files = Descriptors::with_console_streams();
+        let (first, second) = UnixSocket::pair(PeerCredentials::NONE, no_wake);
+        let open = |socket| Arc::new(OpenFile::new(FileKind::Socket(socket), open_flag::RDWR));
+        let limit = 64;
+        let first_fd = files
+            .lock()
+            .open(open(Arc::clone(&first)), false, limit)
+            .unwrap();
+        let second_fd = files.lock().open(open(second), false, limit).unwrap();
+        let entry = |fd: u32, events: u16| {
+            let mut entry = [0; POLLFD_SIZE];
+            entry[..4].copy_from_slice(&(fd as i32).to_ne_bytes());
+            entry[4..6].copy_from_slice(&events.to_ne_bytes());
+            entry
+        };
+        assert!(!any_device_ready(&[entry(second_fd, event::IN)], &files));
+        assert!(any_device_ready(&[entry(first_fd, event::OUT)], &files));
+        let (connection, side) = first.connected().unwrap();
+        assert_eq!(side, Side::First);
+        assert_eq!(connection.send(side, b"x", &mut None), Ok(1));
+        drop(connection);
+        assert!(any_device_ready(&[entry(second_fd, event::IN)], &files));
+        assert!(!any_device_ready(&[entry(second_fd, event::RDHUP)], &files));
+        assert_eq!(Arc::strong_count(&first), 2);
+        let closed = files.lock().remove(first_fd);
+        drop(closed);
+        assert_eq!(Arc::strong_count(&first), 1);
+        drop(first);
+        assert!(any_device_ready(&[entry(second_fd, event::RDHUP)], &files));
     }
 
     #[test]

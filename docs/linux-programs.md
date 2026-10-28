@@ -76,8 +76,9 @@ that aborts it.
   creating a file fails with `EROFS`. There is no `/proc` (so `std::env::current_exe` fails)
   and no `/dev`.
 - **The wall clock** reads 1970 without an RTC driver.
-- **Networking, sockets and `mmap` of files** are not implemented (`mmap` takes anonymous
-  memory only).
+- **Networking and `mmap` of files** are not implemented (`mmap` takes anonymous memory
+  only). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
+  with `SCM_RIGHTS` (D138); datagram sockets and `epoll` do not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 
