@@ -331,7 +331,7 @@ D16):
     and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: `epoll`,
     `eventfd`, `timerfd` and `signalfd`, dynamic linking, then the toolkits' protocols
     (subcompositor, decorations, popups, the clipboard).
-40. the macOS Objective-C runtime and the core of Foundation.
+40. **in progress** — the macOS Objective-C runtime and the core of Foundation.
 41. macOS GUI apps, part 1.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
