@@ -405,6 +405,10 @@ impl System for Fake {
         Ok(())
     }
 
+    fn now(&mut self) -> u64 {
+        self.now.max(0) as u64
+    }
+
     fn device_control(
         &mut self,
         descriptor: usize,

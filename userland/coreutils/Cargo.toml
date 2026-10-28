@@ -10,6 +10,8 @@ name = "coreutils"
 path = "src/main.rs"
 
 [dependencies]
+eggos-app = { path = "../app" }
+eggos-files = { path = "../files" }
 eggos-runtime = { path = "../runtime" }
 
 [lints]

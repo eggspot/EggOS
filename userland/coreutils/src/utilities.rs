@@ -9,6 +9,7 @@ use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
 use crate::processes::{free, ps, uptime};
 use crate::sleep::sleep;
 use crate::system::{STANDARD_ERROR, STANDARD_OUTPUT, System};
+use crate::trash::trash;
 use crate::uname::uname;
 use crate::wc::wc;
 use crate::wm::wm;
@@ -41,6 +42,7 @@ pub enum Utility {
     Sync,
     Tail,
     Touch,
+    Trash,
     True,
     Uname,
     Uptime,
@@ -49,7 +51,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Cat,
         Self::Cp,
         Self::Echo,
@@ -69,6 +71,7 @@ impl Utility {
         Self::Sync,
         Self::Tail,
         Self::Touch,
+        Self::Trash,
         Self::True,
         Self::Uname,
         Self::Uptime,
@@ -97,6 +100,7 @@ impl Utility {
             Self::Sync => b"sync",
             Self::Tail => b"tail",
             Self::Touch => b"touch",
+            Self::Trash => b"trash",
             Self::True => b"true",
             Self::Uname => b"uname",
             Self::Uptime => b"uptime",
@@ -130,6 +134,7 @@ impl Utility {
             Self::Sync => sync(output, arguments),
             Self::Tail => tail(output, arguments),
             Self::Touch => touch(output, arguments),
+            Self::Trash => trash(output, arguments),
             Self::True => 0,
             Self::Uname => uname(output, arguments),
             Self::Uptime => uptime(output, arguments),
