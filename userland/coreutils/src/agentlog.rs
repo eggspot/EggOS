@@ -199,7 +199,8 @@ fn format_raw(line: &[u8], text: &mut [u8]) -> usize {
         if index > 0 {
             length += put(text, length, b"\t");
         }
-        length += audit::display_into(field, &mut text[length..]);
+        let end = text.len().min(length + audit::FIELD_BYTES);
+        length += audit::display_into(field, &mut text[length..end]);
     }
     length + put(text, length, b"\n")
 }
@@ -324,6 +325,22 @@ mod tests {
         assert!(output.contains('\u{fffd}'));
         assert!(!output.contains('\u{1b}'));
         assert!(!output.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn a_hand_edited_line_full_of_control_bytes_is_shown_cut_in_both_modes() {
+        let mut line = b"1\t1\tc\tcat\tok\t".to_vec();
+        line.extend(std::iter::repeat_n(1u8, 4000));
+        line.extend_from_slice(b"\tafter the long field\n");
+        assert!(line.len() < LINE_BYTES);
+        for arguments in [&[c"--raw"][..], &[]] {
+            let mut fake = Fake::default().with_file(LOG, 0o640, &line, 0);
+            assert_eq!(run(&mut fake, arguments), 0);
+            let output = fake.output();
+            assert!(output.contains("...(cut)"), "{arguments:?}");
+            assert!(output.contains("after the long field"), "{arguments:?}");
+            assert!(output.lines().all(|row| row.len() < 2 * LINE_BYTES));
+        }
     }
 
     #[test]

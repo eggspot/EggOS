@@ -8204,7 +8204,7 @@ the license, by an explicit instruction recorded here.
   script opens the image exclusively. `run-eggos.ps1` starts QEMU with a bare `& $Qemu
   @QemuArgs` as its last statement, so QEMU inherits the raw handles.
 - **Lightness (D24).** Without `--mcp` nothing runs and nothing is allocated: the driver's
-  probe finds no console device, init makes two failed opens. The image grows by `eggmcpd`,
+  probe finds no console device, init makes one failed open (of `/dev/agent`). The image grows by `eggmcpd`,
   `agentlog`'s code in the core utilities, the driver and `/dev/agent` in the kernel, and one
   directory entry (`/var`) parsed at boot; CI reports the sizes. With `--mcp`, eggmcpd holds
   about 2.5 MiB of buffers and wakes every 32 ms while idle (4 ms after traffic).
@@ -8220,6 +8220,13 @@ the license, by an explicit instruction recorded here.
   read with the client pausing 2 s before reading (128 KiB arrive whole), two refused paths,
   four hostile lines; then a second boot of the disk runs `agentlog` and the image is read
   back.
+- **Notes for 28b from the security review.** The log keeps one older file, so an agent could
+  push its own trail out with junk calls: before writing and running arrive, keep a session's
+  records, more generations or a rate limit. A call refused before it runs must log only its
+  arguments' names, never raw argument text (`tee`'s content). `run` must decide whether
+  children drop root. Grants come only from `/proc/cmdline`. Once symbolic links exist, a twin
+  must open paths with `O_NOFOLLOW` or stay beneath its root, not rely on the resolution alone.
+  `poll` on `/dev/agent` reports `POLLERR` until the device interrupts.
 - **Not yet (28b and later).** Grants from the host (`--mcp-allow`, the kernel command line),
   `tee`, `trash`, `run`, `app_install`, `app_open`, `app_uninstall`, confirmation and
   elicitation of destructive calls; the 2026-07-28 protocol; resources and prompts; per-agent

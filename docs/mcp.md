@@ -117,6 +117,18 @@ release.
 - **Tested** by `cargo xtask qemu` on all three architectures: the release `run-eggos.sh --mcp`
   runs as a child and a scripted client drives every tool, then a second boot runs `agentlog`.
 
+## Known limits of this version
+
+- The log keeps one older file (about 2,000 calls): a client making many calls pushes older
+  records out. Before 28b lets agents write and run programs, a session's records will be
+  kept whole (more generations or a rate limit).
+- A refused call records its arguments as sent; 28b, whose `tee` carries file contents, logs
+  only argument names for refused calls.
+- Paths are checked after resolution; once EggOS has symbolic links, the commands will open
+  them with `O_NOFOLLOW` or stay beneath their root as well.
+- `poll` on `/dev/agent` reports `POLLERR`: the server reads it blocking until the device
+  interrupts (issue #97).
+
 ## Not yet
 
 Grants and the tools that change things (`tee` to write, `trash` to delete, `run`, and

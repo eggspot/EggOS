@@ -44,7 +44,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
 
 const REFUSED_PATHS: [&str; 2] = [
     r#""/home/../etc/eggos/init.conf""#,
-    r#""/home/../etc/eggos/init.conf""#,
+    r#""/home/\u002e\u002e/etc/eggos/init.conf""#,
 ];
 
 const AGENTLOG_SESSION: [&[u8]; 2] = [b"agentlog; echo EGGOS-MCP agentlog $?\r", b"poweroff\r"];

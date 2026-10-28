@@ -240,7 +240,7 @@ fn paths_outside_the_roots_are_refused_after_decoding_and_resolution() {
     let mut harness = Harness::initialized();
     for (id, path) in [
         (1, r#""/home/../etc/eggos/init.conf""#),
-        (2, r#""/home/../etc/eggos/init.conf""#),
+        (2, r#""/home/\u002e\u002e/etc/eggos/init.conf""#),
         (3, r#""/homework""#),
         (4, r#""/media/host/..""#),
     ] {

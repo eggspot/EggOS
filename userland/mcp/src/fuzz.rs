@@ -18,7 +18,7 @@ const CORPUS: [&str; 10] = [
     r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
     r#"{"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"cat","arguments":{"path":"/home/a.txt"}}}"#,
-    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ls","arguments":{"path":"/home/../etc"}}}"#,
+    r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ls","arguments":{"path":"/home/\u002e\u002e/etc"}}}"#,
     r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cat","arguments":{"path":"/media/host/x\u0000y"}}}"#,
     r#"{"jsonrpc":"2.0","id":6,"method":"ping"}"#,
     r#"{"jsonrpc":"2.0","id":7,"method":"server/discover","params":{}}"#,

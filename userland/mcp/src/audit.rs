@@ -288,7 +288,10 @@ fn escape_field(text: &[u8], out: &mut [u8], escape_backslash: bool) -> usize {
                 None => "\u{fffd}".as_bytes(),
             };
             if length + bytes.len() > capacity {
-                let cut = last_safe.min(capacity.saturating_sub(CUT.len()));
+                if capacity < CUT.len() {
+                    return length;
+                }
+                let cut = last_safe.min(capacity - CUT.len());
                 out[cut..cut + CUT.len()].copy_from_slice(CUT);
                 return cut + CUT.len();
             }
@@ -387,6 +390,15 @@ mod tests {
         let worst = "\u{202e}".repeat(FIELD_BYTES);
         let line = record(&entry(worst.as_bytes(), worst.as_bytes()));
         assert!(line.len() <= RECORD_BYTES);
+    }
+
+    #[test]
+    fn a_field_in_less_room_than_the_cut_marker_never_overruns() {
+        let mut out = [0u8; 5];
+        assert_eq!(display_into(b"abcdefgh", &mut out), 5);
+        assert_eq!(&out, b"abcde");
+        assert_eq!(display_into(b"\x01\x01", &mut out), 4);
+        assert_eq!(display_into(b"x", &mut []), 0);
     }
 
     #[test]
