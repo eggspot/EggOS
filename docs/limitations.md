@@ -110,8 +110,9 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);
-- Settings is the one program with a window in the image (the window tests' `hello-window`
-  and `win-paint.exe` are added only to their own images); its Mouse and Components panes,
+- Settings and the installer's window (`app --window`, served by the same program, D134) are
+  the programs with a window in the image (the window tests' `hello-window`
+  and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs open windows
   (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
 - 3D graphics;

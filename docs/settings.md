@@ -5,7 +5,8 @@ Settings is EggOS's settings app (D132), designed by Claude Fable
 [toolkit-v0.3.md](ux/toolkit-v0.3.md) section 11). One program, `/bin/settings`, is all of its
 front-ends (D22): run with no arguments it opens the Settings window; with arguments it is the
 `settings` command. Its MCP tools (`settings_get`, `settings_set`, `settings_list`) come with
-the MCP server (D21).
+the MCP server (D21). The same program, started as `/usr/libexec/app-window` (a hard link),
+is the installer's window instead ([Apps](apps.md), D134), so the toolkit is in the image once.
 
 ## The window
 
@@ -59,7 +60,7 @@ and in memory for the session otherwise; in `root`'s home until there are accoun
 text file: the line `eggos-settings 1`, then `key=value` lines. A file of another version, a
 longer one than 4 KiB or garbage holds nothing, so every setting takes its default; unknown
 keys are kept when the file is written, and the last line of a key wins. A change is written to
-`settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole.
+`settings.tmp.<process id>` beside it (one per writer), synced, and renamed over it, so a failure leaves the old file whole. Before it writes, a writer removes the temporary files of writers that `/proc/ps` no longer lists (one that crashed), best effort (D134).
 The kernel reads `shell.profile` from it after mounting the disks and before the desktop starts,
 so the first frame is already in the saved profile. The format is the `eggos-settings-file`
 crate (`settings-file/`), shared by the kernel and the program.
