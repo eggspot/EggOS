@@ -54,14 +54,21 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
   dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
-  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
+  `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
   sockets only (no datagrams or sequenced packets, no networking), socket files only in the
   memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
   itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or
-  `signalfd` yet, which most graphical Linux toolkits need.
+  `signalfd` yet, which most graphical Linux toolkits need. Shared memory works through
+  `memfd_create` (D139): `MAP_SHARED`, or `MAP_PRIVATE` read-only, of a memfd; not of other
+  files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
+  executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
+  `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
+  with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
+  (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
+  work).
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with

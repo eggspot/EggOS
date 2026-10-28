@@ -46,6 +46,12 @@ exactly by default (what `cargo xtask ci` and the weekly performance pass run), 
 - `linux_unix_stream_send_recv`: 64 bytes sent and received on a socket pair (D138): the
   connection's lock taken twice, the bytes queued and taken back, no allocation once the queue
   has grown. Without the trap from user mode or the copies from and to the program.
+- `linux_memfd_map_unmap`: `mmap` of 16 pages of a memfd `MAP_SHARED`, read-write, then
+  `munmap` (D139): the descriptor looked up, the file's frames (allocated once, before the
+  loop) taken under its lock, a region added, 16 pages mapped at once and the stale
+  translations dropped, then the range unmapped without freeing the frames and the mapping's
+  hold on the file let go. Compare with `linux_mmap_munmap`, whose pages are mapped on first
+  touch. Without the trap from user mode.
 - `linux_execve`: `execve` of a small static program from the initramfs, per call (D103): the
   runtime's self-test program (`/usr/libexec/eggos-selftest`, a static PIE), started with
   `exec-loop <n>`, runs its start-up and execs itself with one less until 0, so each iteration

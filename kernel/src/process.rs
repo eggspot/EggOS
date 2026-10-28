@@ -208,13 +208,19 @@ struct Memory<P: Platform> {
     has_lent: AtomicBool,
 }
 
-/// Frames a device lends to user space ([`Process::map_lent_frames`]): physically contiguous,
-/// owned by the device, and kept by every process that maps them for as long as it does.
+/// Frames a device or a memory file lends to user space ([`Process::map_lent_frames`]): owned
+/// by the lender, and kept by every process that maps them for as long as it does.
 pub trait LentFrames: Send + Sync {
-    /// The physical address of the first frame.
-    fn physical(&self) -> u64;
+    /// The physical address of the frame `offset` bytes in, a multiple of the frame size below
+    /// [`Self::length`].
+    fn frame_at(&self, offset: u64) -> u64;
     /// How many bytes, whole frames, may be mapped.
     fn length(&self) -> u64;
+    /// Whether the program may make the mapping writable (`mprotect`): `false` for a private
+    /// mapping of a memory file, which shares the file's frames read-only.
+    fn writable(&self) -> bool {
+        true
+    }
 }
 
 struct LentRange {
@@ -328,6 +334,15 @@ impl<P: Platform> Memory<P> {
                 .lock()
                 .iter()
                 .any(|range| range.start < end && start < range.end)
+    }
+
+    fn lends_read_only_in(&self, start: u64, end: u64) -> bool {
+        self.has_lent.load(Ordering::Relaxed)
+            && self
+                .lent
+                .lock()
+                .iter()
+                .any(|range| range.start < end && start < range.end && !range.frames.writable())
     }
 }
 
@@ -821,10 +836,11 @@ impl<P: Platform> Process<P> {
 
     /// Adds a region of `length` bytes with `attributes` where `placement` says, as
     /// [`Self::map_region`], and maps it at once to `frames`, from their first: memory a device
-    /// shares with the program (`MAP_SHARED` of a device, D127). The frames stay the device's:
-    /// unmapping the range, or the process's end, never frees them, and the process keeps
-    /// `frames` until then. Such a range cannot be moved (`mremap`) or discarded (`madvise`),
-    /// and a process that has one is not copied by `fork` ([`Self::mark_shared_anonymous`]).
+    /// or a memory file shares with the program (`MAP_SHARED` of a device, D127, or of a
+    /// memfd, D139). The frames stay the lender's: unmapping the range, or the process's end,
+    /// never frees them, and the process keeps `frames` until then. Such a range cannot be
+    /// moved (`mremap`) or discarded (`madvise`), and a process that has one is not copied by
+    /// `fork` ([`Self::mark_shared_anonymous`]).
     pub fn map_lent_frames(
         &self,
         placement: Placement,
@@ -840,7 +856,7 @@ impl<P: Platform> Process<P> {
         let mut regions = memory.regions.lock();
         let start = Self::place_locked(memory, &mut regions, placement, length)?;
         regions.insert(start, start + length, Some(attributes))?;
-        let physical = frames.physical();
+        let lender = Arc::clone(&frames);
         let mut lent = memory.lent.lock();
         if lent.try_reserve(1).is_err() {
             drop(lent);
@@ -857,7 +873,12 @@ impl<P: Platform> Process<P> {
         for offset in (0..length).step_by(FRAME_SIZE as usize) {
             if memory
                 .space
-                .map(start + offset, physical + offset, FRAME_SIZE, attributes)
+                .map(
+                    start + offset,
+                    lender.frame_at(offset),
+                    FRAME_SIZE,
+                    attributes,
+                )
                 .is_err()
             {
                 let _ = Self::unmap_locked(memory, &mut regions, start, start + length);
@@ -1187,6 +1208,10 @@ impl<P: Platform> Process<P> {
         let lent_refused = attributes.is_none_or(|attributes| attributes.executable);
         if lent_refused && memory.lends_in(start, end) {
             return Err(RegionError::Invalid);
+        }
+        let writes = attributes.is_some_and(|attributes| attributes.writable);
+        if writes && memory.lends_read_only_in(start, end) {
+            return Err(RegionError::NotWritable);
         }
         let mut changed_end = start;
         let result = regions.protect(start, end, attributes, |part| changed_end = part.end);
@@ -2586,8 +2611,8 @@ mod tests {
     }
 
     impl LentFrames for TestLentFrames {
-        fn physical(&self) -> u64 {
-            self.physical
+        fn frame_at(&self, offset: u64) -> u64 {
+            self.physical + offset
         }
 
         fn length(&self) -> u64 {

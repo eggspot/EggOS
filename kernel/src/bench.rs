@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 53] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -129,6 +129,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 53] {
         ("linux_execve", linux_execve::<P>),
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
+        ("linux_memfd_map_unmap", linux_memfd_map_unmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
         ("linux_openat_close", linux_openat_close::<P>),
@@ -1431,6 +1432,44 @@ fn linux_unix_stream_send_recv(n: u64) {
     }
 }
 
+fn linux_memfd_map_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{Descriptors, FileKind, OpenFile, open_flag};
+    use linux::memfd::MemoryFile;
+    use linux::memory::{MappedFile, map, prot};
+    const LENGTH: u64 = 16 * FRAME_SIZE;
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let file = MemoryFile::new(0);
+    file.allocate(0, LENGTH).expect("16 frames are free");
+    let files = Descriptors::with_console_streams();
+    let open = alloc::sync::Arc::new(OpenFile::new(FileKind::MemoryFile(file), open_flag::RDWR));
+    let fd = files
+        .lock()
+        .open(alloc::sync::Arc::clone(&open), false, 64)
+        .expect("descriptor 3 is free");
+    let mapped = MappedFile {
+        files: &files,
+        fd: u64::from(fd),
+    };
+    program.with_active(|| {
+        for _ in 0..n {
+            let start = linux::memory::mmap_file(
+                &program,
+                0,
+                LENGTH,
+                prot::READ | prot::WRITE,
+                map::SHARED,
+                mapped,
+                0,
+            )
+            .expect("16 pages fit");
+            linux::memory::munmap(&program, black_box(start), LENGTH)
+                .expect("the pages were just mapped");
+        }
+    });
+}
+
 fn linux_descriptor_lookup(n: u64) {
     let files = linux::descriptors::Descriptors::with_console_streams();
     for _ in 0..n {
@@ -1745,8 +1784,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 22..].split_at(15);
-        let benchmarks = &[&all[..all.len() - 22], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 23..].split_at(16);
+        let benchmarks = &[&all[..all.len() - 23], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1757,6 +1796,7 @@ mod tests {
             (linux_execve, _),
             (linux_page_fault, _),
             (linux_mmap_munmap, _),
+            (linux_memfd_map_unmap, _),
             (linux_dup3_close, _),
             (linux_descriptor_lookup, _),
             (linux_openat_close, _),
@@ -1790,6 +1830,7 @@ mod tests {
                 *linux_execve,
                 *linux_page_fault,
                 *linux_mmap_munmap,
+                *linux_memfd_map_unmap,
                 *linux_dup3_close,
                 *linux_descriptor_lookup,
                 *linux_openat_close,
@@ -1807,6 +1848,7 @@ mod tests {
                 "linux_execve",
                 "linux_page_fault",
                 "linux_mmap_munmap",
+                "linux_memfd_map_unmap",
                 "linux_dup3_close",
                 "linux_descriptor_lookup",
                 "linux_openat_close",

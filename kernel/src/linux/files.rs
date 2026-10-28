@@ -462,6 +462,9 @@ pub fn pread64<P: Platform>(
     if !super::ends_in_user_space::<P>(buffer, count) {
         return Err(Errno::EFAULT);
     }
+    if let FileKind::MemoryFile(memory) = file.kind() {
+        return super::memfd::pread(process, memory, buffer, count.min(MAX_RW_COUNT), offset);
+    }
     match Contents::of(file.kind()) {
         Some(contents) => copy_out(process, contents, offset, buffer, count),
         None => Err(Errno::EISDIR),
@@ -489,6 +492,7 @@ pub mod whence {
 pub fn lseek_node(file: &OpenFile, offset: u64, whence: u64) -> Result<u64, Errno> {
     let (size, directory) = match file.kind() {
         FileKind::Directory(node) => (node.attributes().size, true),
+        FileKind::MemoryFile(memory) => (memory.size(), false),
         kind => match Contents::of(kind) {
             Some(contents) => (contents.size(), false),
             None => return Err(Errno::EBADF),

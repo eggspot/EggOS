@@ -8490,3 +8490,108 @@ the license, by an explicit instruction recorded here.
   (`SO_PASSCRED` is kept only); permission checks on socket files (D75); socket files on EggFS
   or FAT; connected sockets that are not bound in `/proc/net/unix`; memfd and `MAP_SHARED`
   (item 38b).
+
+## D139 Shared memory: `memfd_create`, `ftruncate`, `fallocate`, seals and `MAP_SHARED` of memfds; and the 38a review follow-ups (v0.3.0 item 38b) — Decided by the build loop (the points below marked so decided by research)
+- **What.** Static Linux programs can now share memory: `memfd_create(name, MFD_CLOEXEC |
+  MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC)`, `read`, `write`, `readv`, `writev`,
+  `pread64`, `pwrite64`, `lseek`, `fstat` (`S_IFREG | 0777`, its size), `ftruncate`,
+  `fallocate` with mode 0, `fsync`, `fcntl`'s `F_ADD_SEALS` and `F_GET_SEALS`, `poll` (always
+  ready) and `mmap` `MAP_SHARED` of the memfd, which every process that maps it shares; the
+  descriptor passes between processes with `SCM_RIGHTS` (D138). This is what Wayland's
+  wl_shm buffers and keymaps are (item 39).
+- **Narrowed from the roadmap** (decided by research). Item 38 said "`MAP_SHARED` of files";
+  this item maps memfds only. libwayland makes its buffers with `memfd_create` (falling back
+  to a file only when that fails), and making tmpfs's heap pages, which go at once when a file
+  is removed (D125), into frames a mapping can hold, or adding write-back to EggFS's journal
+  (D131), would risk both file systems in the time left. `MAP_SHARED` of a tmpfs, EggFS or
+  other regular file is `ENODEV`; there is no `shm_open` (musl's opens `/dev/shm`, which does
+  not exist). A later item can make tmpfs files keep their pages in a `MemoryFile`.
+- **Where.** `kernel/src/linux/memfd.rs`: `MemoryFile`, behind one leaf lock (only the frame
+  allocator's is taken under it), with its frames, its size, its seals and its count of
+  mappings, which the lock covers, so no mapping can start between a shrink's check and its
+  freeing. Its frame list covers only up to the highest page with a frame, so a large sparse
+  `ftruncate` takes nothing; holes read as zeros; frames are taken as they are first written,
+  allocated or mapped. A program's memory is copied through a page-sized buffer on the kernel
+  stack, the frame part under the lock, so no frame is freed under a copy.
+- **Mappings.** `mmap` of a memfd takes the frames of the whole range at once and maps them
+  through the lent-frames mechanism of `/dev/window` (D127), generalised from "contiguous
+  from a physical address" to `LentFrames::frame_at(offset)`; each mapping holds a
+  `MemoryFileMapping`, which keeps the file alive and counts itself, and reads each frame from
+  the file's own list. No frame of a mapped file is freed or replaced: a shrink zeroes the
+  frames past the new end and keeps them, so a later grow brings the same frames back and every
+  mapping keeps sharing them; the list is trimmed when the last mapping goes. Pages a mapping
+  reaches past the end are mapped and read as zeros (decided by research: no `SIGBUS`), and a
+  grow zeroes what lies between the old end and the new, so bytes a program wrote past the end
+  through a mapping never show up in the file. File mappings go to an out-of-line `map_file`,
+  so the anonymous `mmap`, `munmap`, the page fault and the process's end are as they were; the
+  frames are mapped at once, so a mapped memfd never faults.
+- **Private mappings** (decided by research). `MAP_PRIVATE` with `PROT_READ` shares the frames
+  read-only, which is all a Wayland client needs for its keymap (Linux shows a private mapping
+  the file's later changes on pages it has not copied, so nothing differs while nothing writes);
+  `mprotect` to writable is `EACCES` (`LentFrames::writable`, `RegionError::NotWritable`).
+  `MAP_PRIVATE` with `PROT_WRITE` is `ENODEV`; `PROT_EXEC` or `PROT_NONE` on a memfd is `EPERM`,
+  as on a window.
+- **Seals** (decided by research). `F_SEAL_SEAL`, `F_SEAL_SHRINK` and `F_SEAL_GROW` are
+  enforced for `ftruncate`, `write` past the end and `fallocate` (`EPERM`); `F_SEAL_EXEC` is
+  kept (nothing executes a memfd); `F_SEAL_WRITE`, `F_SEAL_FUTURE_WRITE` and unknown seals are
+  `EINVAL`. Without `MFD_ALLOW_SEALING` (or `MFD_NOEXEC_SEAL`, which also adds
+  `F_SEAL_EXEC`) a memfd starts with `F_SEAL_SEAL`, so adding one is `EPERM`. libwayland's
+  helpers add `F_SEAL_SHRINK` (and `F_SEAL_SEAL`).
+- **`fallocate`** (plan review 1): libwayland's `os_resize_anonymous_file` calls
+  `posix_fallocate` and falls back to `ftruncate` only on `EINVAL` or `EOPNOTSUPP`, so a
+  missing call (`ENOSYS`) would break every client. Mode 0 on a memfd gives the range frames
+  and the file at least its end; as Linux, in this order: `EOPNOTSUPP` for an unknown mode bit,
+  `EINVAL` for a negative offset or a length of 0 or less, `EBADF` without write access,
+  `ESPIPE` for a pipe, `EISDIR` for a directory, `ENODEV` for a socket, the console or a
+  device, `EFBIG` past the largest size, and `EOPNOTSUPP` for another mode or a file of
+  another file system, which libwayland's fallback takes.
+- **`memfd_create`'s checks.** `EINVAL` for an unknown flag, `MFD_HUGETLB`, `MFD_EXEC` with
+  `MFD_NOEXEC_SEAL`, or a name longer than 249 bytes; `EFAULT` for a name that is not the
+  program's; `EMFILE` without a free descriptor. The name is not kept: there is no
+  `/proc/self/fd` to show it.
+- **`fork` with a memfd mapping** stays `ENOSYS` until `execve` (D104: memory with shared
+  pages is never copied). `vfork` and `posix_spawn` work, so starting a program from a Wayland
+  server works; Wayland clients that `fork` after mapping (foot, weston-terminal) do not yet.
+  The cheap follow-up: `fork` maps the parent's memfd mappings into the child as shared.
+- **For item 39.** Lent ranges refuse `mremap`, so eggway resizes a wl_shm pool with `munmap`
+  then `mmap` (libwayland's server does `mremap`, eggway is ours).
+- **The 38a review follow-ups folded in.** A socket `connect` is connecting from its check to
+  its end (`SocketState::Connecting`): it can neither listen, be bound nor be passed
+  (`ETOOMANYREFS`), so a socket passed by another thread of its process cannot end up inside
+  its own new connection; a second `connect` meanwhile is `EALREADY`, and a failed one makes it
+  open again. A send of nothing after the caller's own `SHUT_WR` is `EPIPE`, as Linux checks
+  the shutdown before the length; `sendmsg` and `recvmsg` with more than 1024 buffers are
+  `EMSGSIZE`. The sockets boot test checks that its `poll` slept at least 50 ms before the
+  client's write woke it.
+- **Performance.** `linux_memfd_map_unmap` measures a 16-page `MAP_SHARED` mapping of a memfd
+  and its `munmap`. The anonymous path's code moved out of the file path's way, so
+  `linux_mmap_munmap` and `linux_page_fault` should not change; `Process` gains no field, and
+  the one new static (the inode counter) is zero, in `.bss`.
+- **Testing.** Host: reads, writes, holes and growth; truncation, zeroing and every seal;
+  sparse files and `fallocate`; frames given back; two processes sharing one memfd's frames
+  through a shrink, a regrow, a write past the mappings and the trim after the last unmap; a
+  mapping keeping the file after its last descriptor; private read-only mappings, `mprotect`'s
+  `EACCES`, `ENODEV`, `EPERM` and other files refused; `memfd_create`'s, `fallocate`'s and the
+  seal commands' errors; the connecting state, the zero-byte `EPIPE` and `EMSGSIZE`. QEMU on
+  aarch64, riscv64 and x86_64: the sockets boot test's client makes a memfd, grows it with
+  `posix_fallocate`, maps it, writes, seals it against shrinking and passes it; the server maps
+  it, sees the client's bytes, writes its own, which the client sees, checks its size, a
+  private read-only mapping, `ENODEV` for a writable private one and `EPERM` for a shrink.
+- **Review fixes** (independent review). Every way out of a `connect` that does not finish
+  it, the process's end and a kill while it waits on a full backlog included, makes the
+  socket open again, so a socket another process holds is never left connecting (a host test
+  ends the process during the wait). `fallocate` and `mmap` check the free frames before
+  taking any (`ENOSPC`, `ENOMEM`), so a huge length fails at once instead of zeroing every frame
+  under the file's lock; a shrink with no mapping zeroes only the partial last page before
+  freeing the rest; a mapping that would end past the largest offset is `EOVERFLOW`; `fstat`'s
+  `st_blocks` counts the frames the file holds.
+- **Not yet.** `MAP_SHARED` of tmpfs, EggFS and other files, `shm_open` and `/dev/shm`;
+  writes or mappings at gigabyte-scale offsets (the page list is dense up to the highest page,
+  so they fail with `ENOSPC` or `ENOMEM` where Linux succeeds); `O_APPEND` writes from two
+  descriptions at once are not atomic with each other;
+  writable private mappings of a memfd; `F_SEAL_WRITE` and `F_SEAL_FUTURE_WRITE`; `SIGBUS`
+  past the end; `fallocate`'s other modes; `fork` with a memfd mapping; `mremap` of one;
+  memfd names in `/proc`. From 38a's review, not done here: a socket read that copies to the
+  program before it takes bytes off the queue, so a bad buffer loses nothing (it needs a
+  per-socket read lock to stay right with two readers); and the other notes recorded on PR
+  #136.

@@ -476,8 +476,9 @@ pub fn map<P: Platform>(
         .map_err(|error| match error {
             RegionError::Overlaps => Errno::EEXIST,
             RegionError::Invalid => Errno::EINVAL,
-            RegionError::NotCovered | RegionError::NoRoom | RegionError::OutOfMemory => {
-                Errno::ENOMEM
-            }
+            RegionError::NotCovered
+            | RegionError::NoRoom
+            | RegionError::OutOfMemory
+            | RegionError::NotWritable => Errno::ENOMEM,
         })
 }

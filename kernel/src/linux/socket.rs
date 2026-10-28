@@ -23,7 +23,9 @@ use super::unix_socket::{
     self, Address, BindingKey, Connection, NotConnected, OutgoingRights, PeerCredentials, Side,
     Taken, UnixSocket,
 };
-use super::{Errno, Iovecs, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number};
+use super::{
+    Errno, Iovecs, MAX_IOVECS, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number,
+};
 use crate::console;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind, Refused};
@@ -847,15 +849,50 @@ fn connect<P: Platform>(
         Err(error) => return finish(process, thread, context, Err(error)),
     };
     let connection = Connection::new(own, credentials_of(&**process));
+    let outcome = queue_connection(
+        process,
+        thread,
+        context,
+        &file,
+        &socket,
+        &target,
+        &connection,
+    );
+    match outcome {
+        ControlFlow::Continue(Some(Ok(result))) => finish(process, thread, context, Ok(result)),
+        ControlFlow::Continue(Some(Err(error))) => {
+            socket.abandon_connect();
+            finish(process, thread, context, Err(error))
+        }
+        ControlFlow::Continue(None) => {
+            socket.abandon_connect();
+            ControlFlow::Continue(())
+        }
+        ControlFlow::Break(()) => {
+            socket.abandon_connect();
+            ControlFlow::Break(())
+        }
+    }
+}
+
+fn queue_connection<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    file: &OpenFile,
+    socket: &UnixSocket,
+    target: &UnixSocket,
+    connection: &Arc<Connection>,
+) -> ControlFlow<(), Option<Result<u64, Errno>>> {
     let timeout = socket.options().send_timeout.load(Ordering::Relaxed);
     let deadline = deadline::<P>(timeout);
     let interrupted = interrupted(context, timeout);
-    let result = loop {
-        match target.queue(&connection) {
-            Err(error) => break Err(error),
+    loop {
+        match target.queue(connection) {
+            Err(error) => return ControlFlow::Continue(Some(Err(error))),
             Ok(true) => {
                 target.changed();
-                break match socket.finish_connect(&connection) {
+                let result = match socket.finish_connect(connection) {
                     Ok(()) => Ok(0),
                     Err(error) => {
                         unix_socket::release_rights(connection.abort(Side::First));
@@ -863,20 +900,22 @@ fn connect<P: Platform>(
                         Err(error)
                     }
                 };
+                return ControlFlow::Continue(Some(result));
             }
-            Ok(false) if file.is_nonblocking() => break Err(Errno::EAGAIN),
+            Ok(false) if file.is_nonblocking() => {
+                return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
+            }
             Ok(false) => match wait_for_input(process, thread, deadline, || target.can_queue())? {
                 Waited::Ready => {}
-                Waited::TimedOut => break Err(Errno::EAGAIN),
+                Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
                 Waited::Signalled => {
                     if signals::deliver_interrupting(process, thread, context, interrupted)? {
-                        return ControlFlow::Continue(());
+                        return ControlFlow::Continue(None);
                     }
                 }
             },
         }
-    };
-    finish(process, thread, context, result)
+    }
 }
 
 struct Send {
@@ -961,6 +1000,9 @@ fn sendmsg<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let header = read_header(process, header)?;
+        if header.buffer_count > MAX_IOVECS {
+            return Err(Errno::EMSGSIZE);
+        }
         let buffers = Iovecs::read(process, header.buffers, header.buffer_count)?;
         check_destination(&socket, header.name_length != 0)?;
         let rights = read_rights(process, thread, header.control, header.control_length)?;
@@ -1114,6 +1156,9 @@ fn send_or_wait<P: Platform>(
         Ok(connected) => connected,
         Err(_) => return ControlFlow::Continue(Some(Err(Errno::ENOTCONN))),
     };
+    if connection.write_shut(side) {
+        return ControlFlow::Continue(Some(Err(Errno::EPIPE)));
+    }
     let total = send.buffers.total().min(MAX_RW_COUNT);
     if total == 0 {
         return ControlFlow::Continue(Some(Ok(0)));
@@ -1250,6 +1295,9 @@ fn recvmsg<P: Platform>(
 ) -> ControlFlow<()> {
     let prepared = socket_of(thread, fd).and_then(|(file, socket)| {
         let header = read_header(process, header_at)?;
+        if header.buffer_count > MAX_IOVECS {
+            return Err(Errno::EMSGSIZE);
+        }
         let buffers = Iovecs::read(process, header.buffers, header.buffer_count)?;
         Ok((
             header,

@@ -233,6 +233,13 @@ pub fn pwrite64<P: Platform>(
     let node = match file.kind() {
         FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_) => return Err(Errno::ESPIPE),
         FileKind::Regular(node) => *node,
+        FileKind::MemoryFile(memory) => {
+            if !super::ends_in_user_space::<P>(buffer, count) {
+                return Err(Errno::EFAULT);
+            }
+            let buffers = Iovecs::one(buffer, count);
+            return super::memfd::write(process, &file, memory, &buffers, Some(offset));
+        }
         _ => return Err(Errno::EBADF),
     };
     if !super::ends_in_user_space::<P>(buffer, count) {
@@ -255,6 +262,12 @@ pub fn ftruncate<P: Platform>(thread: &LinuxThread, fd: u64, length: u64) -> Res
         return Err(Errno::EINVAL);
     }
     let file = thread.files().file(fd)?;
+    if let FileKind::MemoryFile(memory) = file.kind() {
+        if !file.is_writable() {
+            return Err(Errno::EINVAL);
+        }
+        return memory.truncate(length).map(|()| 0);
+    }
     let FileKind::Regular(node) = file.kind() else {
         return Err(Errno::EINVAL);
     };
@@ -461,6 +474,7 @@ pub fn fsync(thread: &LinuxThread, fd: u64) -> Result<u64, Errno> {
     let file = thread.files().file(fd)?;
     let node = match file.kind() {
         FileKind::Path(_) => return Err(Errno::EBADF),
+        FileKind::MemoryFile(_) => return Ok(0),
         kind => kind.node().ok_or(Errno::EINVAL)?,
     };
     node.file_system()

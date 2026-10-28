@@ -85,9 +85,12 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
             requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
         }
         Some(FileKind::Console) => requested & (event::OUT | event::WRNORM),
-        Some(FileKind::Regular(_) | FileKind::Directory(_) | FileKind::Snapshot(_)) => {
-            requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM)
-        }
+        Some(
+            FileKind::Regular(_)
+            | FileKind::Directory(_)
+            | FileKind::Snapshot(_)
+            | FileKind::MemoryFile(_),
+        ) => requested & (event::OUT | event::WRNORM | event::IN | event::RDNORM),
         Some(FileKind::Path(_)) => event::NVAL,
         Some(FileKind::Pipe(end)) => end.events(requested),
         Some(FileKind::Window(connection)) => super::window::events(connection, requested),

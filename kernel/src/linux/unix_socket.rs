@@ -458,6 +458,12 @@ impl Connection {
         core::mem::take(&mut self.state.lock().reset[side.index()])
     }
 
+    /// Whether `side` shut down writing (`SHUT_WR`): a send of nothing is `EPIPE` then, as
+    /// any other send.
+    pub fn write_shut(&self, side: Side) -> bool {
+        self.state.lock().write_shut[side.index()]
+    }
+
     /// `shutdown` from `side`: no more reading, no more writing, or both.
     pub fn shutdown(&self, side: Side, read: bool, write: bool) {
         let mut state = self.state.lock();
@@ -541,6 +547,9 @@ struct Listening {
 #[derive(Debug)]
 enum SocketState {
     Open {
+        address: Address,
+    },
+    Connecting {
         address: Address,
     },
     Listening(Listening),
@@ -674,7 +683,7 @@ impl UnixSocket {
         match &*self.state.lock() {
             SocketState::Connected { connection, side } => Ok((Arc::clone(connection), *side)),
             SocketState::Listening(_) => Err(NotConnected::Listening),
-            SocketState::Open { .. } => Err(NotConnected::Open),
+            SocketState::Open { .. } | SocketState::Connecting { .. } => Err(NotConnected::Open),
         }
     }
 
@@ -686,7 +695,9 @@ impl UnixSocket {
     /// Its own address (`getsockname`).
     pub fn local_address(&self) -> Address {
         let connection = match &*self.state.lock() {
-            SocketState::Open { address } => return address.clone(),
+            SocketState::Open { address } | SocketState::Connecting { address } => {
+                return address.clone();
+            }
             SocketState::Listening(listening) => return listening.address.clone(),
             SocketState::Connected { connection, side } => (Arc::clone(connection), *side),
         };
@@ -783,13 +794,33 @@ impl UnixSocket {
         }
     }
 
-    /// Its own address before a `connect`: `EISCONN` if it is connected, `EINVAL` if it
-    /// listens.
+    /// Marks it connecting and returns its own address, before a `connect` queues its
+    /// connection: a connecting socket can neither listen, be bound nor be passed, so it cannot
+    /// end up inside its own connection. `EISCONN` if it is connected, `EALREADY` if another
+    /// call connects it, `EINVAL` if it listens. The caller then finishes
+    /// ([`Self::finish_connect`]) or gives up ([`Self::abandon_connect`]).
     pub fn begin_connect(&self) -> Result<Address, Errno> {
-        match &*self.state.lock() {
-            SocketState::Open { address } => Ok(address.clone()),
+        let mut state = self.state.lock();
+        match &mut *state {
+            SocketState::Open { address } => {
+                let address = core::mem::take(address);
+                *state = SocketState::Connecting {
+                    address: address.clone(),
+                };
+                Ok(address)
+            }
+            SocketState::Connecting { .. } => Err(Errno::EALREADY),
             SocketState::Connected { .. } => Err(Errno::EISCONN),
             SocketState::Listening(_) => Err(Errno::EINVAL),
+        }
+    }
+
+    /// Makes a connecting socket open again: its `connect` failed.
+    pub fn abandon_connect(&self) {
+        let mut state = self.state.lock();
+        if let SocketState::Connecting { address } = &mut *state {
+            let address = core::mem::take(address);
+            *state = SocketState::Open { address };
         }
     }
 
@@ -827,13 +858,13 @@ impl UnixSocket {
         }
     }
 
-    /// Makes it the first side of `connection` once that is queued: its address goes with the
-    /// connection. `EISCONN` or `EINVAL` if another call connected it or made it listen
-    /// meanwhile; the caller then closes the connection.
+    /// Makes a connecting socket the first side of `connection` once that is queued: its
+    /// address goes with the connection. `EINVAL` if it is not connecting; the caller then
+    /// closes the connection.
     pub fn finish_connect(&self, connection: &Arc<Connection>) -> Result<(), Errno> {
         let mut state = self.state.lock();
         match &mut *state {
-            SocketState::Open { address } => {
+            SocketState::Connecting { address } => {
                 let address = core::mem::take(address);
                 let credentials = connection.credentials(Side::First);
                 connection.set(Side::First, address, credentials);
@@ -844,7 +875,7 @@ impl UnixSocket {
                 Ok(())
             }
             SocketState::Connected { .. } => Err(Errno::EISCONN),
-            SocketState::Listening(_) => Err(Errno::EINVAL),
+            SocketState::Open { .. } | SocketState::Listening(_) => Err(Errno::EINVAL),
         }
     }
 
@@ -871,7 +902,9 @@ impl UnixSocket {
     /// open socket is writable and hung up, as on Linux.
     pub fn events(&self, requested: u16) -> u16 {
         match &*self.state.lock() {
-            SocketState::Open { .. } => requested & (event::OUT | event::WRNORM) | event::HUP,
+            SocketState::Open { .. } | SocketState::Connecting { .. } => {
+                requested & (event::OUT | event::WRNORM) | event::HUP
+            }
             SocketState::Listening(listening) => match listening.backlog.is_empty() {
                 true => 0,
                 false => requested & (event::IN | event::RDNORM),
@@ -883,6 +916,7 @@ impl UnixSocket {
     fn passable_into(&self, receiving: &Connection) -> bool {
         match &*self.state.lock() {
             SocketState::Open { .. } => true,
+            SocketState::Connecting { .. } => false,
             SocketState::Listening(listening) => listening.backlog.is_empty(),
             SocketState::Connected { connection, .. } => {
                 !core::ptr::eq(&**connection, receiving) && !connection.carries_sockets()
@@ -894,7 +928,7 @@ impl UnixSocket {
         match &*self.state.lock() {
             SocketState::Listening(_) => (true, false),
             SocketState::Connected { .. } => (false, true),
-            SocketState::Open { .. } => (false, false),
+            SocketState::Open { .. } | SocketState::Connecting { .. } => (false, false),
         }
     }
 }
@@ -914,7 +948,7 @@ impl Drop for UnixSocket {
                     release_rights(connection.abort(Side::Second));
                 }
             }
-            SocketState::Open { .. } => {}
+            SocketState::Open { .. } | SocketState::Connecting { .. } => {}
         }
         unregister(&*self);
         (self.wake)();

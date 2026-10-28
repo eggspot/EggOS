@@ -119,6 +119,9 @@ pub const S_IFSOCK: u32 = 0o140000;
 /// The device Linux's sockets report (`st_dev`): the anonymous device of its socket file system.
 pub const SOCKETS: Device = Device { major: 0, minor: 8 };
 
+/// The device memory files report (`st_dev`): the anonymous device of Linux's internal tmpfs.
+pub const MEMORY_FILES: Device = Device { major: 0, minor: 1 };
+
 /// The status of `node`: its attributes, on its file system's device, in blocks of the page
 /// size as a memory file system reports them.
 pub fn node_status(node: Node) -> Status {
@@ -314,6 +317,19 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
         FileKind::Window(_) => Ok(WINDOW),
         FileKind::AgentChannel(_) => Ok(AGENT),
+        FileKind::MemoryFile(memory) => {
+            let size = memory.size();
+            Ok(Status {
+                device: MEMORY_FILES,
+                inode: memory.inode(),
+                mode: S_IFREG | 0o777,
+                links: 1,
+                represented_device: Device { major: 0, minor: 0 },
+                size,
+                blocks: memory.frames_held() as u64 * (FRAME_SIZE / 512),
+                ..CONSOLE
+            })
+        }
         FileKind::Socket(socket) => Ok(Status {
             device: SOCKETS,
             inode: socket.inode(),

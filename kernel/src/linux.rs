@@ -39,7 +39,8 @@
 //! sessions and the console's foreground group ([`job_control`], D105), and the machine
 //! powered off, halted or reset with `reboot` ([`reboot`], D106), and changes put on the
 //! disk with `sync`, `syncfs`, `fsync` and `fdatasync` ([`file_changes`], D131), and `AF_UNIX`
-//! stream sockets with `SCM_RIGHTS` ([`socket`], [`unix_socket`], D138). Every
+//! stream sockets with `SCM_RIGHTS` ([`socket`], [`unix_socket`], D138), and memory files
+//! with `memfd_create`, `fallocate` and their shared mappings ([`memfd`], D139). Every
 //! other number returns `ENOSYS`, as Linux does for a call it lacks, so a program that
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
@@ -56,6 +57,7 @@ pub mod futex;
 pub mod identity;
 pub mod job_control;
 pub mod limits;
+pub mod memfd;
 pub mod memory;
 pub mod pipe;
 pub mod poll;
@@ -229,6 +231,8 @@ pub mod number {
         pub const SETSOCKOPT: u64 = 54;
         pub const GETSOCKOPT: u64 = 55;
         pub const ACCEPT4: u64 = 288;
+        pub const FALLOCATE: u64 = 285;
+        pub const MEMFD_CREATE: u64 = 319;
         /// The highest number above.
         pub const LAST: u64 = CLOSE_RANGE;
     }
@@ -355,6 +359,8 @@ pub mod number {
         pub const SENDMSG: u64 = 211;
         pub const RECVMSG: u64 = 212;
         pub const ACCEPT4: u64 = 242;
+        pub const FALLOCATE: u64 = 47;
+        pub const MEMFD_CREATE: u64 = 279;
         /// The highest number above.
         pub const LAST: u64 = CLOSE_RANGE;
     }
@@ -503,6 +509,8 @@ pub mod number {
             SHUTDOWN,
             SETSOCKOPT,
             GETSOCKOPT,
+            FALLOCATE,
+            MEMFD_CREATE,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -643,6 +651,12 @@ impl Errno {
     pub const ETOOMANYREFS: Self = Self(109);
     /// Nothing listens there (`connect`).
     pub const ECONNREFUSED: Self = Self(111);
+    /// Another call is connecting the socket already (`connect`).
+    pub const EALREADY: Self = Self(114);
+    /// Too many buffers for one message (`sendmsg`, `recvmsg`).
+    pub const EMSGSIZE: Self = Self(90);
+    /// A mapping that would end past the largest offset (`mmap` of a memfd).
+    pub const EOVERFLOW: Self = Self(75);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {
@@ -1038,6 +1052,8 @@ fn out_of_line_result<P: Platform>(
         number::PIPE2 => pipe::pipe2::<P>(process, thread, first, second),
         number::PWRITE64 => file_changes::pwrite64(process, thread, first, second, third, fourth),
         number::FTRUNCATE => file_changes::ftruncate::<P>(thread, first, second),
+        number::FALLOCATE => memfd::fallocate(thread, first, second, third, fourth),
+        number::MEMFD_CREATE => memfd::memfd_create(process, thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
         #[cfg(not(target_arch = "riscv64"))]
@@ -1302,7 +1318,8 @@ fn write<P: Platform>(
         FileKind::Pipe(_)
         | FileKind::Regular(_)
         | FileKind::AgentChannel(_)
-        | FileKind::Socket(_) => {
+        | FileKind::Socket(_)
+        | FileKind::MemoryFile(_) => {
             return Err(NOT_THE_CONSOLE);
         }
         FileKind::Window(_) => return Err(Errno::EINVAL),
@@ -1373,6 +1390,11 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
             }
+            FileKind::MemoryFile(memory) => {
+                let result = memfd::write(process, &file, memory, &iovecs, None);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
+            }
             FileKind::Console => {
                 let result = write_iovecs_to_console(process, &iovecs);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
@@ -1437,6 +1459,11 @@ fn read<P: Platform>(
             }
             FileKind::Socket(socket) => {
                 socket::read(process, thread, context, &file, socket, iovecs)
+            }
+            FileKind::MemoryFile(memory) => {
+                let result = memfd::read(process, &file, memory, &iovecs);
+                context.set_syscall_result(result.unwrap_or_else(Errno::result));
+                ControlFlow::Continue(())
             }
             kind => {
                 let result = match files::Contents::of(kind) {

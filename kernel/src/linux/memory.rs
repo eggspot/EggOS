@@ -1,10 +1,11 @@
 //! Linux's memory calls (M6, D53): `brk`, `mmap`, `munmap` and `mprotect`, on the process's
 //! regions ([`crate::regions`]).
 //!
-//! Anonymous mappings, and `MAP_SHARED` mappings of a window's pixels on `/dev/window` (D127),
-//! whose pages map the window server's frames at once and are never the process's; mappings of
-//! files come later (M7). An anonymous mapping is a region whose pages are mapped, zeroed, as
-//! the program first touches them. `MAP_SHARED` anonymous memory behaves
+//! Anonymous mappings, `MAP_SHARED` mappings of a window's pixels on `/dev/window` (D127),
+//! whose pages map the window server's frames at once and are never the process's, and
+//! mappings of a memfd (D139, [`super::memfd`]), which map the file's frames the same way;
+//! mappings of other files come later (M7). An anonymous mapping is a region whose pages are
+//! mapped, zeroed, as the program first touches them. `MAP_SHARED` anonymous memory behaves
 //! as private within one memory, which `CLONE_VM` children share; it marks the memory, and a
 //! `fork` that would copy it is refused with `ENOSYS` until copy-on-write (D104). Placement is top-down
 //! from below the stack's guard gap, as Linux places mappings; the break starts at the end of
@@ -166,11 +167,12 @@ fn page_aligned(length: u64) -> Option<u64> {
     length.checked_next_multiple_of(FRAME_SIZE)
 }
 
-fn window_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
+fn mapped_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
     let file = file.ok_or(Errno::EBADF)?;
     let open = file.files.file(file.fd)?;
     match open.kind() {
-        FileKind::Window(_) => Ok(open),
+        FileKind::Window(_) | FileKind::MemoryFile(_) => Ok(open),
+        FileKind::Regular(_) | FileKind::Snapshot(_) => Err(Errno::ENODEV),
         _ => Err(Errno::EBADF),
     }
 }
@@ -202,10 +204,11 @@ pub fn mmap<P: Platform>(
     map_memory(process, address, length, prot, flags, None, offset)
 }
 
-/// `mmap(address, length, prot, flags, fd, offset)`: anonymous mappings, and `MAP_SHARED`
+/// `mmap(address, length, prot, flags, fd, offset)`: anonymous mappings, `MAP_SHARED`
 /// mappings of a window's pixels on `/dev/window` (D127; `EACCES` with `MAP_PRIVATE`,
-/// `EPERM` executable or inaccessible); any other file is `EBADF`. Returns the mapping's
-/// start.
+/// `EPERM` executable or inaccessible), and mappings of a memfd (D139: shared, or private
+/// and read-only; `ENODEV` private and writable, `EPERM` executable or inaccessible). Other
+/// regular files are `ENODEV`; any other descriptor is `EBADF`. Returns the mapping's start.
 pub fn mmap_file<P: Platform>(
     process: &Process<P>,
     address: u64,
@@ -242,23 +245,70 @@ fn map_memory<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let length = page_aligned(length).ok_or(Errno::ENOMEM)?;
-    let window = match flags & map::ANONYMOUS {
-        0 => Some(window_file(file)?),
-        _ => None,
-    };
+    if flags & map::ANONYMOUS == 0 {
+        return map_file(process, address, length, prot, flags, file, offset);
+    }
     if flags & map::HUGETLB != 0 {
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
-    if window.is_some() && kind == map::PRIVATE {
-        return Err(Errno::EACCES);
-    }
-    if window.is_some() && attributes.is_none_or(|attributes| attributes.executable) {
-        return Err(Errno::EPERM);
-    }
     if kind != map::PRIVATE {
         process.mark_shared_anonymous();
     }
+    let placement = placement::<P>(address, length, flags)?;
+    process
+        .map_region(placement, length, attributes)
+        .map_err(|error| match error {
+            RegionError::Overlaps => Errno::EEXIST,
+            RegionError::Invalid
+            | RegionError::NotCovered
+            | RegionError::NoRoom
+            | RegionError::OutOfMemory
+            | RegionError::NotWritable => Errno::ENOMEM,
+        })
+}
+
+#[inline(never)]
+fn map_file<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u64,
+    file: Option<MappedFile<'_>>,
+    offset: u64,
+) -> Result<u64, Errno> {
+    let kind = flags & map::TYPE;
+    let file = mapped_file(file)?;
+    if flags & map::HUGETLB != 0 {
+        return Err(Errno::ENOMEM);
+    }
+    let attributes = attributes(prot)?;
+    let shared = kind != map::PRIVATE;
+    match file.kind() {
+        FileKind::Window(_) if !shared => return Err(Errno::EACCES),
+        FileKind::MemoryFile(_) if !shared && attributes.is_some_and(|a| a.writable) => {
+            return Err(Errno::ENODEV);
+        }
+        _ => {}
+    }
+    let Some(attributes) = attributes.filter(|attributes| !attributes.executable) else {
+        return Err(Errno::EPERM);
+    };
+    let placement = placement::<P>(address, length, flags)?;
+    match file.kind() {
+        FileKind::Window(connection) => {
+            super::window::map(process, connection, placement, length, attributes, offset)
+        }
+        FileKind::MemoryFile(memory) => super::memfd::map(
+            process, memory, placement, length, attributes, offset, shared,
+        ),
+        _ => Err(Errno::EBADF),
+    }
+}
+
+#[inline(always)]
+fn placement<P: Platform>(address: u64, length: u64, flags: u64) -> Result<Placement, Errno> {
     let user_end = <P::PageTableFormat as Format>::USER_END;
     let placement = if flags & (map::FIXED | map::FIXED_NOREPLACE) != 0 {
         if !address.is_multiple_of(FRAME_SIZE) {
@@ -291,21 +341,7 @@ fn map_memory<P: Platform>(
             top: mmap_top::<P>(),
         }
     };
-    if let (Some(window), Some(attributes)) = (window, attributes) {
-        let FileKind::Window(connection) = window.kind() else {
-            return Err(Errno::EBADF);
-        };
-        return super::window::map(process, connection, placement, length, attributes, offset);
-    }
-    process
-        .map_region(placement, length, attributes)
-        .map_err(|error| match error {
-            RegionError::Overlaps => Errno::EEXIST,
-            RegionError::Invalid
-            | RegionError::NotCovered
-            | RegionError::NoRoom
-            | RegionError::OutOfMemory => Errno::ENOMEM,
-        })
+    Ok(placement)
 }
 
 /// `munmap(address, length)`: unmaps whatever is mapped in the range, freeing the pages.
@@ -349,6 +385,7 @@ pub fn mprotect<P: Platform>(
         .protect_range(address, end, attributes)
         .map_err(|error| match error {
             RegionError::NotCovered => Errno::ENOMEM,
+            RegionError::NotWritable => Errno::EACCES,
             _ => Errno::EINVAL,
         })?;
     Ok(0)
@@ -561,7 +598,7 @@ fn remap_error(error: RegionError) -> Errno {
     match error {
         RegionError::NotCovered => Errno::EFAULT,
         RegionError::NoRoom | RegionError::OutOfMemory => Errno::ENOMEM,
-        RegionError::Invalid | RegionError::Overlaps => Errno::EINVAL,
+        RegionError::Invalid | RegionError::Overlaps | RegionError::NotWritable => Errno::EINVAL,
     }
 }
 
