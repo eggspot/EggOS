@@ -88,7 +88,7 @@ the log survives reboots; with `--no-disk` it is in memory. At 256 KiB the log m
 
 ```
 eggsh:/# agentlog
-TIME                CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
+TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL
 1970-01-01T00:00:04  claude-code  -  initialize  {"requested":"2025-11-25",...}
 1970-01-01T00:00:09  claude-code  cat  ok  {"path":"/home/notes.txt"}  exit status 0, 812 bytes
 1970-01-01T00:00:12  claude-code  cat  refused  {"path":"/home/../etc/eggos/init.conf"}  Refused: ...

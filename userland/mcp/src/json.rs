@@ -317,7 +317,7 @@ impl<'a> Parser<'a> {
 /// The members of an object, read from its validated text, in order.
 #[derive(Debug, Clone)]
 pub struct Members<'a> {
-    parser_text: &'a [u8],
+    text: &'a [u8],
     position: usize,
     done: bool,
 }
@@ -329,7 +329,7 @@ impl<'a> Members<'a> {
             .position(|&byte| byte == b'{')
             .map_or(text.len(), |at| at + 1);
         Self {
-            parser_text: text,
+            text,
             position: start,
             done: false,
         }
@@ -340,7 +340,7 @@ impl<'a> Members<'a> {
             return None;
         }
         let mut parser = Parser {
-            text: self.parser_text,
+            text: self.text,
             position: self.position,
             values: 0,
             check: false,

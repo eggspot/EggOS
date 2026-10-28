@@ -10,7 +10,7 @@ const USAGE_STATUS: i32 = 2;
 const LOGS: [&CStr; 2] = [c"/var/log/agent-audit.log.1", c"/var/log/agent-audit.log"];
 const LINE_BYTES: usize = 4096;
 const CHUNK: usize = 4096;
-const HEADER: &[u8] = b"TIME                CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
+const HEADER: &[u8] = b"TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {

@@ -24,8 +24,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   the RTC (item 29).
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`. `/home` and `/Applications` live on the disk image the run scripts
-  attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
+  `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
+  scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `meminfo`, `uptime`
   and `ps` (D125). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
