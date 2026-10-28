@@ -6,6 +6,7 @@
 //! [`feature::VERSION_1`] is required.
 
 pub mod block;
+pub mod console;
 pub mod gpu;
 pub mod input;
 pub mod mmio;
@@ -114,6 +115,8 @@ pub enum Error {
     PartialSector,
     /// A transfer past the end of the disk.
     BeyondCapacity,
+    /// The console device has no data port the driver can use, or never named it.
+    NoPort,
 }
 
 impl Error {
@@ -145,6 +148,7 @@ impl Error {
             Error::ReadOnly => "the device is read-only",
             Error::PartialSector => "a transfer that is not a whole number of sectors",
             Error::BeyondCapacity => "a transfer past the end of the disk",
+            Error::NoPort => "the console device offers no named port with multiport support",
         }
     }
 }

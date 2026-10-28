@@ -16,13 +16,14 @@ eggos-app-manifest = { path = "../app-manifest" }
 workspace = true
 
 [features]
-default = ["virtio-gpu", "virtio-input", "virtio-blk"]
+default = ["virtio-gpu", "virtio-input", "virtio-blk", "virtio-console"]
 virtio = []
 virtio-gpu = ["virtio"]
 virtio-input = ["virtio"]
 virtio-rng = ["virtio"]
 virtio-blk = ["virtio"]
-qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk"]
+virtio-console = ["virtio"]
+qemu-test = ["virtio-gpu", "virtio-input", "virtio-rng", "virtio-blk", "virtio-console"]
 qemu-test-fatal-exception = ["qemu-test"]
 qemu-bench = ["qemu-test"]
 qemu-boot-clock = []

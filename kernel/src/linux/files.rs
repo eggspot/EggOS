@@ -235,7 +235,7 @@ pub fn openat<P: Platform>(
             return Err(Errno::ENOTDIR);
         }
         if let Some(device) = node.character_device() {
-            open_device::<P>(device)?
+            open_device(process, device)?
         } else {
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
                 super::file_changes::truncate_on_open::<P>(node, flags)?;
@@ -262,9 +262,10 @@ pub fn openat<P: Platform>(
     Ok(u64::from(opened?))
 }
 
-fn open_device<P: Platform>(device: (u32, u32)) -> Result<FileKind, Errno> {
+fn open_device<P: Platform>(process: &Process<P>, device: (u32, u32)) -> Result<FileKind, Errno> {
     match device {
         crate::vfs::devfs::WINDOW_DEVICE => super::window::open::<P>(),
+        crate::vfs::devfs::AGENT_DEVICE => super::agent_channel::open(process),
         _ => Err(Errno::ENXIO),
     }
 }

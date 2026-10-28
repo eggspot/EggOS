@@ -1,6 +1,7 @@
 //! virtio in the driver model (D110): the virtio-mmio and modern virtio-pci transports as bus
 //! drivers, each adding the virtio device it finds as a child, and the polled virtio entropy
-//! device, GPU (D112), input devices (D113) and block device (D130) on top of either.
+//! device, GPU (D112), input devices (D113), block device (D130) and console device (D136) on
+//! top of either.
 
 use super::dma::DmaRegion;
 use super::{
@@ -585,6 +586,95 @@ mod disk {
         };
         crate::block::install(Box::new(VirtioDisk(disk)))
             .map_err(|_| ProbeError::Refused("no room for another disk"))
+    }
+}
+
+#[cfg(any(test, feature = "virtio-console"))]
+pub use agent::CONSOLE_DRIVER;
+
+#[cfg(any(test, feature = "virtio-console"))]
+mod agent {
+    use super::*;
+    use crate::agent_channel::{self, AgentPort};
+    use eggos_drivers::virtio::console::{MEMORY_BYTES, VirtioConsole};
+
+    type Console = VirtioConsole<AnyTransport, DmaRegion>;
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+
+    /// The polled virtio console device (virtio 1.2, 5.3) with multiple ports, whose port
+    /// named [`agent_channel::PORT_NAME`] becomes the agent channel (D136).
+    pub static CONSOLE_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-console",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::CONSOLE)],
+        probe: probe_console,
+    };
+
+    struct AgentConsole(Console);
+
+    impl AgentPort for AgentConsole {
+        fn has_input(&mut self) -> bool {
+            self.0.has_input()
+        }
+        fn receive(&mut self, bytes: &mut [u8]) -> usize {
+            self.0.receive(bytes)
+        }
+        fn host_connected(&self) -> bool {
+            self.0.host_connected()
+        }
+        fn poll_control(&mut self) -> bool {
+            self.0.poll_control()
+        }
+        fn is_sending(&mut self) -> bool {
+            self.0.is_sending()
+        }
+        fn stage(&mut self, bytes: &[u8]) -> usize {
+            self.0.stage(bytes)
+        }
+        fn send_staged(&mut self) -> Result<(), &'static str> {
+            self.0.send_staged().map_err(virtio::Error::description)
+        }
+    }
+
+    fn probe_console(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused(
+                "the device's DMA is not coherent, which the kernel does not support yet",
+            ));
+        }
+        if agent_channel::is_present() {
+            return Err(ProbeError::Refused("an agent channel is already in use"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        let console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting())
+        {
+            Ok(console) => console,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioConsole::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        if console.name() != agent_channel::PORT_NAME {
+            return Err(ProbeError::Refused(
+                "its port is not named org.eggos.mcp, the agent channel's name",
+            ));
+        }
+        agent_channel::install(Box::new(AgentConsole(console)))
+            .map_err(|_| ProbeError::Refused("an agent channel is already in use"))
     }
 }
 

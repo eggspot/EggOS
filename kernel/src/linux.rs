@@ -43,6 +43,7 @@
 //! probes for a call carries on. The next calls are the rest of what a static program's
 //! startup needs, then the file system's (M7).
 
+pub mod agent_channel;
 pub mod credentials;
 pub mod descriptors;
 pub mod exec;
@@ -1204,7 +1205,9 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
-        FileKind::Pipe(_) | FileKind::Regular(_) => return Err(NOT_THE_CONSOLE),
+        FileKind::Pipe(_) | FileKind::Regular(_) | FileKind::AgentChannel(_) => {
+            return Err(NOT_THE_CONSOLE);
+        }
         FileKind::Window(_) => return Err(Errno::EINVAL),
         _ => return Err(Errno::EBADF),
     };
@@ -1282,6 +1285,7 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(Errno::EINVAL.result());
                 ControlFlow::Continue(())
             }
+            FileKind::AgentChannel(_) => agent_channel::write(process, thread, context, &file, &iovecs),
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1326,6 +1330,7 @@ fn read<P: Platform>(
             FileKind::Window(connection) => {
                 window::read(process, thread, context, &file, connection, &iovecs)
             }
+            FileKind::AgentChannel(_) => agent_channel::read(process, thread, context, &file, &iovecs),
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {
@@ -1378,7 +1383,9 @@ fn ioctl<P: Platform>(
 fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, Errno> {
     let file = files.file(fd)?;
     match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) | FileKind::Window(_) => terminal::lseek(whence),
+        FileKind::Console | FileKind::Pipe(_) | FileKind::Window(_) | FileKind::AgentChannel(_) => {
+            terminal::lseek(whence)
+        }
         _ => files::lseek_node(&file, offset, whence),
     }
 }

@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod address_space;
+pub mod agent_channel;
 pub mod apps;
 #[cfg(any(test, feature = "qemu-bench"))]
 pub mod bench;
@@ -127,7 +128,11 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
     }
 }
 
-const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 2] = [(b"/tmp", (0, 30)), (b"/home", (0, 31))];
+const MEMORY_FILE_SYSTEMS: [(&[u8], (u32, u32)); 3] = [
+    (b"/tmp", (0, 30)),
+    (b"/home", (0, 31)),
+    (b"/var", (0, 32)),
+];
 
 fn mount_system_file_systems<P: Platform>() {
     use alloc::boxed::Box;
@@ -165,8 +170,11 @@ const HOST_FOLDER_DEVICE: (u32, u32) = (254, 0);
 
 const PERSISTENT_DEVICE: (u32, u32) = (254, 1);
 
-const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 2] =
-    [(b"home", b"/home"), (b"Applications", b"/Applications")];
+const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 3] = [
+    (b"home", b"/home"),
+    (b"Applications", b"/Applications"),
+    (b"var", b"/var"),
+];
 
 fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut persistent = false;
@@ -274,7 +282,7 @@ fn mount_persistent<P: Platform, W: Write>(
     let mebibytes = |blocks: u64| (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20;
     writeln!(
         console,
-        "vfs: EggFS disk mounted at /home and /Applications ({} MiB, {} MiB free)",
+        "vfs: EggFS disk mounted at /home, /Applications and /var ({} MiB, {} MiB free)",
         mebibytes(blocks),
         mebibytes(free)
     )?;

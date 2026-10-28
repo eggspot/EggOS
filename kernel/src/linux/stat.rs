@@ -177,6 +177,17 @@ pub const WINDOW: Status = Status {
     ..CONSOLE
 };
 
+/// `/dev/agent`'s status (D136): a character device on [`DEVICE_FILES`].
+pub const AGENT: Status = Status {
+    inode: crate::vfs::devfs::AGENT,
+    mode: S_IFCHR | 0o600,
+    represented_device: Device {
+        major: crate::vfs::devfs::AGENT_DEVICE.0,
+        minor: crate::vfs::devfs::AGENT_DEVICE.1,
+    },
+    ..WINDOW
+};
+
 /// The size of the architecture's `struct stat`: x86_64's own, or the generic one AArch64 and
 /// RISC-V share.
 pub const STAT_SIZE: usize = if cfg!(target_arch = "x86_64") {
@@ -295,6 +306,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
         }
         FileKind::Snapshot(snapshot) => Ok(node_status(snapshot.node)),
         FileKind::Window(_) => Ok(WINDOW),
+        FileKind::AgentChannel(_) => Ok(AGENT),
     }
 }
 
