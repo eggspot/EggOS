@@ -2673,6 +2673,29 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
     ]
 }
 
+/// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
+pub const GRANT_NAMES: [&str; 3] = ["write", "run", "install"];
+
+/// Checks a `--mcp-allow` list: names from [`GRANT_NAMES`], lowercase, separated by single
+/// commas, none empty.
+pub fn check_grants(list: &str) -> Result<(), String> {
+    for name in list.split(',') {
+        if !GRANT_NAMES.contains(&name) {
+            return Err(format!(
+                "--mcp-allow: unknown grant '{name}' (write, run or install, separated by commas)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// QEMU's arguments that hand the grants `list` (checked, or a script's variable holding it)
+/// to EggOS's built-in MCP server on the kernel command line, which only the host sets and the
+/// server reads in `/proc/cmdline` (D137). `-append` takes a plain string: commas stay single.
+pub fn grant_args(list: &str) -> Vec<String> {
+    vec!["-append".into(), format!("eggos.mcp_allow={list}")]
+}
+
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
 /// agent channel on QEMU's standard input and output, which then carry nothing else, the
 /// console in the file `console_log` (commas doubled), no monitor, and the display in a window
