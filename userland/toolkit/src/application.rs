@@ -4,7 +4,8 @@
 
 use crate::canvas::Canvas;
 use crate::input::{self, Input, RECORD_SIZE};
-use crate::tree::{Response, WidgetTree};
+use crate::damage::Damage;
+use crate::tree::{PointerShape, Response, WidgetTree};
 use crate::window::{Window, now_ms};
 use eggos_runtime::errno::Errno;
 
@@ -32,12 +33,8 @@ pub trait Application<const N: usize> {
     fn focused(&mut self, _now_ms: u32) {}
 }
 
-fn draw<const N: usize>(
-    window: &mut Window,
-    tree: &mut WidgetTree<N>,
-    everything: bool,
-) -> Result<(), Errno> {
-    let damage = tree.take_damage();
+fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(), Errno> {
+    let damage = view.take_damage();
     if damage.is_empty() && !everything {
         return Ok(());
     }
@@ -49,7 +46,7 @@ fn draw<const N: usize>(
         };
         for rect in damage.rects() {
             let previous = canvas.narrow(*rect);
-            tree.paint(&mut canvas);
+            view.paint(&mut canvas);
             canvas.restore(previous);
         }
     }
@@ -90,40 +87,108 @@ fn in_scale_1(input: Input, scale: i32) -> Input {
     }
 }
 
+/// A window's content a program draws and answers itself, with the toolkit's pieces
+/// ([`crate::canvas`], [`crate::widget`], [`crate::menu`], [`crate::panel`]) rather than a
+/// widget tree; [`run_view`] serves it.
+pub trait View {
+    /// The content is now `width` by `height` (scale 1).
+    fn resize(&mut self, width: i32, height: i32);
+
+    /// Acts on `input`, which happened at `time_ms`; `false` once the window should close.
+    fn handle(&mut self, input: Input, time_ms: u32) -> bool;
+
+    /// What changed since the last call.
+    fn take_damage(&mut self) -> Damage;
+
+    /// Draws the whole content; the canvas is clipped to what is redrawn.
+    fn paint(&mut self, canvas: &mut Canvas<'_>);
+
+    /// The pointer shape over the content now.
+    fn pointer_shape(&mut self) -> PointerShape {
+        PointerShape::Arrow
+    }
+
+    /// When the view next wants [`Self::tick`], if ever.
+    fn deadline(&mut self, _now_ms: u32) -> Option<u32> {
+        None
+    }
+
+    /// Called whenever the loop wakes, with the time.
+    fn tick(&mut self, _now_ms: u32) {}
+}
+
+struct Tree<'a, A, const N: usize>(&'a mut A);
+
+impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
+    fn resize(&mut self, width: i32, height: i32) {
+        self.0.tree().resize(width, height);
+    }
+
+    fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        let response = self.0.tree().handle(input, time_ms);
+        self.0.respond(response, time_ms);
+        if input == Input::FocusIn {
+            self.0.focused(time_ms);
+        }
+        true
+    }
+
+    fn take_damage(&mut self) -> Damage {
+        self.0.tree().take_damage()
+    }
+
+    fn paint(&mut self, canvas: &mut Canvas<'_>) {
+        self.0.tree().paint(canvas);
+    }
+
+    fn pointer_shape(&mut self) -> PointerShape {
+        self.0.tree().pointer_shape()
+    }
+
+    fn deadline(&mut self, now_ms: u32) -> Option<u32> {
+        let tree = self.0.tree().next_deadline(now_ms);
+        soonest(tree, self.0.deadline(now_ms), now_ms)
+    }
+
+    fn tick(&mut self, now_ms: u32) {
+        self.0.tree().tick(now_ms);
+        if self
+            .0
+            .deadline(now_ms)
+            .is_some_and(|deadline| deadline.wrapping_sub(now_ms) as i32 <= 0)
+        {
+            self.0.tick(now_ms);
+        }
+    }
+}
+
 /// Shows `window` with `application`'s widgets laid out in it and serves it until the user
 /// asks to close it.
 pub fn run<const N: usize>(
     window: &mut Window,
     application: &mut impl Application<N>,
 ) -> Result<(), Errno> {
+    run_view(window, &mut Tree(application))
+}
+
+/// Shows `window` with `view` drawn in it and serves it until the user asks to close it or
+/// [`View::handle`] says so.
+pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> {
     let scale = window.scale().max(1);
     let (width, height) = window.size();
-    application
-        .tree()
-        .resize((width / scale) as i32, (height / scale) as i32);
+    view.resize((width / scale) as i32, (height / scale) as i32);
     let mut everything = true;
     let mut records = [0u8; RECORD_SIZE * RECORDS_READ];
     loop {
-        draw(window, application.tree(), everything)?;
+        draw(window, view, everything)?;
         everything = false;
-        let shape = application.tree().pointer_shape();
+        let shape = view.pointer_shape();
         window.set_pointer(shape)?;
         let now = now_ms();
-        let deadline = soonest(
-            application.tree().next_deadline(now),
-            application.deadline(now),
-            now,
-        );
+        let deadline = view.deadline(now);
         let timeout = deadline.map(|deadline| (deadline.wrapping_sub(now) as i32).max(0) as u32);
         let read = window.read_events(&mut records, timeout)?;
-        let now = now_ms();
-        application.tree().tick(now);
-        if application
-            .deadline(now)
-            .is_some_and(|deadline| deadline.wrapping_sub(now) as i32 <= 0)
-        {
-            application.tick(now);
-        }
+        view.tick(now_ms());
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
             let Some(event) = input::decode(record) else {
                 continue;
@@ -136,18 +201,12 @@ pub fn run<const N: usize>(
                 Input::Resize { width, height } => {
                     window.resize(width, height)?;
                     let (width, height) = window.size();
-                    application
-                        .tree()
-                        .resize((width / scale) as i32, (height / scale) as i32);
+                    view.resize((width / scale) as i32, (height / scale) as i32);
                     everything = true;
                 }
                 other => {
-                    let response = application
-                        .tree()
-                        .handle(in_scale_1(other, scale as i32), event.time_ms);
-                    application.respond(response, event.time_ms);
-                    if other == Input::FocusIn {
-                        application.focused(event.time_ms);
+                    if !view.handle(in_scale_1(other, scale as i32), event.time_ms) {
+                        return Ok(());
                     }
                 }
             }

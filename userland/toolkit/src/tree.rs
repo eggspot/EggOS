@@ -7,10 +7,10 @@ use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::geometry::Rect;
 use crate::input::{Input, MouseButton, key};
-use crate::text::{self, Text};
+use crate::text::Text;
 use crate::widget::{
-    self, Escape, Field, Horizontal, Kind, Length, List, Look, Place, THUMB, WHEEL_STEP, card_rect,
-    caret_rect, field_inner, radio_rect, scroll_bar,
+    self, Field, FieldKey, Horizontal, Kind, Length, List, Look, Place, THUMB, WHEEL_STEP,
+    card_rect, caret_rect, radio_rect, scroll_bar,
 };
 
 /// A widget's place in its tree.
@@ -920,18 +920,7 @@ impl<const N: usize> WidgetTree<N> {
         let Some(rect) = self.rect(id) else {
             return;
         };
-        let inner = field_inner(rect);
-        let wanted = x - inner.x + field.scroll;
-        let mut caret = 0;
-        let mut used = 0;
-        for (at, character) in field.text.as_str().char_indices() {
-            let advance = text::width(character.encode_utf8(&mut [0; 4]));
-            if used + advance / 2 > wanted {
-                break;
-            }
-            used += advance;
-            caret = at + character.len_utf8();
-        }
+        let caret = widget::caret_at(field, rect, x);
         self.edit_field(id, now_ms, |field| {
             field.caret = caret;
             false
@@ -1144,19 +1133,8 @@ impl<const N: usize> WidgetTree<N> {
         let Some(rect) = self.rect(id) else {
             return;
         };
-        let inner = field_inner(rect);
         if let Some(Kind::TextField(field)) = self.node_mut(id).map(|node| &mut node.kind) {
-            let before = text::width(&field.text.as_str()[..field.caret]);
-            let total = text::width(field.text.as_str());
-            if before - field.scroll > inner.width {
-                field.scroll = before - inner.width;
-            }
-            if before - field.scroll < 0 {
-                field.scroll = before;
-            }
-            if field.scroll > 0 && total - field.scroll < inner.width {
-                field.scroll = (total - inner.width).max(0);
-            }
+            widget::keep_caret_visible(field, rect);
         }
     }
 
@@ -1169,71 +1147,21 @@ impl<const N: usize> WidgetTree<N> {
         now_ms: u32,
         unused: Response,
     ) -> Response {
-        let Some(Kind::TextField(field)) = self.kind(id).copied() else {
+        let Some(Kind::TextField(mut edited)) = self.kind(id).copied() else {
             return unused;
         };
-        let changed = match code {
-            key::BACKSPACE => self.edit_field(id, now_ms, |field| {
-                let at = field.text.previous_boundary(field.caret);
-                if at == field.caret {
-                    return false;
-                }
-                field.text.remove(at);
-                field.caret = at;
-                true
-            }),
-            key::DELETE => self.edit_field(id, now_ms, |field| field.text.remove(field.caret) > 0),
-            key::LEFT => self.edit_field(id, now_ms, |field| {
-                field.caret = field.text.previous_boundary(field.caret);
-                false
-            }),
-            key::RIGHT => self.edit_field(id, now_ms, |field| {
-                field.caret = field.text.next_boundary(field.caret);
-                false
-            }),
-            key::HOME => self.edit_field(id, now_ms, |field| {
-                field.caret = 0;
-                false
-            }),
-            key::END => self.edit_field(id, now_ms, |field| {
-                field.caret = field.text.len();
-                false
-            }),
-            key::ESC => match field.escape {
-                Escape::Clear if field.text.is_empty() => return unused,
-                Escape::Clear => self.edit_field(id, now_ms, |field| {
-                    field.text.set("");
-                    field.caret = 0;
-                    true
-                }),
-                Escape::Revert => {
-                    let before = self.text_before_focus;
-                    self.edit_field(id, now_ms, |field| {
-                        let changed = field.text != before;
-                        field.text = before;
-                        field.caret = field.text.len();
-                        changed
-                    })
-                }
-            },
-            _ => {
-                let typed = char::from_u32(character)
-                    .filter(|typed| !command && !typed.is_control() && (*typed as u32) < 0x100);
-                match typed {
-                    Some(typed) => self.edit_field(id, now_ms, |field| {
-                        let inserted = field.text.insert(field.caret, typed);
-                        if inserted {
-                            field.caret += typed.len_utf8();
-                        }
-                        inserted
-                    }),
-                    None => return unused,
-                }
-            }
-        };
-        match changed {
-            true => Response::Edited(id),
-            false => Response::Nothing,
+        let before = self.text_before_focus;
+        let key = widget::field_key(&mut edited, code, character, command, &before);
+        if key == FieldKey::Unused {
+            return unused;
+        }
+        self.edit_field(id, now_ms, |field| {
+            *field = edited;
+            false
+        });
+        match key {
+            FieldKey::Changed => Response::Edited(id),
+            _ => Response::Nothing,
         }
     }
 }
