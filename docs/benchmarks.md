@@ -112,6 +112,11 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `window_commit_line`: a commit of one 656x16 band of the top window's content (D127): the
   damage it makes and the band copied from the window's buffer to the framebuffer, through the
   compositor's fast path.
+- `wayland_blit_rows`: a 656x16 band (the size `window_commit_line` commits) copied from a
+  Wayland client's pixels into a window's buffer with each pixel's alpha byte cleared (D140):
+  the work `eggway` adds per damaged band before the window server's own commit. eggway reads
+  the client's memory with volatile loads; the benchmark runs the same loop over slices. The
+  kernel targets have no FP/SIMD, so this is scalar code, one load, mask and store per pixel.
 - `window_hit_test`: the pointer moving between two points over eight overlapping windows
   (D127): the top window under it found, and its enter, leave and motion events made; since
   D128 in the same walk its resize zones and the control under the pointer, then the pointer's

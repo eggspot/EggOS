@@ -1,0 +1,19 @@
+[package]
+name = "eggos-linux-gui-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "linux-paint"
+path = "src/bin/linux_paint.rs"
+
+[dependencies]
+eggos-wayland = { path = "../../wayland" }
+
+[lints]
+workspace = true

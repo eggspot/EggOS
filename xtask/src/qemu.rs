@@ -4,6 +4,7 @@
 
 pub mod files;
 pub mod install;
+mod linux_gui;
 pub mod mcp;
 pub mod persistent;
 pub mod settings;
@@ -182,6 +183,15 @@ pub enum Expect {
     /// the close control closes the window (D129); then the program's lines in the file, its
     /// status 0, and on riscv64 `ENOEXEC`.
     WindowsGui,
+    /// The release kernel with `linux-paint`, a Wayland client built from our own source with
+    /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
+    /// with `eggway` started by init; the test runs it with its standard output redirected to a
+    /// file and checks the display against the host's render as its window appears painted with
+    /// the desktop's chrome, a click recolours its target, a key adds a mark, its title bar is
+    /// dragged, its handle's press moves it through `xdg_toplevel.move` (and a stale serial
+    /// moves nothing), its maximise control gives it the work area and its close control ends
+    /// it (D140); then the program's lines in the file and its status 0.
+    LinuxGui,
     /// A kernel built with `qemu-boot-clock` boots to the prompt of the shell init starts and
     /// writes its `boot_to_prompt` benchmark line; the test ends QEMU once the line is whole,
     /// since nothing types at that prompt (D116).
@@ -371,6 +381,36 @@ fn program_window_output() -> [Vec<Line>; PROGRAM_WINDOW_SESSION.len()] {
             Line::Around("64 normal ", " kernel Terminal"),
         ],
         vec![line(SHELL_EXIT_LINE), line(POWER_DOWN_LINE)],
+    ]
+}
+
+const LINUX_GUI_SESSION: [&[u8]; 3] = [
+    b"linux-paint > /tmp/linux-paint.log; echo LINUX-PAINT status $?\r",
+    b"cat /tmp/linux-paint.log\r",
+    b"exit 7\r",
+];
+
+fn linux_gui_output() -> [Vec<Line>; LINUX_GUI_SESSION.len()] {
+    let whole = |line: &str| Line::Whole(line.to_owned());
+    let keymap = format!(
+        "LINUX-PAINT keymap xkb_v1 {}",
+        eggos_wayland::keymap::US_KEYMAP.len() + 1
+    );
+    [
+        vec![whole("LINUX-PAINT status 0")],
+        vec![
+            whole("LINUX-PAINT globals wl_compositor wl_shm wl_seat wl_output xdg_wm_base"),
+            Line::Whole(keymap),
+            whole("LINUX-PAINT configured"),
+            whole("LINUX-PAINT shown"),
+            Line::Around("LINUX-PAINT clicked ", ""),
+            whole("LINUX-PAINT key 30 pressed"),
+            whole("LINUX-PAINT move sent"),
+            whole("LINUX-PAINT stale move sent"),
+            Line::Around("LINUX-PAINT maximised ", ""),
+            whole("LINUX-PAINT close"),
+        ],
+        vec![whole(SHELL_EXIT_LINE), whole(POWER_DOWN_LINE)],
     ]
 }
 
@@ -1252,6 +1292,25 @@ fn boot(
                     &mut shell_typed,
                 )
             }
+            Expect::LinuxGui => {
+                if let Some(port) = qmp_port
+                    && shell_typed.lines >= 1
+                    && terminal_frames.is_empty()
+                {
+                    let checked = linux_gui::check(arch, port, &mut console, &rx);
+                    if let Err(error) = checked {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    terminal_frames.push(Ok(()));
+                }
+                shell_scripts_to_type(
+                    &String::from_utf8_lossy(&console),
+                    &LINUX_GUI_SESSION,
+                    &mut shell_typed,
+                )
+            }
             Expect::AndroidPrograms => shell_scripts_to_type(
                 &String::from_utf8_lossy(&console),
                 &ANDROID_PROGRAM_SESSION,
@@ -1561,6 +1620,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 &WINDOWS_GUI_SESSION,
                 windows_gui_output(arch),
                 "Windows GUI",
+            );
+        }
+        Expect::LinuxGui => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &LINUX_GUI_SESSION,
+                linux_gui_output(),
+                "Linux GUI",
             );
         }
         Expect::AndroidPrograms => {

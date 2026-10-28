@@ -1,0 +1,20 @@
+[package]
+name = "eggos-eggway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "eggway"
+path = "src/main.rs"
+
+[features]
+fuzz = []
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+eggos-wayland = { path = "../../wayland" }
+
+[lints]
+workspace = true

@@ -321,8 +321,16 @@ D16):
     `SCM_RIGHTS` and `poll` readiness (38a); `memfd_create`, `ftruncate`, `fallocate`, seals
     and `MAP_SHARED` of memfds (38b). The item's "`MAP_SHARED` of files" is narrowed to
     memfds, which is what Wayland's shared buffers use; tmpfs and EggFS files come later. Next:
-    the Wayland server (item 39), then `epoll`, `eventfd`, `timerfd` and `signalfd`.
-39. a Wayland server, `eggway`, for Linux GUI apps.
+    the Wayland server (item 39, done), then `epoll`, `eventfd`, `timerfd` and `signalfd`.
+39. **done** — users can now run Linux programs that open their windows through Wayland
+    (D140, docs/linux-programs.md): `eggway`, our own Wayland server from the public protocol
+    specifications, started by init when a display exists, on `/run/user/0/wayland-0`;
+    `wl_compositor`, `wl_shm`, `wl_surface`, `wl_seat` with a US keymap, `wl_output`,
+    `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`; each toplevel a desktop window with
+    EggOS's chrome, its input as Wayland events, frame callbacks at 60 Hz; `xdg_toplevel.move`
+    and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: `epoll`,
+    `eventfd`, `timerfd` and `signalfd`, dynamic linking, then the toolkits' protocols
+    (subcompositor, decorations, popups, the clipboard).
 40. the macOS Objective-C runtime and the core of Foundation.
 41. macOS GUI apps, part 1.
 

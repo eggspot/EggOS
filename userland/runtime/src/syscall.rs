@@ -57,6 +57,15 @@ pub mod number {
     pub const SCHED_GETAFFINITY: usize = 204;
     pub const FSYNC: usize = 74;
     pub const KILL: usize = 62;
+    pub const SOCKET: usize = 41;
+    pub const CONNECT: usize = 42;
+    pub const SENDMSG: usize = 46;
+    pub const RECVMSG: usize = 47;
+    pub const BIND: usize = 49;
+    pub const LISTEN: usize = 50;
+    pub const ACCEPT4: usize = 288;
+    pub const MEMFD_CREATE: usize = 319;
+    pub const FTRUNCATE: usize = 77;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -113,6 +122,15 @@ pub mod number {
     pub const SCHED_GETAFFINITY: usize = 123;
     pub const FSYNC: usize = 82;
     pub const KILL: usize = 129;
+    pub const SOCKET: usize = 198;
+    pub const BIND: usize = 200;
+    pub const LISTEN: usize = 201;
+    pub const CONNECT: usize = 203;
+    pub const SENDMSG: usize = 211;
+    pub const RECVMSG: usize = 212;
+    pub const ACCEPT4: usize = 242;
+    pub const MEMFD_CREATE: usize = 279;
+    pub const FTRUNCATE: usize = 46;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

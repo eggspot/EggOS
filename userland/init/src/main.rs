@@ -6,7 +6,10 @@
 //! it ends, init starts it again after the back-off (`backoff.rs`), or takes the machine down with
 //! `reboot` if the configuration says so. Without a login program init says so and only reaps
 //! children, for good. When the agent channel exists, init also starts the built-in MCP server
-//! and starts it again when it ends (`agent_server.rs`, D136).
+//! and starts it again when it ends (`agent_server.rs`, D136). When a display exists, it also
+//! starts the Wayland server, `eggway`, and starts it again when it ends (`display_server.rs`,
+//! D140); every program it starts finds the Wayland socket through `XDG_RUNTIME_DIR` and
+//! `WAYLAND_DISPLAY`.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
@@ -16,6 +19,8 @@ mod agent_server;
 mod backoff;
 #[cfg(any(test, target_env = "musl"))]
 mod config;
+#[cfg(any(test, target_env = "musl"))]
+mod display_server;
 #[cfg(target_env = "musl")]
 mod system;
 

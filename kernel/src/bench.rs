@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 55] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -114,6 +114,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
         ("linux_unix_stream_send_recv", |_, n| {
             linux_unix_stream_send_recv(n)
         }),
+        ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -936,6 +937,24 @@ fn gfx_compose_four_windows(n: u64) {
             BENCH_SCREEN.0 as usize,
             rect,
             &contents,
+        );
+    }
+}
+
+fn wayland_blit_rows(n: u64) {
+    use eggos_wayland::blit::{self, Rect as BlitRect};
+    const WIDTH: usize = 656;
+    const ROWS: usize = 16;
+    let source = alloc::vec![0xff20_4060u32; WIDTH * ROWS];
+    let mut window = alloc::vec![0u32; WIDTH * ROWS];
+    let band = BlitRect::new(0, 0, WIDTH as u32, ROWS as u32);
+    for _ in 0..n {
+        blit::copy_opaque_rows(
+            black_box(&source),
+            WIDTH,
+            black_box(&mut window),
+            WIDTH,
+            band,
         );
     }
 }

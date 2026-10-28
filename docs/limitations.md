@@ -69,6 +69,15 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
   (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
   work).
+- **Linux GUI programs: static Wayland clients only.** `eggway` (D140) shows a static program's
+  `xdg_toplevel`s as desktop windows; GTK, Qt, SDL and browsers need dynamic linking, `epoll`,
+  `eventfd` and `timerfd` and protocols eggway does not serve yet ([Linux
+  programs](linux-programs.md) lists them). It serves one seat and one output (whose mode is the
+  work area's size, at scale 1), shows surfaces opaque and ignores buffer scale and transform,
+  window geometry and the window menu request; popups close at once, and there is no clipboard,
+  subsurfaces, touch or cursor surfaces; at most 16 clients, 16 surfaces and 8 pools each, pools
+  of 32 MiB at most and 48 MiB for all clients, and the terminal waits while a Wayland program
+  opened from it runs.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with
