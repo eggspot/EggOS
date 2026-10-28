@@ -19,8 +19,12 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// `ENOEXEC`.
     pub const ENOEXEC: Self = Self(8);
+    /// `EAGAIN`.
+    pub const EAGAIN: Self = Self(11);
     /// `EACCES`.
     pub const EACCES: Self = Self(13);
+    /// `EBUSY`.
+    pub const EBUSY: Self = Self(16);
     /// `ENOTDIR`.
     pub const ENOTDIR: Self = Self(20);
     /// `EISDIR`.

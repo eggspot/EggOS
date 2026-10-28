@@ -1,3 +1,4 @@
+use crate::agentlog::agentlog;
 use crate::cat::cat;
 use crate::echo::echo;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
@@ -23,6 +24,7 @@ const UTILITY_NOT_FOUND: i32 = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Utility {
+    Agentlog,
     Cat,
     Cp,
     Echo,
@@ -51,7 +53,8 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
+        Self::Agentlog,
         Self::Cat,
         Self::Cp,
         Self::Echo,
@@ -81,6 +84,7 @@ impl Utility {
 
     pub fn name(self) -> &'static [u8] {
         match self {
+            Self::Agentlog => b"agentlog",
             Self::Cat => b"cat",
             Self::Cp => b"cp",
             Self::Echo => b"echo",
@@ -115,6 +119,7 @@ impl Utility {
 
     fn run<S: System>(self, output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match self {
+            Self::Agentlog => agentlog(output, arguments),
             Self::Cat => cat(output, arguments),
             Self::Cp => cp(output, arguments),
             Self::Echo => echo(output, arguments),

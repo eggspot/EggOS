@@ -25,6 +25,7 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-files",
+ "eggos-mcp",
  "eggos-runtime",
 ]
 
@@ -109,6 +110,13 @@ name = "eggos-macos-console"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-mcp"
+version = "0.2.0"
+dependencies = [
+ "eggos-runtime",
+]
+
+[[package]]
 name = "eggos-runtime"
 version = "0.2.0"
 
@@ -178,6 +186,7 @@ dependencies = [
  "eggos-drivers",
  "eggos-eggfs",
  "eggos-files",
+ "eggos-mcp",
  "eggos-settings",
  "eggos-settings-file",
  "eggos-toolkit",
