@@ -1,6 +1,9 @@
-//! A minimal `/proc` (D125): `meminfo`, `uptime` and `ps`, read-only regular files made when
-//! they are opened, mounted on `/proc` at boot when the root file system has that directory.
+//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime` and `ps`, read-only regular
+//! files made when they are opened, mounted on `/proc` at boot when the root file system has
+//! that directory.
 //!
+//! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
+//!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
 //! - `meminfo`: `MemTotal`, `MemFree` and `MemAvailable` in kB, as Linux writes them: the
 //!   frames the allocator had once the kernel's page tables were built, and the frames it has
 //!   now (every free frame is available: there is no page cache to reclaim).
@@ -21,13 +24,20 @@ use eggos_hal::memory::FRAME_SIZE;
 
 const ROOT: u64 = 1;
 
-const FILES: [(&[u8], u64); 3] = [(b"meminfo", 2), (b"ps", 3), (b"uptime", 4)];
+const FILES: [(&[u8], u64); 4] = [
+    (b"cmdline", 5),
+    (b"meminfo", 2),
+    (b"ps", 3),
+    (b"uptime", 4),
+];
 
 const MEMINFO: u64 = 2;
 
 const PS: u64 = 3;
 
 const UPTIME: u64 = 4;
+
+const CMDLINE: u64 = 5;
 
 const DEVICE: (u32, u32) = (0, 4);
 
@@ -95,6 +105,21 @@ pub fn uptime(ticks: u64, frequency: u64) -> Option<Vec<u8>> {
     let mut text = Text(Vec::new());
     writeln!(text, "{}.{:02} 0.00", hundredths / 100, hundredths % 100).ok()?;
     Some(text.0)
+}
+
+/// `/proc/cmdline`'s text for the command line `line`: the line and a newline, as Linux writes it.
+pub fn cmdline_text(line: &[u8]) -> Option<Vec<u8>> {
+    let mut text = Vec::new();
+    text.try_reserve(line.len() + 1).ok()?;
+    text.extend_from_slice(line);
+    text.push(b'\n');
+    Some(text)
+}
+
+fn cmdline<P: Platform>() -> Option<Vec<u8>> {
+    let mut text = None;
+    P::command_line(&mut |line| text = cmdline_text(line));
+    text.or_else(|| cmdline_text(b""))
 }
 
 fn ps() -> Option<Vec<u8>> {
@@ -188,6 +213,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             }
             UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
             PS => ps(),
+            CMDLINE => cmdline::<P>(),
             _ => None,
         }
     }
@@ -219,6 +245,17 @@ mod tests {
     }
 
     #[test]
+    fn cmdline_is_the_line_and_a_newline() {
+        assert_eq!(
+            cmdline_text(b"eggos.mcp_allow=write").unwrap(),
+            b"eggos.mcp_allow=write\n"
+        );
+        assert_eq!(cmdline_text(b"").unwrap(), b"\n");
+        let proc = Proc::<crate::tests::TestPlatform>::new();
+        assert_eq!(proc.generate(CMDLINE).unwrap(), b"\n");
+    }
+
+    #[test]
     fn uptime_has_two_decimals() {
         assert_eq!(uptime(12_345, 1000).unwrap(), b"12.34 0.00\n");
         assert_eq!(uptime(5, 100).unwrap(), b"0.05 0.00\n");
@@ -226,13 +263,14 @@ mod tests {
     }
 
     #[test]
-    fn the_root_lists_and_finds_its_three_files() {
+    fn the_root_lists_and_finds_its_four_files() {
         let proc = Proc::<crate::tests::TestPlatform>::new();
         let names: Vec<Vec<u8>> = (0..)
             .map_while(|position| proc.entry(ROOT, position))
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect();
-        assert_eq!(names, [&b"meminfo"[..], b"ps", b"uptime"]);
+        assert_eq!(names, [&b"cmdline"[..], b"meminfo", b"ps", b"uptime"]);
+        assert_eq!(proc.lookup(ROOT, b"cmdline"), Some(CMDLINE));
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
         assert_eq!(proc.lookup(ROOT, b"self"), None);
         assert_eq!(proc.name(UPTIME).as_bytes(), b"uptime");

@@ -19,6 +19,7 @@ mod thread;
 mod timer;
 
 use crate::acpi::{self, RootTable};
+use crate::command_line::{self, CommandLineCopy};
 use crate::arch::boot_memory;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
@@ -310,6 +311,7 @@ static PVH_START_INFO: AtomicU32 = AtomicU32::new(0);
 /// `hvm_start_info` (start_info.h): `magic` (u32) at 0, then `version`, `flags`, `nr_modules`
 /// (u32 each), `modlist_paddr` and `cmdline_paddr` (u64 each), and `rsdp_paddr` (u64) at 32.
 const PVH_START_MAGIC: u32 = 0x336e_c578;
+const PVH_CMDLINE_PADDR: usize = 24;
 const PVH_RSDP_PADDR: usize = 32;
 /// Bytes of `hvm_start_info` read: up to and including `rsdp_paddr` (present since version 0).
 const PVH_START_INFO_READ_LENGTH: usize = PVH_RSDP_PADDR + 8;
@@ -599,7 +601,17 @@ impl Platform for X86_64 {
         unsafe { core::arch::asm!("sti", "nop", "cli") };
     }
 
+    fn command_line(line: &mut dyn FnMut(&[u8])) {
+        capture_command_line();
+        let mut copy = [0u8; command_line::MAX_BYTES];
+        let text = COMMAND_LINE.load(&mut copy);
+        if !text.is_empty() {
+            line(text);
+        }
+    }
+
     fn memory_map() -> MemoryMap {
+        capture_command_line();
         let mut map = MemoryMap::new();
         let Some(pvh) = PvhMemoryMap::read() else {
             return map;
@@ -1060,6 +1072,53 @@ fn signature_of(root: RootTable) -> &'static [u8; 4] {
         RootTable::Rsdt(_) => b"RSDT",
         RootTable::Xsdt(_) => b"XSDT",
     }
+}
+
+/// The PVH loader's command line, copied by the first [`capture_command_line`]: the first call
+/// to `memory_map`, on the boot CPU, before the frame allocator exists.
+static COMMAND_LINE: CommandLineCopy = CommandLineCopy::new();
+
+/// Copies the command line `hvm_start_info.cmdline_paddr` names, once: from the low memory
+/// (QEMU's PVH option ROM keeps it there, outside every RAM entry) or a RAM entry of the
+/// loader's map, inside the boot direct map, up to its NUL and at most
+/// [`command_line::MAX_BYTES`]; an empty line when anything is wrong.
+fn capture_command_line() {
+    if COMMAND_LINE.is_taken() {
+        return;
+    }
+    COMMAND_LINE.store(pvh_command_line().unwrap_or_default());
+}
+
+fn pvh_command_line() -> Option<&'static [u8]> {
+    let start_info = in_boot_direct_map(
+        PVH_START_INFO.load(Ordering::Relaxed).into(),
+        PVH_START_INFO_READ_LENGTH,
+    )?;
+    // SAFETY: the loader passed the address of its `hvm_start_info`, which spans at least
+    // `PVH_START_INFO_READ_LENGTH` bytes inside the boot direct map (checked), and nothing
+    // writes it.
+    let info = unsafe { physical_slice(start_info, PVH_START_INFO_READ_LENGTH) };
+    let magic = u32::from_le_bytes(info.get(..4)?.try_into().ok()?);
+    if magic != PVH_START_MAGIC {
+        return None;
+    }
+    let field = info.get(PVH_CMDLINE_PADDR..PVH_CMDLINE_PADDR + 8)?;
+    let address = u64::from_le_bytes(field.try_into().ok()?);
+    let ram = PvhMemoryMap::read();
+    let mut ram_ranges = ram
+        .iter()
+        .flat_map(|pvh| pvh.entries())
+        .filter(|&(_, kind)| kind == PVH_MEMMAP_TYPE_RAM)
+        .map(|(range, _)| range);
+    let region = command_line::region(address, LOW_MEMORY, &mut ram_ranges, BOOT_DIRECT_MAP_END)?;
+    let length = usize::try_from(region.end - region.start).ok()?;
+    let start = in_boot_direct_map(region.start, length)?;
+    // SAFETY: `region` is inside the low memory, which the boot direct map covers whole and the
+    // allocator never hands out, or inside a RAM entry of the loader's map, before the
+    // allocator exists (the first `memory_map`); either way inside the boot direct map
+    // (checked) and written by nothing while it is read here.
+    let bytes = unsafe { physical_slice(start, length) };
+    Some(command_line::prefix(bytes))
 }
 
 /// The RSDP's bytes, at the address the PVH loader passed in `hvm_start_info`, if any.
