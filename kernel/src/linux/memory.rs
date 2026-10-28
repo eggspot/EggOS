@@ -268,8 +268,6 @@ fn map_memory<P: Platform>(
         })
 }
 
-/// [`map_memory`] of a file, whose arguments it checked as far as the length: out of line, so
-/// the anonymous path stays as short as it was.
 #[inline(never)]
 fn map_file<P: Platform>(
     process: &Process<P>,
@@ -302,16 +300,13 @@ fn map_file<P: Platform>(
         FileKind::Window(connection) => {
             super::window::map(process, connection, placement, length, attributes, offset)
         }
-        FileKind::MemoryFile(memory) => {
-            super::memfd::map(process, memory, placement, length, attributes, offset, shared)
-        }
+        FileKind::MemoryFile(memory) => super::memfd::map(
+            process, memory, placement, length, attributes, offset, shared,
+        ),
         _ => Err(Errno::EBADF),
     }
 }
 
-/// Where a new mapping of `length` bytes goes, from `mmap`'s `address` and `flags`: `EINVAL`
-/// for an unaligned fixed address, `ENOMEM` past user space, `EPERM` below the lowest address
-/// allowed.
 #[inline(always)]
 fn placement<P: Platform>(address: u64, length: u64, flags: u64) -> Result<Placement, Errno> {
     let user_end = <P::PageTableFormat as Format>::USER_END;

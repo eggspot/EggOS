@@ -230,7 +230,10 @@ impl MemoryFile {
 
     fn frame_for(&self, pages: &mut MemoryPages, page: usize) -> Option<u64> {
         if page >= pages.frames.len() {
-            pages.frames.try_reserve(page + 1 - pages.frames.len()).ok()?;
+            pages
+                .frames
+                .try_reserve(page + 1 - pages.frames.len())
+                .ok()?;
             pages.frames.resize(page + 1, 0);
         }
         if pages.frames[page] == 0 {
@@ -545,7 +548,13 @@ pub const FALLOCATE_MODES: u64 = 0x7f;
 /// less, `EBADF` for a descriptor not open for writing, `ESPIPE` for a pipe, `EISDIR` for a
 /// directory, `ENODEV` for anything else not a regular file (a socket, the console, a device),
 /// `EFBIG` past the largest size, `EOPNOTSUPP` for another mode or another file system.
-pub fn fallocate(thread: &LinuxThread, fd: u64, mode: u64, offset: u64, length: u64) -> Result<u64, Errno> {
+pub fn fallocate(
+    thread: &LinuxThread,
+    fd: u64,
+    mode: u64,
+    offset: u64,
+    length: u64,
+) -> Result<u64, Errno> {
     let mode = mode as u32 as u64;
     if mode & !FALLOCATE_MODES != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -565,7 +574,10 @@ pub fn fallocate(thread: &LinuxThread, fd: u64, mode: u64, offset: u64, length: 
         FileKind::Regular(_) | FileKind::Snapshot(_) => return Err(Errno::EOPNOTSUPP),
         _ => return Err(Errno::ENODEV),
     };
-    if (offset as u64).checked_add(length as u64).is_none_or(|end| end > MAX_SIZE) {
+    if (offset as u64)
+        .checked_add(length as u64)
+        .is_none_or(|end| end > MAX_SIZE)
+    {
         return Err(Errno::EFBIG);
     }
     if mode != 0 {

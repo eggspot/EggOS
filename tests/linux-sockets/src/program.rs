@@ -397,7 +397,9 @@ fn conversation() -> Checked<()> {
         .read_exact(&mut byte)
         .map_err(|error| failed("read", error))?;
     if woken != 1 || events & POLLIN == 0 || &byte != b"w" || waited < Duration::from_millis(50) {
-        return Err(format!("woken {woken} {events:#x} {byte:?} after {waited:?}"));
+        return Err(format!(
+            "woken {woken} {events:#x} {byte:?} after {waited:?}"
+        ));
     }
     println!("{PREFIX} poll woken by the client");
 

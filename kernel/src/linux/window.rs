@@ -479,8 +479,6 @@ pub fn map<P: Platform>(
             RegionError::NotCovered
             | RegionError::NoRoom
             | RegionError::OutOfMemory
-            | RegionError::NotWritable => {
-                Errno::ENOMEM
-            }
+            | RegionError::NotWritable => Errno::ENOMEM,
         })
 }

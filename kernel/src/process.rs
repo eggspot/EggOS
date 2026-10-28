@@ -338,9 +338,11 @@ impl<P: Platform> Memory<P> {
 
     fn lends_read_only_in(&self, start: u64, end: u64) -> bool {
         self.has_lent.load(Ordering::Relaxed)
-            && self.lent.lock().iter().any(|range| {
-                range.start < end && start < range.end && !range.frames.writable()
-            })
+            && self
+                .lent
+                .lock()
+                .iter()
+                .any(|range| range.start < end && start < range.end && !range.frames.writable())
     }
 }
 
@@ -871,7 +873,12 @@ impl<P: Platform> Process<P> {
         for offset in (0..length).step_by(FRAME_SIZE as usize) {
             if memory
                 .space
-                .map(start + offset, lender.frame_at(offset), FRAME_SIZE, attributes)
+                .map(
+                    start + offset,
+                    lender.frame_at(offset),
+                    FRAME_SIZE,
+                    attributes,
+                )
                 .is_err()
             {
                 let _ = Self::unmap_locked(memory, &mut regions, start, start + length);

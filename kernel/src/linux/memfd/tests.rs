@@ -29,7 +29,12 @@ fn process(kernel: &PageTables<<P as Platform>::PageTableFormat>) -> Arc<Process
     Arc::new(process)
 }
 
-fn call(process: &Arc<Process<P>>, thread: &mut LinuxThread, number: u64, arguments: [u64; 6]) -> u64 {
+fn call(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    number: u64,
+    arguments: [u64; 6],
+) -> u64 {
     let mut context = UserContext::new(0x40_0000, 0);
     context.simulate_syscall(number, arguments, 0x40_0004);
     assert_eq!(
@@ -45,7 +50,12 @@ fn free_frames() -> u64 {
 
 fn memfd(process: &Arc<Process<P>>, thread: &mut LinuxThread, flags: u32) -> u64 {
     process.write_user_memory(DATA, b"wl_shm\0").unwrap();
-    call(process, thread, number::MEMFD_CREATE, [DATA, u64::from(flags), 0, 0, 0, 0])
+    call(
+        process,
+        thread,
+        number::MEMFD_CREATE,
+        [DATA, u64::from(flags), 0, 0, 0, 0],
+    )
 }
 
 fn mmap(
@@ -57,7 +67,12 @@ fn mmap(
     fd: u64,
     offset: u64,
 ) -> u64 {
-    call(process, thread, number::MMAP, [0, length, protection, flags, fd, offset])
+    call(
+        process,
+        thread,
+        number::MMAP,
+        [0, length, protection, flags, fd, offset],
+    )
 }
 
 fn byte(process: &Process<P>, address: u64) -> u8 {
@@ -97,7 +112,7 @@ fn bytes_come_back_holes_read_zero_and_writes_grow_the_file() {
 fn truncate_cuts_and_zeroes_and_seals_refuse_what_they_seal() {
     let _frames = frames_for_test();
     let file = MemoryFile::new(0);
-    file.write_at(0, &[7u8; 3 * PAGE as usize]).unwrap();
+    file.write_at(0, &[7u8; 3 * PAGE]).unwrap();
     file.truncate(PAGE_BYTES + 1).unwrap();
     assert_eq!(file.frames_held(), 2);
     file.truncate(3 * PAGE_BYTES).unwrap();
@@ -118,7 +133,10 @@ fn truncate_cuts_and_zeroes_and_seals_refuse_what_they_seal() {
     file.add_seals(seal::SEAL).unwrap();
     assert_eq!(file.add_seals(seal::EXEC), Err(Errno::EPERM));
     assert_eq!(file.seals(), seal::SHRINK | seal::GROW | seal::SEAL);
-    assert_eq!(MemoryFile::new(seal::SEAL).add_seals(seal::GROW), Err(Errno::EPERM));
+    assert_eq!(
+        MemoryFile::new(seal::SEAL).add_seals(seal::GROW),
+        Err(Errno::EPERM)
+    );
 }
 
 #[test]
@@ -142,11 +160,11 @@ fn a_sparse_file_takes_no_frames_and_allocate_fills_and_grows_it() {
 fn a_file_s_frames_go_back_when_it_is_dropped() {
     let _frames = frames_for_test();
     let warm = MemoryFile::new(0);
-    warm.write_at(0, &[1u8; 3 * PAGE as usize]).unwrap();
+    warm.write_at(0, &[1u8; 3 * PAGE]).unwrap();
     drop(warm);
     let before = free_frames();
     let file = MemoryFile::new(0);
-    file.write_at(0, &[1u8; 3 * PAGE as usize]).unwrap();
+    file.write_at(0, &[1u8; 3 * PAGE]).unwrap();
     assert_eq!(free_frames(), before - 3);
     drop(file);
     assert_eq!(free_frames(), before);
@@ -174,41 +192,111 @@ fn two_processes_share_a_memfd_s_frames_through_shrinks_and_growth() {
         .open(Arc::clone(&file), false, limit)
         .unwrap();
     assert_eq!(
-        call(&first, &mut first_thread, number::FALLOCATE, [fd, 0, 0, 2 * PAGE_BYTES, 0, 0]),
+        call(
+            &first,
+            &mut first_thread,
+            number::FALLOCATE,
+            [fd, 0, 0, 2 * PAGE_BYTES, 0, 0]
+        ),
         0
     );
-    let one = mmap(&first, &mut first_thread, 2 * PAGE_BYTES, READ_WRITE, SHARED, fd, 0);
-    let two = mmap(&second, &mut second_thread, 2 * PAGE_BYTES, READ_WRITE, SHARED, u64::from(second_fd), 0);
+    let one = mmap(
+        &first,
+        &mut first_thread,
+        2 * PAGE_BYTES,
+        READ_WRITE,
+        SHARED,
+        fd,
+        0,
+    );
+    let two = mmap(
+        &second,
+        &mut second_thread,
+        2 * PAGE_BYTES,
+        READ_WRITE,
+        SHARED,
+        u64::from(second_fd),
+        0,
+    );
     assert!(one < 1 << 47 && two < 1 << 47, "{one:#x} {two:#x}");
-    first.write_user_memory(one + PAGE_BYTES + 3, b"from one").unwrap();
+    first
+        .write_user_memory(one + PAGE_BYTES + 3, b"from one")
+        .unwrap();
     let mut seen = [0u8; 8];
-    second.read_user_memory(two + PAGE_BYTES + 3, &mut seen).unwrap();
+    second
+        .read_user_memory(two + PAGE_BYTES + 3, &mut seen)
+        .unwrap();
     assert_eq!(&seen, b"from one");
     second.write_user_memory(two, b"two").unwrap();
     let mut back = [0u8; 3];
     assert_eq!(memory.read_at(0, &mut back), 3);
     assert_eq!(&back, b"two");
 
-    assert_eq!(call(&first, &mut first_thread, number::FTRUNCATE, [fd, 4, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &first,
+            &mut first_thread,
+            number::FTRUNCATE,
+            [fd, 4, 0, 0, 0, 0]
+        ),
+        0
+    );
     assert_eq!(byte(&second, two + PAGE_BYTES + 3), 0);
     assert_eq!(memory.frames_held(), 2);
-    assert_eq!(call(&first, &mut first_thread, number::FTRUNCATE, [fd, 4 * PAGE_BYTES, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &first,
+            &mut first_thread,
+            number::FTRUNCATE,
+            [fd, 4 * PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
     first.write_user_memory(one + PAGE_BYTES, b"again").unwrap();
-    second.read_user_memory(two + PAGE_BYTES, &mut seen[..5]).unwrap();
+    second
+        .read_user_memory(two + PAGE_BYTES, &mut seen[..5])
+        .unwrap();
     assert_eq!(&seen[..5], b"again");
     memory.write_at(3 * PAGE_BYTES, b"past").unwrap();
     assert_eq!(memory.frames_held(), 3);
 
-    assert_eq!(call(&first, &mut first_thread, number::MUNMAP, [one, 2 * PAGE_BYTES, 0, 0, 0, 0]), 0);
-    assert_eq!(call(&first, &mut first_thread, number::FTRUNCATE, [fd, PAGE_BYTES, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &first,
+            &mut first_thread,
+            number::MUNMAP,
+            [one, 2 * PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &first,
+            &mut first_thread,
+            number::FTRUNCATE,
+            [fd, PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
     assert_eq!(memory.frames_held(), 3);
     assert_eq!(byte(&second, two + PAGE_BYTES), 0);
-    assert_eq!(call(&second, &mut second_thread, number::MUNMAP, [two, 2 * PAGE_BYTES, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &second,
+            &mut second_thread,
+            number::MUNMAP,
+            [two, 2 * PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
     assert_eq!(memory.frames_held(), 1);
     let weak = Arc::downgrade(&memory);
     drop(memory);
     drop(file);
-    for (process, thread, fd) in [(&first, &mut first_thread, fd), (&second, &mut second_thread, u64::from(second_fd))] {
+    for (process, thread, fd) in [
+        (&first, &mut first_thread, fd),
+        (&second, &mut second_thread, u64::from(second_fd)),
+    ] {
         assert_eq!(call(process, thread, number::CLOSE, [fd, 0, 0, 0, 0, 0]), 0);
     }
     assert_eq!(weak.strong_count(), 0);
@@ -221,16 +309,35 @@ fn a_mapping_keeps_the_file_after_its_last_descriptor_closes() {
     let process = process(&kernel);
     let mut thread = LinuxThread::first(&process);
     let fd = memfd(&process, &mut thread, 0);
-    assert_eq!(call(&process, &mut thread, number::FTRUNCATE, [fd, PAGE_BYTES, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::FTRUNCATE,
+            [fd, PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
     let mapped = mmap(&process, &mut thread, PAGE_BYTES, READ_WRITE, SHARED, fd, 0);
     let weak = match thread.files().file(fd).unwrap().kind() {
         FileKind::MemoryFile(memory) => Arc::downgrade(memory),
         _ => panic!("not a memory file"),
     };
-    assert_eq!(call(&process, &mut thread, number::CLOSE, [fd, 0, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(&process, &mut thread, number::CLOSE, [fd, 0, 0, 0, 0, 0]),
+        0
+    );
     assert_eq!(weak.strong_count(), 1);
     process.write_user_memory(mapped, b"kept").unwrap();
-    assert_eq!(call(&process, &mut thread, number::MUNMAP, [mapped, PAGE_BYTES, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::MUNMAP,
+            [mapped, PAGE_BYTES, 0, 0, 0, 0]
+        ),
+        0
+    );
     assert_eq!(weak.strong_count(), 0);
 }
 
@@ -242,24 +349,61 @@ fn private_mappings_are_read_only_and_other_files_cannot_be_mapped() {
     let mut thread = LinuxThread::first(&process);
     let fd = memfd(&process, &mut thread, 0);
     process.write_user_memory(DATA + 64, b"keymap").unwrap();
-    assert_eq!(call(&process, &mut thread, number::WRITE, [fd, DATA + 64, 6, 0, 0, 0]), 6);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::WRITE,
+            [fd, DATA + 64, 6, 0, 0, 0]
+        ),
+        6
+    );
     let private = map::PRIVATE;
-    let keymap = mmap(&process, &mut thread, PAGE_BYTES, prot::READ, private, fd, 0);
+    let keymap = mmap(
+        &process,
+        &mut thread,
+        PAGE_BYTES,
+        prot::READ,
+        private,
+        fd,
+        0,
+    );
     assert!(keymap < 1 << 47);
     let mut read = [0u8; 6];
     process.read_user_memory(keymap, &mut read).unwrap();
     assert_eq!(&read, b"keymap");
     assert!(process.write_user_memory(keymap, b"x").is_err());
     assert_eq!(
-        call(&process, &mut thread, number::MPROTECT, [keymap, PAGE_BYTES, READ_WRITE, 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::MPROTECT,
+            [keymap, PAGE_BYTES, READ_WRITE, 0, 0, 0]
+        ),
         Errno::EACCES.result()
     );
     assert_eq!(
-        mmap(&process, &mut thread, PAGE_BYTES, READ_WRITE, private, fd, 0),
+        mmap(
+            &process,
+            &mut thread,
+            PAGE_BYTES,
+            READ_WRITE,
+            private,
+            fd,
+            0
+        ),
         Errno::ENODEV.result()
     );
     assert_eq!(
-        mmap(&process, &mut thread, PAGE_BYTES, prot::READ | prot::EXEC, SHARED, fd, 0),
+        mmap(
+            &process,
+            &mut thread,
+            PAGE_BYTES,
+            prot::READ | prot::EXEC,
+            SHARED,
+            fd,
+            0
+        ),
         Errno::EPERM.result()
     );
     assert_eq!(
@@ -268,16 +412,36 @@ fn private_mappings_are_read_only_and_other_files_cannot_be_mapped() {
     );
     let shared = mmap(&process, &mut thread, PAGE_BYTES, prot::READ, SHARED, fd, 0);
     assert_eq!(
-        call(&process, &mut thread, number::MPROTECT, [shared, PAGE_BYTES, READ_WRITE, 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::MPROTECT,
+            [shared, PAGE_BYTES, READ_WRITE, 0, 0, 0]
+        ),
         0
     );
     process.write_user_memory(shared, b"K").unwrap();
     process.read_user_memory(keymap, &mut read[..1]).unwrap();
     assert_eq!(&read[..1], b"K");
-    let regular = Arc::new(OpenFile::new(FileKind::Regular(crate::vfs::root()), open_flag::RDWR));
-    let regular_fd = thread.files().lock().open(Arc::clone(&regular), false, 64).unwrap();
+    let regular = Arc::new(OpenFile::new(
+        FileKind::Regular(crate::vfs::root()),
+        open_flag::RDWR,
+    ));
+    let regular_fd = thread
+        .files()
+        .lock()
+        .open(Arc::clone(&regular), false, 64)
+        .unwrap();
     assert_eq!(
-        mmap(&process, &mut thread, PAGE_BYTES, prot::READ, SHARED, u64::from(regular_fd), 0),
+        mmap(
+            &process,
+            &mut thread,
+            PAGE_BYTES,
+            prot::READ,
+            SHARED,
+            u64::from(regular_fd),
+            0
+        ),
         Errno::ENODEV.result()
     );
     assert_eq!(
@@ -292,7 +456,10 @@ fn memfd_create_fallocate_and_the_seal_commands_check_as_linux_does() {
     let kernel = kernel_tables();
     let process = process(&kernel);
     let mut thread = LinuxThread::first(&process);
-    assert_eq!(memfd(&process, &mut thread, flag::HUGETLB), Errno::EINVAL.result());
+    assert_eq!(
+        memfd(&process, &mut thread, flag::HUGETLB),
+        Errno::EINVAL.result()
+    );
     assert_eq!(memfd(&process, &mut thread, 0x100), Errno::EINVAL.result());
     assert_eq!(
         memfd(&process, &mut thread, flag::NOEXEC_SEAL | flag::EXEC),
@@ -300,24 +467,64 @@ fn memfd_create_fallocate_and_the_seal_commands_check_as_linux_does() {
     );
     let long = vec![b'n'; NAME_MAX + 1];
     process.write_user_memory(DATA + 512, &long).unwrap();
-    process.write_user_memory(DATA + 512 + long.len() as u64, &[0]).unwrap();
+    process
+        .write_user_memory(DATA + 512 + long.len() as u64, &[0])
+        .unwrap();
     assert_eq!(
-        call(&process, &mut thread, number::MEMFD_CREATE, [DATA + 512, 0, 0, 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::MEMFD_CREATE,
+            [DATA + 512, 0, 0, 0, 0, 0]
+        ),
         Errno::EINVAL.result()
     );
     let sealed = memfd(&process, &mut thread, flag::CLOEXEC);
-    assert!(thread.files().lock().get(sealed as u32).unwrap().close_on_exec);
+    assert!(
+        thread
+            .files()
+            .lock()
+            .get(sealed as u32)
+            .unwrap()
+            .close_on_exec
+    );
     let get = u64::from(command::GET_SEALS);
     let add = u64::from(command::ADD_SEALS);
-    assert_eq!(call(&process, &mut thread, number::FCNTL, [sealed, get, 0, 0, 0, 0]), u64::from(seal::SEAL));
     assert_eq!(
-        call(&process, &mut thread, number::FCNTL, [sealed, add, u64::from(seal::GROW), 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::FCNTL,
+            [sealed, get, 0, 0, 0, 0]
+        ),
+        u64::from(seal::SEAL)
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::FCNTL,
+            [sealed, add, u64::from(seal::GROW), 0, 0, 0]
+        ),
         Errno::EPERM.result()
     );
     let open = memfd(&process, &mut thread, flag::ALLOW_SEALING);
-    assert_eq!(call(&process, &mut thread, number::FCNTL, [open, get, 0, 0, 0, 0]), 0);
     assert_eq!(
-        call(&process, &mut thread, number::FCNTL, [open, add, u64::from(seal::SHRINK), 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::FCNTL,
+            [open, get, 0, 0, 0, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::FCNTL,
+            [open, add, u64::from(seal::SHRINK), 0, 0, 0]
+        ),
         0
     );
     assert_eq!(
@@ -326,11 +533,21 @@ fn memfd_create_fallocate_and_the_seal_commands_check_as_linux_does() {
     );
     let noexec = memfd(&process, &mut thread, flag::NOEXEC_SEAL);
     assert_eq!(
-        call(&process, &mut thread, number::FCNTL, [noexec, get, 0, 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::FCNTL,
+            [noexec, get, 0, 0, 0, 0]
+        ),
         u64::from(seal::EXEC)
     );
     let fallocate = |thread: &mut LinuxThread, fd: u64, mode: u64, offset: u64, length: u64| {
-        call(&process, thread, number::FALLOCATE, [fd, mode, offset, length, 0, 0])
+        call(
+            &process,
+            thread,
+            number::FALLOCATE,
+            [fd, mode, offset, length, 0, 0],
+        )
     };
     assert_eq!(fallocate(&mut thread, open, 0, 0, 3 * PAGE_BYTES), 0);
     let file = thread.files().file(open).unwrap();
@@ -338,23 +555,56 @@ fn memfd_create_fallocate_and_the_seal_commands_check_as_linux_does() {
         panic!("not a memory file")
     };
     assert_eq!(memory.size(), 3 * PAGE_BYTES);
-    assert_eq!(fallocate(&mut thread, open, 1, 0, 1), Errno::EOPNOTSUPP.result());
-    assert_eq!(fallocate(&mut thread, open, 0x100, 0, 1), Errno::EOPNOTSUPP.result());
-    assert_eq!(fallocate(&mut thread, open, 0, u64::MAX, 1), Errno::EINVAL.result());
-    assert_eq!(fallocate(&mut thread, open, 0, 0, 0), Errno::EINVAL.result());
+    assert_eq!(
+        fallocate(&mut thread, open, 1, 0, 1),
+        Errno::EOPNOTSUPP.result()
+    );
+    assert_eq!(
+        fallocate(&mut thread, open, 0x100, 0, 1),
+        Errno::EOPNOTSUPP.result()
+    );
+    assert_eq!(
+        fallocate(&mut thread, open, 0, u64::MAX, 1),
+        Errno::EINVAL.result()
+    );
+    assert_eq!(
+        fallocate(&mut thread, open, 0, 0, 0),
+        Errno::EINVAL.result()
+    );
     assert_eq!(fallocate(&mut thread, 40, 0, 0, 1), Errno::EBADF.result());
     assert_eq!(fallocate(&mut thread, 1, 0, 0, 1), Errno::ENODEV.result());
-    assert_eq!(fallocate(&mut thread, open, 0, 1 << 62, 1 << 62), Errno::EFBIG.result());
-    let regular = Arc::new(OpenFile::new(FileKind::Regular(crate::vfs::root()), open_flag::RDWR));
-    let regular_fd = thread.files().lock().open(Arc::clone(&regular), false, 64).unwrap();
+    assert_eq!(
+        fallocate(&mut thread, open, 0, 1 << 62, 1 << 62),
+        Errno::EFBIG.result()
+    );
+    let regular = Arc::new(OpenFile::new(
+        FileKind::Regular(crate::vfs::root()),
+        open_flag::RDWR,
+    ));
+    let regular_fd = thread
+        .files()
+        .lock()
+        .open(Arc::clone(&regular), false, 64)
+        .unwrap();
     assert_eq!(
         fallocate(&mut thread, u64::from(regular_fd), 0, 0, 1),
         Errno::EOPNOTSUPP.result()
     );
     assert_eq!(
-        call(&process, &mut thread, number::FTRUNCATE, [open, 1, 0, 0, 0, 0]),
+        call(
+            &process,
+            &mut thread,
+            number::FTRUNCATE,
+            [open, 1, 0, 0, 0, 0]
+        ),
         Errno::EPERM.result()
     );
-    assert_eq!(call(&process, &mut thread, number::LSEEK, [open, 0, 2, 0, 0, 0]), 3 * PAGE_BYTES);
-    assert_eq!(call(&process, &mut thread, number::FSYNC, [open, 0, 0, 0, 0, 0]), 0);
+    assert_eq!(
+        call(&process, &mut thread, number::LSEEK, [open, 0, 2, 0, 0, 0]),
+        3 * PAGE_BYTES
+    );
+    assert_eq!(
+        call(&process, &mut thread, number::FSYNC, [open, 0, 0, 0, 0, 0]),
+        0
+    );
 }
