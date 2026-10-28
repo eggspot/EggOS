@@ -102,6 +102,8 @@ pub extern "C" fn restore_after_signal() -> ! {
 pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 
 const SIGCHLD: usize = 17;
+const SIGPIPE: usize = 13;
+const SIGNAL_SET_BYTES: usize = 8;
 const NOT_RUN: i32 = 127;
 
 /// The stack a child started by [`spawn`] runs on until its `execve`. [`spawn`] borrows it
@@ -187,6 +189,8 @@ impl<'a> Spawn<'a> {
 
 /// Starts `request`'s program as a child on `stack`, sharing this process's memory until the
 /// child's `execve` (`CLONE_VM | CLONE_VFORK`), so nothing is copied; returns its process id.
+/// The child starts with `SIGPIPE`'s default action, as a shell's children do, whatever this
+/// process does with it.
 /// `EINVAL` for an array without its null end; when `execve` fails, the child ends, is reaped,
 /// and its error comes back.
 pub fn spawn(stack: &mut ChildStack, request: &Spawn<'_>) -> Result<usize, Errno> {
@@ -224,6 +228,22 @@ extern "C" fn start_child(request: usize) -> ! {
     // atomic error word while this child runs on the parent's memory: the parent's thread
     // sleeps until the child runs `execve` or ends.
     let request = unsafe { &*(request as *const Spawn<'_>) };
+    let default_action = [0u64; 4];
+    // SAFETY: `rt_sigaction` reads the zeroed action, which lives on this child's stack for the
+    // call, and changes only this child's own action table (no `CLONE_SIGHAND`).
+    unsafe {
+        syscall::call(
+            number::RT_SIGACTION,
+            [
+                SIGPIPE,
+                default_action.as_ptr() as usize,
+                0,
+                SIGNAL_SET_BYTES,
+                0,
+                0,
+            ],
+        )
+    };
     if request.own_group {
         // SAFETY: `setpgid` touches no memory.
         unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };

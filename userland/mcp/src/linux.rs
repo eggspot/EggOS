@@ -6,8 +6,8 @@
 use crate::arguments::{MAX_CONTENT_BYTES, WORDS_BYTES};
 use crate::audit::{GENERATIONS, LOG_FOLDER, LOG_PATH, RECORD_BYTES, ROTATE_BYTES, ROTATED_PATHS};
 use crate::framing::{Line, LineReader};
-use crate::grants::{self, COMMAND_LINE_PATH};
-use crate::paths::MAX_PATH_BYTES;
+use crate::grants::{self, COMMAND_LINE_PATH, Grant};
+use crate::paths::{HOME, MAX_PATH_BYTES};
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
 };
@@ -56,10 +56,14 @@ const CLOCK_REALTIME: usize = 0;
 const CLOCK_MONOTONIC: usize = 1;
 const CONSOLE: usize = 2;
 const ENVIRONMENT: [&CStr; 3] = [c"PATH=/bin", c"HOME=/home/root", c"TERM=dumb"];
-const MAX_WORD_BYTES: usize = WORDS_BYTES + 512;
+const MAX_WORD_BYTES: usize = WORDS_BYTES + MAX_PATH_BYTES + 64;
 const RETRY_PAUSE_MS: u64 = 100;
 const REAP_PAUSE_MS: u64 = 10;
 const COMMAND_LINE_BYTES: usize = 1024;
+const SIGPIPE: usize = 13;
+const SIG_IGN: u64 = 1;
+const SIGNAL_SET_BYTES: usize = 8;
+const HOME_MODE: usize = 0o755;
 
 struct Buffers {
     input: [u8; MAX_MESSAGE_BYTES],
@@ -198,6 +202,14 @@ fn wait_for_channel(channel: usize, deadline_ms: u64) -> bool {
     }
 }
 
+fn ignore_broken_pipes() {
+    let action = [SIG_IGN, 0, 0, 0];
+    let _ = call(
+        number::RT_SIGACTION,
+        [SIGPIPE, action.as_ptr() as usize, 0, SIGNAL_SET_BYTES, 0, 0],
+    );
+}
+
 fn send(channel: usize, answer: &[u8]) {
     if !answer.is_empty() && !syscall::write_all(channel, answer) {
         say(&[b"eggmcpd: an answer could not be sent\n"]);
@@ -266,6 +278,16 @@ pub fn run(startup: &Startup) -> i32 {
         false => Server::new(),
     };
     read_grants(&mut server);
+    if server.grants().allows(Grant::Write) {
+        let mut home = [0u8; 16];
+        if let Some(home) = c_path(HOME, &mut home) {
+            let _ = call(
+                number::MKDIRAT,
+                [AT_FDCWD, home.as_ptr() as usize, HOME_MODE, 0, 0, 0],
+            );
+        }
+    }
+    ignore_broken_pipes();
     server.start(restarted, &mut system, &mut scratch);
     let mut reader = LineReader::new(input);
     loop {

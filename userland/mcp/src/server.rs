@@ -207,6 +207,11 @@ impl Server {
         self.unknown = unknown;
     }
 
+    /// The grants of this boot.
+    pub fn grants(&self) -> Grants {
+        self.grants
+    }
+
     /// Sets how many bytes of records this run may write ([`BUDGET_BYTES`] by default).
     pub fn set_audit_budget(&mut self, bytes: u64) {
         self.budget = bytes;
