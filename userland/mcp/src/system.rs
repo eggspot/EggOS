@@ -1,18 +1,29 @@
-//! What the server needs from the machine, as a trait: running a CLI twin with its output
-//! captured, asking whether a path is a symbolic link, appending to the audit log, the clock
-//! and the console. `linux.rs` makes the system calls; the tests script a fake.
+//! What the server needs from the machine, as a trait: running a CLI twin with its input given
+//! and its output captured, asking whether a path is a symbolic link and what is there,
+//! appending to the audit log, the clocks and the console. `linux.rs` makes the system calls;
+//! the tests script a fake.
 
 use eggos_runtime::errno::Errno;
 
-/// A command to run: the program, its words and, last after `--`, a path.
+/// The most words a command line takes, the program and the operand included.
+pub const MAX_COMMAND_WORDS: usize = 40;
+
+/// A command to run: the program, its words, last after `--` an operand, what it reads on its
+/// standard input, whether its output is kept, and how long it may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Invocation<'a> {
     /// The program's absolute path.
     pub program: &'a str,
     /// The words after the program.
     pub words: &'a [&'a str],
-    /// The path, given after `--`.
-    pub path: Option<&'a str>,
+    /// The operand, given after `--`.
+    pub operand: Option<&'a str>,
+    /// Its standard input; `None` for none (end of input at once).
+    pub stdin: Option<&'a [u8]>,
+    /// Whether its standard output is read and dropped instead of kept.
+    pub discard_output: bool,
+    /// How long it may run, in milliseconds.
+    pub time_limit_ms: u64,
 }
 
 /// How a command ended.
@@ -39,12 +50,44 @@ pub struct RunOutcome {
     pub stdout_cut: bool,
     /// How many bytes of its standard error were kept.
     pub stderr: usize,
+    /// How many bytes of its standard input it took.
+    pub stdin_taken: usize,
+    /// Why it could not be stopped when it had to be, if it could not.
+    pub stop_failed: Option<Errno>,
+}
+
+impl RunOutcome {
+    /// A command that could not start because of `error`.
+    pub fn not_started(error: Errno) -> Self {
+        Self {
+            ended: Ended::NotStarted(error),
+            stdout: 0,
+            stdout_cut: false,
+            stderr: 0,
+            stdin_taken: 0,
+            stop_failed: None,
+        }
+    }
+}
+
+/// What is at a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileState {
+    /// Nothing (or it cannot be looked at).
+    Missing,
+    /// A regular file of this many bytes.
+    File(u64),
+    /// A folder.
+    Directory,
+    /// Something else (a device, a link).
+    Other,
 }
 
 /// The machine, as the server uses it.
 pub trait System {
     /// Runs `invocation`, keeping its output in `stdout` and its errors in `stderr`; a command
-    /// whose output passes `stdout`'s size is stopped at once.
+    /// whose kept output passes `stdout`'s size, or that runs past its time limit, is stopped
+    /// at once, with every process it started.
     fn run_twin(
         &mut self,
         invocation: &Invocation<'_>,
@@ -53,10 +96,14 @@ pub trait System {
     ) -> RunOutcome;
     /// Whether `path` is a symbolic link (an error counts as not).
     fn is_link(&mut self, path: &str) -> bool;
+    /// What is at `path`, not following a last symbolic link.
+    fn file_state(&mut self, path: &str) -> FileState;
     /// Appends `record` to the audit log, durably.
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno>;
     /// The wall clock's seconds.
     fn now(&mut self) -> u64;
+    /// A clock that never goes back, in milliseconds.
+    fn monotonic_ms(&mut self) -> u64;
     /// Tells the console `message` (a line).
     fn report(&mut self, message: &[u8]);
 }

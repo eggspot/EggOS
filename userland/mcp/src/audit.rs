@@ -3,7 +3,14 @@
 //! the client's name, the tool, the outcome, the arguments and a detail (a size, an exit
 //! status or an error, never what a command printed). A call that runs a command writes a
 //! `started` record, then its outcome under the same number; one stopped before (an unknown
-//! tool, bad arguments, a refused path) writes one record.
+//! tool, a missing grant, bad arguments, a refused path) writes one record; one that asks the
+//! user first writes `asked`, then `refused` or `started` and its outcome (D137). A call
+//! stopped before its arguments are checked keeps only their names, never their values.
+//!
+//! The log moves to `.1` once it passes [`ROTATE_BYTES`], `.1` to `.2` and so on up to
+//! [`GENERATIONS`]; a server run writes at most [`BUDGET_BYTES`], less than the generations
+//! keep, so nothing a run wrote is rotated away while it runs (an agent cannot push its own
+//! session out with junk calls).
 //!
 //! Every field a client could have chosen is escaped when written, so a record is one line and
 //! shows what was sent: a backslash as `\\`, tab, newline and return as `\t`, `\n`, `\r`, escape
@@ -15,12 +22,29 @@
 
 /// Where the log is.
 pub const LOG_PATH: &str = "/var/log/agent-audit.log";
-/// Where the previous log goes once the log passes [`ROTATE_BYTES`].
-pub const ROTATED_PATH: &str = "/var/log/agent-audit.log.1";
+/// How many older logs are kept.
+pub const GENERATIONS: usize = 7;
+/// Where the older logs are, newest first: the log moves to the first once it passes
+/// [`ROTATE_BYTES`], each to the next, and the last is dropped.
+pub const ROTATED_PATHS: [&str; GENERATIONS] = [
+    "/var/log/agent-audit.log.1",
+    "/var/log/agent-audit.log.2",
+    "/var/log/agent-audit.log.3",
+    "/var/log/agent-audit.log.4",
+    "/var/log/agent-audit.log.5",
+    "/var/log/agent-audit.log.6",
+    "/var/log/agent-audit.log.7",
+];
 /// The folder the log is in.
 pub const LOG_FOLDER: &str = "/var/log";
 /// How large the log grows before it is rotated.
-pub const ROTATE_BYTES: u64 = 256 * 1024;
+pub const ROTATE_BYTES: u64 = 512 * 1024;
+/// The most bytes of records one server run writes: less than the older logs keep, so none of
+/// a run's records is rotated away while it runs. Past it, calls are refused unlogged until
+/// the server starts again.
+pub const BUDGET_BYTES: u64 = 2 * 1024 * 1024;
+
+const _: () = assert!(BUDGET_BYTES + 2 * ROTATE_BYTES <= ROTATE_BYTES * GENERATIONS as u64);
 /// The most bytes a free field keeps.
 pub const FIELD_BYTES: usize = 512;
 /// The most bytes one record takes, its newline included.
@@ -39,6 +63,8 @@ pub enum Outcome {
     Initialize,
     /// The client's side of the channel closed.
     Disconnected,
+    /// A call's command waits for the user's answer (elicitation).
+    Asked,
     /// A call's command is about to run.
     Started,
     /// A call succeeded.
@@ -57,6 +83,7 @@ impl Outcome {
             Outcome::ServerRestart => "server-restart",
             Outcome::Initialize => "initialize",
             Outcome::Disconnected => "disconnected",
+            Outcome::Asked => "asked",
             Outcome::Started => "started",
             Outcome::Ok => "ok",
             Outcome::Error => "error",
@@ -71,6 +98,7 @@ impl Outcome {
             Outcome::ServerRestart,
             Outcome::Initialize,
             Outcome::Disconnected,
+            Outcome::Asked,
             Outcome::Started,
             Outcome::Ok,
             Outcome::Error,

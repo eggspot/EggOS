@@ -7,7 +7,16 @@ use eggos_runtime::errno::Errno;
 
 const USAGE: &[u8] = b"usage: agentlog [-n <count>] [--raw]";
 const USAGE_STATUS: i32 = 2;
-const LOGS: [&CStr; 2] = [c"/var/log/agent-audit.log.1", c"/var/log/agent-audit.log"];
+const LOGS: [&CStr; 8] = [
+    c"/var/log/agent-audit.log.7",
+    c"/var/log/agent-audit.log.6",
+    c"/var/log/agent-audit.log.5",
+    c"/var/log/agent-audit.log.4",
+    c"/var/log/agent-audit.log.3",
+    c"/var/log/agent-audit.log.2",
+    c"/var/log/agent-audit.log.1",
+    c"/var/log/agent-audit.log",
+]
 const LINE_BYTES: usize = 4096;
 const CHUNK: usize = 4096;
 const HEADER: &[u8] = b"TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL\n";
@@ -174,15 +183,17 @@ fn take_line<S: System>(
         return 1;
     }
     let mut rows = 0;
-    let pairs = pending
-        .record()
-        .is_some_and(|started| started.call == record.call && record.outcome.ends_a_call());
-    if !pairs && let Some(started) = pending.record() {
-        let shown = format_row(&started, Some(b"interrupted"), text);
+    let continues = pending.record().is_some_and(|open| {
+        open.call == record.call
+            && (record.outcome.ends_a_call()
+                || (open.outcome == Outcome::Asked && record.outcome == Outcome::Started))
+    });
+    if !continues && let Some(open) = pending.record() {
+        let shown = format_row(&open, Some(b"interrupted"), text);
         row(output, &text[..shown]);
         rows += 1;
     }
-    if record.outcome == Outcome::Started {
+    if matches!(record.outcome, Outcome::Asked | Outcome::Started) {
         pending.line[..line.len()].copy_from_slice(line);
         pending.length = line.len();
         return rows;
@@ -309,6 +320,49 @@ mod tests {
         let mut fake = Fake::default();
         assert_eq!(run(&mut fake, &[]), 0);
         assert_eq!(fake.output(), "");
+    }
+
+    #[test]
+    fn every_generation_is_read_oldest_first() {
+        let mut fake = Fake::default().with_file(LOG, 0o640, b"9\t0\t-\t-\tserver-start\t\tg0\n", 0);
+        for generation in 1..=7 {
+            let record = format!("{generation}\t0\t-\t-\tserver-start\t\tg{generation}\n");
+            fake = fake.with_file(
+                &format!("{LOG}.{generation}"),
+                0o640,
+                record.as_bytes(),
+                0,
+            );
+        }
+        assert_eq!(run(&mut fake, &[]), 0);
+        let output = fake.output();
+        let order: Vec<usize> = (0..=7)
+            .rev()
+            .map(|generation| output.find(&format!("g{generation}")).unwrap())
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+    }
+
+    #[test]
+    fn a_question_and_its_answer_are_one_row() {
+        let log = [
+            "1\t1\tc\ttrash\tasked\t{\"path\":\"/home/root/a\"}\teggos-elicit-1",
+            "2\t1\tc\ttrash\trefused\t{\"path\":\"/home/root/a\"}\tthe user declined",
+            "3\t2\tc\ttrash\tasked\t{\"path\":\"/home/root/b\"}\teggos-elicit-2",
+            "4\t2\tc\ttrash\tstarted\t{\"path\":\"/home/root/b\"}\tapproved by the user",
+            "5\t2\tc\ttrash\tok\t{\"path\":\"/home/root/b\"}\texit status 0, 0 bytes",
+            "6\t3\tc\tapp_uninstall\tasked\t{\"name\":\"x\"}\teggos-elicit-3",
+        ]
+        .join("\n")
+            + "\n";
+        let mut fake = Fake::default().with_file(LOG, 0o640, log.as_bytes(), 0);
+        assert_eq!(run(&mut fake, &[]), 0);
+        let output = fake.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 1 + 3, "{output}");
+        assert!(lines[1].contains("trash  refused") && lines[1].contains("declined"));
+        assert!(lines[2].contains("trash  ok"));
+        assert!(lines[3].contains("app_uninstall  interrupted"));
     }
 
     #[test]
