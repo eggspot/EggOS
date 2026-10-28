@@ -60,7 +60,10 @@ impl Kind {
 
 /// What a file whose first bytes are `head` is.
 pub fn of_head(head: &[u8]) -> Kind {
-    let word = |at: usize| head.get(at..at + 4).map(|bytes| [bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let word = |at: usize| {
+        head.get(at..at + 4)
+            .map(|bytes| [bytes[0], bytes[1], bytes[2], bytes[3]])
+    };
     if head.starts_with(ELF) {
         return Kind::Program(Source::Linux);
     }
@@ -140,7 +143,12 @@ pub fn of_entry(files: &mut impl Files, folder: &Path, name: &[u8], kind: files:
 /// What Properties says an entry is: `Directory`, `Text`, `File`, `Windows program, x86_64`,
 /// `macOS program, arm64`, `Linux program` or `App, Windows`; a program this machine cannot
 /// run is named by its system alone.
-pub fn describe(files: &mut impl Files, path: &[u8], kind: Kind, machine: Architecture) -> messages::Line {
+pub fn describe(
+    files: &mut impl Files,
+    path: &[u8],
+    kind: Kind,
+    machine: Architecture,
+) -> messages::Line {
     let mut line = messages::Line::new();
     match kind {
         Kind::Folder | Kind::Bundle => line.push_bytes(b"Directory"),
@@ -180,8 +188,14 @@ mod tests {
     fn programs_are_told_by_their_first_bytes() {
         assert_eq!(of_head(b"\x7fELF\x02\x01"), Kind::Program(Source::Linux));
         assert_eq!(of_head(b"MZ\x90\x00"), Kind::Program(Source::Windows));
-        assert_eq!(of_head(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]), Kind::Program(Source::Macos));
-        assert_eq!(of_head(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]), Kind::Program(Source::Macos));
+        assert_eq!(
+            of_head(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]),
+            Kind::Program(Source::Macos)
+        );
+        assert_eq!(
+            of_head(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]),
+            Kind::Program(Source::Macos)
+        );
         assert_eq!(of_head(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52]), Kind::File);
     }
 

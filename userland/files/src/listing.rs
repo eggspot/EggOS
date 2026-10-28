@@ -125,8 +125,7 @@ impl Listing {
 
     fn push(&mut self, name: &[u8], kind: Kind, size: u64, time: u64) {
         let end = self.used + name.len();
-        if self.count == MAX_ENTRIES || end > NAMES_CAPACITY || name.len() > usize::from(u8::MAX)
-        {
+        if self.count == MAX_ENTRIES || end > NAMES_CAPACITY || name.len() > usize::from(u8::MAX) {
             self.truncated = true;
             return;
         }

@@ -536,8 +536,6 @@ mod tests {
         assert_eq!(start(AppId::Files), b"/bin/files");
         assert_eq!(catalogue.launch(AppId::Terminal), None);
         assert_eq!(typed(AppId::HostShare), b"\x15ls /media/host\r");
-        catalogue.set_files_present(true);
-        assert_eq!(start(AppId::HostShare), b"/bin/files\0/media/host");
         let paint = catalogue.installed_named("Paint").unwrap();
         assert_eq!(typed(paint), b"\x15/Applications/Paint/paint.exe\r");
         let zebra = catalogue.installed_named("zebra").unwrap();
@@ -550,6 +548,13 @@ mod tests {
         assert_eq!(catalogue.launch(AppId::Installed(9)), None);
         let installer = start(AppId::InstallFromHostShare);
         assert_eq!(installer, b"/usr/libexec/app-window\0install\0/media/host");
+        catalogue.set_files_present(true);
+        match catalogue.launch(AppId::HostShare) {
+            Some(Launch::Start(command)) => {
+                assert_eq!(command.as_bytes(), b"/bin/files\0/media/host")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

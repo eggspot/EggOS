@@ -73,7 +73,7 @@ impl Menu {
             })
             .max()
             .unwrap_or(0);
-        let width = (widest.div_ceil(WIDTH_STEP) * WIDTH_STEP).max(MIN_WIDTH);
+        let width = ((widest + WIDTH_STEP - 1) / WIDTH_STEP * WIDTH_STEP).max(MIN_WIDTH);
         let height = 2 + held[..count]
             .iter()
             .map(|entry| match entry {
@@ -82,7 +82,9 @@ impl Menu {
             })
             .sum::<i32>();
         let x = x.min(bounds.right() - CLEAR_OF_EDGE - width).max(bounds.x);
-        let y = y.min(bounds.bottom() - CLEAR_OF_EDGE - height).max(bounds.y);
+        let y = y
+            .min(bounds.bottom() - CLEAR_OF_EDGE - height)
+            .max(bounds.y);
         Self {
             entries: held,
             count,
@@ -163,9 +165,9 @@ impl Menu {
                 let mut enabled = (0..self.count).filter(|&index| self.enabled(index).is_some());
                 let next = match (code, self.chosen) {
                     (key::DOWN, None) => enabled.next(),
-                    (key::UP, None) => enabled.last(),
+                    (_, None) => enabled.next_back(),
                     (key::DOWN, Some(at)) => enabled.find(|&index| index > at).or(Some(at)),
-                    (_, Some(at)) => enabled.filter(|&index| index < at).last().or(Some(at)),
+                    (_, Some(at)) => enabled.rfind(|&index| index < at).or(Some(at)),
                 };
                 self.chosen = next;
                 MenuKey::Nothing
@@ -243,7 +245,10 @@ mod tests {
         assert!(rect.width >= MIN_WIDTH);
         assert_eq!(rect.right(), 720 - 8);
         assert_eq!(rect.bottom(), 480 - 8);
-        assert_eq!(menu.entry_rect(2).y, rect.y + 1 + ITEM_HEIGHT + SEPARATOR_HEIGHT);
+        assert_eq!(
+            menu.entry_rect(2).y,
+            rect.y + 1 + ITEM_HEIGHT + SEPARATOR_HEIGHT
+        );
     }
 
     #[test]

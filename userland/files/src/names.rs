@@ -177,7 +177,10 @@ pub fn is_within(path: &[u8], folder: &[u8]) -> bool {
 pub fn display<'a>(bytes: &[u8], out: &'a mut [u8; NAME_CAPACITY * 2]) -> &'a str {
     let mut length = 0;
     for chunk in bytes.utf8_chunks() {
-        for piece in [chunk.valid().as_bytes(), &b"?"[..chunk.invalid().len().min(1)]] {
+        for piece in [
+            chunk.valid().as_bytes(),
+            &b"?"[..chunk.invalid().len().min(1)],
+        ] {
             let end = (length + piece.len()).min(out.len());
             let taken = end - length;
             out[length..end].copy_from_slice(&piece[..taken]);
@@ -206,7 +209,10 @@ mod tests {
         assert_eq!(text(copy_name(b"notes.txt", false, 2)), "notes copy 2.txt");
         assert_eq!(text(copy_name(b".profile", false, 1)), ".profile copy");
         assert_eq!(text(copy_name(b"Paint.app", true, 1)), "Paint.app copy");
-        assert_eq!(text(copy_name(b"archive.tar.gz", false, 3)), "archive.tar copy 3.gz");
+        assert_eq!(
+            text(copy_name(b"archive.tar.gz", false, 3)),
+            "archive.tar copy 3.gz"
+        );
         assert!(copy_name(&[b'x'; NAME_CAPACITY], false, 1).is_none());
     }
 

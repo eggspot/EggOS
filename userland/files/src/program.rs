@@ -99,7 +99,14 @@ fn type_in_terminal(line: &[u8]) -> Result<(), Errno> {
     )?;
     let asked = call(
         number::IOCTL,
-        [fd, TYPE_IN_TERMINAL, argument.as_mut_ptr() as usize, 0, 0, 0],
+        [
+            fd,
+            TYPE_IN_TERMINAL,
+            argument.as_mut_ptr() as usize,
+            0,
+            0,
+            0,
+        ],
     );
     let _ = call(number::CLOSE, [fd, 0, 0, 0, 0, 0]);
     asked.map(|_| ())
@@ -149,7 +156,10 @@ impl Program {
             )
         };
         if child < 0 {
-            write_all(STANDARD_ERROR, b"files: could not start the installer's window\n");
+            write_all(
+                STANDARD_ERROR,
+                b"files: could not start the installer's window\n",
+            );
         }
     }
 
@@ -180,9 +190,7 @@ impl View for Program {
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
-        let open = self
-            .window
-            .handle(&mut self.files, input, time_ms, clock());
+        let open = self.window.handle(&mut self.files, input, time_ms, clock());
         self.serve();
         open
     }
@@ -237,7 +245,9 @@ pub fn run(startup: &Startup) -> i32 {
         files,
         environment,
     };
-    match application::run_view(&mut window, &mut program) {
+    let served = application::run_view(&mut window, &mut program);
+    program.window.close(&mut program.files);
+    match served {
         Ok(()) => 0,
         Err(error) => {
             write_all(STANDARD_ERROR, b"files: its window: ");

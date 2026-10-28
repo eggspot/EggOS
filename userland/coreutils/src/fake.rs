@@ -49,6 +49,7 @@ pub struct Fake {
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
     pub window_server: bool,
+    pub working_directory: String,
     open: Vec<Option<OpenFile>>,
 }
 
@@ -86,6 +87,7 @@ impl Default for Fake {
             windows: Vec::new(),
             managed: Vec::new(),
             window_server: true,
+            working_directory: "/".to_owned(),
             open: Vec::new(),
         }
     }
@@ -407,6 +409,13 @@ impl System for Fake {
 
     fn now(&mut self) -> u64 {
         self.now.max(0) as u64
+    }
+
+    fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let directory = self.working_directory.as_bytes();
+        let held = out.get_mut(..directory.len()).ok_or(Errno(34))?;
+        held.copy_from_slice(directory);
+        Ok(directory.len())
     }
 
     fn device_control(

@@ -8055,8 +8055,8 @@ the license, by an explicit instruction recorded here.
   (there is no system clipboard yet); copy happens at paste time; a cut is cleared by its
   paste. A taken name becomes `<stem> copy<.ext>`, then `<stem> copy 2<.ext>`, in every
   profile (names are data; a profile switch must not change them); `New folder` becomes
-  `New folder 2`. Names starting with `.` are hidden, as Finder, Explorer's default and the
-  Linux file managers do.
+  `New folder 2`. Names starting with `.` are hidden, as Finder and the Linux file managers
+  hide them.
 - **Free space** (decided by research): not in 0.3.0. `statfs` is a real ABI addition (a
   method on every file system, layouts per architecture, FAT's free-cluster count) better done
   as its own item with a `df` and the Windows layer's `GetDiskFreeSpaceEx`; no capability is

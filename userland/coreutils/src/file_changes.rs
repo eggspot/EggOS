@@ -291,11 +291,21 @@ pub fn cp<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     for &source in sources {
         if recursive && is_directory(output, source) {
             let Some(to) = target_for(source.to_bytes(), target, into_directory) else {
-                status = failed(output, b"cannot copy", source.to_bytes(), Errno::ENAMETOOLONG);
+                status = failed(
+                    output,
+                    b"cannot copy",
+                    source.to_bytes(),
+                    Errno::ENAMETOOLONG,
+                );
                 continue;
             };
             let Some((from, to)) = job_paths(source.to_bytes(), to.as_bytes()) else {
-                status = failed(output, b"cannot copy", source.to_bytes(), Errno::ENAMETOOLONG);
+                status = failed(
+                    output,
+                    b"cannot copy",
+                    source.to_bytes(),
+                    Errno::ENAMETOOLONG,
+                );
                 continue;
             };
             if run_job(output, Job::copy(&from, &to), b"cannot copy").is_err() {
@@ -389,7 +399,12 @@ pub fn mv<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         let result = match output.system.rename(source, to.as_c_str()) {
             Err(Errno::EXDEV) if is_directory(output, source) => {
                 let Some((from, to)) = job_paths(source.to_bytes(), to.as_bytes()) else {
-                    status = failed(output, b"cannot move", source.to_bytes(), Errno::ENAMETOOLONG);
+                    status = failed(
+                        output,
+                        b"cannot move",
+                        source.to_bytes(),
+                        Errno::ENAMETOOLONG,
+                    );
                     continue;
                 };
                 if run_job(output, Job::moving(&from, &to), b"cannot move").is_err() {
@@ -552,7 +567,9 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(contents(&fake, "/home/x"), Some(b"a\nb\n".to_vec()));
         assert_eq!(contents(&fake, "/tmp/x"), None);
-        let mut across = files().with_directory("/tmp/d", 0).with_file("/tmp/d/f", 0o600, b"f", 0);
+        let mut across = files()
+            .with_directory("/tmp/d", 0)
+            .with_file("/tmp/d/f", 0o600, b"f", 0);
         across.cross_device = vec![b"/home".to_vec()];
         let (status, fake) = run(mv, across, &[c"/tmp/d", c"/home"]);
         assert_eq!((status, fake.errors().as_str()), (0, ""));

@@ -288,14 +288,23 @@ mod tests {
     #[test]
     fn keys_move_the_focus_and_press_the_primary_or_the_cancel() {
         let mut panel = Panel::new(&["Empty the Trash?"], &["Cancel", "Empty"], Some(1), 0);
-        assert_eq!(panel.key(key::ENTER, false, true), PanelResponse::Pressed(1));
+        assert_eq!(
+            panel.key(key::ENTER, false, true),
+            PanelResponse::Pressed(1)
+        );
         assert_eq!(panel.key(key::ESC, false, true), PanelResponse::Pressed(0));
         panel.key(key::TAB, false, true);
         assert_eq!(panel.key(key::SPACE, false, true), PanelResponse::Nothing);
-        assert_eq!(panel.key(key::SPACE, false, false), PanelResponse::Pressed(0));
+        assert_eq!(
+            panel.key(key::SPACE, false, false),
+            PanelResponse::Pressed(0)
+        );
         panel.key(key::TAB, true, true);
         panel.key(key::SPACE, false, true);
-        assert_eq!(panel.key(key::SPACE, false, false), PanelResponse::Pressed(1));
+        assert_eq!(
+            panel.key(key::SPACE, false, false),
+            PanelResponse::Pressed(1)
+        );
     }
 
     #[test]

@@ -173,6 +173,7 @@ impl Place {
 
 /// Where the window is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Location {
     Folder(Path),
     Trash,
@@ -180,6 +181,7 @@ pub enum Location {
 
 /// What the window asks of the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     /// Type this line in the Terminal window, after erasing a half-typed one, press Enter and
     /// focus the Terminal (`/dev/window`'s `TYPE_IN_TERMINAL`).
@@ -279,6 +281,7 @@ struct Clip {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 enum Asked {
     DeletePermanently(Path),
     EmptyTrash,
@@ -287,6 +290,7 @@ enum Asked {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 enum After {
     Paste { folder: Path, name: Name, cut: bool },
     Delete { trashed: Option<Name> },
@@ -377,9 +381,7 @@ impl FilesWindow {
     ) -> Self {
         let _ = make_folders(files, HOME);
         let home = Location::Folder(Path::from(HOME).unwrap_or_default());
-        let location = start
-            .and_then(Path::from)
-            .map_or(home, Location::Folder);
+        let location = start.and_then(Path::from).map_or(home, Location::Folder);
         let mut window = Self {
             width: DEFAULT_SIZE.0 as i32,
             height: DEFAULT_SIZE.1 as i32,
@@ -486,9 +488,18 @@ impl FilesWindow {
         self.running.is_some()
     }
 
+    /// The window is closing: a job under way stops as its Cancel would stop it.
+    pub fn close(&mut self, files: &mut impl Files) {
+        if let Some(mut running) = self.running.take() {
+            running.job.cancel(files);
+        }
+    }
+
     /// The pointer shape now: the I-beam over a text field.
     pub fn pointer_shape(&self) -> PointerShape {
-        let Some((x, y)) = self.pointer.filter(|_| self.panel.is_none() && self.menu.is_none())
+        let Some((x, y)) = self
+            .pointer
+            .filter(|_| self.panel.is_none() && self.menu.is_none())
         else {
             return PointerShape::Arrow;
         };
@@ -738,12 +749,15 @@ impl FilesWindow {
             Location::Trash => self.listing.read_trash(files, &self.trash),
         }
         self.selected = keep.and_then(|name| self.listing.find(name.as_bytes()));
-        if self.rename.is_some_and(|rename| {
-            self.listing.name(rename.index) != rename.original.as_bytes()
-        }) {
+        if self
+            .rename
+            .is_some_and(|rename| self.listing.name(rename.index) != rename.original.as_bytes())
+        {
             self.rename = None;
         }
-        self.set_path_text();
+        if self.focus != Focus::Path {
+            self.set_path_text();
+        }
         self.clamp_offset();
         self.damage_all();
     }
@@ -777,7 +791,10 @@ impl FilesWindow {
             match files.status(folder.as_bytes()) {
                 Ok(status) if status.kind == files::Kind::Directory => {}
                 Ok(_) => {
-                    self.show_notice(format_args!("Could not open {} (Not a directory).", Shown(folder.as_bytes())));
+                    self.show_notice(format_args!(
+                        "Could not open {} (Not a directory).",
+                        Shown(folder.as_bytes())
+                    ));
                     return;
                 }
                 Err(error) => {
@@ -809,6 +826,8 @@ impl FilesWindow {
         self.offset = 0;
         self.last_click = None;
         self.reload(files);
+        self.set_path_text();
+        self.path_before = self.path_field.text;
         if let Some(name) = select {
             let found = self.listing.find(name);
             self.select(found);
@@ -826,11 +845,16 @@ impl FilesWindow {
             Location::Folder(folder) => parent(from.as_bytes()) == folder.as_bytes(),
             Location::Trash => false,
         });
-        self.enter(files, location, select.as_ref().map(|from| from.file_name()));
+        self.enter(
+            files,
+            location,
+            select.as_ref().map(|from| from.file_name()),
+        );
     }
 
     fn can_go_up(&self) -> bool {
-        self.folder().is_some_and(|folder| folder.as_bytes() != b"/")
+        self.folder()
+            .is_some_and(|folder| folder.as_bytes() != b"/")
     }
 
     fn up(&mut self, files: &mut impl Files) {
@@ -930,7 +954,7 @@ impl FilesWindow {
         self.now_ms = now_ms;
         self.clock = clock;
         if let Some(rect) = self.editing() {
-            let shown = now_ms.wrapping_sub(self.caret_epoch) / CARET_BLINK_MS % 2 == 0;
+            let shown = (now_ms.wrapping_sub(self.caret_epoch) / CARET_BLINK_MS).is_multiple_of(2);
             if shown != self.caret_shown {
                 self.caret_shown = shown;
                 self.damage.add(rect);
@@ -950,7 +974,13 @@ impl FilesWindow {
 
     /// Hands the window `input`, which happened at `time_ms` when the clock of the date said
     /// `clock` seconds; `false` once the window should close.
-    pub fn handle(&mut self, files: &mut impl Files, input: Input, time_ms: u32, clock: u64) -> bool {
+    pub fn handle(
+        &mut self,
+        files: &mut impl Files,
+        input: Input,
+        time_ms: u32,
+        clock: u64,
+    ) -> bool {
         self.now_ms = time_ms;
         self.clock = clock;
         let closes_notice = matches!(
@@ -1019,12 +1049,10 @@ impl FilesWindow {
                 button,
                 pressed,
             } => self.button(files, x, y, button, pressed),
-            Input::Wheel { x, y, notches } => {
-                if self.list().contains(x, y) {
-                    self.offset -= notches * WHEEL_ROWS * ROW_HEIGHT;
-                    self.clamp_offset();
-                    self.damage_middle();
-                }
+            Input::Wheel { x, y, notches } if self.list().contains(x, y) => {
+                self.offset -= notches * WHEEL_ROWS * ROW_HEIGHT;
+                self.clamp_offset();
+                self.damage_middle();
             }
             _ => {}
         }
@@ -1223,7 +1251,10 @@ impl FilesWindow {
             return;
         };
         let text = text_of(name);
-        let folder = self.listing.get(index).is_some_and(|entry| entry.kind.is_folder());
+        let folder = self
+            .listing
+            .get(index)
+            .is_some_and(|entry| entry.kind.is_folder());
         let mut caret = extension_start(text.as_str().as_bytes(), folder);
         while !text.as_str().is_char_boundary(caret) {
             caret -= 1;
@@ -1310,7 +1341,9 @@ impl FilesWindow {
             self.show_notice(format_args!("The host share is read-only."));
             return;
         }
-        let path = free_path(files, folder.as_bytes(), |number| Some(new_folder_name(number)));
+        let path = free_path(files, folder.as_bytes(), |number| {
+            Some(new_folder_name(number))
+        });
         let made = path.and_then(|path| files.make_directory(path.as_bytes()).map(|()| path));
         match made {
             Ok(path) => {
@@ -1384,15 +1417,11 @@ impl FilesWindow {
                 self.open_menu_at_selection();
                 return;
             }
-            (key::BACKSPACE, true, false) => {
-                self.delete_selected(files, false);
+            (key::BACKSPACE, true, alt) if self.focus == Focus::List => {
+                self.delete_selected(files, alt);
                 return;
             }
-            (key::BACKSPACE, true, true) => {
-                self.delete_selected(files, true);
-                return;
-            }
-            (code::O, true, false) | (key::DOWN, true, false) => {
+            (code::O, true, false) | (key::DOWN, true, false) if self.focus == Focus::List => {
                 if let Some(index) = self.selected {
                     self.open(files, index);
                 }
@@ -1550,10 +1579,12 @@ impl FilesWindow {
             1 => self.selected.map_or(0, |at| at + 1),
             _ => self.selected.unwrap_or(0),
         };
-        let found = (0..count).map(|step| (start + step) % count.max(1)).find(|&index| {
-            let name = self.listing.name(index);
-            name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
-        });
+        let found = (0..count)
+            .map(|step| (start + step) % count.max(1))
+            .find(|&index| {
+                let name = self.listing.name(index);
+                name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+            });
         if found.is_some() {
             self.select(found);
         }
@@ -1729,7 +1760,11 @@ impl FilesWindow {
         self.menu = Some((menu, on));
     }
 
-    fn menu_entries(&self, on: MenuOn, out: &mut [Entry; eggos_toolkit::menu::MAX_ENTRIES]) -> usize {
+    fn menu_entries(
+        &self,
+        on: MenuOn,
+        out: &mut [Entry; eggos_toolkit::menu::MAX_ENTRIES],
+    ) -> usize {
         let windows = self.windows_words;
         let share = self.on_share();
         let pasteable = self.clipboard.is_some() && !share;
@@ -1746,7 +1781,11 @@ impl FilesWindow {
         };
         match on {
             MenuOn::Space if self.is_trash() => {
-                let label = if windows { "Empty Recycle Bin" } else { "Empty Trash" };
+                let label = if windows {
+                    "Empty Recycle Bin"
+                } else {
+                    "Empty Trash"
+                };
                 add(item(label, !self.listing.is_empty(), item::EMPTY_TRASH));
                 add(Entry::Separator);
                 add(item("Reload", true, item::RELOAD));
@@ -1764,7 +1803,10 @@ impl FilesWindow {
                 add(item("Properties", true, item::PROPERTIES));
             }
             MenuOn::Row(index) => {
-                let kind = self.listing.get(index).map_or(Kind::Other, |entry| entry.kind);
+                let kind = self
+                    .listing
+                    .get(index)
+                    .map_or(Kind::Other, |entry| entry.kind);
                 if let Kind::App(_) = kind {
                     add(item("Open", true, item::OPEN));
                     add(item("Uninstall...", true, item::UNINSTALL));
@@ -1847,7 +1889,8 @@ impl FilesWindow {
         let Some(path) = self.entry_path(index) else {
             return;
         };
-        let name = self.listing.name(index);
+        let owned = Name::from(self.listing.name(index)).unwrap_or_default();
+        let name = owned.as_bytes();
         match entry.kind {
             Kind::Folder => self.go(files, Location::Folder(path)),
             Kind::App(_) => {
@@ -1932,7 +1975,11 @@ impl FilesWindow {
         let target = match target {
             Ok(target) => target,
             Err(error) => {
-                self.show_notice(format_args!("Could not copy {} ({}).", Shown(name), errno_text(error)));
+                self.show_notice(format_args!(
+                    "Could not copy {} ({}).",
+                    Shown(name),
+                    errno_text(error)
+                ));
                 return;
             }
         };
@@ -1955,8 +2002,12 @@ impl FilesWindow {
         let Some(path) = self.entry_path(index) else {
             return;
         };
-        let name = self.listing.name(index);
-        let kind = self.listing.get(index).map_or(Kind::Other, |entry| entry.kind);
+        let owned = Name::from(self.listing.name(index)).unwrap_or_default();
+        let name = owned.as_bytes();
+        let kind = self
+            .listing
+            .get(index)
+            .map_or(Kind::Other, |entry| entry.kind);
         if self.on_share() {
             self.show_notice(format_args!("The host share is read-only."));
             return;
@@ -1983,7 +2034,10 @@ impl FilesWindow {
         }
         let mut first = Line::new();
         let _ = write!(first, "Delete {} permanently?", Shown(name));
-        let second = match self.folder().is_some_and(|folder| is_within(folder.as_bytes(), TMP)) {
+        let second = match self
+            .folder()
+            .is_some_and(|folder| is_within(folder.as_bytes(), TMP))
+        {
             true => "/tmp is not kept, so it has no Trash. This cannot be undone.",
             false => "This cannot be undone.",
         };
@@ -1997,15 +2051,15 @@ impl FilesWindow {
         if count == 0 {
             return;
         }
-        let (title, noun) = match self.windows_words {
-            true => ("Empty the Recycle Bin?", "item"),
-            false => ("Empty the Trash?", "item"),
+        let title = match self.windows_words {
+            true => "Empty the Recycle Bin?",
+            false => "Empty the Trash?",
         };
         let mut second = Line::new();
         let _ = write!(
             second,
-            "Deletes {count} {noun}{}. This cannot be undone.",
-            if count == 1 { "" } else { "s" }
+            "Deletes {}. This cannot be undone.",
+            items_text(count).as_str()
         );
         let panel = Panel::new(&[title, second.as_str()], &["Cancel", "Empty"], Some(1), 0);
         self.panel = Some((panel, Asked::EmptyTrash));
@@ -2087,7 +2141,10 @@ impl FilesWindow {
                 let _ = write!(
                     lines[4],
                     "From: {}",
-                    Shown(from.as_ref().map_or(&b"?"[..], |path| parent(path.as_bytes())))
+                    Shown(
+                        from.as_ref()
+                            .map_or(&b"?"[..], |path| parent(path.as_bytes()))
+                    )
                 );
             }
             false => {

@@ -907,7 +907,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "usr",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 25 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 26 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -2542,8 +2542,6 @@ fn copy_masked(from: &Picture, into: &mut Picture, masks: &[Rect]) {
     }
 }
 
-/// As [`check_desktop_frame_among`], but the screen's `masks` are not compared: what the
-/// guest shows there depends on its clock (Files' time column).
 #[allow(clippy::too_many_arguments)]
 fn check_desktop_frame_masked(
     arch: &Arch,

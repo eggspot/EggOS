@@ -27,6 +27,7 @@ pub enum Work {
 
 /// Where a job is after a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// More to do.
     Working,
@@ -53,6 +54,7 @@ struct Walk {
     depth: usize,
 }
 
+#[allow(clippy::result_large_err)]
 impl Walk {
     fn new() -> Self {
         Self {
@@ -132,6 +134,7 @@ pub struct Job {
     done: u64,
 }
 
+#[allow(clippy::result_large_err)]
 impl Job {
     /// A copy of `from` to `to`, which must not exist yet.
     pub fn copy(from: &Path, to: &Path) -> Self {
@@ -305,7 +308,9 @@ impl Job {
         to: &Path,
         permissions: u32,
     ) -> Result<(), (Errno, Path)> {
-        let source = files.open(from.as_bytes()).map_err(|error| (error, *from))?;
+        let source = files
+            .open(from.as_bytes())
+            .map_err(|error| (error, *from))?;
         match files.create(to.as_bytes(), permissions) {
             Ok(target) => {
                 self.writing = Some(Writing {
@@ -332,7 +337,11 @@ impl Job {
         }
     }
 
-    fn copy_some(&mut self, files: &mut impl Files, buffer: &mut [u8]) -> Result<(), (Errno, Path)> {
+    fn copy_some(
+        &mut self,
+        files: &mut impl Files,
+        buffer: &mut [u8],
+    ) -> Result<(), (Errno, Path)> {
         let chunk = buffer.len().min(STEP_BYTES);
         let buffer = &mut buffer[..chunk];
         if let Some(writing) = self.writing {
@@ -480,17 +489,23 @@ mod tests {
         let mut files = tree();
         let job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
         assert_eq!(run(&mut files, job), Step::Done);
-        assert_eq!(files.contents("/tmp/Work/a.txt").map(<[u8]>::len), Some(200_000));
+        assert_eq!(
+            files.contents("/tmp/Work/a.txt").map(<[u8]>::len),
+            Some(200_000)
+        );
         assert_eq!(files.contents("/tmp/Work/Deep/b.txt"), Some(&b"b"[..]));
         assert_eq!(files.node("/tmp/Work/Empty"), Some(&Node::Folder));
-        assert_eq!(files.node("/home/root/Work/a.txt").is_some(), true);
+        assert!(files.node("/home/root/Work/a.txt").is_some());
         assert_eq!(files.open_count(), 0);
     }
 
     #[test]
     fn a_file_is_copied_out_of_the_read_only_share_but_not_into_it() {
         let mut files = tree();
-        let job = Job::copy(&path("/media/host/notes.txt"), &path("/home/root/notes.txt"));
+        let job = Job::copy(
+            &path("/media/host/notes.txt"),
+            &path("/home/root/notes.txt"),
+        );
         assert_eq!(run(&mut files, job), Step::Done);
         assert_eq!(
             files.contents("/home/root/notes.txt"),
@@ -501,8 +516,14 @@ mod tests {
             run(&mut files, job),
             Step::Failed(Errno::EROFS, path("/media/host/back.txt"))
         );
-        let job = Job::moving(&path("/media/host/notes.txt"), &path("/home/root/moved.txt"));
-        assert!(matches!(run(&mut files, job), Step::Failed(Errno::EROFS, _)));
+        let job = Job::moving(
+            &path("/media/host/notes.txt"),
+            &path("/home/root/moved.txt"),
+        );
+        assert!(matches!(
+            run(&mut files, job),
+            Step::Failed(Errno::EROFS, _)
+        ));
         assert_eq!(
             files.contents("/media/host/notes.txt"),
             Some(&b"from the host"[..])
@@ -519,7 +540,10 @@ mod tests {
         let job = Job::moving(&path("/home/root/Work"), &path("/tmp/Work"));
         assert_eq!(run(&mut files, job), Step::Done);
         assert_eq!(files.node("/home/root/Work"), None);
-        assert_eq!(files.contents("/tmp/Work/a.txt").map(<[u8]>::len), Some(200_000));
+        assert_eq!(
+            files.contents("/tmp/Work/a.txt").map(<[u8]>::len),
+            Some(200_000)
+        );
         assert_eq!(files.node("/tmp/Work/Empty"), Some(&Node::Folder));
     }
 
@@ -528,9 +552,15 @@ mod tests {
         let mut files = tree();
         files.folder("/tmp/Work");
         let job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
-        assert_eq!(run(&mut files, job), Step::Failed(Errno::EEXIST, path("/tmp/Work")));
+        assert_eq!(
+            run(&mut files, job),
+            Step::Failed(Errno::EEXIST, path("/tmp/Work"))
+        );
         let job = Job::moving(&path("/home/root/Work"), &path("/home/root/Work/Deep/x"));
-        assert!(matches!(run(&mut files, job), Step::Failed(Errno::EINVAL, _)));
+        assert!(matches!(
+            run(&mut files, job),
+            Step::Failed(Errno::EINVAL, _)
+        ));
     }
 
     #[test]
@@ -543,10 +573,13 @@ mod tests {
             seen.push(job.permille());
         }
         assert_eq!(files.node("/home/root/Work"), None);
-        assert_eq!(files.node("/home/root").is_some(), true);
+        assert!(files.node("/home/root").is_some());
         assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]));
         let job = Job::delete(&path("/home/root/none"));
-        assert!(matches!(run(&mut files, job), Step::Failed(Errno::ENOENT, _)));
+        assert!(matches!(
+            run(&mut files, job),
+            Step::Failed(Errno::ENOENT, _)
+        ));
     }
 
     #[test]
@@ -554,7 +587,10 @@ mod tests {
         let mut files = tree();
         let mut job = Job::copy(&path("/home/root/Work"), &path("/tmp/Work"));
         let mut buffer = vec![0u8; STEP_BYTES];
-        while files.contents("/tmp/Work/a.txt").is_none_or(|bytes| bytes.is_empty()) {
+        while files
+            .contents("/tmp/Work/a.txt")
+            .is_none_or(|bytes| bytes.is_empty())
+        {
             assert_eq!(job.step(&mut files, &mut buffer), Step::Working);
         }
         assert!(job.permille() > 0);
@@ -569,7 +605,10 @@ mod tests {
     fn a_full_disk_stops_the_copy_and_leaves_no_half_file() {
         let mut files = tree();
         files.space = Some(250_000);
-        let job = Job::copy(&path("/home/root/Work/a.txt"), &path("/home/root/a copy.txt"));
+        let job = Job::copy(
+            &path("/home/root/Work/a.txt"),
+            &path("/home/root/a copy.txt"),
+        );
         assert_eq!(
             run(&mut files, job),
             Step::Failed(Errno::ENOSPC, path("/home/root/a copy.txt"))

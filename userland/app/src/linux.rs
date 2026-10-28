@@ -316,9 +316,8 @@ impl Files for LinuxFiles {
             record[STATX_MODE],
             record[STATX_MODE + 1],
         ]));
-        let double_word = |at: usize| {
-            u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]))
-        };
+        let double_word =
+            |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
         let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
         let size = double_word(STATX_FILE_SIZE);
         let kind = match mode & FILE_TYPE {

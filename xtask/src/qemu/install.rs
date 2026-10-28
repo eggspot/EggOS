@@ -164,7 +164,10 @@ pub(super) fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Opt
     Ok(Some(node))
 }
 
-pub(super) fn file_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn file_at(
+    volume: &mut Volume<MemoryDisk>,
+    path: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let Some(node) = node_at(volume, path)? else {
         return Ok(None);
     };
@@ -184,7 +187,10 @@ pub(super) fn file_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Opt
     }
 }
 
-pub(super) fn entries_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Vec<String>, String> {
+pub(super) fn entries_at(
+    volume: &mut Volume<MemoryDisk>,
+    path: &str,
+) -> Result<Vec<String>, String> {
     let node = node_at(volume, path)?.ok_or_else(|| format!("no {path}"))?;
     let mut names = Vec::new();
     let mut position = 0;
@@ -333,7 +339,11 @@ pub(super) fn host_window(
     Ok(created.window)
 }
 
-pub(super) fn host_destroy(shell: &mut Shell<'_>, client: u16, window: WindowId) -> Result<(), String> {
+pub(super) fn host_destroy(
+    shell: &mut Shell<'_>,
+    client: u16,
+    window: WindowId,
+) -> Result<(), String> {
     let arch = shell.arch();
     shell
         .screen

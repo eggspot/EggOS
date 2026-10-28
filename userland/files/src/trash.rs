@@ -47,6 +47,7 @@ pub struct Record {
 
 /// Why an item could not be restored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum RestoreError {
     /// Its folder no longer exists: the folder's path.
     FolderGone(Path),
@@ -223,7 +224,10 @@ impl Trash {
     /// another file system than the Trash, `EINVAL` for the Trash itself or `/`.
     pub fn put(&self, files: &mut impl Files, path: &[u8], now: u64) -> Result<Name, Errno> {
         let base = files::file_name(path);
-        if self.holds(path) || base.is_empty() || base == b"/" || is_within(self.root.as_bytes(), path)
+        if self.holds(path)
+            || base.is_empty()
+            || base == b"/"
+            || is_within(self.root.as_bytes(), path)
         {
             return Err(Errno::EINVAL);
         }
@@ -318,12 +322,15 @@ impl Trash {
     }
 
     /// Moves trashed item `name` back to its folder, under a name free there: where it went.
+    #[allow(clippy::result_large_err)]
     pub fn restore(&self, files: &mut impl Files, name: &[u8]) -> Result<Path, RestoreError> {
         let record = self.record(files, name).ok_or(RestoreError::NoRecord)?;
         let item = self
             .item(name)
             .ok_or(RestoreError::Failed(Errno::ENAMETOOLONG))?;
-        let status = files.status(item.as_bytes()).map_err(RestoreError::Failed)?;
+        let status = files
+            .status(item.as_bytes())
+            .map_err(RestoreError::Failed)?;
         let folder = Path::from(parent(record.original.as_bytes()))
             .ok_or(RestoreError::Failed(Errno::ENAMETOOLONG))?;
         match files.status(folder.as_bytes()) {
@@ -375,9 +382,7 @@ impl Trash {
                 let Some(length) = found else {
                     break;
                 };
-                let path = folder
-                    .join(&name[..length])
-                    .ok_or(Errno::ENAMETOOLONG)?;
+                let path = folder.join(&name[..length]).ok_or(Errno::ENAMETOOLONG)?;
                 remove_tree(files, path.as_bytes())?;
                 count += usize::from(counted);
             }
@@ -481,12 +486,13 @@ mod tests {
     fn other_file_systems_and_the_trash_itself_cannot_be_trashed() {
         let mut files = home();
         let trash = Trash::of_home(HOME.as_bytes()).unwrap();
-        assert_eq!(
-            trash.put(&mut files, b"/tmp/scratch", 1),
-            Err(Errno::EXDEV)
-        );
+        assert_eq!(trash.put(&mut files, b"/tmp/scratch", 1), Err(Errno::EXDEV));
         assert_eq!(files.contents("/tmp/scratch"), Some(&b"s"[..]));
-        assert!(files.paths_under("/home/root/.local/share/Trash/info").is_empty());
+        assert!(
+            files
+                .paths_under("/home/root/.local/share/Trash/info")
+                .is_empty()
+        );
         assert_eq!(
             trash.put(&mut files, b"/home/root/.local/share/Trash", 1),
             Err(Errno::EINVAL)
@@ -506,7 +512,10 @@ mod tests {
         files.folder("/home/root/Work/Deep");
         let back = trash.restore(&mut files, b"Deep").unwrap();
         assert_eq!(text(&back), "/home/root/Work/Deep copy");
-        assert_eq!(files.node("/home/root/Work/Deep copy/er"), Some(&Node::Folder));
+        assert_eq!(
+            files.node("/home/root/Work/Deep copy/er"),
+            Some(&Node::Folder)
+        );
         assert_eq!(trash.count(&mut files), 0);
         trash
             .put(&mut files, b"/home/root/Work/notes old.txt", 1)
@@ -514,9 +523,14 @@ mod tests {
         trash.put(&mut files, b"/home/root/Work", 2).unwrap();
         assert_eq!(
             trash.restore(&mut files, b"notes old.txt"),
-            Err(RestoreError::FolderGone(Path::from(b"/home/root/Work").unwrap()))
+            Err(RestoreError::FolderGone(
+                Path::from(b"/home/root/Work").unwrap()
+            ))
         );
-        assert_eq!(trash.restore(&mut files, b"nothing"), Err(RestoreError::NoRecord));
+        assert_eq!(
+            trash.restore(&mut files, b"nothing"),
+            Err(RestoreError::NoRecord)
+        );
     }
 
     #[test]
@@ -530,8 +544,16 @@ mod tests {
         trash.delete(&mut files, b"notes old.txt").unwrap();
         assert_eq!(trash.count(&mut files), 1);
         assert_eq!(trash.empty(&mut files), Ok(1));
-        assert!(files.paths_under("/home/root/.local/share/Trash/files").is_empty());
-        assert!(files.paths_under("/home/root/.local/share/Trash/info").is_empty());
+        assert!(
+            files
+                .paths_under("/home/root/.local/share/Trash/files")
+                .is_empty()
+        );
+        assert!(
+            files
+                .paths_under("/home/root/.local/share/Trash/info")
+                .is_empty()
+        );
         assert_eq!(trash.empty(&mut files), Ok(0));
     }
 

@@ -2,13 +2,14 @@ use crate::disk::SystemFiles;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_app::files::Files;
 use eggos_files::clock::deletion_date;
 use eggos_files::trash::{HOME, RestoreError, Trash};
 use eggos_runtime::errno::Errno;
 
-const USAGE: &[u8] =
-    b"usage: trash [-f] [--] <path>... | trash -l | trash -r <name>... | trash -e";
+const USAGE: &[u8] = b"usage: trash [-f] [--] <path>... | trash -l | trash -r <name>... | trash -e";
 const USAGE_STATUS: i32 = 2;
+const ABSOLUTE_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -92,12 +93,46 @@ pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
 }
 
+fn absolute_path<S: System>(
+    system: &mut S,
+    path: &[u8],
+    out: &mut [u8; ABSOLUTE_CAPACITY],
+) -> Option<usize> {
+    if path.first() == Some(&b'/') {
+        out.get_mut(..path.len())?.copy_from_slice(path);
+        return Some(path.len());
+    }
+    let mut length = system.working_directory(out).ok()?;
+    if out[..length].last() != Some(&b'/') {
+        *out.get_mut(length)? = b'/';
+        length += 1;
+    }
+    out.get_mut(length..length + path.len())?
+        .copy_from_slice(path);
+    Some(length + path.len())
+}
+
 fn put<S: System>(output: &mut Output<S>, trash: &Trash, paths: &[&CStr], force: bool) -> i32 {
     let mut status = 0;
     for &path in paths {
         let now = output.system.now();
         let bytes = path.to_bytes();
-        let put = trash.put(&mut SystemFiles::new(&mut output.system), bytes, now);
+        let mut absolute = [0u8; ABSOLUTE_CAPACITY];
+        let Some(length) = absolute_path(&mut output.system, bytes, &mut absolute) else {
+            output.error(&[
+                b"cannot move '",
+                bytes,
+                b"' to the Trash: ",
+                Errno::ENAMETOOLONG.message(),
+            ]);
+            status = FAILURE;
+            continue;
+        };
+        let put = trash.put(
+            &mut SystemFiles::new(&mut output.system),
+            &absolute[..length],
+            now,
+        );
         match put {
             Ok(_) => {}
             Err(Errno::ENOENT) if force => {}
@@ -110,7 +145,12 @@ fn put<S: System>(output: &mut Output<S>, trash: &Trash, paths: &[&CStr], force:
                 status = FAILURE;
             }
             Err(error) => {
-                output.error(&[b"cannot move '", bytes, b"' to the Trash: ", error.message()]);
+                output.error(&[
+                    b"cannot move '",
+                    bytes,
+                    b"' to the Trash: ",
+                    error.message(),
+                ]);
                 status = FAILURE;
             }
         }
@@ -140,7 +180,10 @@ fn list<S: System>(output: &mut Output<S>, trash: &Trash) -> i32 {
         let date = record.and_then(|record| record.deleted).map(deletion_date);
         output.write(&name[..length]);
         output.write(b"\t");
-        output.write(date.as_ref().map_or(&b"-"[..], |date| date.as_str().as_bytes()));
+        output.write(
+            date.as_ref()
+                .map_or(&b"-"[..], |date| date.as_str().as_bytes()),
+        );
         output.write(b"\t");
         output.write(
             record
@@ -227,7 +270,10 @@ mod tests {
         let (_, fake) = run(fake, &[c"--", c"/home/root/Work"]);
         let (status, fake) = run(fake, &[c"-r", c"notes.txt"]);
         assert_eq!(status, 1);
-        assert_eq!(fake.errors(), "trash: cannot restore 'notes.txt': it is not in the Trash\n");
+        assert_eq!(
+            fake.errors(),
+            "trash: cannot restore 'notes.txt': it is not in the Trash\n"
+        );
         let (status, fake) = run(fake, &[c"--empty"]);
         assert_eq!(status, 0);
         let (_, fake) = run(fake, &[c"-l"]);
@@ -256,6 +302,12 @@ mod tests {
         assert!(fake.errors().ends_with("No such file or directory\n"));
         let (status, fake) = run(fake, &[c"-f", c"/home/root/none"]);
         assert_eq!((status, fake.errors().as_str()), (0, ""));
+        let mut fake = home();
+        fake.working_directory = "/home/root/Work".to_owned();
+        let (status, fake) = run(fake, &[c"notes.txt"]);
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        let (_, fake) = run(fake, &[c"-l"]);
+        assert!(fake.output().ends_with("\t/home/root/Work/notes.txt\n"));
         assert_eq!(run(home(), &[]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"x"]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"-e"]).0, 2);

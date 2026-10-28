@@ -164,7 +164,10 @@ mod tests {
             .with_directory("/home/d", 3);
         let mut files = SystemFiles::new(&mut fake);
         let status = files.status(b"/home/a").unwrap();
-        assert_eq!((status.kind, status.size, status.permissions), (Kind::File, 3, 0o640));
+        assert_eq!(
+            (status.kind, status.size, status.permissions),
+            (Kind::File, 3, 0o640)
+        );
         assert_eq!(status.modified, 7);
         assert_eq!(files.status(b"/home/d").unwrap().kind, Kind::Directory);
         let mut name = [0u8; 256];

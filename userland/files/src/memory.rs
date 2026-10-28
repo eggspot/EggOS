@@ -389,8 +389,7 @@ impl Files for MemoryFiles {
             .collect();
         for path in inside {
             if let Some(held) = self.nodes.remove(&path) {
-                self.nodes
-                    .insert([to, &path[from.len()..]].concat(), held);
+                self.nodes.insert([to, &path[from.len()..]].concat(), held);
             }
         }
         Ok(())

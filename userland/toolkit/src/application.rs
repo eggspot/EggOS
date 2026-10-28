@@ -3,8 +3,8 @@
 //! user closes the window. Nothing runs while nothing happens: the loop sleeps in `ppoll`.
 
 use crate::canvas::Canvas;
-use crate::input::{self, Input, RECORD_SIZE};
 use crate::damage::Damage;
+use crate::input::{self, Input, RECORD_SIZE};
 use crate::tree::{PointerShape, Response, WidgetTree};
 use crate::window::{Window, now_ms};
 use eggos_runtime::errno::Errno;

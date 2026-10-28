@@ -57,18 +57,24 @@ impl Driver {
     }
 
     fn press(&mut self, code: u16, modifiers: u32, character: char) {
-        self.input_after(Input::Key {
-            code,
-            pressed: true,
-            modifiers: Modifiers(modifiers),
-            character: character as u32,
-        }, 100);
-        self.input_after(Input::Key {
-            code,
-            pressed: false,
-            modifiers: Modifiers(modifiers),
-            character: character as u32,
-        }, 100);
+        self.input_after(
+            Input::Key {
+                code,
+                pressed: true,
+                modifiers: Modifiers(modifiers),
+                character: character as u32,
+            },
+            100,
+        );
+        self.input_after(
+            Input::Key {
+                code,
+                pressed: false,
+                modifiers: Modifiers(modifiers),
+                character: character as u32,
+            },
+            100,
+        );
     }
 
     fn typed(&mut self, words: &str) {
@@ -90,7 +96,11 @@ impl Driver {
     }
 
     fn click(&mut self, rect: Rect) {
-        self.click_at(rect.x + rect.width / 2, rect.y + rect.height / 2, MouseButton::Left);
+        self.click_at(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+            MouseButton::Left,
+        );
     }
 
     fn double_click(&mut self, rect: Rect) {
@@ -179,7 +189,10 @@ fn the_share_lists_its_files_by_name_and_says_what_they_are() {
         ["blob.bin", "linux-static", "notes.txt", "win-paint.exe"]
     );
     let listing = driver.window.listing();
-    assert_eq!(listing.get(1).unwrap().kind, Kind::Program(manifest::Source::Linux));
+    assert_eq!(
+        listing.get(1).unwrap().kind,
+        Kind::Program(manifest::Source::Linux)
+    );
     assert_eq!(listing.get(2).unwrap().kind, Kind::Text);
 }
 
@@ -199,7 +212,9 @@ fn double_clicks_run_programs_offer_installs_and_show_text_in_the_terminal() {
     driver.double_click(rect);
     assert_eq!(
         driver.request(),
-        Some(Request::Install(Path::from(b"/media/host/win-paint.exe").unwrap()))
+        Some(Request::Install(
+            Path::from(b"/media/host/win-paint.exe").unwrap()
+        ))
     );
     driver.select("notes.txt");
     driver.press(key::ENTER, 0, '\r');
@@ -245,7 +260,10 @@ fn an_app_opens_and_its_delete_offers_uninstall() {
 fn a_new_folder_is_named_in_place_and_renamed_with_f2() {
     let mut driver = Driver::new();
     driver.press(code::N, Modifiers::CTRL, 'n');
-    assert_eq!(driver.files.node("/home/root/New folder"), Some(&Node::Folder));
+    assert_eq!(
+        driver.files.node("/home/root/New folder"),
+        Some(&Node::Folder)
+    );
     driver.press(key::ENTER, 0, '\r');
     driver.press(code::N, Modifiers::SUPER | Modifiers::SHIFT, 'N');
     for _ in 0.."New folder 2".len() {
@@ -261,7 +279,10 @@ fn a_new_folder_is_named_in_place_and_renamed_with_f2() {
     }
     driver.typed("Projects");
     driver.press(key::ENTER, 0, '\r');
-    assert_eq!(driver.window.notice(), Some("Projects already exists here."));
+    assert_eq!(
+        driver.window.notice(),
+        Some("Projects already exists here.")
+    );
     driver.press(key::ESC, 0, '\u{1b}');
     driver.press(code::F2, 0, '\0');
     driver.typed("/x");
@@ -317,7 +338,10 @@ fn a_folder_is_not_pasted_into_itself() {
     driver.press(code::C, Modifiers::CTRL, 'c');
     driver.press(key::ENTER, 0, '\r');
     driver.press(code::V, Modifiers::CTRL, 'v');
-    assert_eq!(driver.window.notice(), Some("Cannot paste a folder into itself."));
+    assert_eq!(
+        driver.window.notice(),
+        Some("Cannot paste a folder into itself.")
+    );
 }
 
 #[test]
@@ -350,7 +374,10 @@ fn delete_moves_to_the_trash_where_restore_and_permanent_delete_work() {
     let restore = driver.window.menu_entry_rect(0).unwrap();
     driver.click(restore);
     assert_eq!(driver.names(), ["keep.txt"]);
-    assert_eq!(driver.files.contents("/home/root/old.txt"), Some(&b"old"[..]));
+    assert_eq!(
+        driver.files.contents("/home/root/old.txt"),
+        Some(&b"old"[..])
+    );
     driver.select("keep.txt");
     driver.press(key::DELETE, 0, '\0');
     assert_eq!(
@@ -370,7 +397,10 @@ fn delete_moves_to_the_trash_where_restore_and_permanent_delete_work() {
 #[test]
 fn empty_trash_asks_then_deletes_everything() {
     let mut driver = Driver::new();
-    driver.files.file("/home/root/a", b"a", 1).file("/home/root/b", b"b", 1);
+    driver
+        .files
+        .file("/home/root/a", b"a", 1)
+        .file("/home/root/b", b"b", 1);
     driver.press(code::F5, 0, '\0');
     driver.select("a");
     driver.press(key::DELETE, 0, '\0');
@@ -388,7 +418,12 @@ fn empty_trash_asks_then_deletes_everything() {
     let button = driver.window.dialog_button_rect(1).unwrap();
     driver.click(button);
     assert!(driver.names().is_empty());
-    assert!(driver.files.paths_under("/home/root/.local/share/Trash/files").is_empty());
+    assert!(
+        driver
+            .files
+            .paths_under("/home/root/.local/share/Trash/files")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -489,7 +524,10 @@ fn properties_say_the_kind_size_and_place() {
     driver.press(code::I, Modifiers::SUPER, 'i');
     assert_eq!(driver.window.dialog_line(1), Some("Kind: Text"));
     assert_eq!(driver.window.dialog_line(2), Some("Size: 20 B (20 bytes)"));
-    assert_eq!(driver.window.dialog_line(3), Some("Modified: 1970-01-01 00:00"));
+    assert_eq!(
+        driver.window.dialog_line(3),
+        Some("Modified: 1970-01-01 00:00")
+    );
     assert_eq!(driver.window.dialog_line(4), Some("Where: /media/host"));
     driver.press(key::ENTER, 0, '\r');
     assert_eq!(driver.window.dialog_line(0), None);
@@ -564,4 +602,30 @@ fn the_window_draws_its_parts_and_a_notice_ends_after_three_seconds() {
 
 mod colour_of {
     pub use eggos_toolkit::colour::*;
+}
+
+#[test]
+fn a_path_being_typed_survives_a_reload_and_closing_stops_a_job() {
+    let mut driver = Driver::new();
+    driver.press(code::L, Modifiers::CTRL, 'l');
+    driver.typed("/x");
+    driver.input(Input::FocusOut);
+    driver.input(Input::FocusIn);
+    assert_eq!(driver.window.path_field.text.as_str(), "/home/root/x");
+    driver.click(BACK_BUTTON);
+    driver.place(Place::Tmp);
+    assert_eq!(driver.window.path_field.text.as_str(), "/tmp");
+    driver
+        .files
+        .file("/home/root/big.bin", &vec![1u8; 4 * 1024 * 1024], 1);
+    driver.place(Place::Home);
+    driver.select("big.bin");
+    driver.press(code::C, Modifiers::CTRL, 'c');
+    driver.place(Place::Tmp);
+    driver.press(code::V, Modifiers::CTRL, 'v');
+    assert!(driver.window.is_working());
+    driver.window.close(&mut driver.files);
+    assert!(!driver.window.is_working());
+    assert_eq!(driver.files.node("/tmp/big.bin"), None);
+    assert_eq!(driver.files.open_count(), 0);
 }

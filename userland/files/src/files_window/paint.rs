@@ -1,7 +1,7 @@
 use super::{
-    BACK_BUTTON, COLUMN_GAP, FilesWindow, Focus, HEADER_HEIGHT, Hover, HOST_SHARE, Location,
-    NAME_X, Place, Pressed, ROW_HEIGHT, SIZE_END_FROM_RIGHT, SIZE_WIDTH, SIDEBAR_WIDTH,
-    TIME_WIDTH, UP_BUTTON, text_of,
+    BACK_BUTTON, COLUMN_GAP, FilesWindow, Focus, HEADER_HEIGHT, HOST_SHARE, Hover, Location,
+    NAME_X, Place, Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, SIZE_END_FROM_RIGHT, SIZE_WIDTH, TIME_WIDTH,
+    UP_BUTTON, text_of,
 };
 use crate::clock::list_time;
 use crate::kind::Kind;
@@ -93,7 +93,14 @@ impl FilesWindow {
         }
     }
 
-    fn paint_button(&self, canvas: &mut Canvas<'_>, rect: Rect, glyph: &str, enabled: bool, hover: Hover) {
+    fn paint_button(
+        &self,
+        canvas: &mut Canvas<'_>,
+        rect: Rect,
+        glyph: &str,
+        enabled: bool,
+        hover: Hover,
+    ) {
         let pressed = matches!(
             (self.pressed, hover),
             (Some(Pressed::Back), Hover::Back) | (Some(Pressed::Up), Hover::Up)
@@ -107,7 +114,11 @@ impl FilesWindow {
         if let Some(fill) = fill {
             canvas.rounded(rect, &INSET_R4, fill);
         }
-        let ink = if enabled { colour::TEXT } else { colour::TEXT_DIM };
+        let ink = if enabled {
+            colour::TEXT
+        } else {
+            colour::TEXT_DIM
+        };
         let width = text::width(glyph);
         canvas.text(
             rect.x + (rect.width - width) / 2,
@@ -125,7 +136,13 @@ impl FilesWindow {
             Rect::new(0, toolbar.bottom() - 1, toolbar.width, 1),
             colour::BAR_EDGE,
         );
-        self.paint_button(canvas, BACK_BUTTON, "<", self.history_length > 0, Hover::Back);
+        self.paint_button(
+            canvas,
+            BACK_BUTTON,
+            "<",
+            self.history_length > 0,
+            Hover::Back,
+        );
         self.paint_button(canvas, UP_BUTTON, "^", self.can_go_up(), Hover::Up);
         let focused = self.window_focused && self.focus == Focus::Path && self.rename.is_none();
         widget::paint(

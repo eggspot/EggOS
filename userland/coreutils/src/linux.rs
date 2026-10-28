@@ -169,6 +169,14 @@ impl System for Linux {
         call(number::UTIMENSAT, [AT_FDCWD, path, 0, 0, 0, 0]).map(|_| ())
     }
 
+    fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let length = call(
+            number::GETCWD,
+            [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
+        )?;
+        Ok(length.saturating_sub(1))
+    }
+
     fn now(&mut self) -> u64 {
         let mut time = Timespec {
             seconds: 0,

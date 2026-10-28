@@ -231,7 +231,8 @@ impl FilesTest<'_> {
             false => (Modifiers::NONE, 0),
         };
         if ctrl {
-            self.shell.key("ctrl", key::LEFT_CTRL, true, Modifiers::NONE)?;
+            self.shell
+                .key("ctrl", key::LEFT_CTRL, true, Modifiers::NONE)?;
         }
         for pressed in [true, false] {
             self.shell.key(qcode, code, pressed, held)?;
@@ -247,7 +248,8 @@ impl FilesTest<'_> {
             )?;
         }
         if ctrl {
-            self.shell.key("ctrl", key::LEFT_CTRL, false, Modifiers::NONE)?;
+            self.shell
+                .key("ctrl", key::LEFT_CTRL, false, Modifiers::NONE)?;
         }
         Ok(())
     }
@@ -287,7 +289,8 @@ impl FilesTest<'_> {
             "dock Files",
         )?;
         let action = self.shell.click(dock)?;
-        self.shell.expect(action, Action::None, "the dock's Files with its window")?;
+        self.shell
+            .expect(action, Action::None, "the dock's Files with its window")?;
         let now = self.shell.now_ms;
         self.feed(Input::FocusIn, now)
     }
@@ -326,17 +329,19 @@ fn browse_the_share_and_open_its_programs(test: &mut FilesTest<'_>) -> Result<()
         Request::TypeInTerminal(_) => {}
         other => return Err(format!("{}: Files asked {other:?}", test.arch())),
     }
-    test.shell.screen.desktop.launch(
-        AppId::Terminal,
-        &mut Damage::new(),
-        &mut DiscardEvents,
-    );
+    test.shell
+        .screen
+        .desktop
+        .launch(AppId::Terminal, &mut Damage::new(), &mut DiscardEvents);
     let now = test.shell.now_ms;
     test.feed(Input::FocusOut, now)?;
     test.park()?;
     test.shell.wait_for_line(LINUX_PROGRAM_LAST_LINE)?;
     test.shell.boot.wait_for_prompts(prompts + 1)?;
-    test.check("the Linux program run in the Terminal from Files", FRAME_TIMEOUT)?;
+    test.check(
+        "the Linux program run in the Terminal from Files",
+        FRAME_TIMEOUT,
+    )?;
     test.focus_files_from_the_dock()?;
     test.park()?;
     test.check("Files focused again from the dock", FRAME_TIMEOUT)?;
@@ -377,7 +382,10 @@ fn copy_create_rename_move_and_trash(test: &mut FilesTest<'_>) -> Result<(), Str
     test.place(Place::Home)?;
     test.key("v", code::V, 'v', true)?;
     test.park()?;
-    test.check("the text file copied out of the share into home", FRAME_TIMEOUT)?;
+    test.check(
+        "the text file copied out of the share into home",
+        FRAME_TIMEOUT,
+    )?;
     test.click(UP_BUTTON)?;
     test.park()?;
     test.check("/home after ^", FRAME_TIMEOUT)?;
@@ -461,8 +469,8 @@ fn check_the_image(arch: &Arch, image: &Path) -> Result<(), String> {
     if !work.is_empty() {
         return Err(fail(format!("/home/root/work still holds {work:?}")));
     }
-    let trashed = file_at(&mut volume, "home/root/.local/share/Trash/files/notes.txt")
-        .map_err(fail)?;
+    let trashed =
+        file_at(&mut volume, "home/root/.local/share/Trash/files/notes.txt").map_err(fail)?;
     if trashed.as_deref() != Some(HOST_TEXT_FILE.1.as_bytes()) {
         return Err(fail(format!("the Trash holds {trashed:?} for notes.txt")));
     }
@@ -472,7 +480,10 @@ fn check_the_image(arch: &Arch, image: &Path) -> Result<(), String> {
     )
     .map_err(fail)?
     .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    if !record.as_deref().is_some_and(|record| record.starts_with(RECORD_START)) {
+    if !record
+        .as_deref()
+        .is_some_and(|record| record.starts_with(RECORD_START))
+    {
         return Err(fail(format!("the Trash's record is {record:?}")));
     }
     if node_at(&mut volume, "home/root/notes.txt")
@@ -542,7 +553,11 @@ fn files_boot(arch: &Arch, kernel: &Path, args: &[String], folder: &Path) -> Res
         .map_err(|e| format!("{}: could not type on the console: {e}", arch.name))?;
     let (console, clean_exit) = boot.finish()?;
     trash_listed(arch, &console)?;
-    match console.lines().any(|line| line.trim_end() == POWER_DOWN_LINE) && clean_exit {
+    match console
+        .lines()
+        .any(|line| line.trim_end() == POWER_DOWN_LINE)
+        && clean_exit
+    {
         true => Ok(()),
         false => Err(format!(
             "{}: QEMU did not power off cleanly after the Files test",
@@ -583,10 +598,19 @@ mod tests {
             .find(|arch| arch.name == "x86_64")
             .expect("x86_64 is an architecture");
         let mut disk = guest_disk(arch, &folder).unwrap();
-        let mut files = FilesWindow::new(&mut disk, Some(b"/media/host"), Architecture::X86_64, false, 0);
+        let mut files = FilesWindow::new(
+            &mut disk,
+            Some(b"/media/host"),
+            Architecture::X86_64,
+            false,
+            0,
+        );
         assert!(files.places().contains(&Place::HostShare));
         assert_eq!(files.listing().len(), 3);
         files.reload(&mut disk);
-        assert_eq!(disk.node("/home/root"), Some(&eggos_files::memory::Node::Folder));
+        assert_eq!(
+            disk.node("/home/root"),
+            Some(&eggos_files::memory::Node::Folder)
+        );
     }
 }
