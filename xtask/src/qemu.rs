@@ -933,7 +933,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
         whole(&["Welcome to EggOS.", "", "==> /etc/hostname <=="]),
         whole(&[PIPELINE_INPUT_LINE, PIPELINE_INPUT_LINE]),
         whole(&["EGGOS-PIPE interrupted 130"]),
-        whole(&["meminfo", "ps", "uptime", "/proc", "/", "3"]),
+        whole(&["cmdline", "meminfo", "ps", "uptime", "/proc", "/", "3"]),
         whole(&["  PID  PPID  PGID S CMD", "    1     0     1 R init", "1"]),
         whole(&[
             "               total        used        free      shared  buff/cache   available",
