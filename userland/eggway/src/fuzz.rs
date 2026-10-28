@@ -2,7 +2,7 @@
 //! toplevels, pools, buffers, commits, moves) cut, flipped, repeated and mixed with random
 //! words, sent in random chunks with random descriptors, while the window server's input comes
 //! at random. After each session every client hangs up; then every descriptor must be closed,
-//! no pool may stay counted and no client may stay connected. A panic fails the run. Host tests
+//! no pool may stay counted, no window may stay mapped and no client may stay connected. A panic fails the run. Host tests
 //! run a bounded number; `cargo xtask fuzz wayland` runs it for longer.
 
 use crate::compositor::Compositor;
@@ -19,6 +19,8 @@ pub enum Fault {
     PoolBytes(usize),
     /// Clients still connected after they hung up.
     Clients(usize),
+    /// Windows whose buffers stayed mapped after their client went.
+    Windows(usize),
 }
 
 /// A small, fast random number generator (xorshift64).
@@ -47,6 +49,8 @@ impl Generator {
         }
     }
 }
+
+const POOL_REQUEST: usize = 14;
 
 fn corpus(size: i32) -> Vec<Vec<u8>> {
     let bind = |name: u32, interface: &'static [u8], version: u32, id: u32| {
@@ -163,7 +167,7 @@ fn descriptors(generator: &mut Generator, fake: &mut Fake, size: i32) -> Vec<Fd>
         .collect()
 }
 
-fn session(generator: &mut Generator) -> Result<(), Fault> {
+fn session(generator: &mut Generator) -> Result<usize, Fault> {
     let mut fake = Fake::default();
     let mut compositor = Compositor::new();
     let clients = 1 + generator.below(2) as usize;
@@ -176,6 +180,20 @@ fn session(generator: &mut Generator) -> Result<(), Fault> {
         .collect();
     let size = 1 + generator.below(64) as i32;
     let messages = corpus(size);
+    if generator.below(3) == 0 {
+        let client = generator.below(clients as u64) as usize;
+        for (index, message) in messages.iter().take(POOL_REQUEST + 6).enumerate() {
+            let fds = match index {
+                POOL_REQUEST => vec![
+                    fake.memory_file(vec![generator.next_number() as u32; (size * size) as usize]),
+                ],
+                _ => Vec::new(),
+            };
+            fake.push(sockets[client], message.clone(), fds);
+            compositor.readable(&mut fake, client);
+            compositor.tick(&mut fake);
+        }
+    }
     for _ in 0..1 + generator.below(40) {
         let client = generator.below(clients as u64) as usize;
         let mut bytes = Vec::new();
@@ -237,14 +255,24 @@ fn session(generator: &mut Generator) -> Result<(), Fault> {
     if !fake.open.is_empty() {
         return Err(Fault::Leaked(fake.open.len()));
     }
-    Ok(())
+    let windows = fake
+        .windows
+        .values()
+        .filter(|window| !window.destroyed)
+        .count();
+    if windows != 0 {
+        return Err(Fault::Windows(windows));
+    }
+    Ok(fake.windows.len())
 }
 
-/// Runs `sessions` hostile sessions from `seed`; the first fault and its session's index.
-pub fn run(seed: u64, sessions: usize) -> Result<(), (Fault, usize)> {
+/// Runs `sessions` hostile sessions from `seed`: how many windows they made, or the first
+/// fault and its session's index.
+pub fn run(seed: u64, sessions: usize) -> Result<usize, (Fault, usize)> {
     let mut generator = Generator::new(seed);
+    let mut windows = 0;
     for index in 0..sessions {
-        session(&mut generator).map_err(|fault| (fault, index))?;
+        windows += session(&mut generator).map_err(|fault| (fault, index))?;
     }
-    Ok(())
+    Ok(windows)
 }

@@ -8730,8 +8730,10 @@ the license, by an explicit instruction recorded here.
   serials, resize edges, frame pacing, descriptors across reads and a truncated batch, the
   keymap's descriptor held over `EAGAIN`, 17 clients, a client that reads nothing, fifteen
   protocol errors each leaving nothing open, pool caps, a pool's growth and a shrunken file,
-  a late output, version inheritance) and 300 fuzzed sessions; `cargo xtask fuzz wayland` runs
-  more. QEMU on aarch64, riscv64 and x86_64 (`Expect::LinuxGui`): `linux-paint`'s window with the
+  a late output, a keyboard made while a window has focus, version inheritance, every window
+  unmapped when its client goes) and 300 fuzzed sessions, a third of them in the protocol's
+  order so they make windows; `cargo xtask fuzz wayland` runs more (60 s: 363,500 sessions,
+  121,162 windows, nothing left open). QEMU on aarch64, riscv64 and x86_64 (`Expect::LinuxGui`): `linux-paint`'s window with the
   desktop's chrome, a click, a key, a title-bar drag, the handle's move with the frame proving
   the request was made before any motion, a stale move that changes nothing, maximise and close,
   each frame compared with the host's render, then the program's lines and its status.

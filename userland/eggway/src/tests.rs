@@ -230,6 +230,10 @@ impl Session {
         self.pump();
         assert_eq!(self.compositor.client_count(), 0);
         assert!(self.fake.open.is_empty(), "left open: {:?}", self.fake.open);
+        assert!(
+            self.fake.windows.values().all(|window| window.destroyed),
+            "a window's buffer left mapped"
+        );
         assert_eq!(self.compositor.pool_bytes(), 0);
     }
 }
@@ -974,7 +978,8 @@ fn objects_inherit_their_parent_s_version() {
 
 #[test]
 fn the_fuzz_target_finds_nothing_in_a_short_run() {
-    crate::fuzz::run(0x5eed, 300).expect("no fault");
+    let windows = crate::fuzz::run(0x5eed, 300).expect("no fault");
+    assert!(windows > 0, "the fuzzed sessions never made a window");
 }
 
 #[test]
@@ -983,4 +988,16 @@ fn interface_names_on_the_wire_match_the_specification() {
     assert_eq!(compositor::FRAME_INTERVAL_MS, 16);
     let mut fake = Fake::default();
     assert_eq!(fake.work_area(), (1280, 732));
+}
+
+#[test]
+fn a_keyboard_made_while_a_window_has_focus_is_entered_and_windows_go_with_the_client() {
+    let mut session = Session::new();
+    session.shown();
+    session.record(record::FOCUS_IN, [0; 4]);
+    session.send(SEAT, 1, &[Value::NewId(40)]);
+    session.pump();
+    assert_eq!(session.of(40, keyboard::ENTER.opcode).len(), 1);
+    assert_eq!(session.of(40, keyboard::MODIFIERS.opcode).len(), 1);
+    session.end();
 }

@@ -66,7 +66,7 @@ mod window_state {
     pub const MAXIMISED: u32 = 2;
 }
 
-mod drag {
+mod move_or_resize {
     pub const MOVE: u32 = 0;
     pub const RESIZE: u32 = 1;
     pub const LEFT: u32 = 1;
@@ -320,6 +320,11 @@ impl Compositor {
         };
         system.close(client.socket);
         if let Some(device) = client.device {
+            for surface in client.surfaces.iter().flatten() {
+                if let Some(window) = surface.window {
+                    system.destroy_window(device, window);
+                }
+            }
             system.close(device);
         }
         for pool in client.pools.iter().flatten() {
@@ -547,7 +552,7 @@ fn handle<S: System>(
         Interface::ShmPool => pool_request(client, shared, system, message),
         Interface::Buffer => destroy_buffer(client, shared, system, message.index),
         Interface::Surface => surface_request(client, shared, system, message),
-        Interface::Seat => seat_request(client, system, message),
+        Interface::Seat => seat_request(client, shared, system, message),
         Interface::XdgWmBase => wm_base_request(client, message),
         Interface::XdgSurface => xdg_surface_request(client, message),
         Interface::XdgToplevel => toplevel_request(client, system, message),
@@ -1251,7 +1256,12 @@ fn current_size(surface: &Surface) -> (u32, u32) {
     }
 }
 
-fn seat_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+fn seat_request<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    message: &Message,
+) {
     let id = message.uint(0);
     match message.opcode {
         0 => {
@@ -1268,6 +1278,36 @@ fn seat_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Me
                 keyboard::REPEAT_INFO,
                 &[Value::Int(REPEAT_RATE), Value::Int(REPEAT_DELAY_MS)],
             );
+            if let Some(surface) = client
+                .keyboard_focus
+                .and_then(|index| client.surface(index))
+            {
+                let surface = surface.id;
+                let (depressed, locked) = client.modifiers;
+                let (enter, modifiers) = (shared.next_serial(), shared.next_serial());
+                client.post(
+                    id,
+                    message.version,
+                    keyboard::ENTER,
+                    &[
+                        Value::Uint(enter),
+                        Value::Object(surface),
+                        Value::Array(&[]),
+                    ],
+                );
+                client.post(
+                    id,
+                    message.version,
+                    keyboard::MODIFIERS,
+                    &[
+                        Value::Uint(modifiers),
+                        Value::Uint(depressed),
+                        Value::Uint(0),
+                        Value::Uint(locked),
+                        Value::Uint(0),
+                    ],
+                );
+            }
         }
         2 => {
             new_object(client, id, Interface::Touch, message.version, 0);
@@ -1418,14 +1458,14 @@ fn xdg_surface_request(client: &mut ClientSlot, message: &Message) {
 fn resize_edges(edge: u32) -> Option<u32> {
     Some(match edge {
         xdg_toplevel::EDGE_NONE => 0,
-        xdg_toplevel::EDGE_TOP => drag::TOP,
-        xdg_toplevel::EDGE_BOTTOM => drag::BOTTOM,
-        xdg_toplevel::EDGE_LEFT => drag::LEFT,
-        xdg_toplevel::EDGE_TOP_LEFT => drag::TOP | drag::LEFT,
-        xdg_toplevel::EDGE_BOTTOM_LEFT => drag::BOTTOM | drag::LEFT,
-        xdg_toplevel::EDGE_RIGHT => drag::RIGHT,
-        xdg_toplevel::EDGE_TOP_RIGHT => drag::TOP | drag::RIGHT,
-        xdg_toplevel::EDGE_BOTTOM_RIGHT => drag::BOTTOM | drag::RIGHT,
+        xdg_toplevel::EDGE_TOP => move_or_resize::TOP,
+        xdg_toplevel::EDGE_BOTTOM => move_or_resize::BOTTOM,
+        xdg_toplevel::EDGE_LEFT => move_or_resize::LEFT,
+        xdg_toplevel::EDGE_TOP_LEFT => move_or_resize::TOP | move_or_resize::LEFT,
+        xdg_toplevel::EDGE_BOTTOM_LEFT => move_or_resize::BOTTOM | move_or_resize::LEFT,
+        xdg_toplevel::EDGE_RIGHT => move_or_resize::RIGHT,
+        xdg_toplevel::EDGE_TOP_RIGHT => move_or_resize::TOP | move_or_resize::RIGHT,
+        xdg_toplevel::EDGE_BOTTOM_RIGHT => move_or_resize::BOTTOM | move_or_resize::RIGHT,
         _ => return None,
     })
 }
@@ -1476,10 +1516,10 @@ fn toplevel_request<S: System>(client: &mut ClientSlot, system: &mut S, message:
                 return;
             }
             let (kind, edges) = match message.opcode {
-                5 => (drag::MOVE, 0),
+                5 => (move_or_resize::MOVE, 0),
                 _ => match resize_edges(message.uint(2)) {
                     Some(0) => return,
-                    Some(edges) => (drag::RESIZE, edges),
+                    Some(edges) => (move_or_resize::RESIZE, edges),
                     None => {
                         client.protocol_error(
                             message.object,

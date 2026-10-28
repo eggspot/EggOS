@@ -1096,15 +1096,17 @@ fn fuzz_wayland(seconds: u64) -> Result<(), String> {
     let mut seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(1, |time| time.as_nanos() as u64);
-    let mut sessions = 0u64;
+    let (mut sessions, mut windows) = (0u64, 0usize);
     while std::time::Instant::now() < deadline {
-        eggos_eggway::fuzz::run(seed, SESSIONS).map_err(|(fault, index)| {
+        windows += eggos_eggway::fuzz::run(seed, SESSIONS).map_err(|(fault, index)| {
             format!("fuzz wayland: seed {seed}, session {index}: {fault:?}")
         })?;
         sessions += SESSIONS as u64;
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
     }
-    println!("fuzz wayland: {sessions} hostile sessions in {seconds} s, nothing left open");
+    println!(
+        "fuzz wayland: {sessions} hostile sessions ({windows} windows) in {seconds} s, nothing left open"
+    );
     Ok(())
 }
 
