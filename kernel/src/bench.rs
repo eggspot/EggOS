@@ -145,6 +145,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 54] {
         }),
         ("window_commit_line", |_, n| window_commit_line(n)),
         ("window_hit_test", |_, n| window_hit_test(n)),
+        ("wayland_blit_rows", |_, n| wayland_blit_rows(n)),
     ]
 }
 
@@ -936,6 +937,24 @@ fn gfx_compose_four_windows(n: u64) {
             BENCH_SCREEN.0 as usize,
             rect,
             &contents,
+        );
+    }
+}
+
+fn wayland_blit_rows(n: u64) {
+    use eggos_wayland::blit::{self, Rect as BlitRect};
+    const WIDTH: usize = 656;
+    const ROWS: usize = 16;
+    let source = alloc::vec![0xff20_4060u32; WIDTH * ROWS];
+    let mut window = alloc::vec![0u32; WIDTH * ROWS];
+    let band = BlitRect::new(0, 0, WIDTH as u32, ROWS as u32);
+    for _ in 0..n {
+        blit::copy_opaque_rows(
+            black_box(&source),
+            WIDTH,
+            black_box(&mut window),
+            WIDTH,
+            band,
         );
     }
 }

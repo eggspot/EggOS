@@ -63,6 +63,53 @@ monotonic and realtime clocks, a `HashMap` with random keys, threads spawned and
 number of CPUs it may use (`std::thread::available_parallelism`), its exit status, and a panic
 that aborts it.
 
+## GUI programs (Wayland)
+
+A Linux program that opens its windows through Wayland shows them on the EggOS desktop
+(D140). `eggway`, EggOS's own Wayland server, starts with the system when there is a display
+and listens on `/run/user/0/wayland-0`; every program started from the terminal or the
+desktop has `XDG_RUNTIME_DIR=/run/user/0` and `WAYLAND_DISPLAY=wayland-0`, so a client finds
+it as it would on Linux. Each top-level window (`xdg_toplevel`) becomes a desktop window with
+EggOS's own title bar and controls: move it, resize it from its edges, maximise, minimise or
+close it as any window, and its clicks, wheel and keys reach the program. `eggway --status`
+(at `/usr/libexec/eggway`) says whether the server runs; `wm list` lists the windows.
+
+What eggway serves: `wl_compositor` (version 4), `wl_shm` (1; `ARGB8888` and `XRGB8888`
+buffers in memory files), `wl_surface` (attach, damage, frame callbacks at up to 60 Hz,
+commit), `wl_seat` (5; pointer and keyboard, with a US keyboard map), `wl_output` (3) and
+`xdg_wm_base` (3; `xdg_surface`, `xdg_toplevel` with title, minimum and maximum size,
+maximise, fullscreen as maximise, minimise, close, and move and resize from a press in the
+window). Surfaces are shown opaque, at scale 1.
+
+`tests/linux-gui` is a complete example: `linux-paint` is a static Rust program that speaks the
+wire protocol itself; the Linux GUI boot test opens its window, clicks, types, drags, maximises
+and closes it on every architecture.
+
+### What real toolkits need next
+
+GTK, Qt, SDL, browsers and Electron apps do not run yet. What they need, roughly in the order
+it unlocks them:
+
+| Need | Who needs it |
+|------|--------------|
+| Dynamic linking (`ld.so`, `libwayland-client.so`, `libxkbcommon.so`, glibc) | every distribution's binaries |
+| `epoll`, `eventfd`, `timerfd`, `signalfd` | GLib and GTK, Qt, SDL3, winit/calloop, Chromium and Electron, EFL |
+| `fork` of a process with shared memory | foot, weston-terminal |
+| `MAP_SHARED` of tmpfs files, `shm_open` and `/dev/shm` | older clients |
+| `wl_subcompositor` | GTK, Qt, libdecor (SDL) |
+| `xdg-decoration` (server-side decorations) | apps that would draw their own title bars |
+| `xdg_popup` placement | menus and tooltips |
+| `wl_data_device_manager` and the primary selection | copy and paste, drag and drop |
+| cursor surfaces and `cursor-shape-v1` | the program's own pointer shapes |
+| `wp_viewporter`, fractional scale, buffer scales above 1 | scaling |
+| `linux-dmabuf` and a GPU driver stack | EGL and Vulkan through Mesa |
+| `text-input-v3` | input methods |
+| `xdg-activation` | apps that raise their own windows |
+| relative pointer and pointer constraints | games |
+| `/etc/fonts` and D-Bus with the desktop portals | most toolkit apps |
+| seccomp, namespaces and `clone3` | browser sandboxes |
+| alpha compositing | translucent windows |
+
 ## What does not work yet
 
 - **Dynamically linked programs.** One that names an interpreter (`/lib/ld-linux-*.so`,
@@ -79,7 +126,7 @@ that aborts it.
   only, and memfds, D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and
   descriptors passed with `SCM_RIGHTS` (D138), and so does memory shared between programs
   with `memfd_create` and `mmap(MAP_SHARED)` (D139); datagram sockets and `epoll` do not
-  yet.
+  yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

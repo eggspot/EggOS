@@ -174,6 +174,13 @@ pub fn ioctl<P: Platform>(
                 desktop.commit(client, window, rects, damage, events)
             })?;
         }
+        Request::StartMoveOrResize {
+            window,
+            kind,
+            edges,
+        } => on_windows::<P, _>(|desktop, _, damage, events| {
+            desktop.start_move_or_resize(client, window, kind, edges, damage, events)
+        })?,
         Request::Destroy { window } => on_windows::<P, _>(|desktop, buffers, damage, events| {
             desktop.destroy(client, window, damage, events)?;
             buffers.release_unused(desktop);

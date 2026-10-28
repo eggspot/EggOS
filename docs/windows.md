@@ -6,7 +6,9 @@ to 5, D16). In v0.3.0 the server is part of the kernel (D126); this device is th
 when it moves to user space, so a program written against this page keeps working.
 
 Windows GUI programs reach it through the Windows layer's user32 and gdi32
-([Windows programs](windows-programs.md), D129), one connection per program.
+([Windows programs](windows-programs.md), D129), one connection per program. Linux Wayland
+programs reach it through `eggway`, the Wayland server ([Linux programs](linux-programs.md),
+D140), which opens one connection per Wayland client and one window per `xdg_toplevel`.
 
 `userland/hello-window` is a complete example: it opens a window, draws a checkerboard into
 it, shows it, redraws it at each new size the user resizes or maximises it to, and waits for
@@ -70,6 +72,7 @@ integer in the machine's byte order unless marked 64; offsets are in bytes. Wind
 | `APPS_CHANGED` | `0x0000770f` | 0 | none | The installed apps changed (D134): the shell reads the catalogue again at once, so its launcher, dock and desktop icons follow; an open icon menu of an app that is gone closes. Any client; what `app install` and `app uninstall` send. |
 | `OPEN_APP` | `0x40447710` (W) | 68 | 0: length, 4: name (64 bytes) | Opens the installed app of that name as a double-click on its icon does (its program typed in the terminal, after Ctrl-U), after reading the catalogue again. `ENOENT` when no such app is installed. Root only, for now the active user's session (`EPERM`); what the installer's `Open` sends. |
 | `TYPE_IN_TERMINAL` | `0x41047711` (W) | 260 | 0: length, 4: line (256 bytes) | Types the line in the terminal window as a keyboard would (after Ctrl-U, which erases a half-typed line, and with Enter after it) and focuses the terminal (D135); a program running in the terminal receives it. `EINVAL` for a control character or a length past 256; `ENXIO` without an interactive desktop. Root only, for now the active user's session (`EPERM`); what Files sends to run a program or `cat` a text file. |
+| `START_MOVE_OR_RESIZE` | `0x400c7712` (W) | 12 | 0: window, 4: kind, 8: edges | While the window's content holds a left press (the button still down), hands that press to the server's own move (kind 0, edges 0), as a drag of the title bar, or resize (kind 1) by `edges` (1 left, 2 right, 4 top, 8 bottom; no two opposite ones), as a drag of those edges: the window follows the pointer, a maximised one is restored after 8 px, a resize sends `Resize`; the release ends it and reaches no client, and the client gets `PointerLeave`. Any client, on its own normal window or dialog (D140); `EINVAL` without the press, for a fixed-size or maximised window's resize, an unknown kind or bad edges. What `xdg_toplevel.move` and `resize` become. |
 
 Errors: a window that is not the client's, an unknown role, state, shape or action, unknown
 flags, a title too long or not UTF-8, more than 8 rects: `EINVAL`; a role the client may not

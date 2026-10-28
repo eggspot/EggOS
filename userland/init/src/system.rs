@@ -1,4 +1,5 @@
 use crate::agent_server::{AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, RESTARTED_ARGUMENT};
+use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use core::ptr;
@@ -33,7 +34,19 @@ const REBOOT_POWER_OFF: usize = 0x4321_fedc;
 const REBOOT_RESTART: usize = 0x0123_4567;
 const REBOOT_HALT: usize = 0xcdef_0123;
 
-const ENVIRONMENT: [&[u8]; 3] = [b"HOME=/\0", b"TERM=linux\0", b"PATH=/bin\0"];
+const ENVIRONMENT: [&[u8]; 5] = [
+    b"HOME=/\0",
+    b"TERM=linux\0",
+    b"PATH=/bin\0",
+    b"XDG_RUNTIME_DIR=/run/user/0\0",
+    b"WAYLAND_DISPLAY=wayland-0\0",
+];
+
+#[derive(Default)]
+struct Services {
+    agent: AgentServer,
+    display: AgentServer,
+}
 
 #[cfg(not(target_arch = "riscv64"))]
 #[repr(C)]
@@ -97,9 +110,12 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 pub fn run(_startup: &Startup) -> i32 {
     set_signal_actions(SIG_IGN);
     say(&[BANNER]);
-    let mut agent = AgentServer::default();
+    let mut services = Services::default();
     if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
-        start_agent_server(&mut agent, false);
+        start_agent_server(&mut services.agent, false);
+    }
+    if exists(DISPLAY_SERVER) && exists(DISPLAY_DEVICE) {
+        start_display_server(&mut services.display);
     }
     let config = read_config();
     let name = config.login.program_name();
@@ -111,11 +127,11 @@ pub fn run(_startup: &Startup) -> i32 {
                 name,
                 b" is missing; init only reaps children\n",
             ]);
-            reap_forever(&mut agent);
+            reap_forever(&mut services);
         }
         say(&[b"init: starting ", name, b"\n"]);
         let started = now_ms();
-        match spawn(&config.login).and_then(|child| wait_for(child, &mut agent)) {
+        match spawn(&config.login).and_then(|child| wait_for(child, &mut services)) {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
@@ -136,7 +152,7 @@ pub fn run(_startup: &Startup) -> i32 {
                 decimal(delay, &mut digits),
                 b" s\n",
             ]);
-            sleep_reaping(delay, &mut agent);
+            sleep_reaping(delay, &mut services);
         }
     }
 }
@@ -310,46 +326,83 @@ fn start_agent_server(agent: &mut AgentServer, restarted: bool) {
     }
 }
 
-fn notice_end(agent: &mut AgentServer, ended: isize) {
+fn start_display_server(display: &mut AgentServer) {
+    let program = DISPLAY_SERVER.as_ptr();
+    let arguments = [program, ptr::null()];
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => {
+            set_signal_actions(SIG_DFL);
+            call(number::SETSID, [0; 6]);
+            call(
+                number::EXECVE,
+                [
+                    program as usize,
+                    arguments.as_ptr() as usize,
+                    environment.as_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            syscall::exit(COMMAND_NOT_RUN)
+        }
+        1.. => display.started(child as usize, now_ms()),
+        _ => say(&[b"init: could not start eggway\n"]),
+    }
+}
+
+fn notice_end(services: &mut Services, ended: isize) {
     if ended <= 0 {
         return;
     }
-    match agent.ended(ended as usize, now_ms()) {
-        Some(AfterEnd::Restart) => start_agent_server(agent, true),
+    match services.agent.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_agent_server(&mut services.agent, true),
         Some(AfterEnd::GiveUp) => {
             say(&[b"init: eggmcpd keeps ending; the agent channel is closed\n"])
         }
         None => {}
     }
+    match services.display.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_display_server(&mut services.display),
+        Some(AfterEnd::GiveUp) => say(&[
+            b"init: eggway keeps ending; Wayland programs cannot open windows\n",
+        ]),
+        None => {}
+    }
 }
 
-fn wait_for(child: usize, agent: &mut AgentServer) -> Option<i32> {
+fn wait_for(child: usize, services: &mut Services) -> Option<i32> {
     loop {
         let mut status = 0;
         match wait4(0, &mut status) {
             ended if ended == child as isize => return Some(status),
             error if error == -ECHILD => return None,
-            ended => notice_end(agent, ended),
+            ended => notice_end(services, ended),
         }
     }
 }
 
-fn reap_ended(agent: &mut AgentServer) {
+fn reap_ended(services: &mut Services) {
     let mut status = 0;
     loop {
         let ended = wait4(WNOHANG, &mut status);
         if ended <= 0 {
             return;
         }
-        notice_end(agent, ended);
+        notice_end(services, ended);
     }
 }
 
-fn reap_forever(agent: &mut AgentServer) -> ! {
+fn reap_forever(services: &mut Services) -> ! {
     loop {
         let mut status = 0;
         let ended = wait4(0, &mut status);
-        notice_end(agent, ended);
+        notice_end(services, ended);
         if ended == -ECHILD {
             let nothing_blocked: u64 = 0;
             call(
@@ -367,8 +420,8 @@ fn reap_forever(agent: &mut AgentServer) -> ! {
     }
 }
 
-fn sleep_reaping(seconds: u64, agent: &mut AgentServer) {
-    reap_ended(agent);
+fn sleep_reaping(seconds: u64, services: &mut Services) {
+    reap_ended(services);
     let time = Timespec {
         seconds: seconds as i64,
         nanoseconds: 0,
@@ -378,7 +431,7 @@ fn sleep_reaping(seconds: u64, agent: &mut AgentServer) {
         [CLOCK_MONOTONIC, 0, &raw const time as usize, 0, 0, 0],
     ) == -EINTR
     {}
-    reap_ended(agent);
+    reap_ended(services);
 }
 
 fn report(name: &[u8], status: i32) {

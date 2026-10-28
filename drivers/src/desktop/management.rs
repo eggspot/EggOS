@@ -6,7 +6,7 @@ use super::pointer;
 use super::popups::{Switcher, WindowMenu};
 use super::protocol::{
     EventRecord, EventSink, PointerShape, Role, TITLE_CAPACITY, WindowAction, WindowError,
-    WindowState, event,
+    WindowState, event, move_or_resize,
 };
 use super::shortcuts::{Shortcut, shortcut};
 use super::windows::{self, Geometry, Part, edge, resize_pointer};
@@ -20,6 +20,22 @@ pub const CLOSE_TIMEOUT_MS: u32 = 2000;
 pub const NOT_RESPONDING_AFTER_MS: u32 = 500;
 /// How far the window menu's keyboard move and size go per arrow key.
 pub const KEYBOARD_STEP: u32 = 8;
+
+const LEFT_BUTTON_BIT: u8 = 1;
+
+/// Whether `edges` names an edge or a corner: some of [`edge`]'s bits, never two opposite
+/// edges, nothing else.
+fn valid_edges(edges: u32) -> bool {
+    let all = u32::from(edge::LEFT | edge::RIGHT | edge::TOP | edge::BOTTOM);
+    let both = |first: u8, second: u8| {
+        let pair = u32::from(first | second);
+        edges & pair == pair
+    };
+    edges != 0
+        && edges & !all == 0
+        && !both(edge::LEFT, edge::RIGHT)
+        && !both(edge::TOP, edge::BOTTOM)
+}
 
 /// One window as `wm list` shows it ([`Desktop::listed_window`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +472,47 @@ impl Desktop {
             start: self.window_at(slot).outside(),
             from: self.pointer,
         });
+    }
+
+    /// `client` asks that the press its window `id` holds start moving the window (`kind`
+    /// [`move_or_resize::MOVE`], `edges` 0) or resizing it by `edges` ([`move_or_resize::RESIZE`]),
+    /// as a press on its title bar or edges would; the release that ends it reaches no client.
+    /// Refused (`Invalid`) unless the client owns the normal window or dialog, the window holds
+    /// the content press with the left button down, the kind is known and the edges fit it.
+    pub fn start_move_or_resize(
+        &mut self,
+        client: u16,
+        id: u32,
+        kind: u32,
+        edges: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), WindowError> {
+        let slot = self.owned(client, id)?;
+        let window = *self.window_at(slot);
+        let held = self.grab == Some(slot) && self.buttons & LEFT_BUTTON_BIT != 0;
+        if !matches!(window.role, Role::Normal | Role::Dialog) || !held {
+            return Err(WindowError::Invalid);
+        }
+        match kind {
+            move_or_resize::MOVE if edges == 0 => {
+                let (x, y) = self.pointer;
+                self.drag = Some(super::Drag {
+                    window: slot,
+                    from_pointer_x: i64::from(x) - i64::from(window.x),
+                    from_pointer_y: i64::from(y) - i64::from(window.y),
+                    pressed_at: (x, y),
+                });
+            }
+            move_or_resize::RESIZE if window.is_resizable() && valid_edges(edges) => {
+                self.start_resize(slot, edges as u8);
+            }
+            _ => return Err(WindowError::Invalid),
+        }
+        self.grab = None;
+        let (x, y) = self.pointer;
+        self.pointer_moved(x, y, damage, events);
+        Ok(())
     }
 
     pub(super) fn end_resize_of(&mut self, slot: usize) {

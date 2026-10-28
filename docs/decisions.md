@@ -8595,3 +8595,149 @@ the license, by an explicit instruction recorded here.
   program before it takes bytes off the queue, so a bad buffer loses nothing (it needs a
   per-socket read lock to stay right with two readers); and the other notes recorded on PR
   #136.
+
+## D140 Linux GUI programs through Wayland: `eggway`, our own Wayland server, each `xdg_toplevel` a window on `/dev/window`, and `START_MOVE_OR_RESIZE` (v0.3.0 item 39) — Decided by the build loop (the points below marked so decided by research)
+- **What.** Static Linux programs that speak Wayland now open windows on the EggOS desktop
+  with its own chrome: the user moves, resizes, maximises, minimises and closes them as any
+  window, the program can start a move or a resize from a press in its content
+  (`xdg_toplevel.move`/`resize`), and clicks, the wheel and keys reach it. `eggway`, written
+  by us from the public protocol specifications `wayland.xml` and `xdg-shell.xml` (MIT; no
+  libwayland, Weston or wlroots code read), serves `wl_compositor` 4, `wl_shm` 1 (ARGB8888 and
+  XRGB8888 from memory files passed with `SCM_RIGHTS`), `wl_surface`, `wl_seat` 5 (pointer and
+  keyboard, with a US xkb keymap we wrote, sent in a sealed memfd), `wl_output` 3 and
+  `xdg_wm_base` 3 with `xdg_surface` and `xdg_toplevel`. `linux-paint` (tests/linux-gui), a
+  client written by hand against the wire protocol, checks it on all three architectures.
+  docs/linux-programs.md has what works and what real toolkits need next.
+- **Where.** `wayland/` (`eggos-wayland`, no_std, no heap, no dependencies): the wire codec,
+  the interfaces' request tables with their versions, the events, errors and enums, the row
+  copy and the keymap text; the kernel's benchmark and the test client link it too.
+  `userland/eggway` (`eggos-eggway`, the bin `eggway` at `/usr/libexec/eggway`, on
+  eggos-runtime like `eggmcpd`): the per-client state (`client.rs`), the compositor
+  (`compositor.rs`, every request checked and carried out), the `System` trait it runs on
+  (`system.rs`), the Linux side and its loop (`linux.rs`), and a fake machine and a fuzz target
+  for the host. It is a client of `/dev/window`, so it is the first piece already where the
+  window server moves later (D126).
+- **Started by init, when a display exists** (decided by research). init starts `eggway` at
+  boot when `/usr/libexec/eggway` exists and `/dev/window` opens (it does not without a
+  display), and again after it ends, with eggmcpd's back-off (a second instance of the same
+  state, D136); it starts silently. A headless machine runs nothing for it. eggway is part of
+  the image's Linux layer until a component manager exists (D18): it runs on every graphical
+  boot. Socket activation (init holding the socket and starting eggway at the first connection)
+  is the later D18 refinement; it means turning PID 1's blocking `wait4` into a `ppoll` loop.
+- **The socket** (decided by research). eggway makes `/run/user` (0755) and `/run/user/0`
+  (0700), connects to `/run/user/0/wayland-0` first (a server answers: it says so and exits
+  1), removes a stale socket file (D138 keeps it after its server ends) and listens; it
+  removes nothing else. init's login environment and the kernel's app launches always carry
+  `XDG_RUNTIME_DIR=/run/user/0` and `WAYLAND_DISPLAY=wayland-0`; without eggway a client gets
+  `ENOENT`, as on Linux.
+- **Installing and opening** (decided by research): unchanged. `app install` of a static ELF is
+  `source=linux` and opening it types it in the terminal, which now has the variables, so a
+  Wayland app works from its icon; the terminal waits until it exits, as for every typed Linux
+  program. A `display=wayland` manifest key that starts the app beside init comes later.
+- **One thread, `ppoll`** (decided by research) over the listener, each client's socket and
+  each client's `/dev/window` connection; at most 16 clients (the 17th is accepted and closed),
+  64 requests per client per wake-up. The wait is for ever unless a frame callback is due or a
+  client has whole requests left (eggway never wakes by itself; D138 wakes every waiter on any
+  socket or console change, so it looks at its clients on each keystroke, accepted for a few
+  clients, per-connection keys later). Each Wayland client has its own `/dev/window`
+  connection, opened at its first toplevel's first buffer (16 windows and 32 MiB of buffers
+  each; closing it ends the client's windows).
+- **Memory** (decided by research). Each client's state is one anonymous mapping of about 42
+  KiB (`ClientSlot`: 8 KiB of requests, 16 KiB of events with 512 bytes kept for the
+  `wl_display.error`, 64 received descriptors, 4 to send, 1024 object ids, 16 surfaces, 64
+  buffers, 8 pools), made when it connects and given back when it goes; eggway's statics are a
+  few hundred bytes, since `.bss` gets frames at `exec`. There is no allocator. Pools are
+  mapped `PROT_READ`, `MAP_SHARED`: at most 32 MiB each, 32 MiB per client and 48 MiB for all
+  clients (the test machines have 128 MiB, and D139 maps a memfd's whole range at once);
+  `ENOMEM` from `mmap` is `no_memory`, never a panic. A client that shrinks its memory file
+  under a pool cannot hurt eggway only because D139 maps the pages past the end and reads them
+  as zeros (no `SIGBUS`); a host test copies from a shrunken pool. A pool keeps its descriptor
+  until it is destroyed, since `resize` maps it again, and maps the new range before it unmaps
+  the old one (lent ranges refuse `mremap`, D139).
+- **The copy.** A commit copies the damaged rows' bounding rectangle (all of it for a new
+  window or size) from the client's pool into the window's buffer, then `COMMIT`s that
+  rectangle; `wl_buffer.release` follows at once, so eggway never holds a buffer. Each pixel is
+  read with one volatile load (the client may write it from its own process: torn pixels are
+  accepted, and no Rust reference to that memory is ever made; volatile rather than relaxed
+  atomic loads, since both are plain 32-bit loads here and volatile says what it is) and its top
+  byte cleared in the same loop: alpha is ignored, surfaces are opaque.
+- **Frame callbacks** (decided by research): `done` no sooner than 16 ms after the surface's
+  last, so a client that draws on every frame runs at 60 Hz, not flat out; held while the
+  window is minimised; a ninth waiting callback makes the oldest's `done` go early.
+- **The shell's requests.** The first commit with no buffer gets `configure(0, 0)`; the window
+  is made at the first buffer's size (a clamp to another size sends a new configure); `Resize`
+  becomes a configure answered by `SET_SIZE` on the next commit; `StateChanged` and focus
+  become configures with `maximized` and `activated`; `CloseRequest` becomes `close`;
+  `set_maximized`, `unset_maximized`, `set_fullscreen` (as maximised), `unset_fullscreen` and
+  `set_minimized` become `SET_STATE`; `set_title` (cut to 64 bytes) and `set_min_size` become
+  their requests; `set_max_size` clamps configures and, equal to the minimum at creation, makes
+  the window `FIXED_SIZE`; `show_window_menu` is ignored (no request opens the window menu at a
+  point). The `resizing` state is never sent: it is optional, and nothing would end it, since
+  the release of a press handed to the server reaches no client.
+- **`START_MOVE_OR_RESIZE`** (decided by research, after the plan's first review): a new
+  `/dev/window` request, `_IOW('w', 18, 12)` = `0x400c7712` (window, kind 0 move or 1 resize,
+  edges LEFT 1, RIGHT 2, TOP 4, BOTTOM 8), any client on its own Normal or Dialog window. It
+  hands the left press that window's content holds to the server's own title-bar drag or edge
+  resize, with their clamping, the restore of a maximised window and the live `Resize`s; the
+  release ends it and reaches no client. Refused (`EINVAL`) without that press, for another
+  client's window, an unknown kind, a move with edges, a resize of a fixed-size or maximised
+  window or a bad set of edges; it never sets the title bar's double-click state. eggway sends
+  it only when the request's serial is the one of the left press it forwarded last and that
+  press is held, and takes any error as "ignored", as the specification allows for a stale
+  serial. This departs from the owner's "via the existing requests": no existing request can do
+  it, since a client cannot read its window's position and motion records are relative to where
+  the window was when they were queued. Item 47a's requests take numbers 19 and up; its
+  `SEND_INPUT` must refuse injected input (`EBUSY`) while a drag, a resize or a grab started by
+  real input is on, including one started through this request, and once 47a records where a
+  grab's press came from, this request should refuse a grab that injected input started.
+- **Protocol rules** (decided by research). A message's size must be at least 8, a multiple of 4
+  and at most 4096; requests are decoded only whole, by their table's signature, with their
+  object's version (every object takes its parent's: surface and region the compositor's,
+  pointer and keyboard the seat's, toplevel the xdg_surface's); a new id must be free and below
+  1024, a server id (0xff000000 and up) is never one; every destroyed object of the client's
+  gets `delete_id`. Descriptors queue in arrival order beside the bytes, since D138 delivers a
+  `sendmsg`'s descriptors with its first byte: each read leaves room for 28 (libwayland's most
+  per batch) unless fewer are free, and `MSG_CTRUNC` (more than 28 at once, or more than 36
+  waiting for bytes not yet sent) disconnects. The keymap's descriptor goes with the next send
+  that takes bytes and is closed only after it; four may wait, then eggway sends before it reads
+  more. A client that does not read stops being read (its events wait); one whose events overflow
+  anyway is disconnected. A protocol error sends `wl_display.error` and disconnects, closing
+  everything the client had. Inert: `wl_region`, `xdg_positioner`, `wl_touch` (the
+  specification allows `missing_capability`; inert is lenient), and popups (`popup_done` at
+  once). Not advertised: `wl_subcompositor`, `wl_data_device_manager`. `set_buffer_transform`
+  (0 to 7) and `set_buffer_scale` (1 and up) are kept but not applied: the window keeps the
+  buffer's size. `wl_output`'s mode is the work area's size, since no request gives the screen's.
+- **CLI, MCP and GUI** (D22, decided by research). The GUI is the windows themselves; `wm list`
+  (and the MCP `wm_list`) lists the toplevels by title, `ps` (and the MCP `ps`) shows eggway
+  running, `cat /proc/net/unix` its socket, and `/usr/libexec/eggway --status` says
+  `eggway: running on /run/user/0/wayland-0` (status 0) or `eggway: not running` (1).
+- **Lightness (D24).** eggway is one process asleep in `ppoll`: no CPU while idle and no
+  `/dev/window` connection until a client has a window; its memory is its code, its stack and
+  its few statics (measured in the PR), plus about 42 KiB per connected client. The image grows
+  by eggway's code (measured in the PR); the kernel by `START_MOVE_OR_RESIZE`'s few lines.
+- **Performance.** `wayland_blit_rows` copies a 656x16 band (the size `window_commit_line`
+  commits) from a client's pixels to a window's, with the alpha byte cleared: the work per
+  damaged band eggway adds before the window server's own commit. The kernel targets have no
+  FP/SIMD, so it measures scalar code. No hot path of the kernel changes.
+- **Testing.** Host: the codec against byte vectors worked from the specification, every
+  malformed message, 20000 random ones; the request tables and versions; the keymap's structure;
+  the copy's clipping and mask; `START_MOVE_OR_RESIZE` (its number and layout, refused without
+  a held press, for another client, after the release, for an unknown kind, a move with edges,
+  bad edges and a fixed-size resize; a move following the pointer with no `Button` release
+  after it; a resize sending `Resize`); eggway's sessions against a fake machine (globals and
+  binds, the keymap, a window from a buffer with its pixels opaque, the first configure, damage,
+  resize, maximise and minimise, focus, keys, close, moves with held, stale and right-button
+  serials, resize edges, frame pacing, descriptors across reads and a truncated batch, the
+  keymap's descriptor held over `EAGAIN`, 17 clients, a client that reads nothing, fifteen
+  protocol errors each leaving nothing open, pool caps, a pool's growth and a shrunken file,
+  a late output, version inheritance) and 300 fuzzed sessions; `cargo xtask fuzz wayland` runs
+  more. QEMU on aarch64, riscv64 and x86_64 (`Expect::LinuxGui`): `linux-paint`'s window with the
+  desktop's chrome, a click, a key, a title-bar drag, the handle's move with the frame proving
+  the request was made before any motion, a stale move that changes nothing, maximise and close,
+  each frame compared with the host's render, then the program's lines and its status.
+- **Not yet.** Socket activation; the manifest key and launching apps beside init;
+  xdg-decoration; opening the window menu at a point; popups' placement; subsurfaces, the
+  clipboard and drag and drop, touch, cursor surfaces; alpha, window-geometry cropping, buffer
+  scale and transform applied, a real fullscreen; several seats or outputs, `global_remove`;
+  `ping`; key repeat beyond `repeat_info`; `/run/user/<uid>` for several users; per-connection
+  wake-ups; a screen-size request; and what real toolkits need (docs/linux-programs.md).

@@ -19,7 +19,12 @@ pub const HOST_SHARE: &[u8] = b"/media/host";
 /// The Files app's program, when the build has it.
 pub const FILES_PROGRAM: &[u8] = b"/bin/files";
 
-const ENVIRONMENT: [&[u8]; 2] = [b"HOME=/", b"TERM=linux"];
+const ENVIRONMENT: [&[u8]; 4] = [
+    b"HOME=/",
+    b"TERM=linux",
+    b"XDG_RUNTIME_DIR=/run/user/0",
+    b"WAYLAND_DISPLAY=wayland-0",
+];
 
 type Starter = Arc<dyn Fn(&[u8]) -> Result<(), &'static str> + Send + Sync>;
 

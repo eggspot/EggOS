@@ -49,6 +49,12 @@ impl Errno {
     pub const ENOSPC: Self = Self(28);
     /// `ENOTEMPTY`.
     pub const ENOTEMPTY: Self = Self(39);
+    /// `ENOMEM`.
+    pub const ENOMEM: Self = Self(12);
+    /// `ENODEV`.
+    pub const ENODEV: Self = Self(19);
+    /// `ECONNREFUSED`.
+    pub const ECONNREFUSED: Self = Self(111);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.
@@ -79,6 +85,7 @@ impl Errno {
             16 => b"Device or resource busy",
             17 => b"File exists",
             18 => b"Invalid cross-device link",
+            19 => b"No such device",
             20 => b"Not a directory",
             21 => b"Is a directory",
             22 => b"Invalid argument",
@@ -96,6 +103,7 @@ impl Errno {
             40 => b"Too many levels of symbolic links",
             75 => b"Value too large for defined data type",
             95 => b"Operation not supported",
+            111 => b"Connection refused",
             _ => b"Unknown error",
         }
     }

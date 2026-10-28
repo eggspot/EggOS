@@ -70,6 +70,9 @@ commands:
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
+  fuzz wayland [--seconds <n>]
+                         hand the Wayland server hostile sessions for <n> seconds (default
+                         60) and fail on a panic or anything left open
   macos-programs         build the macOS programs boot test's Mach-O programs with Apple's
                          linker (macOS hosts only) into target/macos-console/programs and
                          print that folder, which EGGOS_MACOS_PROGRAMS can name elsewhere
@@ -189,6 +192,7 @@ const KERNEL_CRATES: &[&str] = &[
     "eggos-font",
     "eggos-settings-file",
     "eggos-app-manifest",
+    "eggos-wayland",
 ];
 
 const USER_CRATES: &[&str] = &[
@@ -201,11 +205,14 @@ const USER_CRATES: &[&str] = &[
     "eggos-settings",
     "eggos-app",
     "eggos-mcp",
+    "eggos-eggway",
+    "eggos-wayland",
     "eggos-files",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
     "eggos-linux-sockets",
+    "eggos-linux-gui-tests",
     "eggos-windows",
     "eggos-windows-gui",
     "eggos-macos",
@@ -257,6 +264,8 @@ const APP_PATH: &str = "bin/app";
 const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 
 const MCP_SERVER_PATH: &str = "usr/libexec/eggmcpd";
+
+const WAYLAND_SERVER_PATH: &str = "usr/libexec/eggway";
 
 const VAR_PATH: &str = "var";
 
@@ -377,6 +386,10 @@ fn run(args: &[String]) -> Result<(), String> {
             [target] if target == "mcp" => fuzz_mcp(60),
             [target, flag, seconds] if target == "mcp" && flag == "--seconds" => {
                 fuzz_mcp(seconds.parse().map_err(|_| USAGE.to_owned())?)
+            }
+            [target] if target == "wayland" => fuzz_wayland(60),
+            [target, flag, seconds] if target == "wayland" && flag == "--seconds" => {
+                fuzz_wayland(seconds.parse().map_err(|_| USAGE.to_owned())?)
             }
             _ => Err(USAGE.into()),
         },
@@ -608,6 +621,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         arch,
         &kernel,
         qemu::Expect::WindowsGui,
+        qemu::TEST_CPUS,
+        qemu::Display::Attached,
+        &[],
+    )?;
+    let kernel = build_linux_gui_test_kernel(arch)?;
+    qemu::boot_test(
+        arch,
+        &kernel,
+        qemu::Expect::LinuxGui,
         qemu::TEST_CPUS,
         qemu::Display::Attached,
         &[],
@@ -998,6 +1020,7 @@ fn release_initramfs(
     let settings = build_runtime_program(arch, "eggos-settings")?;
     let app = build_runtime_program(arch, "eggos-app")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
+    let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
     let links: Vec<String> = COREUTILS.iter().map(|name| format!("bin/{name}")).collect();
     let mut members = vec![
         (INIT_PATH, initramfs::Content::Program(&init)),
@@ -1008,6 +1031,7 @@ fn release_initramfs(
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
+        (WAYLAND_SERVER_PATH, initramfs::Content::Program(&wayland_server)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
@@ -1060,6 +1084,24 @@ fn fuzz_mcp(seconds: u64) -> Result<(), String> {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
     }
     println!("fuzz mcp: {lines} hostile lines in {seconds} s, every answer valid");
+    Ok(())
+}
+
+fn fuzz_wayland(seconds: u64) -> Result<(), String> {
+    const SESSIONS: usize = 500;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |time| time.as_nanos() as u64);
+    let mut sessions = 0u64;
+    while std::time::Instant::now() < deadline {
+        eggos_eggway::fuzz::run(seed, SESSIONS).map_err(|(fault, index)| {
+            format!("fuzz wayland: seed {seed}, session {index}: {fault:?}")
+        })?;
+        sessions += SESSIONS as u64;
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    }
+    println!("fuzz wayland: {sessions} hostile sessions in {seconds} s, nothing left open");
     Ok(())
 }
 
@@ -1152,6 +1194,28 @@ const LINUX_STATIC_PACKAGE: &str = "eggos-linux-static";
 const LINUX_SOCKETS_PACKAGE: &str = "eggos-linux-sockets";
 
 const LINUX_SOCKETS_PATH: &str = "bin/linux-sockets";
+
+const LINUX_GUI_PACKAGE: &str = "eggos-linux-gui-tests";
+
+const LINUX_PAINT_PATH: &str = "bin/linux-paint";
+
+fn build_linux_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
+    let added = [image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?,
+        path: LINUX_PAINT_PATH.to_owned(),
+    }];
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-linux-gui-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs)
+}
 
 const LINUX_STATIC_BUILDS: [(&str, &str); 2] = [
     ("static", "bin/linux-static"),

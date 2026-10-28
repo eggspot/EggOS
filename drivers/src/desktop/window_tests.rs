@@ -713,3 +713,171 @@ fn request_numbers_and_layouts_are_the_contract_s() {
         })
     );
 }
+
+fn pressed_in_content(desktop: &mut Desktop, window: WindowId, events: &mut Recorded) {
+    let content = desktop.content_rect(window).unwrap();
+    press(desktop, content.x + 20, content.y + 20, events);
+}
+
+fn start(
+    desktop: &mut Desktop,
+    client: u16,
+    window: WindowId,
+    kind: u32,
+    edges: u32,
+    events: &mut Recorded,
+) -> Result<(), WindowError> {
+    desktop.start_move_or_resize(
+        client,
+        u32::from(window),
+        kind,
+        edges,
+        &mut Damage::new(),
+        events,
+    )
+}
+
+#[test]
+fn start_move_or_resize_has_the_contract_s_number_and_layout() {
+    assert_eq!(request::START_MOVE_OR_RESIZE, 0x400c_7712);
+    let mut argument = [0u8; 12];
+    for (offset, value) in [(0, 65u32), (4, 1), (8, 10)] {
+        argument[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    assert_eq!(
+        Request::parse(request::START_MOVE_OR_RESIZE, &argument),
+        Some(Request::StartMoveOrResize {
+            window: 65,
+            kind: 1,
+            edges: 10
+        })
+    );
+    assert_eq!(
+        Request::parse(request::START_MOVE_OR_RESIZE, &argument[..8]),
+        None
+    );
+}
+
+#[test]
+fn a_move_or_resize_needs_the_client_s_own_window_holding_a_left_press() {
+    use super::protocol::move_or_resize::{MOVE, RESIZE};
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    assert_eq!(
+        start(&mut desktop, CLIENT, window, MOVE, 0, &mut events),
+        Err(WindowError::Invalid)
+    );
+    pressed_in_content(&mut desktop, window, &mut events);
+    assert_eq!(
+        start(&mut desktop, OTHER, window, MOVE, 0, &mut events),
+        Err(WindowError::Invalid)
+    );
+    for (kind, edges) in [
+        (2, 0),
+        (MOVE, u32::from(edge::LEFT)),
+        (RESIZE, 0),
+        (RESIZE, u32::from(edge::LEFT | edge::RIGHT)),
+        (RESIZE, u32::from(edge::TOP | edge::BOTTOM)),
+        (RESIZE, 16),
+    ] {
+        assert_eq!(
+            start(&mut desktop, CLIENT, window, kind, edges, &mut events),
+            Err(WindowError::Invalid),
+            "{kind} {edges}"
+        );
+    }
+    release(&mut desktop, &mut events);
+    assert_eq!(
+        start(&mut desktop, CLIENT, window, MOVE, 0, &mut events),
+        Err(WindowError::Invalid)
+    );
+    let fixed = desktop.create(CLIENT, 0, 0, 300, 200, flags::FIXED_SIZE).unwrap();
+    let fixed = fixed.window;
+    desktop
+        .commit(
+            CLIENT,
+            u32::from(fixed),
+            &[],
+            &mut Damage::new(),
+            &mut events,
+        )
+        .unwrap();
+    pressed_in_content(&mut desktop, fixed, &mut events);
+    assert_eq!(
+        start(
+            &mut desktop,
+            CLIENT,
+            fixed,
+            RESIZE,
+            u32::from(edge::RIGHT),
+            &mut events
+        ),
+        Err(WindowError::Invalid)
+    );
+    assert_eq!(start(&mut desktop, CLIENT, fixed, MOVE, 0, &mut events), Ok(()));
+}
+
+#[test]
+fn a_started_move_follows_the_pointer_and_no_release_reaches_the_client() {
+    use super::protocol::move_or_resize::MOVE;
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    let before = desktop.window_rect(window).unwrap();
+    pressed_in_content(&mut desktop, window, &mut events);
+    events.take();
+    start(&mut desktop, CLIENT, window, MOVE, 0, &mut events).unwrap();
+    assert_eq!(events.kinds(), vec![(CLIENT, event::POINTER_LEAVE)]);
+    assert!(desktop.last_title_press.is_none());
+    let (x, y) = desktop.pointer;
+    desktop.pointer_moved(x + 50, y + 30, &mut Damage::new(), &mut events);
+    let moved = desktop.window_rect(window).unwrap();
+    assert_eq!((moved.x, moved.y), (before.x + 50, before.y + 30));
+    release(&mut desktop, &mut events);
+    desktop.pointer_moved(x + 90, y + 60, &mut Damage::new(), &mut events);
+    assert_eq!(desktop.window_rect(window).unwrap(), moved);
+    assert!(
+        events
+            .0
+            .iter()
+            .all(|(_, record)| record.kind != event::BUTTON)
+    );
+    let content = desktop.content_rect(window).unwrap();
+    desktop.pointer_moved(content.x + 5, content.y + 5, &mut Damage::new(), &mut events);
+    assert_eq!(events.0.last().unwrap().1.kind, event::POINTER_MOVE);
+    assert!(
+        events
+            .kinds()
+            .contains(&(CLIENT, event::POINTER_ENTER))
+    );
+}
+
+#[test]
+fn a_started_resize_follows_the_pointer_with_resize_events() {
+    use super::protocol::move_or_resize::RESIZE;
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = shown(&mut desktop, CLIENT, 400, 300);
+    pressed_in_content(&mut desktop, window, &mut events);
+    events.take();
+    let edges = u32::from(edge::RIGHT | edge::BOTTOM);
+    start(&mut desktop, CLIENT, window, RESIZE, edges, &mut events).unwrap();
+    let (x, y) = desktop.pointer;
+    desktop.pointer_moved(x + 40, y + 20, &mut Damage::new(), &mut events);
+    let resized = events
+        .0
+        .iter()
+        .rev()
+        .find(|(_, record)| record.kind == event::RESIZE)
+        .map(|(_, record)| (record.a, record.b));
+    assert_eq!(resized, Some((440, 320)));
+    release(&mut desktop, &mut events);
+    assert!(desktop.resize.is_none());
+    assert!(
+        events
+            .0
+            .iter()
+            .all(|(_, record)| record.kind != event::BUTTON)
+    );
+}

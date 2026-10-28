@@ -47,6 +47,7 @@ pub mod size {
     pub const APPS_CHANGED: usize = 0;
     pub const OPEN_APP: usize = 68;
     pub const TYPE_IN_TERMINAL: usize = 260;
+    pub const START_MOVE_OR_RESIZE: usize = 12;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -73,6 +74,15 @@ pub mod request {
     pub const APPS_CHANGED: u32 = encode(0, 15, size::APPS_CHANGED);
     pub const OPEN_APP: u32 = encode(WRITE, 16, size::OPEN_APP);
     pub const TYPE_IN_TERMINAL: u32 = encode(WRITE, 17, size::TYPE_IN_TERMINAL);
+    pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
+}
+
+/// What `StartMoveOrResize` starts.
+pub mod move_or_resize {
+    /// The window follows the pointer, as when its title bar is dragged.
+    pub const MOVE: u32 = 0;
+    /// The window's edges follow the pointer, as when they are dragged.
+    pub const RESIZE: u32 = 1;
 }
 
 /// The longest app name `OpenApp` carries, in bytes.
@@ -276,6 +286,11 @@ pub enum Request {
         length: u32,
         line: [u8; TERMINAL_LINE_CAPACITY],
     },
+    StartMoveOrResize {
+        window: u32,
+        kind: u32,
+        edges: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -315,6 +330,7 @@ impl Request {
             request::APPS_CHANGED => size::APPS_CHANGED,
             request::OPEN_APP => size::OPEN_APP,
             request::TYPE_IN_TERMINAL => size::TYPE_IN_TERMINAL,
+            request::START_MOVE_OR_RESIZE => size::START_MOVE_OR_RESIZE,
             _ => return None,
         })
     }
@@ -406,6 +422,11 @@ impl Request {
                     line,
                 }
             }
+            request::START_MOVE_OR_RESIZE => Self::StartMoveOrResize {
+                window: at(0),
+                kind: at(4),
+                edges: at(8),
+            },
             _ => Self::GetWorkArea,
         })
     }
