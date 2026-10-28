@@ -205,6 +205,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
+    "eggos-linux-sockets",
     "eggos-windows",
     "eggos-windows-gui",
     "eggos-macos",
@@ -268,6 +269,8 @@ const DEV_PATH: &str = "dev";
 const HELLO_WINDOW_PATH: &str = "usr/libexec/hello-window";
 
 const TMP_PATH: &str = "tmp";
+
+const RUN_PATH: &str = "run";
 
 const HOST_FOLDER_PATH: &str = "media/host";
 
@@ -1012,6 +1015,7 @@ fn release_initramfs(
         (APPLICATIONS_PATH, initramfs::Content::Directory),
         (HOST_FOLDER_PATH, initramfs::Content::Directory),
         (VAR_PATH, initramfs::Content::Directory),
+        (RUN_PATH, initramfs::Content::Directory),
     ];
     members.extend(
         links
@@ -1145,6 +1149,10 @@ fn build_shell_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
 
 const LINUX_STATIC_PACKAGE: &str = "eggos-linux-static";
 
+const LINUX_SOCKETS_PACKAGE: &str = "eggos-linux-sockets";
+
+const LINUX_SOCKETS_PATH: &str = "bin/linux-sockets";
+
 const LINUX_STATIC_BUILDS: [(&str, &str); 2] = [
     ("static", "bin/linux-static"),
     ("pie", "bin/linux-static-pie"),
@@ -1158,6 +1166,10 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
             path: path.to_owned(),
         });
     }
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_SOCKETS_PACKAGE, "static")?,
+        path: LINUX_SOCKETS_PATH.to_owned(),
+    });
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),
@@ -1255,6 +1267,14 @@ fn build_program_windows_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, 
 }
 
 fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, String> {
+    build_linux_test_program(arch, LINUX_STATIC_PACKAGE, relocation_model)
+}
+
+fn build_linux_test_program(
+    arch: &Arch,
+    package: &str,
+    relocation_model: &str,
+) -> Result<String, String> {
     let relocation_model = format!("relocation-model={relocation_model}");
     let rustflags = [
         "-C",
@@ -1275,19 +1295,13 @@ fn build_linux_static(arch: &Arch, relocation_model: &str) -> Result<String, Str
     ));
     let target_dir = target_dir.to_string_lossy();
     let path = build_executable(
-        &[
-            "build",
-            "-p",
-            LINUX_STATIC_PACKAGE,
-            "--target",
-            arch.user_target,
-        ],
+        &["build", "-p", package, "--target", arch.user_target],
         &[
             ("CARGO_ENCODED_RUSTFLAGS", rustflags.as_str()),
             ("CARGO_TARGET_DIR", &target_dir),
         ],
         &format!(
-            "{LINUX_STATIC_PACKAGE} executable ({relocation_model}) for {}",
+            "{package} executable ({relocation_model}) for {}",
             arch.user_target
         ),
     )?;

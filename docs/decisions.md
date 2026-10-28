@@ -8370,3 +8370,123 @@ the license, by an explicit instruction recorded here.
   `SIGCONT` within a session. Not yet: per-agent grants and revoking them while EggOS runs;
   elicitation's URL mode; the 2026-07-28 protocol; network MCP; the log in Settings; device
   interrupts for the channel (#97).
+
+## D138 Local sockets: `AF_UNIX` stream sockets, `socketpair`, `SCM_RIGHTS` descriptor passing, `poll` readiness, socket files in tmpfs, `/run` and `/proc/net/unix` (v0.3.0 item 38a) — Decided by the build loop (the points below marked so decided by research)
+- **What.** Static Linux programs can now talk over local sockets: `socket(AF_UNIX,
+  SOCK_STREAM[|SOCK_CLOEXEC|SOCK_NONBLOCK], 0)`, `socketpair`, `bind`, `listen`, `accept`,
+  `accept4`, `connect`, `read`, `write` and their vector forms, `send`, `sendto`, `recv`,
+  `recvfrom`, `sendmsg` and `recvmsg` with `SCM_RIGHTS`, `getsockname`, `getpeername`,
+  `shutdown`, `setsockopt`, `getsockopt`, `ioctl`'s `FIONREAD` and `SIOCOUTQ`, `fstat`
+  (`S_IFSOCK`), and `poll`/`ppoll`. This is the base of item 39 (eggway): Wayland clients and
+  servers pass wl_shm memfds, keymaps and clipboard pipes over a socket under `/run`.
+- **Where.** `kernel/src/linux/unix_socket.rs` holds the objects: `UnixSocket` (open,
+  listening or connected, behind a leaf lock), `Connection` (both directions of a pair behind
+  one leaf lock: bytes in a ring that grows on demand to 256 KiB per direction and is given
+  back when the connection ends, and beside them the descriptors each `SCM_RIGHTS` message
+  carries, with the stream position of its first byte), the registry of bound sockets
+  (`BOUND_SOCKETS`, `None` until the first `bind`, D18) and `/proc/net/unix`'s text.
+  `kernel/src/linux/socket.rs` reads the calls' arguments (`sockaddr_un`, 56-byte `msghdr`,
+  16-byte `cmsghdr`, `ucred`, `timeval`), the same on the three architectures. Every socket
+  number goes to one `#[inline(never)]` `socket::call` from `out_of_line_call`, so the
+  system-call path and its benchmarks are as they were; `Process` gains nothing, and the new
+  statics (the registry, the in-flight count, the passing lock, the release list) are zero
+  and in `.bss`.
+- **Types and families** (decided by research): `SOCK_STREAM` only; datagrams, sequenced
+  packets and raw sockets are `ESOCKTNOSUPPORT`, every family but `AF_UNIX` is
+  `EAFNOSUPPORT`, a protocol but 0 or `PF_UNIX` `EPROTONOSUPPORT`, unknown type bits `EINVAL`,
+  in Linux's order.
+- **Addresses.** A path ends at its first NUL or at the length, so a length that counts the NUL
+  (libwayland's `offsetof + strlen + 1`) names the same path; a first NUL starts an abstract
+  name; just the family binds to a new abstract name of five hexadecimal digits (autobind).
+  Reported lengths are Linux's: 2 unnamed, 2 + the path + 1, 2 + 1 + the abstract name.
+- **Socket files** (decided by research). `bind` makes a socket node, the new
+  `NodeKind::Socket`, mode `0777 & !umask`, on tmpfs only: its kind is a bit of its number
+  (`SOCKET_BIT`), as a directory's is, so `kind()` takes no lock, and the generation moves
+  to bit 34, kept to 30 bits on both sides of the comparison. EggFS and FAT refuse with
+  `EPERM` (as Linux's `mknod` on a file system without it), the initramfs with `EROFS`; an
+  existing name is `EADDRINUSE`. The file stays after its socket closes, until `unlink`; a
+  later `connect` finds it with no socket, `ECONNREFUSED`, and a node made again never
+  matches an old binding, its generation differing. `open` of a socket file is `ENXIO`;
+  `stat` reports `S_IFSOCK` and `ls -l` an `s`. A tmpfs is mounted on `/run` (0755, device
+  0:33) for `XDG_RUNTIME_DIR`; item 39 makes `/run/user/<uid>`.
+- **Connecting.** `connect` to a missing path is `ENOENT`, to a path that is no socket or has
+  no listener `ECONNREFUSED`; once queued, the client is connected and may write before
+  `accept`. A full backlog (more than `backlog` waiting, so `backlog + 1` fit) waits, or is
+  `EAGAIN` nonblocking. `listen`'s backlog is read as Linux reads it, unsigned and at most
+  4096, so Rust std's `listen(fd, -1)` gets 4096; `listen` on an unbound socket is `EINVAL`.
+  `SO_PEERCRED` is the peer's pid and effective ids at `connect`, `listen` or `socketpair`.
+- **Locks.** All are leaf locks; at most one socket's state is held at a time, and under it
+  only that socket's connection. The registry's lock is always taken alone: `connect` upgrades
+  the target's `Weak` and lets the lock go before it locks any state, builds the connection
+  with nothing held, queues it under the listener's state alone, then marks itself connected
+  under its own state; if another call changed its state meanwhile, it resets the queued
+  connection and fails (`EISCONN`, `EINVAL`). So two sockets connecting to each other at once
+  can never spin on each other's locks (a host test runs it). Wake-ups run with no lock held;
+  no open file description is dropped under a lock.
+- **Data.** A write waits while the peer's queue is full and returns what it moved on
+  `EAGAIN` or a signal; a read waits while nothing is queued and the peer may still write.
+  `MSG_PEEK`, `MSG_WAITALL`, `MSG_DONTWAIT`, `MSG_NOSIGNAL` and `MSG_CMSG_CLOEXEC` work;
+  `MSG_OOB` is `EOPNOTSUPP`. `SO_RCVTIMEO` and `SO_SNDTIMEO` bound the waits (`EAGAIN`), and a
+  socket with a timeout fails with `EINTR` after a handler, as Linux's; otherwise waits restart
+  under `SA_RESTART`.
+- **Ends.** The peer of an end that closes reads what is queued and then 0; if the end left
+  bytes unread, the peer first gets `ECONNRESET` once (`read`, `SO_ERROR`). A write after the
+  peer closed, after its `SHUT_RD` or after our own `SHUT_WR` is `EPIPE` and `SIGPIPE` unless
+  `MSG_NOSIGNAL`. Connections a listener never accepted are reset when it closes. `poll`: a
+  listener is readable while connections wait; a connected socket reports `POLLIN` while bytes
+  wait, `POLLOUT` with 4 KiB of room (as pipes report `PIPE_BUF`, also after the peer closed),
+  `POLLIN|POLLRDHUP` once the peer stopped writing, `POLLHUP` once both ways are shut, `POLLERR`
+  while a reset is pending; an open socket reports `POLLOUT|POLLHUP`.
+- **`SCM_RIGHTS`.** A message's descriptors go with its first byte, and a read never runs past
+  the bytes of one message into the next that carries descriptors; a plain `read` or `recv`
+  closes them. `recvmsg` opens them at the lowest free numbers and closes what does not fit
+  the control buffer or the table (`MSG_CTRUNC`). As Linux: at most 253 per message
+  (`EINVAL`), a control buffer of at most 20480 bytes (`ENOBUFS`), `EBADF` for one not open,
+  `SCM_CREDENTIALS` refused (`EINVAL`), and a send of 0 bytes moves none. `MSG_PEEK` delivers
+  no descriptors and leaves them queued, where Linux installs copies: a deviation no known
+  program depends on.
+- **Passing sockets** (decided by research, then by the plan's second review). Sockets may be
+  passed, as D-Bus, portals and Wayland's security-context listener do, but never into a
+  cycle, so none leaks without a collector: under one lock for passing sockets, a socket may be
+  passed only if its own connection carries no sockets, it is not the receiving connection,
+  and a listener's backlog is empty; otherwise `ETOOMANYREFS`. Every new link then points at a
+  connection that carries nothing, so the graph stays acyclic. This is stricter than Linux,
+  which collects cycles: a socket that carries sockets cannot be passed. At most 1024
+  descriptors are queued per direction and 4096 in flight in all (`ETOOMANYREFS`): one global
+  count, so a program holding 4096 unread blocks others' passing until it reads or ends,
+  accepted for the single-user v0.3.0. Descriptors leaving a queue go through
+  `release_rights`, which drops them one at a time from a list, so a chain of passed sockets
+  of any length is freed with the stack of one drop (a host test frees 4096).
+- **Wake-ups** (decided by research). Every socket change wakes through the console's input
+  key, as pipes do (`UnixSocket::changed`), so one `poll` waits for the console, pipes,
+  windows and sockets together, and a `poll` asleep in one process wakes when another writes.
+  The cost is one wake of every waiter per change, fine for a few clients; per-connection keys
+  with a `poll` that waits on several come later.
+- **Why its own queue.** pipe.rs's ring is fixed at 64 KiB, allocated eagerly, with no peek and
+  no descriptors, and no benchmark guards it; sharing it would change the terminal's pipelines
+  for no gain here. One ring for both, with a pipe benchmark, is a follow-up.
+- **CLI, MCP and GUI** (D22). The capability is an ABI programs use; its front-end is the
+  listing: `/proc/net/unix` in Linux's format (bound sockets, `@` before an abstract name), read
+  with `cat` and, through D137's `run`, by an agent. No GUI front-end yet.
+- **Performance.** `linux_unix_stream_send_recv` measures a 64-byte send and receive on a
+  pair, without the trap.
+- **Testing.** Host: the ring, peeks, descriptor boundaries, ends and resets, shutdown, the
+  backlog, a closed listener's backlog, `connect` racing `listen`, two sockets connecting to
+  each other on two threads, the registry and autobind, `/proc/net/unix`, cycles refused and
+  every socket freed, a 4096-long chain, the in-flight caps, readiness under the descriptor
+  table's lock, tmpfs socket nodes and the wrapping generation, and through the system-call
+  layer `socket`'s errors and flags, a pair, `SCM_RIGHTS` with `MSG_CMSG_CLOEXEC` and
+  `MSG_CTRUNC`, an abstract listener with `SO_PEERCRED`, addresses, control messages, the
+  backlog and timeouts. QEMU on aarch64, riscv64 and x86_64: the Linux programs boot test runs
+  `linux-sockets` (`tests/linux-sockets`, Rust std on musl), a server on
+  `/tmp/eggos-sockets.sock` that starts its client with `posix_spawn`: the error cases, a pair
+  and its hang-up, an abstract name, the peer's credentials and names, a `poll` asleep in the
+  server woken by the client's write, a pipe passed with `SCM_RIGHTS`, 1 MiB through a 256 KiB
+  queue, and the close.
+- **Not yet.** Datagram and sequenced-packet sockets (sequenced packets are the cheapest next),
+  other families and networking; `epoll`, `eventfd`, `timerfd` and `signalfd`, the next
+  Linux-layer item before real Wayland apps (winit/calloop, Chromium and Electron, EFL need
+  them; eggway uses `poll`); `sendmmsg`/`recvmmsg`; `SCM_CREDENTIALS` sent or received
+  (`SO_PASSCRED` is kept only); permission checks on socket files (D75); socket files on EggFS
+  or FAT; connected sockets that are not bound in `/proc/net/unix`; memfd and `MAP_SHARED`
+  (item 38b).

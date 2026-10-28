@@ -119,7 +119,8 @@ pub mod request {
 }
 
 /// What an open file description names: the console, a node of the file system (D102), an
-/// end of a pipe (D125), a client of the window server (D127), or the agent channel (D136).
+/// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), or a
+/// socket (D138).
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
@@ -138,6 +139,8 @@ pub enum FileKind {
     Window(crate::window::Connection),
     /// The agent channel's one opener (`/dev/agent`, D136).
     AgentChannel(super::agent_channel::AgentChannelEnd),
+    /// An `AF_UNIX` stream socket (D138).
+    Socket(Arc<super::unix_socket::UnixSocket>),
 }
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
@@ -153,7 +156,11 @@ impl FileKind {
     /// The node it names, if it names one.
     pub fn node(&self) -> Option<Node> {
         match self {
-            Self::Console | Self::Pipe(_) | Self::Window(_) | Self::AgentChannel(_) => None,
+            Self::Console
+            | Self::Pipe(_)
+            | Self::Window(_)
+            | Self::AgentChannel(_)
+            | Self::Socket(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }

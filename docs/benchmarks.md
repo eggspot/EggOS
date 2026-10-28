@@ -43,6 +43,9 @@ exactly by default (what `cargo xtask ci` and the weekly performance pass run), 
 - `linux_file_read`: `pread64` of `/etc/motd`'s 18 bytes from offset 0 into the program's
   memory (D102): the descriptor looked up and its kind matched, the bytes copied straight from
   the archive in the kernel image, no allocation. Without the trap from user mode.
+- `linux_unix_stream_send_recv`: 64 bytes sent and received on a socket pair (D138): the
+  connection's lock taken twice, the bytes queued and taken back, no allocation once the queue
+  has grown. Without the trap from user mode or the copies from and to the program.
 - `linux_execve`: `execve` of a small static program from the initramfs, per call (D103): the
   runtime's self-test program (`/usr/libexec/eggos-selftest`, a static PIE), started with
   `exec-loop <n>`, runs its start-up and execs itself with one less until 0, so each iteration

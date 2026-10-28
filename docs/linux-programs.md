@@ -68,16 +68,16 @@ that aborts it.
 - **Dynamically linked programs.** One that names an interpreter (`/lib/ld-linux-*.so`,
   `/lib/ld-musl-*.so`) fails with `No such file or directory`, as on Linux when the loader is
   missing. Link statically.
-- **Starting other programs from a program.** Rust's `std::process::Command` and C's
-  `posix_spawn`, `system` and `popen` create a pipe first (to report a child's start-up
-  failure, or to read its output), and EggOS has no pipes yet, so they fail;
-  `fork`, `vfork`, `execve` and `wait4` themselves work.
-- **Files you write.** The file system is read-only: there is no `/tmp`, and writing or
-  creating a file fails with `EROFS`. There is no `/proc` (so `std::env::current_exe` fails)
-  and no `/dev`.
+- **`fork` after `MAP_SHARED`.** Rust's `std::process::Command`, `posix_spawn`, `fork`,
+  `vfork`, `execve` and `wait4` work (the sockets boot test starts its client with `Command`),
+  but a process with shared memory cannot `fork` (D104).
+- **`/proc/self`.** `/proc` has only `cmdline`, `meminfo`, `uptime`, `ps` and `net/unix`, so
+  `std::env::current_exe` fails: start a copy of the program by its path. Files can be written
+  in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
 - **The wall clock** reads 1970 without an RTC driver.
-- **Networking, sockets and `mmap` of files** are not implemented (`mmap` takes anonymous
-  memory only).
+- **Networking and `mmap` of files** are not implemented (`mmap` takes anonymous memory
+  only). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
+  with `SCM_RIGHTS` (D138); datagram sockets and `epoll` do not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 

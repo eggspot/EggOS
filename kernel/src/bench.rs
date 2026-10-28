@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 52] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 53] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -111,6 +111,9 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 52] {
             input_event_queue_push_pop(n)
         }),
         ("device_tree_walk", |_, n| device_tree_walk(n)),
+        ("linux_unix_stream_send_recv", |_, n| {
+            linux_unix_stream_send_recv(n)
+        }),
         ("syscall_round_trip", syscall_round_trip::<P>),
         (
             "process_syscall_round_trip",
@@ -1409,6 +1412,23 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
                 .expect("the pages were just mapped");
         }
     });
+}
+
+fn linux_unix_stream_send_recv(n: u64) {
+    use linux::unix_socket::{PeerCredentials, Taken, UnixSocket};
+    fn no_wake() {}
+    let (first, second) = UnixSocket::pair(PeerCredentials::NONE, no_wake);
+    let (sending, side) = first.connected().expect("a pair is connected");
+    let (receiving, other) = second.connected().expect("a pair is connected");
+    let message = [0x5a_u8; 64];
+    let mut buffer = [0u8; 64];
+    for _ in 0..n {
+        let sent = sending
+            .send(side, black_box(&message), &mut None)
+            .expect("the queue has room");
+        let taken = receiving.receive(other, black_box(&mut buffer), true);
+        black_box((sent, matches!(taken, Taken::Bytes { count: 64, .. })));
+    }
 }
 
 fn linux_descriptor_lookup(n: u64) {

@@ -94,6 +94,9 @@ pub enum NodeKind {
     Regular,
     /// A character device (`/dev`, D127): opening it opens the device.
     CharacterDevice,
+    /// A socket file (D138): `bind` makes it, `connect` finds its socket by it, and opening it
+    /// is refused.
+    Socket,
 }
 
 /// A node's attributes, as `stat` reports them.

@@ -316,7 +316,9 @@ D16):
     `confirm: true`; every call goes to `/var/log/agent-audit.log` (seven generations, a budget
     per run, content never logged), which `agentlog` shows; `kill` reaches other processes and
     groups, init excepted. Next: per-agent grants, network MCP, the log in Settings.
-38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
+38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files. Part
+    38a is in: users can now run Linux programs that talk over local stream sockets and pass
+    descriptors (D138); next, 38b: `memfd` and `MAP_SHARED` of memfds.
 39. a Wayland server, `eggway`, for Linux GUI apps.
 40. the macOS Objective-C runtime and the core of Foundation.
 41. macOS GUI apps, part 1.

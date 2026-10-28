@@ -56,7 +56,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
-  with every pipe and console change.
+  with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
+  sockets only (no datagrams or sequenced packets, no networking), socket files only in the
+  memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
+  is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
+  itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or
+  `signalfd` yet, which most graphical Linux toolkits need.
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer
   provides run natively, x64 programs on x86_64 and ARM64 programs on aarch64, added with

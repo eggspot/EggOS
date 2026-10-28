@@ -1,6 +1,6 @@
-//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime` and `ps`, read-only regular
-//! files made when they are opened, mounted on `/proc` at boot when the root file system has
-//! that directory.
+//! A minimal `/proc` (D125): `cmdline` (D137), `meminfo`, `uptime`, `ps` and `net/unix` (D138),
+//! read-only regular files made when they are opened, mounted on `/proc` at boot when the root
+//! file system has that directory.
 //!
 //! - `cmdline`: the kernel command line the host started the machine with (QEMU's `-append`), and
 //!   a newline, as Linux writes it; the built-in MCP server reads its grants there (D137).
@@ -12,6 +12,8 @@
 //! - `ps`: EggOS's own, one line per process in the process table, by id: its id, its
 //!   parent's, its process group, its session, its state (`R` running, `Z` ended and not yet
 //!   waited for) and its name, separated by single spaces. `ps` reads it.
+//! - `net/unix`: the bound `AF_UNIX` sockets, in Linux's format (D138,
+//!   [`super::unix_socket::proc_net_unix`]).
 
 use super::process_table::{NAME_LENGTH, TABLE};
 use crate::memory;
@@ -24,7 +26,31 @@ use eggos_hal::memory::FRAME_SIZE;
 
 const ROOT: u64 = 1;
 
-const FILES: [(&[u8], u64); 4] = [(b"cmdline", 5), (b"meminfo", 2), (b"ps", 3), (b"uptime", 4)];
+const FILES: [(&[u8], u64); 5] = [
+    (b"cmdline", 5),
+    (b"meminfo", 2),
+    (b"net", 6),
+    (b"ps", 3),
+    (b"uptime", 4),
+];
+
+const NET: u64 = 6;
+
+const NET_FILES: [(&[u8], u64); 1] = [(b"unix", 7)];
+
+const NET_UNIX: u64 = 7;
+
+fn is_directory(node: u64) -> bool {
+    matches!(node, ROOT | NET)
+}
+
+fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
+    match directory {
+        ROOT => &FILES,
+        NET => &NET_FILES,
+        _ => &[],
+    }
+}
 
 const MEMINFO: u64 = 2;
 
@@ -150,14 +176,14 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 
     fn kind(&self, node: u64) -> NodeKind {
-        match node {
-            ROOT => NodeKind::Directory,
-            _ => NodeKind::Regular,
+        match is_directory(node) {
+            true => NodeKind::Directory,
+            false => NodeKind::Regular,
         }
     }
 
     fn attributes(&self, node: u64) -> Attributes {
-        let directory = node == ROOT;
+        let directory = is_directory(node);
         Attributes {
             kind: self.kind(node),
             permissions: if directory { 0o555 } else { 0o444 },
@@ -171,23 +197,24 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
-        if directory != ROOT {
-            return None;
-        }
-        FILES
+        listing(directory)
             .iter()
             .find(|(file, _)| *file == name)
             .map(|&(_, node)| node)
     }
 
-    fn parent(&self, _node: u64) -> u64 {
-        ROOT
+    fn parent(&self, node: u64) -> u64 {
+        match NET_FILES.iter().any(|&(_, file)| file == node) {
+            true => NET,
+            false => ROOT,
+        }
     }
 
     fn name(&self, node: u64) -> Name {
         Name::new(
             FILES
                 .iter()
+                .chain(NET_FILES.iter())
                 .find(|&&(_, file)| file == node)
                 .map_or(&[][..], |(name, _)| name),
         )
@@ -209,19 +236,17 @@ impl<P: Platform> FileSystem for Proc<P> {
             UPTIME => uptime(P::clock_ticks(), P::clock_frequency()),
             PS => ps(),
             CMDLINE => cmdline::<P>(),
+            NET_UNIX => super::unix_socket::proc_net_unix(),
             _ => None,
         }
     }
 
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
-        if directory != ROOT {
-            return None;
-        }
-        let &(name, node) = FILES.get(usize::try_from(position).ok()?)?;
+        let &(name, node) = listing(directory).get(usize::try_from(position).ok()?)?;
         Some(DirectoryEntry {
             name: Name::new(name),
             node,
-            kind: NodeKind::Regular,
+            kind: self.kind(node),
         })
     }
 }
@@ -258,13 +283,25 @@ mod tests {
     }
 
     #[test]
-    fn the_root_lists_and_finds_its_four_files() {
+    fn the_root_lists_and_finds_its_files_and_net() {
         let proc = Proc::<crate::tests::TestPlatform>::new();
         let names: Vec<Vec<u8>> = (0..)
             .map_while(|position| proc.entry(ROOT, position))
             .map(|entry| entry.name.as_bytes().to_vec())
             .collect();
-        assert_eq!(names, [&b"cmdline"[..], b"meminfo", b"ps", b"uptime"]);
+        assert_eq!(
+            names,
+            [&b"cmdline"[..], b"meminfo", b"net", b"ps", b"uptime"]
+        );
+        assert_eq!(proc.kind(NET), NodeKind::Directory);
+        assert_eq!(proc.entry(ROOT, 2).unwrap().kind, NodeKind::Directory);
+        assert_eq!(proc.lookup(NET, b"unix"), Some(NET_UNIX));
+        assert_eq!(proc.lookup(ROOT, b"unix"), None);
+        assert_eq!(proc.parent(NET_UNIX), NET);
+        assert_eq!(proc.parent(NET), ROOT);
+        assert_eq!(proc.name(NET_UNIX).as_bytes(), b"unix");
+        assert_eq!(proc.entry(NET, 0).unwrap().node, NET_UNIX);
+        assert!(proc.generate(NET_UNIX).is_some());
         assert_eq!(proc.lookup(ROOT, b"cmdline"), Some(CMDLINE));
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
         assert_eq!(proc.lookup(ROOT, b"self"), None);

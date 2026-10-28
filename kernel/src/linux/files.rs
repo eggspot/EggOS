@@ -164,7 +164,8 @@ pub fn lookup<P: Platform>(
 /// else with `O_DIRECTORY`; `EROFS` for a regular file opened for writing or with `O_TRUNC`;
 /// `EMFILE` when every descriptor below the open-file limit is taken. `O_PATH` opens a
 /// location only, ignoring the other flags but `O_CLOEXEC`, `O_DIRECTORY` and `O_NOFOLLOW`.
-/// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it.
+/// A character device (`/dev`, D127) opens its device, `ENXIO` when no driver serves it. A
+/// socket file (D138) is `ENXIO`, as on Linux: `connect` reaches its socket.
 /// With no symbolic links yet, `O_NOFOLLOW` changes nothing; `O_NONBLOCK` and `O_APPEND` are
 /// kept as status flags, and the other flags (`O_NOCTTY`, `O_LARGEFILE`, `O_SYNC`, ...) are
 /// ignored. `mode` matters only to a file created, which none is.
@@ -236,6 +237,8 @@ pub fn openat<P: Platform>(
         }
         if let Some(device) = node.character_device() {
             open_device(process, device)?
+        } else if node.kind() == NodeKind::Socket {
+            return Err(Errno::ENXIO);
         } else {
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
                 super::file_changes::truncate_on_open::<P>(node, flags)?;
@@ -450,7 +453,10 @@ pub fn pread64<P: Platform>(
     if !file.is_readable() || matches!(file.kind(), FileKind::Path(_)) {
         return Err(Errno::EBADF);
     }
-    if matches!(file.kind(), FileKind::Console | FileKind::Pipe(_)) {
+    if matches!(
+        file.kind(),
+        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_)
+    ) {
         return Err(Errno::ESPIPE);
     }
     if !super::ends_in_user_space::<P>(buffer, count) {
@@ -524,6 +530,8 @@ pub const DT_CHR: u8 = 2;
 pub const DT_DIR: u8 = 4;
 /// A directory entry's type (`d_type`): a regular file.
 pub const DT_REG: u8 = 8;
+/// A directory entry's type (`d_type`): a socket.
+pub const DT_SOCK: u8 = 12;
 
 /// The size of a `struct linux_dirent64` before its name: inode, next offset, record length
 /// and type.
@@ -566,6 +574,7 @@ fn directory_entry(directory: Node, position: u64) -> Option<(u64, u8, vfs::Name
                 NodeKind::Directory => DT_DIR,
                 NodeKind::Regular => DT_REG,
                 NodeKind::CharacterDevice => DT_CHR,
+                NodeKind::Socket => DT_SOCK,
             };
             Some((node.attributes().file_id, kind, name))
         }
