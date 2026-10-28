@@ -1,6 +1,8 @@
 use crate::audit::RECORD_BYTES;
 use crate::paths::MAX_PATH_BYTES;
-use crate::server::{ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server};
+use crate::server::{
+    ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
+};
 use crate::system::{Ended, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 use std::collections::HashMap;
@@ -51,7 +53,11 @@ impl System for FakeSystem {
         let kept_err = err.len().min(stderr.len());
         stderr[..kept_err].copy_from_slice(&err[..kept_err]);
         RunOutcome {
-            ended: if out.len() > kept { Ended::Signalled(9) } else { ended },
+            ended: if out.len() > kept {
+                Ended::Signalled(9)
+            } else {
+                ended
+            },
             stdout: kept,
             stdout_cut: out.len() > kept,
             stderr: kept_err,
@@ -63,7 +69,10 @@ impl System for FakeSystem {
     }
 
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno> {
-        if self.audit_fails_from.is_some_and(|from| self.audit.len() >= from) {
+        if self
+            .audit_fails_from
+            .is_some_and(|from| self.audit.len() >= from)
+        {
             return Err(Errno::ENOSPC);
         }
         self.audit.push(String::from_utf8(record.to_vec()).unwrap());
@@ -76,7 +85,8 @@ impl System for FakeSystem {
     }
 
     fn report(&mut self, message: &[u8]) {
-        self.reports.push(String::from_utf8_lossy(message).into_owned());
+        self.reports
+            .push(String::from_utf8_lossy(message).into_owned());
     }
 }
 
@@ -132,7 +142,9 @@ impl Harness {
             buffers: Buffers::new(),
         };
         let (mut scratch, _) = harness.buffers.scratch();
-        harness.server.start(false, &mut harness.system, &mut scratch);
+        harness
+            .server
+            .start(false, &mut harness.system, &mut scratch);
         harness
     }
 

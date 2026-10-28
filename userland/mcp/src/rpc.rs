@@ -28,22 +28,16 @@ pub const MAX_ID_BYTES: usize = 256;
 /// A message's kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message<'a> {
-    /// A request: an answer is due, with its id.
+    /// A request: an answer is due, echoing its id as written; its parameters object, if
+    /// any, and whether an object inside them names a key twice.
     Request {
-        /// The id as written, echoed in the answer.
         id: &'a [u8],
-        /// The method.
         method: Str<'a>,
-        /// The parameters object, if any.
         params: Option<Object<'a>>,
-        /// An object inside the parameters names a key twice.
         nested_duplicate: bool,
     },
-    /// A notification: no answer.
-    Notification {
-        /// The method.
-        method: Str<'a>,
-    },
+    /// A notification (its method): no answer.
+    Notification { method: Str<'a> },
     /// An answer to a request of ours.
     Response,
 }
@@ -59,7 +53,7 @@ pub struct Refusal<'a> {
     pub message: &'static str,
 }
 
-fn refuse(id: Option<&[u8]>, code: i64, message: &'static str) -> Refusal<'_> {
+fn refuse<'a>(id: Option<&'a [u8]>, code: i64, message: &'static str) -> Refusal<'a> {
     Refusal { id, code, message }
 }
 
@@ -68,10 +62,18 @@ pub fn classify(line: &[u8]) -> Result<Message<'_>, Refusal<'_>> {
     let parsed = match json::parse(line) {
         Ok(parsed) => parsed,
         Err(JsonError::DuplicateKey) => {
-            return Err(refuse(None, INVALID_REQUEST, "a key appears twice in an object"));
+            return Err(refuse(
+                None,
+                INVALID_REQUEST,
+                "a key appears twice in an object",
+            ));
         }
         Err(JsonError::TooDeep | JsonError::TooManyValues | JsonError::TooManyMembers) => {
-            return Err(refuse(None, INVALID_REQUEST, "the message is too large or too deep"));
+            return Err(refuse(
+                None,
+                INVALID_REQUEST,
+                "the message is too large or too deep",
+            ));
         }
         Err(JsonError::InvalidUtf8 | JsonError::Syntax(_)) => {
             return Err(refuse(None, PARSE_ERROR, "the message is not valid JSON"));
@@ -92,7 +94,13 @@ pub fn classify(line: &[u8]) -> Result<Message<'_>, Refusal<'_>> {
         Some(Value::Number(_) | Value::Str(_)) => {
             return Err(refuse(None, INVALID_REQUEST, "the id is too long"));
         }
-        Some(_) => return Err(refuse(None, INVALID_REQUEST, "an id is a string or a number")),
+        Some(_) => {
+            return Err(refuse(
+                None,
+                INVALID_REQUEST,
+                "an id is a string or a number",
+            ));
+        }
     };
     if !object
         .get("jsonrpc")
@@ -104,7 +112,9 @@ pub fn classify(line: &[u8]) -> Result<Message<'_>, Refusal<'_>> {
     let method = match object.get("method") {
         Some(Value::Str(method)) => method,
         Some(_) => return Err(refuse(id, INVALID_REQUEST, "a method is a string")),
-        None if id.is_some() && (object.get("result").is_some() || object.get("error").is_some()) => {
+        None if id.is_some()
+            && (object.get("result").is_some() || object.get("error").is_some()) =>
+        {
             return Ok(Message::Response);
         }
         None => return Err(refuse(id, INVALID_REQUEST, "the message has no method")),
@@ -170,8 +180,12 @@ mod tests {
 
     #[test]
     fn requests_notifications_and_responses_are_told_apart() {
-        let Ok(Message::Request { id, method, params, nested_duplicate }) =
-            classify(br#"{"jsonrpc":"2.0","id":"a-1","method":"tools/list","params":{}}"#)
+        let Ok(Message::Request {
+            id,
+            method,
+            params,
+            nested_duplicate,
+        }) = classify(br#"{"jsonrpc":"2.0","id":"a-1","method":"tools/list","params":{}}"#)
         else {
             panic!("a request");
         };
@@ -199,7 +213,10 @@ mod tests {
     fn what_is_not_a_request_gets_the_specification_s_codes() {
         assert_eq!(error_of("{"), (None, PARSE_ERROR));
         assert_eq!(error_of("[]"), (None, INVALID_REQUEST));
-        assert_eq!(error_of("[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]"), (None, INVALID_REQUEST));
+        assert_eq!(
+            error_of("[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]"),
+            (None, INVALID_REQUEST)
+        );
         assert_eq!(error_of("1"), (None, INVALID_REQUEST));
         assert_eq!(
             error_of(r#"{"jsonrpc":"1.0","id":7,"method":"ping"}"#),
@@ -221,7 +238,10 @@ mod tests {
             error_of(r#"{"jsonrpc":"2.0","id":7,"method":"x","params":[1]}"#),
             (Some(b"7".to_vec()), INVALID_PARAMS)
         );
-        assert_eq!(error_of(r#"{"jsonrpc":"2.0","id":7}"#), (Some(b"7".to_vec()), INVALID_REQUEST));
+        assert_eq!(
+            error_of(r#"{"jsonrpc":"2.0","id":7}"#),
+            (Some(b"7".to_vec()), INVALID_REQUEST)
+        );
     }
 
     #[test]

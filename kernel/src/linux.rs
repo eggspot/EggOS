@@ -1285,7 +1285,9 @@ fn write_out_of_line<P: Platform>(
                 context.set_syscall_result(Errno::EINVAL.result());
                 ControlFlow::Continue(())
             }
-            FileKind::AgentChannel(_) => agent_channel::write(process, thread, context, &file, &iovecs),
+            FileKind::AgentChannel(_) => {
+                agent_channel::write(process, thread, context, &file, &iovecs)
+            }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1330,7 +1332,9 @@ fn read<P: Platform>(
             FileKind::Window(connection) => {
                 window::read(process, thread, context, &file, connection, &iovecs)
             }
-            FileKind::AgentChannel(_) => agent_channel::read(process, thread, context, &file, &iovecs),
+            FileKind::AgentChannel(_) => {
+                agent_channel::read(process, thread, context, &file, &iovecs)
+            }
             kind => {
                 let result = match files::Contents::of(kind) {
                     Some(contents) => {

@@ -132,7 +132,10 @@ mod tests {
         assert_eq!(resolved("/home/"), Ok("/home".into()));
         assert_eq!(resolved("/home/./a//b/"), Ok("/home/a/b".into()));
         assert_eq!(resolved("/home/a/../b"), Ok("/home/b".into()));
-        assert_eq!(resolved("/media/host/readme.txt"), Ok("/media/host/readme.txt".into()));
+        assert_eq!(
+            resolved("/media/host/readme.txt"),
+            Ok("/media/host/readme.txt".into())
+        );
         assert_eq!(resolved("//home"), Ok("/home".into()));
     }
 

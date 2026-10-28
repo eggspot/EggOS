@@ -4,9 +4,8 @@
 use crate::errno::Errno;
 use crate::syscall::{self, number};
 use core::arch::asm;
-use core::cell::UnsafeCell;
 use core::ffi::CStr;
-use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use core::sync::atomic::{AtomicIsize, Ordering};
 
 /// The `clone` flag that shares the caller's memory with the child.
 pub const CLONE_VM: usize = 0x100;
@@ -105,24 +104,18 @@ pub const CHILD_STACK_BYTES: usize = 16 * 1024;
 const SIGCHLD: usize = 17;
 const NOT_RUN: i32 = 127;
 
-/// The stack a child started by [`spawn`] runs on until its `execve`: one child at a time,
-/// which its busy flag enforces.
+/// The stack a child started by [`spawn`] runs on until its `execve`. [`spawn`] borrows it
+/// mutably, so one child at a time uses it.
 #[repr(C, align(16))]
 pub struct ChildStack {
-    bytes: UnsafeCell<[u8; CHILD_STACK_BYTES]>,
-    busy: AtomicBool,
+    bytes: [u8; CHILD_STACK_BYTES],
 }
-
-// SAFETY: only a child started by `spawn` uses the bytes, while the busy flag is set and the
-// starting thread sleeps in its `CLONE_VFORK` clone; nothing else reads or writes them.
-unsafe impl Sync for ChildStack {}
 
 impl ChildStack {
     /// An unused stack.
     pub const fn new() -> Self {
         Self {
-            bytes: UnsafeCell::new([0; CHILD_STACK_BYTES]),
-            busy: AtomicBool::new(false),
+            bytes: [0; CHILD_STACK_BYTES],
         }
     }
 }
@@ -135,9 +128,7 @@ impl Default for ChildStack {
 
 impl core::fmt::Debug for ChildStack {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ChildStack")
-            .field("busy", &self.busy.load(Ordering::Relaxed))
-            .finish()
+        f.debug_struct("ChildStack").finish_non_exhaustive()
     }
 }
 
@@ -173,21 +164,18 @@ impl<'a> Spawn<'a> {
 
 /// Starts `request`'s program as a child on `stack`, sharing this process's memory until the
 /// child's `execve` (`CLONE_VM | CLONE_VFORK`), so nothing is copied; returns its process id.
-/// `EBUSY` while the stack is in use, `EINVAL` for an array without its null end; when
-/// `execve` fails, the child ends, is reaped, and its error comes back.
-pub fn spawn(stack: &'static ChildStack, request: &Spawn<'_>) -> Result<usize, Errno> {
+/// `EINVAL` for an array without its null end; when `execve` fails, the child ends, is reaped,
+/// and its error comes back.
+pub fn spawn(stack: &mut ChildStack, request: &Spawn<'_>) -> Result<usize, Errno> {
     let ended = |array: &[*const u8]| array.last().is_some_and(|last| last.is_null());
     if !ended(request.arguments) || !ended(request.environment) {
         return Err(Errno::EINVAL);
     }
-    if stack.busy.swap(true, Ordering::Acquire) {
-        return Err(Errno::EBUSY);
-    }
     request.exec_error.store(0, Ordering::Relaxed);
-    let top = stack.bytes.get() as usize + CHILD_STACK_BYTES;
-    // SAFETY: `top` is the 16-byte aligned end of the stack's bytes, which only this child
-    // uses (the busy flag) while this thread sleeps in the `CLONE_VFORK` clone; the child
-    // touches only `request`, which outlives the clone, then runs `execve` or ends.
+    let top = stack.bytes.as_mut_ptr() as usize + CHILD_STACK_BYTES;
+    // SAFETY: `top` is the 16-byte aligned end of the stack's bytes, borrowed mutably for this
+    // call, which only the child uses while this thread sleeps in the `CLONE_VFORK` clone; the
+    // child touches only `request`, which outlives the clone, then runs `execve` or ends.
     let started = unsafe {
         clone_onto_stack(
             CLONE_VM | CLONE_VFORK | SIGCHLD,
@@ -196,19 +184,13 @@ pub fn spawn(stack: &'static ChildStack, request: &Spawn<'_>) -> Result<usize, E
             request as *const Spawn<'_> as usize,
         )
     };
-    stack.busy.store(false, Ordering::Release);
     let child = Errno::result(started)?;
     match request.exec_error.load(Ordering::Acquire) {
         0 => Ok(child),
         error => {
             let mut status = 0i32;
             // SAFETY: `wait4` writes the status into `status`, which this function owns.
-            unsafe {
-                syscall::call(
-                    number::WAIT4,
-                    [child, &raw mut status as usize, 0, 0, 0, 0],
-                )
-            };
+            unsafe { syscall::call(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) };
             Err(Errno(error.unsigned_abs().min(usize::from(u16::MAX)) as u16))
         }
     }
@@ -240,9 +222,7 @@ extern "C" fn start_child(request: usize) -> ! {
             ],
         )
     };
-    request
-        .exec_error
-        .store(result.min(-1), Ordering::Release);
+    request.exec_error.store(result.min(-1), Ordering::Release);
     syscall::exit(NOT_RUN)
 }
 
@@ -250,27 +230,18 @@ extern "C" fn start_child(request: usize) -> ! {
 mod tests {
     use super::*;
 
-    static STACK: ChildStack = ChildStack::new();
-
     #[test]
     fn requests_need_their_arrays_null_ended() {
+        let mut stack = Box::new(ChildStack::new());
         let program = c"/bin/true";
         let arguments = [program.as_ptr().cast::<u8>()];
         let environment = [core::ptr::null()];
         let request = Spawn::new(program, &arguments, &environment, [0, 1, 2]);
-        assert_eq!(spawn(&STACK, &request), Err(Errno::EINVAL));
-        assert!(!STACK.busy.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn a_busy_stack_refuses_a_second_child() {
-        static BUSY: ChildStack = ChildStack::new();
-        BUSY.busy.store(true, Ordering::Relaxed);
-        let program = c"/bin/true";
-        let arguments = [program.as_ptr().cast::<u8>(), core::ptr::null()];
-        let environment = [core::ptr::null()];
-        let request = Spawn::new(program, &arguments, &environment, [0, 1, 2]);
-        assert_eq!(spawn(&BUSY, &request), Err(Errno::EBUSY));
-        assert_eq!(format!("{BUSY:?}"), "ChildStack { busy: true }");
+        assert_eq!(spawn(&mut stack, &request), Err(Errno::EINVAL));
+        let ended = [program.as_ptr().cast::<u8>(), core::ptr::null()];
+        let unended_environment = [c"A=b".as_ptr().cast::<u8>()];
+        let request = Spawn::new(program, &ended, &unended_environment, [0, 1, 2]);
+        assert_eq!(spawn(&mut stack, &request), Err(Errno::EINVAL));
+        assert_eq!(format!("{stack:?}"), "ChildStack { .. }");
     }
 }

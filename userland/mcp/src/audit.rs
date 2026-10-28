@@ -274,8 +274,6 @@ fn escape_character(character: char, escape_backslash: bool, buffer: &mut [u8; 1
     &buffer[..length + 1]
 }
 
-/// Escapes `text` into `out`, keeping at most `out.len()` bytes and ending `...(cut)` when it
-/// does not fit; returns the length.
 fn escape_field(text: &[u8], out: &mut [u8], escape_backslash: bool) -> usize {
     let capacity = out.len();
     let mut length = 0;
@@ -356,7 +354,11 @@ mod tests {
         assert_eq!(line.matches('\t').count(), 6);
         assert!(line.contains("evil\\e[2J\\u{202e}gnp.exe\\ttab\\nnew\\\\"));
         assert!(line.contains("/home/\\u{202e}txt.exe\\u{200b}"));
-        assert!(!line.chars().any(|character| character != '\t' && character != '\n' && is_hidden(character)));
+        assert!(
+            !line
+                .chars()
+                .any(|character| character != '\t' && character != '\n' && is_hidden(character))
+        );
         let invalid = record(&entry(b"bad\xff\xfe", b"\x01\x7f\xc2\x85"));
         assert!(invalid.contains("bad\u{fffd}\u{fffd}"));
         assert!(invalid.contains("\\x01\\x7f\\u{85}"));

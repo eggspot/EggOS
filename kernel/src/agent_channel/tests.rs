@@ -102,8 +102,13 @@ fn bytes_flow_both_ways_through_small_pieces() {
     let (_guard, wire) = installed();
     open().unwrap();
     assert!(!ready_to_receive());
-    wire.lock().unwrap().from_host.extend(b"{\"a\":1}\n{\"b\":2}\n");
+    assert!(!has_bytes());
+    wire.lock()
+        .unwrap()
+        .from_host
+        .extend(b"{\"a\":1}\n{\"b\":2}\n");
     assert!(ready_to_receive());
+    assert!(has_bytes());
     assert_eq!(read_everything(), b"{\"a\":1}\n{\"b\":2}\n");
     send_everything(b"an answer longer than the port's buffer\n");
     assert_eq!(
@@ -121,7 +126,10 @@ fn a_new_opener_skips_the_rest_of_a_line_left_half_read() {
     wire.lock().unwrap().from_host.extend(b"{\"half\":");
     assert_eq!(read_everything(), b"{\"half\":");
     close();
-    wire.lock().unwrap().from_host.extend(b"\"rest\"}\n{\"next\":1}\n");
+    wire.lock()
+        .unwrap()
+        .from_host
+        .extend(b"\"rest\"}\n{\"next\":1}\n");
     open().unwrap();
     assert_eq!(read_everything(), b"{\"next\":1}\n");
     close();
@@ -161,9 +169,16 @@ fn the_host_closing_ends_input_once_and_reopening_resumes_it() {
         wire.host_open = false;
         wire.host_changed = true;
     }
-    assert_eq!(read_everything(), b"last\n");
     let mut buffer = [0u8; 8];
-    assert_eq!(receive(&mut buffer), Received::EndOfInput);
+    let mut got = Vec::new();
+    let ended = loop {
+        match receive(&mut buffer) {
+            Received::Bytes(count) => got.extend_from_slice(&buffer[..count]),
+            other => break other,
+        }
+    };
+    assert_eq!(got, b"last\n");
+    assert_eq!(ended, Received::EndOfInput);
     assert_eq!(receive(&mut buffer), Received::Nothing);
     assert!(!ready_to_receive());
     {

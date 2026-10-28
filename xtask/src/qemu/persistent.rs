@@ -309,7 +309,10 @@ fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Option<u64> {
     Some(node)
 }
 
-pub(super) fn contents(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn contents(
+    volume: &mut Volume<MemoryDisk>,
+    path: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let Some(node) = node_at(volume, path) else {
         return Ok(None);
     };

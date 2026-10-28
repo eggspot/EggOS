@@ -15,7 +15,9 @@
 use crate::audit::{self, Entry, Outcome};
 use crate::json::{JsonWriter, Object, Value};
 use crate::paths::{self, MAX_PATH_BYTES, PathRefusal};
-use crate::rpc::{self, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Message};
+use crate::rpc::{
+    self, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Message,
+};
 use crate::session::Session;
 use crate::system::{Ended, Invocation, RunOutcome, System};
 use crate::tools::{self, Tool};
@@ -95,24 +97,23 @@ impl Server {
             true => Outcome::ServerRestart,
             false => Outcome::ServerStart,
         };
-        self.record(system, scratch, 0, b"-", outcome, b"", SERVER_VERSION.as_bytes());
+        self.record(
+            system,
+            scratch,
+            0,
+            b"-",
+            outcome,
+            b"",
+            SERVER_VERSION.as_bytes(),
+        );
     }
 
     /// Records that the client's side closed; the next client starts with `initialize`.
     pub fn disconnected(&mut self, system: &mut impl System, scratch: &mut Scratch<'_>) {
-        let client = self.client_bytes();
-        let mut name = [0u8; crate::session::MAX_CLIENT_NAME_BYTES];
-        let length = client.len().min(name.len());
-        if let (Some(place), Some(source)) = (name.get_mut(..length), client.get(..length)) {
-            place.copy_from_slice(source);
-        }
-        let client = name.get(..length).unwrap_or_default();
+        let client = self.session.client();
+        let client = client.as_str().as_bytes();
         self.record(system, scratch, 0, client, Outcome::Disconnected, b"", b"");
         self.session.end();
-    }
-
-    fn client_bytes(&self) -> &[u8] {
-        self.session.client_name().as_bytes()
     }
 
     /// Answers a line longer than the input buffer; returns the answer's length in `out`.
@@ -241,16 +242,11 @@ impl Server {
         let name_length = text_of("name", &mut name);
         let mut version = [0u8; 128];
         let version_length = text_of("version", &mut version);
-        let as_text = |bytes: &[u8], length: usize| -> &str {
-            bytes
-                .get(..length)
-                .and_then(|bytes| core::str::from_utf8(bytes).ok())
-                .unwrap_or("")
-        };
+
         let chosen = self.session.initialize(
             requested,
-            as_text(&name, name_length),
-            as_text(&version, version_length),
+            text_prefix(&name, name_length),
+            text_prefix(&version, version_length),
         );
         let mut detail = [0u8; 160];
         let mut writer = JsonWriter::new(&mut detail);
@@ -263,19 +259,12 @@ impl Server {
         writer.string(self.session.client_version());
         writer.end_object();
         let detail_length = writer.len();
-        let mut client = [0u8; crate::session::MAX_CLIENT_NAME_BYTES];
-        let client_name = self.session.client_name().as_bytes();
-        let client_length = client_name.len().min(client.len());
-        if let (Some(place), Some(source)) =
-            (client.get_mut(..client_length), client_name.get(..client_length))
-        {
-            place.copy_from_slice(source);
-        }
+        let client = self.session.client();
         self.record(
             system,
             scratch,
             0,
-            client.get(..client_length).unwrap_or_default(),
+            client.as_str().as_bytes(),
             Outcome::Initialize,
             detail.get(..detail_length).unwrap_or_default(),
             b"",
@@ -318,7 +307,9 @@ impl Server {
         arguments: &[u8],
         detail: &[u8],
     ) -> bool {
-        self.record_tool(system, scratch, call, client, b"-", outcome, arguments, detail)
+        self.record_tool(
+            system, scratch, call, client, b"-", outcome, arguments, detail,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -359,29 +350,40 @@ impl Server {
     ) {
         self.calls += 1;
         let number = self.calls;
-        let mut client = [0u8; crate::session::MAX_CLIENT_NAME_BYTES];
-        let client_name = self.session.client_name().as_bytes();
-        let client_length = client_name.len().min(client.len());
-        if let (Some(place), Some(source)) =
-            (client.get_mut(..client_length), client_name.get(..client_length))
-        {
-            place.copy_from_slice(source);
-        }
-        let client = client.get(..client_length).unwrap_or_default();
+        let client = self.session.client();
+        let client = client.as_str().as_bytes();
         let arguments = params.and_then(|params| params.get("arguments"));
         let raw_arguments = arguments.map_or(&b""[..], Value::raw);
         let Some(name) = params
             .and_then(|params| params.get("name"))
             .and_then(Value::as_str)
         else {
-            self.record_tool(system, scratch, number, client, b"-", Outcome::Error, raw_arguments, b"no tool name");
+            self.record_tool(
+                system,
+                scratch,
+                number,
+                client,
+                b"-",
+                Outcome::Error,
+                raw_arguments,
+                b"no tool name",
+            );
             rpc::write_error(out, Some(id), INVALID_PARAMS, "the tool's name is missing");
             return;
         };
         let mut name_text = [0u8; 128];
         let (name, _) = name.decode_prefix_into(&mut name_text);
         let Some(tool) = tools::find(name) else {
-            self.record_tool(system, scratch, number, client, name.as_bytes(), Outcome::Error, raw_arguments, b"unknown tool");
+            self.record_tool(
+                system,
+                scratch,
+                number,
+                client,
+                name.as_bytes(),
+                Outcome::Error,
+                raw_arguments,
+                b"unknown tool",
+            );
             rpc::write_error(out, Some(id), INVALID_PARAMS, "unknown tool");
             return;
         };
@@ -393,14 +395,26 @@ impl Server {
         let path = match checked_path(tool, arguments, nested_duplicate, scratch.decoded) {
             Ok(path) => path,
             Err(problem) => {
-                self.record_tool(system, scratch, number, client, call.tool.as_bytes(), Outcome::Error, raw_arguments, problem.as_bytes());
+                self.record_tool(
+                    system,
+                    scratch,
+                    number,
+                    client,
+                    call.tool.as_bytes(),
+                    Outcome::Error,
+                    raw_arguments,
+                    problem.as_bytes(),
+                );
                 rpc::write_error(out, Some(id), INVALID_PARAMS, problem);
                 return;
             }
         };
         let arguments_length = audit_arguments(path, scratch.arguments);
         let mut arguments_text = [0u8; ARGUMENTS_BYTES];
-        let shown = scratch.arguments.get(..arguments_length).unwrap_or_default();
+        let shown = scratch
+            .arguments
+            .get(..arguments_length)
+            .unwrap_or_default();
         if let Some(place) = arguments_text.get_mut(..shown.len()) {
             place.copy_from_slice(shown);
         }
@@ -412,7 +426,16 @@ impl Server {
                     Ok(resolved) => Some(resolved.len()),
                     Err(refusal) => {
                         let message = refusal_message(refusal);
-                        self.record_tool(system, scratch, number, client, call.tool.as_bytes(), Outcome::Refused, shown, message.as_bytes());
+                        self.record_tool(
+                            system,
+                            scratch,
+                            number,
+                            client,
+                            call.tool.as_bytes(),
+                            Outcome::Refused,
+                            shown,
+                            message.as_bytes(),
+                        );
                         refused(out, &call, message);
                         return;
                     }
@@ -427,7 +450,16 @@ impl Server {
             place.copy_from_slice(source);
             core::str::from_utf8(place).ok()
         });
-        if !self.record_tool(system, scratch, number, client, call.tool.as_bytes(), Outcome::Started, shown, resolved.unwrap_or("").as_bytes()) {
+        if !self.record_tool(
+            system,
+            scratch,
+            number,
+            client,
+            call.tool.as_bytes(),
+            Outcome::Started,
+            shown,
+            resolved.unwrap_or("").as_bytes(),
+        ) {
             refused(
                 out,
                 &call,
@@ -448,12 +480,32 @@ impl Server {
         let mut detail = [0u8; 96];
         let detail_length = describe(&outcome, &mut detail);
         let succeeded = succeeded(&outcome);
-        let result_outcome = if succeeded { Outcome::Ok } else { Outcome::Error };
-        if !self.record_tool(system, scratch, number, client, call.tool.as_bytes(), result_outcome, shown, detail.get(..detail_length).unwrap_or_default()) {
+        let result_outcome = if succeeded {
+            Outcome::Ok
+        } else {
+            Outcome::Error
+        };
+        if !self.record_tool(
+            system,
+            scratch,
+            number,
+            client,
+            call.tool.as_bytes(),
+            result_outcome,
+            shown,
+            detail.get(..detail_length).unwrap_or_default(),
+        ) {
             system.report(b"eggmcpd: a call's outcome could not be written to the audit log");
         }
         answer_with_output(out, &call, &outcome, scratch);
     }
+}
+
+fn text_prefix(bytes: &[u8], length: usize) -> &str {
+    bytes
+        .get(..length)
+        .and_then(|bytes| core::str::from_utf8(bytes).ok())
+        .unwrap_or("")
 }
 
 fn refusal_message(refusal: PathRefusal) -> &'static str {
@@ -486,7 +538,9 @@ fn checked_path<'d>(
         return Ok(None);
     };
     if let Some(arguments) = arguments
-        && arguments.members().any(|(name, _)| !name.equals(argument.name))
+        && arguments
+            .members()
+            .any(|(name, _)| !name.equals(argument.name))
     {
         return Err("an argument this tool does not take");
     }
@@ -632,7 +686,9 @@ fn notice(out: &mut JsonWriter<'_>, tool: &str) {
 pub fn text_of(output: &[u8], cut: bool) -> Option<&str> {
     match core::str::from_utf8(output) {
         Ok(text) => Some(text),
-        Err(error) if cut && error.error_len().is_none() && output.len() - error.valid_up_to() <= 3 => {
+        Err(error)
+            if cut && error.error_len().is_none() && output.len() - error.valid_up_to() <= 3 =>
+        {
             output
                 .get(..error.valid_up_to())
                 .and_then(|valid| core::str::from_utf8(valid).ok())

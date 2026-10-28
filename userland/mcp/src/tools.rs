@@ -173,14 +173,22 @@ mod tests {
     fn every_schema_is_an_object_schema_naming_only_the_twin_s_arguments() {
         for tool in &TOOLS {
             let schema = json::parse(tool.input_schema.as_bytes()).unwrap().value;
-            assert!(schema.get("type").unwrap().as_str().unwrap().equals("object"));
+            assert!(
+                schema
+                    .get("type")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .equals("object")
+            );
             assert_eq!(schema.get("additionalProperties"), Some(Value::Bool(false)));
             let properties = schema.get("properties").unwrap().as_object().unwrap();
             let names: Vec<String> = properties
                 .members()
                 .map(|(name, _)| name.chars().collect())
                 .collect();
-            let expected: Vec<String> = tool.twin.path.iter().map(|path| path.name.into()).collect();
+            let expected: Vec<String> =
+                tool.twin.path.iter().map(|path| path.name.into()).collect();
             assert_eq!(names, expected, "{}", tool.name);
             if let Some(path) = tool.twin.path {
                 let required = schema.get("required").is_some();

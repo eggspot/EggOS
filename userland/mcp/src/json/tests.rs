@@ -26,7 +26,12 @@ fn every_kind_of_value_parses_and_reads_back() {
     assert_eq!(parsed.get("d").unwrap().raw(), b"-12.5e+3");
     let mut buffer = [0u8; 8];
     assert_eq!(
-        parsed.get("e").unwrap().as_str().unwrap().decode_into(&mut buffer),
+        parsed
+            .get("e")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .decode_into(&mut buffer),
         Some("x\ty")
     );
     let Some(Value::Array(array)) = parsed.get("f") else {
@@ -44,15 +49,47 @@ fn every_kind_of_value_parses_and_reads_back() {
 #[test]
 fn the_grammar_is_rfc_8259_s() {
     for good in [
-        "0", "-0", "1.5", "1e5", "1E-5", "\"\"", "[]", "{}", " [ 1 , 2 ] ", "\"\\u00e9\"",
+        "0",
+        "-0",
+        "1.5",
+        "1e5",
+        "1E-5",
+        "\"\"",
+        "[]",
+        "{}",
+        " [ 1 , 2 ] ",
+        "\"\\u00e9\"",
         "\"\\/\"",
     ] {
         assert!(parse(good.as_bytes()).is_ok(), "{good}");
     }
     for bad in [
-        "", " ", "01", "1.", ".5", "-", "1e", "+1", "[1,]", "{\"a\":1,}", "[1 2]", "{\"a\" 1}",
-        "{a:1}", "'a'", "\"\\x\"", "\"\\u12\"", "\"\t\"", "nul", "true false", "[", "{", "\"",
-        "{\"a\":}", "[,]", "NaN", "Infinity",
+        "",
+        " ",
+        "01",
+        "1.",
+        ".5",
+        "-",
+        "1e",
+        "+1",
+        "[1,]",
+        "{\"a\":1,}",
+        "[1 2]",
+        "{\"a\" 1}",
+        "{a:1}",
+        "'a'",
+        "\"\\x\"",
+        "\"\\u12\"",
+        "\"\t\"",
+        "nul",
+        "true false",
+        "[",
+        "{",
+        "\"",
+        "{\"a\":}",
+        "[,]",
+        "NaN",
+        "Infinity",
     ] {
         assert!(parse(bad.as_bytes()).is_err(), "{bad}");
     }
@@ -70,17 +107,16 @@ fn nesting_values_and_members_are_bounded() {
     assert_eq!(parse(unclosed.as_bytes()), Err(JsonError::TooDeep));
     let many = format!("[{}0]", "0,".repeat(MAX_VALUES));
     assert_eq!(parse(many.as_bytes()), Err(JsonError::TooManyValues));
-    let members: Vec<String> = (0..=MAX_MEMBERS).map(|index| format!("\"k{index}\":0")).collect();
+    let members: Vec<String> = (0..=MAX_MEMBERS)
+        .map(|index| format!("\"k{index}\":0"))
+        .collect();
     let wide = format!("{{{}}}", members.join(","));
     assert_eq!(parse(wide.as_bytes()), Err(JsonError::TooManyMembers));
 }
 
 #[test]
 fn duplicate_keys_are_refused_near_the_top_and_reported_deeper() {
-    assert_eq!(
-        parse(br#"{"a":1,"a":2}"#),
-        Err(JsonError::DuplicateKey)
-    );
+    assert_eq!(parse(br#"{"a":1,"a":2}"#), Err(JsonError::DuplicateKey));
     assert_eq!(
         parse(br#"{"a":1,"\u0061":2}"#),
         Err(JsonError::DuplicateKey)
@@ -100,9 +136,17 @@ fn strings_decode_escapes_and_surrogates() {
     let mut buffer = [0u8; 64];
     let decode = |text: &str, buffer: &mut [u8; 64]| -> String {
         let value = parse(text.as_bytes()).unwrap().value;
-        value.as_str().unwrap().decode_into(buffer).unwrap().to_owned()
+        value
+            .as_str()
+            .unwrap()
+            .decode_into(buffer)
+            .unwrap()
+            .to_owned()
     };
-    assert_eq!(decode(r#""a\"b\\c\/d\b\f\n\r\t""#, &mut buffer), "a\"b\\c/d\u{8}\u{c}\n\r\t");
+    assert_eq!(
+        decode(r#""a\"b\\c\/d\b\f\n\r\t""#, &mut buffer),
+        "a\"b\\c/d\u{8}\u{c}\n\r\t"
+    );
     assert_eq!(decode(r#""\u0041\u00e9\u20ac""#, &mut buffer), "Aé€");
     assert_eq!(decode(r#""\ud83d\ude00""#, &mut buffer), "😀");
     assert_eq!(decode(r#""\ud83d x""#, &mut buffer), "\u{fffd} x");
@@ -114,7 +158,12 @@ fn strings_decode_escapes_and_surrogates() {
     assert_eq!(long.decode_prefix_into(&mut [0u8; 3]), ("abc", false));
     assert_eq!(long.decode_prefix_into(&mut [0u8; 8]), ("abcdef", true));
     assert_eq!(value(r#""\u00e9""#).as_str().unwrap().decoded_len(), 2);
-    assert!(value(r#""tools\/list""#).as_str().unwrap().equals("tools/list"));
+    assert!(
+        value(r#""tools\/list""#)
+            .as_str()
+            .unwrap()
+            .equals("tools/list")
+    );
     assert_eq!(value(r#""x""#).raw(), br#""x""#);
 }
 

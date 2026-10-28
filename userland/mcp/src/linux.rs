@@ -46,8 +46,6 @@ const ENVIRONMENT: [&CStr; 3] = [c"PATH=/bin", c"HOME=/home/root", c"TERM=dumb"]
 const MAX_WORDS: usize = 8;
 const RETRY_PAUSE_MS: u64 = 100;
 
-static CHILD_STACK: ChildStack = ChildStack::new();
-
 struct Buffers {
     input: [u8; MAX_MESSAGE_BYTES],
     response: [u8; RESPONSE_BYTES],
@@ -57,6 +55,7 @@ struct Buffers {
     resolved: [u8; MAX_PATH_BYTES + 1],
     record: [u8; RECORD_BYTES],
     arguments: [u8; ARGUMENTS_BYTES],
+    child_stack: ChildStack,
 }
 
 static mut BUFFERS: Buffers = Buffers {
@@ -68,6 +67,7 @@ static mut BUFFERS: Buffers = Buffers {
     resolved: [0; MAX_PATH_BYTES + 1],
     record: [0; RECORD_BYTES],
     arguments: [0; ARGUMENTS_BYTES],
+    child_stack: ChildStack::new(),
 };
 
 fn call(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
@@ -89,7 +89,14 @@ fn close(descriptor: usize) {
 fn open(path: &CStr, flags: usize, mode: usize) -> Result<usize, Errno> {
     call(
         number::OPENAT,
-        [AT_FDCWD, path.as_ptr() as usize, flags | O_CLOEXEC, mode, 0, 0],
+        [
+            AT_FDCWD,
+            path.as_ptr() as usize,
+            flags | O_CLOEXEC,
+            mode,
+            0,
+            0,
+        ],
     )
 }
 
@@ -115,7 +122,9 @@ fn now_ms() -> u64 {
 
 /// Opens the channel, records the start and answers messages until the machine stops.
 pub fn run(startup: &Startup) -> i32 {
-    let restarted = startup.arguments().any(|argument| argument.to_bytes() == RESTARTED);
+    let restarted = startup
+        .arguments()
+        .any(|argument| argument.to_bytes() == RESTARTED);
     let channel = match open(CHANNEL, O_RDWR, 0) {
         Ok(channel) => channel,
         Err(error) => {
@@ -132,7 +141,9 @@ pub fn run(startup: &Startup) -> i32 {
     }
     // SAFETY: the program has one thread and takes the buffers once, here, so no other
     // reference to them exists while these live.
-    let buffers = unsafe { &mut *(&raw mut BUFFERS) };
+    let Some(buffers) = (unsafe { (&raw mut BUFFERS).as_mut() }) else {
+        return 1;
+    };
     let Buffers {
         input,
         response,
@@ -142,6 +153,7 @@ pub fn run(startup: &Startup) -> i32 {
         resolved,
         record,
         arguments,
+        child_stack,
     } = buffers;
     let mut scratch = Scratch {
         stdout,
@@ -151,7 +163,7 @@ pub fn run(startup: &Startup) -> i32 {
         record,
         arguments,
     };
-    let mut system = Linux;
+    let mut system = Linux { child_stack };
     let mut server = match restarted {
         true => Server::restarted(),
         false => Server::new(),
@@ -173,7 +185,11 @@ pub fn run(startup: &Startup) -> i32 {
             Ok(count) => reader.filled(count),
             Err(Errno::EINTR) => continue,
             Err(error) => {
-                say(&[b"eggmcpd: reading /dev/agent failed: ", error.message(), b"\n"]);
+                say(&[
+                    b"eggmcpd: reading /dev/agent failed: ",
+                    error.message(),
+                    b"\n",
+                ]);
                 pause(RETRY_PAUSE_MS);
                 continue;
             }
@@ -200,7 +216,9 @@ pub fn run(startup: &Startup) -> i32 {
     }
 }
 
-struct Linux;
+struct Linux {
+    child_stack: &'static mut ChildStack,
+}
 
 #[repr(C)]
 struct PollDescriptor {
@@ -244,10 +262,7 @@ fn c_path<'b>(path: &str, buffer: &'b mut [u8]) -> Option<&'b CStr> {
 fn wait_for(child: usize) -> Ended {
     loop {
         let mut status = 0i32;
-        match call(
-            number::WAIT4,
-            [child, &raw mut status as usize, 0, 0, 0, 0],
-        ) {
+        match call(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) {
             Ok(_) => {
                 let signal = status & 0x7f;
                 return match signal {
@@ -277,7 +292,10 @@ impl Capture<'_> {
             0 => (spill.as_mut_ptr(), spill.len()),
             _ => (self.buffer[self.kept..].as_mut_ptr(), room),
         };
-        match call(number::READ, [self.descriptor, target as usize, length, 0, 0, 0]) {
+        match call(
+            number::READ,
+            [self.descriptor, target as usize, length, 0, 0, 0],
+        ) {
             Ok(0) | Err(_) => self.open = false,
             Ok(count) if room == 0 => self.overflowed |= count > 0,
             Ok(count) => self.kept += count,
@@ -306,7 +324,10 @@ impl Linux {
         if let Some(path) = invocation.path {
             pointers[count] = c"--".as_ptr().cast();
             count += 1;
-            pointers[count] = c_path(path, &mut path_storage).ok_or(Errno::E2BIG)?.as_ptr().cast();
+            pointers[count] = c_path(path, &mut path_storage)
+                .ok_or(Errno::E2BIG)?
+                .as_ptr()
+                .cast();
             count += 1;
         }
         pointers[count] = core::ptr::null();
@@ -328,7 +349,7 @@ impl Linux {
             &environment,
             [input[0], output[1], errors[1]],
         );
-        let started = spawn(&CHILD_STACK, &request);
+        let started = spawn(self.child_stack, &request);
         for descriptor in [input[0], output[1], errors[1]] {
             close(descriptor);
         }
@@ -380,13 +401,21 @@ impl Linux {
             let timeout = [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64];
             match call(
                 number::PPOLL,
-                [watched.as_mut_ptr() as usize, 2, timeout.as_ptr() as usize, 0, 8, 0],
+                [
+                    watched.as_mut_ptr() as usize,
+                    2,
+                    timeout.as_ptr() as usize,
+                    0,
+                    8,
+                    0,
+                ],
             ) {
                 Ok(_) => {}
                 Err(Errno::EINTR) => continue,
                 Err(_) => break,
             }
-            let ready = |entry: &PollDescriptor| entry.returned_events & (POLLIN | POLLHUP | POLLERR) != 0;
+            let ready =
+                |entry: &PollDescriptor| entry.returned_events & (POLLIN | POLLHUP | POLLERR) != 0;
             if ready(&watched[0]) {
                 out.take();
             }
@@ -451,7 +480,14 @@ impl System for Linux {
                 let rotated = c_path(ROTATED_PATH, &mut rotated).ok_or(Errno::EINVAL)?;
                 let _ = call(
                     number::RENAMEAT2,
-                    [AT_FDCWD, log.as_ptr() as usize, AT_FDCWD, rotated.as_ptr() as usize, 0, 0],
+                    [
+                        AT_FDCWD,
+                        log.as_ptr() as usize,
+                        AT_FDCWD,
+                        rotated.as_ptr() as usize,
+                        0,
+                        0,
+                    ],
                 );
             }
         }

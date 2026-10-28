@@ -759,7 +759,11 @@ mod tests {
         for arch in ARCHES {
             let args = qemu::mcp_args(arch, false, "/tmp/a,,b.log").join(" ");
             assert!(args.contains("-display none"), "{args}");
-            assert!(args.contains("-chardev file,id=console,path=/tmp/a,,b.log -serial chardev:console"));
+            assert!(
+                args.contains(
+                    "-chardev file,id=console,path=/tmp/a,,b.log -serial chardev:console"
+                )
+            );
             assert!(args.contains("-monitor none"));
             assert!(args.contains("-chardev stdio,id=mcp,signal=off"));
             assert!(args.ends_with(&format!(
@@ -767,7 +771,11 @@ mod tests {
                 arch.agent_bus_device
             )));
             assert!(!args.contains("stdio,") || args.matches("stdio").count() == 1);
-            assert!(!qemu::mcp_args(arch, true, "x").join(" ").contains("-display none"));
+            assert!(
+                !qemu::mcp_args(arch, true, "x")
+                    .join(" ")
+                    .contains("-display none")
+            );
         }
     }
 

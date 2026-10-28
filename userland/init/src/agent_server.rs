@@ -42,11 +42,6 @@ impl AgentServer {
         self.started_ms = now_ms;
     }
 
-    /// Whether the server runs.
-    pub fn is_running(&self) -> bool {
-        self.process.is_some()
-    }
-
     /// What to do now that `process` ended at `now_ms`; `None` if it is not the server.
     pub fn ended(&mut self, process: usize, now_ms: u64) -> Option<AfterEnd> {
         if self.process != Some(process) {
@@ -69,13 +64,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_paths_and_the_argument_are_c_strings() {
+        for text in [AGENT_CHANNEL, AGENT_SERVER, RESTARTED_ARGUMENT] {
+            assert_eq!(
+                text.iter().position(|&byte| byte == 0),
+                Some(text.len() - 1)
+            );
+        }
+    }
+
+    #[test]
     fn other_processes_ending_change_nothing() {
         let mut server = AgentServer::default();
-        assert!(!server.is_running());
+        assert_eq!(server.ended(7, 0), None);
         server.started(7, 0);
-        assert!(server.is_running());
         assert_eq!(server.ended(8, 10), None);
-        assert!(server.is_running());
+        assert_eq!(server.ended(7, 10_000), Some(AfterEnd::Restart));
+        assert_eq!(server.ended(7, 10_001), None);
     }
 
     #[test]
@@ -104,6 +109,6 @@ mod tests {
         assert_eq!(server.ended(5, 100_002), Some(AfterEnd::Restart));
         server.started(6, 100_002);
         assert_eq!(server.ended(6, 100_003), Some(AfterEnd::GiveUp));
-        assert!(!server.is_running());
+        assert_eq!(server.ended(6, 100_004), None);
     }
 }

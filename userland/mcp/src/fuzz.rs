@@ -7,7 +7,9 @@
 use crate::audit::RECORD_BYTES;
 use crate::json;
 use crate::paths::MAX_PATH_BYTES;
-use crate::server::{ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server};
+use crate::server::{
+    ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
+};
 use crate::system::{Ended, Invocation, RunOutcome, System};
 use eggos_runtime::errno::Errno;
 
@@ -67,7 +69,9 @@ impl System for StandIn {
     }
 
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno> {
-        if record.last() != Some(&b'\n') || record.iter().filter(|&&byte| byte == b'\n').count() != 1 {
+        if record.last() != Some(&b'\n')
+            || record.iter().filter(|&&byte| byte == b'\n').count() != 1
+        {
             return Err(Errno::EINVAL);
         }
         self.records += 1;
@@ -90,9 +94,7 @@ pub struct Generator {
 impl Generator {
     /// A generator from `seed`.
     pub fn new(seed: u64) -> Self {
-        Self {
-            state: seed | 1,
-        }
+        Self { state: seed | 1 }
     }
 
     fn next(&mut self) -> u64 {
@@ -110,7 +112,8 @@ impl Generator {
     pub fn line(&mut self, out: &mut [u8]) -> usize {
         let base = CORPUS.get(self.below(CORPUS.len())).copied().unwrap_or("");
         let mut length = base.len().min(out.len());
-        if let (Some(place), Some(source)) = (out.get_mut(..length), base.as_bytes().get(..length)) {
+        if let (Some(place), Some(source)) = (out.get_mut(..length), base.as_bytes().get(..length))
+        {
             place.copy_from_slice(source);
         }
         for _ in 0..1 + self.below(4) {
@@ -123,7 +126,10 @@ impl Generator {
                 }
                 1 => length = self.below(length + 1),
                 2 => {
-                    let splice = SPLICES.get(self.below(SPLICES.len())).copied().unwrap_or("");
+                    let splice = SPLICES
+                        .get(self.below(SPLICES.len()))
+                        .copied()
+                        .unwrap_or("");
                     let at = self.below(length + 1);
                     length = insert(out, length, at, splice.as_bytes());
                 }
@@ -132,7 +138,8 @@ impl Generator {
                     let to = (from + self.below(64)).min(length);
                     let mut piece = [0u8; 64];
                     let count = to - from;
-                    if let (Some(place), Some(source)) = (piece.get_mut(..count), out.get(from..to)) {
+                    if let (Some(place), Some(source)) = (piece.get_mut(..count), out.get(from..to))
+                    {
                         place.copy_from_slice(source);
                     }
                     let at = self.below(length + 1);
@@ -261,7 +268,10 @@ pub fn check_answer(answer: &[u8]) -> Result<(), Fault> {
     let value = json::parse(answer).map_err(|_| Fault::NotJson)?.value;
     let version = value.get("jsonrpc").and_then(json::Value::as_str);
     let has_body = value.get("result").is_some() != value.get("error").is_some();
-    match version.is_some_and(|version| version.equals("2.0")) && has_body && value.get("id").is_some() {
+    match version.is_some_and(|version| version.equals("2.0"))
+        && has_body
+        && value.get("id").is_some()
+    {
         true => Ok(()),
         false => Err(Fault::NotResponse),
     }
@@ -281,9 +291,15 @@ mod tests {
                 0 => Server::restarted(),
                 _ => Server::new(),
             };
-            let mut generator = Generator::new(seed * 0x9e37_79b9_7f4a_7c15);
+            let mut generator = Generator::new(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
             assert_eq!(
-                run(&mut server, &mut system, &mut generator, &mut workspace, 5000),
+                run(
+                    &mut server,
+                    &mut system,
+                    &mut generator,
+                    &mut workspace,
+                    5000
+                ),
                 Ok(())
             );
         }

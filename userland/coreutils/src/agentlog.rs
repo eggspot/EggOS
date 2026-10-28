@@ -27,7 +27,9 @@ pub fn agentlog<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             b"--raw" => mode = Mode::Raw,
             b"-n" => {
                 index += 1;
-                let Some(count) = arguments.get(index).and_then(|count| number(count.to_bytes()))
+                let Some(count) = arguments
+                    .get(index)
+                    .and_then(|count| number(count.to_bytes()))
                 else {
                     output.error(&[USAGE]);
                     return USAGE_STATUS;
@@ -216,7 +218,13 @@ fn format_row(record: &Record<'_>, result: Option<&[u8]>, text: &mut [u8]) -> us
     let stamp = deletion_date(record.time);
     let mut length = put(text, 0, stamp.as_str().as_bytes());
     let result = result.unwrap_or(record.outcome.word().as_bytes());
-    for field in [record.client, record.tool, result, record.arguments, record.detail] {
+    for field in [
+        record.client,
+        record.tool,
+        result,
+        record.arguments,
+        record.detail,
+    ] {
         length += put(text, length, b"  ");
         let end = text.len().min(length + audit::FIELD_BYTES);
         length += audit::display_into(field, &mut text[length..end]);
@@ -288,7 +296,12 @@ mod tests {
     fn the_rotated_log_comes_first_and_a_missing_log_shows_nothing() {
         let mut fake = Fake::default()
             .with_file(LOG, 0o640, b"9\t0\t-\t-\tserver-start\t\tnew\n", 0)
-            .with_file("/var/log/agent-audit.log.1", 0o640, b"1\t0\t-\t-\tserver-start\t\told\n", 0);
+            .with_file(
+                "/var/log/agent-audit.log.1",
+                0o640,
+                b"1\t0\t-\t-\tserver-start\t\told\n",
+                0,
+            );
         assert_eq!(run(&mut fake, &[]), 0);
         let output = fake.output();
         assert!(output.find("old").unwrap() < output.find("new").unwrap());

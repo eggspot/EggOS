@@ -32,7 +32,11 @@ const WM_LIST_HEADER: &str = "ID STATE X Y WIDTH HEIGHT CLIENT TITLE";
 /// a text its output must hold. A tool missing here fails `every_tool_is_called_by_the_check`.
 pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
-    ("cat", r#"{"path":"/media/host/readme.txt"}"#, "EGGOS-MCP hello from the host"),
+    (
+        "cat",
+        r#"{"path":"/media/host/readme.txt"}"#,
+        "EGGOS-MCP hello from the host",
+    ),
     ("ps", "{}", "eggmcpd"),
     ("wm_list", "{}", WM_LIST_HEADER),
     ("app_list", "{}", ""),
@@ -79,8 +83,14 @@ impl Client {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("could not run {}: {e}", script.display()))?;
-        let input = child.stdin.take().ok_or("the script's stdin is not piped")?;
-        let output = child.stdout.take().ok_or("the script's stdout is not piped")?;
+        let input = child
+            .stdin
+            .take()
+            .ok_or("the script's stdin is not piped")?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or("the script's stdout is not piped")?;
         let paused = Arc::new(AtomicBool::new(false));
         let (sender, lines) = mpsc::channel();
         let reader_paused = Arc::clone(&paused);
@@ -165,7 +175,8 @@ impl Client {
             "tools/call",
             &format!(r#"{{"name":"{tool}","arguments":{arguments}}}"#),
         )?;
-        ToolResult::of(&answer).ok_or_else(|| self.fail(format!("{tool}: not a tool result: {answer}")))
+        ToolResult::of(&answer)
+            .ok_or_else(|| self.fail(format!("{tool}: not a tool result: {answer}")))
     }
 
     fn stop(mut self) {
@@ -204,7 +215,10 @@ impl ToolResult {
 
 fn error_code(answer: &str) -> Option<i64> {
     let error = json::parse(answer.as_bytes()).ok()?.value.get("error")?;
-    std::str::from_utf8(error.get("code")?.raw()).ok()?.parse().ok()
+    std::str::from_utf8(error.get("code")?.raw())
+        .ok()?
+        .parse()
+        .ok()
 }
 
 fn result_field(answer: &str, key: &str) -> Option<String> {
@@ -246,7 +260,11 @@ fn session(client: &mut Client) -> Result<(), String> {
     let arch = client.arch;
     client.send(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#)?;
     let probe = client.receive(FIRST_ANSWER_TIMEOUT)?;
-    expect(error_code(&probe) == Some(-32601), arch, "server/discover is not METHOD_NOT_FOUND")?;
+    expect(
+        error_code(&probe) == Some(-32601),
+        arch,
+        "server/discover is not METHOD_NOT_FOUND",
+    )?;
     let answer = client.request(
         "initialize",
         &format!(
@@ -280,12 +298,23 @@ fn session(client: &mut Client) -> Result<(), String> {
             &format!("tools/list lacks {}", tool.name),
         )?;
     }
-    expect(answer.contains(r#""readOnlyHint":true"#), arch, "tools carry no annotations")?;
+    expect(
+        answer.contains(r#""readOnlyHint":true"#),
+        arch,
+        "tools carry no annotations",
+    )?;
     for (tool, arguments, wanted) in TWIN_CALLS {
         let result = client.call(tool, arguments)?;
-        expect(!result.is_error, arch, &format!("{tool} failed: {}", result.all()))?;
         expect(
-            result.texts.first().is_some_and(|notice| notice.ends_with(NOTICE_END)),
+            !result.is_error,
+            arch,
+            &format!("{tool} failed: {}", result.all()),
+        )?;
+        expect(
+            result
+                .texts
+                .first()
+                .is_some_and(|notice| notice.ends_with(NOTICE_END)),
             arch,
             &format!("{tool}'s result does not start with the data notice"),
         )?;
@@ -314,7 +343,11 @@ fn session(client: &mut Client) -> Result<(), String> {
         arch,
         "the large read did not arrive byte for byte",
     )?;
-    expect(result.all().contains("cut at 131072"), arch, "the large read is not marked cut")?;
+    expect(
+        result.all().contains("cut at 131072"),
+        arch,
+        "the large read is not marked cut",
+    )?;
     for path in REFUSED_PATHS {
         let result = client.call("cat", &format!(r#"{{"path":{path}}}"#))?;
         expect(
@@ -336,10 +369,18 @@ fn session(client: &mut Client) -> Result<(), String> {
         }
         client.send(&line)?;
         let answer = client.receive(ANSWER_TIMEOUT)?;
-        expect(error_code(&answer).is_some(), arch, "a hostile line got no error")?;
+        expect(
+            error_code(&answer).is_some(),
+            arch,
+            "a hostile line got no error",
+        )?;
     }
     let answer = client.request("ping", "{}")?;
-    expect(answer.contains(r#""result":{}"#), arch, "ping after the hostile lines")
+    expect(
+        answer.contains(r#""result":{}"#),
+        arch,
+        "ping after the hostile lines",
+    )
 }
 
 /// Runs the MCP boot test for `arch` with the release image `kernel`.
@@ -372,8 +413,15 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
             &format!("agentlog does not show `{wanted}`"),
         )?;
     }
-    let refused = rows.iter().filter(|row| row.contains("  cat  refused  ")).count();
-    expect(refused == 2, arch.name, "agentlog does not show both refused reads")?;
+    let refused = rows
+        .iter()
+        .filter(|row| row.contains("  cat  refused  "))
+        .count();
+    expect(
+        refused == 2,
+        arch.name,
+        "agentlog does not show both refused reads",
+    )?;
     expect(
         has_line(&second.console, "EGGOS-MCP agentlog 0") && second.clean_exit,
         arch.name,
@@ -386,7 +434,11 @@ pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
         .split(|&byte| byte == b'\n')
         .filter_map(eggos_mcp::audit::parse_line)
         .count();
-    expect(records >= 15, arch.name, "the audit log on the disk is missing records")?;
+    expect(
+        records >= 15,
+        arch.name,
+        "the audit log on the disk is missing records",
+    )?;
     eprintln!("xtask: {}: MCP boot test passed", arch.name);
     Ok(())
 }

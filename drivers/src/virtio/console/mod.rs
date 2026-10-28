@@ -50,7 +50,8 @@ pub const CONTROL_BUFFER_BYTES: usize = 128;
 /// How many control receive buffers stay posted.
 pub const CONTROL_BUFFERS: usize = 4;
 /// Where the control message the driver sends is written.
-pub const CONTROL_SEND_OFFSET: usize = CONTROL_BUFFERS_OFFSET + CONTROL_BUFFERS * CONTROL_BUFFER_BYTES;
+pub const CONTROL_SEND_OFFSET: usize =
+    CONTROL_BUFFERS_OFFSET + CONTROL_BUFFERS * CONTROL_BUFFER_BYTES;
 /// Where the port's receive buffers start.
 pub const RECEIVE_OFFSET: usize = 8192;
 /// Each receive buffer's size.
@@ -181,7 +182,7 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
             queues,
             name: [0; MAX_NAME_BYTES],
             name_len: 0,
-            host_connected: false,
+            host_connected: true,
             unread: None,
             staged: 0,
             sending: false,
@@ -214,7 +215,8 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
         &self.name[..self.name_len]
     }
 
-    /// Whether the port's host side is open, as the device last said.
+    /// Whether the port's host side is open, as the device last said (open until it says
+    /// otherwise).
     pub fn host_connected(&self) -> bool {
         self.host_connected
     }
@@ -312,7 +314,11 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
     fn next_control_message(&mut self) -> Option<(ControlMessage, NameBytes)> {
         loop {
             let used = self.queues.control_receive.pop_used()?;
-            let Some(buffer) = self.control_heads.iter().position(|&head| head == used.head) else {
+            let Some(buffer) = self
+                .control_heads
+                .iter()
+                .position(|&head| head == used.head)
+            else {
                 continue;
             };
             let len = (used.len as usize).min(CONTROL_BUFFER_BYTES);
@@ -407,7 +413,11 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
                 return Some(unread);
             }
             let used = self.queues.port_receive.pop_used()?;
-            let Some(buffer) = self.receive_heads.iter().position(|&head| head == used.head) else {
+            let Some(buffer) = self
+                .receive_heads
+                .iter()
+                .position(|&head| head == used.head)
+            else {
                 continue;
             };
             let unread = Unread {
@@ -464,11 +474,7 @@ impl<T: Transport, M: DmaMemory> VirtioConsole<T, M> {
             return 0;
         }
         let count = bytes.len().min(TRANSMIT_BYTES - self.staged);
-        copy_to_dma(
-            &self.memory,
-            TRANSMIT_OFFSET + self.staged,
-            &bytes[..count],
-        );
+        copy_to_dma(&self.memory, TRANSMIT_OFFSET + self.staged, &bytes[..count]);
         self.staged += count;
         count
     }
@@ -536,8 +542,12 @@ fn set_up_queues<T: Transport, M: DmaMemory>(transport: &T, memory: &M) -> Resul
         transport.set_up_queue(queue, size, &split.addresses())?;
         *slot = Some(split);
     }
-    let [Some(control_receive), Some(control_transmit), Some(port_receive), Some(port_transmit)] =
-        made
+    let [
+        Some(control_receive),
+        Some(control_transmit),
+        Some(port_receive),
+        Some(port_transmit),
+    ] = made
     else {
         return Err(Error::QueueUnavailable);
     };

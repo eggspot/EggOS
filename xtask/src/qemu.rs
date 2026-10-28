@@ -3341,7 +3341,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 26 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 27 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

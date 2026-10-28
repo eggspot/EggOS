@@ -276,9 +276,9 @@ const HOME_PATH: &str = "home";
 const APPLICATIONS_PATH: &str = "Applications";
 
 const COREUTILS: [&str; 26] = [
-    "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
-    "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "trash", "true", "uname", "uptime",
-    "wc", "wm",
+    "agentlog", "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv",
+    "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "trash", "true", "uname",
+    "uptime", "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -1041,8 +1041,14 @@ fn fuzz_mcp(seconds: u64) -> Result<(), String> {
             0 => Server::restarted(),
             _ => Server::new(),
         };
-        run(&mut server, &mut system, &mut generator, &mut workspace, 10_000)
-            .map_err(|(fault, index)| format!("fuzz mcp: seed {seed}, line {index}: {fault:?}"))?;
+        run(
+            &mut server,
+            &mut system,
+            &mut generator,
+            &mut workspace,
+            10_000,
+        )
+        .map_err(|(fault, index)| format!("fuzz mcp: seed {seed}, line {index}: {fault:?}"))?;
         lines += 10_000;
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
     }

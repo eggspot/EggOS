@@ -281,9 +281,10 @@ impl<'a> Parser<'a> {
             let key_start = self.position;
             let key = self.string()?;
             if self.check {
-                let seen = keys.iter().take(count).any(|&(from, to)| {
-                    Str(self.text.get(from..to).unwrap_or(&[])).same_text(key)
-                });
+                let seen = keys
+                    .iter()
+                    .take(count)
+                    .any(|&(from, to)| Str(self.text.get(from..to).unwrap_or(&[])).same_text(key));
                 if seen {
                     match depth <= STRICT_DEPTH {
                         true => return Err(JsonError::DuplicateKey),
@@ -323,7 +324,10 @@ pub struct Members<'a> {
 
 impl<'a> Members<'a> {
     fn over(text: &'a [u8]) -> Self {
-        let start = text.iter().position(|&byte| byte == b'{').map_or(text.len(), |at| at + 1);
+        let start = text
+            .iter()
+            .position(|&byte| byte == b'{')
+            .map_or(text.len(), |at| at + 1);
         Self {
             parser_text: text,
             position: start,
@@ -869,12 +873,9 @@ impl<'b> JsonWriter<'b> {
     pub fn string_base64(&mut self, bytes: &[u8]) {
         self.begin_string();
         for group in bytes.chunks(3) {
-            let word = group
-                .iter()
-                .enumerate()
-                .fold(0u32, |word, (index, &byte)| {
-                    word | u32::from(byte) << (16 - 8 * index)
-                });
+            let word = group.iter().enumerate().fold(0u32, |word, (index, &byte)| {
+                word | u32::from(byte) << (16 - 8 * index)
+            });
             let mut encoded = [b'='; 4];
             for (index, slot) in encoded.iter_mut().enumerate().take(group.len() + 1) {
                 *slot = digit(BASE64, (word >> (18 - 6 * index)) as usize);

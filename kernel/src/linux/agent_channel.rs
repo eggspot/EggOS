@@ -119,19 +119,32 @@ fn read_or_wait<P: Platform>(
         return ControlFlow::Continue(Some(Ok(0)));
     };
     let mut piece = [0u8; PIECE];
-    let wanted = (length as usize).min(PIECE);
+    let length = length.min(super::MAX_RW_COUNT);
     loop {
-        match agent_channel::receive(&mut piece[..wanted]) {
-            Received::Bytes(count) => {
-                note_traffic::<P>();
-                let copied = process.write_user_memory(base, &piece[..count]);
-                return ControlFlow::Continue(Some(match copied {
-                    Ok(()) => Ok(count as u64),
-                    Err(_) => Err(Errno::EFAULT),
-                }));
+        let mut copied = 0u64;
+        while copied < length {
+            let wanted = (length - copied).min(PIECE as u64) as usize;
+            let count = match agent_channel::receive(&mut piece[..wanted]) {
+                Received::Bytes(count) => count,
+                Received::EndOfInput if copied == 0 => {
+                    return ControlFlow::Continue(Some(Ok(0)));
+                }
+                Received::EndOfInput | Received::Nothing => break,
+            };
+            if process
+                .write_user_memory(base + copied, &piece[..count])
+                .is_err()
+            {
+                return ControlFlow::Continue(Some(Err(Errno::EFAULT)));
             }
-            Received::EndOfInput => return ControlFlow::Continue(Some(Ok(0))),
-            Received::Nothing => {}
+            copied += count as u64;
+            if count < wanted || !agent_channel::has_bytes() {
+                break;
+            }
+        }
+        if copied > 0 {
+            note_traffic::<P>();
+            return ControlFlow::Continue(Some(Ok(copied)));
         }
         if file.is_nonblocking() {
             return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));

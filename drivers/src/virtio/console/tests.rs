@@ -70,7 +70,9 @@ impl FakeConsole {
     fn take_driver_control(&self) {
         let messages: Vec<ControlMessage> = {
             let mut queues = self.queues.borrow_mut();
-            let device = queues[usize::from(CONTROL_TRANSMIT_QUEUE)].as_mut().unwrap();
+            let device = queues[usize::from(CONTROL_TRANSMIT_QUEUE)]
+                .as_mut()
+                .unwrap();
             let mut messages = Vec::new();
             while let Some(head) = device.next_available() {
                 let (addr, len, _, _) = device.descriptor(head);
@@ -143,11 +145,7 @@ impl FakeConsole {
             let count = (bytes.len() - sent).min(len as usize);
             // SAFETY: a receive buffer the driver posted for the device to write.
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    bytes[sent..].as_ptr(),
-                    addr.get() as *mut u8,
-                    count,
-                )
+                std::ptr::copy_nonoverlapping(bytes[sent..].as_ptr(), addr.get() as *mut u8, count)
             };
             device.put_used(head, count as u32);
             sent += count;
@@ -207,7 +205,8 @@ impl Transport for &FakeConsole {
         let memory = addresses.descriptors.get() as *mut u8;
         // SAFETY: the queue lives in the test's HostDma, whose device address is its host
         // address, for as long as the fake device is used.
-        self.queues.borrow_mut()[usize::from(queue)] = Some(unsafe { DeviceSide::new(memory, size) });
+        self.queues.borrow_mut()[usize::from(queue)] =
+            Some(unsafe { DeviceSide::new(memory, size) });
         Ok(())
     }
     fn notify(&self, queue: u16) {
@@ -294,15 +293,11 @@ fn other_ports_are_refused_and_the_data_port_still_opens() {
     fake.ports = vec![(1, b"org.eggos.mcp"), (2, b"other")];
     let console = console(&fake);
     assert_eq!(console.name(), b"org.eggos.mcp");
-    assert!(
-        fake.sent_control
-            .borrow()
-            .contains(&ControlMessage {
-                id: 2,
-                event: event::PORT_READY,
-                value: 0
-            })
-    );
+    assert!(fake.sent_control.borrow().contains(&ControlMessage {
+        id: 2,
+        event: event::PORT_READY,
+        value: 0
+    }));
 }
 
 #[test]
@@ -319,7 +314,9 @@ fn a_device_without_multiport_or_a_named_port_is_refused() {
     let mut fake = FakeConsole::new();
     fake.ports = vec![(2, b"org.eggos.mcp")];
     assert_eq!(
-        VirtioConsole::new(&fake, memory(), &mut polls(20)).unwrap_err().0,
+        VirtioConsole::new(&fake, memory(), &mut polls(20))
+            .unwrap_err()
+            .0,
         Error::NoPort
     );
 }
@@ -336,7 +333,9 @@ fn bytes_from_the_host_are_read_across_buffers_and_buffers_go_back() {
     let fake = FakeConsole::new();
     let mut console = console(&fake);
     assert!(!console.has_input());
-    let message: Vec<u8> = (0..RECEIVE_BUFFER_BYTES * 3 + 17).map(|i| i as u8).collect();
+    let message: Vec<u8> = (0..RECEIVE_BUFFER_BYTES * 3 + 17)
+        .map(|i| i as u8)
+        .collect();
     assert_eq!(fake.host_sends(&message), message.len());
     assert!(console.has_input());
     let mut first = [0u8; 10];
@@ -367,7 +366,9 @@ fn more_than_the_posted_buffers_waits_for_the_driver_to_read() {
 fn sends_are_split_at_the_transmit_buffer_and_arrive_in_order() {
     let fake = FakeConsole::new();
     let mut console = console(&fake);
-    let message: Vec<u8> = (0..TRANSMIT_BYTES * 2 + 5).map(|i| (i % 251) as u8).collect();
+    let message: Vec<u8> = (0..TRANSMIT_BYTES * 2 + 5)
+        .map(|i| (i % 251) as u8)
+        .collect();
     send(&mut console, &message);
     assert!(!console.is_sending());
     assert_eq!(*fake.output.borrow(), message);
@@ -472,6 +473,9 @@ fn a_long_port_name_is_cut_and_control_messages_round_trip() {
         message.to_bytes(),
         [0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07]
     );
-    assert_eq!(ControlMessage::from_bytes(&message.to_bytes()), Some(message));
+    assert_eq!(
+        ControlMessage::from_bytes(&message.to_bytes()),
+        Some(message)
+    );
     assert_eq!(ControlMessage::from_bytes(&[0; 7]), None);
 }

@@ -105,7 +105,11 @@ impl Session {
     pub fn initialize(&mut self, requested: &str, name: &str, version: &str) -> &'static str {
         self.state = State::Initialized;
         self.version = negotiate(requested);
-        self.client_name = Bounded::new(if name.is_empty() { UNNAMED_CLIENT } else { name });
+        self.client_name = Bounded::new(if name.is_empty() {
+            UNNAMED_CLIENT
+        } else {
+            name
+        });
         self.client_version = Bounded::new(version);
         self.version
     }
@@ -123,6 +127,11 @@ impl Session {
     /// The protocol version in use.
     pub fn version(&self) -> &'static str {
         self.version
+    }
+
+    /// A copy of the client's name, which outlives a borrow of the session.
+    pub fn client(&self) -> Bounded<MAX_CLIENT_NAME_BYTES> {
+        self.client_name
     }
 
     /// The client's name, as it gave it.
@@ -153,7 +162,10 @@ mod tests {
     fn a_session_starts_fresh_initializes_and_ends() {
         let mut session = Session::default();
         assert!(!session.is_initialized());
-        assert_eq!(session.initialize("2025-06-18", "claude-code", "2.1"), "2025-06-18");
+        assert_eq!(
+            session.initialize("2025-06-18", "claude-code", "2.1"),
+            "2025-06-18"
+        );
         assert!(session.is_initialized());
         assert_eq!(session.client_name(), "claude-code");
         assert_eq!(session.client_version(), "2.1");

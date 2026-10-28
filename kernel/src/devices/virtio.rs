@@ -655,8 +655,7 @@ mod agent {
         let memory = DmaRegion::allocate(MEMORY_BYTES)
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting())
-        {
+        let console = match VirtioConsole::new(transport, memory, &mut || deadline.keep_waiting()) {
             Ok(console) => console,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {

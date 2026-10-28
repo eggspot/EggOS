@@ -8167,8 +8167,9 @@ the license, by an explicit instruction recorded here.
   (the core utilities are one binary crate, and no capability registry exists). A host test
   fails when a tool's twin is not in the release image, and another when a tool has no call in
   the QEMU check, which runs every twin. A twin starts through the runtime's new
-  `eggos_runtime::process::spawn` (`CLONE_VM | CLONE_VFORK` on a stack whose busy flag allows
-  one child at a time, so the server's 2.5 MiB of buffers are never copied), is stopped after
+  `eggos_runtime::process::spawn` (`CLONE_VM | CLONE_VFORK` on a stack it borrows mutably,
+  so one child at a time uses it, with no atomic read-modify-write that would pull in
+  `getauxval` on aarch64; so the server's 2.5 MiB of buffers are never copied), is stopped after
   10 s or as soon as its output passes 128 KiB, and its errors are kept to 4 KiB.
 - **Paths** are decoded, then resolved before they are checked: absolute only, no NUL, `.`,
   `..` and repeated slashes folded, every component checked not to be a symbolic link (none

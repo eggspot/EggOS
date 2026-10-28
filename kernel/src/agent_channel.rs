@@ -164,6 +164,14 @@ pub fn ready_to_receive() -> bool {
     channel.port.has_input() || (!channel.port.host_connected() && !channel.end_reported)
 }
 
+/// Whether bytes from the host wait to be read.
+pub fn has_bytes() -> bool {
+    CHANNEL
+        .lock()
+        .as_mut()
+        .is_some_and(|channel| channel.port.has_input())
+}
+
 /// Appends the start of `bytes` to what goes to the host; returns how many were taken, 0 while
 /// the device still holds the last transmission. A full transmission is handed over at once.
 pub fn send(bytes: &[u8]) -> Result<usize, &'static str> {
@@ -217,7 +225,9 @@ static TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 pub(crate) fn tests_lock() -> std::sync::MutexGuard<'static, ()> {
-    TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    TESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
