@@ -60,6 +60,7 @@ pub const STEPS_PER_TICK: usize = 16;
 pub const LINE_CAPACITY: usize = 256;
 
 pub(crate) const TOOLBAR_HEIGHT: i32 = 32;
+const PATH_FIELD_CAPACITY: usize = 255;
 pub(crate) const SIDEBAR_WIDTH: i32 = 160;
 pub(crate) const ROW_HEIGHT: i32 = 24;
 pub(crate) const HEADER_HEIGHT: i32 = 24;
@@ -272,6 +273,7 @@ struct Rename {
     index: usize,
     field: Field,
     original: Name,
+    shown: Text<255>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1246,6 +1248,12 @@ impl FilesWindow {
             self.show_notice(format_args!("The host share is read-only."));
             return;
         }
+        if let Some(Kind::App(_)) = self.listing.get(index).map(|entry| entry.kind) {
+            self.show_notice(format_args!(
+                "An installed app keeps its name: use Uninstall... to remove it."
+            ));
+            return;
+        }
         let name = self.listing.name(index);
         let Some(original) = Name::from(name) else {
             return;
@@ -1272,6 +1280,7 @@ impl FilesWindow {
             index,
             field,
             original,
+            shown: text,
         });
         self.focus = Focus::List;
         self.restart_caret();
@@ -1284,7 +1293,10 @@ impl FilesWindow {
         };
         self.damage_middle();
         let wanted = rename.field.text.as_str().as_bytes();
-        if wanted.is_empty() || wanted == rename.original.as_bytes() {
+        if wanted.is_empty()
+            || wanted == rename.original.as_bytes()
+            || rename.field.text == rename.shown
+        {
             return;
         }
         let keep_open = |window: &mut Self| window.rename = Some(rename);
@@ -1482,10 +1494,23 @@ impl FilesWindow {
                 let trash_words = [Place::Trash.label(false), Place::Trash.label(true)];
                 let location = match trash_words.iter().any(|word| word.as_bytes() == typed) {
                     true => Some(Location::Trash),
-                    false => Path::from(typed)
+                    false => names::normalized(typed)
                         .filter(|path| path.as_bytes().first() == Some(&b'/'))
                         .map(Location::Folder),
                 };
+                if typed.len() + 4 > PATH_FIELD_CAPACITY {
+                    self.show_notice(format_args!(
+                        "Could not open this folder ({}).",
+                        errno_text(Errno::ENAMETOOLONG)
+                    ));
+                    return;
+                }
+                if typed == self.path_before.as_str().as_bytes() {
+                    self.focus = Focus::List;
+                    self.set_path_text();
+                    self.damage_all();
+                    return;
+                }
                 match location {
                     Some(location) => {
                         self.go(files, location);
@@ -1962,7 +1987,7 @@ impl FilesWindow {
             self.damage_middle();
             return;
         }
-        if is_within(folder.as_bytes(), clip.path.as_bytes()) {
+        if names::is_inside(folder.as_bytes(), clip.path.as_bytes()) {
             self.show_notice(format_args!("Cannot paste a folder into itself."));
             return;
         }

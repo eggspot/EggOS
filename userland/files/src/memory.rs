@@ -106,6 +106,19 @@ impl MemoryFiles {
         self
     }
 
+    /// Adds the file at `path`, any bytes, holding `bytes`; its folder must exist.
+    pub fn file_at(&mut self, path: &[u8], bytes: &[u8], modified: u64) -> &mut Self {
+        self.nodes.insert(
+            path.to_vec(),
+            Held {
+                node: Node::File(bytes.to_vec()),
+                permissions: 0o644,
+                modified,
+            },
+        );
+        self
+    }
+
     /// Adds `path` as a device or a link: neither a file nor a folder.
     pub fn other(&mut self, path: &str) -> &mut Self {
         self.nodes.insert(

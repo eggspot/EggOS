@@ -629,3 +629,57 @@ fn a_path_being_typed_survives_a_reload_and_closing_stops_a_job() {
     assert_eq!(driver.files.node("/tmp/big.bin"), None);
     assert_eq!(driver.files.open_count(), 0);
 }
+
+#[test]
+fn a_folder_is_not_pasted_into_itself_through_an_unnormalised_path() {
+    let mut driver = Driver::new();
+    driver.files.folder("/home/root/Work");
+    driver.press(code::F5, 0, '\0');
+    driver.select("Work");
+    driver.press(code::C, Modifiers::CTRL, 'c');
+    driver.press(code::L, Modifiers::CTRL, 'l');
+    for _ in 0.."/home/root".len() {
+        driver.press(key::BACKSPACE, 0, '\u{8}');
+    }
+    driver.typed("/home/root/./Work/");
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(driver.folder(), "/home/root/Work");
+    driver.press(code::V, Modifiers::CTRL, 'v');
+    assert_eq!(
+        driver.window.notice(),
+        Some("Cannot paste a folder into itself.")
+    );
+    assert!(driver.files.paths_under("/home/root/Work").is_empty());
+}
+
+#[test]
+fn renames_keep_names_they_cannot_show_apps_keep_theirs_and_long_paths_are_refused() {
+    let mut driver = Driver::new();
+    driver.files.file_at(b"/home/root/caf\xe9", b"x", 1);
+    driver.press(code::F5, 0, '\0');
+    let index = driver.window.listing().find(b"caf\xe9").unwrap();
+    let rect = driver.window.row_rect(index);
+    driver.click(rect);
+    driver.press(code::F2, 0, '\0');
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(driver.window.notice(), None);
+    assert_eq!(
+        driver.files.paths_under("/home/root"),
+        ["/home/root/caf\u{fffd}"]
+    );
+    driver.place(Place::Apps);
+    driver.select("Hello");
+    driver.press(code::F2, 0, '\0');
+    assert_eq!(
+        driver.window.notice(),
+        Some("An installed app keeps its name: use Uninstall... to remove it.")
+    );
+    driver.press(code::L, Modifiers::CTRL, 'l');
+    driver.typed(&"/a".repeat(140));
+    driver.press(key::ENTER, 0, '\r');
+    assert_eq!(
+        driver.window.notice(),
+        Some("Could not open this folder (File name too long).")
+    );
+    assert_eq!(driver.folder(), "/Applications");
+}

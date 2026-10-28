@@ -166,6 +166,52 @@ pub fn parent(path: &[u8]) -> &[u8] {
     }
 }
 
+/// `path` with `//` collapsed, `.` dropped, `..` taking the component before it away and no
+/// `/` at its end: exact for EggOS, which has no symbolic links. A relative path stays
+/// relative (a `..` it cannot resolve is kept); `None` when it does not fit.
+pub fn normalized(path: &[u8]) -> Option<Path> {
+    let absolute = path.first() == Some(&b'/');
+    let mut out = Path::new();
+    if absolute && !out.append(b"/") {
+        return None;
+    }
+    let mut kept = 0usize;
+    for part in path.split(|&byte| byte == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." if kept > 0 => {
+                let bytes = out.as_bytes();
+                let cut = bytes.iter().rposition(|&byte| byte == b'/').unwrap_or(0);
+                let cut = if absolute && cut == 0 { 1 } else { cut };
+                out = Path::from(&bytes[..cut])?;
+                kept -= 1;
+            }
+            b".." if absolute => {}
+            part => {
+                let room = out.as_bytes().last().is_some_and(|&byte| byte != b'/');
+                if (room && !out.append(b"/")) || !out.append(part) {
+                    return None;
+                }
+                if part != b".." {
+                    kept += 1;
+                }
+            }
+        }
+    }
+    if out.is_empty() && !absolute {
+        out.append(b".");
+    }
+    Some(out)
+}
+
+/// Whether `path` names `folder` or something inside it, once both are [`normalized`].
+pub fn is_inside(path: &[u8], folder: &[u8]) -> bool {
+    match (normalized(path), normalized(folder)) {
+        (Some(path), Some(folder)) => is_within(path.as_bytes(), folder.as_bytes()),
+        _ => false,
+    }
+}
+
 /// Whether `path` is `folder` or inside it.
 pub fn is_within(path: &[u8], folder: &[u8]) -> bool {
     folder == b"/"
@@ -246,6 +292,22 @@ mod tests {
         assert!(is_within(b"/home/root", b"/home/root"));
         assert!(!is_within(b"/home/rooted", b"/home/root"));
         assert!(is_within(b"/x", b"/"));
+    }
+
+    #[test]
+    fn paths_are_normalized_without_touching_the_file_system() {
+        let text = |path: &[u8]| String::from_utf8(normalized(path).unwrap().as_bytes().to_vec());
+        assert_eq!(text(b"/home/root/./Work").unwrap(), "/home/root/Work");
+        assert_eq!(text(b"/home//root/Work/").unwrap(), "/home/root/Work");
+        assert_eq!(text(b"/home/root/a/../Work").unwrap(), "/home/root/Work");
+        assert_eq!(text(b"/../..").unwrap(), "/");
+        assert_eq!(text(b"/").unwrap(), "/");
+        assert_eq!(text(b"Work/./x/..").unwrap(), "Work");
+        assert_eq!(text(b"../a").unwrap(), "../a");
+        assert_eq!(text(b"a/..").unwrap(), ".");
+        assert!(is_inside(b"/home/root/./Work/backup", b"/home/root/Work"));
+        assert!(is_inside(b"/home/root/Work", b"/home/root/x/../Work/"));
+        assert!(!is_inside(b"/home/root/Workshop", b"/home/root/Work"));
     }
 
     #[test]

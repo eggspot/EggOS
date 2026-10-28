@@ -4,9 +4,10 @@
 //! a rename when it can be; across file systems it is a copy, then a delete of the source. A
 //! delete removes a folder's entries one at a time from the first, so a file system whose
 //! listing moves under removals still loses every entry. Cancelling keeps what is done and
-//! removes the file half-written.
+//! removes the file half-written. Paths are normalized first, so a target written with `.`,
+//! `..` or `//` cannot hide inside its own source.
 
-use crate::names::is_within;
+use crate::names::{is_inside, normalized};
 use eggos_app::files::{Files, Handle, Kind, Path, Status};
 use eggos_runtime::errno::Errno;
 
@@ -152,6 +153,11 @@ impl Job {
     }
 
     fn new(work: Work, from: &Path, to: &Path) -> Self {
+        let exact = |path: &Path| match path.is_empty() {
+            true => *path,
+            false => normalized(path.as_bytes()).unwrap_or(*path),
+        };
+        let (from, to) = (&exact(from), &exact(to));
         Self {
             work,
             from: *from,
@@ -235,7 +241,7 @@ impl Job {
             .map_err(|error| (error, from))?;
         if self.work != Work::Delete {
             let to = self.to;
-            if is_within(to.as_bytes(), from.as_bytes()) {
+            if is_inside(to.as_bytes(), from.as_bytes()) {
                 return Err((Errno::EINVAL, to));
             }
             match files.status(to.as_bytes()) {
@@ -561,6 +567,12 @@ mod tests {
             run(&mut files, job),
             Step::Failed(Errno::EINVAL, _)
         ));
+        let job = Job::copy(&path("/home/root/./Work"), &path("/home/root//Work/./x"));
+        assert!(matches!(
+            run(&mut files, job),
+            Step::Failed(Errno::EINVAL, _)
+        ));
+        assert_eq!(files.node("/home/root/Work/x"), None);
     }
 
     #[test]

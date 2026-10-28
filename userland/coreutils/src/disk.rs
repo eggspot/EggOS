@@ -8,6 +8,27 @@ const REGULAR: u32 = 0o100_000;
 const ENTRIES_CHUNK: usize = 2048;
 const NEW_DIRECTORY_MODE: u32 = 0o777;
 
+pub const ABSOLUTE_CAPACITY: usize = 1024;
+
+pub fn absolute_path<S: System>(
+    system: &mut S,
+    path: &[u8],
+    out: &mut [u8; ABSOLUTE_CAPACITY],
+) -> Option<usize> {
+    if path.first() == Some(&b'/') {
+        out.get_mut(..path.len())?.copy_from_slice(path);
+        return Some(path.len());
+    }
+    let mut length = system.working_directory(out).ok()?;
+    if out[..length].last() != Some(&b'/') {
+        *out.get_mut(length)? = b'/';
+        length += 1;
+    }
+    out.get_mut(length..length + path.len())?
+        .copy_from_slice(path);
+    Some(length + path.len())
+}
+
 pub struct SystemFiles<'a, S: System> {
     system: &'a mut S,
 }

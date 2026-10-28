@@ -1,15 +1,15 @@
-use crate::disk::SystemFiles;
+use crate::disk::{ABSOLUTE_CAPACITY, SystemFiles, absolute_path};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
 use eggos_app::files::Files;
 use eggos_files::clock::deletion_date;
+use eggos_files::names::is_valid;
 use eggos_files::trash::{HOME, RestoreError, Trash};
 use eggos_runtime::errno::Errno;
 
 const USAGE: &[u8] = b"usage: trash [-f] [--] <path>... | trash -l | trash -r <name>... | trash -e";
 const USAGE_STATUS: i32 = 2;
-const ABSOLUTE_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -93,23 +93,22 @@ pub fn trash<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
 }
 
-fn absolute_path<S: System>(
-    system: &mut S,
-    path: &[u8],
-    out: &mut [u8; ABSOLUTE_CAPACITY],
-) -> Option<usize> {
-    if path.first() == Some(&b'/') {
-        out.get_mut(..path.len())?.copy_from_slice(path);
-        return Some(path.len());
+fn write_escaped<S: System>(output: &mut Output<S>, bytes: &[u8]) {
+    for &byte in bytes {
+        match byte {
+            b'\\' => output.write(b"\\\\"),
+            byte if byte < b' ' || byte == 0x7f => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                output.write(&[
+                    b'\\',
+                    b'x',
+                    HEX[usize::from(byte >> 4)],
+                    HEX[usize::from(byte & 0xf)],
+                ]);
+            }
+            byte => output.write(&[byte]),
+        }
     }
-    let mut length = system.working_directory(out).ok()?;
-    if out[..length].last() != Some(&b'/') {
-        *out.get_mut(length)? = b'/';
-        length += 1;
-    }
-    out.get_mut(length..length + path.len())?
-        .copy_from_slice(path);
-    Some(length + path.len())
 }
 
 fn put<S: System>(output: &mut Output<S>, trash: &Trash, paths: &[&CStr], force: bool) -> i32 {
@@ -178,14 +177,15 @@ fn list<S: System>(output: &mut Output<S>, trash: &Trash) -> i32 {
         index += 1;
         let record = trash.record(&mut SystemFiles::new(&mut output.system), &name[..length]);
         let date = record.and_then(|record| record.deleted).map(deletion_date);
-        output.write(&name[..length]);
+        write_escaped(output, &name[..length]);
         output.write(b"\t");
         output.write(
             date.as_ref()
                 .map_or(&b"-"[..], |date| date.as_str().as_bytes()),
         );
         output.write(b"\t");
-        output.write(
+        write_escaped(
+            output,
             record
                 .as_ref()
                 .map_or(&b"?"[..], |record| record.original.as_bytes()),
@@ -198,6 +198,11 @@ fn restore<S: System>(output: &mut Output<S>, trash: &Trash, names: &[&CStr]) ->
     let mut status = 0;
     for &name in names {
         let bytes = name.to_bytes();
+        if !is_valid(bytes) {
+            output.error(&[b"cannot restore '", bytes, b"': it is not in the Trash"]);
+            status = FAILURE;
+            continue;
+        }
         let restored = trash.restore(&mut SystemFiles::new(&mut output.system), bytes);
         match restored {
             Ok(_) => {}
@@ -268,6 +273,12 @@ mod tests {
         assert_eq!((status, fake.errors().as_str()), (0, ""));
         assert!(fake.nodes.contains_key(&b"/home/root/Work/notes.txt"[..]));
         let (_, fake) = run(fake, &[c"--", c"/home/root/Work"]);
+        let (status, fake) = run(fake, &[c"-r", c"../../etc"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            fake.errors(),
+            "trash: cannot restore '../../etc': it is not in the Trash\n"
+        );
         let (status, fake) = run(fake, &[c"-r", c"notes.txt"]);
         assert_eq!(status, 1);
         assert_eq!(
@@ -306,8 +317,16 @@ mod tests {
         fake.working_directory = "/home/root/Work".to_owned();
         let (status, fake) = run(fake, &[c"notes.txt"]);
         assert_eq!((status, fake.errors().as_str()), (0, ""));
-        let (_, fake) = run(fake, &[c"-l"]);
+        let (_, mut fake) = run(fake, &[c"-l"]);
         assert!(fake.output().ends_with("\t/home/root/Work/notes.txt\n"));
+        fake = fake.with_file(
+            "/home/root/.local/share/Trash/info/notes.txt.trashinfo",
+            0o600,
+            b"[Trash Info]\nPath=/home/root/a%1B%5Bb\\c\nDeletionDate=x\n",
+            0,
+        );
+        let (_, fake) = run(fake, &[c"-l"]);
+        assert_eq!(fake.output(), "notes.txt\t-\t/home/root/a\\x1b[b\\\\c\n");
         assert_eq!(run(home(), &[]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"x"]).0, 2);
         assert_eq!(run(home(), &[c"-l", c"-e"]).0, 2);
