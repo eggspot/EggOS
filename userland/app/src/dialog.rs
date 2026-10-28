@@ -4,7 +4,11 @@
 //! apart from the system calls so host tests, and the QEMU test's expected frames, draw the
 //! same window the program shows.
 
-use crate::messages::Line;
+use crate::architecture::Architecture;
+use crate::files::Files;
+use crate::installer::{self, Plan};
+use crate::messages::{self, Line};
+use core::fmt::Write;
 use eggos_app_manifest::Source;
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
 use eggos_toolkit::colour;
@@ -25,6 +29,45 @@ pub const INSTALL_TITLE: &str = "Install";
 pub const UNINSTALL_TITLE: &str = "Uninstall";
 /// The most programs the chooser lists.
 pub const MAX_CHOICES: usize = 4;
+
+/// The installer's first screen for the program or `.app` at `path`, installed as `name` or
+/// the name its file gives: the prompt and the plan it would carry out, or why it cannot,
+/// with no plan. Files' `Install...` and the QEMU tests' expected frames show the same.
+pub fn install_prompt(
+    files: &mut impl Files,
+    path: &[u8],
+    name: Option<&[u8]>,
+    machine: Architecture,
+) -> (Dialog, Option<Plan>) {
+    match installer::plan(files, path, name, machine) {
+        Ok(plan) => {
+            let kind = messages::kind(plan.program());
+            let mut from = Line::new();
+            let _ = from.write_str("From: ");
+            from.push_bytes(plan.source());
+            let mut to = Line::new();
+            let _ = to.write_str("To: ");
+            to.push_bytes(plan.folder().as_bytes());
+            let dialog = Dialog::prompt(
+                AppIcon::of(plan.name(), Some(plan.program().source)),
+                plan.name(),
+                &[
+                    kind.as_str(),
+                    from.as_str(),
+                    to.as_str(),
+                    "Adds: a launcher entry and a desktop icon",
+                ],
+            );
+            (dialog, Some(plan))
+        }
+        Err(refused) => {
+            let line =
+                messages::install_failed(refused.name.as_str(), "this", machine, refused.problem);
+            let dialog = Dialog::message(AppIcon::of(refused.name.as_str(), None), line.as_str());
+            (dialog, None)
+        }
+    }
+}
 
 const PADDING: i32 = 16;
 const ICON: i32 = 48;

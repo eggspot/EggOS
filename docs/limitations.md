@@ -104,9 +104,8 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - resizing or maximising the terminal: its grid stays 80x24 until terminals are user programs;
 - F11; the phone layout of the shell, 2x, dragging or arranging desktop icons, the caret's
   blink in the launcher's search field and keyboard focus in the Linux launcher's dash (D133);
-- installing a missing Windows or macOS layer, `app install --force`, Files' `Install...`
-  (item 37) and the MCP tools `app_install`, `app_uninstall` and `app_list` (with the MCP
-  server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
+- installing a missing Windows or macOS layer, `app install --force` and the MCP tools
+  `app_install`, `app_uninstall` and `app_list` (with the MCP server): `app install` refuses a program whose layer is not in the image (D134, docs/apps.md);
 - `.app` bundles that hold symbolic links (a framework's `Versions/Current`, for example):
   `app install` refuses them, as EggFS stores no symbolic links (D131, D134); the installer's
   chooser lists at most four programs and leaves out names longer than 64 bytes (`app install
@@ -114,8 +113,8 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - closing the terminal (its close control is disabled) and a second terminal: launching
   Terminal focuses the one console terminal, and installed console apps are typed into it, so
   they reach whatever reads the console at that moment (docs/apps.md);
-- Settings and the installer's window (`app --window`, served by the same program, D134) are
-  the programs with a window in the image (the window tests' `hello-window`
+- Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
+  all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
   key repeat and 2x come later; Windows GUI programs open windows
   (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
@@ -123,4 +122,17 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
   rows): the window does not fit every profile's work area, and the display then shows no
   terminal (the serial console still works);
-- copy and paste, and scaling for high-density displays.
+- Files (D135, docs/ux/desktop-v0.3-gui.md section 8.1) selects one item at a time (no
+  multiple selection, dragging or drop), has one list view (no icons, thumbnails or columns
+  to sort by), hides names starting with `.`, shows at most 512 entries (32 KiB of names) of
+  a folder, and shows no free space in its status bar (no `statfs` yet); its clipboard holds
+  one item inside the Files process, shared with no other program and lost when Files
+  closes; times follow the wall clock, which counts from the boot until an RTC driver lands
+  (item 29); a text file opens with `cat` in the Terminal window until the Text Editor (item
+  46); each click on the desktop's `Host share` opens another Files window; folders nest at
+  most 32 levels deep in a copy, a move across file systems or a delete; the MCP tools for
+  files come with the MCP server (item 28, after the release);
+- the Trash holds only what is on the home folder's file system (`/home`): an item in `/tmp`
+  or `/Applications` is deleted for good after a question, and the read-only host share's are
+  neither trashed nor changed;
+- copy and paste of text, and scaling for high-density displays.

@@ -24,6 +24,9 @@ const STATX_BASIC_STATS: usize = 0x7ff;
 const STATX_SIZE: usize = 256;
 const STATX_MODE: usize = 28;
 const STATX_FILE_SIZE: usize = 40;
+const STATX_MODIFIED: usize = 112;
+const STATX_DEVICE_MAJOR: usize = 136;
+const STATX_DEVICE_MINOR: usize = 140;
 const FILE_TYPE: u32 = 0o170_000;
 const REGULAR: u32 = 0o100_000;
 const DIRECTORY: u32 = 0o040_000;
@@ -313,11 +316,10 @@ impl Files for LinuxFiles {
             record[STATX_MODE],
             record[STATX_MODE + 1],
         ]));
-        let size = u64::from_ne_bytes(
-            record[STATX_FILE_SIZE..STATX_FILE_SIZE + 8]
-                .try_into()
-                .unwrap_or([0; 8]),
-        );
+        let double_word =
+            |at: usize| u64::from_ne_bytes(record[at..at + 8].try_into().unwrap_or([0; 8]));
+        let word = |at: usize| u32::from_ne_bytes(record[at..at + 4].try_into().unwrap_or([0; 4]));
+        let size = double_word(STATX_FILE_SIZE);
         let kind = match mode & FILE_TYPE {
             REGULAR => Kind::File,
             DIRECTORY => Kind::Directory,
@@ -327,6 +329,8 @@ impl Files for LinuxFiles {
             kind,
             size,
             permissions: mode & 0o7777,
+            modified: double_word(STATX_MODIFIED).min(i64::MAX as u64),
+            device: u64::from(word(STATX_DEVICE_MAJOR)) << 32 | u64::from(word(STATX_DEVICE_MINOR)),
         })
     }
 

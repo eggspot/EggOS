@@ -508,9 +508,10 @@ impl Desktop {
 
     /// Launches `app` (docs/ux/desktop-v0.3-gui.md, section 6.2): Terminal focuses the
     /// terminal's window; Settings and Files focus their window if they have one, else ask the
-    /// kernel to start them (Files says it is not in the build when it is not), as
-    /// `Install from host share...` asks to start the installer; the host share and installed
-    /// apps focus the terminal and ask the kernel to type their command in it.
+    /// kernel to start them (Files says it is not installed when it is not), as
+    /// `Install from host share...` asks to start the installer and the host share Files on
+    /// it; installed apps, and the host share without Files, focus the terminal and ask the
+    /// kernel to type their command in it.
     pub fn launch(
         &mut self,
         app: AppId,
@@ -541,7 +542,11 @@ impl Desktop {
                 self.show_notice(super::launcher::FILES_MISSING, damage);
                 Action::None
             }
-            AppId::Files | AppId::Settings | AppId::InstallFromHostShare => {
+            AppId::HostShare if !self.catalogue.files_present() => {
+                self.activate(TERMINAL_SLOT, damage, events);
+                Action::Type(app)
+            }
+            AppId::Files | AppId::Settings | AppId::InstallFromHostShare | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
                     pending == app && self.now_ms.wrapping_sub(at) < STARTING_MS
                 });
@@ -551,7 +556,7 @@ impl Desktop {
                 self.panels.starting = Some((app, self.now_ms));
                 Action::Start(app)
             }
-            AppId::HostShare | AppId::Installed(_) => {
+            AppId::Installed(_) => {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::Type(app)
             }

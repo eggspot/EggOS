@@ -49,6 +49,7 @@ pub struct Fake {
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
     pub window_server: bool,
+    pub working_directory: String,
     open: Vec<Option<OpenFile>>,
 }
 
@@ -86,6 +87,7 @@ impl Default for Fake {
             windows: Vec::new(),
             managed: Vec::new(),
             window_server: true,
+            working_directory: "/".to_owned(),
             open: Vec::new(),
         }
     }
@@ -227,7 +229,7 @@ impl System for Fake {
         if window_device && !self.window_server {
             return Err(Errno::ENXIO);
         }
-        let path = path.to_bytes().to_vec();
+        let path = self.resolve(path.to_bytes());
         if !window_device && !self.nodes.contains_key(&path) {
             return Err(Errno::ENOENT);
         }
@@ -284,7 +286,7 @@ impl System for Fake {
                     _ => [&directory[..], b"/", path.to_bytes()].concat(),
                 }
             }
-            None => path.to_bytes().to_vec(),
+            None => self.resolve(path.to_bytes()),
         };
         let path = match split_last_component(&path) {
             (directory, b".") => directory.to_vec(),
@@ -325,7 +327,7 @@ impl System for Fake {
     }
 
     fn create(&mut self, path: &CStr, mode: u32, truncate: bool) -> Result<usize, Errno> {
-        let bytes = path.to_bytes().to_vec();
+        let bytes = self.resolve(path.to_bytes());
         match self.nodes.get_mut(&bytes) {
             Some((Node::Directory, _)) => return Err(Errno::EISDIR),
             Some((Node::File(content), status)) => {
@@ -348,7 +350,7 @@ impl System for Fake {
     }
 
     fn make_directory(&mut self, path: &CStr, _mode: u32) -> Result<(), Errno> {
-        let bytes = path.to_bytes().to_vec();
+        let bytes = self.resolve(path.to_bytes());
         if self.nodes.contains_key(&bytes) {
             return Err(Errno::EEXIST);
         }
@@ -359,7 +361,7 @@ impl System for Fake {
     }
 
     fn remove(&mut self, path: &CStr, directory: bool) -> Result<(), Errno> {
-        let bytes = path.to_bytes().to_vec();
+        let bytes = self.resolve(path.to_bytes());
         match (self.nodes.get(&bytes), directory) {
             (None, _) => Err(Errno::ENOENT),
             (Some((Node::Directory, _)), false) => Err(Errno::EISDIR),
@@ -375,7 +377,7 @@ impl System for Fake {
     }
 
     fn rename(&mut self, from: &CStr, to: &CStr) -> Result<(), Errno> {
-        let (from, to) = (from.to_bytes().to_vec(), to.to_bytes().to_vec());
+        let (from, to) = (self.resolve(from.to_bytes()), self.resolve(to.to_bytes()));
         if self
             .cross_device
             .iter()
@@ -403,6 +405,17 @@ impl System for Fake {
         let (_, status) = self.nodes.get_mut(path.to_bytes()).ok_or(Errno::ENOENT)?;
         status.modified = self.now;
         Ok(())
+    }
+
+    fn now(&mut self) -> u64 {
+        self.now.max(0) as u64
+    }
+
+    fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let directory = self.working_directory.as_bytes();
+        let held = out.get_mut(..directory.len()).ok_or(Errno(34))?;
+        held.copy_from_slice(directory);
+        Ok(directory.len())
     }
 
     fn device_control(
@@ -454,6 +467,14 @@ impl System for Fake {
 }
 
 impl Fake {
+    fn resolve(&self, path: &[u8]) -> Vec<u8> {
+        if path.first() == Some(&b'/') || self.working_directory == "/" {
+            return path.to_vec();
+        }
+        let joined = [self.working_directory.as_bytes(), b"/", path].concat();
+        eggos_files::names::normalized(&joined).map_or(joined, |path| path.as_bytes().to_vec())
+    }
+
     fn parent_directory(&self, path: &[u8]) -> Result<(), Errno> {
         let (directory, _) = split_last_component(path);
         match self.nodes.get(directory) {

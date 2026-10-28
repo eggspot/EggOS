@@ -651,6 +651,15 @@ fn request_numbers_and_layouts_are_the_contract_s() {
         Some(Request::OpenApp { length: 5, name }) => assert_eq!(&name[..5], b"Paint"),
         other => panic!("{other:?}"),
     }
+    assert_eq!(request::TYPE_IN_TERMINAL, 0x4104_7711);
+    let mut typed = [0u8; 260];
+    typed[..4].copy_from_slice(&6u32.to_ne_bytes());
+    typed[4..10].copy_from_slice(b"cat 'a");
+    match Request::parse(request::TYPE_IN_TERMINAL, &typed) {
+        Some(Request::TypeInTerminal { length: 6, line }) => assert_eq!(&line[..6], b"cat 'a"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(size::LARGEST, 260);
     assert_eq!(
         Request::parse(request::SET_PROFILE, &2u32.to_ne_bytes()),
         Some(Request::SetProfile { profile: 2 })

@@ -419,7 +419,7 @@ fn the_launcher_offers_install_from_host_share_while_the_share_is_mounted() {
 }
 
 #[test]
-fn files_says_it_is_not_in_the_build_until_it_is() {
+fn files_says_it_is_not_installed_until_it_is() {
     let mut desktop = desktop(Profile::Macos);
     let files = desktop.dock_icon(AppId::Files).unwrap();
     assert_eq!(click_in(&mut desktop, files), Action::None);
@@ -430,6 +430,36 @@ fn files_says_it_is_not_in_the_build_until_it_is() {
     catalogue.set_files_present(true);
     desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
     assert_eq!(click_in(&mut desktop, files), Action::Start(AppId::Files));
+}
+
+#[test]
+fn the_host_share_opens_files_on_it_and_without_files_lists_it_in_the_terminal() {
+    let mut desktop = desktop(Profile::Macos);
+    let mut catalogue = catalogue();
+    catalogue.set_host_share(true);
+    desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
+    assert_eq!(
+        desktop.launch(AppId::HostShare, &mut Damage::new(), &mut DiscardEvents),
+        Action::Type(AppId::HostShare)
+    );
+    let mut catalogue = self::catalogue();
+    catalogue.set_host_share(true);
+    catalogue.set_files_present(true);
+    desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
+    assert_eq!(
+        desktop.launch(AppId::HostShare, &mut Damage::new(), &mut DiscardEvents),
+        Action::Start(AppId::HostShare)
+    );
+    assert_eq!(
+        desktop.launch(AppId::HostShare, &mut Damage::new(), &mut DiscardEvents),
+        Action::None
+    );
+    match desktop.launch_command(AppId::HostShare) {
+        Some(Launch::Start(command)) => {
+            assert_eq!(command.as_bytes(), b"/bin/files\0/media/host")
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

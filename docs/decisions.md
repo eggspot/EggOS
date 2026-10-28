@@ -7988,3 +7988,127 @@ the license, by an explicit instruction recorded here.
   control closes it, the icon menu's `Uninstall...` opens the installer's confirmation, Enter
   uninstalls, and the frames show the window, icon and row gone; `ls /Applications` and `app
   list` print nothing, and the image's `/Applications` is empty.
+
+## D135 Files: a file manager with places, open by double-click, copy, cut and paste across file systems, rename, new folders and a real Trash; `cp -r`, `mv` of folders and `trash`; `TYPE_IN_TERMINAL` (v0.3.0 item 37) — Decided by the build loop (the design is Claude Fable's, D16; the Trash's layout and reach, the program's place, the command, what opening does, free space, long operations, the clipboard and names, the request and the share's icon decided by research)
+- **What.** Users can now browse their folders and the host share in a graphical file manager
+  and do what they would in Explorer, Finder or Files: open Files from the dock, the launcher
+  or the desktop (its `Host share` icon opens it on the share), go to a place in the sidebar
+  (Home and its Documents, Downloads and Desktop, tmp, Host share while mounted, Apps, System,
+  Trash, `Recycle Bin` in the Windows profile), back, up or a typed path; see each folder's
+  entries with their sizes, times and kinds; open by double-click or Enter; copy, cut and
+  paste with Ctrl or Cmd and C, X, V or the context menu, within and across file systems and
+  out of the read-only share; make folders, rename in place, see Properties; move to the Trash,
+  restore, empty it, and delete for good after a question. The same capabilities are commands:
+  `cp -r`, `mv` (folders across file systems too), `mkdir`, `rm -r` and `trash` (D22).
+- **Design (Claude Fable, D16).** Section 8 of `docs/ux/desktop-v0.3-gui.md` designed the window
+  for item 37 before the disk existed; for this item Fable wrote section 8.1: the sidebar with
+  the Trash, the dialog panel drawn inside the window (no second window per program in 0.3.0,
+  no alpha, so a 2 px `field.bg` edge instead of a shadow), every dialog's words, the progress
+  panel, the in-window notice, the context menus per case, the cut row, rename in place, one key
+  map with both Ctrl and Cmd in every profile, the Trash view, the empty-folder lines and the
+  status bar without free space. The design's `/mnt/host`, its "no Trash" dialog and `X free`
+  are superseded by D130, D131 and this entry.
+- **The Trash** (decided by research): the freedesktop.org Trash specification,
+  `/home/root/.local/share/Trash/files/<name>` with `info/<name>.trashinfo` (`[Trash Info]`,
+  the original path percent-encoded, `DeletionDate=YYYY-MM-DDThh:mm:ss`), the layout Linux
+  desktops and tools already read, over a home-made `.Trash`. A record is claimed first by an
+  exclusive create, then the item is moved by a rename, so a cut leaves at worst a record with
+  no item, which the listing skips; a taken name becomes `<name>.2`, `<name>.3`. Only what is on
+  the home folder's file system is trashed (the rename's reach): `/tmp` is memory and not
+  kept, so Delete there asks `Delete <name> permanently?`; the share is read-only and refuses
+  every change with `The host share is read-only.`; in `/Applications` Delete on an app asks to
+  uninstall it through the installer (D134), anything else there is deleted after the
+  question. Restore puts an item back under a name free in its folder (Fable's rule), and says
+  so when the folder is gone. The dates count from the boot until an RTC exists (item 29); they
+  still order the Trash, newest first.
+- **The program** (decided by research): `/bin/files` is a third name of the Settings program
+  (a hard link, dispatch on `argv[0]`, as `app-window`, D134), so the toolkit and Egg Sans are
+  in the image once; when the component manager exists (D18) the desktop apps are one
+  component. `/bin/files [<folder>]` opens the window there. The logic is the no_std crate
+  `eggos-files` (`userland/files`): names, times, what an entry is, the listing (512 entries,
+  32 KiB of names, in fixed arrays: no heap, as the toolkit), the Trash and a stepwise job for
+  copy, move and delete; the window is its `window` feature, pure state over `eggos-app`'s
+  `Files` calls, so host tests and the QEMU test's expected frames run what the program shows.
+  The toolkit grows a `View` (a program that draws its content itself, served by the same event
+  loop as a widget tree, whose `run` now goes through it), the text field's editing as a
+  function, a context `Menu` and a dialog `Panel`, and four colour tokens.
+- **Opening** (decided by research; Fable's item 11): what a file is comes from its first
+  1 KiB, never its name (D134): a folder is browsed into; an app's folder in `/Applications`
+  opens the app (`OPEN_APP`); a Windows or macOS program or an `.app` outside `/Applications`
+  opens the installer's prompt (`/usr/libexec/app-window install <path>`, started by Files as a
+  child with `clone(CLONE_VM | CLONE_VFORK)`, as the shell starts programs); a static Linux
+  program runs in the Terminal window and a text file (UTF-8, no NUL) of at most 256 KiB opens
+  there with `cat`, until the Text Editor (item 46); anything else says `No app opens <name>
+  yet.` and is never thrown at the terminal. A program's menu has `Open` and `Install...`.
+- **`TYPE_IN_TERMINAL`** (decided by research for the name and the permission): `0x41047711`,
+  a line of at most 256 printable bytes that the kernel types in the terminal after Ctrl-U,
+  with Enter, focusing it, as the shell's launches do (D133); root only, like `OPEN_APP`,
+  because it is typing into another program's terminal. Files quotes the path for the shell
+  (`'it'\''s'`).
+- **Long operations** (decided by research): a copy, a move across file systems or a delete
+  runs in steps (64 KiB of data or 16 entries each, 16 steps per tick of the window's loop); a
+  progress panel shows only when the work is not done after the first tick, so small copies are
+  instant, and Cancel keeps what is done and removes the file half-written. A copy never
+  replaces anything; a move inside a file system is a rename; across file systems it is a copy
+  then a delete of the source.
+- **The clipboard and names** (decided by research): one item, held by the Files process
+  (there is no system clipboard yet); copy happens at paste time; a cut is cleared by its
+  paste. A taken name becomes `<stem> copy<.ext>`, then `<stem> copy 2<.ext>`, in every
+  profile (names are data; a profile switch must not change them); `New folder` becomes
+  `New folder 2`. Names starting with `.` are hidden, as Finder and the Linux file managers
+  hide them.
+- **Free space** (decided by research): not in 0.3.0. `statfs` is a real ABI addition (a
+  method on every file system, layouts per architecture, FAT's free-cluster count) better done
+  as its own item with a `df` and the Windows layer's `GetDiskFreeSpaceEx`; no capability is
+  GUI-only without it, and `ENOSPC` is still reported on every write.
+- **The share's icon and the missing Files** (decided by research): the desktop's `Host share`
+  starts `files /media/host`, a new window each time, behind the shell's 2 s guard; the
+  launcher's Files row still focuses or starts Files. An image without `/bin/files` shows
+  `Files is not installed.` and the share's icon falls back to `ls /media/host` in the
+  terminal (design 6.4 item 10).
+- **The command** (decided by research): `trash` is a core utility (a hard link, so a headless
+  image keeps it and it costs a directory entry): `trash [-f] [--] <path>...`, `-l` (`--list`),
+  `-r` (`--restore`) `<name>...`, `-e` (`--empty`); options rather than words, so a file named
+  `list` is never taken for one, as `gio trash`. `-l` writes `name`, the date and the original
+  path, tab-separated, the path last since it may hold spaces. Restore takes the name in the
+  Trash, which is unique where the original path is not. `cp -r` and `mv` of folders across
+  file systems run the same stepwise job over the utilities' system calls, through an adapter
+  from their `System` to `eggos-app`'s `Files`. The MCP tools wait for the MCP server (item
+  28, after the release).
+- **Kernel.** No gap in the file systems needed fixing: renames across folders, `utimensat`,
+  `statx` times, `fsync` and `mkdirat` on EggFS already worked; nothing new is `unsafe` there.
+  The kernel gains `TYPE_IN_TERMINAL` and the share's launch, and the desktop's notice text.
+- **Lightness (D24).** Nothing runs and nothing is allocated while Files is closed; open, it
+  holds its listing and a 64 KiB copy buffer on its stack, and its 720x480 window buffer
+  (1.3 MiB). The image grows by Files' code inside `/bin/settings` (209.3 to 340.4 KB on
+  aarch64, 199.9 to 328.0 KB on riscv64, 231.8 to 378.3 KB on x86_64: the window, its menus,
+  dialogs and painting, the listing, the Trash and the jobs, with `core::fmt` for its
+  messages) and by the Trash and copy code inside `/bin/coreutils` (87.2 to 128.1 KB on
+  riscv64, 99.4 to 145.5 KB on x86_64, 128.3 KB on aarch64), so about 170 to 190 KB per
+  architecture; a separate `/bin/files` would have added the toolkit and Egg Sans again. CI
+  reports the image's change against the baseline (D122); the weekly pass looks for what can be
+  trimmed (the window's messages without `core::fmt`, one copy of the listing's code).
+- **Testing.** Host: names, copies and new folders' names, times and dates both ways, what an
+  entry is from its bytes and its place, the listing's order, kinds and limit, the Trash's put
+  (records, numbering, other file systems, the Trash itself), restore (free names, a gone
+  folder), delete and empty, the stepwise copy, move (rename or copy and delete), delete,
+  cancel and full disk, the window (places, opening each kind and the requests it makes,
+  quoting, new folder and rename with their refusals, copy out of the share, cut and paste,
+  folders into themselves, the Trash with restore and permanent delete, Empty Trash, `/tmp`'s
+  question, the progress panel and its cancel, the menus per case, Properties, back, up, the
+  path field, type-ahead, drawing and the notice's end), the toolkit's menu and panel, the
+  `trash` command, `cp -r`, `mv` of folders across file systems, the utilities' adapter, the
+  request's number and layout, the share's launch with and without Files. QEMU on all three
+  architectures (`xtask/src/qemu/files.rs`), frames compared with the host's render over a
+  file system in memory mirroring the guest's (the time column is not compared, since it
+  follows the guest's clock): the dock's Files opens at home; the share lists its files; a
+  double-click runs the Linux program in the terminal; a double-click on `win-paint.exe` opens
+  the installer's prompt (on riscv64 its refusal), Esc closes it; Ctrl+C and Ctrl+V copy the
+  text file out of the share; `^` shows `/home`; Ctrl+N and F2 make and rename a folder; Ctrl+X
+  and Ctrl+V move the file into it; Delete trashes it and the Trash lists it; the close control
+  closes Files; `trash -l` lists it; and the image read back holds the empty folder, the
+  trashed file and its record.
+- **Not yet.** The MCP tools (item 28); free space and `df`; multiple selection, drag and drop,
+  an icon view and sorting by column; a clipboard shared with other programs; showing hidden
+  names; the Text Editor (item 46); a Trash per file system; merging folders on paste or `cp
+  -r`; icons from apps (item 45).

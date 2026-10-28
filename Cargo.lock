@@ -23,6 +23,8 @@ version = "0.2.0"
 name = "eggos-coreutils"
 version = "0.2.0"
 dependencies = [
+ "eggos-app",
+ "eggos-files",
  "eggos-runtime",
 ]
 
@@ -43,6 +45,16 @@ name = "eggos-eggsh"
 version = "0.2.0"
 dependencies = [
  "eggos-runtime",
+]
+
+[[package]]
+name = "eggos-files"
+version = "0.2.0"
+dependencies = [
+ "eggos-app",
+ "eggos-app-manifest",
+ "eggos-runtime",
+ "eggos-toolkit",
 ]
 
 [[package]]
@@ -112,6 +124,7 @@ name = "eggos-settings"
 version = "0.2.0"
 dependencies = [
  "eggos-app",
+ "eggos-files",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-toolkit",
@@ -164,6 +177,7 @@ dependencies = [
  "eggos-app-manifest",
  "eggos-drivers",
  "eggos-eggfs",
+ "eggos-files",
  "eggos-settings",
  "eggos-settings-file",
  "eggos-toolkit",

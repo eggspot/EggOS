@@ -1,8 +1,12 @@
+use crate::disk::{ABSOLUTE_CAPACITY, SystemFiles, absolute_path};
 use crate::ls::record_names;
 use crate::options::{Item, parse};
 use crate::output::{FAILURE, Output};
 use crate::system::{SymbolicLinks, System};
 use core::ffi::CStr;
+use eggos_app::files::Path as FilesPath;
+use eggos_files::job::{Job, STEP_BYTES, Step};
+use eggos_files::names::{is_within, normalized};
 use eggos_runtime::errno::Errno;
 
 const PATH_CAPACITY: usize = 4096;
@@ -258,8 +262,51 @@ fn sources_and_target<'a, S: System>(
     Some((sources, target, into_directory))
 }
 
+fn run_job<S: System>(output: &mut Output<S>, mut job: Job, what: &[u8]) -> Result<(), ()> {
+    let mut buffer = [0u8; STEP_BYTES];
+    match job.run(&mut SystemFiles::new(&mut output.system), &mut buffer) {
+        Step::Failed(errno, path) => {
+            failed(output, what, path.as_bytes(), errno);
+            Err(())
+        }
+        Step::Working | Step::Done => Ok(()),
+    }
+}
+
+fn job_paths<S: System>(system: &mut S, from: &[u8], to: &[u8]) -> Option<(FilesPath, FilesPath)> {
+    let mut absolute = [0u8; ABSOLUTE_CAPACITY];
+    let length = absolute_path(system, from, &mut absolute)?;
+    let from = normalized(&absolute[..length])?;
+    let length = absolute_path(system, to, &mut absolute)?;
+    Some((from, normalized(&absolute[..length])?))
+}
+
+fn into_itself<S: System>(
+    output: &mut Output<S>,
+    from: &FilesPath,
+    to: &FilesPath,
+    source: &[u8],
+    target: &[u8],
+) -> bool {
+    let inside = is_within(to.as_bytes(), from.as_bytes());
+    if inside {
+        output.error(&[
+            b"cannot copy a directory, '",
+            source,
+            b"', into itself, '",
+            target,
+            b"'",
+        ]);
+    }
+    inside
+}
+
 pub fn cp<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Ok(operands) = parse(output, arguments, b"", b"", |_, _| Ok(())) else {
+    let mut recursive = false;
+    let Ok(operands) = parse(output, arguments, b"rR", b"", |_, _| {
+        recursive = true;
+        Ok(())
+    }) else {
         return FAILURE;
     };
     let Some((sources, target, into_directory)) = sources_and_target(output, operands.all()) else {
@@ -267,6 +314,45 @@ pub fn cp<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     };
     let mut status = 0;
     for &source in sources {
+        if recursive && is_directory(output, source) {
+            let Some(to) = target_for(source.to_bytes(), target, into_directory) else {
+                status = failed(
+                    output,
+                    b"cannot copy",
+                    source.to_bytes(),
+                    Errno::ENAMETOOLONG,
+                );
+                continue;
+            };
+            let target_path = to;
+            let Some((from, to)) = job_paths(
+                &mut output.system,
+                source.to_bytes(),
+                target_path.as_bytes(),
+            ) else {
+                status = failed(
+                    output,
+                    b"cannot copy",
+                    source.to_bytes(),
+                    Errno::ENAMETOOLONG,
+                );
+                continue;
+            };
+            if into_itself(
+                output,
+                &from,
+                &to,
+                source.to_bytes(),
+                target_path.as_bytes(),
+            ) {
+                status = FAILURE;
+                continue;
+            }
+            if run_job(output, Job::copy(&from, &to), b"cannot copy").is_err() {
+                status = FAILURE;
+            }
+            continue;
+        }
         if is_directory(output, source) {
             output.error(&[
                 b"-r not specified; omitting directory '",
@@ -351,11 +437,26 @@ pub fn mv<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             continue;
         };
         let result = match output.system.rename(source, to.as_c_str()) {
-            Err(Errno::EXDEV) if !is_directory(output, source) => {
-                copy_file(output, source, to.as_c_str())
-                    .map_err(|(_, _, errno)| errno)
-                    .and_then(|()| output.system.remove(source, false))
+            Err(Errno::EXDEV) if is_directory(output, source) => {
+                let Some((from, to)) =
+                    job_paths(&mut output.system, source.to_bytes(), to.as_bytes())
+                else {
+                    status = failed(
+                        output,
+                        b"cannot move",
+                        source.to_bytes(),
+                        Errno::ENAMETOOLONG,
+                    );
+                    continue;
+                };
+                if run_job(output, Job::moving(&from, &to), b"cannot move").is_err() {
+                    status = FAILURE;
+                }
+                continue;
             }
+            Err(Errno::EXDEV) => copy_file(output, source, to.as_c_str())
+                .map_err(|(_, _, errno)| errno)
+                .and_then(|()| output.system.remove(source, false)),
             result => result,
         };
         if let Err(errno) = result {
@@ -468,6 +569,39 @@ mod tests {
             fake.errors(),
             "t: -r not specified; omitting directory '/tmp'\n"
         );
+        let (status, fake) = run(cp, files(), &[c"-r", c"/etc", c"/home"]);
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(contents(&fake, "/home/etc/motd"), Some(b"hi\n".to_vec()));
+        assert_eq!(contents(&fake, "/etc/motd"), Some(b"hi\n".to_vec()));
+        let (status, fake) = run(cp, fake, &[c"-R", c"/etc", c"/home/etc2"]);
+        assert_eq!(status, 0);
+        assert_eq!(contents(&fake, "/home/etc2/motd"), Some(b"hi\n".to_vec()));
+        let (status, fake) = run(cp, fake, &[c"-r", c"/etc", c"/home"]);
+        assert_eq!(status, 1);
+        assert_eq!(fake.errors(), "t: cannot copy '/home/etc': File exists\n");
+        let mut inside = files()
+            .with_directory("/home/root", 0)
+            .with_directory("/home/root/Work", 0)
+            .with_file("/home/root/Work/a", 0o644, b"a", 0);
+        inside.working_directory = "/home/root".to_owned();
+        let (status, fake) = run(cp, inside, &[c"-r", c"Work", c"/home/root/Work/x"]);
+        assert_eq!(status, 1);
+        assert_eq!(
+            fake.errors(),
+            "t: cannot copy a directory, 'Work', into itself, '/home/root/Work/x'\n"
+        );
+        assert!(
+            !fake
+                .nodes
+                .keys()
+                .any(|path| path.starts_with(b"/home/root/Work/x"))
+        );
+        let (status, fake) = run(cp, fake, &[c"-r", c"Work", c"./Work/./y/"]);
+        assert_eq!(status, 1);
+        assert!(fake.errors().contains("into itself"));
+        let (status, fake) = run(cp, fake, &[c"-r", c"Work", c"Copy"]);
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(contents(&fake, "/home/root/Copy/a"), Some(b"a".to_vec()));
         let (status, fake) = run(cp, files(), &[c"/tmp/x", c"/etc/motd", c"/tmp/x"]);
         assert_eq!(status, 1);
         assert_eq!(fake.errors(), "t: target '/tmp/x' is not a directory\n");
@@ -498,6 +632,14 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(contents(&fake, "/home/x"), Some(b"a\nb\n".to_vec()));
         assert_eq!(contents(&fake, "/tmp/x"), None);
+        let mut across = files()
+            .with_directory("/tmp/d", 0)
+            .with_file("/tmp/d/f", 0o600, b"f", 0);
+        across.cross_device = vec![b"/home".to_vec()];
+        let (status, fake) = run(mv, across, &[c"/tmp/d", c"/home"]);
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(contents(&fake, "/home/d/f"), Some(b"f".to_vec()));
+        assert!(!fake.nodes.contains_key(&b"/tmp/d"[..]));
         let (status, fake) = run(mv, files(), &[c"/nope", c"/home/a"]);
         assert_eq!(status, 1);
         assert_eq!(

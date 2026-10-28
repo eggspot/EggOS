@@ -364,10 +364,11 @@ impl Catalogue {
     }
 
     /// What launching `app` asks of the kernel, if anything: Settings and Files start their
-    /// programs, and `Install from host share...` the installer on the share; the host share
-    /// and installed apps are typed in the terminal (the program's path, single-quoted when it
-    /// holds more than letters, digits and `/._-+`), after Ctrl-U so a half-typed line does
-    /// not run with it; the terminal is only focused, which the desktop does itself.
+    /// programs, `Install from host share...` the installer on the share, and the host share
+    /// Files on it (D135); without Files the share's listing and installed apps are typed in
+    /// the terminal (the program's path, single-quoted when it holds more than letters, digits
+    /// and `/._-+`), after Ctrl-U so a half-typed line does not run with it; the terminal is
+    /// only focused, which the desktop does itself.
     pub fn launch(&self, app: AppId) -> Option<Launch> {
         match app {
             AppId::Terminal => None,
@@ -376,6 +377,9 @@ impl Catalogue {
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
+            }
+            AppId::HostShare if self.files_present => {
+                Command::program(FILES_PROGRAM, &[HOST_SHARE.as_bytes()]).map(Launch::Start)
             }
             AppId::HostShare => {
                 let mut line = Command::new();
@@ -544,6 +548,13 @@ mod tests {
         assert_eq!(catalogue.launch(AppId::Installed(9)), None);
         let installer = start(AppId::InstallFromHostShare);
         assert_eq!(installer, b"/usr/libexec/app-window\0install\0/media/host");
+        catalogue.set_files_present(true);
+        match catalogue.launch(AppId::HostShare) {
+            Some(Launch::Start(command)) => {
+                assert_eq!(command.as_bytes(), b"/bin/files\0/media/host")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

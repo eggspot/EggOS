@@ -82,9 +82,13 @@ app list
 - The desktop starts the same window: the launcher's `Install from host share...` row (while
   the share is mounted) opens it on `/media/host`, and `Uninstall...` in an installed app's
   menu (its desktop icon's or its launcher row's) asks to uninstall it.
+- Files (D135) starts the same window: a double-click on a Windows or macOS program or an
+  `.app` outside `/Applications`, or `Install...` in a program's menu, opens the prompt; in the
+  `Apps` place (`/Applications`) a double-click on an app opens it as its icon does and Delete
+  or `Uninstall...` asks to uninstall it.
 - Not yet: the MCP tools `app_install`, `app_uninstall` and `app_list` come with the MCP
   server (D21, after the release); installing a missing layer (the component manager, D18);
-  `--force` to replace an installed app (uninstall it first); Files' `Install...` (item 37).
+  `--force` to replace an installed app (uninstall it first).
 
 ## `app.manifest`
 
@@ -113,8 +117,8 @@ are kept.
 | App | Launch |
 |-----|--------|
 | Terminal | Focuses the terminal's window (restoring it if it is minimised). |
-| Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Files says `Files is not in this build yet.` until item 37. |
-| Host share | Focuses the terminal and runs `ls /media/host` in it. |
+| Settings, Files | Focuses its window if it has one, else starts `/bin/settings` or `/bin/files` as a process. Without `/bin/files` (D18), Files says `Files is not installed.` |
+| Host share | Starts Files on `/media/host` (`/bin/files /media/host`, D135); without Files it focuses the terminal and runs `ls /media/host` in it. |
 | An installed app | Focuses the terminal and runs its program there, as if its path had been typed at the prompt (single-quoted when it holds a space or other punctuation), after Ctrl-U, so a half-typed line is erased first. The program runs through its layer as at the prompt: a Windows GUI program opens its window, a console program writes in the terminal. |
 | `Install from host share...` | Starts the installer's window on `/media/host` (above). |
 

@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod files;
 pub mod install;
 pub mod persistent;
 pub mod settings;
@@ -906,7 +907,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "usr",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 25 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 26 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -2512,6 +2513,47 @@ fn check_desktop_frame_among(
     alternatives: &[&[(WindowId, WindowContent)]],
     timeout: Duration,
 ) -> Result<(), String> {
+    check_desktop_frame_masked(
+        arch,
+        qmp,
+        console,
+        output,
+        at,
+        desktop,
+        alternatives,
+        &[],
+        timeout,
+    )
+}
+
+fn copy_masked(from: &Picture, into: &mut Picture, masks: &[Rect]) {
+    if from.width != into.width || from.height != into.height {
+        return;
+    }
+    let width = from.width as usize;
+    for mask in masks {
+        let right = (mask.x + mask.width).min(from.width) as usize;
+        let bottom = (mask.y + mask.height).min(from.height) as usize;
+        for row in mask.y as usize..bottom {
+            let start = row * width + (mask.x as usize).min(right);
+            let end = row * width + right;
+            into.pixels[start..end].copy_from_slice(&from.pixels[start..end]);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_desktop_frame_masked(
+    arch: &Arch,
+    qmp: &mut Qmp,
+    console: &mut Vec<u8>,
+    output: &mpsc::Receiver<Vec<u8>>,
+    at: &str,
+    desktop: &Desktop,
+    alternatives: &[&[(WindowId, WindowContent)]],
+    masks: &[Rect],
+    timeout: Duration,
+) -> Result<(), String> {
     let path = screendump_path(arch, "")?;
     let started = Instant::now();
     loop {
@@ -2533,6 +2575,7 @@ fn check_desktop_frame_among(
             );
         }
         let matched = candidates.iter_mut().any(|expected| {
+            copy_masked(&picture, expected, masks);
             (0..CLOCK_SECONDS_ACCEPTED).any(|seconds| {
                 with_uptime(desktop, expected, seconds);
                 picture == *expected
@@ -3248,7 +3291,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 25 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 26 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

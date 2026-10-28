@@ -112,38 +112,9 @@ impl Installer {
 
     fn prompt_for(&mut self, path: &[u8]) {
         let name = self.name.as_ref().map(Name::as_bytes);
-        match installer::plan(&mut self.files, path, name, self.machine) {
-            Ok(plan) => {
-                let kind = messages::kind(plan.program());
-                let mut from = Line::new();
-                let _ = from.write_str("From: ");
-                from.push_bytes(plan.source());
-                let mut to = Line::new();
-                let _ = to.write_str("To: ");
-                to.push_bytes(plan.folder().as_bytes());
-                let dialog = Dialog::prompt(
-                    Self::icon_of(&plan),
-                    plan.name(),
-                    &[
-                        kind.as_str(),
-                        from.as_str(),
-                        to.as_str(),
-                        "Adds: a launcher entry and a desktop icon",
-                    ],
-                );
-                self.show(dialog, Stage::Prompting(plan));
-            }
-            Err(refused) => {
-                let line = messages::install_failed(
-                    refused.name.as_str(),
-                    "this",
-                    self.machine,
-                    refused.problem,
-                );
-                let dialog =
-                    Dialog::message(AppIcon::of(refused.name.as_str(), None), line.as_str());
-                self.show(dialog, Stage::Showing);
-            }
+        match dialog::install_prompt(&mut self.files, path, name, self.machine) {
+            (dialog, Some(plan)) => self.show(dialog, Stage::Prompting(plan)),
+            (dialog, None) => self.show(dialog, Stage::Showing),
         }
     }
 

@@ -530,7 +530,8 @@ at 1x and double at 2x.
    chrome, the text in `text` centred, glyph top at row 12; centred on the work area's width,
    top at the work area's top + 16. It closes after 3000 ms, on any key, or on a button-down
    anywhere (delivered normally); any other popup replaces it. Launching Files closes the
-   launcher and shows `Files is not in this build yet.`
+   launcher and shows `Files is not in this build yet.` (As built in item 37, D135: Files is
+   in the image, and only an image without `/bin/files` shows `Files is not installed.`)
 3. **Tooltips**, on the taskbar and the dock only: `menu.bg`, 1 px `menu.border`, r4, no
    shadow, 24 tall, width = glyphs x 8 + 16, text at x + 8, glyph top at row 4; after 600 ms of
    hover; hidden on leave, on button-down, and while a popup is open. Drawn above the panels
@@ -565,7 +566,8 @@ at 1x and double at 2x.
    the row's right - 8. No match: row 1 holds `No apps match` in `text.dim` at x + 48, glyph top
    at the row's y + 12, nothing selected, Enter does nothing.
 10. **Host share without Files.** Opening it focuses the Terminal window and runs
-    `ls /media/host` as if typed. No notice.
+    `ls /media/host` as if typed. No notice. (With Files, item 37, it opens Files on the
+    share, a new window each time.)
 11. **The Linux top bar's `Activities` item.** No egg mark in the Linux profile: `Activities`
     at x 12 (ending at x 92), glyph top at row 6; hit target 0..96; chips still from x 104.
 12. **The dock separator** is drawn only when at least one icon follows it. The pinned-only
@@ -600,6 +602,11 @@ The 32x32 set is a separate table, not a scaled 48 (scaling by 2/3 has no intege
 scale 2 both are pixel-doubled. Host tests hash every icon at both sizes.
 
 ## 8. The Files app (item 37)
+
+(As built, section 8.1 supersedes the details below where they differ: the host share is
+`/media/host`, `Apps` is `/Applications` (D133), home is `/home/root`, there is a Trash, so
+Delete no longer asks under `/home`, there is no `X free` in the status bar, and the window's
+dialogs and context menus are drawn inside the window.)
 
 A `Normal` window titled `Files`, default content 720x480, minimum 480x300, resizable. A
 userland program (`/bin/files`) drawing into its buffer with the shared widget code (buttons,
@@ -647,6 +654,143 @@ space (`New folder`, `Reload`). `Properties` is a dialog with name, kind (`Direc
 `Windows program, x86_64`, `macOS program, arm64`, `Linux program`, `Text`, `File`), size,
 modified time and path. Every action is also the `files` CLI and its MCP tools when they
 land (`files ls|rm|mv|mkdir|info`); in 0.3.0 the core utilities are that CLI.
+
+### 8.1 Details settled during item 37
+
+Addendum by Claude Fable (D16) while item 37 was built; everything above stands unless this
+says otherwise. Numbers are at 1x and double at 2x. The content surface is `menu.bg`, as the
+toolkit draws it (`toolkit-v0.3.md` section 1).
+
+1. **Title and path.** The title is always `Files` (the shell matches windows to apps by
+   title); the path field says where you are. In the Trash view the field shows `Trash`
+   (`Recycle Bin` in the Windows profile), still editable: a typed path and Enter leaves it.
+   `^` is `text.dim` there; `<` works.
+2. **Sidebar rows**, a toolkit list of 24 px rows from y 60, text at x 24, `>` at x 8: `Home`
+   (`/home/root`), `Documents`, `Downloads`, `Desktop`, `tmp` (`/tmp`), `Host share`
+   (`/media/host`, only while mounted), `Apps` (`/Applications`), `System` (`/`), `Trash`
+   (`Recycle Bin` in the Windows profile; always the last row, always shown). Nine rows end at
+   y 275, the last row the status bar allows at the minimum height. The row whose path equals
+   the current directory (or `Trash` in the Trash view) is `selection` with the `>`; no row
+   when the directory is no place. With keyboard focus Up/Down move the ring alone, Enter or a
+   click goes to the place. Tab order: path field, sidebar, list; the two toolbar buttons are
+   not Tab stops (Alt+Left and Alt+Up are their keys). The share unmounting while shown
+   drops its row and the list says `The host share is not mounted`.
+3. **The dialog panel.** Files' dialogs are a modal panel inside the content: 400 wide,
+   `menu.bg`, `INSET_R6`, 1 px `menu.border` inside the edge, and a 2 px `field.bg` edge
+   drawn outside it (a solid stand-in for the shadow: no alpha, no scrim); centred in the rect
+   between the toolbar and the status bar, rounded down. Padding 16: body lines from y + 16 at
+   pitch 20, the first in `text`, the rest in `text.dim`, each one line, end-ellipsised at the
+   inner width 368; buttons 28 tall right-aligned at right - 16, 8 apart, the primary last, top
+   at y + 20n + 28 for n lines; height 20n + 72 (112 for two lines). Focus starts on the
+   primary; Tab and Shift+Tab move between the buttons, Space presses the focused one, Enter
+   the primary, Esc the cancel (or `Close`). While it shows, the content ignores pointer and
+   wheel, hover is cleared and the list draws unfocused; the chrome still works, and closing
+   the window cancels the panel. The window's own `Dialog` role is not used (one window per
+   program in 0.3.0).
+4. **Dialog texts** (`<name>` is the item; `Trash` reads `Recycle Bin` in the Windows profile):
+   - Delete in the Trash, Shift+Delete anywhere, Delete in `/tmp`: `Delete <name> permanently?`
+     / `This cannot be undone.` (in `/tmp`: `/tmp is not kept, so it has no Trash. This cannot
+     be undone.`); `Cancel`, `Delete` (primary).
+   - `Empty Trash`: `Empty the Trash?` / `Deletes <N> items. This cannot be undone.` (`1 item`);
+     `Cancel`, `Empty` (primary). The menu item is `text.dim` while the Trash is empty.
+   - Uninstall: Files shows no panel; Delete, Enter on `Uninstall...` or the key on an app
+     folder in `/Applications` starts `app uninstall --window <name>` (section 9's window asks
+     `Uninstall <name>?` itself) and Files reloads when it closes.
+   - Properties, `Close` only (primary; Enter and Esc close): line 1 the name; then `Kind:
+     <Directory | Text | File | Windows program, x86_64 | macOS program, arm64 | Linux
+     program | App, Windows | App, macOS | App, Linux>`; a file `Size: 4.2 KB (4,321 bytes)`,
+     a folder `Contains: <N> items` (direct entries), an app `Runs: <path from app.manifest>`;
+     `Modified: YYYY-MM-DD HH:MM`; `Where: <folder path>`. A trashed item has `Deleted:
+     YYYY-MM-DD HH:MM` in place of `Modified:` and `From: <original folder path>` in place of
+     `Where:`. Errors never use the panel; they are notices (item 6).
+5. **The progress panel**, shown only when a copy, a move across file systems or a permanent
+   delete is not done within its first tick (16 steps of 64 KiB), then kept until done: line 1
+   `Copying <name>...`, `Moving <name>...` or `Deleting <name>...` in `text`; the bar at y + 44,
+   from x + 16 to right - 16, 8 tall, `progress.track`, the done part `accent`, `INSET_R4`,
+   following bytes (copy, move) or entries (delete); nothing under the bar (one line and a
+   bar); `Cancel` alone, not primary, at y + 68; height 112. Esc cancels,
+   Enter does nothing. Cancel stops after the current step: what is done stays, the half-written
+   file is removed, and the notice `Stopped copying <name>.` (`moving`, `deleting`) shows.
+6. **Notices** (errors and `No app opens <name> yet.`): the shell's notice drawn by Files
+   inside its content, not a `Popup`: `menu.bg`, 1 px `menu.border`, `INSET_R6`, the panel's
+   2 px `field.bg` edge instead of a shadow, 40 tall, width = text + 32 clamped to 160 ..
+   list width - 32 (the text end-ellipsised), the text in `text` centred, glyph top at row 12;
+   centred on the list's width (x 160 .. right), bottom at the status bar's top - 16. It closes
+   after 3000 ms, on any key or on a button-down (both delivered normally); a new notice
+   replaces it. Texts: `The host share is read-only.`, `<name> already exists here.`, `A name
+   cannot contain "/".`, `Cannot paste a folder into itself.`, `Cannot restore <name>: <folder>
+   no longer exists.`, `<name> is too large to show in the Terminal.`, `No app opens <name>
+   yet.`, `Could not <copy|move|delete|rename> <name> (<errno name>).`. The status bar's left
+   text stays `N items` and never carries messages.
+7. **Context menus**, drawn by Files inside its content with the desktop's menu chrome (6.4
+   item 4: items 32 tall, text at x + 12, `menu.hover`, 1 px `menu.border`, `INSET_R6`, no
+   shadow): width 160, or the widest label + 24 rounded up to a multiple of 8 when that is
+   wider; a separator is a 9 px band (4, a 1 px `menu.border` line from x 8 to right - 8, 4);
+   height = 2 + 32 x items + 9 x separators. Disabled items in `text.dim`, skipped by Up/Down,
+   ignored by clicks. Up/Down/Enter/Esc; a button-down outside closes it and is delivered
+   normally; losing window focus closes it. Opened at the pointer by a right-click (which first
+   selects the row under it, or nothing on empty space); by Shift+F10 or the Menu key at the
+   selected row's x + 28, top at its bottom (empty list: at the header's bottom); clamped so
+   its right is at most content width - 8 and its bottom at most content height - 8. `─` is a
+   separator; `[dim]` marks an item that is `text.dim` in that case:
+   - File row: `Open` ─ `Cut` `Copy` ─ `Rename` `Move to Trash` ─ `Properties`.
+   - Folder row: `Open` ─ `Cut` `Copy` `Paste` ─ `Rename` `Move to Trash` ─ `Properties`
+     (`Paste` pastes into the folder; `[dim]` with an empty clipboard).
+   - Program row (ELF, `.exe`, Mach-O, `.app`) outside `/Applications`: `Open` `Install...` ─
+     then as a file row.
+   - App folder in `/Applications` (a folder holding `app.manifest`): `Open` `Uninstall...` ─
+     `Properties`. Other entries there are plain folders and files.
+   - Any row on the host share: its usual menu with `Cut`, `Paste`, `Rename` and `Move to
+     Trash` `[dim]`.
+   - Row in `/tmp`: `Move to Trash` reads `Delete permanently` (asks, item 4).
+   - Trashed row: `Restore` `Delete permanently` ─ `Properties`.
+   - Empty space in a folder: `New folder` `Paste` ─ `Reload`; on the share `New folder` and
+     `Paste` `[dim]`; in the Trash: `Empty Trash` ─ `Reload`.
+   - Profile wording: the Windows profile says `Delete` for `Move to Trash` (as Explorer; it
+     moves to the Recycle Bin), `Empty Recycle Bin`, and `Restore` stays.
+8. **Clipboard, paste and names.** One item, held by the Files process; Copy or Cut replaces
+   it, pasting a cut item clears it. Paste never overwrites: a taken name becomes `<stem>
+   copy<.ext>`, then `<stem> copy 2<.ext>`, ... (a folder's whole name is the stem); `New
+   folder` becomes `New folder 2`, ...; Restore uses the same rule in the original folder.
+   Pasting a cut item into its own folder does nothing but clear the cut. A move inside one
+   file system is a rename; across file systems it is a copy then a delete (item 5).
+9. **The cut row**: its name, size and time in `text.dim` (the type mark unchanged) in every
+   Files window view of that folder until it is pasted or the clipboard changes; when the row
+   is selected, `selection` wins and the text is `text`.
+10. **Rename in place** (F2, `Rename`, and the new folder's first rename): the row's name cell
+    becomes a 24 px variant of the toolkit field: rect from x + 20 to the list's right - 8 (the
+    size and time cells are not drawn meanwhile), the row's y, 24 tall, `field.bg`, 1 px
+    `button.border`, `INSET_R4`, text inset 8 (so the name does not move), cell top +4, the
+    ring at inset 2, the caret and keys of toolkit section 7. The caret starts before the
+    extension (the last `.` of a file name that is not its first character), else at the end.
+    Enter commits, Esc cancels, a click elsewhere commits; an empty or unchanged name cancels.
+    An error (item 6's texts) keeps the field open with its text.
+11. **Open** (double-click, Enter, `Open`): a folder browses into it; an app folder in
+    `/Applications` opens the app; a trashed item shows Properties; a static Linux program runs
+    in the Terminal window; a Windows or macOS program, or an `.app`, outside `/Applications`
+    opens the installer's prompt window (section 9); a text file over 256 KiB, or any other
+    file, shows a notice (item 6); a text file runs `cat` in the Terminal window.
+12. **Keys**, one map in every profile, with the primary modifier of section 11 (`Mod` = Ctrl,
+    or Cmd (the Super key) in the macOS profile; both are accepted everywhere, as the shell
+    accepts every profile's shortcuts): Enter opens (the toolkit's list rule; macOS's
+    Enter-to-rename is not kept); F2 renames; Delete moves to the Trash (asks only in `/tmp`),
+    Shift+Delete deletes permanently after the dialog; Mod+C, Mod+X, Mod+V; Mod+Shift+N (and
+    Mod+N) makes `New folder` renaming; Backspace and Alt+Up go up, Alt+Left back; F5 reloads;
+    Mod+L focuses the path field; Alt+Enter shows Properties; Shift+F10 and the Menu key open
+    the context menu. macOS synonyms, accepted in every profile: Cmd+Backspace (Trash),
+    Cmd+Alt+Backspace (permanently), Cmd+Up (up), Cmd+Down and Cmd+O (open), Cmd+I
+    (Properties), Cmd+R (reload). Keys that do not apply (F2 in the Trash, Delete on the
+    share) show the matching notice when there is a reason to give, else do nothing.
+13. **The Trash view** lists `/home/root/.local/share/Trash/files` with its `info` entries:
+    columns `Name`, `Size`, `Deleted` (the time column's width and format), newest first,
+    folders not grouped first. Trashed folders are not browsed into. `Restore` returns the item
+    to its original folder (item 8's name rule).
+14. **Empty and unreadable lists**, one line in `text.dim` at the name column (x + 28), cell
+    top +4 of the first row under the header: `This folder is empty`, `Trash is empty`
+    (`Recycle Bin is empty`), `The host share is not mounted`, `Cannot read this folder
+    (<errno name>)`.
+15. **Status bar**: `N items` only (`1 item`; in the Trash the trashed count); `X free` is a
+    listed 0.3.0 limitation. The `Delete <name>?` dialog above and `/mnt/host` are superseded.
 
 ## 9. Install and uninstall (item 36)
 

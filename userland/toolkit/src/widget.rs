@@ -4,6 +4,7 @@
 use crate::canvas::{Canvas, INSET_R3, INSET_R4, INSET_R6, INSET_R8, SQUARE};
 use crate::colour;
 use crate::geometry::Rect;
+use crate::input::key;
 use crate::text::{self, Text};
 
 /// Height of push buttons, text fields, checkboxes and radio rows.
@@ -508,6 +509,120 @@ pub fn caret_rect(field: &Field, rect: Rect) -> Rect {
     )
 }
 
+/// The caret's byte in `field` at `rect` nearest to x `x`, as a click there places it.
+pub fn caret_at(field: &Field, rect: Rect, x: i32) -> usize {
+    let inner = field_inner(rect);
+    let wanted = x - inner.x + field.scroll;
+    let mut caret = 0;
+    let mut used = 0;
+    for (at, character) in field.text.as_str().char_indices() {
+        let advance = text::width(character.encode_utf8(&mut [0; 4]));
+        if used + advance / 2 > wanted {
+            break;
+        }
+        used += advance;
+        caret = at + character.len_utf8();
+    }
+    caret
+}
+
+/// Scrolls `field` at `rect` so its caret is inside it, and no further than its text needs.
+pub fn keep_caret_visible(field: &mut Field, rect: Rect) {
+    let inner = field_inner(rect);
+    let before = text::width(&field.text.as_str()[..field.caret]);
+    let total = text::width(field.text.as_str());
+    if before - field.scroll > inner.width {
+        field.scroll = before - inner.width;
+    }
+    if before - field.scroll < 0 {
+        field.scroll = before;
+    }
+    if field.scroll > 0 && total - field.scroll < inner.width {
+        field.scroll = (total - inner.width).max(0);
+    }
+}
+
+/// What a key did to a text field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKey {
+    /// The field does not use the key.
+    Unused,
+    /// The caret moved, or the key did nothing visible.
+    Moved,
+    /// The text changed.
+    Changed,
+}
+
+/// Applies key `code` (typing `character`, with Ctrl, Alt or Super held when `command`) to
+/// `field` as section 7 of docs/ux/toolkit-v0.3.md says; Esc in a [`Escape::Revert`] field
+/// puts back `before`.
+pub fn field_key(
+    field: &mut Field,
+    code: u16,
+    character: u32,
+    command: bool,
+    before: &Text<255>,
+) -> FieldKey {
+    let changed = match code {
+        key::BACKSPACE => {
+            let at = field.text.previous_boundary(field.caret);
+            let changed = at != field.caret;
+            if changed {
+                field.text.remove(at);
+                field.caret = at;
+            }
+            changed
+        }
+        key::DELETE => field.text.remove(field.caret) > 0,
+        key::LEFT => {
+            field.caret = field.text.previous_boundary(field.caret);
+            false
+        }
+        key::RIGHT => {
+            field.caret = field.text.next_boundary(field.caret);
+            false
+        }
+        key::HOME => {
+            field.caret = 0;
+            false
+        }
+        key::END => {
+            field.caret = field.text.len();
+            false
+        }
+        key::ESC => match field.escape {
+            Escape::Clear if field.text.is_empty() => return FieldKey::Unused,
+            Escape::Clear => {
+                field.text.set("");
+                field.caret = 0;
+                true
+            }
+            Escape::Revert => {
+                let changed = field.text != *before;
+                field.text = *before;
+                field.caret = field.text.len();
+                changed
+            }
+        },
+        _ => {
+            let typed = char::from_u32(character)
+                .filter(|typed| !command && !typed.is_control() && (*typed as u32) < 0x100);
+            let Some(typed) = typed else {
+                return FieldKey::Unused;
+            };
+            let inserted = field.text.insert(field.caret, typed);
+            if inserted {
+                field.caret += typed.len_utf8();
+            }
+            inserted
+        }
+    };
+    match changed {
+        true => FieldKey::Changed,
+        false => FieldKey::Moved,
+    }
+}
+
 /// How a widget looks now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
@@ -527,6 +642,16 @@ pub const THUMB: usize = usize::MAX - 1;
 
 fn ring(canvas: &mut Canvas<'_>, rect: Rect, inset: i32, colour: u32) {
     canvas.outline(rect.inset(inset), &INSET_R4, 2, colour);
+}
+
+/// Draws the 2 px focus ring `inset` inside `rect`.
+pub fn focus_ring(canvas: &mut Canvas<'_>, rect: Rect, inset: i32) {
+    ring(canvas, rect, inset, colour::FOCUS_RING);
+}
+
+/// Draws `words` from (`x`, `y`) in at most `space` pixels, cut with `...` when they do not fit.
+pub fn clipped_text(canvas: &mut Canvas<'_>, x: i32, y: i32, space: i32, words: &str, colour: u32) {
+    line(canvas, x, y, space, words, colour, 1);
 }
 
 fn centred_text(canvas: &mut Canvas<'_>, rect: Rect, words: &str, colour: u32) {

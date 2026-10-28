@@ -23,6 +23,10 @@ pub struct Status {
     pub size: u64,
     /// The permission bits (`0o755`).
     pub permissions: u32,
+    /// When its contents last changed, in seconds since the epoch.
+    pub modified: u64,
+    /// The device of the file system it is on, its major number in the high 32 bits.
+    pub device: u64,
 }
 
 /// An open file.

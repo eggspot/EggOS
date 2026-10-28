@@ -16,6 +16,7 @@ const O_TRUNC: usize = 0o1000;
 const AT_REMOVEDIR: usize = 0x200;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const CLOCK_MONOTONIC: usize = 1;
+const CLOCK_REALTIME: usize = 0;
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
 const REBOOT_MAGIC2: usize = 0x2812_1969;
 const EIO: Errno = Errno(5);
@@ -166,6 +167,28 @@ impl System for Linux {
     fn set_modified_now(&mut self, path: &CStr) -> Result<(), Errno> {
         let path = path.as_ptr() as usize;
         call(number::UTIMENSAT, [AT_FDCWD, path, 0, 0, 0, 0]).map(|_| ())
+    }
+
+    fn working_directory(&mut self, out: &mut [u8]) -> Result<usize, Errno> {
+        let length = call(
+            number::GETCWD,
+            [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
+        )?;
+        Ok(length.saturating_sub(1))
+    }
+
+    fn now(&mut self) -> u64 {
+        let mut time = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        match call(
+            number::CLOCK_GETTIME,
+            [CLOCK_REALTIME, &raw mut time as usize, 0, 0, 0, 0],
+        ) {
+            Ok(_) => time.seconds.max(0) as u64,
+            Err(_) => 0,
+        }
     }
 
     fn device_control(

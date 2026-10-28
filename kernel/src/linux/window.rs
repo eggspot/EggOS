@@ -14,7 +14,8 @@ use super::{Errno, Iovecs, iovec};
 use crate::process::{LentFrames, Placement, Process};
 use crate::regions::RegionError;
 use crate::terminal::{
-    desktop_profile, open_app, reload_catalogue, set_desktop_profile, with_windows,
+    desktop_profile, open_app, reload_catalogue, set_desktop_profile, type_in_terminal,
+    with_windows,
 };
 use crate::window::{self, Connection, PixelBuffer, ServerError};
 use alloc::sync::Arc;
@@ -93,6 +94,9 @@ pub fn ioctl<P: Platform>(
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::OpenApp { .. }) && !may_open_apps(process) {
+        return Err(Errno::EPERM);
+    }
+    if matches!(request, Request::TypeInTerminal { .. }) && !may_type_in_terminal(process) {
         return Err(Errno::EPERM);
     }
     match request {
@@ -239,6 +243,15 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::ENOENT);
             }
         }
+        Request::TypeInTerminal { length, line } => {
+            let line = line.get(..length as usize).ok_or(Errno::EINVAL)?;
+            if line.iter().any(|&byte| byte < b' ' || byte == 0x7f) {
+                return Err(Errno::EINVAL);
+            }
+            if !type_in_terminal::<P>(line) {
+                return Err(Errno::ENXIO);
+            }
+        }
     }
     Ok(0)
 }
@@ -256,6 +269,10 @@ fn may_change_desktop_settings<P: Platform>(process: &Process<P>) -> bool {
 }
 
 fn may_open_apps<P: Platform>(process: &Process<P>) -> bool {
+    is_privileged(process)
+}
+
+fn may_type_in_terminal<P: Platform>(process: &Process<P>) -> bool {
     is_privileged(process)
 }
 
