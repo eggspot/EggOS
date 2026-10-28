@@ -8577,7 +8577,18 @@ the license, by an explicit instruction recorded here.
   `posix_fallocate`, maps it, writes, seals it against shrinking and passes it; the server maps
   it, sees the client's bytes, writes its own, which the client sees, checks its size, a
   private read-only mapping, `ENODEV` for a writable private one and `EPERM` for a shrink.
+- **Review fixes** (independent review). Every way out of a `connect` that does not finish
+  it, the process's end and a kill while it waits on a full backlog included, makes the
+  socket open again, so a socket another process holds is never left connecting (a host test
+  ends the process during the wait). `fallocate` and `mmap` check the free frames before
+  taking any (`ENOSPC`, `ENOMEM`), so a huge length fails at once instead of zeroing every frame
+  under the file's lock; a shrink with no mapping zeroes only the partial last page before
+  freeing the rest; a mapping that would end past the largest offset is `EOVERFLOW`; `fstat`'s
+  `st_blocks` counts the frames the file holds.
 - **Not yet.** `MAP_SHARED` of tmpfs, EggFS and other files, `shm_open` and `/dev/shm`;
+  writes or mappings at gigabyte-scale offsets (the page list is dense up to the highest page,
+  so they fail with `ENOSPC` or `ENOMEM` where Linux succeeds); `O_APPEND` writes from two
+  descriptions at once are not atomic with each other;
   writable private mappings of a memfd; `F_SEAL_WRITE` and `F_SEAL_FUTURE_WRITE`; `SIGBUS`
   past the end; `fallocate`'s other modes; `fork` with a memfd mapping; `mremap` of one;
   memfd names in `/proc`. From 38a's review, not done here: a socket read that copies to the

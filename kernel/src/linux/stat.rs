@@ -326,7 +326,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
                 links: 1,
                 represented_device: Device { major: 0, minor: 0 },
                 size,
-                blocks: size.div_ceil(FRAME_SIZE) * (FRAME_SIZE / 512),
+                blocks: memory.frames_held() as u64 * (FRAME_SIZE / 512),
                 ..CONSOLE
             })
         }

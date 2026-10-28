@@ -66,7 +66,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   files (`ENODEV`), no `shm_open` or `/dev/shm`, no writable private mapping of a memfd, no
   executable or `PROT_NONE` mapping of one (`EPERM`), no `F_SEAL_WRITE` or
   `F_SEAL_FUTURE_WRITE`, no `SIGBUS` past the end (those pages read as zeros), `fallocate`
-  with mode 0 only, and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
+  with mode 0 only, a write, `fallocate` or mapping at a gigabyte-scale offset fails
+  (`ENOSPC`, `ENOMEM`), and a process that maps one cannot `fork` (`posix_spawn` and `vfork`
   work).
 - **Windows: console programs and simple GUI programs on x86_64 and aarch64 only.** Windows
   programs that use the kernel32, ntdll, shell32, user32 and gdi32 functions the Windows layer

@@ -655,6 +655,8 @@ impl Errno {
     pub const EALREADY: Self = Self(114);
     /// Too many buffers for one message (`sendmsg`, `recvmsg`).
     pub const EMSGSIZE: Self = Self(90);
+    /// A mapping that would end past the largest offset (`mmap` of a memfd).
+    pub const EOVERFLOW: Self = Self(75);
 
     /// The value the program sees in its result register: `-errno`.
     pub fn result(self) -> u64 {

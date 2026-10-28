@@ -758,3 +758,73 @@ fn the_backlog_is_read_unsigned_and_capped_and_timeouts_are_checked() {
     assert_eq!(timeout_nanoseconds(timeval(1, 1_000_000)), Err(Errno::EDOM));
     assert_eq!(timeout_nanoseconds(timeval(1, -1)), Err(Errno::EDOM));
 }
+
+#[test]
+fn a_connect_that_ends_with_its_process_leaves_the_socket_open() {
+    let _serial = unix_socket::tests_lock();
+    let _frames = frames_for_test();
+    let kernel = kernel_tables();
+    let process = process(&kernel);
+    let mut thread = LinuxThread::first(&process);
+    let listener = call(
+        &process,
+        &mut thread,
+        number::SOCKET,
+        [UNIX, STREAM, 0, 0, 0, 0],
+    );
+    let address = abstract_address(b"eggos-full");
+    let length = address.len() as u64;
+    store(&process, DATA, &address);
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::BIND,
+            [listener, DATA, length, 0, 0, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::LISTEN,
+            [listener, 0, 0, 0, 0, 0]
+        ),
+        0
+    );
+    let first = call(
+        &process,
+        &mut thread,
+        number::SOCKET,
+        [UNIX, STREAM, 0, 0, 0, 0],
+    );
+    assert_eq!(
+        call(
+            &process,
+            &mut thread,
+            number::CONNECT,
+            [first, DATA, length, 0, 0, 0]
+        ),
+        0
+    );
+    let waiting = call(
+        &process,
+        &mut thread,
+        number::SOCKET,
+        [UNIX, STREAM, 0, 0, 0, 0],
+    );
+    let socket = match thread.files().file(waiting).unwrap().kind() {
+        FileKind::Socket(socket) => Arc::clone(socket),
+        _ => panic!("not a socket"),
+    };
+    assert!(process.exit(crate::process::ProcessExit::Exited(0)));
+    let mut context = UserContext::new(0x40_0000, 0);
+    context.simulate_syscall(number::CONNECT, [waiting, DATA, length, 0, 0, 0], 0x40_0004);
+    assert_eq!(
+        handle(&process, &mut thread, &mut context, UserExit::Syscall),
+        ControlFlow::Break(())
+    );
+    assert_eq!(socket.begin_connect(), Ok(Address::Unnamed));
+    socket.abandon_connect();
+}

@@ -124,6 +124,13 @@ fn allocate_frame() -> Option<u64> {
     FRAMES.lock().as_mut()?.allocate()
 }
 
+fn frames_free_for(count: u64) -> bool {
+    FRAMES
+        .lock()
+        .as_ref()
+        .is_some_and(|frames| frames.free_frames() >= count)
+}
+
 impl MemoryFile {
     /// An empty memory file, `seals` set: [`seal::SEAL`] unless sealing is allowed.
     pub fn new(seals: u32) -> Arc<Self> {
@@ -260,6 +267,19 @@ impl MemoryFile {
         }
     }
 
+    fn holes(pages: &MemoryPages, first: usize, last: usize) -> u64 {
+        let listed = last.min(pages.frames.len());
+        let beyond = last.saturating_sub(pages.frames.len().max(first));
+        let unfilled = pages
+            .frames
+            .get(first..listed)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|&&frame| frame == 0)
+            .count();
+        beyond as u64 + unfilled as u64
+    }
+
     fn trim(pages: &mut MemoryPages) {
         if pages.mappings != 0 {
             return;
@@ -350,7 +370,13 @@ impl MemoryFile {
             return Err(Errno::EPERM);
         }
         let reached = (pages.frames.len() as u64).saturating_mul(FRAME_SIZE);
-        let (from, to) = (size.min(length), size.max(length).max(reached));
+        let from = size.min(length);
+        let to = match pages.mappings {
+            0 => size
+                .max(length)
+                .min(from.next_multiple_of(FRAME_SIZE).max(from)),
+            _ => size.max(length).max(reached),
+        };
         self.zero_range(&pages, from, to);
         pages.size = length;
         Self::trim(&mut pages);
@@ -373,6 +399,9 @@ impl MemoryFile {
             self.zero_range(&pages, pages.size, end);
         }
         let first = (offset / FRAME_SIZE) as usize;
+        if !frames_free_for(Self::holes(&pages, first, pages_for(end))) {
+            return Err(Errno::ENOSPC);
+        }
         for page in first..pages_for(end) {
             if self.frame_for(&mut pages, page).is_none() {
                 Self::trim(&mut pages);
@@ -384,17 +413,24 @@ impl MemoryFile {
     }
 
     /// A mapping of `length` bytes of it from `offset`, both whole pages, whose frames it
-    /// takes at once, holes and pages past the end too: `ENOMEM` when frames run out.
+    /// takes at once, holes and pages past the end too: `EOVERFLOW` when the range ends past
+    /// the largest offset, `ENOMEM` when frames run out (checked before any is taken).
     pub fn mapping(
         self: &Arc<Self>,
         offset: u64,
         length: u64,
         writable: bool,
     ) -> Result<Arc<MemoryFileMapping>, Errno> {
+        if offset.checked_add(length).is_none_or(|end| end > MAX_SIZE) {
+            return Err(Errno::EOVERFLOW);
+        }
         let first = usize::try_from(offset / FRAME_SIZE).map_err(|_| Errno::ENOMEM)?;
         let count = usize::try_from(length / FRAME_SIZE).map_err(|_| Errno::ENOMEM)?;
         let last = first.checked_add(count).ok_or(Errno::ENOMEM)?;
         let mut pages = self.pages.lock();
+        if !frames_free_for(Self::holes(&pages, first, last)) {
+            return Err(Errno::ENOMEM);
+        }
         for page in first..last {
             if self.frame_for(&mut pages, page).is_none() {
                 Self::trim(&mut pages);

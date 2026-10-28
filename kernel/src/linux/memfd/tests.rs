@@ -154,6 +154,17 @@ fn a_sparse_file_takes_no_frames_and_allocate_fills_and_grows_it() {
     assert_eq!(small.size(), 3 * PAGE_BYTES);
     assert_eq!(small.frames_held(), 3);
     assert_eq!(small.allocate(MAX_SIZE, 1), Err(Errno::EFBIG));
+    assert_eq!(small.allocate(0, 1 << 40), Err(Errno::ENOSPC));
+    assert_eq!(small.frames_held(), 3);
+    assert!(matches!(
+        small.mapping(0, 1 << 40, true),
+        Err(Errno::ENOMEM)
+    ));
+    assert!(matches!(
+        small.mapping(MAX_SIZE & !(FRAME_SIZE - 1), 2 * FRAME_SIZE, true),
+        Err(Errno::EOVERFLOW)
+    ));
+    assert_eq!(small.frames_held(), 3);
 }
 
 #[test]
