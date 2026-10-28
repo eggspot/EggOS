@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 eggos-app = { path = "../userland/app", features = ["window"] }
+eggos-files = { path = "../userland/files", features = ["window", "memory"] }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }

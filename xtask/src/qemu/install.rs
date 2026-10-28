@@ -137,7 +137,7 @@ fn first_output(arch: &Arch, app: &TestApp) -> Vec<String> {
     lines
 }
 
-fn image_volume(image: &Path) -> Result<Volume<MemoryDisk>, String> {
+pub(super) fn image_volume(image: &Path) -> Result<Volume<MemoryDisk>, String> {
     let bytes = std::fs::read(image).map_err(|e| format!("{}: {e}", image.display()))?;
     let (mut volume, _) = Volume::mount(MemoryDisk::from_image(bytes))
         .map_err(|(error, _)| format!("{}: {}", image.display(), error.description()))?;
@@ -150,7 +150,7 @@ fn image_volume(image: &Path) -> Result<Volume<MemoryDisk>, String> {
     Ok(volume)
 }
 
-fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<u64>, String> {
+pub(super) fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<u64>, String> {
     let mut node = volume.root();
     for name in path.split('/').filter(|name| !name.is_empty()) {
         match volume
@@ -164,7 +164,7 @@ fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<u64>, S
     Ok(Some(node))
 }
 
-fn file_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn file_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>>, String> {
     let Some(node) = node_at(volume, path)? else {
         return Ok(None);
     };
@@ -184,7 +184,7 @@ fn file_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>
     }
 }
 
-fn entries_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Vec<String>, String> {
+pub(super) fn entries_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Vec<String>, String> {
     let node = node_at(volume, path)?.ok_or_else(|| format!("no {path}"))?;
     let mut names = Vec::new();
     let mut position = 0;
@@ -305,7 +305,7 @@ fn check_with(
     )
 }
 
-fn host_window(
+pub(super) fn host_window(
     shell: &mut Shell<'_>,
     client: u16,
     title: &str,
@@ -333,7 +333,7 @@ fn host_window(
     Ok(created.window)
 }
 
-fn host_destroy(shell: &mut Shell<'_>, client: u16, window: WindowId) -> Result<(), String> {
+pub(super) fn host_destroy(shell: &mut Shell<'_>, client: u16, window: WindowId) -> Result<(), String> {
     let arch = shell.arch();
     shell
         .screen

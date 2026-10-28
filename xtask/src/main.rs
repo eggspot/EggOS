@@ -192,6 +192,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-toolkit",
     "eggos-settings",
     "eggos-app",
+    "eggos-files",
     "eggos-selftest",
     "eggos-std-selftest",
     "eggos-linux-static",
@@ -245,6 +246,8 @@ const APP_PATH: &str = "bin/app";
 
 const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 
+const FILES_PATH: &str = "bin/files";
+
 const PROC_PATH: &str = "proc";
 
 const DEV_PATH: &str = "dev";
@@ -259,9 +262,10 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 24] = [
+const COREUTILS: [&str; 25] = [
     "cat", "cp", "echo", "false", "free", "grep", "halt", "head", "ls", "mkdir", "mv", "poweroff",
-    "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "true", "uname", "uptime", "wc", "wm",
+    "ps", "reboot", "rm", "sleep", "sync", "tail", "touch", "trash", "true", "uname", "uptime",
+    "wc", "wm",
 ];
 
 const SHELL_TEST_CONFIG: &str = "login-exit=poweroff\n";
@@ -611,6 +615,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::shell::check(arch, &kernel)?;
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
+    qemu::files::check(arch, &install_kernel, &install_folder)?;
     qemu::boot_test(
         arch,
         &kernel,
@@ -975,6 +980,7 @@ fn release_initramfs(
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
@@ -1148,6 +1154,9 @@ fn build_install_test(arch: &Arch) -> Result<(std::path::PathBuf, std::path::Pat
         let to = folder.join(name);
         std::fs::copy(host, &to).map_err(|e| format!("{host} to {}: {e}", to.display()))?;
     }
+    let (name, text) = qemu::files::HOST_TEXT_FILE;
+    let to = folder.join(name);
+    std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
     let detected = [image::AddedFile {
         host: paint,
         path: String::new(),
