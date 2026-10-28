@@ -909,7 +909,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "var",
         ]),
         vec![
-            Line::Around("-rwxr-xr-x 27 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 28 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -3364,7 +3364,7 @@ mod tests {
         }
         let reordered = ok.replace("bin\r\ndev\r\n", "dev\r\nbin\r\n");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &reordered).is_err());
-        let one_link = ok.replace("-rwxr-xr-x 27 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 28 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());
