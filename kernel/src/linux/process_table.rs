@@ -35,6 +35,26 @@ pub struct Running {
     pub first_thread: Arc<WaitSlot>,
 }
 
+/// A process a signal is sent to: its id, and how to reach it while it runs (`None` once it
+/// ended and before it is reaped: it is found, and takes nothing).
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub id: u32,
+    pub running: Option<Running>,
+}
+
+impl Target {
+    fn of(entry: &Entry) -> Self {
+        Self {
+            id: entry.id,
+            running: match entry.exit {
+                Some(_) => None,
+                None => entry.running.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Entry {
     id: u32,
@@ -685,6 +705,31 @@ impl Table {
         members
     }
 
+    /// Process `id` as a signal sent to it finds it, ended or not; `None` if it is not in the
+    /// table.
+    pub fn target(&self, id: u32) -> Option<Target> {
+        self.entry(id).map(Target::of)
+    }
+
+    /// Every process of group `group` as a signal sent to the group finds it, ended or not.
+    pub fn group_targets(&self, group: u32) -> Vec<Target> {
+        let mut targets = Vec::new();
+        if group == 0 {
+            return targets;
+        }
+        for entry in &self.entries {
+            if entry.group == group && targets.try_reserve(1).is_ok() {
+                targets.push(Target::of(entry));
+            }
+        }
+        targets
+    }
+
+    /// The process orphans go to, which cannot be killed; 0 before there is one.
+    pub fn init(&self) -> u32 {
+        self.init
+    }
+
     /// The running processes of the console's foreground group.
     pub fn console_foreground_members(&self) -> Vec<Running> {
         self.members(self.console.foreground)
@@ -947,5 +992,36 @@ mod tests {
         assert_eq!(table.controlling_terminal(101), Err(Errno::ENOTTY));
         assert_eq!(table.take_console(110, false), Ok(()));
         assert_eq!(table.controlling_terminal(110), Ok((110, 110)));
+    }
+
+    #[test]
+    fn signals_find_processes_and_groups_zombies_included() {
+        let mut table = table_with(&[(120, None), (121, Some(120)), (122, Some(120)), (130, None)]);
+        for id in [121, 122] {
+            table.set_running(
+                id,
+                Running {
+                    process: Weak::<()>::new(),
+                    first_thread: Arc::new(WaitSlot::new()),
+                },
+            );
+        }
+        table.set_init(120);
+        assert_eq!(table.init(), 120);
+        assert!(table.target(121).unwrap().running.is_some());
+        assert!(table.target(999).is_none());
+        let ids = |targets: Vec<Target>| -> Vec<u32> { targets.iter().map(|t| t.id).collect() };
+        assert_eq!(ids(table.group_targets(120)), [120, 121, 122]);
+        assert_eq!(ids(table.group_targets(130)), [130]);
+        assert!(table.group_targets(0).is_empty());
+        assert!(table.group_targets(999).is_empty());
+        table.set_group(120, 122, 0).unwrap();
+        assert_eq!(ids(table.group_targets(122)), [122]);
+        table.end(122, EXITED, 0);
+        let zombie = table.target(122).unwrap();
+        assert!(zombie.running.is_none());
+        let zombies = table.group_targets(122);
+        assert_eq!(ids(zombies.clone()), [122]);
+        assert!(zombies.iter().all(|target| target.running.is_none()));
     }
 }

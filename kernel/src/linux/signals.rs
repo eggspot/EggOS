@@ -25,6 +25,7 @@
 
 use super::Errno;
 use super::fault::Fault;
+use super::process_table;
 use super::futex::WaitSlot;
 use super::signal::{SIGBUS, SIGFPE, SIGILL, SIGKILL, SIGSEGV, SIGSTOP, SIGTRAP};
 use super::signal_frame::{self, BadFrame, FpPart, INFO_SIZE, STACK_SIZE, Saved};
@@ -1764,14 +1765,95 @@ fn own_id<P: Platform>(process: &Process<P>) -> i32 {
     process.id().get() as i32
 }
 
-/// `kill(pid, signal)`: sends `signal` to the process `pid` names, the caller being the only
-/// one it can reach yet: its own id; 0, its process group, of which it is the only member (a
-/// process is its own group's leader until `setpgid` exists); or minus its id, that group.
-/// `ESRCH` for anything else, `-1` (every process but the caller) included, before the signal
-/// is looked at, as on Linux; then `EINVAL` for a signal outside 0 to 64, and 0, which only
-/// checks the target. `pid` is a `pid_t`: the register's upper half is ignored. The signal's
-/// `siginfo_t` says `SI_USER` from the caller. A thread of the process that does not block it
-/// takes it ([`Signals::send_to_process`]).
+/// The user ids a signal's permission check compares (Linux's `kill_ok_by_cred`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalIds {
+    /// Whether the process is privileged (`CAP_KILL`: its effective user id is 0).
+    pub privileged: bool,
+    /// Its real user id.
+    pub real: u32,
+    /// Its effective user id.
+    pub effective: u32,
+    /// Its saved user id.
+    pub saved: u32,
+}
+
+/// Whether a process with `sender`'s ids may signal one with `target`'s: it is privileged, or
+/// its real or effective user id is the target's real or saved one, as Linux's rule.
+pub fn may_signal(sender: SignalIds, target: SignalIds) -> bool {
+    sender.privileged
+        || [sender.real, sender.effective]
+            .into_iter()
+            .any(|id| id == target.real || id == target.saved)
+}
+
+/// Whether init, which cannot be killed (Linux's `SIGNAL_UNKILLABLE`), takes `signal` sent
+/// by another process while its action for it is `action`: only through a handler, and never
+/// `SIGKILL` or `SIGSTOP`.
+pub fn init_takes(signal: u32, action: Option<Action>) -> bool {
+    signal != SIGKILL
+        && signal != SIGSTOP
+        && action.is_some_and(|action| action.handler != DEFAULT && action.handler != IGNORE)
+}
+
+fn signal_ids<P: Platform>(process: &Process<P>) -> SignalIds {
+    let credentials = process.credentials_and_limits().lock();
+    let ids = credentials
+        .credentials
+        .ids(super::credentials::Kind::User);
+    SignalIds {
+        privileged: credentials.credentials.is_privileged(),
+        real: ids.real,
+        effective: ids.effective,
+        saved: ids.saved,
+    }
+}
+
+enum Reached {
+    Delivered,
+    Refused,
+}
+
+fn send_to_other<P: Platform>(
+    sender: SignalIds,
+    target: &process_table::Target,
+    init: u32,
+    signal: u32,
+    info: Info,
+) -> Reached {
+    let Some(running) = &target.running else {
+        return Reached::Delivered;
+    };
+    let Some(process) = running
+        .process
+        .upgrade()
+        .and_then(|process| process.downcast::<Process<P>>().ok())
+    else {
+        return Reached::Delivered;
+    };
+    if !may_signal(sender, signal_ids(&process)) {
+        return Reached::Refused;
+    }
+    if signal == 0 {
+        return Reached::Delivered;
+    }
+    if target.id == init && !init_takes(signal, process.signals().lock().action(signal)) {
+        return Reached::Delivered;
+    }
+    send_from_outside::<P>(&process, &running.first_thread, info);
+    Reached::Delivered
+}
+
+/// `kill(pid, signal)`: sends `signal` to the process `pid` names: its id (the caller's own
+/// included); 0, every process of the caller's group; or minus a group's id, every process of
+/// that group. A process that ended and is not yet reaped is found, and takes nothing. `ESRCH`
+/// for `-1` (every process but the caller is not supported), `i32::MIN` and an id or group
+/// with no process, before the signal is looked at, as on Linux; then `EINVAL` for a signal
+/// outside 0 to 64; then `EPERM` when the caller may signal none of them ([`may_signal`]); 0,
+/// the signal, only checks. Init takes another process's signal only through a handler, and
+/// never `SIGKILL` or `SIGSTOP` ([`init_takes`]). `pid` is a `pid_t`: the register's upper half
+/// is ignored. The signal's `siginfo_t` says `SI_USER` from the caller. The caller's own
+/// signal goes to a thread of it that does not block it ([`Signals::send_to_process`]).
 pub fn kill<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1781,14 +1863,52 @@ pub fn kill<P: Platform>(
     let own = own_id(process);
     let pid = pid as u32 as i32;
     let every_process_but_the_caller = -1;
-    if pid == every_process_but_the_caller || (pid != own && pid != 0 && pid != own.wrapping_neg())
-    {
+    if pid == every_process_but_the_caller || pid == i32::MIN {
         return Err(Errno::ESRCH);
     }
     let uid = real_user_id(process);
-    send_to_process(process, thread, signal, |signal| {
-        Info::sent(signal, code::USER, own as u32, uid)
-    })
+    let info = |signal| Info::sent(signal, code::USER, own as u32, uid);
+    if pid == own {
+        return send_to_process(process, thread, signal, info);
+    }
+    let (targets, caller_included, init) = {
+        let table = process_table::TABLE.lock();
+        let own_group = table
+            .group_and_session(own as u32)
+            .map_or(own as u32, |(group, _)| group);
+        let init = table.init();
+        match pid {
+            0 => (table.group_targets(own_group), true, init),
+            pid if pid < 0 => {
+                let group = pid.unsigned_abs();
+                (table.group_targets(group), group == own_group, init)
+            }
+            pid => (table.target(pid as u32).into_iter().collect(), false, init),
+        }
+    };
+    let others = targets.iter().filter(|target| target.id != own as u32);
+    if !caller_included && others.clone().next().is_none() {
+        return Err(Errno::ESRCH);
+    }
+    if signal as usize > COUNT {
+        return Err(Errno::EINVAL);
+    }
+    let number = signal as u32;
+    let sender = signal_ids(process);
+    let mut reached = caller_included;
+    for target in others {
+        if let Reached::Delivered = send_to_other::<P>(sender, target, init, number, info(number))
+        {
+            reached = true;
+        }
+    }
+    if caller_included {
+        return send_to_process(process, thread, signal, info);
+    }
+    match reached {
+        true => Ok(0),
+        false => Err(Errno::EPERM),
+    }
 }
 
 /// `tkill(tid, signal)`: sends `signal` to thread `tid` of the caller's process, the only
@@ -2459,6 +2579,40 @@ mod tests {
 
     fn by_tkill(signal: u32) -> Info {
         Info::sent(signal, code::TKILL, 7, 0)
+    }
+
+    #[test]
+    fn a_signal_needs_privileges_or_a_matching_user_id() {
+        let user = |real, effective, saved| SignalIds {
+            privileged: effective == 0,
+            real,
+            effective,
+            saved,
+        };
+        assert!(may_signal(user(0, 0, 0), user(5, 5, 5)));
+        assert!(may_signal(user(5, 5, 5), user(5, 6, 6)));
+        assert!(may_signal(user(7, 5, 5), user(6, 6, 5)));
+        assert!(may_signal(user(5, 7, 7), user(6, 6, 7)));
+        assert!(!may_signal(user(5, 5, 5), user(6, 5, 6)));
+        assert!(!may_signal(user(5, 6, 6), user(7, 8, 9)));
+    }
+
+    #[test]
+    fn init_takes_another_process_s_signal_only_through_a_handler() {
+        const SIGUSR1: u32 = 10;
+        let with = |handler| {
+            Some(Action {
+                handler,
+                ..Action::default()
+            })
+        };
+        assert!(init_takes(SIGUSR1, with(0x1000)));
+        assert!(!init_takes(SIGUSR1, with(DEFAULT)));
+        assert!(!init_takes(SIGUSR1, with(IGNORE)));
+        assert!(!init_takes(SIGKILL, with(0x1000)));
+        assert!(!init_takes(SIGSTOP, with(0x1000)));
+        assert!(!init_takes(SIGKILL, with(DEFAULT)));
+        assert!(!init_takes(SIGUSR1, None));
     }
 
     #[test]

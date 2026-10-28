@@ -3402,7 +3402,13 @@ mod tests {
             );
         }
         let group_of_none = u64::from(i32::MIN as u32);
-        for target in [pid + 1, u64::MAX, group_of_none, (pid + 1).wrapping_neg()] {
+        let no_process = u64::from(i32::MAX as u32);
+        for target in [
+            no_process,
+            u64::MAX,
+            group_of_none,
+            no_process.wrapping_neg(),
+        ] {
             assert_eq!(
                 call(&process, number::KILL, [target, 65, 0, 0, 0, 0]),
                 esrch
