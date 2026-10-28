@@ -237,7 +237,9 @@ holds what used to be written in them.
   script's standard input and output (`qemu::agent_channel_args`), the console in
   `eggos-<arch>-serial.log`, no monitor, and `-display none` with `--no-window`
   (`-NoWindow`), every script message on standard error, and the disk image checked with
-  `qemu-io` for another EggOS's lock (D136, docs/mcp.md); a host test checks they
+  `qemu-io` for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>`
+  (`-McpAllow`, `--mcp` only) `qemu::grant_args`: `-append eggos.mcp_allow=<list>` once each
+  name is checked as `write`, `run` or `install` (D137); a host test checks they
   match. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for

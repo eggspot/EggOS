@@ -16,18 +16,21 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
 
 ## What the system can do
-- **Agents read only.** The built-in MCP server (D136, docs/mcp.md) lets an MCP client list
-  and read files in `/home` and `/media/host` and list processes, windows and installed apps;
-  it cannot write or delete files, run programs or install apps yet (item 28b), has no
-  per-agent permissions, and is reached only through the run scripts' `--mcp` (no network
-  MCP). The audit log keeps about the last 2,000 calls and shows times since the boot until
-  the RTC (item 29).
+- **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
+  docs/mcp.md) lets an MCP client read files in `/home` and `/media/host` and list processes,
+  windows and installed apps; with grants given when starting EggOS (`--mcp-allow
+  write,run,install`) it also writes and trashes files below `/home/root`, runs programs and
+  installs, opens and uninstalls apps. Grants hold for the whole machine and boot: no per-agent
+  grants, no revoking them while EggOS runs; `run` is full control, the audit log included.
+  Commands run as root (file permissions are not enforced yet). Reached only through the run
+  scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB and shows times since
+  the boot until the RTC (item 29).
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
   `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
-  with `--no-disk` (together at most half of the memory), and `/proc` has `meminfo`, `uptime`
-  and `ps` (D125). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
+  `uptime` and `ps` (D125, D137). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
   hard or symbolic links, access times or repair tool yet, searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
@@ -50,7 +53,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No
-  dynamic linking, only a minimal `/proc` (`meminfo`, `uptime` and EggOS's own `ps`, no
+  dynamic linking, only a minimal `/proc` (`cmdline`, `meminfo`, `uptime` and EggOS's own `ps`, no
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window`, no `mmap` of files, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe and console change.

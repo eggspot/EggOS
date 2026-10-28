@@ -8232,3 +8232,138 @@ the license, by an explicit instruction recorded here.
   elicitation of destructive calls; the 2026-07-28 protocol; resources and prompts; per-agent
   grants and revocation; network MCP; the log in Settings; device interrupts for the channel;
   moving eggsh's and Files' own vfork code onto `eggos_runtime::process::spawn`.
+
+## D137 The built-in MCP server, part 2: grants from the kernel command line, `tee`, `trash`, `run`, `app_install`, `app_open`, `app_uninstall`, confirmation by elicitation, a session-safe audit log, and `kill` across processes (v0.3.0 item 28b) — Decided by the build loop (the points below marked so decided by research)
+- **What.** Users can now let an MCP client change things on EggOS under grants they set on
+  the host when starting it: `run-eggos.sh --mcp --mcp-allow write,run,install`
+  (`run-eggos.ps1 -Mcp -McpAllow write,run,install`). Without grants agents only read, as in
+  D136.
+- **Grants** (owner's spec; D21's exceptions for this release as D136 says). `write` allows
+  `tee` and `trash`; `install` allows `app_install`, `app_open` and `app_uninstall`; `run`
+  allows `run` and implies the others, since a program can do anything (the audit log
+  included). The scripts check each name (lowercase `write`, `run` or `install`, no empty
+  name; PowerShell compares case-sensitively and joins and splits `-McpAllow`'s values) and
+  pass `-append eggos.mcp_allow=<list>` to QEMU, only when grants are given
+  (`qemu::grant_args`, shared by the scripts and xtask). `eggmcpd` reads them at each start
+  from `/proc/cmdline` only: the first `eggos.mcp_allow=` word, names split on commas, unknown
+  names granting nothing and named in the `server-start` record so a typo shows. They are fixed
+  for the boot. **Grants are only as safe as where the command line comes from:** today the
+  host's QEMU `-append`; a future bootloader or configuration must never take it from anywhere
+  an agent or a program in the machine can write.
+- **The command line** (decided by research). `Platform::command_line` hands the kernel the
+  line: on AArch64 and RISC-V `/chosen/bootargs` of the device tree the HAL keeps (QEMU sets it
+  from `-append` for ELF `-kernel` images, and OpenSBI passes it on); on x86_64 the PVH loader's
+  `hvm_start_info.cmdline_paddr`, which QEMU's PVH option ROM points at its own buffer below
+  1 MiB (`pvh_main.c`'s `cmdline_buffer`, outside every RAM entry of the map), copied once, by
+  the first `memory_map`, before the frame allocator exists: accepted inside the low memory or
+  a RAM entry and the boot direct map, read up to its NUL, at most 1024 bytes (cut back to the
+  last space without a NUL), into atomics (`hal::command_line::CommandLineCopy`, no `unsafe`
+  but the one read); anything wrong gives an empty line, so the machine stays read-only.
+  fw_cfg was weighed and refused: three new drivers, no more safety. `/proc/cmdline` shows
+  the line and a newline, read-only.
+- **The tools** (D22: each runs its CLI twin). `tee {path, content | content_base64, append?,
+  confirm?}` runs the new core utility `tee [-a] -- <path>` with the content on its input
+  (decoded, at most 128 KiB a call, as `cat` reads back; larger files take `append`), its echo
+  read and dropped; `trash {path, confirm?}` runs `trash -- <path>`; `run {program,
+  arguments?, timeout_seconds?}` runs the program itself, an absolute path (no PATH search, no
+  shell), at most 32 arguments and 4 KiB, 1 to 60 s (10 by default), and returns its output,
+  errors and exit status (`structuredContent` too); `app_install {path}` runs `app install --
+  <path>`, from `/media/host` only, so `write` and `install` together cannot install what the
+  agent wrote; `app_open {name}` runs the new `app open -- <name>` (`OPEN_APP`, as a
+  double-click on the icon); `app_uninstall {name, confirm?}` runs `app uninstall -- <name>`.
+  `app` takes `--` now. Every command starts in `/home` with the fixed environment (`PATH=/bin`,
+  `HOME=/home/root`, `TERM=dumb`), in a process group of its own, stopped whole (with every
+  process it started) at its time limit or 128 KiB of output; the wait for its end always ends.
+  Errors are kept to 32 KiB (4 KiB in D136). Children keep root (decided by research): the
+  kernel does not enforce file permissions (D75), so another user would only break `app` and
+  `reboot` while suggesting a boundary that does not exist; a user of its own comes with
+  enforced permissions.
+- **Paths.** The writing tools reach strictly below `/home/root` in 0.3, the home whose Trash
+  `trash` and Files use, so whatever is trashed can be restored, and never the Trash itself
+  (`/home/root/.local/share/Trash` and what is in it). What else under `/home` other parts read:
+  the Trash's records (`Trash::restore` now refuses a record whose original is not a plain
+  path strictly inside its home and outside the Trash: `RestoreError::OutsideHome`, which fixes
+  Files and `trash -r` against a forged record too) and the settings file
+  (`/home/root/.config/eggos/settings`), whose writing is accepted: it holds preferences only,
+  every key and value checked by Settings and the desktop. Files `tee` writes are mode 0644,
+  never executable; opening one is the user's act.
+- **The order of a call**, each stop writing exactly one record: the tool; its grant (refused
+  naming the grant and the flag that gives it, before any path is resolved; only the
+  arguments' names are logged); a call waiting for the user (then every call needing a grant is
+  refused before its arguments are decoded, so the waiting call's content stays what the user
+  was shown); the arguments; the path, resolved; what is there (`tee` on a folder, `trash` of
+  nothing and `app_uninstall` of an app not installed are errors); the user's yes; `started`
+  (fail closed); the twin; its outcome.
+- **Destructive calls** (decided by research): replacing a file with `tee` (not appending, not
+  creating), `trash` and `app_uninstall`. When the client declared form elicitation
+  (`capabilities.elicitation` an empty object or one with `form`, at 2025-06-18 or later), the
+  server sends `elicitation/create` (id `eggos-elicit-<start ms>-<n>`, unique across restarts;
+  a message naming the tool, the escaped path or name and sizes, never content; a schema of one
+  required boolean, `confirm`) and the call waits: answered on `accept` with `confirm: true`
+  once the target is checked again (the path resolved again and what is there unchanged; the
+  app still installed), refused otherwise (decline, cancel, accept without `confirm`, an error,
+  a malformed answer, 120 s without an answer, after which the question is cancelled, the
+  client cancelling the call, a new `initialize`, whose refusal comes before its answer, or the
+  client leaving); `confirm` is then ignored, and an elicitation error never falls back to it.
+  Without elicitation the call needs `confirm: true`, documented as a guard against accidents,
+  not the user's approval. While a call waits, `ping`, `tools/list` and reading calls are
+  answered; a response with another id is dropped. `run` is not asked about (decided against
+  research: the owner's list names overwrite, delete and uninstall; `run` carries
+  `destructiveHint` and its own grant). The waiting call keeps its checked arguments (path,
+  logged arguments, content in its buffer), not its 1 MiB line (D24).
+- **Annotations.** `tee`, `trash`, `run` and `app_uninstall` are `destructiveHint: true`;
+  `app_install` and `app_open` are neither read-only nor destructive; every description names
+  its grant.
+- **`tee` partial writes.** A `tee` that ends badly or takes less than its content is an error
+  saying `N of M bytes written; the file may be cut`: it writes in place, as POSIX `tee`, so a
+  failed replacement can leave the file cut.
+- **The audit log** (decided by research). A call stopped before its arguments are checked
+  keeps only their names (`["path","content"]`, or `<unparsed N bytes>`); a checked call keeps
+  `path`, `program`, `arguments`, `append`, `confirm`, `timeout_seconds` and `name`, and
+  `tee`'s content as `<N bytes>`: content is never logged. A question writes `asked` first (not
+  sent if it cannot be written), then `refused` or `started` and the outcome; `agentlog` shows
+  them as one row. The log rotates at 512 KiB through seven generations (`.1` to `.7`, at least
+  3.5 MiB); a missing generation is skipped, any other failed rename fails the record, so the
+  call is not run. A server run writes at most 2 MiB of records, less than the generations
+  keep, so nothing of a run rotates away during it; past it one `refused` record says so and
+  every later call is refused unlogged until the server starts again (init restarts it at most
+  3 times within 5 s each). An agent without `run` cannot erase its own trail (`/var` is outside
+  `/home/root`); with `run` it can, and docs/mcp.md says so.
+- **`kill` across processes** (review). `kill(pid)` reaches any process now, `kill(0)` the
+  caller's group, `kill(-pgid)` a group, through the process table (`Table::target`,
+  `group_targets`) and `send_from_outside`, the path the console's Ctrl-C uses; the caller's
+  own signal goes through `send_to_process` as before. As Linux: `-1` and `i32::MIN` are
+  `ESRCH`, then an id or group with no process; then `EINVAL` for a signal over 64; a process
+  ended but not reaped, or a group of only such, answers 0 and takes nothing; `EPERM` when the
+  caller may signal none (`may_signal`: privileged, or its real or effective uid the target's
+  real or saved one; every process is root in 0.3, so it is ready rather than active; Linux's
+  `SIGCONT` within a session is left out). Init cannot be killed (`SIGNAL_UNKILLABLE`): another
+  process's signal reaches it only through a handler, never `SIGKILL` or `SIGSTOP`. Only
+  `kill`'s body changed; the dispatch and the signal hot paths did not.
+- **The channel's readiness.** `poll` on `/dev/agent` reports `POLLIN` while bytes or the
+  host's end wait and `POLLOUT` always (D136 reported `POLLERR`), looking at the device again at
+  the channel's polling interval; `eggmcpd` waits with `ppoll` only while a call waits for the
+  user, so an idle server costs what it did.
+- **Lightness (D24).** The base without `--mcp` gains `tee` and `app open` in the image, the
+  HAL's command-line code and, on x86_64, a 1 KiB copy. With `--mcp`, `eggmcpd`'s buffers grow
+  by about 0.4 MiB (the 128 KiB content, 32 KiB errors and their room in the answer, the held
+  path and arguments).
+- **Testing.** Host: grants, the command-line copy and `bootargs`, `/proc/cmdline`, `kill`'s
+  rules, `/dev/agent`'s readiness, arguments, paths, every refusal and its record, the overwrite
+  check, `confirm`, every elicitation path, a changed target, a short `tee`, `run`'s time limit
+  and a failed stop, the audit budget, the start record, `tee`, `app open` and `--`, a forged
+  Trash record, `agentlog`'s generations and question rows, the scripts' grant checks, and the
+  fuzz target with the new tools, answers and cancellations. QEMU on aarch64, riscv64 and x86_64:
+  the release script without grants (every changing tool refused naming its grant) and, on the
+  same disk, with `--mcp-allow write,run,install` (writes, refusals, the Trash, `run` of
+  `uname`, `/proc/cmdline` and a `sleep 30` stopped at 1 s, installing, opening and uninstalling
+  `win-paint.exe` or, on riscv64, the static Linux program, a declined and an accepted question,
+  and `agentlog` through `run`); the disk image read back holds `asked` and no written content.
+- **Follow-ups.** For children, `O_NOFOLLOW` or staying beneath their root once symbolic links
+  can exist (EggOS has no `symlinkat` yet). Moved to a fix PR after the freeze: the console
+  driver's refusal of a late port left in flight, the reset and freed memory of a console with
+  another port name, init's `exists` without opening the channel, init's back-off sleeping in
+  slices. `vfork`'s parent wait (`fork.rs` `wait_for_release`) not ending on `SIGKILL`; `kill`'s
+  `SIGCONT` within a session. Not yet: per-agent grants and revoking them while EggOS runs;
+  elicitation's URL mode; the 2026-07-28 protocol; network MCP; the log in Settings; device
+  interrupts for the channel (#97).
