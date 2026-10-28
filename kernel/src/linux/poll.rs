@@ -85,6 +85,7 @@ fn events(file: Option<&FileKind>, requested: u16, readable: bool) -> u16 {
         Some(FileKind::Path(_)) => event::NVAL,
         Some(FileKind::Pipe(end)) => end.events(requested),
         Some(FileKind::Window(connection)) => super::window::events(connection, requested),
+        Some(FileKind::AgentChannel(_)) => event::ERR,
     }
 }
 

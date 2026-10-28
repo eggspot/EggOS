@@ -35,7 +35,7 @@ const KILL_DELAY: Duration = Duration::from_millis(500);
 const FORMATTED_LINE: &str = "vfs: formatted the blank disk with EggFS";
 
 const MOUNTED_LINE: Line = Line::Around(
-    "vfs: EggFS disk mounted at /home and /Applications (",
+    "vfs: EggFS disk mounted at /home, /Applications and /var (",
     " MiB free)",
 );
 
@@ -95,7 +95,7 @@ const RECOVERY_SESSION: [&[u8]; 3] = [
 const WRITTEN_LINE: &str = "EGGOS-PERSIST written";
 
 #[derive(Debug, Clone, Copy)]
-enum Then {
+pub(super) enum Then {
     Nothing,
     Kill(&'static str),
     PowerMenu(&'static str),
@@ -190,13 +190,13 @@ fn prepare(arch: &Arch) -> Result<Files, String> {
     })
 }
 
-struct Ended {
-    console: String,
-    clean_exit: bool,
+pub(super) struct Ended {
+    pub(super) console: String,
+    pub(super) clean_exit: bool,
     killed: bool,
 }
 
-fn boot_on_disk(
+pub(super) fn boot_on_disk(
     arch: &Arch,
     kernel: &Path,
     args: &[String],
@@ -288,7 +288,7 @@ fn boot_on_disk(
     })
 }
 
-fn image_volume(path: &Path) -> Result<Volume<MemoryDisk>, String> {
+pub(super) fn image_volume(path: &Path) -> Result<Volume<MemoryDisk>, String> {
     let image = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let (mut volume, _) = Volume::mount(MemoryDisk::from_image(image))
         .map_err(|(error, _)| format!("{}: {}", path.display(), error.description()))?;
@@ -309,7 +309,10 @@ fn node_at(volume: &mut Volume<MemoryDisk>, path: &str) -> Option<u64> {
     Some(node)
 }
 
-fn contents(volume: &mut Volume<MemoryDisk>, path: &str) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn contents(
+    volume: &mut Volume<MemoryDisk>,
+    path: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let Some(node) = node_at(volume, path) else {
         return Ok(None);
     };

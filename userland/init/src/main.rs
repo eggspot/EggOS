@@ -5,10 +5,13 @@
 //! group. As long as it runs, init reaps every child that ends, its orphans among them. When
 //! it ends, init starts it again after the back-off (`backoff.rs`), or takes the machine down with
 //! `reboot` if the configuration says so. Without a login program init says so and only reaps
-//! children, for good.
+//! children, for good. When the agent channel exists, init also starts the built-in MCP server
+//! and starts it again when it ends (`agent_server.rs`, D136).
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
+#[cfg(any(test, target_env = "musl"))]
+mod agent_server;
 #[cfg(any(test, target_env = "musl"))]
 mod backoff;
 #[cfg(any(test, target_env = "musl"))]

@@ -1,8 +1,11 @@
 //! Starting a process the way `posix_spawn` does: `clone` with the child on a stack of its
-//! own, and the return path a signal handler needs on x86_64.
+//! own ([`spawn`]), and the return path a signal handler needs on x86_64.
 
-use crate::syscall::number;
+use crate::errno::Errno;
+use crate::syscall::{self, number};
 use core::arch::asm;
+use core::ffi::CStr;
+use core::sync::atomic::{AtomicIsize, Ordering};
 
 /// The `clone` flag that shares the caller's memory with the child.
 pub const CLONE_VM: usize = 0x100;
@@ -93,4 +96,152 @@ pub extern "C" fn restore_after_signal() -> ! {
         "ud2",
         number = const number::RT_SIGRETURN,
     )
+}
+
+/// The bytes of a [`ChildStack`].
+pub const CHILD_STACK_BYTES: usize = 16 * 1024;
+
+const SIGCHLD: usize = 17;
+const NOT_RUN: i32 = 127;
+
+/// The stack a child started by [`spawn`] runs on until its `execve`. [`spawn`] borrows it
+/// mutably, so one child at a time uses it.
+#[repr(C, align(16))]
+pub struct ChildStack {
+    bytes: [u8; CHILD_STACK_BYTES],
+}
+
+impl ChildStack {
+    /// An unused stack.
+    pub const fn new() -> Self {
+        Self {
+            bytes: [0; CHILD_STACK_BYTES],
+        }
+    }
+}
+
+impl Default for ChildStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::fmt::Debug for ChildStack {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChildStack").finish_non_exhaustive()
+    }
+}
+
+/// What [`spawn`] starts: the program, its arguments and environment (each a null-ended
+/// array of C strings), and the descriptors that become its standard input, output and error.
+#[derive(Debug)]
+pub struct Spawn<'a> {
+    program: &'a CStr,
+    arguments: &'a [*const u8],
+    environment: &'a [*const u8],
+    streams: [usize; 3],
+    exec_error: AtomicIsize,
+}
+
+impl<'a> Spawn<'a> {
+    /// A request to run `program` with `arguments` and `environment`, both ending with a null
+    /// pointer, and `streams` as descriptors 0, 1 and 2.
+    pub fn new(
+        program: &'a CStr,
+        arguments: &'a [*const u8],
+        environment: &'a [*const u8],
+        streams: [usize; 3],
+    ) -> Self {
+        Self {
+            program,
+            arguments,
+            environment,
+            streams,
+            exec_error: AtomicIsize::new(0),
+        }
+    }
+}
+
+/// Starts `request`'s program as a child on `stack`, sharing this process's memory until the
+/// child's `execve` (`CLONE_VM | CLONE_VFORK`), so nothing is copied; returns its process id.
+/// `EINVAL` for an array without its null end; when `execve` fails, the child ends, is reaped,
+/// and its error comes back.
+pub fn spawn(stack: &mut ChildStack, request: &Spawn<'_>) -> Result<usize, Errno> {
+    let ended = |array: &[*const u8]| array.last().is_some_and(|last| last.is_null());
+    if !ended(request.arguments) || !ended(request.environment) {
+        return Err(Errno::EINVAL);
+    }
+    request.exec_error.store(0, Ordering::Relaxed);
+    let top = stack.bytes.as_mut_ptr() as usize + CHILD_STACK_BYTES;
+    // SAFETY: `top` is the 16-byte aligned end of the stack's bytes, borrowed mutably for this
+    // call, which only the child uses while this thread sleeps in the `CLONE_VFORK` clone; the
+    // child touches only `request`, which outlives the clone, then runs `execve` or ends.
+    let started = unsafe {
+        clone_onto_stack(
+            CLONE_VM | CLONE_VFORK | SIGCHLD,
+            top,
+            start_child,
+            request as *const Spawn<'_> as usize,
+        )
+    };
+    let child = Errno::result(started)?;
+    match request.exec_error.load(Ordering::Acquire) {
+        0 => Ok(child),
+        error => {
+            let mut status = 0i32;
+            // SAFETY: `wait4` writes the status into `status`, which this function owns.
+            unsafe { syscall::call(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) };
+            Err(Errno(error.unsigned_abs().min(usize::from(u16::MAX)) as u16))
+        }
+    }
+}
+
+extern "C" fn start_child(request: usize) -> ! {
+    // SAFETY: `spawn` passes its `Spawn`, which stays in place and unchanged but for its
+    // atomic error word while this child runs on the parent's memory: the parent's thread
+    // sleeps until the child runs `execve` or ends.
+    let request = unsafe { &*(request as *const Spawn<'_>) };
+    for (target, &from) in request.streams.iter().enumerate() {
+        if from != target {
+            // SAFETY: `dup3` touches no memory.
+            unsafe { syscall::call(number::DUP3, [from, target, 0, 0, 0, 0]) };
+        }
+    }
+    // SAFETY: `execve` reads the C string and the null-ended pointer arrays `request` names,
+    // which stay in place while the parent sleeps.
+    let result = unsafe {
+        syscall::call(
+            number::EXECVE,
+            [
+                request.program.as_ptr() as usize,
+                request.arguments.as_ptr() as usize,
+                request.environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    request.exec_error.store(result.min(-1), Ordering::Release);
+    syscall::exit(NOT_RUN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_need_their_arrays_null_ended() {
+        let mut stack = Box::new(ChildStack::new());
+        let program = c"/bin/true";
+        let arguments = [program.as_ptr().cast::<u8>()];
+        let environment = [core::ptr::null()];
+        let request = Spawn::new(program, &arguments, &environment, [0, 1, 2]);
+        assert_eq!(spawn(&mut stack, &request), Err(Errno::EINVAL));
+        let ended = [program.as_ptr().cast::<u8>(), core::ptr::null()];
+        let unended_environment = [c"A=b".as_ptr().cast::<u8>()];
+        let request = Spawn::new(program, &ended, &unended_environment, [0, 1, 2]);
+        assert_eq!(spawn(&mut stack, &request), Err(Errno::EINVAL));
+        assert_eq!(format!("{stack:?}"), "ChildStack { .. }");
+    }
 }

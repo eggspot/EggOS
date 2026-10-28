@@ -1,9 +1,9 @@
 # The EggOS core utilities
 
 `userland/coreutils` (D108) is one program, `/bin/coreutils`, with the utilities as hard links
-to it in `/bin`: `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`, `mkdir`,
+to it in `/bin`: `agentlog`, `cat`, `cp`, `echo`, `false`, `free`, `grep`, `halt`, `head`, `ls`, `mkdir`,
 `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`, `tail`, `touch`, `trash`, `true`, `uname`,
-`uptime`, `wc` and `wm` (D108, D125, D128, D135). It runs the utility named by the last component of the name
+`uptime`, `wc` and `wm` (D108, D125, D128, D135, D136). It runs the utility named by the last component of the name
 it was started by, so `ls`, `/bin/ls` and a link called `ls` anywhere are all `ls`. Started as `coreutils`, it runs
 the utility its first argument names (`coreutils ls /`); `coreutils --list` lists them. It is
 our own Rust program on our own runtime, like the shell: no C library, no allocator, about
@@ -40,6 +40,7 @@ status; a bad option is `invalid option -- 'x'` (or `unrecognized option '--x'`)
 | `ps` | Lists every process from `/proc/ps`: its id, its parent's, its process group, its state (`R` running, `Z` ended and not yet waited for) and its name. `-A`, `-e` and `-f` are accepted. | 0, or 1 if `/proc` cannot be read |
 | `free [-b\|-k\|-m]` | Writes the memory's total, used, free and available amounts from `/proc/meminfo`, in KiB, or bytes or MiB (`shared` and `buff/cache` are 0: there is no page cache). | 0, or 1 if `/proc` cannot be read |
 | `uptime [-p]` | Writes how long the system has been up (`up 1 hour, 2 minutes`), from `/proc/uptime`, as `uptime -p` does elsewhere; there are no load averages or users to count. | 0, or 1 if `/proc` cannot be read |
+| `agentlog [-n count] [--raw]` | Shows the MCP server's audit log (D136, docs/mcp.md): `/var/log/agent-audit.log.1` then `/var/log/agent-audit.log`, a `TIME  CLIENT  TOOL  RESULT  ARGUMENTS  DETAIL` header and a row per call (a call's `started` record and its outcome as one row; a `started` with no outcome as `interrupted`), and the server's starts and the clients' sessions; `-n` the last `count` rows, `--raw` the records as stored. Control and invisible characters in what clients sent are shown escaped (`\e`, `\xHH`, `\u{202e}`). Nothing when there is no log. | 0, 1 if a log cannot be read, 2 for a bad usage |
 | `poweroff`, `reboot`, `halt` | Power the machine off, reset it or halt it at once with `reboot(2)` (only for root; `-f` and `--force` are accepted and change nothing). | Does not return; 1 with the error when the kernel refuses |
 
 ## Limits and differences from GNU

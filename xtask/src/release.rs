@@ -97,6 +97,28 @@ pub fn screenshot(arch: &Arch) -> Result<(), String> {
     Ok(())
 }
 
+/// Writes `kernel` as `arch`'s release image, its `SHA256SUMS` line and both run scripts into
+/// `dir`, as `cargo xtask release` does, for a test that runs the scripts.
+pub fn write_test_dist(arch: &Arch, kernel: &Path, dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let contents = std::fs::read(kernel).map_err(|e| format!("{}: {e}", kernel.display()))?;
+    let file_name = image_name(arch);
+    write(&dir.join(&file_name), &contents)?;
+    let sums = format!("{}  {file_name}\n", sha256::hex_digest(&contents));
+    write(&dir.join(SUMS_FILE), sums.as_bytes())?;
+    let scripts = script_arches();
+    write(&dir.join(SHELL_SCRIPT), shell_script(&scripts).as_bytes())?;
+    set_executable(&dir.join(SHELL_SCRIPT))?;
+    write(
+        &dir.join(POWERSHELL_SCRIPT),
+        powershell_script(&scripts).as_bytes(),
+    )?;
+    Ok(dir.join(match cfg!(windows) {
+        true => POWERSHELL_SCRIPT,
+        false => SHELL_SCRIPT,
+    }))
+}
+
 fn write(path: &Path, contents: &[u8]) -> Result<(), String> {
     std::fs::write(path, contents).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
@@ -129,6 +151,10 @@ struct ScriptArch {
     powershell_folder: Vec<String>,
     shell_disk: Vec<String>,
     powershell_disk: Vec<String>,
+    shell_mcp: Vec<String>,
+    shell_mcp_headless: Vec<String>,
+    powershell_mcp: Vec<String>,
+    powershell_mcp_headless: Vec<String>,
 }
 
 const SHELL_FOLDER: &str = "$folder";
@@ -138,6 +164,10 @@ const POWERSHELL_FOLDER: &str = "$Folder";
 const SHELL_DISK: &str = "$disk_path";
 
 const POWERSHELL_DISK: &str = "$DiskPath";
+
+const SHELL_CONSOLE_LOG: &str = "$console_log";
+
+const POWERSHELL_CONSOLE_LOG: &str = "$ConsoleLog";
 
 fn script_arches() -> Vec<ScriptArch> {
     ARCHES
@@ -150,6 +180,10 @@ fn script_arches() -> Vec<ScriptArch> {
             powershell_folder: qemu::host_folder_args(arch, POWERSHELL_FOLDER),
             shell_disk: qemu::disk_args(arch, SHELL_DISK),
             powershell_disk: qemu::disk_args(arch, POWERSHELL_DISK),
+            shell_mcp: qemu::mcp_args(arch, true, SHELL_CONSOLE_LOG),
+            shell_mcp_headless: qemu::mcp_args(arch, false, SHELL_CONSOLE_LOG),
+            powershell_mcp: qemu::mcp_args(arch, true, POWERSHELL_CONSOLE_LOG),
+            powershell_mcp_headless: qemu::mcp_args(arch, false, POWERSHELL_CONSOLE_LOG),
         })
         .collect()
 }
@@ -191,11 +225,15 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         );
         let _ = writeln!(
             cases,
-            "  {}:window) set -- {} ;;\n  {}:serial) set -- {} ;;",
+            "  {}:window) set -- {} ;;\n  {}:serial) set -- {} ;;\n  {}:mcp) set -- {} ;;\n  {}:mcp-headless) set -- {} ;;",
             arch.name,
             single_quoted(&arch.window),
             arch.name,
-            single_quoted(&arch.serial)
+            single_quoted(&arch.serial),
+            arch.name,
+            double_quoted(&arch.shell_mcp),
+            arch.name,
+            double_quoted(&arch.shell_mcp_headless)
         );
         let _ = writeln!(
             folder_cases,
@@ -208,13 +246,15 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
   *) arch=x86_64 ;;
 esac
 mode=window
+mcp=''
+no_window=''
 apps=''
 disk=''
 no_disk=''
@@ -222,6 +262,8 @@ format_disk=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) mode=serial ;;
+    --mcp) mcp=yes ;;
+    --no-window) no_window=yes ;;
     --apps)
       if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
       shift
@@ -238,6 +280,21 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ -n "$no_window" ] && [ -z "$mcp" ]; then
+  echo "$usage" >&2
+  exit 2
+fi
+if [ -n "$mcp" ]; then
+  if [ "$mode" = serial ]; then
+    echo "$usage" >&2
+    exit 2
+  fi
+  mode=mcp
+  if [ -n "$no_window" ]; then mode=mcp-headless; fi
+fi
+say() {{
+  if [ -n "$mcp" ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi
+}}
 if [ -n "$apps" ]; then
   if [ ! -d "$apps" ]; then
     echo "run-eggos.sh: $apps is not a folder" >&2
@@ -271,7 +328,7 @@ if [ -f "$dir/{SUMS_FILE}" ]; then
   elif [ -z "$check" ]; then
     echo "run-eggos.sh: no sha256sum or shasum found: the checksum was not verified" >&2
   elif (cd "$dir" && printf '%s\n' "$line" | $check >/dev/null 2>&1); then
-    echo "run-eggos.sh: $file: checksum OK"
+    say "run-eggos.sh: $file: checksum OK"
   else
     echo "run-eggos.sh: $file does not match its checksum in {SUMS_FILE}: download it again" >&2
     exit 1
@@ -284,33 +341,43 @@ if ! command -v "$qemu" >/dev/null 2>&1; then
   echo "run-eggos.sh: $qemu not found: install QEMU (macOS: brew install qemu; Debian or Ubuntu: sudo apt install qemu-system)" >&2
   exit 1
 fi
+console_log=$(printf '%s' "$dir/eggos-$arch-serial.log" | sed 's/,/,,/g')
 case "$arch:$mode" in
 {cases}esac
 if [ -n "$apps" ]; then
   case "$arch" in
 {folder_cases}  esac
-  echo "run-eggos.sh: $apps is at /media/host in EggOS, read-only."
+  say "run-eggos.sh: $apps is at /media/host in EggOS, read-only."
 fi
 if [ -z "$no_disk" ]; then
   if [ -z "$disk" ]; then disk="$dir/eggos-$arch-disk.img"; fi
   if [ -n "$format_disk" ]; then
     : > "$disk"
-    echo "run-eggos.sh: emptied $disk: EggOS formats it at boot."
+    say "run-eggos.sh: emptied $disk: EggOS formats it at boot."
   fi
   if [ ! -s "$disk" ]; then
-    dd if=/dev/null of="$disk" bs=1 seek={disk_bytes} 2>/dev/null
+    dd if=/dev/null of="$disk" bs=1 seek={disk_bytes} >&2 2>/dev/null
+  fi
+  if command -v qemu-io >/dev/null 2>&1; then
+    if ! probe=$(qemu-io -f raw -c quit "$disk" 2>&1 </dev/null); then
+      case "$probe" in
+        *lock*)
+          echo "run-eggos.sh: another EggOS is using the disk image $disk: quit it first, or start this one with --disk <another image> or --no-disk." >&2
+          exit 1 ;;
+      esac
+    fi
   fi
   disk_path=$(CDPATH= cd -- "$(dirname -- "$disk")" && pwd)/$(basename -- "$disk")
   disk_path=$(printf '%s' "$disk_path" | sed 's/,/,,/g')
   case "$arch" in
 {disk_cases}  esac
-  echo "run-eggos.sh: $disk holds /home and /Applications in EggOS (--no-disk: none)."
+  say "run-eggos.sh: $disk holds /home, /Applications and /var in EggOS (--no-disk: none)."
 fi
-if [ "$mode" = window ]; then
-  echo "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
-else
-  echo "run-eggos.sh: booting EggOS $version ($arch) on this terminal. Quit: Ctrl-A then X."
-fi
+case "$mode" in
+  window) say "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here." ;;
+  serial) say "run-eggos.sh: booting EggOS $version ($arch) on this terminal. Quit: Ctrl-A then X." ;;
+  *) say "run-eggos.sh: booting EggOS $version ($arch) for an MCP client on this script's standard input and output; the console is in $dir/eggos-$arch-serial.log." ;;
+esac
 exec "$qemu" "$@" -kernel "$image"
 "#,
         choices = names.join("|"),
@@ -335,10 +402,13 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
             double_quoted(&arch.powershell_disk).replace("\" \"", "\", \"")
         );
         let list = |args: &[String]| single_quoted(args).replace("' '", "', '");
+        let expanded = |args: &[String]| double_quoted(args).replace("\" \"", "\", \"");
         let _ = writeln!(
             cases,
-            "    '{}' {{ if ($Serial) {{ @({}) }} else {{ @({}) }} }}",
+            "    '{}' {{ if ($Mcp -and $NoWindow) {{ @({}) }} elseif ($Mcp) {{ @({}) }} elseif ($Serial) {{ @({}) }} else {{ @({}) }} }}",
             arch.name,
+            expanded(&arch.powershell_mcp_headless),
+            expanded(&arch.powershell_mcp),
             list(&arch.serial),
             list(&arch.window)
         );
@@ -354,6 +424,8 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
 param(
     [string]$Arch,
     [switch]$Serial,
+    [switch]$Mcp,
+    [switch]$NoWindow,
     [string]$Apps,
     [string]$Disk,
     [switch]$NoDisk,
@@ -364,11 +436,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk]"
 for ($i = 0; $i -lt $Rest.Count; $i++) {{
     $argument = $Rest[$i]
     if ($argument -eq '--serial') {{
         $Serial = $true
+    }} elseif ($argument -eq '--mcp') {{
+        $Mcp = $true
+    }} elseif ($argument -eq '--no-window') {{
+        $NoWindow = $true
     }} elseif ($argument -eq '--apps' -and $i + 1 -lt $Rest.Count) {{
         $i++
         $Apps = $Rest[$i]
@@ -386,9 +462,12 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {{
         exit 2
     }}
 }}
-if ($NoDisk -and ($Disk -or $FormatDisk)) {{
+if (($NoDisk -and ($Disk -or $FormatDisk)) -or ($NoWindow -and -not $Mcp) -or ($Mcp -and $Serial)) {{
     Write-Error "run-eggos.ps1: $Usage"
     exit 2
+}}
+function Say([string]$Text) {{
+    if ($Mcp) {{ [Console]::Error.WriteLine($Text) }} else {{ Write-Host $Text }}
 }}
 if ($Arch -and $Arches -notcontains $Arch) {{
     Write-Error "run-eggos.ps1: $Usage"
@@ -419,9 +498,9 @@ if (Test-Path -LiteralPath $Sums) {{
         Write-Error "run-eggos.ps1: $File does not match its checksum in {SUMS_FILE}: download it again"
         exit 1
     }}
-    Write-Host "run-eggos.ps1: ${{File}}: checksum OK"
+    Say "run-eggos.ps1: ${{File}}: checksum OK"
 }} else {{
-    Write-Warning "run-eggos.ps1: no {SUMS_FILE} next to this script: the checksum was not verified"
+    [Console]::Error.WriteLine("run-eggos.ps1: no {SUMS_FILE} next to this script: the checksum was not verified")
 }}
 $Qemu = "qemu-system-$Arch"
 if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
@@ -434,6 +513,7 @@ if (-not (Get-Command $Qemu -ErrorAction SilentlyContinue)) {{
         exit 1
     }}
 }}
+$ConsoleLog = (Join-Path $PSScriptRoot "eggos-$Arch-serial.log").Replace(',', ',,')
 $QemuArgs = switch ($Arch) {{
 {cases}}}
 if ($Apps) {{
@@ -444,7 +524,7 @@ if ($Apps) {{
     $Folder = (Resolve-Path -LiteralPath $Apps).ProviderPath.Replace(',', ',,')
     $QemuArgs += switch ($Arch) {{
 {folder_cases}    }}
-    Write-Host "run-eggos.ps1: $Apps is at /media/host in EggOS, read-only."
+    Say "run-eggos.ps1: $Apps is at /media/host in EggOS, read-only."
 }}
 if (-not $NoDisk) {{
     if (-not $Disk) {{ $Disk = Join-Path $PSScriptRoot "eggos-$Arch-disk.img" }}
@@ -454,7 +534,7 @@ if (-not $NoDisk) {{
         $QemuImg = Join-Path (Split-Path -Parent (Get-Command $Qemu).Source) 'qemu-img.exe'
         $created = $false
         if (Test-Path -LiteralPath $QemuImg) {{
-            & $QemuImg create -q -f raw $Disk {disk_bytes}
+            & $QemuImg create -q -f raw $Disk {disk_bytes} | ForEach-Object {{ [Console]::Error.WriteLine($_) }}
             $created = $LASTEXITCODE -eq 0
         }}
         if (-not $created) {{
@@ -462,17 +542,26 @@ if (-not $NoDisk) {{
             $stream.SetLength({disk_bytes})
             $stream.Close()
         }}
-        if ($FormatDisk) {{ Write-Host "run-eggos.ps1: emptied ${{Disk}}: EggOS formats it at boot." }}
+        if ($FormatDisk) {{ Say "run-eggos.ps1: emptied ${{Disk}}: EggOS formats it at boot." }}
+    }}
+    try {{
+        $probe = [System.IO.File]::Open($Disk, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $probe.Close()
+    }} catch [System.IO.IOException] {{
+        [Console]::Error.WriteLine("run-eggos.ps1: another EggOS is using the disk image ${{Disk}}: quit it first, or start this one with -Disk <another image> or -NoDisk.")
+        exit 1
     }}
     $DiskPath = (Resolve-Path -LiteralPath $Disk).ProviderPath.Replace(',', ',,')
     $QemuArgs += switch ($Arch) {{
 {disk_cases}    }}
-    Write-Host "run-eggos.ps1: $Disk holds /home and /Applications in EggOS (-NoDisk: none)."
+    Say "run-eggos.ps1: $Disk holds /home, /Applications and /var in EggOS (-NoDisk: none)."
 }}
-if ($Serial) {{
-    Write-Host "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
+if ($Mcp) {{
+    Say "run-eggos.ps1: booting EggOS $Version ($Arch) for an MCP client on this script's standard input and output; the console is in $(Join-Path $PSScriptRoot "eggos-$Arch-serial.log")."
+}} elseif ($Serial) {{
+    Say "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
 }} else {{
-    Write-Host "run-eggos.ps1: booting EggOS $Version ($Arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
+    Say "run-eggos.ps1: booting EggOS $Version ($Arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here."
 }}
 & $Qemu @QemuArgs -kernel $Image
 exit $LASTEXITCODE
@@ -540,6 +629,18 @@ The window shows the EggOS desktop with the shell in a terminal window; the same
 the terminal the script runs in. Quit with Ctrl-A then X on that terminal, or close the window.
 From a source checkout, `cargo xtask run --arch <arch>` boots the same image.
 
+## Connect an AI agent (MCP)
+
+```
+claude mcp add eggos -- /path/to/run-eggos.sh --mcp
+claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
+```
+
+Claude Code, or any MCP client, then starts EggOS and talks to its built-in MCP server. Agents
+can list and read files in `/home` and `/media/host` and list processes, windows and installed
+apps. They cannot yet write or delete files, run programs or install apps. Every call is
+recorded in `/var/log/agent-audit.log`, which `agentlog` shows. See docs/mcp.md.
+
 ## Known limits
 
 See [docs/limitations.md](https://github.com/eggspot/EggOS/blob/v{VERSION}/docs/limitations.md)
@@ -576,11 +677,26 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            let expanded = |args: &[String]| {
+                args.iter()
+                    .map(|arg| format!("\"{arg}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             assert!(powershell.contains(&format!(
-                "    '{}' {{ if ($Serial) {{ @({}) }} else {{ @({}) }} }}\n",
+                "    '{}' {{ if ($Mcp -and $NoWindow) {{ @({}) }} elseif ($Mcp) {{ @({}) }} elseif ($Serial) {{ @({}) }} else {{ @({}) }} }}\n",
                 arch.name,
+                expanded(&qemu::mcp_args(arch, false, "$ConsoleLog")),
+                expanded(&qemu::mcp_args(arch, true, "$ConsoleLog")),
                 list(&serial),
                 list(&window)
+            )));
+            assert!(shell.contains(&format!(
+                "  {}:mcp) set -- {} ;;\n  {}:mcp-headless) set -- {} ;;\n",
+                arch.name,
+                double_quoted(&qemu::mcp_args(arch, true, "$console_log")),
+                arch.name,
+                double_quoted(&qemu::mcp_args(arch, false, "$console_log"))
             )));
         }
         for arch in ARCHES {
@@ -612,6 +728,55 @@ mod tests {
         assert!(shell.starts_with("#!/bin/sh\n"));
         assert!(shell.contains(&format!("version='{VERSION}'")));
         assert!(powershell.contains(&format!("$Version = '{VERSION}'")));
+    }
+
+    #[test]
+    fn with_mcp_the_scripts_print_nothing_on_standard_output() {
+        let arches = script_arches();
+        let shell = shell_script(&arches);
+        let after_parsing = &shell[shell.find("say() {").unwrap()..];
+        for line in after_parsing.lines() {
+            let line = line.trim_start();
+            if line.starts_with("echo ") {
+                assert!(line.ends_with(">&2"), "{line}");
+            }
+        }
+        assert!(shell.contains("printf '%s\\n' \"$*\" >&2"));
+        assert!(shell.contains("--mcp) mcp=yes ;;"));
+        assert!(shell.contains("if [ -n \"$no_window\" ] && [ -z \"$mcp\" ]; then"));
+        assert!(shell.contains("qemu-io -f raw -c quit \"$disk\""));
+        assert!(shell.contains("another EggOS is using the disk image $disk"));
+        let powershell = powershell_script(&arches);
+        let after_say = &powershell[powershell.find("function Say").unwrap()..];
+        assert!(!after_say.contains("Write-Host \"run-eggos"));
+        assert!(!after_say.contains("Write-Warning"));
+        assert!(powershell.contains("& $Qemu @QemuArgs -kernel $Image\nexit $LASTEXITCODE\n"));
+        assert!(powershell.contains("[System.IO.FileShare]::None"));
+    }
+
+    #[test]
+    fn the_mcp_boot_has_the_channel_on_stdio_the_console_in_a_file_and_no_monitor() {
+        for arch in ARCHES {
+            let args = qemu::mcp_args(arch, false, "/tmp/a,,b.log").join(" ");
+            assert!(args.contains("-display none"), "{args}");
+            assert!(
+                args.contains(
+                    "-chardev file,id=console,path=/tmp/a,,b.log -serial chardev:console"
+                )
+            );
+            assert!(args.contains("-monitor none"));
+            assert!(args.contains("-chardev stdio,id=mcp,signal=off"));
+            assert!(args.ends_with(&format!(
+                "-device {},id=agent -device virtserialport,bus=agent.0,nr=1,chardev=mcp,name=org.eggos.mcp",
+                arch.agent_bus_device
+            )));
+            assert!(!args.contains("stdio,") || args.matches("stdio").count() == 1);
+            assert!(
+                !qemu::mcp_args(arch, true, "x")
+                    .join(" ")
+                    .contains("-display none")
+            );
+        }
     }
 
     #[test]

@@ -1,14 +1,16 @@
 //! The EggOS core utilities (D108): one program, `/bin/coreutils`, whose other names in `/bin`
-//! (hard links to the same file) are its utilities: `cat`, `cp`, `echo`, `false`, `free`,
-//! `grep`, `halt`, `head`, `ls`, `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`, `sleep`,
-//! `sync`, `tail`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs the utility named by the last
-//! component of the name it was started by; started as `coreutils`, the one its first argument
-//! names (`coreutils --list` lists them). Each utility is pure logic over a `System` trait, with
+//! (hard links to the same file) are its utilities: `agentlog`, `cat`, `cp`, `echo`, `false`,
+//! `free`, `grep`, `halt`, `head`, `ls`, `mkdir`, `mv`, `poweroff`, `ps`, `reboot`, `rm`,
+//! `sleep`, `sync`, `tail`, `touch`, `trash`, `true`, `uname`, `uptime`, `wc` and `wm`. It runs
+//! the utility named by the last component of the name it was started by; started as
+//! `coreutils`, the one its first argument names (`coreutils --list` lists them). Each utility is pure logic over a `System` trait, with
 //! host tests against a fake; `linux.rs` makes the system calls. docs/coreutils.md describes
 //! what each utility does.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 
+#[cfg(any(test, target_env = "musl"))]
+mod agentlog;
 #[cfg(any(test, target_env = "musl"))]
 mod cat;
 #[cfg(any(test, target_env = "musl"))]

@@ -16,10 +16,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   driven: no network, no sound, no USB, no real-time clock (D110-D113, D130).
 
 ## What the system can do
+- **Agents read only.** The built-in MCP server (D136, docs/mcp.md) lets an MCP client list
+  and read files in `/home` and `/media/host` and list processes, windows and installed apps;
+  it cannot write or delete files, run programs or install apps yet (item 28b), has no
+  per-agent permissions, and is reached only through the run scripts' `--mcp` (no network
+  MCP). The audit log keeps about the last 2,000 calls and shows times since the boot until
+  the RTC (item 29).
 - **One disk, and no network.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`. `/home` and `/Applications` live on the disk image the run scripts
-  attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
+  `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
+  scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `meminfo`, `uptime`
   and `ps` (D125). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no

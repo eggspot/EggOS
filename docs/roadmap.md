@@ -305,6 +305,14 @@ D16):
     on the command line: `cp -r`, `mv` of folders across file systems, and `trash` with
     `-l`, `-r` and `-e`; `TYPE_IN_TERMINAL`. Next: the MCP tools with the MCP server, free
     space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
+28. **28a done** — users can now connect Claude Code or any MCP client to EggOS and let it
+    read files, processes, windows and apps (D136, docs/mcp.md): `run-eggos.sh --mcp`
+    (`run-eggos.ps1 -Mcp`, `--no-window` for headless hosts) wires a named virtio console port
+    to the script's stdio; init starts `eggmcpd` when `/dev/agent` exists; the tools `ls`,
+    `cat`, `ps`, `wm_list` and `app_list` run their CLI twins in `/home` and `/media/host`;
+    every call goes to `/var/log/agent-audit.log`, which `agentlog` shows. Next (28b): grants
+    from the host (`--mcp-allow write,run,install`), writing and deleting files, running
+    programs, installing, opening and uninstalling apps, confirmation of destructive calls.
 38. `AF_UNIX` sockets, `socketpair`, `SCM_RIGHTS`, `memfd` and `MAP_SHARED` of files.
 39. a Wayland server, `eggway`, for Linux GUI apps.
 40. the macOS Objective-C runtime and the core of Foundation.
@@ -312,8 +320,8 @@ D16):
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
-Editor; 29 an RTC driver for `date`. Moved after the release: networking, the MCP server, the
-terminal's `edit`. The graphical terminal stays the owner's priority: nothing above may break it.
+Editor; 29 an RTC driver for `date`. Moved after the release: networking and the terminal's
+`edit`; the MCP server is back in the release (owner, 2026-10-28; item 28, D136). The graphical terminal stays the owner's priority: nothing above may break it.
 
 ## Milestones
 

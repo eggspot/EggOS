@@ -476,7 +476,7 @@ struct Mount {
 }
 
 /// The most file systems [`mount`] mounts besides the root.
-pub const MAX_MOUNTS: usize = 8;
+pub const MAX_MOUNTS: usize = 16;
 
 struct Mounted {
     point: Node,

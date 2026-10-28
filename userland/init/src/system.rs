@@ -1,3 +1,4 @@
+use crate::agent_server::{AGENT_CHANNEL, AGENT_SERVER, AfterEnd, AgentServer, RESTARTED_ARGUMENT};
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
 use core::ptr;
@@ -96,6 +97,10 @@ fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
 pub fn run(_startup: &Startup) -> i32 {
     set_signal_actions(SIG_IGN);
     say(&[BANNER]);
+    let mut agent = AgentServer::default();
+    if exists(AGENT_CHANNEL) && exists(AGENT_SERVER) {
+        start_agent_server(&mut agent, false);
+    }
     let config = read_config();
     let name = config.login.program_name();
     let mut backoff = Backoff::default();
@@ -106,11 +111,11 @@ pub fn run(_startup: &Startup) -> i32 {
                 name,
                 b" is missing; init only reaps children\n",
             ]);
-            reap_forever();
+            reap_forever(&mut agent);
         }
         say(&[b"init: starting ", name, b"\n"]);
         let started = now_ms();
-        match spawn(&config.login).and_then(wait_for) {
+        match spawn(&config.login).and_then(|child| wait_for(child, &mut agent)) {
             Some(status) => report(name, status),
             None => say(&[b"init: could not start ", name, b"\n"]),
         }
@@ -131,7 +136,7 @@ pub fn run(_startup: &Startup) -> i32 {
                 decimal(delay, &mut digits),
                 b" s\n",
             ]);
-            sleep_reaping(delay);
+            sleep_reaping(delay, &mut agent);
         }
     }
 }
@@ -268,26 +273,83 @@ fn wait4(options: usize, status: &mut i32) -> isize {
     )
 }
 
-fn wait_for(child: usize) -> Option<i32> {
+fn start_agent_server(agent: &mut AgentServer, restarted: bool) {
+    let program = AGENT_SERVER.as_ptr();
+    let mut arguments = [ptr::null::<u8>(); 3];
+    arguments[0] = program;
+    if restarted {
+        arguments[1] = RESTARTED_ARGUMENT.as_ptr();
+    }
+    let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
+    for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
+        *slot = variable.as_ptr();
+    }
+    let child = call(number::CLONE, [SIGCHLD, 0, 0, 0, 0, 0]);
+    match child {
+        0 => {
+            set_signal_actions(SIG_DFL);
+            call(number::SETSID, [0; 6]);
+            call(
+                number::EXECVE,
+                [
+                    program as usize,
+                    arguments.as_ptr() as usize,
+                    environment.as_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            syscall::exit(COMMAND_NOT_RUN)
+        }
+        1.. => {
+            agent.started(child as usize, now_ms());
+            say(&[b"init: started the MCP server on /dev/agent\n"]);
+        }
+        _ => say(&[b"init: could not start the MCP server\n"]),
+    }
+}
+
+fn notice_end(agent: &mut AgentServer, ended: isize) {
+    if ended <= 0 {
+        return;
+    }
+    match agent.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_agent_server(agent, true),
+        Some(AfterEnd::GiveUp) => {
+            say(&[b"init: eggmcpd keeps ending; the agent channel is closed\n"])
+        }
+        None => {}
+    }
+}
+
+fn wait_for(child: usize, agent: &mut AgentServer) -> Option<i32> {
     loop {
         let mut status = 0;
         match wait4(0, &mut status) {
             ended if ended == child as isize => return Some(status),
             error if error == -ECHILD => return None,
-            _ => {}
+            ended => notice_end(agent, ended),
         }
     }
 }
 
-fn reap_ended() {
+fn reap_ended(agent: &mut AgentServer) {
     let mut status = 0;
-    while wait4(WNOHANG, &mut status) > 0 {}
+    loop {
+        let ended = wait4(WNOHANG, &mut status);
+        if ended <= 0 {
+            return;
+        }
+        notice_end(agent, ended);
+    }
 }
 
-fn reap_forever() -> ! {
+fn reap_forever(agent: &mut AgentServer) -> ! {
     loop {
         let mut status = 0;
         let ended = wait4(0, &mut status);
+        notice_end(agent, ended);
         if ended == -ECHILD {
             let nothing_blocked: u64 = 0;
             call(
@@ -305,8 +367,8 @@ fn reap_forever() -> ! {
     }
 }
 
-fn sleep_reaping(seconds: u64) {
-    reap_ended();
+fn sleep_reaping(seconds: u64, agent: &mut AgentServer) {
+    reap_ended(agent);
     let time = Timespec {
         seconds: seconds as i64,
         nanoseconds: 0,
@@ -316,7 +378,7 @@ fn sleep_reaping(seconds: u64) {
         [CLOCK_MONOTONIC, 0, &raw const time as usize, 0, 0, 0],
     ) == -EINTR
     {}
-    reap_ended();
+    reap_ended(agent);
 }
 
 fn report(name: &[u8], status: i32) {

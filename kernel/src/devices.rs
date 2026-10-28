@@ -190,6 +190,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::INPUT_DRIVER,
     #[cfg(any(test, feature = "virtio-blk"))]
     &virtio::BLOCK_DRIVER,
+    #[cfg(any(test, feature = "virtio-console"))]
+    &virtio::CONSOLE_DRIVER,
 ];
 
 /// What a device is, as the bus that found it says.
