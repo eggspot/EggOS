@@ -15,7 +15,7 @@
 //! moves it back to its folder under a name that is free there (`notes copy.txt`).
 
 use crate::clock::{deletion_date, parse_deletion_date};
-use crate::names::{Name, copy_name, free_path, is_within, joined, parent};
+use crate::names::{Name, copy_name, free_path, is_within, joined, normalized, parent};
 use core::fmt::Write;
 use eggos_app::files::{self, Files, Kind, Path};
 use eggos_app::installer::remove_tree;
@@ -53,6 +53,9 @@ pub enum RestoreError {
     FolderGone(Path),
     /// The Trash has no record of where it came from.
     NoRecord,
+    /// Its record names a place outside the Trash's home folder, or inside the Trash, or a
+    /// path that is not plain (with `.` or `..`): a record nobody but a forger writes.
+    OutsideHome,
     /// The file system refused.
     Failed(Errno),
 }
@@ -321,10 +324,34 @@ impl Trash {
         }
     }
 
-    /// Moves trashed item `name` back to its folder, under a name free there: where it went.
+    /// The home folder whose Trash this is.
+    pub fn home(&self) -> &[u8] {
+        self.root
+            .as_bytes()
+            .strip_suffix(UNDER_HOME)
+            .and_then(|home| home.strip_suffix(b"/"))
+            .unwrap_or(b"/")
+    }
+
+    /// Whether an item may go back to `original`: a plain absolute path (no `.`, `..` or
+    /// repeated slashes) strictly inside the home folder and outside the Trash itself.
+    pub fn may_restore_to(&self, original: &[u8]) -> bool {
+        let plain = normalized(original).is_some_and(|path| path.as_bytes() == original);
+        plain
+            && original.first() == Some(&b'/')
+            && original != self.home()
+            && is_within(original, self.home())
+            && !is_within(original, self.root.as_bytes())
+    }
+
+    /// Moves trashed item `name` back to its folder, under a name free there: where it went;
+    /// refused for a record that points outside the home folder ([`Self::may_restore_to`]).
     #[allow(clippy::result_large_err)]
     pub fn restore(&self, files: &mut impl Files, name: &[u8]) -> Result<Path, RestoreError> {
         let record = self.record(files, name).ok_or(RestoreError::NoRecord)?;
+        if !self.may_restore_to(record.original.as_bytes()) {
+            return Err(RestoreError::OutsideHome);
+        }
         let item = self
             .item(name)
             .ok_or(RestoreError::Failed(Errno::ENAMETOOLONG))?;
@@ -531,6 +558,43 @@ mod tests {
             trash.restore(&mut files, b"nothing"),
             Err(RestoreError::NoRecord)
         );
+    }
+
+    #[test]
+    fn a_forged_record_pointing_outside_the_home_is_not_restored() {
+        let mut files = home();
+        let trash = Trash::of_home(HOME.as_bytes()).unwrap();
+        assert_eq!(trash.home(), b"/home/root");
+        trash
+            .put(&mut files, b"/home/root/notes old.txt", 1)
+            .unwrap();
+        for forged in [
+            "/usr/x",
+            "/home/root/../../etc/x",
+            "/home/root/./x",
+            "/home/other/x",
+            "/home/root",
+            "/home/root/.local/share/Trash/files/y",
+            "/home/rootless/x",
+        ] {
+            let record = format!("[Trash Info]\nPath={forged}\nDeletionDate=1970-01-01T00:00:01\n");
+            files.file(
+                "/home/root/.local/share/Trash/info/notes old.txt.trashinfo",
+                record.as_bytes(),
+                1,
+            );
+            assert_eq!(
+                trash.restore(&mut files, b"notes old.txt"),
+                Err(RestoreError::OutsideHome),
+                "{forged}"
+            );
+            assert_eq!(
+                files.contents("/home/root/.local/share/Trash/files/notes old.txt"),
+                Some(&b"other"[..])
+            );
+        }
+        assert!(trash.may_restore_to(b"/home/root/notes old.txt"));
+        assert!(trash.may_restore_to(b"/home/root/Work/x"));
     }
 
     #[test]

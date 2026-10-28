@@ -289,7 +289,7 @@ fn first_screen(installer: &mut Installer, command: Command<'_>) {
                 }
             }
         }
-        Command::List | Command::Help => {}
+        Command::Open { .. } | Command::List | Command::Help => {}
     }
 }
 

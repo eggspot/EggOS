@@ -124,6 +124,13 @@ impl Fake {
         self
     }
 
+    pub fn contents(&self, path: &str) -> Vec<u8> {
+        match self.nodes.get(path.as_bytes()) {
+            Some((Node::File(content), _)) => content.clone(),
+            _ => panic!("{path} is not a file"),
+        }
+    }
+
     pub fn open_count(&self) -> usize {
         self.open.iter().filter(|file| file.is_some()).count()
     }
@@ -347,6 +354,16 @@ impl System for Fake {
             position: 0,
         }));
         Ok(self.open.len() - 1 + FIRST_FILE_DESCRIPTOR)
+    }
+
+    fn append(&mut self, path: &CStr, mode: u32) -> Result<usize, Errno> {
+        let descriptor = self.create(path, mode, false)?;
+        let end = match self.nodes.get(&self.resolve(path.to_bytes())) {
+            Some((Node::File(content), _)) => content.len(),
+            _ => 0,
+        };
+        self.file(descriptor)?.position = end;
+        Ok(descriptor)
     }
 
     fn make_directory(&mut self, path: &CStr, _mode: u32) -> Result<(), Errno> {

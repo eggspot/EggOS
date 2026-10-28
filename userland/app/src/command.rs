@@ -1,6 +1,8 @@
 //! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--window] <path>`,
-//! `app uninstall [--window] <name>` (`remove` is the same), `app list`. Text only, the same
-//! with or without a display; `--window` shows the installer's dialogs instead.
+//! `app uninstall [--window] <name>` (`remove` is the same), `app open <name>` (D137) and
+//! `app list`. Text only, the same with or without a display; `--window` shows the installer's
+//! dialogs instead. `--` ends the options, so the next word is the operand even if it starts
+//! with `-`.
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,13 +16,17 @@ pub enum Command<'a> {
         name: &'a [u8],
         window: bool,
     },
+    Open {
+        name: &'a [u8],
+    },
     List,
     Help,
 }
 
 /// The command's usage, printed for `--help` and with a usage error.
-pub const USAGE: &str = "usage: app install [--name <name>] [--window] <path>\n       \
-                         app uninstall [--window] <name>\n       app list\n";
+pub const USAGE: &str = "usage: app install [--name <name>] [--window] [--] <path>\n       \
+                         app uninstall [--window] [--] <name>\n       \
+                         app open [--] <name>\n       app list\n";
 
 /// Exit status of a refused or failed command.
 pub const FAILED: i32 = 1;
@@ -34,8 +40,12 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
     let mut name = None;
     let mut operand = None;
     let mut rest = rest.iter();
+    let mut options_end = false;
     while let Some(&argument) = rest.next() {
         match argument {
+            _ if options_end && operand.is_none() => operand = Some(argument),
+            _ if options_end => return None,
+            b"--" => options_end = true,
             b"--window" => window = true,
             b"--name" if verb == b"install" => name = Some(*rest.next()?),
             _ if argument.starts_with(b"-") && argument.len() > 1 => return None,
@@ -53,6 +63,7 @@ pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
             name: operand?,
             window,
         }),
+        b"open" if !window => Some(Command::Open { name: operand? }),
         b"list" if operand.is_none() && !window => Some(Command::List),
         b"--help" | b"help" if operand.is_none() => Some(Command::Help),
         _ => None,
@@ -155,6 +166,36 @@ mod program {
         }
     }
 
+    fn open(name: &[u8]) -> i32 {
+        let mut files = LinuxFiles::new();
+        let shown = installer::Name::new(name);
+        let mut installed = false;
+        let listed = installer::for_each_installed(&mut files, |app| {
+            installed |= app.name.as_bytes() == name;
+        });
+        if listed.is_err() || !installed {
+            let mut line = Line::new();
+            let _ = write!(line, "{} is not installed", shown.as_str());
+            complain(line.as_str());
+            return FAILED;
+        }
+        match linux::open_app(name) {
+            Ok(()) => {
+                let mut line = Line::new();
+                let _ = write!(line, "Opened {}.", shown.as_str());
+                say(STANDARD_OUTPUT, line.as_str());
+                0
+            }
+            Err(error) => {
+                let mut line = Line::new();
+                let _ = write!(line, "could not open {}: ", shown.as_str());
+                line.push_bytes(error.message());
+                complain(line.as_str());
+                FAILED
+            }
+        }
+    }
+
     fn list() -> i32 {
         let mut files = LinuxFiles::new();
         let listed = installer::for_each_installed(&mut files, |app| {
@@ -237,6 +278,7 @@ mod program {
             ) => open_window(startup, &arguments[..count]),
             Some(Command::Install { path, name, .. }) => install(path, name),
             Some(Command::Uninstall { name, .. }) => uninstall(name),
+            Some(Command::Open { name }) => open(name),
             Some(Command::List) => list(),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
@@ -297,9 +339,37 @@ mod tests {
             &[b"list", b"extra"],
             &[b"list", b"--window"],
             &[b"upgrade", b"x"],
+            &[b"open"],
+            &[b"open", b"a", b"b"],
+            &[b"open", b"--window", b"a"],
+            &[b"uninstall", b"--", b"a", b"b"],
+            &[b"open", b"--name", b"a"],
         ] {
             assert_eq!(parse(wrong), None, "{wrong:?}");
         }
+        assert_eq!(
+            parse(&[b"open", b"win-paint"]),
+            Some(Command::Open { name: b"win-paint" })
+        );
+        assert_eq!(
+            parse(&[b"open", b"--", b"-odd"]),
+            Some(Command::Open { name: b"-odd" })
+        );
+        assert_eq!(
+            parse(&[b"uninstall", b"--", b"--window"]),
+            Some(Command::Uninstall {
+                name: b"--window",
+                window: false
+            })
+        );
+        assert_eq!(
+            parse(&[b"install", b"--", b"/media/host/-x.exe"]),
+            Some(Command::Install {
+                path: b"/media/host/-x.exe",
+                name: None,
+                window: false
+            })
+        );
         assert_eq!(
             parse(&[b"install", b"-"]),
             Some(Command::Install {

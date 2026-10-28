@@ -133,13 +133,16 @@ impl core::fmt::Debug for ChildStack {
 }
 
 /// What [`spawn`] starts: the program, its arguments and environment (each a null-ended
-/// array of C strings), and the descriptors that become its standard input, output and error.
+/// array of C strings), the descriptors that become its standard input, output and error, and
+/// optionally the folder it starts in and a process group of its own.
 #[derive(Debug)]
 pub struct Spawn<'a> {
     program: &'a CStr,
     arguments: &'a [*const u8],
     environment: &'a [*const u8],
     streams: [usize; 3],
+    directory: Option<&'a CStr>,
+    own_group: bool,
     exec_error: AtomicIsize,
 }
 
@@ -157,7 +160,27 @@ impl<'a> Spawn<'a> {
             arguments,
             environment,
             streams,
+            directory: None,
+            own_group: false,
             exec_error: AtomicIsize::new(0),
+        }
+    }
+
+    /// The same request, with the child starting in `directory`; when it cannot, the child
+    /// ends and its error comes back as `execve`'s would.
+    pub fn in_directory(self, directory: &'a CStr) -> Self {
+        Self {
+            directory: Some(directory),
+            ..self
+        }
+    }
+
+    /// The same request, with the child leading a process group of its own, so the whole
+    /// group (its own children too) can be signalled at once with `kill(-child, ..)`.
+    pub fn in_own_process_group(self) -> Self {
+        Self {
+            own_group: true,
+            ..self
         }
     }
 }
@@ -201,6 +224,19 @@ extern "C" fn start_child(request: usize) -> ! {
     // atomic error word while this child runs on the parent's memory: the parent's thread
     // sleeps until the child runs `execve` or ends.
     let request = unsafe { &*(request as *const Spawn<'_>) };
+    if request.own_group {
+        // SAFETY: `setpgid` touches no memory.
+        unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };
+    }
+    if let Some(directory) = request.directory {
+        // SAFETY: `chdir` reads the C string `request` names, which stays in place while the
+        // parent sleeps.
+        let changed = unsafe { syscall::call(number::CHDIR, [directory.as_ptr() as usize, 0, 0, 0, 0, 0]) };
+        if changed < 0 {
+            request.exec_error.store(changed, Ordering::Release);
+            syscall::exit(NOT_RUN)
+        }
+    }
     for (target, &from) in request.streams.iter().enumerate() {
         if from != target {
             // SAFETY: `dup3` touches no memory.
