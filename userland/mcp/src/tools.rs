@@ -117,6 +117,12 @@ pub enum Kind {
     WmAct,
     /// `wm_drag` (D162).
     WmDrag,
+    /// `settings_list`: every setting and its value (D163).
+    SettingsList,
+    /// `settings_get`: one setting's value (D163).
+    SettingsGet,
+    /// `settings_set`: sets a setting (D163).
+    SettingsSet,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -294,7 +300,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 36] = [
+pub const TOOLS: [Tool; 39] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -450,6 +456,21 @@ pub const TOOLS: [Tool; 36] = [
     tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
     tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
     tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
+    tool(
+        &registry::SETTINGS_LIST,
+        Kind::SettingsList,
+        twin("/bin/settings", &["list"], Operand::None),
+    ),
+    tool(
+        &registry::SETTINGS_GET,
+        Kind::SettingsGet,
+        twin("/bin/settings", &["get"], Operand::None),
+    ),
+    tool(
+        &registry::SETTINGS_SET,
+        Kind::SettingsSet,
+        twin("/bin/settings", &["set"], Operand::None),
+    ),
 ];
 
 /// The tool named `name`.

@@ -34,7 +34,10 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     while let Some(word) = words.next() {
         match word {
             b"-s" | b"-stats" | b"-statistics" => statistics = true,
-            b"-j" | b"-json" | b"--json" => json = true,
+            b"-j" | b"-json" | b"--json" => {
+                json = true;
+                output.use_json();
+            }
             b"-4" => {}
             b"show" | b"list" | b"ls" if chosen.is_some() => {}
             b"dev" if chosen.is_some() => match words.next() {
@@ -67,7 +70,8 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.error(&[b"device \"", name, b"\" does not exist"]);
         return FAILURE;
     }
-    let shown = |status: &&InterfaceStatus| device.is_none_or(|name| status.name.as_bytes() == name);
+    let shown =
+        |status: &&InterfaceStatus| device.is_none_or(|name| status.name.as_bytes() == name);
     match (chosen.unwrap_or(Object::Address), json) {
         (_, true) => write_json(output, &read),
         (Object::Address, false) => {
@@ -99,10 +103,17 @@ fn usage<S: System>(output: &mut Output<S>) -> i32 {
 }
 
 fn numbered(read: &Interfaces) -> impl Iterator<Item = (usize, &InterfaceStatus)> {
-    interfaces(read).enumerate().map(|(index, status)| (index + 1, status))
+    interfaces(read)
+        .enumerate()
+        .map(|(index, status)| (index + 1, status))
 }
 
-fn write_link<S: System>(output: &mut Output<S>, index: usize, status: &InterfaceStatus, statistics: bool) {
+fn write_link<S: System>(
+    output: &mut Output<S>,
+    index: usize,
+    status: &InterfaceStatus,
+    statistics: bool,
+) {
     output.write_number(index as u64, 0);
     output.write(b": ");
     output.write(status.name.as_bytes());
@@ -173,7 +184,10 @@ fn write_counters<S: System>(output: &mut Output<S>, heading: &[u8], values: [u6
 }
 
 fn write_addresses<S: System>(output: &mut Output<S>, status: &InterfaceStatus) {
-    let Some(subnet) = status.subnet.filter(|_| status.link_up || status.is_loopback()) else {
+    let Some(subnet) = status
+        .subnet
+        .filter(|_| status.link_up || status.is_loopback())
+    else {
         return;
     };
     output.write(b"    inet ");
@@ -203,7 +217,10 @@ fn write_addresses<S: System>(output: &mut Output<S>, status: &InterfaceStatus) 
 }
 
 fn write_routes<S: System>(output: &mut Output<S>, status: &InterfaceStatus) {
-    let Some(subnet) = status.subnet.filter(|_| !status.is_loopback() && status.link_up) else {
+    let Some(subnet) = status
+        .subnet
+        .filter(|_| !status.is_loopback() && status.link_up)
+    else {
         return;
     };
     let source = Shown::<15>::of(subnet.address);
@@ -216,7 +233,8 @@ fn write_routes<S: System>(output: &mut Output<S>, status: &InterfaceStatus) {
         output.write(source.as_bytes());
         output.write(b"\n");
     }
-    output.write(Shown::<18>::of(format_args!("{}/{}", subnet.network(), subnet.prefix)).as_bytes());
+    output
+        .write(Shown::<18>::of(format_args!("{}/{}", subnet.network(), subnet.prefix)).as_bytes());
     output.write(b" dev ");
     output.write(status.name.as_bytes());
     output.write(b" proto kernel scope link src ");

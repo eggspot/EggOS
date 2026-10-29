@@ -1342,6 +1342,13 @@ impl Server {
         if let Some(url) = arguments::url_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, url);
         }
+        if let Some(key) = arguments::setting_key_text(&prepared.checked, buffers.words) {
+            push_word(&mut words, &mut count, "--");
+            push_word(&mut words, &mut count, key);
+        }
+        if let Some(value) = arguments::setting_value_text(&prepared.checked, buffers.words) {
+            push_word(&mut words, &mut count, value);
+        }
         if let Some(entry) = arguments::archive_entry_text(&prepared.checked, buffers.words) {
             push_word(&mut words, &mut count, "--entry");
             push_word(&mut words, &mut count, entry);
@@ -2181,6 +2188,14 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(url) = arguments::url_text(checked, scratch.content) {
         writer.key("url");
         writer.string(url);
+    }
+    if let Some(key) = arguments::setting_key_text(checked, scratch.words) {
+        writer.key("key");
+        writer.string(key);
+    }
+    if let Some(value) = arguments::setting_value_text(checked, scratch.words) {
+        writer.key("value");
+        writer.string(value);
     }
     if tool.takes("confirm") {
         writer.key("confirm");

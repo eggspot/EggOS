@@ -1,7 +1,8 @@
-//! The Egg command model's registry for EggOS (D160, docs/ux/command-model.md): one
-//! [`CommandDefinition`] per CLI command and one [`ToolDefinition`] per MCP tool, in two
-//! `'static` const tables, [`COMMANDS`] and [`TOOLS`]. The core utilities, `app` and the MCP
-//! server read their options, `help`, JSON forms, error codes and tool schemas from here, so
+//! The Egg command model's registry for EggOS (D160, D163, docs/ux/command-model.md): one
+//! [`CommandDefinition`] per CLI command, every command EggOS ships, and one
+//! [`ToolDefinition`] per MCP tool, in two `'static` const tables, [`COMMANDS`] and [`TOOLS`].
+//! The core utilities, `app`, `settings` and the MCP server read their options, `help`, JSON
+//! forms, error codes, examples and tool schemas from here, so
 //! the help, the tools and the docs cannot drift apart (D22's CLI and MCP front-ends; each
 //! command's [`Surface`] records the GUI). No allocator: everything is const data.
 
@@ -400,6 +401,27 @@ pub enum Surface {
     NoGui(&'static str),
 }
 
+/// A command line with what it writes, shown by `help` and run as a test against the fakes of
+/// the program that runs it (the core utilities' or Settings').
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Example {
+    /// The command line: its words, separated by single spaces, none quoted.
+    pub line: &'static str,
+    /// What it writes on standard output.
+    pub output: &'static str,
+    /// Its exit status.
+    pub status: i32,
+}
+
+/// An example that ends with exit status 0.
+pub const fn example(line: &'static str, output: &'static str) -> Example {
+    Example {
+        line,
+        output,
+        status: 0,
+    }
+}
+
 /// One CLI command: its words, help, options, operands, outputs, effect and errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandDefinition {
@@ -419,6 +441,8 @@ pub struct CommandDefinition {
     pub max_effect: Effect,
     /// The errors it ends with, beyond the ones any command can (usage and a file's errors).
     pub errors: &'static [CommandError],
+    /// Command lines with what they write, run as tests.
+    pub examples: &'static [Example],
     /// Where its GUI front-end lives.
     pub surface: Surface,
 }
@@ -506,8 +530,8 @@ pub const KEPT_NAMES: [&str; 37] = [
     "uname", "uptime", "wc", "wm",
 ];
 
-/// `eggsh`'s built-ins: CLI only, described for the docs (they are not in [`COMMANDS`] until
-/// slice 2).
+/// `eggsh`'s built-ins: CLI only, named for the docs and the tests; `eggsh` does not link the
+/// registry, so they are not in [`COMMANDS`].
 pub const SHELL_BUILTINS: [&str; 13] = [
     ".", ":", "cd", "echo", "exit", "export", "false", "help", "pwd", "set", "true", "type",
     "unset",

@@ -1,4 +1,4 @@
-//! The MCP tools (D136, D137, D143, D147, D149, D150, D157 to D162): each a front-end over a
+//! The MCP tools (D136, D137, D143, D147, D149, D150, D157 to D163): each a front-end over a
 //! command, its CLI twin, with the names, arguments, results and annotations they shipped with.
 //! The MCP server writes each tool's `inputSchema` from its [`Argument`]s when it lists them.
 
@@ -1227,9 +1227,80 @@ pub const WM_ACT: ToolDefinition = operating(
     &ACT_ARGUMENTS,
 );
 
-/// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's
-/// and D162's.
-pub const TOOLS: [ToolDefinition; 36] = [
+const SETTING_KEY: Argument = required(described(
+    lengths(
+        Argument {
+            pattern: Some("^[a-z][a-z0-9_.]*$"),
+            ..optional("key", JsonType::String, Mapping::Operand)
+        },
+        Some(1),
+        64,
+    ),
+    "The setting's key, as settings_list shows it, such as shell.profile.",
+));
+
+const SETTINGS_GET_ARGUMENTS: [Argument; 1] = [SETTING_KEY];
+
+const SETTINGS_SET_ARGUMENTS: [Argument; 2] = [
+    SETTING_KEY,
+    required(described(
+        lengths(
+            optional("value", JsonType::String, Mapping::Operand),
+            Some(1),
+            64,
+        ),
+        "The new value: windows, macos or linux for shell.profile.",
+    )),
+];
+
+/// `settings_list` (D163).
+pub const SETTINGS_LIST: ToolDefinition = reading(
+    "settings_list",
+    "List the settings",
+    "Lists every setting and its value, as `settings list` shows them: key=value, one a line. \
+     shell.profile (windows, macos or linux: the desktop's layout) can be set with \
+     settings_set; the others report facts: the display's scale, resolution and pointer, the \
+     keyboard layout, the version, architecture, CPUs, memory and uptime.",
+    &["settings", "list"],
+    &[],
+    &[],
+);
+
+/// `settings_get` (D163).
+pub const SETTINGS_GET: ToolDefinition = reading(
+    "settings_get",
+    "Read a setting",
+    "Reads one setting's value, as `settings get` prints it. Fails with no_such_setting for a \
+     key settings_list does not show.",
+    &["settings", "get"],
+    &[],
+    &SETTINGS_GET_ARGUMENTS,
+);
+
+/// `settings_set` (D163).
+pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
+    name: "settings_set",
+    title: "Change a setting",
+    description: "Sets a setting, as `settings set` does: saves it and applies it at once, as \
+                  the Settings window would. shell.profile takes windows, macos or linux: the \
+                  desktop's layout (its taskbar, dock or panel and its window buttons) changes \
+                  for the person at once. The other keys report facts and fail with \
+                  setting_read_only. Needs the run grant: a setting changes how the machine \
+                  behaves for its user.",
+    command: &["settings", "set"],
+    fixed: &[],
+    arguments: &SETTINGS_SET_ARGUMENTS,
+    max_effect: Effect::Change,
+    grant: Some(Grant::Run),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
+/// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
+/// D162's and D163's.
+pub const TOOLS: [ToolDefinition; 39] = [
     LS,
     CAT,
     PS,
@@ -1266,6 +1337,9 @@ pub const TOOLS: [ToolDefinition; 36] = [
     WM_SHOW,
     WM_ACT,
     WM_DRAG,
+    SETTINGS_LIST,
+    SETTINGS_GET,
+    SETTINGS_SET,
 ];
 
 impl ToolDefinition {

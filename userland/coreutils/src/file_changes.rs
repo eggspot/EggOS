@@ -1,10 +1,11 @@
 use crate::disk::{ABSOLUTE_CAPACITY, SystemFiles, absolute_path};
 use crate::ls::record_names;
-use crate::options::{Item, parse};
-use crate::output::{FAILURE, Output};
+use crate::options::parse_defined;
+use crate::output::{FAILURE, Output, error_for};
 use crate::system::{SymbolicLinks, System};
 use core::ffi::CStr;
 use eggos_app::files::Path as FilesPath;
+use eggos_commands::{commands, errors};
 use eggos_files::job::{Job, STEP_BYTES, Step};
 use eggos_files::names::{is_within, normalized};
 use eggos_runtime::errno::Errno;
@@ -82,20 +83,23 @@ fn is_directory<S: System>(output: &mut Output<S>, path: &CStr) -> bool {
 }
 
 fn failed<S: System>(output: &mut Output<S>, what: &[u8], path: &[u8], errno: Errno) -> i32 {
-    output.error(&[what, b" '", path, b"': ", errno.message()]);
+    output.coded(
+        error_for(errno),
+        &[what, b" '", path, b"': ", errno.message()],
+    );
     FAILURE
 }
 
 pub fn mkdir<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut parents = false;
-    let Ok(operands) = parse(output, arguments, b"p", b"", |_, _| {
+    let Ok(operands) = parse_defined(output, arguments, &commands::MKDIR, |_, _| {
         parents = true;
         Ok(())
     }) else {
         return FAILURE;
     };
     if operands.all().is_empty() {
-        output.error(&[b"missing operand"]);
+        output.coded(&errors::USAGE, &[b"missing operand"]);
         return FAILURE;
     }
     let mut status = 0;
@@ -138,14 +142,14 @@ fn make_with_parents<S: System>(output: &mut Output<S>, path: &[u8]) -> Result<(
 
 pub fn touch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut create = true;
-    let Ok(operands) = parse(output, arguments, b"c", b"", |_, _| {
+    let Ok(operands) = parse_defined(output, arguments, &commands::TOUCH, |_, _| {
         create = false;
         Ok(())
     }) else {
         return FAILURE;
     };
     if operands.all().is_empty() {
-        output.error(&[b"missing file operand"]);
+        output.coded(&errors::USAGE, &[b"missing file operand"]);
         return FAILURE;
     }
     let mut status = 0;
@@ -167,9 +171,9 @@ pub fn touch<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 
 pub fn rm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let (mut recursive, mut force) = (false, false);
-    let Ok(operands) = parse(output, arguments, b"rRf", b"", |_, item| {
-        match item {
-            Item::Flag(b'f') => force = true,
+    let Ok(operands) = parse_defined(output, arguments, &commands::RM, |_, given| {
+        match given.option.short {
+            Some(b'f') => force = true,
             _ => recursive = true,
         }
         Ok(())
@@ -177,7 +181,7 @@ pub fn rm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return FAILURE;
     };
     if operands.all().is_empty() && !force {
-        output.error(&[b"missing operand"]);
+        output.coded(&errors::USAGE, &[b"missing operand"]);
         return FAILURE;
     }
     let mut status = 0;
@@ -243,7 +247,7 @@ fn sources_and_target<'a, S: System>(
     operands: &'a [&'a CStr],
 ) -> Option<(&'a [&'a CStr], &'a CStr, bool)> {
     let Some((&target, sources)) = operands.split_last() else {
-        output.error(&[b"missing file operand"]);
+        output.coded(&errors::USAGE, &[b"missing file operand"]);
         return None;
     };
     if sources.is_empty() {
@@ -256,7 +260,10 @@ fn sources_and_target<'a, S: System>(
     }
     let into_directory = is_directory(output, target);
     if sources.len() > 1 && !into_directory {
-        output.error(&[b"target '", target.to_bytes(), b"' is not a directory"]);
+        output.coded(
+            &errors::NOT_A_FOLDER,
+            &[b"target '", target.to_bytes(), b"' is not a directory"],
+        );
         return None;
     }
     Some((sources, target, into_directory))
@@ -303,7 +310,7 @@ fn into_itself<S: System>(
 
 pub fn cp<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut recursive = false;
-    let Ok(operands) = parse(output, arguments, b"rR", b"", |_, _| {
+    let Ok(operands) = parse_defined(output, arguments, &commands::CP, |_, _| {
         recursive = true;
         Ok(())
     }) else {
@@ -419,7 +426,7 @@ fn copy_file<'p, S: System>(
 }
 
 pub fn mv<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Ok(operands) = parse(output, arguments, b"f", b"", |_, _| Ok(())) else {
+    let Ok(operands) = parse_defined(output, arguments, &commands::MV, |_, _| Ok(())) else {
         return FAILURE;
     };
     let Some((sources, target, into_directory)) = sources_and_target(output, operands.all()) else {

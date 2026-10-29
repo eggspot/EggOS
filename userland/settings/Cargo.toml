@@ -12,8 +12,10 @@ path = "src/main.rs"
 [dependencies]
 eggos-app = { path = "../app", features = ["window"] }
 eggos-calendar = { path = "../../calendar" }
+eggos-commands = { path = "../commands" }
 eggos-editor = { path = "../editor", features = ["window"] }
 eggos-files = { path = "../files", features = ["window"] }
+eggos-mcp = { path = "../mcp" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
 eggos-toolkit = { path = "../toolkit" }

@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod art;
+pub mod command;
 pub mod facts;
 pub mod keys;
 pub mod settings_window;

@@ -176,6 +176,7 @@ fn write_usage<S: System>(output: &mut Output<S>, command: &CommandDefinition) {
         output.write_number(u64::from(declared.exit.unsigned_abs()), 0);
     }
     output.write(b"\n");
+    write_examples(output, command);
     match command.surface {
         Surface::Gui(place) => {
             output.write(b"GUI: ");
@@ -187,6 +188,30 @@ fn write_usage<S: System>(output: &mut Output<S>, command: &CommandDefinition) {
         }
     }
     output.write(b"\n");
+}
+
+fn write_examples<S: System>(output: &mut Output<S>, command: &CommandDefinition) {
+    if command.examples.is_empty() {
+        return;
+    }
+    output.write(b"examples:\n");
+    for example in command.examples {
+        output.write(b"  $ ");
+        output.write(example.line.as_bytes());
+        output.write(b"\n");
+        for line in example.output.split_inclusive('\n') {
+            output.write(b"    ");
+            output.write(line.as_bytes());
+        }
+        if !example.output.is_empty() && !example.output.ends_with('\n') {
+            output.write(b"\n");
+        }
+        if example.status != 0 {
+            output.write(b"    (exit status ");
+            output.write_number(u64::from(example.status.unsigned_abs()), 0);
+            output.write(b")\n");
+        }
+    }
 }
 
 fn write_value_type(out: &mut JsonWriter<'_>, value: ValueType) {
@@ -322,6 +347,19 @@ fn write_definition<S: System>(output: &mut Output<S>, command: &CommandDefiniti
         out.end_object();
     }
     out.end_array();
+    out.key("examples");
+    out.begin_array();
+    for example in command.examples {
+        out.begin_object();
+        out.key("line");
+        out.string(example.line);
+        out.key("output");
+        out.string(example.output);
+        out.key("status");
+        out.i64(i64::from(example.status));
+        out.end_object();
+    }
+    out.end_array();
     out.key("surface");
     out.begin_object();
     match command.surface {
@@ -417,6 +455,31 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(output.lines().count(), 1);
         assert!(output.contains("\"fields\":[{\"name\":\"name\""));
+    }
+
+    #[test]
+    fn help_shows_a_command_s_examples_with_their_output_and_status() {
+        let (status, output, _) = run(&[c"grep"]);
+        assert_eq!(status, 0);
+        assert!(
+            output.contains(
+                "examples:\n  $ grep milk /home/root/notes.txt\n    milk\n\
+                 \x20 $ grep -c e /home/root/notes.txt\n    2\n\
+                 \x20 $ grep tea /home/root/notes.txt\n    (exit status 1)\n"
+            ),
+            "{output}"
+        );
+        let (_, output, _) = run(&[c"echo"]);
+        assert!(output.contains("  $ echo -n hi\n    hi\n"), "{output}");
+        let (status, output, _) = run(&[c"--json", c"settings", c"get"]);
+        assert_eq!(status, 0);
+        assert!(
+            output.contains(
+                "\"examples\":[{\"line\":\"settings get shell.profile\",\"output\":\"macos\\n\",\
+                 \"status\":0}"
+            ),
+            "{output}"
+        );
     }
 
     #[test]

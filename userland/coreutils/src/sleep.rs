@@ -1,6 +1,7 @@
 use crate::output::{FAILURE, Output};
 use crate::system::{Duration, System};
 use core::ffi::CStr;
+use eggos_commands::errors;
 
 const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 const FRACTION_DIGITS: usize = 9;
@@ -23,13 +24,13 @@ pub fn sleep<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         match interval(bytes) {
             Some(nanoseconds) => total = total.saturating_add(nanoseconds),
             None => {
-                output.error(&[b"invalid time interval '", bytes, b"'"]);
+                output.coded(&errors::USAGE, &[b"invalid time interval '", bytes, b"'"]);
                 status = FAILURE;
             }
         }
     }
     if operands == 0 {
-        output.error(&[b"missing operand"]);
+        output.coded(&errors::USAGE, &[b"missing operand"]);
         return FAILURE;
     }
     if status != 0 {

@@ -4,8 +4,7 @@ use crate::{
     errors, find_command,
 };
 
-const SLICE_TWO_COMMANDS: [&str; 5] = ["date", "ip", "ping", "nslookup", "fetch"];
-const EDITOR_COMMAND: &str = "edit";
+const ANY_WORDS: [&str; 3] = ["echo", "false", "true"];
 
 fn words_of(words: &[&str]) -> Vec<Vec<u8>> {
     words.iter().map(|word| word.as_bytes().to_vec()).collect()
@@ -47,20 +46,39 @@ fn commands_are_unique_sorted_and_found_by_their_words() {
         }
     }
     assert_eq!(find(&["wm"]), None);
-    assert_eq!(find(&["rm"]), None);
+    assert_eq!(find(&["frobnicate"]), None);
+    assert_eq!(find(&["settings"]), Some(&crate::commands::SETTINGS));
 }
 
 #[test]
-fn every_command_has_the_fields_slice_one_requires() {
+fn every_kept_name_has_a_definition_so_the_registry_holds_every_command() {
+    for name in KEPT_NAMES {
+        assert!(
+            COMMANDS.iter().any(|command| command.words[0] == name),
+            "{name} has no definition"
+        );
+    }
+    for command in &COMMANDS {
+        assert!(
+            KEPT_NAMES.contains(&command.words[0]),
+            "{:?}",
+            command.words
+        );
+    }
+}
+
+#[test]
+fn every_command_has_the_fields_the_model_requires() {
     for command in &COMMANDS {
         let name = command.words.join(" ");
         assert!(command.summary.ends_with('.'), "{name}");
         assert!(command.description.len() > command.summary.len(), "{name}");
-        assert!(
+        assert_eq!(
             command
                 .errors
                 .iter()
                 .any(|error| error.error.code == "usage"),
+            !ANY_WORDS.contains(&name.as_str()),
             "{name}"
         );
         for (index, error) in command.errors.iter().enumerate() {
@@ -95,6 +113,36 @@ fn every_command_has_the_fields_slice_one_requires() {
             }
         }
     }
+}
+
+#[test]
+fn examples_start_with_their_command_s_words_and_show_json_only_where_it_exists() {
+    let mut examples = 0;
+    for command in &COMMANDS {
+        let name = command.words.join(" ");
+        for example in command.examples {
+            examples += 1;
+            let rest = example
+                .line
+                .strip_prefix(name.as_str())
+                .unwrap_or_else(|| panic!("{}", example.line));
+            assert!(rest.is_empty() || rest.starts_with(' '), "{}", example.line);
+            assert!(!example.line.contains("  "), "{}", example.line);
+            assert!(!example.line.contains(['\'', '"']), "{}", example.line);
+            assert!((0..=2).contains(&example.status), "{}", example.line);
+            if example.line.split(' ').any(|word| word == "--json") {
+                assert!(command.has_json(), "{}", example.line);
+            }
+        }
+        let shown_by_a_fake = !matches!(
+            command.words,
+            ["agentlog" | "help"] | ["wm" | "app" | "ip" | "ping" | "nslookup", ..]
+        );
+        if command.max_effect == Effect::Read && shown_by_a_fake {
+            assert!(!command.examples.is_empty(), "{name} has no example");
+        }
+    }
+    assert!(examples >= 30, "{examples}");
 }
 
 #[test]
@@ -183,13 +231,10 @@ fn new_tool_names_join_their_command_s_words_and_shipped_names_are_kept() {
 }
 
 #[test]
-fn every_tool_runs_a_registry_command_or_one_slice_two_defines() {
+fn every_tool_runs_a_registry_command() {
     for tool in &TOOLS {
         match tool.command {
             [] => assert_eq!(tool.name, "run"),
-            [name] if SLICE_TWO_COMMANDS.contains(name) || *name == EDITOR_COMMAND => {
-                assert!(KEPT_NAMES.contains(name));
-            }
             words => {
                 let command = find(words).unwrap_or_else(|| panic!("{words:?}"));
                 for argument in tool.arguments {

@@ -61,6 +61,10 @@ pub const MAX_PING_COUNT: u64 = 5;
 pub const DEFAULT_PING_COUNT: u32 = 4;
 /// The longest URL `fetch` takes (D158).
 pub const MAX_URL_BYTES: usize = 2048;
+/// The longest key `settings_get` and `settings_set` take (D163).
+pub const MAX_SETTING_KEY_BYTES: usize = 64;
+/// The longest value `settings_set` takes, kept in the words buffer after the key (D163).
+pub const MAX_SETTING_VALUE_BYTES: usize = 64;
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -135,6 +139,11 @@ pub enum ArgumentProblem {
     /// `text` for set-text is longer than [`MAX_ELEMENT_TEXT_BYTES`] or holds a control
     /// character (D161).
     BadElementText,
+    /// `key` is not 1 to [`MAX_SETTING_KEY_BYTES`] lowercase letters, digits, dots and
+    /// underscores starting with a letter (D163).
+    BadSettingKey,
+    /// `value` is not 1 to [`MAX_SETTING_VALUE_BYTES`] bytes without control characters (D163).
+    BadSettingValue,
 }
 
 impl ArgumentProblem {
@@ -163,6 +172,8 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("element") => {
                 "element and action are required: an id wm_show shows and what to do"
             }
+            ArgumentProblem::Missing("key") => "key is required: a key settings_list shows",
+            ArgumentProblem::Missing("value") => "value is required: the new value",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -236,6 +247,13 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadElementText => {
                 "text must be at most 232 bytes of UTF-8 without control characters"
+            }
+            ArgumentProblem::BadSettingKey => {
+                "key must be a key settings_list shows, such as shell.profile: 1 to 64 lowercase \
+                 letters, digits, dots and underscores"
+            }
+            ArgumentProblem::BadSettingValue => {
+                "value must be 1 to 64 bytes without control characters"
             }
         }
     }
@@ -428,6 +446,11 @@ pub struct Checked {
     pub element: Option<u32>,
     /// `wm_act`'s action, as `wm act` takes it (D161).
     pub action: Option<&'static str>,
+    /// `settings_get`'s and `settings_set`'s key's length, in the words buffer (D163).
+    pub setting_key: Option<usize>,
+    /// `settings_set`'s value's length, in the words buffer after
+    /// [`MAX_SETTING_KEY_BYTES`] (D163).
+    pub setting_value: Option<usize>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -566,6 +589,34 @@ pub fn check(
             Some(count) => count as u32,
         });
     }
+    if matches!(tool.kind, Kind::SettingsGet | Kind::SettingsSet) {
+        let length = short_text(
+            get("key"),
+            "key",
+            decoded.words,
+            MAX_SETTING_KEY_BYTES,
+            is_setting_key_byte,
+            ArgumentProblem::BadSettingKey,
+        )?;
+        if !decoded.words.first().is_some_and(u8::is_ascii_lowercase) {
+            return Err(ArgumentProblem::BadSettingKey);
+        }
+        checked.setting_key = Some(length);
+    }
+    if tool.kind == Kind::SettingsSet {
+        let room = decoded
+            .words
+            .get_mut(MAX_SETTING_KEY_BYTES..)
+            .ok_or(ArgumentProblem::BadSettingValue)?;
+        checked.setting_value = Some(short_text(
+            get("value"),
+            "value",
+            room,
+            MAX_SETTING_VALUE_BYTES,
+            |byte| !byte.is_ascii_control(),
+            ArgumentProblem::BadSettingValue,
+        )?);
+    }
     if tool.kind == Kind::Fetch {
         let length = short_text(
             get("url"),
@@ -587,6 +638,23 @@ pub fn check(
         checked.url = Some(length);
     }
     Ok(checked)
+}
+
+fn is_setting_key_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+}
+
+/// `settings_get`'s and `settings_set`'s key in `buffer`, the words buffer, that
+/// [`Checked::setting_key`] measures (D163).
+pub fn setting_key_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.setting_key?)?).ok()
+}
+
+/// `settings_set`'s value in `buffer`, the words buffer, that [`Checked::setting_value`]
+/// measures (D163).
+pub fn setting_value_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    let end = MAX_SETTING_KEY_BYTES.checked_add(checked.setting_value?)?;
+    core::str::from_utf8(buffer.get(MAX_SETTING_KEY_BYTES..end)?).ok()
 }
 
 fn is_host_byte(byte: u8) -> bool {

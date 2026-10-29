@@ -205,7 +205,10 @@ fn the_tools_are_listed_once_initialized() {
             "wm_close",
             "wm_show",
             "wm_act",
-            "wm_drag"
+            "wm_drag",
+            "settings_list",
+            "settings_get",
+            "settings_set"
         ]
     );
 }
@@ -2434,4 +2437,66 @@ fn the_instructions_teach_the_verbs_effects_and_error_categories() {
     }
     assert!(answer.contains("fix_command"));
     assert!(answer.contains("destructiveHint"));
+}
+
+#[test]
+fn the_settings_tools_run_settings_with_the_key_after_a_double_dash() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "settings_list", "{}");
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "list"]
+    );
+    let answer = harness.call(2, "settings_get", r#"{"key":"shell.profile"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/settings", "get", "--", "shell.profile"]
+    );
+    assert_eq!(last_record(&harness).2, r#"{"key":"shell.profile"}"#);
+    let answer = harness.call(
+        3,
+        "settings_set",
+        r#"{"key":"shell.profile","value":"linux"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(
+        texts(&answer)[0].contains("needs the run grant"),
+        "{answer}"
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("settings_get", r#"{}"#, "key is required"),
+        ("settings_get", r#"{"key":"-x"}"#, "key must be"),
+        ("settings_get", r#"{"key":"Shell"}"#, "key must be"),
+        ("settings_get", r#"{"key":"a b"}"#, "key must be"),
+        ("settings_list", r#"{"key":"a"}"#, "does not take"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+    let mut granted = granted_only(&[crate::grants::Grant::Run]);
+    let answer = granted.call(
+        5,
+        "settings_set",
+        r#"{"value":"windows","key":"shell.profile"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        granted.system.runs.last().unwrap(),
+        &["/bin/settings", "set", "--", "shell.profile", "windows"]
+    );
+    assert_eq!(
+        last_record(&granted).2,
+        r#"{"key":"shell.profile","value":"windows"}"#
+    );
+    let answer = granted.call(6, "settings_set", r#"{"key":"shell.profile"}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
+    assert!(error_message(&answer).contains("value is required"));
+    let answer = granted.call(7, "settings_set", "{\"key\":\"a\",\"value\":\"x\\ny\"}");
+    assert_eq!(error_code(&answer), INVALID_PARAMS);
 }

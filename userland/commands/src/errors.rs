@@ -1,4 +1,4 @@
-//! EggOS's error codes (D160): the ones every command can end with, each command's own, and
+//! EggOS's error codes (D160, D163): the ones every command can end with, each command's own, and
 //! the MCP server's refusals. Codes are EggOS's own; the category is shared with EggDB.
 
 use crate::{Category, ErrorDefinition};
@@ -214,6 +214,35 @@ pub const NO_SUCH_COMMAND: ErrorDefinition = error(
     Some("help"),
 );
 
+/// `settings`: no setting has the key (D163).
+pub const NO_SUCH_SETTING: ErrorDefinition = error(
+    "no_such_setting",
+    Category::NotFound,
+    "Use a key settings list shows.",
+    Some("settings list"),
+);
+/// `settings set`: the setting reports a fact and cannot be set (D163).
+pub const SETTING_READ_ONLY: ErrorDefinition = error(
+    "setting_read_only",
+    Category::ReadOnly,
+    "Set a setting settings list marks settable; this one reports a fact.",
+    Some("settings list"),
+);
+/// `settings set`: the setting does not take the value (D163).
+pub const INVALID_VALUE: ErrorDefinition = error(
+    "invalid_value",
+    Category::Usage,
+    "Use one of the values the message lists.",
+    None,
+);
+/// `settings set`: the value was saved, but the desktop did not take it now (D163).
+pub const NOT_APPLIED: ErrorDefinition = error(
+    "not_applied",
+    Category::Failed,
+    "The value is saved and applies when the desktop starts next; try again to apply it now.",
+    None,
+);
+
 /// MCP: the path is outside the folders the tool may reach.
 pub const PATH_NOT_ALLOWED: ErrorDefinition = error(
     "path_not_allowed",
@@ -300,7 +329,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 40] = [
+pub const ALL: [&ErrorDefinition; 44] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -329,6 +358,10 @@ pub const ALL: [&ErrorDefinition; 40] = [
     &NOT_AN_APP,
     &NOT_IN_TRASH,
     &NO_SUCH_COMMAND,
+    &NO_SUCH_SETTING,
+    &SETTING_READ_ONLY,
+    &INVALID_VALUE,
+    &NOT_APPLIED,
     &PATH_NOT_ALLOWED,
     &NEEDS_GRANT,
     &NEEDS_CONFIRMATION,

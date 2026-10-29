@@ -16,8 +16,8 @@
 //!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
 //!    program stopped at its time limit), installing and opening an app; then the windows
 //!    (D143): Settings opened by name and captured at scale 1/2, its macOS card found in
-//!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which `settings get`
-//!    sees, on x86_64 and aarch64 `win-paint` captured,
+//!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which
+//!    `settings_get` (D163) sees, after `settings_set` chose Windows' layout; on x86_64 and aarch64 `win-paint` captured,
 //!    minimised, typed into with `wm_type`, captured again with the text, its drawn text read
 //!    from `wm_show` (D162) and closed (an
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
@@ -71,7 +71,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 8] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 10] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -88,6 +88,8 @@ pub const TWIN_CALLS: [(&str, &str, &str); 8] = [
         r#"{"host":"127.0.0.1","count":1}"#,
         "1 received",
     ),
+    ("settings_list", "{}", "shell.profile="),
+    ("settings_get", r#"{"key":"keyboard.layout"}"#, "us"),
 ];
 
 /// Every call of a reading tool whose result depends on the network the machine was started
@@ -109,7 +111,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 27] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 28] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -175,6 +177,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 27] = [
     (
         "wm_drag",
         r#"{"window":64,"x":1,"y":1,"to_x":2,"to_y":2}"#,
+        "run",
+    ),
+    (
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows"}"#,
         "run",
     ),
 ];
@@ -1195,9 +1202,11 @@ fn run_program(client: &mut Client, arguments: &[&str]) -> Result<ToolResult, St
 
 fn settings_session(client: &mut Client) -> Result<u32, String> {
     let arch = client.arch;
-    run_program(
+    succeeds(
         client,
-        &["/bin/settings", "set", "shell.profile", "windows"],
+        "settings_set",
+        r#"{"key":"shell.profile","value":"windows"}"#,
+        "",
     )?;
     succeeds(client, "app_open", r#"{"name":"Settings"}"#, "Opened")?;
     let settings = window_titled(client, eggos_settings::settings_window::TITLE)?;
@@ -1252,7 +1261,7 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
     )?;
     let deadline = Instant::now() + ANSWER_TIMEOUT;
     loop {
-        let profile = run_program(client, &["/bin/settings", "get", "shell.profile"])?;
+        let profile = succeeds(client, "settings_get", r#"{"key":"shell.profile"}"#, "")?;
         if profile.all().contains("macos") {
             return Ok(settings);
         }

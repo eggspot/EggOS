@@ -7,8 +7,8 @@ use core::fmt::Write;
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 use eggos_runtime::syscall::{call, number, write_all};
+use eggos_settings::command::{self, MAX_ARGUMENTS, USAGE, USAGE_STATUS};
 use eggos_settings::facts::Facts;
-use eggos_settings::keys::{self, Change, Key, PROFILE_CHOICES, Refusal};
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, MINIMUM_SIZE, Request, SetOutcome,
     SettingsWindow, TITLE,
@@ -37,7 +37,6 @@ const UTSNAME_FIELD: usize = 65;
 const AFFINITY_BYTES: usize = 128;
 const PATH_CAPACITY: usize = 128;
 const DEFAULT_PROFILE: usize = 1;
-const USAGE: &[u8] = b"usage: settings [get <key> | set <key> <value> | list]\n";
 const O_DIRECTORY: usize = 0o200_000;
 const PS_CAPACITY: usize = 4096;
 const STALE_CAPACITY: usize = 8;
@@ -418,67 +417,43 @@ fn apply_profile(index: usize, server: Option<&WindowServer>) -> bool {
     applied.is_ok()
 }
 
-fn print_line(parts: &[&str]) {
-    let mut line = Text::<256>::new();
-    for part in parts {
-        let _ = line.write_str(part);
-    }
-    let _ = line.write_str("\n");
-    write_all(STANDARD_OUTPUT, line.as_str().as_bytes());
+struct Machine {
+    server: Option<WindowServer>,
 }
 
-fn command(arguments: &[&str]) -> i32 {
-    let server = WindowServer::open().ok();
-    match arguments {
-        ["list"] => {
-            let facts = facts(server.as_ref());
-            for key in Key::ALL {
-                print_line(&[key.name(), "=", key.value(&facts).as_str()]);
-            }
-            0
-        }
-        ["get", name] => match Key::named(name) {
-            Some(key) => {
-                print_line(&[key.value(&facts(server.as_ref())).as_str()]);
-                0
-            }
+impl command::Machine for Machine {
+    fn facts(&mut self) -> Facts {
+        facts(self.server.as_ref())
+    }
+
+    fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let name = settings_file::PROFILES[index];
+        save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).map_err(Errno::message)
+    }
+
+    fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => Some(server),
             None => {
-                say_error(&[name.as_bytes(), b": no such setting"]);
-                1
+                opened = WindowServer::open();
+                opened.as_ref().ok()
             }
-        },
-        ["set", name, value] => match keys::change(name, value) {
-            Ok((_, Change::Profile(index))) => {
-                let saved = save_profile(index);
-                match apply_profile(index, server.as_ref()) && saved {
-                    true => 0,
-                    false => 1,
-                }
-            }
-            Err(Refusal::NoSuchSetting) => {
-                say_error(&[name.as_bytes(), b": no such setting"]);
-                1
-            }
-            Err(Refusal::ReadOnly) => {
-                say_error(&[name.as_bytes(), b": read-only"]);
-                1
-            }
-            Err(Refusal::InvalidValue) => {
-                say_error(&[
-                    name.as_bytes(),
-                    b": invalid value '",
-                    value.as_bytes(),
-                    b"' (",
-                    PROFILE_CHOICES.as_bytes(),
-                    b")",
-                ]);
-                2
-            }
-        },
-        _ => {
-            write_all(STANDARD_ERROR, USAGE);
-            2
+        };
+        match server {
+            Some(server) => server
+                .set_desktop_profile(index as u32)
+                .map_err(Errno::message),
+            None => Ok(()),
         }
+    }
+
+    fn write_output(&mut self, bytes: &[u8]) {
+        write_all(STANDARD_OUTPUT, bytes);
+    }
+
+    fn write_error(&mut self, bytes: &[u8]) {
+        write_all(STANDARD_ERROR, bytes);
     }
 }
 
@@ -611,22 +586,27 @@ pub fn run(startup: &Startup) -> i32 {
         EDIT_COMMAND_NAME => return eggos_editor::command::run(startup),
         _ => {}
     }
-    let mut arguments = [""; 4];
+    let mut arguments = [""; MAX_ARGUMENTS];
     let mut count = 0;
     for argument in startup.arguments().skip(1).map(CStr::to_bytes) {
         if count == arguments.len() {
-            write_all(STANDARD_ERROR, USAGE);
-            return 2;
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
         }
         let Ok(argument) = core::str::from_utf8(argument) else {
-            write_all(STANDARD_ERROR, USAGE);
-            return 2;
+            write_all(STANDARD_ERROR, USAGE.as_bytes());
+            return USAGE_STATUS;
         };
         arguments[count] = argument;
         count += 1;
     }
     match count {
         0 => open_window(),
-        _ => command(&arguments[..count]),
+        _ => {
+            let mut machine = Machine {
+                server: WindowServer::open().ok(),
+            };
+            command::run(&mut machine, &arguments[..count])
+        }
     }
 }

@@ -237,8 +237,10 @@ version = "0.2.0"
 dependencies = [
  "eggos-app",
  "eggos-calendar",
+ "eggos-commands",
  "eggos-editor",
  "eggos-files",
+ "eggos-mcp",
  "eggos-runtime",
  "eggos-settings-file",
  "eggos-toolkit",

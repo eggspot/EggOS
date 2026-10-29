@@ -1,10 +1,10 @@
 use crate::lines::each_line;
-use crate::options::{Item, parse, parse_count, parse_defined};
+use crate::options::{parse_count, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
-use eggos_commands::{commands, errors};
+use eggos_commands::{CommandDefinition, commands, errors};
 use eggos_mcp::json::JsonWriter;
 
 const PROCESSES: &CStr = c"/proc/ps";
@@ -17,6 +17,8 @@ const NAME_COLUMN: usize = 5;
 
 const PROCESS_RECORD_BYTES: usize = 1024;
 
+const SMALL_RECORD_BYTES: usize = 256;
+
 const PROCESS_NUMBERS: [&str; 4] = ["pid", "parent_pid", "group_id", "session_id"];
 
 fn fields(line: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -24,26 +26,37 @@ fn fields(line: &[u8]) -> impl Iterator<Item = &[u8]> {
         .filter(|field| !field.is_empty())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Chosen {
+    bytes: bool,
+    mebibytes: bool,
+    json: bool,
+}
+
 fn no_operands<S: System>(
     output: &mut Output<S>,
     arguments: &[&CStr],
-    flags: &[u8],
-) -> Option<[bool; 4]> {
-    let mut seen = [false; 4];
-    let operands = parse(output, arguments, flags, b"", |_, item| {
-        if let Item::Flag(letter) = item
-            && let Some(index) = flags.iter().position(|&flag| flag == letter)
-        {
-            seen[index] = true;
+    definition: &'static CommandDefinition,
+) -> Option<Chosen> {
+    let mut chosen = Chosen::default();
+    let operands = parse_defined(output, arguments, definition, |_, given| {
+        match (given.option.short, given.option.long) {
+            (Some(b'b'), _) => chosen.bytes = true,
+            (Some(b'm'), _) => chosen.mebibytes = true,
+            (_, Some("json")) => chosen.json = true,
+            _ => {}
         }
         Ok(())
     })
     .ok()?;
     if let Some(extra) = operands.all().first() {
-        output.error(&[b"extra operand '", extra.to_bytes(), b"'"]);
+        output.coded(
+            &errors::USAGE,
+            &[b"extra operand '", extra.to_bytes(), b"'"],
+        );
         return None;
     }
-    Some(seen)
+    Some(chosen)
 }
 
 pub fn ps<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
@@ -117,7 +130,7 @@ fn write_process<S: System>(output: &mut Output<S>, line: &[u8]) {
 }
 
 pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    let Some([bytes, _, mebibytes, _]) = no_operands(output, arguments, b"bkm") else {
+    let Some(chosen) = no_operands(output, arguments, &commands::FREE) else {
         return FAILURE;
     };
     let mut values = [None::<u64>; 4];
@@ -140,7 +153,15 @@ pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.error(&[b"/proc/meminfo: no MemTotal, MemFree or MemAvailable"]);
         return FAILURE;
     };
-    let unit = |kilobytes: u64| match (bytes, mebibytes) {
+    if chosen.json {
+        write_memory(
+            output,
+            [total, total.saturating_sub(free), free, available],
+            reserve,
+        );
+        return 0;
+    }
+    let unit = |kilobytes: u64| match (chosen.bytes, chosen.mebibytes) {
         (true, _) => kilobytes * 1024,
         (_, true) => kilobytes / 1024,
         _ => kilobytes,
@@ -162,9 +183,9 @@ pub fn free<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 }
 
 pub fn uptime<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    if no_operands(output, arguments, b"p").is_none() {
+    let Some(chosen) = no_operands(output, arguments, &commands::UPTIME) else {
         return FAILURE;
-    }
+    };
     let mut seconds = None;
     let status = each_line(output, UPTIME, |_, line| {
         seconds = fields(line)
@@ -180,10 +201,41 @@ pub fn uptime<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         output.error(&[b"/proc/uptime: no time since boot"]);
         return FAILURE;
     };
+    if chosen.json {
+        let mut buffer = [0u8; SMALL_RECORD_BYTES];
+        let mut out = JsonWriter::new(&mut buffer);
+        out.begin_object();
+        out.key("uptime_ms");
+        out.u64(seconds.saturating_mul(1000));
+        out.end_object();
+        out.end_line();
+        output.write(out.as_bytes());
+        return 0;
+    }
     output.write(b"up ");
     write_duration(output, seconds);
     output.write(b"\n");
     0
+}
+
+const MEMORY_KEYS: [&str; 4] = ["total_bytes", "used_bytes", "free_bytes", "available_bytes"];
+
+fn write_memory<S: System>(output: &mut Output<S>, kilobytes: [u64; 4], reserve: Option<u64>) {
+    let mut buffer = [0u8; SMALL_RECORD_BYTES];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    for (key, value) in MEMORY_KEYS.into_iter().zip(kilobytes) {
+        out.key(key);
+        out.u64(value.saturating_mul(1024));
+    }
+    out.key("reserve_bytes");
+    match reserve {
+        Some(reserve) => out.u64(reserve.saturating_mul(1024)),
+        None => out.null(),
+    }
+    out.end_object();
+    out.end_line();
+    output.write(out.as_bytes());
 }
 
 fn write_duration<S: System>(output: &mut Output<S>, seconds: u64) {

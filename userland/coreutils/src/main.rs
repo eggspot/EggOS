@@ -21,6 +21,8 @@ mod disk;
 #[cfg(any(test, target_env = "musl"))]
 mod echo;
 #[cfg(test)]
+mod examples;
+#[cfg(test)]
 mod fake;
 #[cfg(any(test, target_env = "musl"))]
 mod fetch;

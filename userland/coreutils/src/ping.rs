@@ -1,8 +1,9 @@
 use crate::network::{Shown, milliseconds, parse_seconds_ms, resolve};
-use crate::options::{self, Item, Refused, parse_count};
+use crate::options::{self, Refused, parse_count};
 use crate::output::{FAILURE, Output};
 use crate::system::{DatagramKind, Duration, System};
 use core::ffi::CStr;
+use eggos_commands::{commands, errors};
 use eggos_net::icmp;
 
 pub const DEFAULT_COUNT: u64 = 4;
@@ -31,28 +32,28 @@ pub fn ping<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         data_bytes: DEFAULT_DATA_BYTES,
         quiet: false,
     };
-    let parsed = options::parse(output, arguments, b"q", b"ciWs", |output, item| {
+    let parsed = options::parse_defined(output, arguments, &commands::PING, |output, given| {
         let bad = |output: &mut Output<S>, what: &[u8], value: &[u8]| {
-            output.error(&[b"invalid ", what, b": '", value, b"'"]);
+            output.coded(&errors::USAGE, &[b"invalid ", what, b": '", value, b"'"]);
             Err(Refused::Reported)
         };
-        match item {
-            Item::Flag(b'q') => settings.quiet = true,
-            Item::Valued(b'c', value) => match parse_count(value).filter(|&count| count > 0) {
+        match (given.option.short, given.value) {
+            (Some(b'q'), _) => settings.quiet = true,
+            (Some(b'c'), Some(value)) => match parse_count(value).filter(|&count| count > 0) {
                 Some(count) => settings.count = count,
                 None => return bad(output, b"count", value),
             },
-            Item::Valued(b'i', value) => {
+            (Some(b'i'), Some(value)) => {
                 match parse_seconds_ms(value).filter(|&ms| ms >= MIN_INTERVAL_MS) {
                     Some(ms) => settings.interval_ms = ms,
                     None => return bad(output, b"interval (at least 0.2 seconds)", value),
                 }
             }
-            Item::Valued(b'W', value) => match parse_seconds_ms(value).filter(|&ms| ms > 0) {
+            (Some(b'W'), Some(value)) => match parse_seconds_ms(value).filter(|&ms| ms > 0) {
                 Some(ms) => settings.timeout_ms = ms,
                 None => return bad(output, b"timeout", value),
             },
-            Item::Valued(b's', value) => {
+            (Some(b's'), Some(value)) => {
                 match parse_count(value).filter(|&bytes| bytes as usize <= MAX_DATA_BYTES) {
                     Some(bytes) => settings.data_bytes = bytes as usize,
                     None => return bad(output, b"packet size", value),
@@ -67,7 +68,10 @@ pub fn ping<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         Err(Refused::Reported) => return TROUBLE,
     };
     let [host] = operands.all() else {
-        output.error(&[b"usage: ping [-c count] [-i interval] [-W timeout] [-s size] [-q] host"]);
+        output.coded(
+            &errors::USAGE,
+            &[b"usage: ping [-c count] [-i interval] [-W timeout] [-s size] [-q] host"],
+        );
         return TROUBLE;
     };
     let host = host.to_bytes();
@@ -128,7 +132,10 @@ fn run<S: System>(
         request[6..8].copy_from_slice(&sequence.to_be_bytes());
         let sent_at = output.system.monotonic_us();
         tally.sent += 1;
-        if let Err(errno) = output.system.send_to(descriptor, &request[..request_bytes], address, 0) {
+        if let Err(errno) = output
+            .system
+            .send_to(descriptor, &request[..request_bytes], address, 0)
+        {
             tally.errors += 1;
             output.error(&[b"sending to ", shown.as_bytes(), b": ", errno.message()]);
         } else if let Some((bytes, round_trip_us)) =

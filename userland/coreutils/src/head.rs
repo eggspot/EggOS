@@ -1,9 +1,10 @@
 use crate::lines::{LINE_CAPACITY, STANDARD_INPUT_NAME, each_line};
-use crate::options::{Item, Refused, parse, parse_count};
+use crate::options::{Refused, parse_count, parse_defined};
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
 use core::ops::ControlFlow;
+use eggos_commands::{CommandDefinition, commands, errors};
 
 const DEFAULT_LINES: u64 = 10;
 
@@ -34,16 +35,22 @@ pub fn tail<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 fn run<S: System>(output: &mut Output<S>, arguments: &[&CStr], end: End) -> i32 {
     let mut start = Start::Last(DEFAULT_LINES);
     let mut headers = None;
-    let parsed = parse(output, arguments, b"qv", b"n", |output, item| {
-        match item {
-            Item::Flag(letter) => headers = Some(letter == b'v'),
-            Item::Valued(_, value) => {
+    let definition: &'static CommandDefinition = match end {
+        End::Head => &commands::HEAD,
+        End::Tail => &commands::TAIL,
+    };
+    let parsed = parse_defined(output, arguments, definition, |output, given| {
+        match (given.option.short, given.value) {
+            (Some(b'n'), Some(value)) => {
                 let (from_start, digits) = match value.strip_prefix(b"+") {
                     Some(digits) if end == End::Tail => (true, digits),
                     _ => (false, value),
                 };
                 let Some(count) = parse_count(digits) else {
-                    output.error(&[b"invalid number of lines: '", value, b"'"]);
+                    output.coded(
+                        &errors::USAGE,
+                        &[b"invalid number of lines: '", value, b"'"],
+                    );
                     return Err(Refused::Reported);
                 };
                 start = match from_start {
@@ -51,6 +58,7 @@ fn run<S: System>(output: &mut Output<S>, arguments: &[&CStr], end: End) -> i32 
                     false => Start::Last(count),
                 };
             }
+            (letter, _) => headers = Some(letter == Some(b'v')),
         }
         Ok(())
     });
