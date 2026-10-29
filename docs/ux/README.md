@@ -27,6 +27,8 @@ behaviour. A UX regression is treated like a performance regression.
 - `text-editor-v0.3.md`: the Text Editor (item 46, D149): the toolbar, the find bar and the
   path bar, the text view and gutter, the status bar, panels, notices, keys, the context menu,
   its place in the launcher and its icon.
+- `date-time-v0.3.md`: the Settings `Date & time` pane and the bar's clock once the real-time
+  clock sets it (item 29, D150).
 - `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
   cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
   app's first version (item 34).
