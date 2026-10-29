@@ -339,7 +339,6 @@ fn realize_one(runtime: &mut Runtime, record: &ClassRecord) {
     }
     refresh_flags(record);
     record.state.store(REALIZED, Ordering::Release);
-    let _ = runtime;
 }
 
 fn push_list(methods: &mut Buffer<(usize, usize)>, list: *const ListHeader) {

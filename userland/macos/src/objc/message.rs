@@ -8,25 +8,13 @@
 use super::abi::{ClassObject, Id, Imp, Sel};
 use super::class;
 
-extern "C" fn lookup_for_send(receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
-    match class::lookup(class, sel) {
-        Some(imp) => imp,
-        None => {
-            let _ = receiver;
-            not_recognized as *const () as Imp
-        }
-    }
+extern "C" fn lookup_for_send(_receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
+    class::lookup(class, sel).unwrap_or(not_recognized as *const () as Imp)
 }
 
 #[cfg(target_arch = "x86_64")]
-extern "C" fn lookup_for_struct_send(receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
-    match class::lookup(class, sel) {
-        Some(imp) => imp,
-        None => {
-            let _ = receiver;
-            not_recognized_struct as *const () as Imp
-        }
-    }
+extern "C" fn lookup_for_struct_send(_receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
+    class::lookup(class, sel).unwrap_or(not_recognized_struct as *const () as Imp)
 }
 
 extern "C" fn not_recognized(receiver: Id, sel: Sel) -> usize {
