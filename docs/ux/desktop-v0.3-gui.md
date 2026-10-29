@@ -669,7 +669,9 @@ toolkit draws it (`toolkit-v0.3.md` section 1).
    (`/home/root`), `Documents`, `Downloads`, `Desktop`, `tmp` (`/tmp`), `Host share`
    (`/media/host`, only while mounted), `Apps` (`/Applications`), `System` (`/`), `Trash`
    (`Recycle Bin` in the Windows profile; always the last row, always shown). Nine rows end at
-   y 275, the last row the status bar allows at the minimum height. The row whose path equals
+   y 275, the last row the status bar allows at the minimum height. (Since D166 a `Work disk`
+   row follows `Host share` while a work disk is attached and the minimum height is 324:
+   files-work-place-v0.3.md.) The row whose path equals
    the current directory (or `Trash` in the Trash view) is `selection` with the `>`; no row
    when the directory is no place. With keyboard focus Up/Down move the ring alone, Enter or a
    click goes to the place. Tab order: path field, sidebar, list; the two toolbar buttons are

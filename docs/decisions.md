@@ -10930,3 +10930,97 @@ the license, by an explicit instruction recorded here.
   carries (not `run`'s) that makes `Output::coded` add one `{"error":{...}}` line after the
   text line, which the server moves into `structuredContent.error` and leaves out of the text;
   examples for the network commands, `hwclock` and `app` (their fakes need fixed answers).
+
+## D166 The CI track: EggOS builds our code inside itself on GitHub's runners; its stage 1, the repository as a disk: a host folder packed into an EggFS work disk that EggOS mounts writable at `/work`, unpacked into a new folder after the boot (the owner's CI track of 2026-10-26; extends D18, D21, D130, D131, D137) — Decided by the build loop (the disk's format, how it is told apart and how results come back decided by research; the Files place designed by Claude Fable)
+- **The track** (recorded here for all of it, as its first item). Goal: our Rust projects
+  (EggOS itself and EggDB) are built and tested inside EggOS in GitHub Actions. An ordinary
+  GitHub-hosted Linux runner (free for these public repositories) boots an EggOS image in
+  QEMU, with KVM when the runner offers it, hands it the repository as a disk and runs
+  `cargo build` and `cargo test` inside EggOS; our repositories use no third-party crates, so
+  builds need no network. GitHub-hosted runners only (owner, 2026-10-26): no self-hosted
+  runner and no runner of our own, ever; EggOS always runs as a QEMU guest on GitHub's
+  machines. It alternates with the Real apps track, both after the Egg command model. Stages,
+  in order, each made of feature-sized items: (1) the repository as a disk (this entry); (2)
+  Linux toolchain compatibility (dynamic linking, file mappings, `/proc` and `/dev`, pipes and
+  process groups, every call `rustc`, `cargo`, `cc` and the linker make), with three
+  milestones, each measured against Linux and its gaps recorded in the roadmap: `rustc
+  --version` runs, a hello-world crate builds and runs, a multi-crate workspace builds; (3)
+  EggOS builds eggspot/EggDB with the same results as Linux, handed over as an `eggos-ci`
+  issue in that repository (its own build loop adds the job); (4) an `eggos-ci` workflow here
+  that builds and tests EggOS inside the latest release, non-blocking at first and compared
+  run by run with the Linux job (making it required needs the owner); (5) EggOS as the main
+  build environment of both, with a design brief for a .NET runtime for the C# projects.
+  Every run of the build loop reports progress against these stages.
+- **Why stage 1 first.** Everything later needs a way to carry a checkout in and the build's
+  results and logs out. The host folder (D130) is read-only and limited by QEMU's `vvfat`
+  (about 500 MB, about 250 top-level names, case-insensitive names, no permission bits), and
+  the persistent disk (D131) holds `/home`.
+- **The work disk.** A work disk is an EggFS volume whose root holds the empty regular file
+  `.eggos-work-disk` and the directory `work` (docs/eggfs.md "Work disks"); `eggos-eggfs` gains
+  `WORK_DISK_MARKER`, `WORK_FOLDER`, `make_work_disk`, `is_work_disk` and `work_folder`. The
+  kernel's `mount_disks` mounts every EggFS disk it may use, then gives the first one with the
+  marker to `/work` (device 254:2, a committer of its own, `sync_all` at power-off as every
+  mount) and the first one without it, or the first blank one, to `/home` as before; a disk it
+  does not need goes back to the block devices. The release initramfs gains an empty `/work`;
+  without a work disk nothing else exists: no thread, no mount, no memory (D18).
+- **Host side** (`xtask/src/work_disk.rs`). `pack` walks the folder (sorted, so images are
+  reproducible), leaves out its top-level `.git` and `target` and every symbolic link or
+  special file (warning for each), sizes a sparse image (the files' blocks, a thirty-second
+  more for pointer and directory blocks, plus 1 GiB, and eight blocks per item so half the
+  inodes stay free), formats it with the crate through `FileDisk` (the image file as an EggFS
+  disk, flushed once at the end), marks it, and copies the tree with permission bits (Unix
+  hosts; read-only maps to 0444 on Windows) and modification times. `unpack` replays the
+  journal (a killed QEMU still gives back its last commit), checks the whole file system,
+  finds `work` and writes its tree into a folder that must be new or empty, with times and
+  permission bits; each name must be one valid host name (no `\` or drive on Windows).
+  `cargo xtask run --work <folder> [--work-out <folder>]` packs into
+  `target/image/eggos-<arch>-work.img`, attaches it (`qemu::work_disk_args`, a virtio block
+  device of its own) and unpacks into `<folder>.out` (or `--work-out`) when QEMU ends; it
+  checks the output folder before booting. `cargo xtask work pack|unpack` do the halves alone,
+  and `run-eggos.sh --work <image>` / `run-eggos.ps1 -Work <image>` attach a packed image.
+- **Front-ends.** GUI: Files shows `Work disk` after `Host share` while a work disk is
+  attached, Delete there is permanent with its own line, and the window's minimum height is
+  324 so ten places fit (docs/ux/files-work-place-v0.3.md, by Claude Fable). CLI: `ls /work`
+  and every utility, plus `cargo xtask work` on the host. MCP: `ls`, `cat` and `edit_open`
+  reach `/work` (`paths::READ_ROOTS`); their descriptions, refusals and the server's
+  instructions say so.
+- **Checks.** Host tests: the crate's marker rules and a work disk surviving a remount; the
+  pack and unpack round trip of a tree with an empty file, an empty folder, a 3 MiB file and a
+  nested `target` that is kept while the top-level `.git` and `target` are not; modification
+  times both ways; permission bits and a skipped symbolic link (Unix); results written on the
+  image coming back and a used output folder refused; an EggFS image without the marker
+  refused; the sizing; host names; the default output folder; `work_disk_args`; both run
+  scripts' `--work`; MCP paths in and out of `/work`; Files' tenth place, its position, its
+  absence while `/work` is on `/`'s device, ten rows above the status bar at the minimum
+  size, and the permanent delete. QEMU (`xtask/src/qemu/work_disk.rs`, all three
+  architectures): the work disk attached before a blank `/home` disk is mounted at `/work`,
+  the other at `/home`; the shell reads the folder, writes results, removes a file and writes
+  `/home/kept.txt`; after power-off the unpacked folder holds the files and results and not
+  the removed file, and the home image holds `kept.txt` and none of the work disk's files.
+- **Performance and size (D24).** No hot path changes: boot does one directory lookup per
+  EggFS disk; the initramfs grows by one empty directory; `eggmcpd` by a root and a few words.
+  Packing and unpacking cost the host one sequential pass over the folder.
+- **Decided by research.** EggFS over a writable FAT: the crate is host-tested and
+  crash-tested, the kernel already mounts it writable, it keeps permission bits and times,
+  journals, and has none of `vvfat`'s limits; QEMU's `fat:rw` is experimental and would write
+  into the live checkout, and a FAT writer in the kernel and on the host would be new code with
+  no journal. Results go into a new folder, never back into the input (no deletions to apply
+  on the host); `.git` and `target` are left out; symbolic links are skipped with a warning
+  until EggFS has them (part 18); unpacking replays the journal first. Telling the disks apart:
+  the research preferred a label on the kernel command line, with a marker in the root as the
+  fallback where EggFS has no label; EggFS version 1 has none, so the marker alone is used. Its
+  worry about a marker (a stale directory on the persistent disk taking it over) cannot happen:
+  the marker is a file in a volume's root, which nothing inside EggOS can reach, and the
+  persistent disk's root holds only the folders EggOS makes.
+- **Decided without research.** The run scripts take a packed image, not a folder: a POSIX
+  shell or PowerShell script cannot write EggFS, and host automation is Rust only; the sizing
+  formula; device 254:2; the image's place in `target/image`; the agents' read tools reach
+  `/work` without a grant, as `/media/host` (the host lent both), and the write tools still
+  reach only `/home/root`; `edit_open` reaches it too; directory times are not restored on the
+  host; on Windows only read-only maps to permissions; `FileDisk`'s flush does nothing (the
+  image is a scratch file synced once). The owner can overrule any of these.
+- **Not yet.** The write tools (`tee`, `trash`) in `/work`; applying the results back to the
+  input folder (`--sync-back`); symbolic and hard links (EggFS version 2, part 18); growing an
+  image that fills; unpacking what can be saved from a damaged image; the run scripts packing a
+  folder themselves (a release of xtask's packer for the host); `df` and Files' free space for
+  `/work` (with `statfs`, part 19); the CI job itself (stages 2 to 4).

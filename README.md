@@ -52,7 +52,7 @@ cargo xtask run --arch aarch64 --apps ~/eggos-apps    # from a checkout
 ```
 
 To let Claude Code, or any MCP client, work with EggOS through its built-in MCP server (read
-files in `/home` and `/media/host`, list processes, windows and apps; with the grants you give,
+files in `/home`, `/media/host` and `/work`, list processes, windows and apps; with the grants you give,
 also write and trash files, run programs and install apps; every call is logged and `agentlog`
 shows it), add the script as a server ([docs/mcp.md](docs/mcp.md)):
 

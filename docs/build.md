@@ -276,6 +276,22 @@ holds what used to be written in them.
   `qemu-img create -f raw` from QEMU's folder (sparse), else `SetLength`. The persistent files
   boot test (`xtask/src/qemu/persistent.rs`) boots on images in `target/qemu-disks` and checks
   them afterwards with the `eggos-eggfs` crate.
+- **Work disk** (D166, the CI track's stage 1). `cargo xtask run --work <folder>` packs the
+  folder into `target/image/eggos-<arch>-work.img` (`xtask/src/work_disk.rs`): a sparse image
+  the size of the folder plus a thirty-second plus 1 GiB, formatted with EggFS on the host by
+  the `eggos-eggfs` crate, its root holding the marker `.eggos-work-disk` and the folder's tree
+  under `work`, with permission bits (on Unix hosts) and modification times; the folder's
+  top-level `.git` and `target` are left out, symbolic links and special files too (each with
+  a warning). EggOS mounts it writable at `/work`, whatever the order of the disks
+  (`qemu::work_disk_args`, a virtio block device of its own beside the `/home` disk). When
+  QEMU ends, xtask replays the image's journal, checks the file system and writes `/work`'s
+  tree into `--work-out`'s folder (default `<folder>.out` beside the folder), which must be
+  new or empty: the folder itself is never changed. `cargo xtask work pack <folder> <image>`
+  and `cargo xtask work unpack <image> <folder>` do the two halves alone, for the run scripts'
+  `--work <image>` (`-Work` in PowerShell), which attach a packed image. The work disk boot
+  test (`xtask/src/qemu/work_disk.rs`) packs a folder, boots with the work disk before a blank
+  `/home` disk, writes results and removes a file under `/work`, writes to `/home`, powers off,
+  then unpacks the image and checks both disks.
 - **Input** (D113). Every run with the display also gets a virtio keyboard, tablet and mouse:
   `-device virtio-keyboard-device -device virtio-tablet-device -device virtio-mouse-device` on
   the `virt` machines, the `-pci` devices with `disable-legacy=on` on q35; the kernel prints

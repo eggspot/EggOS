@@ -518,6 +518,20 @@ The release path (the release-path review's issues #141-#145, after the items ab
   parsing, `eggsh`'s built-ins defined, examples for `date` and `wm list`. Next: the rest of
   slice 2's leftovers (D165 "Not yet"), the macOS layer's NSView tree, slice 4 (apps' own
   actions).
+- After v0.3.0: EggOS builds our code in CI (owner, 2026-10-26; the CI track, D166): a
+  GitHub-hosted Linux runner boots EggOS in QEMU, hands it a repository as a disk and runs
+  `cargo build` and `cargo test` inside it; alternating with the Real apps track. Stages: (1)
+  the repository as a disk; (2) Linux toolchain compatibility, in three milestones, each
+  measured against Linux: `rustc --version` runs, a hello-world crate builds and runs, a
+  multi-crate workspace builds; (3) EggOS builds EggDB (an `eggos-ci` issue in that repo); (4)
+  an `eggos-ci` workflow here, non-blocking first; (5) EggOS the main build environment, with
+  a design brief for a .NET runtime. Stage 1 **done** (D166): `cargo xtask run --work
+  <folder>` packs a folder (without `.git` and `target`) into an EggFS work disk on the host,
+  EggOS mounts it writable at `/work` (told from the `/home` disk by a marker in its root),
+  and when QEMU ends xtask unpacks `/work` into `<folder>.out`; `cargo xtask work pack|unpack`
+  and the run scripts' `--work <image>`; Files' `Work disk` place, `ls /work`, and MCP `ls`
+  and `cat` reach `/work`; a QEMU check on all three architectures. Next: stage 2's first
+  milestone (Linux dynamic linking, `/proc` and `/dev` for real programs, `rustc --version`).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

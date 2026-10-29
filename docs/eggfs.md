@@ -163,3 +163,14 @@ inode reachable from the root reads back, its kind matches its record and its pa
 directory listing it, every pointer leads into the data region and is used once, nothing is
 mapped past a file's end, directories have no holes, malformed records or repeated names and
 their counts are right, and the bitmaps mark exactly the blocks and inodes in use.
+
+## Work disks
+
+A **work disk** (D166) is an ordinary EggFS volume whose root directory holds a regular file
+named `.eggos-work-disk` (empty, permissions 0444) and a directory named `work`, which EggOS
+mounts at `/work`; the disk that holds `/home` has neither (its root holds `home`,
+`Applications` and `var`). Nothing inside EggOS can reach a volume's root, so only the host
+makes a work disk (`cargo xtask work pack`). EggOS tells the two apart by this marker, never by
+the order of the disks: of the EggFS disks it finds, the first with the marker is mounted at
+`/work` and the first without it (or the first blank one) at `/home`. The crate's
+`make_work_disk`, `is_work_disk` and `work_folder` write and read the marker.

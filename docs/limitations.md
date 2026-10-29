@@ -36,7 +36,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 
 ## What the system can do
 - **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
-  docs/mcp.md) lets an MCP client read files in `/home` and `/media/host` and list processes,
+  docs/mcp.md) lets an MCP client read files in `/home`, `/media/host` and `/work` and list processes,
   windows and installed apps; with grants given when starting EggOS (`--mcp-allow
   view,write,run,install`) it also sees what app windows show (`view`), writes and trashes
   files below `/home/root`, runs programs, clicks and types in windows, and installs, opens and
@@ -76,6 +76,20 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   and aarch64 release images carry the Windows and macOS layers, so Windows and macOS programs
   in it run and install there; the riscv64 image carries neither, as neither layer runs on
   riscv64 (D152).
+- **A work disk is a copy, packed before the boot and unpacked after it** (D166). `cargo
+  xtask run --work <folder>` (and `cargo xtask work pack`, for the run scripts' `--work
+  <image>`) copies a folder into an EggFS image that EggOS mounts writable at `/work`; what
+  EggOS writes there comes back only when QEMU has ended, into a new folder (`<folder>.out`
+  or `--work-out`'s), never into the folder itself, and files removed in EggOS are simply
+  absent from it. Changes made on your computer while EggOS runs are not seen. The folder's
+  top-level `.git` and `target` are left out, and so are symbolic links (EggFS has none yet),
+  with a warning for each; names must be valid Unicode and at most 255 bytes. The run scripts
+  cannot pack or unpack a folder themselves: that needs `cargo xtask` in an EggOS checkout.
+  Only one work disk can be attached. The image is sized once, when it is packed (the folder
+  plus a thirty-second plus 1 GiB): a build that writes more fills it (`No space left on
+  device`). Unpacking reads the whole image's metadata and checks it first, so a damaged image
+  gives nothing back. Agents read `/work` without a grant, as `/media/host`; the write tools
+  still reach only `/home/root`.
 - **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
   at boot (QEMU's follows the host's clock) and keeps time from it; the network time is
   set by hand (`date --sync`, MCP `clock_sync`; D159), not at boot or by Settings, so a clock
