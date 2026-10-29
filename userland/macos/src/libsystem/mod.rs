@@ -528,16 +528,16 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 /// How many missing functions a program may import.
 pub const MISSING_STUBS: usize = 256;
 
-static MISSING_NAMES: Exclusive<[(usize, usize); MISSING_STUBS]> =
-    Exclusive::new([(0, 0); MISSING_STUBS]);
+static MISSING_NAMES: Exclusive<[(&'static [u8], &'static [u8]); MISSING_STUBS]> =
+    Exclusive::new([(b"", b""); MISSING_STUBS]);
 
 extern "C" fn missing<const INDEX: usize>() -> ! {
-    let (address, length) = MISSING_NAMES.with(|names| names[INDEX]);
-    // SAFETY: `bind_missing` stored a name from the program's file, which stays mapped.
-    let name = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+    let (library, name) = MISSING_NAMES.with(|names| names[INDEX]);
     let name = name.strip_prefix(b"_").unwrap_or(name);
     stdio::flush_all();
-    let _ = linux::write_all(2, b"eggos-macos: unimplemented libSystem function ");
+    let _ = linux::write_all(2, b"eggos-macos: unimplemented ");
+    let _ = linux::write_all(2, library);
+    let _ = linux::write_all(2, b" function ");
     let _ = linux::write_all(2, name);
     let _ = linux::write_all(2, b"\n");
     linux::exit(127)
@@ -589,8 +589,8 @@ fn missing_stub(index: usize) -> usize {
 }
 
 /// The address of stub number `index` (below [`MISSING_STUBS`]), which reports `name` as an
-/// unimplemented function when the program calls it.
-pub fn bind_missing(index: usize, name: &'static [u8]) -> u64 {
-    MISSING_NAMES.with(|names| names[index] = (name.as_ptr() as usize, name.len()));
+/// unimplemented function of `library` (its short name) when the program calls it.
+pub fn bind_missing(index: usize, library: &'static [u8], name: &'static [u8]) -> u64 {
+    MISSING_NAMES.with(|names| names[index] = (library, name));
     missing_stub(index) as u64
 }
