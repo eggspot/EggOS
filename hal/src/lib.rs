@@ -267,7 +267,7 @@ pub trait Platform: 'static {
     /// What user programs may run beyond the base instruction set, as Linux's `AT_HWCAP` and
     /// `AT_HWCAP2` encode it for the architecture (D51): only what user mode really runs as
     /// the kernel sets it up. FP/SIMD, which programs get on first use (D54): FP and ASIMD on
-    /// AArch64 (no SVE or SME), RV64GC's letters with F and D on RISC-V (no V), and on x86_64
+    /// AArch64 (no SVE or SME), with the ARMv8.1 atomics when the processor has them (D151), RV64GC's letters with F and D on RISC-V (no V), and on x86_64
     /// `CPUID.1:EDX`, with `AT_HWCAP2` 0 (its `FSGSBASE` bit would let programs set their GS
     /// base, D49's trigger).
     fn linux_hardware_capabilities() -> [u64; 2];
