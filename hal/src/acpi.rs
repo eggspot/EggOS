@@ -159,6 +159,41 @@ pub enum CmosClock {
     Present { century_register: Option<u8> },
 }
 
+const CMOS_CLOCK_ABSENT_BITS: u16 = 1;
+const CMOS_CLOCK_PRESENT_BITS: u16 = 2;
+const CMOS_CLOCK_CENTURY_BITS: u16 = 0x100;
+
+impl CmosClock {
+    /// `self` as a nonzero `u16`, to keep in an atomic once the FADT was read;
+    /// [`Self::from_bits`] gives it back.
+    pub const fn to_bits(self) -> u16 {
+        match self {
+            Self::Absent => CMOS_CLOCK_ABSENT_BITS,
+            Self::Present {
+                century_register: None,
+            } => CMOS_CLOCK_PRESENT_BITS,
+            Self::Present {
+                century_register: Some(register),
+            } => CMOS_CLOCK_CENTURY_BITS | register as u16,
+        }
+    }
+
+    /// The [`CmosClock`] whose [`Self::to_bits`] is `bits`; `None` for any other value, 0
+    /// included.
+    pub const fn from_bits(bits: u16) -> Option<Self> {
+        match bits {
+            CMOS_CLOCK_ABSENT_BITS => Some(Self::Absent),
+            CMOS_CLOCK_PRESENT_BITS => Some(Self::Present {
+                century_register: None,
+            }),
+            _ if bits & !0xff == CMOS_CLOCK_CENTURY_BITS => Some(Self::Present {
+                century_register: Some(bits as u8),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// What a validated FADT (signature "FACP") says about the CMOS clock: its `CENTURY` field (0
 /// for none) and the "CMOS RTC Not Present" flag of its `IAPC_BOOT_ARCH` (ACPI 6.5, tables 5.9
 /// and 5.10). A FADT too short to hold them, as ACPI 1.0's may be, names no century register
@@ -618,6 +653,28 @@ mod tests {
                 century_register: None
             }
         );
+    }
+
+    #[test]
+    fn what_the_fadt_says_of_the_cmos_clock_packs_into_nonzero_bits_and_back() {
+        for clock in [
+            CmosClock::Absent,
+            CmosClock::Present {
+                century_register: None,
+            },
+            CmosClock::Present {
+                century_register: Some(0x32),
+            },
+            CmosClock::Present {
+                century_register: Some(0),
+            },
+        ] {
+            assert_ne!(clock.to_bits(), 0);
+            assert_eq!(CmosClock::from_bits(clock.to_bits()), Some(clock));
+        }
+        assert_eq!(CmosClock::from_bits(0), None);
+        assert_eq!(CmosClock::from_bits(3), None);
+        assert_eq!(CmosClock::from_bits(0x232), None);
     }
 
     #[test]

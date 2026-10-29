@@ -9201,7 +9201,12 @@ the license, by an explicit instruction recorded here.
   default `_CRT_INTERNAL_PRINTF_LEGACY_WIDE_SPECIFIERS`), `%s` and `%c` wide. `printf` itself
   is inline in Microsoft's headers; programs import `__stdio_common_vfprintf` and its family,
   whose `va_list` is a pointer to 8-byte slots on x64 and ARM64 alike. The wide functions
-  format UTF-8 and write UTF-16.
+  format UTF-8: `swprintf` and its family convert it to UTF-16 in the caller's buffer, while
+  `fwprintf` and `wprintf` write the UTF-8 bytes to the stream (streams are byte streams; wide
+  streams are in "Not yet") and return the count of UTF-16 units. A width and a number's
+  precision are capped at 4096 characters of padding, but a string's precision only bounds
+  how much is read, so `%.*s` with 10000 writes all 10000 bytes; this holds for the macOS
+  layer's `printf` too.
 - **Streams.** A `FILE *` is a stream in a table of 64 (a pointer not from `fopen` is `EBADF`),
   with a 4 KiB buffer; one lock covers the table and every operation. Text mode, Windows'
   default without `b` (and `_fmode`), writes `\n` as `\r\n`, reads `\r\n` as `\n` and stops at
@@ -9209,9 +9214,18 @@ the license, by an explicit instruction recorded here.
   either mode. `stdin`, `stdout` and `stderr` are descriptors 0 to 2, made on first use: a GUI
   program's are missing where they would be the terminal, as its standard handles are (D129);
   a terminal's `stdout` is line buffered, `stderr` unbuffered. `exit` runs the `atexit` table,
-  then flushes every stream.
-- **`errno`** lives in each thread's TEB, past the documented part (after the thread object),
-  so threads have their own without a TLS slot. Linux's numbers up to `ERANGE` (34) are
+  then flushes every stream; `ExitProcess` flushes them too, as the Universal C Runtime does
+  when the process detaches it (unless another thread keeps the streams' lock, say blocked
+  reading `stdin`: the process then ends without waiting). `fflush(NULL)` writes out only
+  streams whose last operation was a write, as C11 and Microsoft define it; `fflush` on a
+  reading stream gives back what it read ahead when the file can seek and otherwise keeps it
+  for the next read (a pipe or terminal loses no input), dropping only an `ungetc` byte.
+  `fopen`'s `D` (temporary) removes the file's name right after opening, so the file goes when
+  the stream closes; other programs cannot open it by name meanwhile, as they could on
+  Windows until the close.
+- **`errno`** lives in each thread's TEB, past the documented part (after the thread object,
+  at `teb::ERRNO`, with `_doserrno` at `teb::DOS_ERRNO`), so threads have their own without a
+  TLS slot. Linux's numbers up to `ERANGE` (34) are
   Windows' too; others become `EINVAL`.
 - **Invalid parameters.** Microsoft documents both the default handler, which ends the
   program, and what each function returns when a handler lets it go on. The
@@ -9253,7 +9267,11 @@ the license, by an explicit instruction recorded here.
   C++ (`__CxxFrameHandler`, `_CxxThrowException`, `operator new` comes from the program but its
   exceptions do not), `vcruntime140_1`'s functions, static CRT (`/MT`) programs' extra imports
   (most are the same kernel32 functions), MinGW's `msvcrt.dll`; per-stream locks (one lock
-  serialises all stdio, so a thread blocked reading `stdin` holds up the others).
+  serialises all stdio, so a thread blocked reading `stdin` holds up the others, and they spin
+  on it, yielding every 128 tries, which burns CPU while they wait: a per-stream lock that
+  `fclose` can take safely, and a lock that sleeps, are a later part); caching `target` in CI's
+  `windows-programs` job (it runs on pull requests only, whose caches other pull requests
+  cannot restore, so it would need a save from `main` first).
 
 ## D147 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
 - **What.** Item 41 (macOS GUI apps, part 1, moved after the release on 2026-10-28 and brought
@@ -9527,8 +9545,9 @@ the license, by an explicit instruction recorded here.
 - **The drivers** (`drivers/src/rtc/`, host-tested over `RegisterIo`): one `RealTimeClock`
   trait (`name`, `read` and `write` in nanoseconds since the epoch, `RtcError`) and three
   drivers. `cmos.rs`, the PC's MC146818-compatible clock on ports 0x70/0x71: a read waits
-  while status A says an update is in progress (bounded) and takes two snapshots in a row
-  until they agree; BCD or binary and 12- or 24-hour as status B says; the century from the
+  while status A says an update is in progress and takes two snapshots in a row until they
+  agree, giving up after 10 ms on the monotonic clock (`READ_TIME_LIMIT_MS`; an update takes
+  under 2.3 ms, and a poll count would be no bound in time); BCD or binary and 12- or 24-hour as status B says; the century from the
   register the FADT names (`acpi::cmos_clock`, 0x32 on QEMU), else years 70-99 are 19xx and
   00-69 20xx, as Linux reads them; a write holds the clock with status B's `SET` and stores
   every field, the weekday and the century included. `pl031.rs`, Arm's PL031 (AArch64 `virt`):
@@ -9552,11 +9571,21 @@ the license, by an explicit instruction recorded here.
   rtc-pl031` in the log) and sets the offset; it is never polled again. `CLOCK_REALTIME`, its
   coarse variant and `CLOCK_TAI` (TAI offset 0) read it, as do `gettimeofday`, x86_64's `time`
   and file times (`file_changes::now`); the monotonic and boot-time clocks do not move. The
-  desktop's clock shows `HH:MM` once the wall clock reads at least a day (Fable's rule), the
-  drawing thread looking once a minute instead of once a second. The Windows layer's
+  desktop's clock shows `HH:MM` once the wall clock reads at least a day (Fable's rule). The
+  drawing thread still looks at the desktop once a second, as D144's timers need (a close's
+  timeout, a notice's expiry, a tooltip's delay), and the clock's rectangle is redrawn only
+  when `HH:MM` changes, so an idle second damages nothing (review: looking only once a minute
+  let those timers fire up to a minute late). The Windows layer's
   `GetSystemTimeAsFileTime` and the macOS layer's `gettimeofday` and `time` already read
   `CLOCK_REALTIME`, so they are real now; `mach_absolute_time` stays monotonic. The statics
   are all zero (`.bss`, the lock's value an `Option<Box<_>>`).
+- **The clock's lock** (review). Reading the CMOS clock is some forty port accesses (each a
+  VM exit under virtualisation), so the real-time clock's lock is an ordinary spin lock whose
+  waiters do their wait duty, not a leaf lock. A set moves the offset and writes the clock in
+  one hold of it, so two sets cannot leave the wall clock and the clock disagreeing; the
+  boot's presence probe takes it too. Whether there is a clock (`/proc/driver/rtc`'s
+  listing) is an atomic flag, and x86_64 reads the FADT's word on the CMOS clock once and
+  keeps it, instead of walking the ACPI tables on every read.
 - **Setting the clock.** `clock_settime(CLOCK_REALTIME)` and `settimeofday` keep Linux's
   checks (D73) and then set the clock for a privileged process (effective user id 0, Linux's
   `CAP_SYS_TIME`, D75; decided by research), `EPERM` otherwise; `settimeofday`'s time zone is
@@ -9613,3 +9642,8 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Time zones and a `TZ` setting; network time; `/dev/rtc0`, alarms and wake-ups
   (`CLOCK_REALTIME_ALARM` stays `EOPNOTSUPP`); waking absolute realtime waits when the clock is
   set; ACPI's `PNP0B00` and UEFI's `GetTime`; a `settings` key for the time.
+  `/proc/driver/rtc` reads the hardware on every open, as Linux's does (any user; each read
+  is bounded to 10 ms, and opens of it contend only for the clock's lock), with no cached
+  reading. The MCP audit log's records carry the wall clock's seconds, which `clock_set` can
+  move back: their order stays the file's and each call's number, and the `clock_set` call is
+  itself recorded, but a monotonic or boot-time field is a format change left for later.

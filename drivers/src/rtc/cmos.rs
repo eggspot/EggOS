@@ -4,7 +4,8 @@
 //! BCD or binary and a 12- or 24-hour clock (status register B); the century, if kept at all, is
 //! in a register the ACPI FADT names. A read waits while the clock updates (status register A's
 //! update-in-progress flag) and takes two snapshots in a row until they agree, so it never mixes
-//! two seconds; a write holds the clock (status B's `SET`) while it stores the fields.
+//! two seconds, giving up after [`READ_TIME_LIMIT_MS`] of the machine's monotonic clock; a write
+//! holds the clock (status B's `SET`) while it stores the fields.
 
 use super::{NANOSECONDS_PER_SECOND, RealTimeClock, RtcError};
 use crate::io::RegisterIo;
@@ -18,6 +19,20 @@ pub const FIRST_CENTURY_REGISTER: u8 = 0x0e;
 
 /// The last register a century may be kept in: the index port takes seven bits.
 pub const LAST_CENTURY_REGISTER: u8 = 0x7f;
+
+/// The longest a read waits for the clock, in milliseconds: an update takes under 2.3 ms once a
+/// second (244 us of warning, then at most 1984 us), so a healthy clock answers well within it.
+pub const READ_TIME_LIMIT_MS: u64 = 10;
+
+/// The machine's monotonic clock, which bounds a read's waits in time: its count now and the
+/// counts in a second, as the platform's `clock_ticks` and `clock_frequency` give them.
+#[derive(Debug, Clone, Copy)]
+pub struct MonotonicClock {
+    /// The count now; it never goes back.
+    pub ticks: fn() -> u64,
+    /// The counts in a second.
+    pub frequency: u64,
+}
 
 const INDEX_PORT: usize = 0;
 const DATA_PORT: usize = 1;
@@ -38,8 +53,8 @@ const BINARY: u8 = 0x04;
 const HOURS_24: u8 = 0x02;
 const PM: u8 = 0x80;
 
-const UPDATE_POLLS: u32 = 100_000;
 const READ_ATTEMPTS: u32 = 8;
+const MILLISECONDS_PER_SECOND: u64 = 1000;
 const YEAR_WITHOUT_CENTURY_FROM: u8 = 70;
 const FIRST_YEAR_WITHOUT_CENTURY: i64 = 1970;
 const LAST_YEAR_WITHOUT_CENTURY: i64 = 2069;
@@ -95,17 +110,29 @@ struct Snapshot {
 pub struct Cmos<R: RegisterIo> {
     regs: R,
     century: Option<u8>,
+    monotonic: MonotonicClock,
 }
 
 impl<R: RegisterIo> Cmos<R> {
     /// The clock behind `regs` ([`REGISTER_BLOCK_SIZE`] ports), keeping its century in register
     /// `century` if the firmware names one (the FADT's `CENTURY`, 0x32 on QEMU and most PCs)
     /// from [`FIRST_CENTURY_REGISTER`] to [`LAST_CENTURY_REGISTER`]. Without one, years 70 to 99
-    /// are 1970 to 1999 and 00 to 69 are 2000 to 2069, as Linux reads them.
-    pub fn new(regs: R, century: Option<u8>) -> Self {
+    /// are 1970 to 1999 and 00 to 69 are 2000 to 2069, as Linux reads them. A read gives up
+    /// after [`READ_TIME_LIMIT_MS`] on `monotonic`.
+    pub fn new(regs: R, century: Option<u8>, monotonic: MonotonicClock) -> Self {
         let century = century
             .filter(|register| (FIRST_CENTURY_REGISTER..=LAST_CENTURY_REGISTER).contains(register));
-        Self { regs, century }
+        Self {
+            regs,
+            century,
+            monotonic,
+        }
+    }
+
+    fn read_deadline(&self) -> u64 {
+        let limit = self.monotonic.frequency.saturating_mul(READ_TIME_LIMIT_MS)
+            / MILLISECONDS_PER_SECOND;
+        (self.monotonic.ticks)().saturating_add(limit.max(1))
     }
 
     fn register(&self, index: u8) -> u8 {
@@ -118,11 +145,9 @@ impl<R: RegisterIo> Cmos<R> {
         self.regs.write8(DATA_PORT, value);
     }
 
-    fn snapshot(&self) -> Result<Snapshot, RtcError> {
-        let mut polls = 0;
+    fn snapshot(&self, deadline: u64) -> Result<Snapshot, RtcError> {
         while self.register(STATUS_A) & UPDATE_IN_PROGRESS != 0 {
-            polls += 1;
-            if polls == UPDATE_POLLS {
+            if (self.monotonic.ticks)() >= deadline {
                 return Err(RtcError::Busy);
             }
         }
@@ -177,9 +202,10 @@ impl<R: RegisterIo> RealTimeClock for Cmos<R> {
     }
 
     fn read(&self) -> Result<u64, RtcError> {
+        let deadline = self.read_deadline();
         for _ in 0..READ_ATTEMPTS {
-            let first = self.snapshot()?;
-            if self.snapshot()? == first {
+            let first = self.snapshot(deadline)?;
+            if self.snapshot(deadline)? == first {
                 let seconds = self.decode(first).ok_or(RtcError::Invalid)?;
                 return Ok(seconds * NANOSECONDS_PER_SECOND);
             }
@@ -234,8 +260,20 @@ impl<R: RegisterIo> RealTimeClock for Cmos<R> {
 mod tests {
     use super::*;
     use core::cell::{Cell, RefCell};
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     const CENTURY: u8 = 0x32;
+
+    static FAKE_TICKS: AtomicU64 = AtomicU64::new(0);
+
+    fn a_microsecond_a_look() -> u64 {
+        FAKE_TICKS.fetch_add(1, Ordering::Relaxed)
+    }
+
+    const MICROSECONDS: MonotonicClock = MonotonicClock {
+        ticks: a_microsecond_a_look,
+        frequency: 1_000_000,
+    };
     const NOW: u64 = 1_793_282_709;
 
     #[derive(Debug)]
@@ -354,7 +392,7 @@ mod tests {
     #[test]
     fn a_bcd_24_hour_clock_with_its_century_reads_as_qemu_keeps_it() {
         let fake = qemu_clock(0x26, 0x20);
-        let clock = Cmos::new(&fake, Some(CENTURY));
+        let clock = Cmos::new(&fake, Some(CENTURY), MICROSECONDS);
         assert_eq!(clock.read(), Ok(NOW * NANOSECONDS_PER_SECOND));
         assert_eq!(clock.name(), "rtc-cmos");
     }
@@ -363,15 +401,15 @@ mod tests {
     fn without_a_century_register_two_digit_years_split_at_seventy() {
         let fake = qemu_clock(0x26, 0x19);
         assert_eq!(
-            Cmos::new(&fake, None).read(),
+            Cmos::new(&fake, None, MICROSECONDS).read(),
             Ok(NOW * NANOSECONDS_PER_SECOND)
         );
         assert_eq!(
-            Cmos::new(&fake, Some(0x0d)).read(),
+            Cmos::new(&fake, Some(0x0d), MICROSECONDS).read(),
             Ok(NOW * NANOSECONDS_PER_SECOND)
         );
         let fake = qemu_clock(0x99, 0x19);
-        let seconds = Cmos::new(&fake, None).read().unwrap() / NANOSECONDS_PER_SECOND;
+        let seconds = Cmos::new(&fake, None, MICROSECONDS).read().unwrap() / NANOSECONDS_PER_SECOND;
         assert_eq!(DateTime::from_unix(seconds as i64).year, 1999);
     }
 
@@ -391,7 +429,8 @@ mod tests {
                 ],
             );
             fake.memory.borrow_mut()[usize::from(CENTURY)] = 20;
-            let read = Cmos::new(&fake, Some(CENTURY)).read().unwrap() / NANOSECONDS_PER_SECOND;
+            let clock = Cmos::new(&fake, Some(CENTURY), MICROSECONDS);
+            let read = clock.read().unwrap() / NANOSECONDS_PER_SECOND;
             assert_eq!(DateTime::from_unix(read as i64).hour, expected);
         }
     }
@@ -401,10 +440,14 @@ mod tests {
         let fake = qemu_clock(0x26, 0x20);
         fake.busy_polls.set(3);
         fake.change_after_reads.set(Some((5, SECONDS, 0x10)));
-        let clock = Cmos::new(&fake, Some(CENTURY));
+        let clock = Cmos::new(&fake, Some(CENTURY), MICROSECONDS);
         assert_eq!(clock.read(), Ok((NOW + 1) * NANOSECONDS_PER_SECOND));
         fake.busy_polls.set(u32::MAX);
+        let before = FAKE_TICKS.load(Ordering::Relaxed);
         assert_eq!(clock.read(), Err(RtcError::Busy));
+        let waited = FAKE_TICKS.load(Ordering::Relaxed) - before;
+        let limit = READ_TIME_LIMIT_MS * 1000;
+        assert!((limit..limit + 100).contains(&waited), "{waited}");
     }
 
     #[test]
@@ -413,7 +456,7 @@ mod tests {
             let fake = qemu_clock(0x26, 0x20);
             fake.memory.borrow_mut()[usize::from(register)] = value;
             assert_eq!(
-                Cmos::new(&fake, Some(CENTURY)).read(),
+                Cmos::new(&fake, Some(CENTURY), MICROSECONDS).read(),
                 Err(RtcError::Invalid),
                 "{register:#x}"
             );
@@ -423,7 +466,7 @@ mod tests {
     #[test]
     fn a_write_stores_every_field_in_the_clock_s_format_while_it_is_held() {
         let fake = qemu_clock(0x00, 0x00);
-        let clock = Cmos::new(&fake, Some(CENTURY));
+        let clock = Cmos::new(&fake, Some(CENTURY), MICROSECONDS);
         clock.write(NOW * NANOSECONDS_PER_SECOND + 999).unwrap();
         assert_eq!(fake.at(STATUS_B), HOURS_24);
         for (register, value) in [
@@ -441,7 +484,7 @@ mod tests {
         assert_eq!(clock.read(), Ok(NOW * NANOSECONDS_PER_SECOND));
 
         let fake = FakeCmos::with(BINARY, [(SECONDS, 0); 7]);
-        let clock = Cmos::new(&fake, None);
+        let clock = Cmos::new(&fake, None, MICROSECONDS);
         clock.write(NOW * NANOSECONDS_PER_SECOND).unwrap();
         assert_eq!((fake.at(HOURS), fake.at(YEAR)), (2 | PM, 26));
         assert_eq!(clock.read(), Ok(NOW * NANOSECONDS_PER_SECOND));

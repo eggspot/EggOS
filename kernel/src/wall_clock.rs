@@ -5,10 +5,15 @@
 //! and sets the offset from it; [`set`] moves the offset and writes the real-time clock, the
 //! only place a set time outlives a restart. Without a real-time clock the wall clock starts
 //! at the epoch at boot, as Linux's does. All in UTC: there are no time zones.
+//!
+//! The real-time clock is slow hardware (the CMOS clock is some forty port accesses a read), so
+//! its lock is an ordinary [`SpinLock`] whose waiters do their wait duty, never a leaf lock.
+//! Setting the clock moves the offset and writes the clock in one hold of that lock, so two sets
+//! never leave the wall clock and the real-time clock disagreeing.
 
-use crate::sync::LeafSpinLock;
+use crate::sync::SpinLock;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicI64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use eggos_drivers::rtc::{NANOSECONDS_PER_SECOND, RealTimeClock, RtcError};
 use eggos_hal::Platform;
 
@@ -19,7 +24,9 @@ enum Clock {
     Platform,
 }
 
-static CLOCK: LeafSpinLock<Option<Box<Clock>>> = LeafSpinLock::new_leaf(None);
+static CLOCK: SpinLock<Option<Box<Clock>>> = SpinLock::new(None);
+
+static HAS_CLOCK: AtomicBool = AtomicBool::new(false);
 
 /// The wall clock in nanoseconds since 1970-01-01 00:00:00 UTC.
 #[inline]
@@ -53,6 +60,7 @@ pub fn register(clock: Box<dyn RealTimeClock + Send>) -> bool {
         return false;
     }
     *held = Some(clock);
+    HAS_CLOCK.store(true, Ordering::Release);
     true
 }
 
@@ -72,19 +80,17 @@ pub enum Started {
 /// driver model's clock if one was registered, else the platform's own
 /// ([`Platform::platform_clock`]).
 pub fn start<P: Platform>() -> Started {
-    let has_device = CLOCK.lock().is_some();
-    if !has_device {
+    let mut platform = Some(Box::new(Clock::Platform));
+    let mut held = CLOCK.lock();
+    if held.is_none() {
         let mut found = false;
         P::platform_clock(&mut |_| found = true);
         if found {
-            let platform = Box::new(Clock::Platform);
-            let mut held = CLOCK.lock();
-            if held.is_none() {
-                *held = Some(platform);
-            }
+            *held = platform.take();
+            HAS_CLOCK.store(true, Ordering::Release);
         }
     }
-    match with_clock::<P, _>(|clock| (clock.name(), clock.read())) {
+    let started = match on_clock::<P, _>(held.as_deref(), |clock| (clock.name(), clock.read())) {
         Some((name, Ok(nanoseconds))) => {
             set_offset::<P>(nanoseconds);
             Started::FromClock {
@@ -94,7 +100,10 @@ pub fn start<P: Platform>() -> Started {
         }
         Some((name, Err(error))) => Started::Unreadable { name, error },
         None => Started::NoClock,
-    }
+    };
+    drop(held);
+    drop(platform);
+    started
 }
 
 /// What [`set`] did with the real-time clock.
@@ -113,23 +122,27 @@ pub enum Saved {
 /// (decided by research: with no network time, it is the only thing that keeps a set time
 /// across a restart). The wall clock is set whatever the real-time clock answers.
 pub fn set<P: Platform>(nanoseconds: u64) -> Saved {
+    let held = CLOCK.lock();
     set_offset::<P>(nanoseconds);
-    match with_clock::<P, _>(|clock| clock.write(nanoseconds)) {
+    let saved = match on_clock::<P, _>(held.as_deref(), |clock| clock.write(nanoseconds)) {
         Some(Ok(())) => Saved::InClock,
         Some(Err(error)) => Saved::ClockFailed(error),
         None => Saved::NoClock,
-    }
+    };
+    drop(held);
+    saved
 }
 
 /// The real-time clock's name and its time now, in nanoseconds since the epoch, read from the
 /// clock itself (`/proc/driver/rtc`, so `hwclock`); `None` without one.
 pub fn read_clock<P: Platform>() -> Option<(&'static str, Result<u64, RtcError>)> {
-    with_clock::<P, _>(|clock| (clock.name(), clock.read()))
+    let held = CLOCK.lock();
+    on_clock::<P, _>(held.as_deref(), |clock| (clock.name(), clock.read()))
 }
 
-/// Whether the machine has a real-time clock (known once [`start`] ran).
+/// Whether the machine has a real-time clock (known once [`start`] ran): one load, no lock.
 pub fn has_clock() -> bool {
-    CLOCK.lock().is_some()
+    HAS_CLOCK.load(Ordering::Acquire)
 }
 
 fn set_offset<P: Platform>(nanoseconds: u64) {
@@ -139,9 +152,11 @@ fn set_offset<P: Platform>(nanoseconds: u64) {
     OFFSET_NANOSECONDS.store(offset, Ordering::Relaxed);
 }
 
-fn with_clock<P: Platform, R>(use_clock: impl FnOnce(&dyn RealTimeClock) -> R) -> Option<R> {
-    let held = CLOCK.lock();
-    match held.as_deref()? {
+fn on_clock<P: Platform, R>(
+    clock: Option<&Clock>,
+    use_clock: impl FnOnce(&dyn RealTimeClock) -> R,
+) -> Option<R> {
+    match clock? {
         Clock::Device(device) => Some(use_clock(&**device)),
         Clock::Platform => {
             let mut use_clock = Some(use_clock);
@@ -169,6 +184,7 @@ pub(crate) mod host {
 mod tests {
     use super::*;
     use crate::tests::TestPlatform;
+    use alloc::sync::Arc;
 
     #[derive(Debug)]
     struct FixedClock {
@@ -197,6 +213,7 @@ mod tests {
         let now = 1_793_282_709 * NANOSECONDS_PER_SECOND;
         let written = alloc::sync::Arc::new(core::sync::atomic::AtomicU64::new(0));
         let before = CLOCK.lock().take();
+        let had_clock = HAS_CLOCK.load(Ordering::Relaxed);
         assert!(register(Box::new(FixedClock {
             nanoseconds: now,
             written: written.clone(),
@@ -224,7 +241,56 @@ mod tests {
             Some("rtc-test")
         );
         *CLOCK.lock() = before;
+        HAS_CLOCK.store(had_clock, Ordering::Relaxed);
         host::reset();
         assert!(nanoseconds::<TestPlatform>() < now);
+    }
+
+    #[derive(Debug)]
+    struct LockWitness {
+        offset_at_write: Arc<AtomicI64>,
+        locked_at_write: Arc<AtomicBool>,
+    }
+
+    impl RealTimeClock for LockWitness {
+        fn name(&self) -> &'static str {
+            "rtc-witness"
+        }
+
+        fn read(&self) -> Result<u64, RtcError> {
+            Ok(0)
+        }
+
+        fn write(&self, _nanoseconds: u64) -> Result<(), RtcError> {
+            self.locked_at_write.store(CLOCK.try_lock().is_none(), Ordering::Relaxed);
+            self.offset_at_write
+                .store(OFFSET_NANOSECONDS.load(Ordering::Relaxed), Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_set_moves_the_offset_and_writes_the_clock_in_one_hold_of_the_clock_s_lock() {
+        let _state = crate::thread::host::frames_for_test();
+        let before = CLOCK.lock().take();
+        let had_clock = HAS_CLOCK.load(Ordering::Relaxed);
+        let offset_at_write = Arc::new(AtomicI64::new(0));
+        let locked_at_write = Arc::new(AtomicBool::new(false));
+        assert!(register(Box::new(LockWitness {
+            offset_at_write: offset_at_write.clone(),
+            locked_at_write: locked_at_write.clone(),
+        })));
+        assert!(has_clock());
+        let later = 1_893_456_000 * NANOSECONDS_PER_SECOND;
+        assert_eq!(set::<TestPlatform>(later), Saved::InClock);
+        assert!(locked_at_write.load(Ordering::Relaxed));
+        assert_ne!(offset_at_write.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            offset_at_write.load(Ordering::Relaxed),
+            OFFSET_NANOSECONDS.load(Ordering::Relaxed)
+        );
+        *CLOCK.lock() = before;
+        HAS_CLOCK.store(had_clock, Ordering::Relaxed);
+        host::reset();
     }
 }
