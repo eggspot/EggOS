@@ -1,5 +1,6 @@
-//! The network (D157): an IPv4 stack over the first network adapter a driver lends the kernel
-//! ([`NetDevice`]), and the loopback interface `lo`, which always exists.
+//! The network (D157; TCP, D158: [`tcp`]): an IPv4 stack over the first network adapter a
+//! driver lends the kernel ([`NetDevice`]), and the loopback interface `lo`, which always
+//! exists.
 //!
 //! The protocols are the `eggos-net` crate's ([`eggos_net::interface::Interface`]); this module
 //! owns the adapter and its interface (`eth0`), runs them, and connects them to the endpoints
@@ -17,6 +18,7 @@
 
 pub mod endpoints;
 pub mod resolv_conf;
+pub mod tcp;
 
 use crate::console;
 use crate::sync::LeafSpinLock;
@@ -180,13 +182,14 @@ pub fn poll<P: Platform>() -> bool {
                 &mut |bytes| {
                     let _ = device.transmit(bytes);
                 },
-                &mut |delivery| delivered |= endpoints::deliver(delivery),
+                &mut |delivery| delivered |= deliver::<P>(delivery),
             );
         }
         interface.poll(now, &mut |bytes| {
             let _ = device.transmit(bytes);
         });
     }
+    tcp::run::<P>();
     if moved {
         LAST_TRAFFIC_MS.store(now, Ordering::Relaxed);
     }
@@ -194,6 +197,45 @@ pub fn poll<P: Platform>() -> bool {
         console::wake_input_waiters::<P>();
     }
     delivered
+}
+
+fn deliver<P: Platform>(delivery: Delivery<'_>) -> bool {
+    match delivery {
+        Delivery::Tcp {
+            source,
+            destination,
+            segment,
+        } => tcp::deliver::<P>(source, destination, &segment),
+        other => endpoints::deliver(other),
+    }
+}
+
+/// The largest TCP segment the adapter's link carries; [`tcp::MSS`] without an adapter.
+pub fn tcp_mss() -> u16 {
+    ADAPTER
+        .lock()
+        .as_ref()
+        .map_or(tcp::MSS, |adapter| adapter.interface.tcp_mss())
+}
+
+/// Sends `segment`, a TCP segment from the interface's address, to `destination` through the
+/// adapter, with time to live `ttl`.
+pub fn send_tcp<P: Platform>(
+    destination: Ipv4Address,
+    segment: &[u8],
+    ttl: u8,
+) -> Result<(), SendError> {
+    let now = now_ms::<P>();
+    let mut adapter = ADAPTER.lock();
+    let Some(adapter) = adapter.as_mut() else {
+        return Err(SendError::NoRoute);
+    };
+    let Adapter {
+        device, interface, ..
+    } = &mut **adapter;
+    interface.send_tcp(destination, segment, ttl, now, &mut |bytes| {
+        let _ = device.transmit(bytes);
+    })
 }
 
 /// Whether `address` is this machine's: in `127.0.0.0/8`, or the interface's.

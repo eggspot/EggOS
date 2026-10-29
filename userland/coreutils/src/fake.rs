@@ -10,6 +10,25 @@ use std::collections::{BTreeMap, VecDeque};
 
 const FIRST_SOCKET_DESCRIPTOR: usize = 200;
 const FIRST_SOCKET_PORT: u16 = 40_000;
+const FIRST_STREAM_DESCRIPTOR: usize = 300;
+const STREAM_PIECE: usize = 7;
+
+#[derive(Debug, Clone)]
+pub struct FakePage {
+    pub address: Ipv4Address,
+    pub port: u16,
+    pub target: Vec<u8>,
+    pub response: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub struct FakeStream {
+    pub address: Option<(Ipv4Address, u16)>,
+    pub request: Vec<u8>,
+    pub response: VecDeque<u8>,
+    pub answered: bool,
+    pub open: bool,
+}
 
 #[derive(Debug)]
 pub struct FakeSocket {
@@ -29,9 +48,33 @@ pub struct FakeNetwork {
     pub sockets: Vec<FakeSocket>,
     pub monotonic_us: u64,
     pub send_error: Option<Errno>,
+    pub pages: Vec<FakePage>,
+    pub streams: Vec<FakeStream>,
+    pub requests: Vec<Vec<u8>>,
 }
 
 impl FakeNetwork {
+    fn stream(&mut self, descriptor: usize) -> Result<&mut FakeStream, Errno> {
+        self.streams
+            .get_mut(descriptor.wrapping_sub(FIRST_STREAM_DESCRIPTOR))
+            .filter(|stream| stream.open)
+            .ok_or(Errno(9))
+    }
+
+    fn page(&self, address: (Ipv4Address, u16), request: &[u8]) -> Vec<u8> {
+        let target = request
+            .strip_prefix(b"GET ")
+            .and_then(|rest| rest.split(|&byte| byte == b' ').next())
+            .unwrap_or_default();
+        self.pages
+            .iter()
+            .find(|page| (page.address, page.port) == address && page.target == target)
+            .map_or_else(
+                || b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found".to_vec(),
+                |page| page.response.clone(),
+            )
+    }
+
     fn socket(&mut self, descriptor: usize) -> Result<&mut FakeSocket, Errno> {
         self.sockets
             .get_mut(descriptor.wrapping_sub(FIRST_SOCKET_DESCRIPTOR))
@@ -340,6 +383,10 @@ impl System for Fake {
     }
 
     fn close(&mut self, descriptor: usize) {
+        if let Ok(stream) = self.network.stream(descriptor) {
+            stream.open = false;
+            return;
+        }
         if let Ok(socket) = self.network.socket(descriptor) {
             socket.open = false;
             return;
@@ -741,6 +788,78 @@ impl System for Fake {
 
     fn monotonic_us(&mut self) -> u64 {
         self.network.monotonic_us
+    }
+
+    fn open_stream_socket(&mut self) -> Result<usize, Errno> {
+        self.network.streams.push(FakeStream {
+            open: true,
+            ..FakeStream::default()
+        });
+        Ok(FIRST_STREAM_DESCRIPTOR + self.network.streams.len() - 1)
+    }
+
+    fn connect(
+        &mut self,
+        descriptor: usize,
+        address: Ipv4Address,
+        port: u16,
+        timeout_ms: u32,
+    ) -> Result<(), Errno> {
+        let served = self
+            .network
+            .pages
+            .iter()
+            .any(|page| (page.address, page.port) == (address, port));
+        let reachable = self.network.reachable.contains(&address);
+        let stream = self.network.stream(descriptor)?;
+        match (served, reachable) {
+            (true, _) => {
+                stream.address = Some((address, port));
+                Ok(())
+            }
+            (false, true) => Err(Errno::ECONNREFUSED),
+            (false, false) => {
+                self.network.monotonic_us += u64::from(timeout_ms) * 1000;
+                Err(Errno::ETIMEDOUT)
+            }
+        }
+    }
+
+    fn send(&mut self, descriptor: usize, bytes: &[u8]) -> Result<(), Errno> {
+        let stream = self.network.stream(descriptor)?;
+        let address = stream.address.ok_or(Errno::EPIPE)?;
+        stream.request.extend_from_slice(bytes);
+        if stream.answered || !stream.request.windows(4).any(|end| end == b"\r\n\r\n") {
+            return Ok(());
+        }
+        let request = stream.request.clone();
+        let response = self.network.page(address, &request);
+        let stream = self.network.stream(descriptor)?;
+        stream.response.extend(response);
+        stream.answered = true;
+        self.network.requests.push(request);
+        Ok(())
+    }
+
+    fn receive(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<usize>, Errno> {
+        let stream = self.network.stream(descriptor)?;
+        if stream.response.is_empty() {
+            if stream.answered {
+                return Ok(Some(0));
+            }
+            self.network.monotonic_us += u64::from(timeout_ms) * 1000;
+            return Ok(None);
+        }
+        let count = stream.response.len().min(buffer.len()).min(STREAM_PIECE);
+        for (slot, byte) in buffer.iter_mut().zip(stream.response.drain(..count)) {
+            *slot = byte;
+        }
+        Ok(Some(count))
     }
 }
 

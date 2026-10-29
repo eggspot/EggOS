@@ -14,6 +14,8 @@ pub const DEFAULT_TTL: u8 = 64;
 pub mod protocol {
     /// ICMP.
     pub const ICMP: u8 = 1;
+    /// TCP.
+    pub const TCP: u8 = 6;
     /// UDP.
     pub const UDP: u8 = 17;
 }

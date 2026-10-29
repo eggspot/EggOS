@@ -150,6 +150,10 @@ name = "eggos-linux-static"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-linux-tcp"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-linux-udp"
 version = "0.2.0"
 

@@ -25,6 +25,10 @@ const REBOOT_MAGIC2: usize = 0x2812_1969;
 const EIO: Errno = Errno(5);
 const AF_INET: u16 = 2;
 const SOCK_DGRAM_CLOEXEC: usize = 2 | 0o2_000_000;
+const SOCK_STREAM_CLOEXEC: usize = 1 | 0o2_000_000;
+const SOL_SOCKET: usize = 1;
+const SO_SNDTIMEO: usize = 21;
+const MSG_NOSIGNAL: usize = 0x4000;
 const IPPROTO_ICMP: usize = 1;
 const MSG_DONTWAIT: usize = 0x40;
 const POLLIN: i16 = 1;
@@ -50,6 +54,43 @@ fn sockaddr_in(address: Ipv4Address, port: u16) -> [u8; SOCKADDR_IN_SIZE] {
 struct Timespec {
     seconds: i64,
     nanoseconds: i64,
+}
+
+#[repr(C)]
+struct Timeval {
+    seconds: i64,
+    microseconds: i64,
+}
+
+fn wait_readable(descriptor: usize, timeout_ms: u32) -> Result<bool, Errno> {
+    let mut poll = PollFd {
+        descriptor: descriptor as i32,
+        events: POLLIN,
+        returned: 0,
+    };
+    let timeout = Timespec {
+        seconds: i64::from(timeout_ms / 1000),
+        nanoseconds: i64::from(timeout_ms % 1000) * 1_000_000,
+    };
+    loop {
+        let polled = call(
+            number::PPOLL,
+            [
+                &raw mut poll as usize,
+                1,
+                &raw const timeout as usize,
+                0,
+                SIGSET_BYTES,
+                0,
+            ],
+        );
+        match polled {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(Errno::EINTR) => {}
+            Err(errno) => return Err(errno),
+        }
+    }
 }
 
 fn call(number: usize, arguments: [usize; 6]) -> Result<usize, Errno> {
@@ -340,33 +381,8 @@ impl System for Linux {
         buffer: &mut [u8],
         timeout_ms: u32,
     ) -> Result<Option<(usize, Sender)>, Errno> {
-        let mut poll = PollFd {
-            descriptor: descriptor as i32,
-            events: POLLIN,
-            returned: 0,
-        };
-        let timeout = Timespec {
-            seconds: i64::from(timeout_ms / 1000),
-            nanoseconds: i64::from(timeout_ms % 1000) * 1_000_000,
-        };
-        loop {
-            let polled = call(
-                number::PPOLL,
-                [
-                    &raw mut poll as usize,
-                    1,
-                    &raw const timeout as usize,
-                    0,
-                    SIGSET_BYTES,
-                    0,
-                ],
-            );
-            match polled {
-                Ok(0) => return Ok(None),
-                Ok(_) => break,
-                Err(Errno::EINTR) => {}
-                Err(errno) => return Err(errno),
-            }
+        if !wait_readable(descriptor, timeout_ms)? {
+            return Ok(None);
         }
         let mut from = [0u8; SOCKADDR_IN_SIZE];
         let mut length = SOCKADDR_IN_SIZE as u32;
@@ -405,6 +421,91 @@ impl System for Linux {
         ) {
             Ok(_) => (time.seconds.max(0) as u64) * 1_000_000 + (time.nanoseconds.max(0) as u64) / 1000,
             Err(_) => 0,
+        }
+    }
+
+    fn open_stream_socket(&mut self) -> Result<usize, Errno> {
+        call(
+            number::SOCKET,
+            [usize::from(AF_INET), SOCK_STREAM_CLOEXEC, 0, 0, 0, 0],
+        )
+    }
+
+    fn connect(
+        &mut self,
+        descriptor: usize,
+        address: Ipv4Address,
+        port: u16,
+        timeout_ms: u32,
+    ) -> Result<(), Errno> {
+        let timeout = Timeval {
+            seconds: i64::from(timeout_ms / 1000),
+            microseconds: i64::from(timeout_ms % 1000) * 1000,
+        };
+        call(
+            number::SETSOCKOPT,
+            [
+                descriptor,
+                SOL_SOCKET,
+                SO_SNDTIMEO,
+                &raw const timeout as usize,
+                core::mem::size_of::<Timeval>(),
+                0,
+            ],
+        )?;
+        let to = sockaddr_in(address, port);
+        let connected = call(
+            number::CONNECT,
+            [descriptor, to.as_ptr() as usize, SOCKADDR_IN_SIZE, 0, 0, 0],
+        );
+        match connected {
+            Ok(_) => Ok(()),
+            Err(Errno::EINPROGRESS) => Err(Errno::ETIMEDOUT),
+            Err(errno) => Err(errno),
+        }
+    }
+
+    fn send(&mut self, descriptor: usize, mut bytes: &[u8]) -> Result<(), Errno> {
+        while !bytes.is_empty() {
+            let pointer = bytes.as_ptr() as usize;
+            let sent = call(
+                number::SENDTO,
+                [descriptor, pointer, bytes.len(), MSG_NOSIGNAL, 0, 0],
+            );
+            match sent {
+                Ok(0) => return Err(EIO),
+                Ok(count) => bytes = &bytes[count.min(bytes.len())..],
+                Err(Errno::EINTR) => {}
+                Err(errno) => return Err(errno),
+            }
+        }
+        Ok(())
+    }
+
+    fn receive(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<usize>, Errno> {
+        if !wait_readable(descriptor, timeout_ms)? {
+            return Ok(None);
+        }
+        let received = call(
+            number::RECVFROM,
+            [
+                descriptor,
+                buffer.as_mut_ptr() as usize,
+                buffer.len(),
+                MSG_DONTWAIT,
+                0,
+                0,
+            ],
+        );
+        match received {
+            Ok(count) => Ok(Some(count)),
+            Err(Errno::EAGAIN) => Ok(None),
+            Err(errno) => Err(errno),
         }
     }
 }

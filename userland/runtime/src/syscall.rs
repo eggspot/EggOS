@@ -63,6 +63,7 @@ pub mod number {
     pub const SENDTO: usize = 44;
     pub const RECVFROM: usize = 45;
     pub const GETSOCKNAME: usize = 51;
+    pub const SETSOCKOPT: usize = 54;
     pub const SENDMSG: usize = 46;
     pub const RECVMSG: usize = 47;
     pub const BIND: usize = 49;
@@ -133,6 +134,7 @@ pub mod number {
     pub const LISTEN: usize = 201;
     pub const CONNECT: usize = 203;
     pub const GETSOCKNAME: usize = 204;
+    pub const SETSOCKOPT: usize = 208;
     pub const SENDTO: usize = 206;
     pub const RECVFROM: usize = 207;
     pub const SENDMSG: usize = 211;

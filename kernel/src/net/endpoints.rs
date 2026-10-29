@@ -35,6 +35,9 @@ pub enum Protocol {
     Udp,
     /// ICMP echo requests out, echo replies in.
     Ping,
+    /// TCP: the endpoint only holds a stream socket's port; [`super::tcp`] runs its
+    /// connections.
+    Tcp,
 }
 
 /// A datagram an endpoint queued.
@@ -290,7 +293,8 @@ impl Endpoint {
     }
 }
 
-/// Hands `delivery` to the endpoint it is for: whether one queued it.
+/// Hands `delivery`, a UDP datagram or an echo reply, to the endpoint it is for: whether one
+/// queued it. TCP segments are [`super::tcp`]'s, never queued here.
 pub fn deliver(delivery: Delivery<'_>) -> bool {
     let (protocol, from, to, data) = match delivery {
         Delivery::Udp(Arrived {
@@ -315,6 +319,7 @@ pub fn deliver(delivery: Delivery<'_>) -> bool {
             (Ipv4Address::UNSPECIFIED, identifier),
             message,
         ),
+        Delivery::Tcp { .. } => return false,
     };
     let endpoint = BOUND
         .lock()

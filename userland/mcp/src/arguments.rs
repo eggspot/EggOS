@@ -49,6 +49,14 @@ pub const MAX_MENU_LABEL_BYTES: usize = 64;
 
 /// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
 pub const TIME_BYTES: usize = 20;
+/// The longest host name `net_ping` and `net_lookup` take (D158).
+pub const MAX_HOST_BYTES: usize = 253;
+/// The most echo requests `net_ping` sends.
+pub const MAX_PING_COUNT: u64 = 5;
+/// The echo requests `net_ping` sends when the agent names no `count`.
+pub const DEFAULT_PING_COUNT: u32 = 4;
+/// The longest URL `fetch` takes (D158).
+pub const MAX_URL_BYTES: usize = 2048;
 
 const TIME_FORM: &[u8; TIME_BYTES] = b"0000-00-00T00:00:00Z";
 
@@ -104,6 +112,14 @@ pub enum ArgumentProblem {
     BadMenuItem,
     /// `label` is longer than [`MAX_MENU_LABEL_BYTES`] or holds a control character.
     BadMenuLabel,
+    /// `host` is not 1 to [`MAX_HOST_BYTES`] letters, digits, dots, hyphens and underscores,
+    /// or starts with a dot or a hyphen.
+    BadHost,
+    /// `count` is not 1 to [`MAX_PING_COUNT`].
+    BadCount,
+    /// `url` is not an `http://` URL of at most [`MAX_URL_BYTES`] bytes without spaces or
+    /// control characters.
+    BadUrl,
 }
 
 impl ArgumentProblem {
@@ -125,6 +141,8 @@ impl ArgumentProblem {
                 "menu and entry are required: the numbers wm_menu_list shows"
             }
             ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
+            ArgumentProblem::Missing("host") => "host is required: an IPv4 address or a host name",
+            ArgumentProblem::Missing("url") => "url is required: an http:// URL",
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -176,6 +194,15 @@ impl ArgumentProblem {
             ArgumentProblem::BadMenuLabel => {
                 "label is the item's label as wm_menu_list shows it: at most 64 bytes, without \
                  control characters"
+            }
+            ArgumentProblem::BadHost => {
+                "host must be an IPv4 address or a host name: 1 to 253 letters, digits, dots, \
+                 hyphens and underscores, not starting with a dot or a hyphen"
+            }
+            ArgumentProblem::BadCount => "count must be a whole number from 1 to 5",
+            ArgumentProblem::BadUrl => {
+                "url must be an http:// URL of at most 2048 bytes without spaces; https:// is not \
+                 supported yet"
             }
         }
     }
@@ -350,6 +377,12 @@ pub struct Checked {
     pub menu_item: Option<(u32, u32)>,
     /// `wm_menu_choose`'s label's length, in the words buffer.
     pub menu_label: Option<usize>,
+    /// `net_ping`'s and `net_lookup`'s host's length, in the words buffer.
+    pub host: Option<usize>,
+    /// `net_ping`'s count of echo requests.
+    pub count: Option<u32>,
+    /// `fetch`'s URL's length, in the content buffer.
+    pub url: Option<usize>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -461,7 +494,61 @@ pub fn check(
             None => return Err(ArgumentProblem::Missing("time")),
         });
     }
+    if matches!(tool.kind, Kind::NetPing | Kind::NetLookup) {
+        let length = short_text(
+            get("host"),
+            "host",
+            decoded.words,
+            MAX_HOST_BYTES,
+            is_host_byte,
+            ArgumentProblem::BadHost,
+        )?;
+        let first = decoded.words.first().copied();
+        if matches!(first, Some(b'-' | b'.')) {
+            return Err(ArgumentProblem::BadHost);
+        }
+        checked.host = Some(length);
+    }
+    if tool.kind == Kind::NetPing {
+        let count = whole(get("count"), MAX_PING_COUNT, ArgumentProblem::BadCount)?;
+        checked.count = Some(match count {
+            None => DEFAULT_PING_COUNT,
+            Some(0) => return Err(ArgumentProblem::BadCount),
+            Some(count) => count as u32,
+        });
+    }
+    if tool.kind == Kind::Fetch {
+        let length = short_text(
+            get("url"),
+            "url",
+            decoded.content,
+            MAX_URL_BYTES,
+            |byte| byte > b' ' && byte != 0x7f,
+            ArgumentProblem::BadUrl,
+        )?;
+        let scheme = decoded.content.get(..b"http://".len());
+        if !scheme.is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"http://")) {
+            return Err(ArgumentProblem::BadUrl);
+        }
+        checked.url = Some(length);
+    }
     Ok(checked)
+}
+
+fn is_host_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+}
+
+/// `net_ping`'s and `net_lookup`'s host in `buffer`, the words buffer, that [`Checked::host`]
+/// measures.
+pub fn host_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.host?)?).ok()
+}
+
+/// `fetch`'s URL in `buffer`, the content buffer (which only calls that need a grant fill, so
+/// it lasts while the call waits for the user), that [`Checked::url`] measures.
+pub fn url_text<'b>(checked: &Checked, buffer: &'b [u8]) -> Option<&'b str> {
+    core::str::from_utf8(buffer.get(..checked.url?)?).ok()
 }
 
 fn archive_entry(

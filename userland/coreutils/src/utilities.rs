@@ -2,6 +2,7 @@ use crate::agentlog::agentlog;
 use crate::cat::cat;
 use crate::date::date;
 use crate::echo::echo;
+use crate::fetch::fetch;
 use crate::file_changes::{cp, mkdir, mv, rm, touch};
 use crate::grep::grep;
 use crate::head::{head, tail};
@@ -36,6 +37,7 @@ pub enum Utility {
     Date,
     Echo,
     False,
+    Fetch,
     Free,
     Grep,
     Halt,
@@ -65,13 +67,14 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Agentlog,
         Self::Cat,
         Self::Cp,
         Self::Date,
         Self::Echo,
         Self::False,
+        Self::Fetch,
         Self::Free,
         Self::Grep,
         Self::Halt,
@@ -108,6 +111,7 @@ impl Utility {
             Self::Date => b"date",
             Self::Echo => b"echo",
             Self::False => b"false",
+            Self::Fetch => b"fetch",
             Self::Free => b"free",
             Self::Grep => b"grep",
             Self::Halt => b"halt",
@@ -149,6 +153,7 @@ impl Utility {
             Self::Date => date(output, arguments),
             Self::Echo => echo(output, arguments),
             Self::False => FAILURE,
+            Self::Fetch => fetch(output, arguments),
             Self::Free => free(output, arguments),
             Self::Grep => grep(output, arguments),
             Self::Halt => power(output, arguments, HALT),

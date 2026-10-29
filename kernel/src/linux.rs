@@ -653,6 +653,8 @@ impl Errno {
     pub const ECONNREFUSED: Self = Self(111);
     /// Another call is connecting the socket already (`connect`).
     pub const EALREADY: Self = Self(114);
+    /// A non-blocking connection is being made (`connect`, D158).
+    pub const EINPROGRESS: Self = Self(115);
     /// Too many buffers for one message (`sendmsg`, `recvmsg`).
     pub const EMSGSIZE: Self = Self(90);
     /// A mapping that would end past the largest offset (`mmap` of a memfd).

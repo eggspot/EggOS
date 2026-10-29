@@ -55,8 +55,20 @@ impl Errno {
     pub const ENODEV: Self = Self(19);
     /// `EOPNOTSUPP`.
     pub const EOPNOTSUPP: Self = Self(95);
+    /// `ENETDOWN`.
+    pub const ENETDOWN: Self = Self(100);
+    /// `ENETUNREACH`.
+    pub const ENETUNREACH: Self = Self(101);
+    /// `ECONNRESET`.
+    pub const ECONNRESET: Self = Self(104);
+    /// `ETIMEDOUT`.
+    pub const ETIMEDOUT: Self = Self(110);
     /// `ECONNREFUSED`.
     pub const ECONNREFUSED: Self = Self(111);
+    /// `EHOSTUNREACH`.
+    pub const EHOSTUNREACH: Self = Self(113);
+    /// `EINPROGRESS`.
+    pub const EINPROGRESS: Self = Self(115);
 
     /// A system call's result: the non-negative value it returned, or the error of a negative
     /// one.
@@ -105,7 +117,13 @@ impl Errno {
             40 => b"Too many levels of symbolic links",
             75 => b"Value too large for defined data type",
             95 => b"Operation not supported",
+            100 => b"Network is down",
+            101 => b"Network is unreachable",
+            104 => b"Connection reset by peer",
+            110 => b"Connection timed out",
             111 => b"Connection refused",
+            113 => b"No route to host",
+            115 => b"Operation now in progress",
             _ => b"Unknown error",
         }
     }

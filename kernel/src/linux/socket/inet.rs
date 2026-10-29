@@ -1,5 +1,7 @@
-//! `AF_INET` datagram sockets (D157): UDP sockets, and ping sockets (`SOCK_DGRAM` with
-//! `IPPROTO_ICMP`, Linux's unprivileged ICMP echo), over the kernel's network
+//! `AF_INET` sockets: stream sockets are TCP's and have their own module ([`super::tcp`],
+//! D158), which every call on one is handed to; this module has the datagram sockets (D157):
+//! UDP sockets, and ping sockets (`SOCK_DGRAM` with `IPPROTO_ICMP`, Linux's unprivileged
+//! ICMP echo), over the kernel's network
 //! ([`crate::net`]). `socket`, `bind`, `connect` (`AF_UNSPEC` disconnects), `getsockname`,
 //! `getpeername`, `sendto`, `sendmsg`, `recvfrom`, `recvmsg`, `shutdown`, `setsockopt` and
 //! `getsockopt`, and `read`, `write`, `poll`, `ioctl(FIONREAD)` and `fstat` on them, as Linux
@@ -23,6 +25,7 @@ use crate::linux::terminal::{Waited, wait_for_input};
 use crate::linux::thread::LinuxThread;
 use crate::linux::{Errno, Iovecs, MAX_IOVECS, ends_in_user_space, iovec, number};
 use crate::net::endpoints::{self, BindError, Endpoint, Protocol};
+use crate::net::tcp;
 use crate::process::Process;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -40,6 +43,8 @@ pub const AF_INET: u32 = 2;
 pub const SOCK_DGRAM: u32 = 2;
 /// ICMP, for ping sockets (`IPPROTO_ICMP`).
 pub const IPPROTO_ICMP: u32 = 1;
+/// TCP (`IPPROTO_TCP`).
+pub const IPPROTO_TCP: u32 = 6;
 /// UDP (`IPPROTO_UDP`).
 pub const IPPROTO_UDP: u32 = 17;
 /// The size of a `struct sockaddr_in`.
@@ -68,10 +73,12 @@ pub struct Options {
     send_buffer: AtomicU32,
 }
 
-/// An `AF_INET` socket: its endpoint and its options.
+/// An `AF_INET` socket: its endpoint (a datagram socket's queue, or a stream socket's port),
+/// its TCP side when it is a stream socket, and its options.
 #[derive(Debug)]
 pub struct InetSocket {
     endpoint: Arc<Endpoint>,
+    stream: Option<tcp::Socket>,
     options: Options,
 }
 
@@ -80,8 +87,33 @@ impl InetSocket {
     pub fn new(protocol: Protocol) -> Arc<Self> {
         Arc::new(Self {
             endpoint: Endpoint::new(protocol),
+            stream: None,
             options: Options::default(),
         })
+    }
+
+    /// A new stream socket, neither connected nor listening; `run` runs the connections
+    /// ([`crate::net::tcp::run`]).
+    pub fn new_stream(run: fn()) -> Arc<Self> {
+        Arc::new(Self {
+            endpoint: Endpoint::new(Protocol::Tcp),
+            stream: Some(tcp::Socket::new(run)),
+            options: Options::default(),
+        })
+    }
+
+    /// A stream socket for `stream`, a connection a listener made.
+    pub fn accepted(stream: Arc<tcp::Stream>, run: fn()) -> Arc<Self> {
+        Arc::new(Self {
+            endpoint: Endpoint::new(Protocol::Tcp),
+            stream: Some(tcp::Socket::accepted(stream, run)),
+            options: Options::default(),
+        })
+    }
+
+    /// Its TCP side, when it is a stream socket.
+    pub fn stream(&self) -> Option<&tcp::Socket> {
+        self.stream.as_ref()
     }
 
     /// Its endpoint.
@@ -110,6 +142,9 @@ impl InetSocket {
     /// waiting or reading shut down, hung up when both directions are.
     pub fn events(&self, requested: u16) -> u16 {
         use crate::linux::poll::event;
+        if let Some(stream) = &self.stream {
+            return super::tcp::events(stream, requested);
+        }
         let read_closed = self.endpoint.is_read_closed();
         let mut events = requested & (event::OUT | event::WRNORM);
         if self.endpoint.has_datagrams() || read_closed {
@@ -140,10 +175,11 @@ pub fn socket_at(thread: &LinuxThread, fd: u64) -> Option<(Arc<OpenFile>, Arc<In
     Some((file, socket))
 }
 
-/// `socket(AF_INET, type, protocol)`: a new datagram socket's descriptor, UDP for protocol 0
-/// or `IPPROTO_UDP`, ping for `IPPROTO_ICMP`. As Linux: `EINVAL` for unknown type bits,
-/// `EPROTONOSUPPORT` for another protocol; `ESOCKTNOSUPPORT` for streams and raw sockets,
-/// which EggOS does not have yet; `EMFILE` without a free descriptor.
+/// `socket(AF_INET, type, protocol)`: a new socket's descriptor: a TCP stream socket for
+/// `SOCK_STREAM` with protocol 0 or `IPPROTO_TCP`, a datagram socket, UDP for protocol 0 or
+/// `IPPROTO_UDP` and ping for `IPPROTO_ICMP`. As Linux: `EINVAL` for unknown type bits,
+/// `EPROTONOSUPPORT` for another protocol; `ESOCKTNOSUPPORT` for raw and other sockets, which
+/// EggOS does not have yet; `EMFILE` without a free descriptor.
 pub fn socket<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -156,16 +192,15 @@ pub fn socket<P: Platform>(
     if base & !super::SOCK_TYPE_MASK != 0 || base >= super::SOCK_MAX {
         return Err(Errno::EINVAL);
     }
-    if base != SOCK_DGRAM {
-        return Err(Errno::ESOCKTNOSUPPORT);
-    }
-    let protocol = match protocol as u32 {
-        0 | IPPROTO_UDP => Protocol::Udp,
-        IPPROTO_ICMP => Protocol::Ping,
-        _ => return Err(Errno::EPROTONOSUPPORT),
+    let socket = match (base, protocol as u32) {
+        (super::SOCK_STREAM, 0 | IPPROTO_TCP) => InetSocket::new_stream(tcp::run::<P>),
+        (SOCK_DGRAM, 0 | IPPROTO_UDP) => InetSocket::new(Protocol::Udp),
+        (SOCK_DGRAM, IPPROTO_ICMP) => InetSocket::new(Protocol::Ping),
+        (super::SOCK_STREAM | SOCK_DGRAM, _) => return Err(Errno::EPROTONOSUPPORT),
+        _ => return Err(Errno::ESOCKTNOSUPPORT),
     };
     let file = Arc::new(OpenFile::new(
-        FileKind::InetSocket(InetSocket::new(protocol)),
+        FileKind::InetSocket(socket),
         open_flag::RDWR | flags & open_flag::NONBLOCK,
     ));
     let limit = open_file_limit(process);
@@ -206,7 +241,7 @@ pub fn encode_address(address: Ipv4Address, port: u16) -> [u8; SOCKADDR_IN_SIZE]
     bytes
 }
 
-fn read_address<P: Platform>(
+pub(super) fn read_address<P: Platform>(
     process: &Process<P>,
     address: u64,
     length: u64,
@@ -219,7 +254,7 @@ fn read_address<P: Platform>(
     parse_address(&bytes[..length])
 }
 
-fn write_address<P: Platform>(
+pub(super) fn write_address<P: Platform>(
     process: &Process<P>,
     address: u64,
     length_at: u64,
@@ -251,7 +286,7 @@ fn bind_error(error: BindError) -> Errno {
     }
 }
 
-fn send_error(error: SendError) -> Errno {
+pub(super) fn send_error(error: SendError) -> Errno {
     match error {
         SendError::LinkDown => Errno::ENETDOWN,
         SendError::NoAddress | SendError::NoRoute => Errno::ENETUNREACH,
@@ -267,7 +302,7 @@ fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
         .is_privileged()
 }
 
-fn ensure_bound(socket: &InetSocket) -> Result<(Ipv4Address, u16), Errno> {
+pub(super) fn ensure_bound(socket: &InetSocket) -> Result<(Ipv4Address, u16), Errno> {
     if let Some(local) = socket.endpoint.local() {
         return Ok(local);
     }
@@ -289,6 +324,9 @@ pub fn call<P: Platform>(
     file: Arc<OpenFile>,
     socket: Arc<InetSocket>,
 ) -> ControlFlow<()> {
+    if socket.stream.is_some() {
+        return super::tcp::call(process, thread, number, context, file, socket);
+    }
     let [_, second, third, fourth, fifth, sixth] = context.syscall_arguments();
     let result = match number {
         number::BIND => bind(process, &socket, second, third),
@@ -346,7 +384,7 @@ pub fn call<P: Platform>(
     ControlFlow::Continue(())
 }
 
-fn bind<P: Platform>(
+pub(super) fn bind<P: Platform>(
     process: &Process<P>,
     socket: &InetSocket,
     address: u64,
@@ -433,7 +471,7 @@ fn shutdown<P: Platform>(socket: &InetSocket, how: u64) -> Result<u64, Errno> {
     Ok(0)
 }
 
-fn setsockopt<P: Platform>(
+pub(super) fn setsockopt<P: Platform>(
     process: &Process<P>,
     socket: &InetSocket,
     level: u64,
@@ -503,7 +541,7 @@ fn doubled(number: i32) -> u32 {
     (number.max(0) as u32).saturating_mul(2).max(4608)
 }
 
-fn getsockopt<P: Platform>(
+pub(super) fn getsockopt<P: Platform>(
     process: &Process<P>,
     socket: &InetSocket,
     level: u64,
@@ -525,6 +563,7 @@ fn getsockopt<P: Platform>(
     let protocol = match socket.endpoint.protocol() {
         Protocol::Udp => IPPROTO_UDP,
         Protocol::Ping => IPPROTO_ICMP,
+        Protocol::Tcp => IPPROTO_TCP,
     };
     let (bytes, size) = match (level as u32, name as u32) {
         (SOL_SOCKET, option::TYPE) => int(SOCK_DGRAM),
@@ -568,6 +607,9 @@ pub fn ioctl<P: Platform>(
     request: u64,
     argument: u64,
 ) -> Option<Result<u64, Errno>> {
+    if let Some(stream) = &socket.stream {
+        return super::tcp::ioctl(process, stream, request, argument);
+    }
     if request as u32 != crate::linux::terminal::request::FIONREAD {
         return None;
     }
@@ -660,7 +702,7 @@ fn send<P: Platform>(
     Ok(data.len() as u64)
 }
 
-fn finish_send<P: Platform>(
+pub(super) fn finish_send<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
     context: &mut UserContext,
@@ -681,6 +723,9 @@ pub fn write<P: Platform>(
     socket: &Arc<InetSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.stream.is_some() {
+        return super::tcp::write(process, thread, context, socket, buffers);
+    }
     let result = send(process, socket, &buffers, None, 0);
     finish_send(process, thread, context, result, 0)
 }
@@ -729,6 +774,9 @@ pub fn read<P: Platform>(
     socket: &Arc<InetSocket>,
     buffers: Iovecs,
 ) -> ControlFlow<()> {
+    if socket.stream.is_some() {
+        return super::tcp::read(process, thread, context, file, socket, buffers);
+    }
     let receive = Receive {
         file: Arc::clone(file),
         socket: Arc::clone(socket),

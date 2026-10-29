@@ -4,7 +4,7 @@ use crate::ethernet::{self, MacAddress, ether_type};
 use crate::interface::{Datagram, Delivery, Interface, SendError};
 use crate::ipv4::{self, Ipv4Address};
 use crate::status::Dhcp;
-use crate::{arp, icmp, udp};
+use crate::{arp, icmp, tcp, udp};
 
 const OURS: MacAddress = MacAddress([0x52, 0x54, 0, 0x12, 0x34, 0x56]);
 const ROUTER_MAC: MacAddress = MacAddress([0x52, 0x55, 0x0a, 0, 2, 2]);
@@ -351,4 +351,65 @@ fn sending_without_an_address_a_link_or_room_fails_with_the_reason() {
     let (_, ip, _, request) = udp_of(&sent.0[before]);
     assert_eq!(ip.destination, Ipv4Address::BROADCAST, "a link back rebinds");
     assert_eq!(request_type(&request), message_type::REQUEST);
+}
+
+#[test]
+fn tcp_segments_to_our_address_are_delivered_and_ours_go_out_through_arp() {
+    let mut interface = configured();
+    let mut sent = Sent(Vec::new());
+    assert_eq!(interface.tcp_mss(), 1460);
+    let header = tcp::Header {
+        source_port: 80,
+        destination_port: 40_000,
+        sequence: 9,
+        flags: tcp::flags::SYN,
+        window: 1024,
+        ..tcp::Header::default()
+    };
+    let mut segment = [0u8; tcp::HEADER_BYTES + 2];
+    segment[tcp::HEADER_BYTES..].copy_from_slice(b"hi");
+    tcp::write_header(&mut segment, address(2), address(15), &header, 2).unwrap();
+    let ip = |destination| ipv4::Header {
+        source: address(2),
+        destination,
+        protocol: ipv4::protocol::TCP,
+        ttl: 64,
+    };
+    let frame = ip_frame(ROUTER_MAC, OURS, ip(address(15)), &segment);
+    let mut delivered = Vec::new();
+    interface.receive(&frame, 70, &mut sent.transmit(), &mut |delivery| {
+        if let Delivery::Tcp { source, destination, segment } = delivery {
+            delivered.push((source, destination, segment.header, segment.data.to_vec()));
+        }
+    });
+    assert_eq!(delivered, [(address(2), address(15), header, b"hi".to_vec())]);
+    let broadcast = ip_frame(ROUTER_MAC, OURS, ip(Ipv4Address::BROADCAST), &segment);
+    interface.receive(&broadcast, 71, &mut sent.transmit(), &mut |_| panic!("not unicast"));
+    let mut damaged = frame.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    let errors = interface.counters().received_errors;
+    interface.receive(&damaged, 72, &mut sent.transmit(), &mut |_| panic!("damaged"));
+    assert_eq!(interface.counters().received_errors, errors + 1);
+    let mut reply = [0u8; tcp::HEADER_BYTES];
+    let reply_header = tcp::Header {
+        source_port: 40_000,
+        destination_port: 80,
+        flags: tcp::flags::RST,
+        ..tcp::Header::default()
+    };
+    tcp::write_header(&mut reply, address(15), address(2), &reply_header, 0).unwrap();
+    let router_answer =
+        arp_frame(arp::operation::REPLY, (ROUTER_MAC, address(2)), (OURS, address(15)), OURS);
+    interface.receive(&router_answer, 73, &mut sent.transmit(), &mut nothing);
+    interface.send_tcp(address(2), &reply, 64, 73, &mut sent.transmit()).unwrap();
+    let (ethernet, payload) = ethernet::parse(sent.0.last().unwrap()).unwrap();
+    assert_eq!(ethernet.destination, ROUTER_MAC);
+    let (ip, body) = ipv4::parse(payload).unwrap();
+    assert_eq!(ip.protocol, ipv4::protocol::TCP);
+    assert_eq!(tcp::parse(ip.source, ip.destination, body).unwrap().header, reply_header);
+    assert_eq!(
+        interface.send_tcp(Ipv4Address::BROADCAST, &reply, 64, 74, &mut sent.transmit()),
+        Err(SendError::NoRoute)
+    );
 }

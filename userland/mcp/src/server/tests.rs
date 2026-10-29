@@ -177,8 +177,11 @@ fn the_tools_are_listed_once_initialized() {
             "app_list",
             "clock_get",
             "net_status",
+            "net_ping",
+            "net_lookup",
             "tee",
             "trash",
+            "fetch",
             "run",
             "clock_set",
             "app_install",
@@ -2056,4 +2059,128 @@ fn a_clock_set_question_names_the_time() {
         "An agent asks to set the machine's clock to 2030-01-02T03:04:05Z (UTC). Allow it? \
          (EggOS, tool clock_set)"
     );
+}
+
+fn error_message(answer: &str) -> String {
+    parsed(answer)
+        .get("error")
+        .unwrap()
+        .get("message")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect()
+}
+
+#[test]
+fn net_ping_and_net_lookup_run_ping_and_nslookup_with_the_host_last() {
+    let mut harness = Harness::initialized();
+    let answer = harness.call(1, "net_ping", r#"{"host":"10.0.2.2","count":2}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ping", "-W", "1", "-c", "2", "10.0.2.2"]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        NETWORK_TIME_LIMIT_MS
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"host":"10.0.2.2","count":2}"#
+    );
+    harness.call(2, "net_ping", r#"{"host":"example.com"}"#);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/ping", "-W", "1", "-c", "4", "example.com"]
+    );
+    harness.call(3, "net_lookup", r#"{"host":"eggos.test"}"#);
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/nslookup", "eggos.test"]
+    );
+    let runs = harness.system.runs.len();
+    for (tool, arguments, words) in [
+        ("net_ping", r#"{"host":"-c"}"#, "host must be"),
+        ("net_ping", r#"{"host":"a b"}"#, "host must be"),
+        ("net_ping", r#"{"host":".x"}"#, "host must be"),
+        ("net_ping", r#"{"host":"h","count":0}"#, "count must be"),
+        ("net_ping", r#"{"host":"h","count":6}"#, "count must be"),
+        ("net_ping", r#"{}"#, "host is required"),
+        ("net_lookup", r#"{"host":7}"#, "host must be"),
+        ("net_lookup", r#"{"host":"h","count":1}"#, "does not take"),
+    ] {
+        let answer = harness.call(4, tool, arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{tool} {arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{tool} {arguments}: {message}");
+    }
+    assert_eq!(harness.system.runs.len(), runs);
+}
+
+#[test]
+fn fetch_needs_the_write_grant_an_http_url_and_confirm_to_replace() {
+    let mut reader = Harness::initialized();
+    let answer = reader.call(
+        1,
+        "fetch",
+        r#"{"url":"http://10.0.2.2/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("needs the write grant"), "{answer}");
+    let mut harness = writer();
+    let answer = harness.call(
+        2,
+        "fetch",
+        r#"{"url":"http://10.0.2.2:8080/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/fetch",
+            "http://10.0.2.2:8080/a.txt",
+            "--",
+            "/home/root/a.txt"
+        ]
+    );
+    assert_eq!(
+        *harness.system.time_limits.last().unwrap(),
+        FETCH_TIME_LIMIT_MS
+    );
+    assert_eq!(
+        last_record(&harness).2,
+        r#"{"path":"/home/root/a.txt","url":"http://10.0.2.2:8080/a.txt","confirm":false}"#
+    );
+    harness
+        .system
+        .files
+        .insert("/home/root/a.txt".into(), b"old".to_vec());
+    let answer = harness.call(
+        3,
+        "fetch",
+        r#"{"url":"http://10.0.2.2/a.txt","path":"/home/root/a.txt"}"#,
+    );
+    assert!(is_error(&answer));
+    assert!(texts(&answer)[0].contains("fetch would replace an existing file"));
+    let runs = harness.system.runs.len();
+    for (arguments, words) in [
+        (r#"{"url":"https://h/","path":"/home/root/b"}"#, "url must be"),
+        (r#"{"url":"ftp://h/","path":"/home/root/b"}"#, "url must be"),
+        (r#"{"url":"http://h/a b","path":"/home/root/b"}"#, "url must be"),
+        (r#"{"path":"/home/root/b"}"#, "url is required"),
+    ] {
+        let answer = harness.call(4, "fetch", arguments);
+        assert_eq!(error_code(&answer), INVALID_PARAMS, "{arguments}");
+        let message = error_message(&answer);
+        assert!(message.contains(words), "{arguments}: {message}");
+    }
+    let answer = harness.call(
+        5,
+        "fetch",
+        r#"{"url":"http://h/","path":"/etc/passwd"}"#,
+    );
+    assert!(is_error(&answer));
+    assert_eq!(harness.system.runs.len(), runs);
 }

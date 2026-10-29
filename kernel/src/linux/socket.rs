@@ -1,8 +1,9 @@
 //! The socket calls (D138): `socket`, `socketpair`, `bind`, `listen`, `accept`, `accept4`,
 //! `connect`, `sendto`, `sendmsg`, `recvfrom`, `recvmsg`, `getsockname`, `getpeername`,
 //! `shutdown`, `setsockopt` and `getsockopt`, and `read`, `write` and their vector forms on a
-//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_INET` datagram sockets
-//! have their own module ([`inet`], D157), which [`call`] hands their calls to.
+//! socket, for `AF_UNIX` stream sockets ([`super::unix_socket`]); `AF_INET` sockets have their
+//! own modules, datagrams [`inet`] (D157) and streams [`tcp`] (D158), which [`call`] hands
+//! their calls to.
 //!
 //! The calls read their arguments as Linux's ABI lays them out on the three architectures:
 //! `struct sockaddr_un` (a family and up to 108 bytes of path), `struct msghdr` and
@@ -38,6 +39,7 @@ use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
 pub mod inet;
+pub mod tcp;
 
 /// Local sockets (`AF_UNIX`, `PF_UNIX`).
 pub const AF_UNIX: u32 = 1;

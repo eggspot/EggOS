@@ -254,6 +254,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-linux-sockets",
     "eggos-linux-memory",
     "eggos-linux-udp",
+    "eggos-linux-tcp",
     "eggos-linux-gui-tests",
     "eggos-windows",
     "eggos-windows-gui",
@@ -333,8 +334,8 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
-const COREUTILS: [&str; 32] = [
-    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock",
+const COREUTILS: [&str; 33] = [
+    "agentlog", "cat", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt", "head", "hwclock",
     "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot", "rm", "sleep",
     "sync", "tail", "tee", "touch", "trash", "true", "uname", "uptime", "wc", "wm",
 ];
@@ -1366,11 +1367,19 @@ const LINUX_MEMORY_PATH: &str = "bin/linux-memory";
 
 const LINUX_UDP_PACKAGE: &str = "eggos-linux-udp";
 
+const LINUX_TCP_PACKAGE: &str = "eggos-linux-tcp";
+
 fn build_network_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, String> {
-    let added = [image::AddedFile {
-        host: build_linux_test_program(arch, LINUX_UDP_PACKAGE, "static")?,
-        path: qemu::network::PROGRAM_PATH.to_owned(),
-    }];
+    let added = [
+        image::AddedFile {
+            host: build_linux_test_program(arch, LINUX_UDP_PACKAGE, "static")?,
+            path: qemu::network::PROGRAM_PATH.to_owned(),
+        },
+        image::AddedFile {
+            host: build_linux_test_program(arch, LINUX_TCP_PACKAGE, "static")?,
+            path: qemu::network::TCP_PROGRAM_PATH.to_owned(),
+        },
+    ];
     let mut extra = vec![(
         "etc/eggos/init.conf",
         initramfs::Content::Text(SHELL_TEST_CONFIG),

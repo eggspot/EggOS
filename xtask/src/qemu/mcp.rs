@@ -66,7 +66,7 @@ const CAPTURE_POLL: Duration = Duration::from_secs(1);
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 7] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 8] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -78,11 +78,29 @@ pub const TWIN_CALLS: [(&str, &str, &str); 7] = [
     ("app_list", "{}", ""),
     ("clock_get", "{}", "Z"),
     ("net_status", "{}", "\"adapters\""),
+    ("net_ping", r#"{"host":"127.0.0.1","count":1}"#, "1 received"),
 ];
+
+/// Every call of a reading tool whose result depends on the network the machine was started
+/// on: the tool, its arguments and texts one of which its result must hold, whether it
+/// succeeded or not (D158). `.invalid` names never exist (RFC 6761), so the lookup answers
+/// whether or not the host reaches the internet.
+pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 1] = [(
+    "net_lookup",
+    r#"{"host":"eggos-mcp.invalid"}"#,
+    &["Server:", "no DNS server"],
+)];
+
+/// `fetch`'s arguments in both boots: a port on the host where nothing listens, so the
+/// download fails fast in a way that names the host (refused, or unreachable without a
+/// network).
+pub const FETCH_ARGUMENTS: &str = r#"{"url":"http://10.0.2.2:1/x","path":"/home/root/fetched"}"#;
+/// What `fetch`'s failure says in the second boot.
+pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 16] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -91,6 +109,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 15] = [
     (
         "trash",
         r#"{"path":"/home/root/x","confirm":true}"#,
+        "write",
+    ),
+    (
+        "fetch",
+        FETCH_ARGUMENTS,
         "write",
     ),
     ("run", r#"{"program":"/bin/uname"}"#, "run"),
@@ -525,6 +548,14 @@ fn session(client: &mut Client) -> Result<(), String> {
             &format!("{tool}'s output lacks `{wanted}`: {}", result.all()),
         )?;
     }
+    for (tool, arguments, wanted) in ANSWERED_CALLS {
+        let result = client.call(tool, arguments)?;
+        expect(
+            wanted.iter().any(|text| result.all().contains(text)),
+            arch,
+            &format!("{tool}'s result lacks every one of {wanted:?}: {}", result.all()),
+        )?;
+    }
     clock_near(client, host_seconds(), "the first boot")?;
     client.paused.store(true, Ordering::Release);
     let id = client.next_id;
@@ -721,6 +752,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
     let confirmed =
         format!(r#"{{"path":"{NOTE}","content":"{CONTENT_MARKER} second\n","confirm":true}}"#);
     succeeds(client, "tee", &confirmed, "Wrote")?;
+    refused(client, "fetch", FETCH_ARGUMENTS, FETCH_FAILURE)?;
     succeeds(
         client,
         "cat",
@@ -1398,7 +1430,8 @@ mod tests {
     #[test]
     fn every_tool_is_called_by_the_check() {
         for tool in &eggos_mcp::tools::TOOLS {
-            let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name);
+            let read = TWIN_CALLS.iter().any(|(name, _, _)| *name == tool.name)
+                || ANSWERED_CALLS.iter().any(|(name, _, _)| *name == tool.name);
             let granted = GRANTED_TOOLS.iter().find(|(name, _, _)| *name == tool.name);
             assert!(
                 read || granted.is_some(),

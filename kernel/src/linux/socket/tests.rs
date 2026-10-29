@@ -180,9 +180,10 @@ fn socket_s_errors_come_in_linux_s_order_and_its_flags_are_kept() {
         socket(&mut thread, 10, STREAM, 0),
         Errno::EAFNOSUPPORT.result()
     );
+    assert_eq!(socket(&mut thread, 2, 3, 0), Errno::ESOCKTNOSUPPORT.result());
     assert_eq!(
-        socket(&mut thread, 2, STREAM, 0),
-        Errno::ESOCKTNOSUPPORT.result()
+        socket(&mut thread, 2, STREAM, 17),
+        Errno::EPROTONOSUPPORT.result()
     );
     assert_eq!(
         socket(&mut thread, UNIX, 2, 0),

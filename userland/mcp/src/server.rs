@@ -58,6 +58,13 @@ pub const ARGUMENTS_TAIL_BYTES: usize = 48;
 pub const CAPTURE_PIECE_BYTES: usize = OUTPUT_LIMIT / 3 * 3;
 /// How long a CLI twin may run before it is stopped (`run` sets its own).
 pub const TWIN_TIME_LIMIT_MS: u64 = 10_000;
+/// How long `fetch`'s twin may run: a download takes longer than other commands (D158).
+pub const FETCH_TIME_LIMIT_MS: u64 = 60_000;
+/// How long `net_ping`'s and `net_lookup`'s twins may run: five pings a second apart, or a
+/// lookup that retries a silent server (D158).
+pub const NETWORK_TIME_LIMIT_MS: u64 = 15_000;
+
+const PING_COUNTS: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 /// How long the server waits for the user's answer to a question.
 pub const ELICITATION_TIMEOUT_MS: u64 = 120_000;
 /// Where installed apps are.
@@ -924,12 +931,15 @@ impl Server {
             };
             let length = resolved.len();
             let state = match tool.kind {
-                Kind::Tee | Kind::Trash => system.file_state(resolved),
+                Kind::Tee | Kind::Trash | Kind::Fetch => system.file_state(resolved),
                 _ => FileState::Missing,
             };
             match (tool.kind, state) {
                 (Kind::Tee, FileState::Directory) => {
                     return Err(Problem::error("the path is a folder: tee writes files"));
+                }
+                (Kind::Fetch, FileState::Directory) => {
+                    return Err(Problem::error("the path is a folder: fetch saves files"));
                 }
                 (Kind::Trash, FileState::Missing) => {
                     return Err(Problem::error("nothing is there to move to the Trash"));
@@ -1282,6 +1292,16 @@ impl Server {
         if let Some(time) = prepared.checked.time.as_ref() {
             push_word(&mut words, &mut count, time.as_str());
         }
+        if let Some(pings) = prepared.checked.count {
+            let shown = PING_COUNTS.get(pings as usize).copied().unwrap_or("1");
+            push_word(&mut words, &mut count, shown);
+        }
+        if let Some(host) = arguments::host_text(&prepared.checked, buffers.words) {
+            push_word(&mut words, &mut count, host);
+        }
+        if let Some(url) = arguments::url_text(&prepared.checked, buffers.content) {
+            push_word(&mut words, &mut count, url);
+        }
         if let Some(entry) = arguments::archive_entry_text(&prepared.checked, buffers.words) {
             push_word(&mut words, &mut count, "--entry");
             push_word(&mut words, &mut count, entry);
@@ -1321,6 +1341,8 @@ impl Server {
             discard_output: tool.twin.output == Output::Discarded,
             time_limit_ms: match tool.kind {
                 Kind::Run => prepared.checked.time_limit_ms,
+                Kind::Fetch => FETCH_TIME_LIMIT_MS,
+                Kind::NetPing | Kind::NetLookup => NETWORK_TIME_LIMIT_MS,
                 _ => TWIN_TIME_LIMIT_MS,
             },
         };
@@ -1938,6 +1960,7 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
     text.put("Refused: ");
     text.put(match tool.kind {
         Kind::Tee => "tee would replace an existing file",
+        Kind::Fetch => "fetch would replace an existing file",
         Kind::Trash => "trash moves the file to the Trash",
         Kind::ClockSet => "clock_set sets the machine's clock",
         _ => "app_uninstall removes the app",
@@ -1982,6 +2005,16 @@ fn question_text(
                 text.put(" bytes)");
             }
             text.put(" to the Trash. Allow it?");
+        }
+        Kind::Fetch => {
+            text.put("An agent asks to replace ");
+            text.put(shown);
+            if let FileState::File(size) = state {
+                text.put(" (");
+                text.number(size as i64);
+                text.put(" bytes)");
+            }
+            text.put(" with a file downloaded from the network. Allow it?");
         }
         Kind::ClockSet => {
             text.put("An agent asks to set the machine's clock to ");
@@ -2039,6 +2072,18 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
     if let Some(time) = checked.time {
         writer.key("time");
         writer.string(time.as_str());
+    }
+    if let Some(host) = arguments::host_text(checked, scratch.words) {
+        writer.key("host");
+        writer.string(host);
+    }
+    if let Some(pings) = checked.count {
+        writer.key("count");
+        writer.u64(u64::from(pings));
+    }
+    if let Some(url) = arguments::url_text(checked, scratch.content) {
+        writer.key("url");
+        writer.string(url);
     }
     if tool.arguments.contains(&"confirm") {
         writer.key("confirm");

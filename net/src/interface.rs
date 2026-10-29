@@ -1,7 +1,8 @@
 //! One Ethernet interface's IPv4 stack: it answers ARP for its address and asks for the
 //! addresses it sends to, queueing a few packets while it waits; it gets its address from its
-//! DHCP client; it answers pings to its address; and it hands the UDP datagrams and the echo
-//! replies that come for it to the caller. It routes to its own network directly and
+//! DHCP client; it answers pings to its address; and it hands the UDP datagrams, the TCP
+//! segments and the echo replies that come for it to the caller, and sends the caller's
+//! (TCP's connections are the caller's, [`crate::tcp`]). It routes to its own network directly and
 //! everything else through the lease's router. The caller owns the device: it passes each
 //! frame received to [`Interface::receive`], calls [`Interface::poll`] by
 //! [`Interface::next_poll_ms`], and sends what both hand its `transmit` closure.
@@ -12,6 +13,7 @@ use crate::ethernet::{self, MacAddress, ether_type};
 use crate::icmp;
 use crate::ipv4::{self, Ipv4Address, Subnet};
 use crate::status::Dhcp;
+use crate::tcp::{self, Segment};
 use crate::udp;
 
 /// How many packets wait for an ARP answer at most; a new one replaces the oldest.
@@ -71,6 +73,15 @@ pub enum Delivery<'a> {
         identifier: u16,
         /// The ICMP message, header and data.
         message: &'a [u8],
+    },
+    /// A TCP segment to this interface's address, its checksum checked.
+    Tcp {
+        /// The sender's address.
+        source: Ipv4Address,
+        /// The interface's address.
+        destination: Ipv4Address,
+        /// The segment.
+        segment: Segment<'a>,
     },
 }
 
@@ -327,6 +338,17 @@ impl Interface {
                     _ => {}
                 }
             }
+            ipv4::protocol::TCP if self.address() == Some(ip.destination) => {
+                let Some(segment) = tcp::parse(ip.source, ip.destination, body) else {
+                    self.counters.received_errors += 1;
+                    return Event::Nothing;
+                };
+                deliver(Delivery::Tcp {
+                    source: ip.source,
+                    destination: ip.destination,
+                    segment,
+                });
+            }
             _ => self.counters.received_dropped += 1,
         }
         Event::Nothing
@@ -462,6 +484,37 @@ impl Interface {
         };
         self.dispatch(&ip, length, next_hop, now_ms, transmit);
         Ok(())
+    }
+
+    /// Sends `segment`, a TCP segment whose checksum was made for the interface's address and
+    /// `destination` ([`tcp::write_header`]), to `destination`, with time to live `ttl`.
+    pub fn send_tcp(
+        &mut self,
+        destination: Ipv4Address,
+        segment: &[u8],
+        ttl: u8,
+        now_ms: u64,
+        transmit: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), SendError> {
+        let source = self.address().ok_or(SendError::NoAddress)?;
+        let next_hop = match self.route(destination, segment.len())? {
+            NextHop::Broadcast => return Err(SendError::NoRoute),
+            hop => hop,
+        };
+        self.frame[PAYLOAD_AT..PAYLOAD_AT + segment.len()].copy_from_slice(segment);
+        let ip = ipv4::Header {
+            source,
+            destination,
+            protocol: ipv4::protocol::TCP,
+            ttl,
+        };
+        self.dispatch(&ip, segment.len(), next_hop, now_ms, transmit);
+        Ok(())
+    }
+
+    /// The largest TCP segment size the link carries: its MTU less the IPv4 and TCP headers.
+    pub fn tcp_mss(&self) -> u16 {
+        self.mtu.saturating_sub(ipv4::HEADER_BYTES + tcp::HEADER_BYTES) as u16
     }
 
     fn route(&self, destination: Ipv4Address, payload_bytes: usize) -> Result<NextHop, SendError> {

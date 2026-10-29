@@ -1,20 +1,29 @@
-//! The network boot test (D157), on every architecture: the release image with
-//! `/bin/linux-udp` added, booted with QEMU's user networking ([`network_args`]), where QEMU's
+//! The network boot test (D157, D158), on every architecture: the release image with
+//! `/bin/linux-udp` and `/bin/linux-tcp` added, booted with QEMU's user networking ([`network_args`]), where QEMU's
 //! DHCP server gives EggOS 10.0.2.15 and the host is 10.0.2.2. At the shell's prompts the test
 //! types `ip addr` (the lease), `cat /etc/resolv.conf` and `ping 10.0.2.2` (QEMU answers),
 //! `nslookup` against a DNS stand-in the test serves on the host, and `linux-udp`, a static
 //! musl program using `std::net`: over the loopback network, then with a UDP echo server the
-//! test serves on the host. `exit` then powers the machine off.
+//! test serves on the host; `fetch` downloads a file from an HTTP server the test serves on the
+//! host, and `linux-tcp`, `std::net`'s TCP over the loopback network and with a TCP echo server
+//! on the host. `exit` then powers the machine off.
 
 use super::*;
 use eggos_net::Ipv4Address;
 use eggos_net::dns;
-use std::net::UdpSocket;
+use std::io::{Read, Write};
+use std::net::{TcpListener, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Where the test adds the `std::net` test program.
 pub const PROGRAM_PATH: &str = "bin/linux-udp";
+/// Where the test adds the `std::net` TCP test program.
+pub const TCP_PROGRAM_PATH: &str = "bin/linux-tcp";
+/// The file the HTTP stand-in serves.
+pub const SERVED_PATH: &str = "/eggos.txt";
+/// What it holds.
+pub const SERVED_TEXT: &str = "EGGOS-FETCH served by the host\n";
 /// The name the DNS stand-in answers.
 pub const KNOWN_NAME: &str = "eggos.test";
 /// The address it answers with.
@@ -24,14 +33,38 @@ const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 const SERVER_POLL: Duration = Duration::from_millis(200);
 const BOOT_LINE: &str = "net: eth0 52:54:00:12:34:56: asking for an address by DHCP";
 
-fn commands(dns_port: u16, echo_port: u16) -> Vec<String> {
+/// The host ports the test's stand-ins listen on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ports {
+    /// The DNS stand-in (UDP).
+    pub dns: u16,
+    /// The UDP echo server.
+    pub echo: u16,
+    /// The TCP echo server.
+    pub tcp_echo: u16,
+    /// The HTTP stand-in.
+    pub http: u16,
+}
+
+fn commands(ports: &Ports) -> Vec<String> {
+    let Ports {
+        dns,
+        echo,
+        tcp_echo,
+        http,
+    } = *ports;
     vec![
         "sleep 2; ip addr; echo EGGOS-NET ip $?\r".into(),
         "cat /etc/resolv.conf; ping -c 2 10.0.2.2; echo EGGOS-NET ping $?\r".into(),
         format!(
-            "nslookup -port={dns_port} {KNOWN_NAME} 10.0.2.2; echo EGGOS-NET nslookup $?\r"
+            "nslookup -port={dns} {KNOWN_NAME} 10.0.2.2; echo EGGOS-NET nslookup $?\r"
         ),
-        format!("linux-udp; linux-udp 10.0.2.2 {echo_port}; echo EGGOS-NET udp $?\r"),
+        format!("linux-udp; linux-udp 10.0.2.2 {echo}; echo EGGOS-NET udp $?\r"),
+        format!(
+            "fetch -o /tmp/fetched http://10.0.2.2:{http}{SERVED_PATH}; cat /tmp/fetched; \
+             echo EGGOS-NET fetch $?\r"
+        ),
+        format!("linux-tcp; linux-tcp 10.0.2.2 {tcp_echo}; echo EGGOS-NET tcp $?\r"),
         "exit\r".into(),
     ]
 }
@@ -50,6 +83,12 @@ fn wanted() -> Vec<String> {
         "LINUX-UDP localhost 127.0.0.1".into(),
         "LINUX-UDP echo EGGOS-UDP hello".into(),
         "EGGOS-NET udp 0".into(),
+        format!("Saved {} bytes to /tmp/fetched (HTTP 200 OK)", SERVED_TEXT.len()),
+        SERVED_TEXT.trim_end().into(),
+        "EGGOS-NET fetch 0".into(),
+        "LINUX-TCP loopback 300000 bytes and back, accept EAGAIN, closed ECONNREFUSED".into(),
+        "LINUX-TCP echo EGGOS-TCP hello".into(),
+        "EGGOS-NET tcp 0".into(),
     ]
 }
 
@@ -82,6 +121,52 @@ pub fn dns_answer(query: &[u8]) -> Option<Vec<u8>> {
     Some(answer[..length].to_vec())
 }
 
+/// The answer the HTTP stand-in gives `request`: [`SERVED_TEXT`] for a `GET` of
+/// [`SERVED_PATH`], 404 for anything else.
+pub fn http_answer(request: &[u8]) -> Vec<u8> {
+    let wanted = format!("GET {SERVED_PATH} HTTP/1.1\r\n");
+    match request.starts_with(wanted.as_bytes()) {
+        true => format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{SERVED_TEXT}",
+            SERVED_TEXT.len()
+        )
+        .into_bytes(),
+        false => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    }
+}
+
+fn serve_tcp(
+    stop: Arc<AtomicBool>,
+    answer: fn(&[u8]) -> Option<Vec<u8>>,
+) -> Result<(u16, std::thread::JoinHandle<()>), String> {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("a host TCP socket: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let server = std::thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(SERVER_POLL);
+                continue;
+            };
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(SERVER_POLL * 10));
+            let mut received = Vec::new();
+            let mut buffer = [0u8; 2048];
+            while let Ok(count @ 1..) = stream.read(&mut buffer) {
+                received.extend_from_slice(&buffer[..count]);
+                if let Some(reply) = answer(&received) {
+                    let _ = stream.write_all(&reply);
+                    break;
+                }
+            }
+        }
+    });
+    Ok((port, server))
+}
+
 fn serve(
     stop: Arc<AtomicBool>,
     answer: fn(&[u8]) -> Option<Vec<u8>>,
@@ -106,16 +191,31 @@ fn serve(
 }
 
 /// Runs the network boot test (see the module documentation) on `kernel`, the release image
-/// for `arch` with `/bin/linux-udp`.
+/// for `arch` with `/bin/linux-udp` and `/bin/linux-tcp`.
 pub fn check(arch: &Arch, kernel: &Path) -> Result<(), String> {
     eprintln!("xtask: booting {} in {} (network)", arch.name, arch.qemu);
     let stop = Arc::new(AtomicBool::new(false));
     let (dns_port, dns_server) = serve(Arc::clone(&stop), dns_answer)?;
     let (echo_port, echo_server) = serve(Arc::clone(&stop), |datagram| Some(datagram.to_vec()))?;
-    let result = boot(arch, kernel, &commands(dns_port, echo_port));
+    let (tcp_echo_port, tcp_echo_server) =
+        serve_tcp(Arc::clone(&stop), |received| Some(received.to_vec()))?;
+    let (http_port, http_server) = serve_tcp(Arc::clone(&stop), |request| {
+        request
+            .windows(4)
+            .any(|end| end == b"\r\n\r\n")
+            .then(|| http_answer(request))
+    })?;
+    let ports = Ports {
+        dns: dns_port,
+        echo: echo_port,
+        tcp_echo: tcp_echo_port,
+        http: http_port,
+    };
+    let result = boot(arch, kernel, &commands(&ports));
     stop.store(true, Ordering::Relaxed);
-    let _ = dns_server.join();
-    let _ = echo_server.join();
+    for server in [dns_server, echo_server, tcp_echo_server, http_server] {
+        let _ = server.join();
+    }
     result?;
     eprintln!("xtask: {}: network boot test passed", arch.name);
     Ok(())
@@ -191,6 +291,20 @@ mod tests {
     }
 
     #[test]
+    fn the_http_stand_in_serves_its_file_and_answers_404_to_the_rest() {
+        let served = http_answer(b"GET /eggos.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(served.ends_with(SERVED_TEXT.as_bytes()));
+        let end = eggos_net::http::head_end(&served).unwrap();
+        let head = eggos_net::http::parse_head(&served[..end]).unwrap();
+        assert_eq!(head.status, 200);
+        assert_eq!(
+            head.framing,
+            eggos_net::http::Framing::Length(SERVED_TEXT.len() as u64)
+        );
+        assert!(http_answer(b"GET /other HTTP/1.1\r\n\r\n").starts_with(b"HTTP/1.1 404"));
+    }
+
+    #[test]
     fn the_dns_stand_in_answers_its_name_and_refuses_others() {
         let mut query = [0u8; dns::MAX_MESSAGE_BYTES];
         let length = dns::write_query(&mut query, 9, KNOWN_NAME.as_bytes(), dns::record_type::A)
@@ -206,6 +320,14 @@ mod tests {
             dns::parse_response(&answer, 9),
             Err(dns::ResponseError::NameNotFound)
         );
-        assert!(commands(53, 7)[2].contains("-port=53 eggos.test 10.0.2.2"));
+        let ports = Ports {
+            dns: 53,
+            echo: 7,
+            tcp_echo: 8,
+            http: 8080,
+        };
+        assert!(commands(&ports)[2].contains("-port=53 eggos.test 10.0.2.2"));
+        assert!(commands(&ports)[4].contains("http://10.0.2.2:8080/eggos.txt"));
+        assert!(commands(&ports)[5].contains("linux-tcp 10.0.2.2 8;"));
     }
 }

@@ -153,6 +153,21 @@ pub trait System {
         timeout_ms: u32,
     ) -> Result<Option<(usize, Sender)>, Errno>;
     fn monotonic_us(&mut self) -> u64;
+    fn open_stream_socket(&mut self) -> Result<usize, Errno>;
+    fn connect(
+        &mut self,
+        descriptor: usize,
+        address: Ipv4Address,
+        port: u16,
+        timeout_ms: u32,
+    ) -> Result<(), Errno>;
+    fn send(&mut self, descriptor: usize, bytes: &[u8]) -> Result<(), Errno>;
+    fn receive(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<usize>, Errno>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -286,6 +301,33 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn monotonic_us(&mut self) -> u64 {
         (**self).monotonic_us()
+    }
+
+    fn open_stream_socket(&mut self) -> Result<usize, Errno> {
+        (**self).open_stream_socket()
+    }
+
+    fn connect(
+        &mut self,
+        descriptor: usize,
+        address: Ipv4Address,
+        port: u16,
+        timeout_ms: u32,
+    ) -> Result<(), Errno> {
+        (**self).connect(descriptor, address, port, timeout_ms)
+    }
+
+    fn send(&mut self, descriptor: usize, bytes: &[u8]) -> Result<(), Errno> {
+        (**self).send(descriptor, bytes)
+    }
+
+    fn receive(
+        &mut self,
+        descriptor: usize,
+        buffer: &mut [u8],
+        timeout_ms: u32,
+    ) -> Result<Option<usize>, Errno> {
+        (**self).receive(descriptor, buffer, timeout_ms)
     }
 }
 
