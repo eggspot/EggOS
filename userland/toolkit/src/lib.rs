@@ -25,5 +25,7 @@ pub mod widget;
 #[cfg(target_env = "musl")]
 pub mod window;
 
+pub use eggos_element_tree as elements;
+
 #[cfg(test)]
 mod tests;

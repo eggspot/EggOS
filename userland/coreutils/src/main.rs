@@ -76,6 +76,7 @@ mod window_capture;
 mod window_input;
 #[cfg(any(test, target_env = "musl"))]
 mod window_menu;
+mod window_tree;
 #[cfg(any(test, target_env = "musl"))]
 mod wm;
 

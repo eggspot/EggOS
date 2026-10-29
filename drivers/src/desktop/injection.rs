@@ -6,10 +6,10 @@
 //! their last input, injected input is refused ([`WindowError::Busy`]).
 
 use super::protocol::{
-    EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind, modifier,
+    EventRecord, EventSink, MAX_WHEEL_NOTCHES, WindowError, event, input_kind, modifier, query_kind,
 };
 use super::{Desktop, KERNEL_CLIENT, WindowId, codepoint, colour, key_modifiers};
-use crate::display::Rect;
+use crate::display::{Damage, Rect};
 use crate::input::keymap::{Modifiers, key_for_ascii};
 use crate::input::{button, key};
 
@@ -234,6 +234,50 @@ impl Desktop {
     pub(super) fn any_window(&self, window: u32) -> Result<usize, WindowError> {
         let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
         self.find(id).ok_or(WindowError::NoSuchWindow)
+    }
+
+    /// The client whose app draws window `window`. [`WindowError::NoSuchWindow`] for no such
+    /// window, [`WindowError::Unsupported`] for the terminal's, which the kernel draws.
+    pub fn owner_of(&self, window: u32) -> Result<u16, WindowError> {
+        let slot = self.any_window(window)?;
+        match self.window_at(slot).client {
+            KERNEL_CLIENT => Err(WindowError::Unsupported),
+            client => Ok(client),
+        }
+    }
+
+    /// Hands window `window`'s app the `Query` record `query` (D161, `GET_TREE` and
+    /// `ACT_ON_ELEMENT`): a request for its element tree, or for an action on one element when
+    /// the record's `b` is [`query_kind::ACT`]; returns the app's client, which answers it.
+    /// [`WindowError::NoSuchWindow`] for no such window, [`WindowError::Unsupported`] for the
+    /// terminal's window (the kernel draws it), [`WindowError::Busy`] for an action while
+    /// [`Self::person_is_active`], [`WindowError::QueueFull`] when the client's queue has no
+    /// room (nothing is sent).
+    pub fn ask_owner(
+        &mut self,
+        window: u32,
+        query: EventRecord,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<u16, WindowError> {
+        let client = self.owner_of(window)?;
+        let slot = self.any_window(window)?;
+        if query.b as u32 == query_kind::ACT && self.person_is_active() {
+            return Err(WindowError::Busy);
+        }
+        if events.room(client) == 0 {
+            return Err(WindowError::QueueFull);
+        }
+        self.note_agent_action(damage);
+        self.send(
+            slot,
+            EventRecord {
+                kind: event::QUERY,
+                ..query
+            },
+            events,
+        );
+        Ok(client)
     }
 
     /// Sends `input` to window `window`, any client's, as one step: straight to its client's

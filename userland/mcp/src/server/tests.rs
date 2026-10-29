@@ -202,7 +202,9 @@ fn the_tools_are_listed_once_initialized() {
             "wm_minimise",
             "wm_maximise",
             "wm_restore",
-            "wm_close"
+            "wm_close",
+            "wm_show",
+            "wm_act"
         ]
     );
 }
@@ -2285,6 +2287,13 @@ fn the_window_management_tools_run_wm_s_verbs_and_say_what_they_did() {
             "close -- 129",
             r#"{"window":129}"#,
             "Asked to close window 129.",
+        ),
+        (
+            "wm_act",
+            r#"{"window":129,"element":302,"action":"set-text","text":"Egg"}"#,
+            "act -- 129 302 set-text Egg",
+            r#"{"window":129,"element":302,"action":"set-text","text":"Egg"}"#,
+            "Acted on an element of window 129.",
         ),
     ] {
         let answer = harness.call(1, tool, arguments);

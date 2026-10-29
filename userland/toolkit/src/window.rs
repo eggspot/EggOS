@@ -6,6 +6,7 @@ use crate::geometry::Rect;
 use crate::input::RECORD_SIZE;
 use crate::tree::PointerShape;
 use core::ffi::CStr;
+use eggos_element_tree::{MAX_TEXT_BYTES, answer_query, read_query, request, size};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::syscall::{call, number};
 
@@ -123,6 +124,31 @@ impl WindowServer {
     /// Makes profile `profile` the desktop's, at once.
     pub fn set_desktop_profile(&self, profile: u32) -> Result<(), Errno> {
         self.ioctl(SET_PROFILE, &mut profile.to_ne_bytes())
+    }
+
+    /// The text of the action query `serial` (`READ_QUERY`, D161): `set-text`'s new text,
+    /// copied into `text`; returns its length. `ENOENT` once the query is answered or its
+    /// asker stopped waiting.
+    pub fn query_text(&self, serial: u32, text: &mut [u8; MAX_TEXT_BYTES]) -> Result<usize, Errno> {
+        let mut query = [0u8; size::READ_QUERY];
+        put(&mut query, read_query::SERIAL, serial);
+        self.ioctl(request::READ_QUERY as usize, &mut query)?;
+        let length = (word(&query, read_query::TEXT_LENGTH) as usize).min(MAX_TEXT_BYTES);
+        text[..length].copy_from_slice(&query[read_query::TEXT..read_query::TEXT + length]);
+        Ok(length)
+    }
+
+    /// Answers query `serial` with `outcome` and, for a tree, the tree's bytes
+    /// (`ANSWER_QUERY`, D161).
+    pub fn answer_query(&self, serial: u32, outcome: u32, tree: &[u8]) -> Result<(), Errno> {
+        let mut answer = [0u8; size::ANSWER_QUERY];
+        put(&mut answer, answer_query::SERIAL, serial);
+        put(&mut answer, answer_query::OUTCOME, outcome);
+        answer[answer_query::BUFFER..answer_query::BUFFER + 8]
+            .copy_from_slice(&(tree.as_ptr() as u64).to_ne_bytes());
+        answer[answer_query::LENGTH..answer_query::LENGTH + 8]
+            .copy_from_slice(&(tree.len() as u64).to_ne_bytes());
+        self.ioctl(request::ANSWER_QUERY as usize, &mut answer)
     }
 }
 

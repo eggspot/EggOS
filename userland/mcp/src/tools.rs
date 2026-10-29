@@ -111,6 +111,10 @@ pub enum Kind {
     WmRestore,
     /// `wm_close` (D160).
     WmClose,
+    /// `wm_show`: a window's element tree (D161).
+    WmShow,
+    /// `wm_act`: an action on one element of a window (D161).
+    WmAct,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -288,7 +292,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 33] = [
+pub const TOOLS: [Tool; 35] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -441,6 +445,8 @@ pub const TOOLS: [Tool; 33] = [
         window_twin(&["restore"]),
     ),
     tool(&registry::WM_CLOSE, Kind::WmClose, window_twin(&["close"])),
+    tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
+    tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
 ];
 
 /// The tool named `name`.

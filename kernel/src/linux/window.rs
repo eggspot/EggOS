@@ -17,14 +17,18 @@ use crate::terminal::{
     desktop_profile, open_app, reload_catalogue, send_to_terminal, set_desktop_profile,
     type_in_terminal, with_windows,
 };
-use crate::window::{self, Connection, PixelBuffer, ServerError, copy_content_rows};
+use crate::window::{
+    self, Connection, PixelBuffer, QueryAnswer, QueryRequest, ServerError, copy_content_rows,
+};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
-    EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MENU_POOL_CAPACITY, Request, WindowError,
-    capture_reply, create_reply, get_menu_reply, list_reply, put_double_word, put_word, request,
-    set_size_reply, size,
+    ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
+    MENU_POOL_CAPACITY, QUERY_ANSWER_MS, Request, WindowError, act_request, capture_reply,
+    create_reply, element_action, get_menu_reply, get_tree_reply, list_reply, put_double_word,
+    put_word, query_kind, read_query_reply, request, set_size_reply, size, tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -68,6 +72,7 @@ pub fn open<P: Platform>() -> Result<FileKind, Errno> {
 /// answer, `EFAULT` for an argument outside the program's memory.
 pub fn ioctl<P: Platform>(
     process: &Process<P>,
+    thread: &mut LinuxThread,
     connection: &Connection,
     number: u64,
     argument: u64,
@@ -102,12 +107,16 @@ pub fn ioctl<P: Platform>(
     if matches!(request, Request::TypeInTerminal { .. }) && !may_type_in_terminal(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::CaptureWindow { .. }) && !may_capture_windows(process) {
+    let reads = matches!(
+        request,
+        Request::CaptureWindow { .. } | Request::GetTree { .. }
+    );
+    if reads && !may_capture_windows(process) {
         return Err(Errno::EPERM);
     }
     let injects = matches!(
         request,
-        Request::SendInput { .. } | Request::ChooseMenu { .. }
+        Request::SendInput { .. } | Request::ChooseMenu { .. } | Request::ActOnElement { .. }
     );
     if injects && !may_send_input(process) {
         return Err(Errno::EPERM);
@@ -351,8 +360,159 @@ pub fn ioctl<P: Platform>(
                 Ok(())
             })?;
         }
+        Request::GetTree {
+            window,
+            buffer,
+            length,
+        } => {
+            if length < MAX_TREE_BYTES as u64 {
+                return Err(Errno::EINVAL);
+            }
+            buffer
+                .checked_add(MAX_TREE_BYTES as u64)
+                .ok_or(Errno::EFAULT)?;
+            let answer = ask::<P>(process, thread, query(window, query_kind::TREE))?;
+            let tree = answer
+                .filter(|answer| answer.outcome == tree_answer::TREE)
+                .map(|answer| answer.tree)
+                .unwrap_or_default();
+            if !tree.is_empty() {
+                process
+                    .write_user_memory(buffer, &tree)
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            let outcome = match tree.is_empty() {
+                true => tree_answer::PIXELS_ONLY,
+                false => tree_answer::TREE,
+            };
+            put_word(bytes, get_tree_reply::ANSWER, outcome);
+            put_word(bytes, get_tree_reply::LENGTH, tree.len() as u32);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ActOnElement {
+            window,
+            element,
+            action,
+            text_length,
+            text,
+        } => {
+            let text = text.get(..text_length as usize).ok_or(Errno::EINVAL)?;
+            let readable =
+                core::str::from_utf8(text).is_ok_and(|text| !text.chars().any(char::is_control));
+            let known = (element_action::INVOKE..=element_action::SELECT).contains(&action);
+            if !known || !readable || element == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if crate::input::person_holds_input() || crate::input::has_pending_events() {
+                return Err(Errno::EBUSY);
+            }
+            let mut request = query(window, query_kind::ACT);
+            request.element = element;
+            request.action = action;
+            request.text_length = text.len();
+            request.text[..text.len()].copy_from_slice(text);
+            let answer = ask::<P>(process, thread, request)?.ok_or(Errno::ETIMEDOUT)?;
+            put_word(bytes, act_request::OUTCOME, answer.outcome);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ReadQuery { serial } => {
+            let query = window::read_query(client, serial).ok_or(Errno::ENOENT)?;
+            bytes.fill(0);
+            for (offset, value) in [
+                (0, serial),
+                (read_query_reply::KIND, query.kind),
+                (read_query_reply::WINDOW, query.window),
+                (read_query_reply::ELEMENT, query.element),
+                (read_query_reply::ACTION, query.action),
+                (read_query_reply::TEXT_LENGTH, query.text_length as u32),
+            ] {
+                put_word(bytes, offset, value);
+            }
+            bytes[read_query_reply::TEXT..read_query_reply::TEXT + query.text_length]
+                .copy_from_slice(&query.text[..query.text_length]);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::AnswerQuery {
+            serial,
+            outcome,
+            buffer,
+            length,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= MAX_TREE_BYTES)
+                .ok_or(Errno::EINVAL)?;
+            window::read_query(client, serial).ok_or(Errno::ENOENT)?;
+            let mut tree = Vec::new();
+            if !crate::heap::may_grow_for_user(length) || tree.try_reserve_exact(length).is_err() {
+                return Err(Errno::ENOMEM);
+            }
+            tree.resize(length, 0);
+            if length > 0 {
+                process
+                    .read_user_memory(buffer, &mut tree)
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            if !window::answer_query(client, serial, QueryAnswer { outcome, tree }) {
+                return Err(Errno::ENOENT);
+            }
+            crate::console::wake_input_waiters::<P>();
+        }
     }
     Ok(0)
+}
+
+fn query(window: u32, kind: u32) -> QueryRequest {
+    QueryRequest {
+        window,
+        kind,
+        element: 0,
+        action: 0,
+        text_length: 0,
+        text: [0; ELEMENT_TEXT_CAPACITY],
+    }
+}
+
+/// Hands `request` to the app of the window it names and waits up to [`QUERY_ANSWER_MS`] for
+/// its answer (D161): `None` when none came in time, as from an app that answers no queries.
+fn ask<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    request: QueryRequest,
+) -> Result<Option<QueryAnswer>, Errno> {
+    let serial = on_windows::<P, _>(|desktop, _, damage, events| {
+        let owner = desktop.owner_of(request.window)?;
+        let serial = window::start_query(owner, request).ok_or(WindowError::QueueFull)?;
+        let record = EventRecord::new(
+            record_kind::QUERY,
+            0,
+            serial as i32,
+            request.kind as i32,
+            request.element,
+            request.action,
+        );
+        if let Err(error) = desktop.ask_owner(request.window, record, damage, events) {
+            window::finish_query(serial);
+            return Err(error);
+        }
+        Ok(serial)
+    })?;
+    let wait_ticks = u64::from(QUERY_ANSWER_MS) * P::clock_frequency() / 1000;
+    let deadline = P::clock_ticks().saturating_add(wait_ticks);
+    let waited = wait_for_input(process, thread, deadline, || window::query_answered(serial));
+    let answer = window::finish_query(serial);
+    match waited {
+        ControlFlow::Continue(Waited::Signalled) | ControlFlow::Break(()) if answer.is_none() => {
+            Err(Errno::EINTR)
+        }
+        _ => Ok(answer),
+    }
 }
 
 struct CapturedRows {

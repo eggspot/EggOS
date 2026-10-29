@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-element-tree = { path = "../element-tree" }
 eggos-font = { path = "../../font" }
 eggos-runtime = { path = "../runtime" }
 

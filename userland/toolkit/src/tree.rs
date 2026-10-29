@@ -51,6 +51,13 @@ pub enum PointerShape {
     IBeam,
 }
 
+mod elements;
+
+pub use elements::element_of;
+
+/// The element id of a window's content: the root of its element tree (D161).
+pub const ROOT_ELEMENT: u32 = 1;
+
 const CARET_BLINK_MS: u32 = 500;
 const DOUBLE_CLICK_MS: u32 = 400;
 const DAMAGE_OUTSET: i32 = 5;

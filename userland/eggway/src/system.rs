@@ -103,6 +103,15 @@ pub trait System {
     fn destroy_window(&mut self, device: Fd, window: WindowBuffer);
     /// Sets `window`'s title, at most 64 bytes of UTF-8.
     fn set_title(&mut self, device: Fd, window: u32, title: &[u8]) -> Result<(), Errno>;
+    /// Answers the window server's query `serial` (D161, `ANSWER_QUERY`) with `outcome` and,
+    /// for a tree query, the element tree `tree`.
+    fn answer_query(
+        &mut self,
+        device: Fd,
+        serial: u32,
+        outcome: u32,
+        tree: &[u8],
+    ) -> Result<(), Errno>;
     /// Sets the smallest content the window may be resized to.
     fn set_minimum_size(
         &mut self,

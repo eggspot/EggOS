@@ -42,6 +42,7 @@ dependencies = [
  "eggos-calendar",
  "eggos-commands",
  "eggos-drivers",
+ "eggos-element-tree",
  "eggos-files",
  "eggos-mcp",
  "eggos-net",
@@ -89,9 +90,14 @@ dependencies = [
 name = "eggos-eggway"
 version = "0.2.0"
 dependencies = [
+ "eggos-element-tree",
  "eggos-runtime",
  "eggos-wayland",
 ]
+
+[[package]]
+name = "eggos-element-tree"
+version = "0.2.0"
 
 [[package]]
 name = "eggos-files"
@@ -257,6 +263,7 @@ dependencies = [
 name = "eggos-toolkit"
 version = "0.2.0"
 dependencies = [
+ "eggos-element-tree",
  "eggos-font",
  "eggos-runtime",
 ]

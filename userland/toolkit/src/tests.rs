@@ -2,8 +2,9 @@ use crate::canvas::Canvas;
 use crate::colour;
 use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
-use crate::tree::{PointerShape, Response, WidgetId, WidgetTree};
+use crate::tree::{PointerShape, ROOT_ELEMENT, Response, WidgetId, WidgetTree, element_of};
 use crate::widget::{Escape, Kind, Length, Place, card_rect, scroll_bar};
+use eggos_element_tree::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements, flags};
 
 const ITEMS: &[&str] = &["Appearance", "Display", "Keyboard", "Mouse", "About"];
 
@@ -634,4 +635,126 @@ fn a_scroll_bar_over_very_tall_content_keeps_its_thumb_in_its_track() {
         rect.y + (rect.height - crate::widget::MIN_THUMB) / 2
     );
     assert!(scroll_bar(rect, rect.height, 0).is_none());
+}
+
+fn described(tree: &WidgetTree<24>) -> Vec<(u32, u32, Role, u16, String, String)> {
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut writer = TreeWriter::new(&mut bytes);
+    tree.describe(&mut writer);
+    elements(writer.bytes())
+        .map(|element| {
+            let element = element.unwrap();
+            (
+                element.id,
+                element.parent,
+                element.role,
+                element.flags,
+                String::from_utf8(element.name.to_vec()).unwrap(),
+                String::from_utf8(element.value.to_vec()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn every_shown_widget_option_card_and_row_is_an_element_of_the_tree() {
+    let mut form = form();
+    let elements = described(&form.tree);
+    let find = |id: u32| elements.iter().find(|element| element.0 == id).cloned();
+    let field = find(element_of(form.field)).unwrap();
+    assert_eq!(field.2, Role::TextField);
+    assert_eq!((field.4.as_str(), field.5.as_str()), ("Search", ""));
+    let cards = element_of(form.cards);
+    assert_eq!(find(cards).unwrap().2, Role::RadioGroup);
+    let two = find(cards + 2).unwrap();
+    assert_eq!((two.1, two.2, two.4.as_str()), (cards, Role::Radio, "Two"));
+    assert_ne!(two.3 & flags::SELECTED, 0, "card 1 is chosen");
+    let list = element_of(form.list);
+    let rows: Vec<_> = elements
+        .iter()
+        .filter(|element| element.1 == list)
+        .collect();
+    assert_eq!(rows.len(), ITEMS.len());
+    assert_eq!(
+        (rows[0].0, rows[0].2, rows[0].4.as_str()),
+        (list + 1, Role::ListItem, "Appearance")
+    );
+    let ok = find(element_of(form.ok)).unwrap();
+    assert_ne!(ok.3 & flags::DEFAULT, 0);
+    assert_ne!(find(element_of(form.off)).unwrap().3 & flags::DISABLED, 0);
+    assert_eq!(find(element_of(form.check)).unwrap().2, Role::Checkbox);
+    assert_eq!(find(element_of(form.radios) + 2).unwrap().4, "2x");
+    assert_eq!(find(element_of(form.value)).unwrap().4, "Right");
+    assert_eq!(
+        find(100).unwrap().1,
+        ROOT_ELEMENT,
+        "the side panel is the root's"
+    );
+    assert_eq!(
+        find(element_of(form.scroll)).unwrap().1,
+        400,
+        "the scroll view is the pane's"
+    );
+    form.tree.set_shown(form.list, false);
+    assert!(
+        described(&form.tree)
+            .iter()
+            .all(|element| element.1 != list)
+    );
+}
+
+#[test]
+fn acting_on_an_element_does_what_a_person_s_input_does() {
+    let mut form = form();
+    let cards = element_of(form.cards);
+    assert_eq!(
+        form.tree.act(cards + 3, Action::Invoke, "", 0),
+        (Outcome::Done, Response::Chosen(form.cards, 2))
+    );
+    assert_eq!(form.tree.selected(form.cards), Some(2));
+    assert_eq!(
+        form.tree.act(element_of(form.ok), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Activated(form.ok))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.off), Action::Invoke, "", 0),
+        (Outcome::Disabled, Response::Nothing)
+    );
+    assert_eq!(
+        form.tree
+            .act(element_of(form.field), Action::SetText, "egg", 0),
+        (Outcome::Done, Response::Edited(form.field))
+    );
+    assert_eq!(form.tree.text_of(form.field), Some("egg"));
+    let list = element_of(form.list);
+    assert_eq!(
+        form.tree.act(list + 3, Action::Select, "", 0),
+        (Outcome::Done, Response::Chosen(form.list, 2))
+    );
+    assert_eq!(
+        form.tree.act(list + 3, Action::Invoke, "", 0),
+        (Outcome::Done, Response::Opened(form.list, 2))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.check), Action::Invoke, "", 0),
+        (Outcome::Done, Response::Toggled(form.check, true))
+    );
+    assert_eq!(
+        form.tree.act(element_of(form.field), Action::Focus, "", 0),
+        (Outcome::Done, Response::Nothing)
+    );
+    assert_eq!(form.tree.focus(), Some(form.field));
+    assert_eq!(
+        form.tree
+            .act(element_of(form.ok), Action::SetText, "x", 0)
+            .0,
+        Outcome::NotSupported
+    );
+    for missing in [0, 7, list + 60, element_of(form.ok) + 1, 99_999] {
+        assert_eq!(
+            form.tree.act(missing, Action::Invoke, "", 0).0,
+            Outcome::NoSuchElement,
+            "{missing}"
+        );
+    }
 }

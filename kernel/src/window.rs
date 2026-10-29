@@ -20,11 +20,13 @@
 use crate::memory::FRAMES;
 use crate::process::LentFrames;
 use crate::sync::LeafSpinLock;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{
-    EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
+    ELEMENT_TEXT_CAPACITY, EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
 };
 use eggos_drivers::desktop::{
     ContentLayout, Desktop, EventQueue, KERNEL_CLIENT, WindowId, colour, slot_of,
@@ -542,10 +544,158 @@ pub fn disconnect<P: Platform>(client: &Arc<Client>) {
     crate::terminal::with_clients(|clients| clients.remove(client));
 }
 
+/// Queries waiting at once for an app's answer (`GET_TREE`, `ACT_ON_ELEMENT`, D161).
+pub const MAX_QUERIES: usize = 8;
+
+/// What a query asks the app whose window it names: an element tree, or an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryRequest {
+    pub window: u32,
+    pub kind: u32,
+    pub element: u32,
+    pub action: u32,
+    pub text_length: usize,
+    pub text: [u8; ELEMENT_TEXT_CAPACITY],
+}
+
+/// An app's answer: its outcome and, for a tree, the tree's bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryAnswer {
+    pub outcome: u32,
+    pub tree: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct PendingQuery {
+    serial: u32,
+    owner: u16,
+    request: QueryRequest,
+    answer: Option<QueryAnswer>,
+}
+
+#[derive(Debug)]
+struct Queries {
+    slots: [Option<PendingQuery>; MAX_QUERIES],
+    next_serial: u32,
+}
+
+static QUERIES: LeafSpinLock<Option<Box<Queries>>> = LeafSpinLock::new_leaf(None);
+
+/// Records a query for `owner`'s app before its `Query` record is sent and returns its
+/// serial; `None` when [`MAX_QUERIES`] already wait.
+pub fn start_query(owner: u16, request: QueryRequest) -> Option<u32> {
+    let mut queries = QUERIES.lock();
+    let queries = queries.get_or_insert_with(|| {
+        Box::new(Queries {
+            slots: [const { None }; MAX_QUERIES],
+            next_serial: 1,
+        })
+    });
+    let slot = queries.slots.iter().position(Option::is_none)?;
+    let serial = queries.next_serial;
+    queries.next_serial = queries.next_serial.wrapping_add(1).max(1);
+    queries.slots[slot] = Some(PendingQuery {
+        serial,
+        owner,
+        request,
+        answer: None,
+    });
+    Some(serial)
+}
+
+fn with_query<R>(serial: u32, work: impl FnOnce(&mut Option<PendingQuery>) -> R) -> Option<R> {
+    let mut queries = QUERIES.lock();
+    let slot = queries
+        .as_mut()?
+        .slots
+        .iter_mut()
+        .find(|slot| slot.as_ref().is_some_and(|query| query.serial == serial))?;
+    Some(work(slot))
+}
+
+/// Whether query `serial` has its answer (or is gone).
+pub fn query_answered(serial: u32) -> bool {
+    with_query(serial, |slot| {
+        slot.as_ref().is_none_or(|query| query.answer.is_some())
+    })
+    .unwrap_or(true)
+}
+
+/// Forgets query `serial` and returns its answer, if the app gave one.
+pub fn finish_query(serial: u32) -> Option<QueryAnswer> {
+    with_query(serial, |slot| slot.take().and_then(|query| query.answer)).flatten()
+}
+
+/// What query `serial` asks of `owner`'s app; `None` for no such query of its, or one it
+/// answered already.
+pub fn read_query(owner: u16, serial: u32) -> Option<QueryRequest> {
+    with_query(serial, |slot| {
+        slot.as_ref()
+            .filter(|query| query.owner == owner && query.answer.is_none())
+            .map(|query| query.request)
+    })
+    .flatten()
+}
+
+/// Gives query `serial` of `owner`'s app its answer; `false` for no such query waiting (it
+/// was answered already, or its asker stopped waiting).
+pub fn answer_query(owner: u16, serial: u32, answer: QueryAnswer) -> bool {
+    with_query(serial, |slot| match slot {
+        Some(query) if query.owner == owner && query.answer.is_none() => {
+            query.answer = Some(answer);
+            true
+        }
+        _ => false,
+    })
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::thread::host::frames_for_test;
+
+    fn tree_request(window: u32) -> QueryRequest {
+        QueryRequest {
+            window,
+            kind: 0,
+            element: 0,
+            action: 0,
+            text_length: 0,
+            text: [0; ELEMENT_TEXT_CAPACITY],
+        }
+    }
+
+    #[test]
+    fn a_query_is_read_and_answered_by_its_owner_only_once_then_finished_by_its_asker() {
+        let serial = start_query(700, tree_request(5)).unwrap();
+        assert!(!query_answered(serial));
+        assert_eq!(read_query(701, serial), None, "another client's");
+        assert_eq!(read_query(700, serial).map(|query| query.window), Some(5));
+        let answer = QueryAnswer {
+            outcome: 0,
+            tree: alloc::vec![1, 2, 3],
+        };
+        assert!(!answer_query(701, serial, answer.clone()));
+        assert!(answer_query(700, serial, answer.clone()));
+        assert!(!answer_query(700, serial, answer.clone()), "answered once");
+        assert_eq!(read_query(700, serial), None);
+        assert!(query_answered(serial));
+        assert_eq!(finish_query(serial), Some(answer));
+        assert_eq!(finish_query(serial), None);
+        assert!(query_answered(serial), "a finished query waits for nothing");
+        let late = start_query(700, tree_request(5)).unwrap();
+        assert_ne!(late, serial);
+        assert_eq!(finish_query(late), None, "the asker stopped waiting");
+        assert!(!answer_query(
+            700,
+            late,
+            QueryAnswer {
+                outcome: 0,
+                tree: alloc::vec![]
+            }
+        ));
+    }
 
     fn free() -> u64 {
         FRAMES.lock().as_ref().unwrap().free_frames()

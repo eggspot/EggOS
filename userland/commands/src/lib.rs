@@ -488,12 +488,12 @@ pub const CORE_VERBS: [&str; 20] = [
     "run",
 ];
 
-/// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147 and this one, D160).
+/// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160 and D161).
 pub const NOUN_VERBS: [(&str, &[&str]); 1] = [(
     "wm",
     &[
         "focus", "minimise", "maximise", "size", "move", "restore", "close", "capture", "click",
-        "type", "press", "scroll", "menu",
+        "type", "press", "scroll", "menu", "act",
     ],
 )];
 

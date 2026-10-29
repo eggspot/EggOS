@@ -1,7 +1,7 @@
 use crate::system::{
     CapturedRows, DIRECTORY, DatagramKind, Duration, STANDARD_ERROR, STANDARD_INPUT,
     STANDARD_OUTPUT, Sender, Status, SymbolicLinks, System, SystemName, UTSNAME_FIELD,
-    UTSNAME_SIZE,
+    UTSNAME_SIZE, WindowTree,
 };
 use core::ffi::CStr;
 use eggos_net::{Ipv4Address, dns, icmp, sntp};
@@ -187,6 +187,9 @@ pub struct Fake {
     pub menus: BTreeMap<u32, Vec<u8>>,
     pub chosen_menus: Vec<[u32; 3]>,
     pub chosen_labels: Vec<Vec<u8>>,
+    pub trees: BTreeMap<u32, Vec<u8>>,
+    pub acted: Vec<(u32, u32, u32, Vec<u8>)>,
+    pub act_outcome: u32,
     pub capture_calls: usize,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
@@ -238,6 +241,9 @@ impl Default for Fake {
             menus: BTreeMap::new(),
             chosen_menus: Vec::new(),
             chosen_labels: Vec::new(),
+            trees: BTreeMap::new(),
+            acted: Vec::new(),
+            act_outcome: 0,
             capture_calls: 0,
             capture_fails_at: None,
             resized_at: None,
@@ -703,6 +709,24 @@ impl System for Fake {
                 self.chosen_labels.push(argument[16..16 + length].to_vec());
                 Ok(())
             }
+            (crate::wm::ACT_ON_ELEMENT, crate::wm::ACT_ON_ELEMENT_SIZE) => {
+                let request = [0, 4, 8, 12].map(|at| word(argument, at));
+                if !self.windows.iter().any(|known| known.id == request[0]) {
+                    return Err(Errno::ENOENT);
+                }
+                if !self.trees.contains_key(&request[0]) {
+                    return Err(Errno::ETIMEDOUT);
+                }
+                if !self.input_results.is_empty()
+                    && let Some(errno) = self.input_results.remove(0)
+                {
+                    return Err(errno);
+                }
+                let text = argument[24..24 + request[3] as usize].to_vec();
+                self.acted.push((request[0], request[1], request[2], text));
+                argument[16..20].copy_from_slice(&self.act_outcome.to_ne_bytes());
+                Ok(())
+            }
             _ => Err(Errno::ENOTTY),
         }
     }
@@ -757,6 +781,33 @@ impl System for Fake {
             width,
             height,
             rows,
+        })
+    }
+
+    fn window_tree(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        tree: &mut [u8],
+    ) -> Result<WindowTree, Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        if !self.windows.iter().any(|known| known.id == window) {
+            return Err(Errno::ENOENT);
+        }
+        let Some(bytes) = self.trees.get(&window) else {
+            return Ok(WindowTree {
+                pixels_only: true,
+                length: 0,
+            });
+        };
+        tree.get_mut(..bytes.len())
+            .ok_or(Errno::EINVAL)?
+            .copy_from_slice(bytes);
+        Ok(WindowTree {
+            pixels_only: false,
+            length: bytes.len(),
         })
     }
 

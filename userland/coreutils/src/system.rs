@@ -87,6 +87,12 @@ pub struct CapturedRows {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowTree {
+    pub pixels_only: bool,
+    pub length: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatagramKind {
     Udp,
     Ping,
@@ -138,6 +144,12 @@ pub trait System {
         row_count: u32,
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno>;
+    fn window_tree(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        tree: &mut [u8],
+    ) -> Result<WindowTree, Errno>;
     fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno>;
     fn send_to(
         &mut self,
@@ -275,6 +287,15 @@ impl<T: System + ?Sized> System for &mut T {
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno> {
         (**self).capture_window_rows(descriptor, window, first_row, row_count, pixels)
+    }
+
+    fn window_tree(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        tree: &mut [u8],
+    ) -> Result<WindowTree, Errno> {
+        (**self).window_tree(descriptor, window, tree)
     }
 
     fn open_datagram_socket(&mut self, kind: DatagramKind) -> Result<usize, Errno> {

@@ -84,6 +84,8 @@ pub struct Fake {
     pub work_area: (u32, u32),
     pub clients: usize,
     pub keymaps: usize,
+    /// The queries answered: serial, outcome and tree.
+    pub answers: Vec<(u32, u32, Vec<u8>)>,
 }
 
 std::thread_local! {
@@ -110,6 +112,7 @@ impl Default for Fake {
             work_area: (1280, 732),
             clients: 0,
             keymaps: 0,
+            answers: Vec::new(),
         }
     }
 }
@@ -374,6 +377,17 @@ impl System for Fake {
     fn set_title(&mut self, _device: Fd, window: u32, title: &[u8]) -> Result<(), Errno> {
         let target = self.windows.get_mut(&window).ok_or(Errno::EINVAL)?;
         target.title = title.to_vec();
+        Ok(())
+    }
+
+    fn answer_query(
+        &mut self,
+        _device: Fd,
+        serial: u32,
+        outcome: u32,
+        tree: &[u8],
+    ) -> Result<(), Errno> {
+        self.answers.push((serial, outcome, tree.to_vec()));
         Ok(())
     }
 

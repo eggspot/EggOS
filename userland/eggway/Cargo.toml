@@ -13,6 +13,7 @@ path = "src/main.rs"
 fuzz = []
 
 [dependencies]
+eggos-element-tree = { path = "../element-tree" }
 eggos-runtime = { path = "../runtime" }
 eggos-wayland = { path = "../../wayland" }
 

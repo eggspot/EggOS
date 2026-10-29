@@ -25,6 +25,12 @@ pub const MAX_MENU_ENTRIES: usize = 16;
 /// The longest item label `ChooseMenu` carries, in bytes: room for the longest a pool holds
 /// (the pool less an empty menu's `M\n` and the item's `I`, tab and `\n`), the argument 260.
 pub const MENU_LABEL_CAPACITY: usize = 244;
+/// The largest element tree an app answers `GET_TREE` with, in bytes (D161).
+pub const MAX_TREE_BYTES: usize = 64 * 1024;
+/// The longest text `ACT_ON_ELEMENT` carries, in bytes (D161).
+pub const ELEMENT_TEXT_CAPACITY: usize = 232;
+/// How long `GET_TREE` and `ACT_ON_ELEMENT` wait for the app's answer, in ms (D161).
+pub const QUERY_ANSWER_MS: u32 = 500;
 /// The size of one event record.
 pub const EVENT_SIZE: usize = 32;
 /// The `ioctl` type byte of every request (`_IOC_TYPE`).
@@ -62,6 +68,10 @@ pub mod size {
     pub const SET_MENU: usize = 256;
     pub const GET_MENU: usize = 256;
     pub const CHOOSE_MENU: usize = super::choose_menu_request::LABEL + super::MENU_LABEL_CAPACITY;
+    pub const GET_TREE: usize = 32;
+    pub const ACT_ON_ELEMENT: usize = super::act_request::TEXT + super::ELEMENT_TEXT_CAPACITY;
+    pub const READ_QUERY: usize = super::read_query_reply::TEXT + super::ELEMENT_TEXT_CAPACITY;
+    pub const ANSWER_QUERY: usize = 24;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -94,6 +104,10 @@ pub mod request {
     pub const SET_MENU: u32 = encode(WRITE, 21, size::SET_MENU);
     pub const GET_MENU: u32 = encode(READ | WRITE, 22, size::GET_MENU);
     pub const CHOOSE_MENU: u32 = encode(WRITE, 23, size::CHOOSE_MENU);
+    pub const GET_TREE: u32 = encode(READ | WRITE, 24, size::GET_TREE);
+    pub const ACT_ON_ELEMENT: u32 = encode(READ | WRITE, 25, size::ACT_ON_ELEMENT);
+    pub const READ_QUERY: u32 = encode(READ | WRITE, 26, size::READ_QUERY);
+    pub const ANSWER_QUERY: u32 = encode(WRITE, 27, size::ANSWER_QUERY);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -152,6 +166,7 @@ pub mod event {
     pub const SCALE: u16 = 12;
     pub const OVERFLOW: u16 = 13;
     pub const MENU_CHOSEN: u16 = 14;
+    pub const QUERY: u16 = 15;
 }
 
 /// The modifier bits of a `Key` record's `c`.
@@ -362,6 +377,27 @@ pub enum Request {
         label_length: u32,
         label: [u8; MENU_LABEL_CAPACITY],
     },
+    GetTree {
+        window: u32,
+        buffer: u64,
+        length: u64,
+    },
+    ActOnElement {
+        window: u32,
+        element: u32,
+        action: u32,
+        text_length: u32,
+        text: [u8; ELEMENT_TEXT_CAPACITY],
+    },
+    ReadQuery {
+        serial: u32,
+    },
+    AnswerQuery {
+        serial: u32,
+        outcome: u32,
+        buffer: u64,
+        length: u64,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
@@ -413,6 +449,10 @@ impl Request {
             request::SET_MENU => size::SET_MENU,
             request::GET_MENU => size::GET_MENU,
             request::CHOOSE_MENU => size::CHOOSE_MENU,
+            request::GET_TREE => size::GET_TREE,
+            request::ACT_ON_ELEMENT => size::ACT_ON_ELEMENT,
+            request::READ_QUERY => size::READ_QUERY,
+            request::ANSWER_QUERY => size::ANSWER_QUERY,
             _ => return None,
         })
     }
@@ -545,6 +585,29 @@ impl Request {
                     label,
                 }
             }
+            request::GET_TREE => Self::GetTree {
+                window: at(0),
+                buffer: double_word(bytes, get_tree_request::BUFFER),
+                length: double_word(bytes, get_tree_request::BUFFER_LENGTH),
+            },
+            request::ACT_ON_ELEMENT => {
+                let mut text = [0; ELEMENT_TEXT_CAPACITY];
+                text.copy_from_slice(&bytes[act_request::TEXT..]);
+                Self::ActOnElement {
+                    window: at(0),
+                    element: at(act_request::ELEMENT),
+                    action: at(act_request::ACTION),
+                    text_length: at(act_request::TEXT_LENGTH),
+                    text,
+                }
+            }
+            request::READ_QUERY => Self::ReadQuery { serial: at(0) },
+            request::ANSWER_QUERY => Self::AnswerQuery {
+                serial: at(0),
+                outcome: at(4),
+                buffer: double_word(bytes, 8),
+                length: double_word(bytes, 16),
+            },
             _ => Self::GetWorkArea,
         })
     }
@@ -586,6 +649,71 @@ pub mod get_menu_reply {
 pub mod choose_menu_request {
     pub const LABEL_LENGTH: usize = 12;
     pub const LABEL: usize = 16;
+}
+
+/// Where `GetTree`'s argument holds the caller's buffer and its length (64-bit each).
+pub mod get_tree_request {
+    pub const BUFFER: usize = 16;
+    pub const BUFFER_LENGTH: usize = 24;
+}
+
+/// Where `GetTree` writes how the app answered ([`tree_answer`]) and the tree's length back.
+pub mod get_tree_reply {
+    pub const ANSWER: usize = 4;
+    pub const LENGTH: usize = 8;
+}
+
+/// Where `ActOnElement`'s argument holds the element, the action ([`element_action`]), the
+/// text's length and the text, and where the app's [`act_outcome`] is written back.
+pub mod act_request {
+    pub const ELEMENT: usize = 4;
+    pub const ACTION: usize = 8;
+    pub const TEXT_LENGTH: usize = 12;
+    pub const OUTCOME: usize = 16;
+    pub const TEXT: usize = 24;
+}
+
+/// Where `ReadQuery` writes the query whose serial it was given: its [`query_kind`], window,
+/// element, action, text length and text.
+pub mod read_query_reply {
+    pub const KIND: usize = 4;
+    pub const WINDOW: usize = 8;
+    pub const ELEMENT: usize = 12;
+    pub const ACTION: usize = 16;
+    pub const TEXT_LENGTH: usize = 20;
+    pub const TEXT: usize = 24;
+}
+
+/// What a query asks the app: its kind in a `Query` record's `b` (D161).
+pub mod query_kind {
+    /// The window's element tree.
+    pub const TREE: u32 = 0;
+    /// An action on one of its elements.
+    pub const ACT: u32 = 1;
+}
+
+/// How an app answered a tree query, and what `GetTree` reports.
+pub mod tree_answer {
+    /// The app gave its tree.
+    pub const TREE: u32 = 0;
+    /// It gave none, or none in time: pixels only.
+    pub const PIXELS_ONLY: u32 = 1;
+}
+
+/// The actions `ActOnElement` asks for.
+pub mod element_action {
+    pub const INVOKE: u32 = 1;
+    pub const FOCUS: u32 = 2;
+    pub const SET_TEXT: u32 = 3;
+    pub const SELECT: u32 = 4;
+}
+
+/// How an app answered an action.
+pub mod act_outcome {
+    pub const DONE: u32 = 0;
+    pub const NO_SUCH_ELEMENT: u32 = 1;
+    pub const NOT_SUPPORTED: u32 = 2;
+    pub const DISABLED: u32 = 3;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside

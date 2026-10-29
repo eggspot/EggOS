@@ -46,6 +46,10 @@ pub const MAX_ENTRY_INDEX: u64 = 15;
 /// The most bytes of `wm_menu_choose`'s `label`, so the audit record keeps it whole as it keeps
 /// `wm_type`'s text.
 pub const MAX_MENU_LABEL_BYTES: usize = 64;
+/// The most bytes of `wm_act`'s `text`: what `ACT_ON_ELEMENT` carries (D161).
+pub const MAX_ELEMENT_TEXT_BYTES: usize = 232;
+/// `wm_act`'s actions, as `wm act` takes them (D161).
+pub const ELEMENT_ACTIONS: [&str; 4] = ["invoke", "focus", "set-text", "select"];
 
 /// The length of `clock_set`'s `time`: `YYYY-MM-DDTHH:MM:SSZ` (D150).
 pub const TIME_BYTES: usize = 20;
@@ -123,6 +127,14 @@ pub enum ArgumentProblem {
     /// `width` or `height` is not a whole number from 1 to [`MAX_COORDINATE`], or only one is
     /// given (D160).
     BadSize,
+    /// `element` is not a whole number from 1 to 4294967295 (D161).
+    BadElement,
+    /// `action` is not invoke, focus, set-text or select, or `text` comes with an action other
+    /// than set-text or is missing for it (D161).
+    BadAction,
+    /// `text` for set-text is longer than [`MAX_ELEMENT_TEXT_BYTES`] or holds a control
+    /// character (D161).
+    BadElementText,
 }
 
 impl ArgumentProblem {
@@ -147,6 +159,9 @@ impl ArgumentProblem {
             ArgumentProblem::Missing("time") => "time is required: YYYY-MM-DDTHH:MM:SSZ, in UTC",
             ArgumentProblem::Missing("host") => "host is required: an IPv4 address or a host name",
             ArgumentProblem::Missing("url") => "url is required: an http:// URL",
+            ArgumentProblem::Missing("element") => {
+                "element and action are required: an id wm_show shows and what to do"
+            }
             ArgumentProblem::Missing(_) => "a required argument is missing",
             ArgumentProblem::WrongType("path") => "path must be a string",
             ArgumentProblem::WrongType("arguments") => "arguments must be an array of strings",
@@ -209,6 +224,17 @@ impl ArgumentProblem {
             ArgumentProblem::BadCount => "count must be a whole number from 1 to 5",
             ArgumentProblem::BadUrl => {
                 "url must be an http:// or https:// URL of at most 2048 bytes without spaces"
+            }
+            ArgumentProblem::BadElement => {
+                "element must be an element id as wm_show shows it: a whole number from 1 to \
+                 4294967295"
+            }
+            ArgumentProblem::BadAction => {
+                "action is invoke, focus, set-text or select; text goes with set-text and only \
+                 with it"
+            }
+            ArgumentProblem::BadElementText => {
+                "text must be at most 232 bytes of UTF-8 without control characters"
             }
         }
     }
@@ -391,6 +417,10 @@ pub struct Checked {
     pub count: Option<u32>,
     /// `fetch`'s URL's length, in the content buffer.
     pub url: Option<usize>,
+    /// `wm_act`'s element id (D161).
+    pub element: Option<u32>,
+    /// `wm_act`'s action, as `wm act` takes it (D161).
+    pub action: Option<&'static str>,
 }
 
 /// The buffers a call's arguments are decoded into.
@@ -726,9 +756,53 @@ fn window_arguments<'a>(
             checked.menu_item = Some((menu as u32, entry as u32));
             checked.menu_label = menu_label(get("label"), words)?;
         }
+        Kind::WmAct => {
+            let element = whole(
+                get("element"),
+                u64::from(u32::MAX),
+                ArgumentProblem::BadElement,
+            )?
+            .ok_or(ArgumentProblem::Missing("element"))?;
+            if element == 0 {
+                return Err(ArgumentProblem::BadElement);
+            }
+            checked.element = Some(element as u32);
+            let action = match get("action") {
+                None => return Err(ArgumentProblem::Missing("element")),
+                Some(Value::Str(name)) => ELEMENT_ACTIONS
+                    .into_iter()
+                    .find(|action| name.equals(action))
+                    .ok_or(ArgumentProblem::BadAction)?,
+                Some(_) => return Err(ArgumentProblem::BadAction),
+            };
+            checked.action = Some(action);
+            checked.text = element_text(get("text"), action == "set-text", words)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn element_text(
+    value: Option<Value<'_>>,
+    wanted: bool,
+    words: &mut [u8],
+) -> Result<Option<usize>, ArgumentProblem> {
+    let text = match (value, wanted) {
+        (None, false) => return Ok(None),
+        (Some(Value::Str(text)), true) => text,
+        _ => return Err(ArgumentProblem::BadAction),
+    };
+    let room = words
+        .get_mut(..MAX_ELEMENT_TEXT_BYTES)
+        .ok_or(ArgumentProblem::BadElementText)?;
+    let text = text
+        .decode_into(room)
+        .ok_or(ArgumentProblem::BadElementText)?;
+    match text.chars().any(char::is_control) {
+        true => Err(ArgumentProblem::BadElementText),
+        false => Ok(Some(text.len())),
+    }
 }
 
 fn menu_label(

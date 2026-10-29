@@ -701,3 +701,61 @@ fn renames_keep_names_they_cannot_show_apps_keep_theirs_and_long_paths_are_refus
     );
     assert_eq!(driver.folder(), "/Applications");
 }
+
+#[test]
+fn an_agent_reads_the_entries_as_list_items_and_opens_one_by_its_element() {
+    use eggos_toolkit::elements::{Action, MAX_TREE_BYTES, Outcome, Role, TreeWriter, elements};
+    let mut files = disk();
+    files
+        .folder("/home/root/Documents")
+        .file("/home/root/notes.txt", b"hi\n", 5);
+    let mut window = window(&mut files);
+    let mut bytes = vec![0u8; MAX_TREE_BYTES];
+    let mut tree = TreeWriter::new(&mut bytes);
+    window.describe(&mut tree);
+    let read: Vec<_> = elements(tree.bytes()).map(Result::unwrap).collect();
+    let entries: Vec<_> = read
+        .iter()
+        .filter(|element| element.parent == ENTRIES_ELEMENT)
+        .map(|element| (element.id, element.role, element.name, element.value))
+        .collect();
+    let documents = entries
+        .iter()
+        .find(|entry| entry.2 == b"Documents")
+        .copied()
+        .unwrap();
+    assert_eq!((documents.1, documents.3), (Role::ListItem, &b"folder"[..]));
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.2 == b"notes.txt" && entry.3 == b"file")
+    );
+    assert!(
+        read.iter()
+            .any(|element| element.id == PATH_ELEMENT && element.role == Role::TextField)
+    );
+    assert!(
+        read.iter()
+            .any(|element| element.parent == PLACES_ELEMENT && element.name == b"Home")
+    );
+    assert_eq!(
+        window.act(&mut files, documents.0, Action::Invoke),
+        Outcome::Done
+    );
+    match window.location() {
+        Location::Folder(path) => assert_eq!(path.as_bytes(), b"/home/root/Documents"),
+        Location::Trash => panic!("not opened"),
+    }
+    assert_eq!(
+        window.act(&mut files, FIRST_ENTRY_ELEMENT + 400, Action::Invoke),
+        Outcome::NoSuchElement
+    );
+    assert_eq!(
+        window.act(&mut files, PATH_ELEMENT, Action::SetText),
+        Outcome::NotSupported
+    );
+    assert_eq!(
+        window.act(&mut files, FIRST_PLACE_ELEMENT, Action::Invoke),
+        Outcome::Done
+    );
+}

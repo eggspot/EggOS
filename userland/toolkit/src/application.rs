@@ -5,8 +5,13 @@
 use crate::canvas::Canvas;
 use crate::damage::Damage;
 use crate::input::{self, Input, RECORD_SIZE};
+use crate::tree::ROOT_ELEMENT;
 use crate::tree::{PointerShape, Response, WidgetTree};
 use crate::window::{Window, now_ms};
+use eggos_element_tree::{
+    Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
+    query_kind, tree_answer,
+};
 use eggos_runtime::errno::Errno;
 
 const RECORDS_READ: usize = 16;
@@ -51,6 +56,37 @@ fn draw(window: &mut Window, view: &mut impl View, everything: bool) -> Result<(
         }
     }
     window.commit(&damage, everything)
+}
+
+fn answer(window: &Window, view: &mut impl View, query: &Query) {
+    let server = window.server();
+    if query.kind == query_kind::TREE {
+        let mut bytes = [0u8; MAX_TREE_BYTES];
+        let mut tree = TreeWriter::new(&mut bytes);
+        let scale = window.scale().max(1);
+        let (width, height) = window.size();
+        let content = Bounds::new(0, 0, (width / scale) as i32, (height / scale) as i32);
+        tree.push(&Element::new(ROOT_ELEMENT, 0, Role::Window, content));
+        let (outcome, tree) = match view.describe(&mut tree) {
+            true => (tree_answer::TREE, tree.bytes()),
+            false => (tree_answer::PIXELS_ONLY, &[][..]),
+        };
+        let _ = server.answer_query(query.serial, outcome, tree);
+        return;
+    }
+    let outcome = match query.action() {
+        Some(action) => {
+            let mut text = [0u8; MAX_TEXT_BYTES];
+            let length = match action {
+                Action::SetText => server.query_text(query.serial, &mut text).unwrap_or(0),
+                _ => 0,
+            };
+            let text = core::str::from_utf8(&text[..length]).unwrap_or("");
+            view.act(query.element, action, text, now_ms())
+        }
+        None => Outcome::NotSupported,
+    };
+    let _ = server.answer_query(query.serial, outcome.value(), &[]);
 }
 
 fn soonest(first: Option<u32>, second: Option<u32>, now: u32) -> Option<u32> {
@@ -126,6 +162,18 @@ pub trait View {
     fn take_title(&mut self) -> Option<&str> {
         None
     }
+
+    /// Writes the content's elements below [`ROOT_ELEMENT`] for an agent (D161, `wm show`);
+    /// `false` when the view describes none, so the agent sees pixels only.
+    fn describe(&mut self, _tree: &mut TreeWriter<'_>) -> bool {
+        false
+    }
+
+    /// Does `action` to element `element` for an agent (D161, `wm act`), with `text` for
+    /// [`Action::SetText`], at `time_ms`.
+    fn act(&mut self, _element: u32, _action: Action, _text: &str, _time_ms: u32) -> Outcome {
+        Outcome::NoSuchElement
+    }
 }
 
 struct Tree<'a, A, const N: usize>(&'a mut A);
@@ -154,6 +202,17 @@ impl<A: Application<N>, const N: usize> View for Tree<'_, A, N> {
 
     fn pointer_shape(&mut self) -> PointerShape {
         self.0.tree().pointer_shape()
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.0.tree().describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
+        let (outcome, response) = self.0.tree().act(element, action, text, time_ms);
+        self.0.respond(response, time_ms);
+        outcome
     }
 
     fn deadline(&mut self, now_ms: u32) -> Option<u32> {
@@ -204,6 +263,10 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
         let read = window.read_events(&mut records, timeout)?;
         view.tick(now_ms());
         for record in records[..read].as_chunks::<RECORD_SIZE>().0 {
+            if let Some(query) = Query::from_record(record) {
+                answer(window, view, &query);
+                continue;
+            }
             let Some(event) = input::decode(record) else {
                 continue;
             };

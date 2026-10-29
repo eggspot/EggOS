@@ -10,6 +10,9 @@ use crate::client::{
     TITLE_CAPACITY,
 };
 use crate::system::{Fd, PoolPixels, Received, System, WindowBuffer};
+use eggos_element_tree::{
+    Bounds, Element, HEADER_BYTES, Outcome, Query, Role, TreeWriter, query_kind, tree_answer,
+};
 use eggos_runtime::errno::Errno;
 use eggos_wayland::blit::Rect;
 use eggos_wayland::keymap;
@@ -36,6 +39,7 @@ pub const MAX_BUFFER_BYTES: usize = 4 << 20;
 /// The most descriptors one read takes: libwayland's most per message batch.
 pub const MAX_RECEIVE_DESCRIPTORS: usize = 28;
 const ANSWER_ROOM: usize = 4096;
+const ROOT_ELEMENT: u32 = 1;
 
 const FIXED_SIZE: u32 = 1;
 /// `/dev/window`'s event record size.
@@ -251,6 +255,10 @@ impl Compositor {
                 break;
             };
             for record in records[..length].as_chunks::<RECORD_SIZE>().0 {
+                if Query::from_record(record).is_some() {
+                    answer_query(client, system, device, record);
+                    continue;
+                }
                 window_event(client, &mut self.shared, record);
             }
             if length < records.len() {
@@ -1534,6 +1542,13 @@ fn toplevel_request<S: System>(client: &mut ClientSlot, system: &mut S, message:
                 let _ = system.set_title(device, window, title);
             });
         }
+        3 => {
+            let app_id = title_prefix(message.values[0].bytes());
+            if let Some(surface) = client.surface(index) {
+                surface.app_id[..app_id.len()].copy_from_slice(app_id);
+                surface.app_id_length = app_id.len();
+            }
+        }
         5 | 6 => {
             let (seat, serial) = (message.uint(0), message.uint(1));
             if object_index(client, seat, Interface::Seat).is_none() {
@@ -1674,6 +1689,42 @@ fn flush_motion(client: &mut ClientSlot, _shared: &mut Shared) {
         );
     });
     pointer_frame(client);
+}
+
+/// Answers the window server's query `record` (D161): a toplevel's tree is one element, the
+/// window, named by its title with its app id as the value; Wayland gives no controls, so
+/// every action is refused as not supported.
+fn answer_query<S: System>(
+    client: &mut ClientSlot,
+    system: &mut S,
+    device: Fd,
+    record: &[u8; RECORD_SIZE],
+) {
+    let Some(query) = Query::from_record(record) else {
+        return;
+    };
+    let surface = u16::try_from(query.window)
+        .ok()
+        .and_then(|window| surface_of_window(client, window))
+        .and_then(|index| client.surface(index).copied());
+    let Some(surface) = surface.filter(|_| query.kind == query_kind::TREE) else {
+        let outcome = match query.kind {
+            query_kind::TREE => tree_answer::PIXELS_ONLY,
+            _ => Outcome::NotSupported.value(),
+        };
+        let _ = system.answer_query(device, query.serial, outcome, &[]);
+        return;
+    };
+    let (width, height) = current_size(&surface);
+    let mut bytes = [0u8; HEADER_BYTES + 2 * TITLE_CAPACITY];
+    let mut tree = TreeWriter::new(&mut bytes);
+    let bounds = Bounds::new(0, 0, width as i32, height as i32);
+    tree.push(
+        &Element::new(ROOT_ELEMENT, 0, Role::Window, bounds)
+            .named(&surface.title[..surface.title_length])
+            .valued(&surface.app_id[..surface.app_id_length]),
+    );
+    let _ = system.answer_query(device, query.serial, tree_answer::TREE, tree.bytes());
 }
 
 fn window_event(client: &mut ClientSlot, shared: &mut Shared, record: &[u8]) {

@@ -1809,7 +1809,7 @@ struct Decimals {
 }
 
 impl Decimals {
-    const COUNT: usize = 10;
+    const COUNT: usize = 11;
     const WINDOW: usize = 0;
     const X: usize = 1;
     const Y: usize = 2;
@@ -1820,6 +1820,7 @@ impl Decimals {
     const ENTRY: usize = 7;
     const WIDTH: usize = 8;
     const HEIGHT: usize = 9;
+    const ELEMENT: usize = 10;
 
     fn of_window_call(checked: &Checked) -> Self {
         let (x, y) = checked.point.unwrap_or((0, 0));
@@ -1836,6 +1837,7 @@ impl Decimals {
             i64::from(entry),
             i64::from(width),
             i64::from(height),
+            i64::from(checked.element.unwrap_or(0)),
         ];
         let mut decimals = Self {
             digits: [[0; 20]; Self::COUNT],
@@ -1919,6 +1921,13 @@ fn push_window_words<'w>(
         Kind::WmSize => {
             push(decimals.get(Decimals::WIDTH));
             push(decimals.get(Decimals::HEIGHT));
+        }
+        Kind::WmAct => {
+            push(decimals.get(Decimals::ELEMENT));
+            push(checked.action.unwrap_or("invoke"));
+            if let Some(text) = arguments::typed_text(checked, typed) {
+                push(text);
+            }
         }
         _ => {}
     }
@@ -2177,6 +2186,14 @@ fn audit_arguments(tool: &Tool, checked: &Checked, scratch: &Scratch<'_>, out: &
         writer.key("height");
         writer.u64(u64::from(height));
     }
+    if let Some(element) = checked.element {
+        writer.key("element");
+        writer.u64(u64::from(element));
+    }
+    if let Some(action) = checked.action {
+        writer.key("action");
+        writer.string(action);
+    }
     if let Some(button) = checked.button {
         writer.key("button");
         writer.string(button.name());
@@ -2251,7 +2268,8 @@ fn succeeded(tool: &Tool, outcome: &RunOutcome, content_length: usize) -> bool {
         | Kind::WmMinimise
         | Kind::WmMaximise
         | Kind::WmRestore
-        | Kind::WmClose => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
+        | Kind::WmClose
+        | Kind::WmAct => outcome.ended == Ended::Exited(0) && !outcome.stdout_cut,
         _ => outcome.stdout_cut || outcome.ended == Ended::Exited(0),
     }
 }
@@ -2515,6 +2533,7 @@ fn window_done(kind: Kind) -> &'static str {
         Kind::WmMinimise => "Minimised window ",
         Kind::WmMaximise => "Maximised window ",
         Kind::WmRestore => "Restored window ",
+        Kind::WmAct => "Acted on an element of window ",
         _ => "Asked to close window ",
     }
 }
@@ -2531,6 +2550,7 @@ fn has_done_text(kind: Kind) -> bool {
             | Kind::WmMaximise
             | Kind::WmRestore
             | Kind::WmClose
+            | Kind::WmAct
     )
 }
 

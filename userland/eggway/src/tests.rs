@@ -1051,3 +1051,30 @@ fn a_pointer_made_over_a_window_is_entered_and_a_gone_surface_s_callbacks_end() 
     assert!(deleted);
     session.end();
 }
+
+#[test]
+fn a_query_gets_the_toplevel_s_title_and_app_id_and_refuses_actions() {
+    use eggos_element_tree::{QUERY_EVENT, Role, elements};
+    let mut session = Session::new();
+    session.shown();
+    session.send(TOPLEVEL, 3, &[Value::String(b"org.eggos.paint")]);
+    session.pump();
+    session.record(QUERY_EVENT, [7, 0, 0, 0]);
+    let (serial, outcome, tree) = session.fake.answers.last().cloned().unwrap();
+    assert_eq!((serial, outcome), (7, 0));
+    let root = elements(&tree).next().unwrap().unwrap();
+    assert_eq!(
+        (root.id, root.parent, root.role, root.name, root.value),
+        (
+            1,
+            0,
+            Role::Window,
+            &b"linux-paint"[..],
+            &b"org.eggos.paint"[..]
+        )
+    );
+    session.record(QUERY_EVENT, [8, 1, 1, 1]);
+    let answer = session.fake.answers.last().unwrap();
+    assert_eq!((answer.0, answer.1, answer.2.len()), (8, 2, 0));
+    session.end();
+}

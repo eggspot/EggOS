@@ -5,9 +5,14 @@
 //! the program for what only the system does ([`Request`]), so host tests and the QEMU test's
 //! expected frames run the same code the program shows.
 
+mod elements;
 mod paint;
 #[cfg(test)]
 mod tests;
+
+pub use elements::{
+    ENTRIES_ELEMENT, FIRST_ENTRY_ELEMENT, FIRST_PLACE_ELEMENT, PATH_ELEMENT, PLACES_ELEMENT,
+};
 
 use crate::job::{Job, STEP_BYTES, Step, Work};
 use crate::kind::{self, Kind};

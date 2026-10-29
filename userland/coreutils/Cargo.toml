@@ -13,6 +13,7 @@ path = "src/main.rs"
 eggos-app = { path = "../app" }
 eggos-calendar = { path = "../../calendar" }
 eggos-commands = { path = "../commands" }
+eggos-element-tree = { path = "../element-tree" }
 eggos-files = { path = "../files" }
 eggos-mcp = { path = "../mcp" }
 eggos-net = { path = "../../net" }

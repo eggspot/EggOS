@@ -568,3 +568,83 @@ fn every_printable_character_has_a_key_that_types_it() {
     assert_eq!(key_for_ascii(0x80), None);
     assert_eq!(key_for_ascii(b'1'), Some((2, Modifiers::NONE)));
 }
+
+#[test]
+fn a_query_goes_to_the_window_s_app_unless_it_is_the_terminal_s_or_a_person_acts() {
+    use super::protocol::{act_request, element_action, query_kind, read_query_reply};
+    assert_eq!(request::GET_TREE, 0xc020_7718);
+    assert_eq!(request::ACT_ON_ELEMENT, 0xc100_7719);
+    assert_eq!(request::READ_QUERY, 0xc100_771a);
+    assert_eq!(request::ANSWER_QUERY, 0x4018_771b);
+    assert_eq!((size::ACT_ON_ELEMENT, size::READ_QUERY), (256, 256));
+    assert_eq!(act_request::TEXT, read_query_reply::TEXT);
+    let mut act = [0u8; size::ACT_ON_ELEMENT];
+    act[..4].copy_from_slice(&9u32.to_ne_bytes());
+    act[act_request::ELEMENT..act_request::ELEMENT + 4].copy_from_slice(&301u32.to_ne_bytes());
+    act[act_request::ACTION..act_request::ACTION + 4]
+        .copy_from_slice(&element_action::SET_TEXT.to_ne_bytes());
+    act[act_request::TEXT_LENGTH..act_request::TEXT_LENGTH + 4]
+        .copy_from_slice(&2u32.to_ne_bytes());
+    act[act_request::TEXT..act_request::TEXT + 2].copy_from_slice(b"hi");
+    let Some(Request::ActOnElement {
+        window,
+        element,
+        action,
+        text_length,
+        text,
+    }) = Request::parse(request::ACT_ON_ELEMENT, &act)
+    else {
+        panic!("not parsed");
+    };
+    assert_eq!((window, element, action, text_length), (9, 301, 3, 2));
+    assert_eq!(&text[..2], b"hi");
+    let (mut desktop, first, _) = desktop_with_two_windows();
+    let mut events = Recorded::default();
+    let tree = EventRecord::new(0, 0, 41, query_kind::TREE as i32, 0, 0);
+    assert_eq!(
+        desktop.ask_owner(u32::from(first), tree, &mut Damage::new(), &mut events),
+        Ok(CLIENT)
+    );
+    let sent = events.take();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].kind, sent[0].window, sent[0].a),
+        (event::QUERY, first, 41)
+    );
+    let terminal = u32::from(desktop.terminal_window());
+    assert_eq!(
+        desktop.ask_owner(terminal, tree, &mut Damage::new(), &mut events),
+        Err(WindowError::Unsupported)
+    );
+    assert_eq!(
+        desktop.ask_owner(9999, tree, &mut Damage::new(), &mut events),
+        Err(WindowError::NoSuchWindow)
+    );
+    let act = EventRecord::new(
+        0,
+        0,
+        42,
+        query_kind::ACT as i32,
+        301,
+        element_action::INVOKE,
+    );
+    desktop.wheel(1, &mut events);
+    events.take();
+    assert_eq!(
+        desktop.ask_owner(u32::from(first), act, &mut Damage::new(), &mut events),
+        Err(WindowError::Busy)
+    );
+    assert_eq!(
+        desktop.ask_owner(u32::from(first), tree, &mut Damage::new(), &mut events),
+        Ok(CLIENT),
+        "reading the tree is no input"
+    );
+    events.take();
+    events.room = 0;
+    desktop.set_time(QUIET_MS * 2);
+    assert_eq!(
+        desktop.ask_owner(u32::from(first), act, &mut Damage::new(), &mut events),
+        Err(WindowError::QueueFull)
+    );
+    assert!(events.records.is_empty());
+}

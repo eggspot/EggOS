@@ -231,7 +231,7 @@ fn the_window_tools_run_wm_and_input_needs_run() {
         );
         assert_eq!(tool.confirmation, Confirmation::Never, "{}", tool.name);
         let expected = match tool.kind {
-            Kind::WmCapture | Kind::WmMenuList => Grant::View,
+            Kind::WmCapture | Kind::WmMenuList | Kind::WmShow => Grant::View,
             _ => Grant::Run,
         };
         assert_eq!(tool.grant, Some(expected), "{}", tool.name);

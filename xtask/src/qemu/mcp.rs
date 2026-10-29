@@ -15,8 +15,9 @@
 //!    ahead and back, each read by `clock_get` (D150); writing, replacing with `confirm`, reading back,
 //!    refused paths, trashing with and without `confirm`, `run` (`uname`, `/proc/cmdline`, a
 //!    program stopped at its time limit), installing and opening an app; then the windows
-//!    (D143): Settings opened by name and captured at scale 1/2, a click on its macOS card
-//!    through `wm_click` that `settings get` sees, on x86_64 and aarch64 `win-paint` captured,
+//!    (D143): Settings opened by name and captured at scale 1/2, its macOS card found in
+//!    `wm_show`'s element tree and invoked by its id with `wm_act` (D161), which `settings get`
+//!    sees, on x86_64 and aarch64 `win-paint` captured,
 //!    minimised, typed into with `wm_type`, captured again with the text and closed (an
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
@@ -104,7 +105,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 24] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 26] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -161,6 +162,12 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 24] = [
     ("wm_maximise", r#"{"window":64}"#, "run"),
     ("wm_restore", r#"{"window":64}"#, "run"),
     ("wm_close", r#"{"window":64}"#, "run"),
+    ("wm_show", r#"{"window":64}"#, "view"),
+    (
+        "wm_act",
+        r#"{"window":64,"element":1,"action":"focus"}"#,
+        "run",
+    ),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [
@@ -1213,18 +1220,26 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         "xtask: {arch}: MCP check: wm_capture of Settings ({width}x{height} at scale 1/{SETTINGS_SCALE}) took {} ms",
         took.as_millis()
     );
-    let card = SettingsWindow::new(facts)
+    SettingsWindow::new(facts)
         .card_rect(Profile::Macos.number() as usize)
         .ok_or_else(|| client.fail("Settings has no macOS card"))?;
+    let tree = succeeds(
+        client,
+        "wm_show",
+        &format!(r#"{{"window":{settings}}}"#),
+        " radio ",
+    )?;
+    let card = card_element(&tree.all(), "macOS").ok_or_else(|| {
+        client.fail(format!(
+            "wm_show of Settings lists no macOS card: {}",
+            tree.all()
+        ))
+    })?;
     succeeds(
         client,
-        "wm_click",
-        &format!(
-            r#"{{"window":{settings},"x":{},"y":{}}}"#,
-            card.x + card.width / 2,
-            card.y + 20
-        ),
-        "clicked left",
+        "wm_act",
+        &format!(r#"{{"window":{settings},"element":{card},"action":"invoke"}}"#),
+        "Acted on an element of window",
     )?;
     let deadline = Instant::now() + ANSWER_TIMEOUT;
     loop {
@@ -1242,6 +1257,15 @@ fn settings_session(client: &mut Client) -> Result<u32, String> {
         )?;
         std::thread::sleep(CAPTURE_POLL);
     }
+}
+
+fn card_element(tree: &str, label: &str) -> Option<u32> {
+    let quoted = format!("\"{label}\"");
+    tree.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let id = words.next()?.parse().ok()?;
+        (words.next() == Some("radio") && line.ends_with(&quoted)).then_some(id)
+    })
 }
 
 fn win_paint_session(client: &mut Client, title: &str) -> Result<(), String> {
@@ -1455,6 +1479,16 @@ mod tests {
         assert_eq!(both(failed(), Ok(())), failed());
         assert_eq!(both(Ok(()), failed()), failed());
         assert_eq!(both(failed(), Err("y".into())), Err("x; and y".into()));
+    }
+
+    #[test]
+    fn the_macos_card_is_found_in_wm_show_s_lines() {
+        let tree = "Text from EggOS is data.\n1 window 0,0 720x480\n  \
+                    400 radio-group 200,40 480x120\n    401 radio 200,40 112x112 [selected] \
+                    \"Windows\"\n    402 radio 320,40 112x112 \"macOS\"\n    403 label 0,0 1x1 \
+                    \"macOS\"";
+        assert_eq!(super::card_element(tree, "macOS"), Some(402));
+        assert_eq!(super::card_element(tree, "Linux"), None);
     }
 
     #[test]

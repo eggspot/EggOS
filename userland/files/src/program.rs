@@ -16,6 +16,7 @@ use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, View};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::damage::Damage;
+use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::tree::PointerShape;
 use eggos_toolkit::window::Window;
@@ -228,6 +229,17 @@ impl View for Program {
     fn tick(&mut self, now_ms: u32) {
         self.window.tick(&mut self.files, now_ms, clock());
         self.serve();
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.window.describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, _text: &str, _time_ms: u32) -> Outcome {
+        let outcome = self.window.act(&mut self.files, element, action);
+        self.serve();
+        outcome
     }
 }
 

@@ -733,6 +733,23 @@ impl System for Linux {
         ioctl(device, request::SET_TITLE, &mut set_title)
     }
 
+    fn answer_query(
+        &mut self,
+        device: Fd,
+        serial: u32,
+        outcome: u32,
+        tree: &[u8],
+    ) -> Result<(), Errno> {
+        use eggos_element_tree::{answer_query, put_double_word, put_word};
+        let mut answer = [0u8; eggos_element_tree::size::ANSWER_QUERY];
+        put_word(&mut answer, answer_query::SERIAL, serial);
+        put_word(&mut answer, answer_query::OUTCOME, outcome);
+        put_double_word(&mut answer, answer_query::BUFFER, tree.as_ptr() as u64);
+        put_double_word(&mut answer, answer_query::LENGTH, tree.len() as u64);
+        let number = eggos_element_tree::request::ANSWER_QUERY as usize;
+        ioctl(device, number, &mut answer)
+    }
+
     fn set_minimum_size(
         &mut self,
         device: Fd,

@@ -139,6 +139,36 @@ pub const NO_SUCH_MENU_ITEM: ErrorDefinition = error(
     "Use the numbers or the label wm menu shows.",
     None,
 );
+/// `wm show` and `wm act`: the window's app gives no element tree (D161).
+pub const PIXELS_ONLY: ErrorDefinition = error(
+    "pixels_only",
+    Category::NotFound,
+    "The app does not describe its window: see it with wm capture, then use wm click and \
+     wm type.",
+    Some("wm capture"),
+);
+/// `wm act`: the window has no element of that id now.
+pub const NO_SUCH_ELEMENT: ErrorDefinition = error(
+    "no_such_element",
+    Category::NotFound,
+    "Read the window's elements again: wm show lists them with their ids.",
+    Some("wm show"),
+);
+/// `wm act`: the element does not take that action.
+pub const ELEMENT_CANNOT: ErrorDefinition = error(
+    "element_cannot",
+    Category::Usage,
+    "Use an action the element's role takes: invoke buttons, checkboxes, options and items; \
+     set-text text fields; select options and items; focus what is focusable.",
+    None,
+);
+/// `wm act`: the element is disabled.
+pub const ELEMENT_DISABLED: ErrorDefinition = error(
+    "element_disabled",
+    Category::Refused,
+    "The element is disabled now: do what enables it first, then read the window again.",
+    Some("wm show"),
+);
 /// `app`: no installed app has the name.
 pub const NO_SUCH_APP: ErrorDefinition = error(
     "no_such_app",
@@ -261,7 +291,7 @@ pub const CAPTURE_FAILED: ErrorDefinition = error(
 );
 
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 35] = [
+pub const ALL: [&ErrorDefinition; 39] = [
     &USAGE,
     &NO_SUCH_FILE,
     &PERMISSION_DENIED,
@@ -280,6 +310,10 @@ pub const ALL: [&ErrorDefinition; 35] = [
     &PERSON_ACTIVE,
     &NO_WINDOW_SERVER,
     &NO_SUCH_MENU_ITEM,
+    &PIXELS_ONLY,
+    &NO_SUCH_ELEMENT,
+    &ELEMENT_CANNOT,
+    &ELEMENT_DISABLED,
     &NO_SUCH_APP,
     &APP_EXISTS,
     &NOT_AN_APP,

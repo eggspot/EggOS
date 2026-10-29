@@ -18,6 +18,10 @@ pub const CAPTURE_SIZE: usize = 40;
 pub const SEND_INPUT_SIZE: usize = 24;
 pub const GET_MENU_SIZE: usize = 256;
 pub const CHOOSE_MENU_SIZE: usize = 260;
+pub const GET_TREE: u32 = eggos_element_tree::request::GET_TREE;
+pub const GET_TREE_SIZE: usize = eggos_element_tree::size::GET_TREE;
+pub const ACT_ON_ELEMENT: u32 = eggos_element_tree::request::ACT_ON_ELEMENT;
+pub const ACT_ON_ELEMENT_SIZE: usize = eggos_element_tree::size::ACT_ON_ELEMENT;
 pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
@@ -30,7 +34,8 @@ const USAGE: &[u8] =
       wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
       wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | \
       wm menu [--] <id> | wm menu --choose [--label <label>] [--] <id> <menu> <entry> | \
-      wm help";
+      wm show [--json] [--] <id> | \
+      wm act [--] <id> <element> invoke|focus|set-text|select [<text>] | wm help";
 const TITLE_AT: usize = 32;
 const TITLE_CAPACITY: usize = 64;
 const WINDOW_RECORD_BYTES: usize = 1024;
@@ -199,11 +204,14 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             return crate::window_input::send(output, verb, &arguments[1..]);
         }
         Some(b"menu") => return crate::window_menu::menu(output, &arguments[1..]),
+        Some(b"show") => return crate::window_tree::show(output, &arguments[1..]),
+        Some(b"act") => return crate::window_tree::act(output, &arguments[1..]),
         Some(b"help") if arguments.len() == 1 => {
             output.write(USAGE);
             output.write(b"\n");
             output.write(crate::window_input::HELP);
             output.write(crate::window_menu::HELP);
+            output.write(crate::window_tree::HELP);
             return 0;
         }
         _ => {}

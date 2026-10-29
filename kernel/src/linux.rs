@@ -1153,7 +1153,7 @@ fn out_of_line_result<P: Platform>(
         number::TIME => time::time(process, first),
         number::CLOCK_SETTIME => time::clock_settime(process, first, second),
         number::SETTIMEOFDAY => time::settimeofday(process, first, second),
-        number::IOCTL => ioctl::<P>(process, thread.files(), first, second, third),
+        number::IOCTL => ioctl::<P>(process, thread, first, second, third),
         number::LSEEK => lseek(thread.files(), first, second, third),
         number::FSTAT => stat::fstat(process, thread.files(), first, second),
         number::NEWFSTATAT => stat::newfstatat(process, thread, first, second, third, fourth),
@@ -1507,28 +1507,31 @@ fn read<P: Platform>(
 
 fn ioctl<P: Platform>(
     process: &Process<P>,
-    files: &Descriptors,
+    thread: &mut LinuxThread,
     fd: u64,
     request: u64,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let file = files.file(fd)?;
+    let file = thread.files().file(fd)?;
     if file.is_location_only() {
         return Err(Errno::EBADF);
     }
     if let Some(result) =
-        descriptors::descriptor_ioctl(process, files, &file, fd, request, argument)
+        descriptors::descriptor_ioctl(process, thread.files(), &file, fd, request, argument)
     {
         return result;
     }
     match file.kind() {
         FileKind::Console => terminal::ioctl(process, request, argument),
-        FileKind::Window(connection) => window::ioctl(process, connection, request, argument),
+        FileKind::Window(connection) => {
+            window::ioctl(process, thread, connection, request, argument)
+        }
         FileKind::Socket(socket) => {
             socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
         }
-        FileKind::InetSocket(socket) => socket::inet::ioctl(process, socket, request, argument)
-            .unwrap_or(Err(Errno::ENOTTY)),
+        FileKind::InetSocket(socket) => {
+            socket::inet::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
+        }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);
             process
