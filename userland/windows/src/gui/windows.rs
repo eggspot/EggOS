@@ -787,7 +787,7 @@ mod tests {
     fn children_keep_creation_order_when_slots_are_reused() {
         let mut table = new_table();
         let root = table.insert(window()).unwrap();
-        let mut make = |creation_sequence: u32| {
+        let make = |creation_sequence: u32| {
             let mut kid = child(root, Rect::sized(0, 0, 10, 10));
             kid.creation_sequence = creation_sequence;
             kid
