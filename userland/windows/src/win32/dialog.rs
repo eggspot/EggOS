@@ -154,6 +154,23 @@ pub fn enable(window: usize, enabled: bool) -> Result<bool, u32> {
         if was_disabled == enabled {
             windows::invalidate_tree(&mut gui.windows, window, None, true);
         }
+        if !enabled && let Some(root) = windows::root_of(&gui.windows, window) {
+            let (focus, capture) = gui
+                .windows
+                .get(root)
+                .map_or((0, 0), |top| (top.focus, top.capture));
+            let inside =
+                |handle: usize| handle != 0 && windows::is_in_tree(&gui.windows, window, handle);
+            let (drop_focus, drop_capture) = (inside(focus), inside(capture));
+            if let Some(top) = gui.windows.get_mut(root) {
+                if drop_focus {
+                    top.focus = 0;
+                }
+                if drop_capture {
+                    top.capture = 0;
+                }
+            }
+        }
         Ok((was_disabled, was_disabled == enabled))
     })?;
     if changed {
@@ -301,8 +318,6 @@ extern "efiapi" fn move_window(
     }
 }
 
-/// The default push button of `dialog`: the focused push button, else the first with
-/// `BS_DEFPUSHBUTTON`.
 fn default_button(dialog: usize) -> Option<(usize, usize)> {
     with(|gui| {
         let root = windows::root_of(&gui.windows, dialog)?;

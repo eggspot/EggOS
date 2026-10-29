@@ -388,7 +388,7 @@ unsafe extern "efiapi" fn create_window_ex_w(
     if send(handle, message::NC_CREATE, 0, create) == 0
         || send(handle, message::CREATE, 0, create) as isize == -1
     {
-        remove_window(handle);
+        destroy_tree(handle);
         return 0;
     }
     if style & WS_VISIBLE != 0 {
@@ -495,6 +495,8 @@ struct ChildRequest<'a> {
     text: &'a [u16],
 }
 
+static NEXT_SEQUENCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
 fn child_bounds(x: i32, y: i32, width: i32, height: i32) -> Rect {
     let or_zero = |value: i32| if value == CW_USE_DEFAULT { 0 } else { value };
     Rect::sized(
@@ -515,6 +517,7 @@ fn insert_child(mut window: Window, text: &[u16]) -> Result<usize, u32> {
             return Err(error::NOT_SUPPORTED);
         }
         window.thread = thread_environment::thread_id();
+        window.sequence = NEXT_SEQUENCE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let handle = gui.windows.insert(window).ok_or(error::NOT_ENOUGH_MEMORY)?;
         if !window_text::store(gui, handle, text) {
             gui.windows.remove(handle);

@@ -8,6 +8,8 @@ use super::queue::{Filter, Message};
 pub const MAX_TIMERS: usize = 32;
 /// The shortest interval, Windows' `USER_TIMER_MINIMUM`.
 pub const MINIMUM_INTERVAL_MS: u32 = 10;
+/// The longest interval, Windows' `USER_TIMER_MAXIMUM`.
+pub const MAXIMUM_INTERVAL_MS: u32 = 0x7fff_ffff;
 const FIRST_THREAD_TIMER_ID: usize = 0x7f00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +69,7 @@ impl Timers {
             _ => id,
         };
         let slot = existing.or_else(|| self.entries.iter().position(Option::is_none))?;
-        let interval = interval.max(MINIMUM_INTERVAL_MS);
+        let interval = interval.clamp(MINIMUM_INTERVAL_MS, MAXIMUM_INTERVAL_MS);
         self.entries[slot] = Some(Timer {
             window,
             id,
@@ -148,12 +150,23 @@ impl Timers {
         None
     }
 
-    /// The milliseconds until `thread`'s next timer is due (0 when one is), `None` without one.
-    pub fn next_due(&self, thread: u32, now: u32) -> Option<u32> {
+    /// The milliseconds until the next timer `filter` accepts is due (0 when one is), `None`
+    /// without one.
+    pub fn next_due(&self, filter: &Filter, now: u32) -> Option<u32> {
+        if !filter.accepts_number(message::TIMER) {
+            return None;
+        }
         self.entries
             .iter()
             .flatten()
-            .filter(|timer| timer.thread == thread)
+            .filter(|timer| {
+                filter.accepts(&Message {
+                    window: timer.window,
+                    message: message::TIMER,
+                    thread: timer.thread,
+                    ..Message::default()
+                })
+            })
             .map(|timer| match reached(now, timer.due) {
                 true => 0,
                 false => timer.due.wrapping_sub(now),
@@ -190,14 +203,14 @@ mod tests {
         let mut timers = Timers::new();
         assert_eq!(timers.set(0x10, 1, 100, 0, 7, 1000), Some(1));
         assert_eq!(timers.take_due(&any(7), 1099, true), None);
-        assert_eq!(timers.next_due(7, 1050), Some(50));
+        assert_eq!(timers.next_due(&any(7), 1050), Some(50));
         let peeked = timers.take_due(&any(7), 1100, false).unwrap();
         assert_eq!((peeked.window, peeked.wparam), (0x10, 1));
         assert!(timers.take_due(&any(7), 1100, false).is_some());
         assert!(timers.take_due(&any(7), 1150, true).is_some());
         assert_eq!(timers.take_due(&any(7), 1200, true), None);
-        assert_eq!(timers.next_due(7, 1200), Some(50));
-        assert_eq!(timers.next_due(8, 1200), None);
+        assert_eq!(timers.next_due(&any(7), 1200), Some(50));
+        assert_eq!(timers.next_due(&any(8), 1200), None);
         assert_eq!(timers.take_due(&any(8), 5000, true), None);
     }
 
@@ -210,7 +223,7 @@ mod tests {
         assert_eq!(timers.set(0, first, 80, 0x99, 7, 0), Some(first));
         assert_eq!(timers.set(0x10, 3, 1, 0, 7, 0), Some(3));
         assert_eq!(timers.set(0x10, 3, 500, 0, 7, 0), Some(3));
-        assert_eq!(timers.next_due(7, 0), Some(50));
+        assert_eq!(timers.next_due(&any(7), 0), Some(50));
         assert!(timers.has_procedure(0, first, 0x99, 7));
         assert!(!timers.has_procedure(0, first, 0x98, 7));
         assert!(!timers.has_procedure(0, first, 0x99, 8));
@@ -218,6 +231,34 @@ mod tests {
         assert!(!timers.kill(0, first, 7));
         timers.kill_window(0x10);
         assert!(!timers.kill(0x10, 3, 7));
+    }
+
+    #[test]
+    fn a_timer_another_window_or_range_filters_out_is_not_waited_for() {
+        let mut timers = Timers::new();
+        timers.set(0x10, 1, 100, 0, 7, 0);
+        let other_window = Filter {
+            window: 0x20,
+            thread: 7,
+            ..Filter::default()
+        };
+        assert_eq!(timers.next_due(&other_window, 500), None);
+        let keys_only = Filter {
+            first: 0x100,
+            last: 0x109,
+            thread: 7,
+            ..Filter::default()
+        };
+        assert_eq!(timers.next_due(&keys_only, 500), None);
+        assert_eq!(timers.next_due(&any(7), 500), Some(0));
+        timers.set(0x10, 2, u32::MAX, 0, 7, 0);
+        assert_eq!(
+            timers
+                .take_due(&any(7), 200, true)
+                .map(|message| message.wparam),
+            Some(1)
+        );
+        assert_eq!(timers.take_due(&any(7), 200, true), None);
     }
 
     #[test]

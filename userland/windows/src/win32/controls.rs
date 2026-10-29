@@ -353,11 +353,11 @@ pub fn procedure(
         message::SET_FOCUS | message::KILL_FOCUS => {
             let gained = number == message::SET_FOCUS;
             if !gained {
-                let cancelled = with_state(window, |_, state| match state {
-                    State::Button(button) => button.cancel(),
-                    _ => ButtonOutcome::Unchanged,
+                with_state(window, |_, state| {
+                    if let State::Button(button) = state {
+                        button.cancel();
+                    }
                 });
-                let _ = cancelled;
             }
             invalidate(window);
             match (kind, gained) {

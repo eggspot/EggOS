@@ -134,7 +134,16 @@ pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
     Some(tracking.rect)
 }
 
+fn bar_command(gui: &Gui, root: usize, entry: usize) -> Option<usize> {
+    let menu = gui.windows.get(root)?.menu;
+    let item = table(gui)?.get(menu)?.items().get(entry)?;
+    item.popup().is_none().then_some(item.id)
+}
+
 fn open(gui: &mut Gui, root: usize, entry: usize) -> Option<Rect> {
+    if let Some(other) = gui.tracking.filter(|tracking| tracking.root != root) {
+        close(gui, other.root);
+    }
     let window = gui.windows.get(root)?;
     let (menu, width) = (window.menu, window.buffer_width as i32);
     let bar = table(gui)?.get(menu)?;
@@ -171,7 +180,10 @@ pub fn close(gui: &mut Gui, root: usize) -> Option<Rect> {
         Some(tracking.rect.offset(0, -menu_height)),
         true,
     );
-    paint_bar(gui, root)
+    let bar = paint_bar(gui, root)?;
+    let window = gui.windows.get_mut(root)?;
+    window.pending = window.pending.union(&bar);
+    Some(bar)
 }
 
 fn drop_down_item_at(gui: &Gui, tracking: &Tracking, point: (i32, i32)) -> Option<(usize, usize)> {
@@ -211,13 +223,27 @@ pub fn input(
         return None;
     }
     let menu_height = window.menu_height;
+    if !window.enabled || window.modal_disabled {
+        return close(gui, root).map(|commit| Effect {
+            commit: Some(commit),
+            command: None,
+        });
+    }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
         if number != message::LEFT_BUTTON_DOWN || point.1 >= menu_height {
             return None;
         }
-        let commit = bar_entry_at(gui, root, point).and_then(|entry| open(gui, root, entry));
+        let Some(entry) = bar_entry_at(gui, root, point) else {
+            return Some(Effect::default());
+        };
+        if let Some(id) = bar_command(gui, root, entry) {
+            return Some(Effect {
+                commit: None,
+                command: Some(id),
+            });
+        }
         return Some(Effect {
-            commit,
+            commit: open(gui, root, entry),
             command: None,
         });
     };

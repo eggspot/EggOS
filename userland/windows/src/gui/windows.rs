@@ -83,6 +83,7 @@ pub struct Window {
     pub enabled: bool,
     pub modal_disabled: bool,
     pub text: usize,
+    pub sequence: u32,
     pub pending: Rect,
     pub paint_sent: bool,
     pub shown: bool,
@@ -143,6 +144,7 @@ impl Window {
             enabled: true,
             modal_disabled: false,
             text: 0,
+            sequence: 0,
             pending: Rect::default(),
             paint_sent: false,
             shown: false,
@@ -351,17 +353,22 @@ pub fn client_placement(table: &WindowTable, handle: usize) -> Option<Placement>
     Some(Placement { root, origin, clip })
 }
 
-/// The handles of `parent`'s children, in creation order (the table's order).
+/// The handles of `parent`'s children, in creation order.
 pub fn children(table: &WindowTable, parent: usize) -> ([usize; MAX_WINDOWS], usize) {
-    let mut found = [0; MAX_WINDOWS];
+    let mut found = [(0u32, 0usize); MAX_WINDOWS];
     let mut count = 0;
     for (handle, window) in table.iter() {
         if window.parent == parent && parent != 0 {
-            found[count] = handle;
+            found[count] = (window.sequence, handle);
             count += 1;
         }
     }
-    (found, count)
+    found[..count].sort_unstable();
+    let mut handles = [0; MAX_WINDOWS];
+    for (slot, (_, handle)) in handles.iter_mut().zip(&found[..count]) {
+        *slot = *handle;
+    }
+    (handles, count)
 }
 
 /// The handles of `handle`'s tree, `handle` first and every window before its children.
@@ -437,13 +444,13 @@ fn ancestors_allow_paint(table: &WindowTable, handle: usize) -> bool {
     })
 }
 
-/// The first window of `filter` (any when 0) and of `thread` (any when 0) with a region to
-/// paint, a parent always before its children.
+/// The first window of `filter`'s tree (any when 0) and of `thread` (any when 0) with a region
+/// to paint, a parent always before its children.
 pub fn needing_paint(table: &WindowTable, filter: usize, thread: u32) -> Option<usize> {
     table
         .iter()
         .find(|(handle, window)| {
-            (filter == 0 || filter == *handle)
+            (filter == 0 || is_in_tree(table, filter, *handle))
                 && (thread == 0 || thread == window.thread)
                 && window.needs_paint()
                 && ancestors_allow_paint(table, *handle)
@@ -765,5 +772,27 @@ mod tests {
         assert_eq!(window.set_long(index::PROCEDURE, 8, 5), None);
         assert_eq!(window.long(index::PARENT, 8), Some(0x1_0040));
         assert_eq!(window.set_long(index::PARENT, 8, 5), None);
+    }
+
+    #[test]
+    fn children_keep_creation_order_when_slots_are_reused() {
+        let mut table = new_table();
+        let root = table.insert(window()).unwrap();
+        let mut make = |sequence: u32| {
+            let mut kid = child(root, Rect::sized(0, 0, 10, 10));
+            kid.sequence = sequence;
+            kid
+        };
+        let first = table.insert(make(1)).unwrap();
+        let second = table.insert(make(2)).unwrap();
+        table.remove(first);
+        let third = table.insert(make(3)).unwrap();
+        let (kids, count) = children(&table, root);
+        assert_eq!(&kids[..count], &[second, third]);
+        assert_eq!(child_at(&table, root, 5, 5).0, third);
+        assert_eq!(needing_paint(&table, root, 0), None);
+        table.get_mut(third).unwrap().invalidate(None, true);
+        assert_eq!(needing_paint(&table, root, 0), Some(third));
+        assert_eq!(needing_paint(&table, second, 0), None);
     }
 }

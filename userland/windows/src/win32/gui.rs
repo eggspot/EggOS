@@ -426,7 +426,10 @@ fn route_input(
         return None;
     }
     let origin = windows::client_placement(&gui.windows, target)?.origin;
-    let local = (point.0 - origin.0, point.1 - origin.1);
+    let local = (
+        point.0.saturating_sub(origin.0),
+        point.1.saturating_sub(origin.1),
+    );
     let lparam = match number {
         message::MOUSE_WHEEL => lparam,
         _ => point_parameter(local.0, local.1),
@@ -559,7 +562,7 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
         linux::yield_now();
         return;
     };
-    let timeout = with(|gui| gui.timers.next_due(filter.thread, super::user32::now_ms()))
+    let timeout = with(|gui| gui.timers.next_due(filter, super::user32::now_ms()))
         .flatten()
         .map(|milliseconds| u64::from(milliseconds) * NANOSECONDS_PER_MILLISECOND);
     if timeout == Some(0) {

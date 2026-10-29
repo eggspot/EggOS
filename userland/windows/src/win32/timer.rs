@@ -27,7 +27,14 @@ extern "efiapi" fn set_timer(window: usize, id: usize, interval: u32, procedure:
                 (_, id) => id,
             }
         }
-        None => fail(error::INVALID_WINDOW_HANDLE, 0),
+        None => {
+            let known = window == 0 || with(|gui| gui.windows.get(window).is_some()) == Some(true);
+            let code = match known {
+                true => error::NOT_ENOUGH_MEMORY,
+                false => error::INVALID_WINDOW_HANDLE,
+            };
+            fail(code, 0)
+        }
     }
 }
 
