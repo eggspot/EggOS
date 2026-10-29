@@ -2,13 +2,18 @@
 //! region waiting to be painted, `GetDC`/`ReleaseDC` for the whole client area), what each one
 //! changed shown on the desktop with one commit when it is released (a window first appears when
 //! its first paint ends), and gdi32's objects, shapes and text drawn with
-//! `eggos_windows_gui`.
+//! `eggos_windows_gui`. A child window (D145) draws on its top-level window's buffer from its
+//! own origin, clipped to its client area and its ancestors'; what a window of a tree draws is
+//! committed once no paint of the same thread is left to hand out in that tree, so a window
+//! never shows with its controls half painted, and an open drop-down is painted over it first.
 
-use super::gui::{self, try_with, with};
+use super::gui::{self, Gui, try_with, with};
+use super::thread_environment;
 use super::user32::Win32Rect;
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::gui::message;
 use crate::gui::objects::{self, DeviceContext, Object, ObjectTable};
+use crate::gui::windows;
 use crate::library::Export;
 use eggos_windows_gui::colour;
 use eggos_windows_gui::shapes::{self, Pen};
@@ -45,31 +50,39 @@ fn rect_of(rect: &Win32Rect) -> Rect {
     Rect::new(rect.left, rect.top, rect.right, rect.bottom)
 }
 
-fn draw<R>(
+/// Runs `work` on context `hdc`'s window's surface (none when it draws nowhere), translated to
+/// the window's client area and clipped to it and to the context, under the state's lock.
+pub fn draw_in<R>(
     hdc: usize,
-    work: impl FnOnce(Option<&mut Surface<'_>>, &mut DeviceContext, &ObjectTable) -> R,
+    work: impl FnOnce(Option<&mut Surface<'_>>, &mut DeviceContext, &Gui) -> R,
 ) -> Result<R, u32> {
     try_with(|gui| {
         let mut context = *gui.contexts.get(hdc).ok_or(error::INVALID_HANDLE)?;
-        let surface = gui.windows.get(context.window).and_then(|window| {
-            // SAFETY: the window's pixels are its mapped buffer of `width * height` pixels,
-            // which stays mapped while the window is in the table, and the table's lock is held.
+        let placement = windows::client_placement(&gui.windows, context.window);
+        let surface = placement.and_then(|placement| {
+            let root = gui.windows.get(placement.root)?;
+            // SAFETY: the top-level window's pixels are its mapped buffer of `buffer_width *
+            // buffer_height` pixels, which stays mapped while the window is in the table, and
+            // the table's lock is held.
             let pixels = unsafe {
                 core::slice::from_raw_parts_mut(
-                    window.pixels as *mut u32,
-                    window.width as usize * window.height as usize,
+                    root.pixels as *mut u32,
+                    root.buffer_width as usize * root.buffer_height as usize,
                 )
             };
-            Surface::new(pixels, window.width, window.height)
+            let mut surface = Surface::new(pixels, root.buffer_width, root.buffer_height)?;
+            surface.clip_to(placement.clip);
+            surface.translate(placement.origin.0, placement.origin.1);
+            Some(surface)
         });
         let result = match surface {
             Some(mut surface) => {
                 surface.clip_to(context.clip);
-                let result = work(Some(&mut surface), &mut context, &gui.objects);
+                let result = work(Some(&mut surface), &mut context, gui);
                 context.drawn = context.drawn.union(&surface.drawn());
                 result
             }
-            None => work(None, &mut context, &gui.objects),
+            None => work(None, &mut context, gui),
         };
         if let Some(stored) = gui.contexts.get_mut(hdc) {
             *stored = context;
@@ -78,7 +91,18 @@ fn draw<R>(
     })
 }
 
-fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
+fn draw<R>(
+    hdc: usize,
+    work: impl FnOnce(Option<&mut Surface<'_>>, &mut DeviceContext, &ObjectTable) -> R,
+) -> Result<R, u32> {
+    draw_in(hdc, |surface, context, gui| {
+        work(surface, context, &gui.objects)
+    })
+}
+
+/// `BeginPaint`'s work: a painting context on `window`'s region waiting to be painted (now
+/// validated), the region, and whether the background is still to erase.
+pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
     let (hdc, region, erase) = try_with(|gui| {
         let target = gui.window_mut(window)?;
         let region = target.update.intersection(&target.client());
@@ -95,26 +119,29 @@ fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
     Ok((hdc, region, unerased))
 }
 
-fn finish(hdc: usize) -> bool {
+/// `EndPaint`'s and `ReleaseDC`'s work: frees context `hdc` and adds what it painted or drew to
+/// its top-level window's region to show, which is committed when nothing of the tree waits to
+/// be painted; whether there was such a context.
+pub fn finish(hdc: usize) -> bool {
+    let thread = thread_environment::thread_id();
     let commit = with(|gui| {
         let context = gui.contexts.remove(hdc)?;
-        let device = gui.device;
-        let window = gui.windows.get_mut(context.window)?;
-        let rect = match context.painting {
+        let Some(placement) = windows::client_placement(&gui.windows, context.window) else {
+            return Some(None);
+        };
+        let local = match context.painting {
             true => context.clip,
             false => context.drawn,
         };
-        if !window.committed {
-            if !context.painting {
-                return Some(None);
-            }
-            window.committed = true;
-            return Some(Some((device?, window.server, None)));
+        let rect = local
+            .offset(placement.origin.0, placement.origin.1)
+            .intersection(&placement.clip);
+        let root = gui.windows.get_mut(placement.root)?;
+        root.pending = root.pending.union(&rect);
+        if !root.shown || windows::paint_outstanding(&gui.windows, placement.root, thread) {
+            return Some(None);
         }
-        match rect.is_empty() {
-            true => Some(None),
-            false => Some(Some((device?, window.server, Some(rect)))),
-        }
+        Some(show_pending(gui, placement.root))
     })
     .flatten();
     match commit {
@@ -123,6 +150,32 @@ fn finish(hdc: usize) -> bool {
         Some(Some((device, server, rect))) => {
             let _ = device.commit(server, rect);
             true
+        }
+    }
+}
+
+/// Takes `root`'s region to show (all of it at its first commit, with the menu bar), with an
+/// open drop-down painted over it: the commit to make, if any.
+pub fn show_pending(
+    gui: &mut Gui,
+    root: usize,
+) -> Option<(super::window_device::Device, u32, Option<Rect>)> {
+    let device = gui.device?;
+    let window = gui.windows.get_mut(root)?;
+    let first = !window.committed;
+    window.committed = true;
+    let pending = core::mem::take(&mut window.pending);
+    let server = window.server;
+    windows::forget_sent_paints(&mut gui.windows, root);
+    if first {
+        super::menu::paint_bar(gui, root);
+    }
+    let dropped = super::menu::paint_open_drop_down(gui, root);
+    match first {
+        true => Some((device, server, None)),
+        false => {
+            let area = dropped.map_or(pending, |dropped| pending.union(&dropped));
+            (!area.is_empty()).then_some((device, server, Some(area)))
         }
     }
 }
@@ -216,11 +269,23 @@ unsafe extern "efiapi" fn invalidate_rect(
     };
     let invalidated = try_with(|gui| {
         match window {
-            0 => gui
-                .windows
-                .iter_mut()
-                .for_each(|(_, target)| target.invalidate(rect, erase != 0)),
-            window => gui.window_mut(window)?.invalidate(rect, erase != 0),
+            0 => {
+                let mut roots = [0; windows::MAX_WINDOWS];
+                let mut count = 0;
+                for (handle, target) in gui.windows.iter() {
+                    if !target.is_child() {
+                        roots[count] = handle;
+                        count += 1;
+                    }
+                }
+                for &root in &roots[..count] {
+                    windows::invalidate_tree(&mut gui.windows, root, rect, erase != 0);
+                }
+            }
+            window => {
+                gui.window(window)?;
+                windows::invalidate_tree(&mut gui.windows, window, rect, erase != 0);
+            }
         }
         Ok(())
     });

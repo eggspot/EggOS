@@ -5,6 +5,8 @@
 
 #![no_std]
 
+pub mod controls;
+
 /// The window's client area the program asks for.
 pub const CLIENT: (i32, i32) = (400, 300);
 /// The window's outside size it passes to `CreateWindowExW`: the client area and EggOS's

@@ -9,7 +9,11 @@
 //! it calls after letting go, on its own windows, and posts to the window's thread otherwise. A
 //! thread with nothing to read sleeps: one of them in `ppoll` on the server's descriptor and a
 //! wake-up pipe, the others on a futex word that every change bumps, so no wake-up is lost
-//! whichever thread is asleep where.
+//! whichever thread is asleep where. Child windows (D145) share their top-level window's server
+//! window: its pointer input goes to the child under the pointer (or the one holding the
+//! capture) and its keys to the focused one, while the menu bar and an open drop-down take what
+//! falls on them; timers fire after the paints, and a thread with a timer sleeps until it is
+//! due.
 
 use super::window_device::{self, Buffer, Device};
 use super::{SpinLock, call_program, error, error_for, heap, thread_environment};
@@ -18,6 +22,7 @@ use crate::gui::input::{Event, InputState, RECORD_SIZE, Record};
 use crate::gui::message::{self, point_parameter};
 use crate::gui::objects::{self, ContextTable, ObjectTable};
 use crate::gui::queue::{Filter, Message, Queue};
+use crate::gui::timers::Timers;
 use crate::gui::windows::{self, Pixels, Procedure, WindowTable};
 use crate::linux;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
@@ -26,6 +31,7 @@ use eggos_runtime::futex::WakeCount;
 const PENDING_CHARACTERS: usize = 8;
 const RECORDS_PER_READ: usize = 16;
 const NO_DESCRIPTOR: usize = usize::MAX;
+const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PendingCharacter {
@@ -42,6 +48,10 @@ pub struct Gui {
     pub objects: ObjectTable,
     pub contexts: ContextTable,
     pub device: Option<Device>,
+    pub timers: Timers,
+    pub menus: usize,
+    pub tracking: Option<super::menu::Tracking>,
+    pub active_root: usize,
     input: InputState,
     characters: [PendingCharacter; PENDING_CHARACTERS],
     next_character: usize,
@@ -57,6 +67,10 @@ impl Gui {
             objects: objects::new_objects(),
             contexts: objects::new_contexts(),
             device: None,
+            timers: Timers::new(),
+            menus: 0,
+            tracking: None,
+            active_root: 0,
             input: InputState::default(),
             characters: [PendingCharacter::default(); PENDING_CHARACTERS],
             next_character: 0,
@@ -104,6 +118,21 @@ impl Gui {
         self.windows
             .get_mut(handle)
             .ok_or(error::INVALID_WINDOW_HANDLE)
+    }
+
+    /// Whether Shift is held, by the last input the server sent.
+    pub fn shift_held(&self) -> bool {
+        self.input.shift_held()
+    }
+
+    /// The window keys of `root`'s tree go to: its focused window while that is still in the
+    /// tree, else `root`.
+    pub fn key_target(&self, root: usize) -> usize {
+        let focus = self.windows.get(root).map_or(0, |window| window.focus);
+        match focus != 0 && windows::is_in_tree(&self.windows, root, focus) {
+            true => focus,
+            false => root,
+        }
     }
 }
 
@@ -192,17 +221,25 @@ pub fn send(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
             // which Windows calls with these four arguments.
             unsafe { call_program(address, [window, number as usize, wparam, lparam]) }
         }
+        Some(Procedure::Control(kind, _)) => {
+            super::controls::procedure(window, kind, number, wparam, lparam)
+        }
+        Some(Procedure::FilePicker(_)) => {
+            super::file_picker::procedure(window, number, wparam, lparam)
+        }
         _ => 0,
     }
 }
 
+/// A message the thread reading the server's records hands on: sent when it is for one of that
+/// thread's windows, posted to the window's thread otherwise.
 #[derive(Debug, Clone, Copy)]
-struct Delivery {
-    window: usize,
-    thread: u32,
-    message: u32,
-    wparam: usize,
-    lparam: usize,
+pub struct Delivery {
+    pub window: usize,
+    pub thread: u32,
+    pub message: u32,
+    pub wparam: usize,
+    pub lparam: usize,
 }
 
 const NO_DELIVERY: Delivery = Delivery {
@@ -300,32 +337,110 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
             point,
             character,
         } => {
-            let message = Message {
-                window: handle,
-                message: number,
-                wparam,
-                lparam,
-                time: record.time,
-                point,
-                thread,
-            };
-            with(|gui| {
-                gui.queue.post_input(message);
-                if let Some(character) = character {
-                    gui.remember_character(message, character);
+            let routed = with(|gui| {
+                if let Some(effect) = super::menu::input(gui, handle, number, wparam, point) {
+                    return Routed::Menu(effect);
+                }
+                match route_input(gui, handle, number, wparam, lparam, point, record.time) {
+                    Some(message) => {
+                        gui.queue.post_input(message);
+                        if let Some(character) = character {
+                            gui.remember_character(message, character);
+                        }
+                        Routed::Queued
+                    }
+                    None => Routed::Dropped,
                 }
             });
-            None
+            match routed {
+                Some(Routed::Menu(effect)) => {
+                    super::menu::finish_input(device, handle, thread, effect)
+                }
+                _ => None,
+            }
         }
         Event::Resize { width, height } => resize(device, handle, width, height)
             .map(|(size_kind, size)| to_window(message::SIZE, size_kind, size)),
         Event::StateChanged(state) => state_changed(handle, state)
             .map(|(size_kind, size)| to_window(message::SIZE, size_kind, size)),
         Event::CloseRequest => Some(to_window(message::SYS_COMMAND, message::SC_CLOSE, 0)),
-        Event::FocusIn => Some(to_window(message::SET_FOCUS, 0, 0)),
-        Event::FocusOut => Some(to_window(message::KILL_FOCUS, 0, 0)),
+        Event::FocusIn => {
+            with(|gui| gui.active_root = handle);
+            Some(to_window(message::SET_FOCUS, 0, 0))
+        }
+        Event::FocusOut => {
+            with(|gui| {
+                if gui.active_root == handle {
+                    gui.active_root = 0;
+                }
+            });
+            Some(to_window(message::KILL_FOCUS, 0, 0))
+        }
         Event::PointerLeft | Event::Ignored => None,
     }
+}
+
+enum Routed {
+    Menu(super::menu::Effect),
+    Queued,
+    Dropped,
+}
+
+fn is_mouse(number: u32) -> bool {
+    (message::FIRST_MOUSE..=message::LAST_MOUSE).contains(&number)
+}
+
+fn route_input(
+    gui: &Gui,
+    root: usize,
+    number: u32,
+    wparam: usize,
+    lparam: usize,
+    point: (i32, i32),
+    time: u32,
+) -> Option<Message> {
+    let top = gui.windows.get(root)?;
+    if !top.enabled || top.modal_disabled {
+        return None;
+    }
+    let message = |window: usize, lparam: usize, point: (i32, i32)| {
+        let thread = gui.windows.get(window).map_or(0, |window| window.thread);
+        Message {
+            window,
+            message: number,
+            wparam,
+            lparam,
+            time,
+            point,
+            thread,
+        }
+    };
+    if !is_mouse(number) {
+        return Some(message(gui.key_target(root), lparam, point));
+    }
+    let capture = top.capture;
+    let target = match capture != 0 && windows::is_in_tree(&gui.windows, root, capture) {
+        true => capture,
+        false => {
+            if point.1 < top.menu_height {
+                return None;
+            }
+            windows::child_at(&gui.windows, root, point.0, point.1 - top.menu_height).0
+        }
+    };
+    if !windows::enabled_in_tree(&gui.windows, target) {
+        return None;
+    }
+    let origin = windows::client_placement(&gui.windows, target)?.origin;
+    let local = (
+        point.0.saturating_sub(origin.0),
+        point.1.saturating_sub(origin.1),
+    );
+    let lparam = match number {
+        message::MOUSE_WHEEL => lparam,
+        _ => point_parameter(local.0, local.1),
+    };
+    Some(message(target, lparam, local))
 }
 
 fn resize(device: &Device, handle: usize, width: u32, height: u32) -> Option<(usize, usize)> {
@@ -340,7 +455,12 @@ fn resize(device: &Device, handle: usize, width: u32, height: u32) -> Option<(us
         width: new.width,
         height: new.height,
     };
-    let unused = with(|gui| windows::replace_pixels(&mut gui.windows, handle, new)).unwrap_or(new);
+    let unused = with(|gui| {
+        let unused = windows::replace_pixels(&mut gui.windows, handle, new);
+        super::menu::paint_bar(gui, handle);
+        unused
+    })
+    .unwrap_or(new);
     // SAFETY: `replace_pixels` gave back the buffer no table entry holds any more (the
     // window's old one, or the new one if the window went meanwhile), and drawing reaches a
     // buffer only through the table under its lock.
@@ -352,12 +472,13 @@ fn resize(device: &Device, handle: usize, width: u32, height: u32) -> Option<(us
             pixels: unused.address,
         })
     };
-    (unused != new).then(|| {
-        (
-            size_kind,
-            point_parameter(new.width as i32, new.height as i32),
-        )
+    let client = with(|gui| {
+        gui.windows
+            .get(handle)
+            .map(|window| point_parameter(window.width as i32, window.height as i32))
     })
+    .flatten()?;
+    (unused != new).then_some((size_kind, client))
 }
 
 fn state_changed(handle: usize, state: u32) -> Option<(usize, usize)> {
@@ -382,16 +503,20 @@ fn find(gui: &mut Gui, filter: &Filter, remove: bool) -> Option<Message> {
     if let Some(message) = gui.queue.take(filter, remove) {
         return Some(message);
     }
-    if !filter.accepts_number(message::PAINT) {
-        return None;
+    if filter.accepts_number(message::PAINT)
+        && let Some(window) = windows::needing_paint(&gui.windows, filter.window, filter.thread)
+    {
+        if remove && let Some(entry) = gui.windows.get_mut(window) {
+            entry.paint_sent = true;
+        }
+        return Some(Message {
+            window,
+            message: message::PAINT,
+            thread: filter.thread,
+            ..Message::default()
+        });
     }
-    let window = windows::needing_paint(&gui.windows, filter.window, filter.thread)?;
-    Some(Message {
-        window,
-        message: message::PAINT,
-        thread: filter.thread,
-        ..Message::default()
-    })
+    gui.timers.take_due(filter, super::user32::now_ms(), remove)
 }
 
 /// What [`wait_for`] found.
@@ -443,6 +568,12 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
         linux::yield_now();
         return;
     };
+    let timeout = with(|gui| gui.timers.next_due(filter, super::user32::now_ms()))
+        .flatten()
+        .map(|milliseconds| u64::from(milliseconds) * NANOSECONDS_PER_MILLISECOND);
+    if timeout == Some(0) {
+        return;
+    }
     let polling = POLLING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok();
@@ -450,13 +581,13 @@ fn sleep(filter: &Filter, done: &dyn Fn(&Gui) -> bool) {
     if !polling {
         if idle {
             FUTEX_WAITERS.fetch_add(1, Ordering::SeqCst);
-            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, None);
+            let _ = linux::futex_wait(&WAKE_SEQUENCE, sequence, timeout);
             FUTEX_WAITERS.fetch_sub(1, Ordering::SeqCst);
         }
         return;
     }
     if idle {
-        let _ = linux::wait_readable(descriptors);
+        let _ = linux::wait_readable(descriptors, timeout);
     }
     let mut drained = [0u8; 64];
     while matches!(linux::read(descriptors[1] as usize, &mut drained), Ok(1..)) {}

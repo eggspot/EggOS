@@ -9,7 +9,13 @@ pub const PAINT: u32 = 0x000f;
 pub const CLOSE: u32 = 0x0010;
 pub const QUIT: u32 = 0x0012;
 pub const ERASE_BACKGROUND: u32 = 0x0014;
+pub const ENABLE: u32 = 0x000a;
+pub const SET_TEXT: u32 = 0x000c;
+pub const GET_TEXT: u32 = 0x000d;
+pub const GET_TEXT_LENGTH: u32 = 0x000e;
 pub const SHOW_WINDOW: u32 = 0x0018;
+pub const SET_FONT: u32 = 0x0030;
+pub const GET_FONT: u32 = 0x0031;
 pub const HELP: u32 = 0x0053;
 pub const NC_CREATE: u32 = 0x0081;
 pub const NC_DESTROY: u32 = 0x0082;
@@ -19,7 +25,9 @@ pub const CHAR: u32 = 0x0102;
 pub const SYS_KEY_DOWN: u32 = 0x0104;
 pub const SYS_KEY_UP: u32 = 0x0105;
 pub const SYS_CHAR: u32 = 0x0106;
+pub const COMMAND: u32 = 0x0111;
 pub const SYS_COMMAND: u32 = 0x0112;
+pub const TIMER: u32 = 0x0113;
 pub const MOUSE_MOVE: u32 = 0x0200;
 pub const LEFT_BUTTON_DOWN: u32 = 0x0201;
 pub const LEFT_BUTTON_UP: u32 = 0x0202;
@@ -33,6 +41,18 @@ pub const SIZE_RESTORED: usize = 0;
 pub const SIZE_MINIMIZED: usize = 1;
 pub const SIZE_MAXIMIZED: usize = 2;
 pub const SC_CLOSE: usize = 0xf060;
+/// `WM_COMMAND`'s ids of the dialog keys.
+pub const ID_OK: usize = 1;
+pub const ID_CANCEL: usize = 2;
+
+/// The first and last mouse message numbers.
+pub const FIRST_MOUSE: u32 = MOUSE_MOVE;
+pub const LAST_MOUSE: u32 = MOUSE_WHEEL;
+
+/// `wParam` holding a low and a high 16-bit word, as `MAKEWPARAM` packs them.
+pub fn word_pair(low: usize, high: usize) -> usize {
+    ((high & 0xffff) << 16) | (low & 0xffff)
+}
 
 /// `lParam` holding the 16-bit coordinates `x` and `y`, as `MAKELPARAM` packs them.
 pub fn point_parameter(x: i32, y: i32) -> usize {

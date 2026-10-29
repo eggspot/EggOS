@@ -2,7 +2,7 @@
 //! compare ignoring ASCII case, with or without `.dll`, and the API sets
 //! (`api-ms-win-core-*`) resolve to kernel32's functions, where Windows forwards them too;
 //! shell32 has only `CommandLineToArgvW`; user32 and gdi32 have what GUI programs' windows,
-//! messages and painting need (D129).
+//! messages and painting need (D129), and comdlg32 the file picker (D145).
 
 use crate::text::equal_ignoring_ascii_case;
 
@@ -14,6 +14,7 @@ pub enum Library {
     Shell32,
     User32,
     Gdi32,
+    Comdlg32,
 }
 
 /// One function a library exports: its name and its address in the layer.
@@ -42,6 +43,8 @@ pub fn library(name: &[u8]) -> Option<Library> {
         Some(Library::User32)
     } else if is(b"gdi32") {
         Some(Library::Gdi32)
+    } else if is(b"comdlg32") {
+        Some(Library::Comdlg32)
     } else {
         None
     }
@@ -84,6 +87,7 @@ mod tests {
         assert_eq!(library(b"SHELL32.dll"), Some(Library::Shell32));
         assert_eq!(library(b"user32.dll"), Some(Library::User32));
         assert_eq!(library(b"GDI32.dll"), Some(Library::Gdi32));
+        assert_eq!(library(b"COMDLG32.dll"), Some(Library::Comdlg32));
         for name in [
             &b"ws2_32.dll"[..],
             b"kernel32.dll.dll",

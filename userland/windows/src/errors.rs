@@ -34,11 +34,14 @@ pub mod code {
     pub const INVALID_ADDRESS: u32 = 487;
     pub const NO_UNICODE_TRANSLATION: u32 = 1113;
     pub const INVALID_WINDOW_HANDLE: u32 = 1400;
+    pub const INVALID_MENU_HANDLE: u32 = 1401;
     pub const CANNOT_FIND_WINDOW_CLASS: u32 = 1407;
     pub const CLASS_ALREADY_EXISTS: u32 = 1410;
     pub const CLASS_DOES_NOT_EXIST: u32 = 1411;
     pub const CLASS_HAS_WINDOWS: u32 = 1412;
     pub const INVALID_INDEX: u32 = 1413;
+    pub const CHILD_WINDOW_MENU: u32 = 1436;
+    pub const CONTROL_ID_NOT_FOUND: u32 = 1421;
     pub const TIMEOUT: u32 = 1460;
     pub const NOT_ENOUGH_QUOTA: u32 = 1816;
 }
@@ -109,6 +112,9 @@ pub fn message(code: u32) -> Option<&'static str> {
         code::INVALID_ADDRESS => "Attempt to access invalid address.",
         code::TIMEOUT => "This operation returned because the timeout period expired.",
         code::INVALID_WINDOW_HANDLE => "Invalid window handle.",
+        code::INVALID_MENU_HANDLE => "Invalid menu handle.",
+        code::CHILD_WINDOW_MENU => "Child windows cannot have menus.",
+        code::CONTROL_ID_NOT_FOUND => "Control ID not found.",
         code::CANNOT_FIND_WINDOW_CLASS => "Cannot find window class.",
         code::CLASS_ALREADY_EXISTS => "Class already exists.",
         code::CLASS_DOES_NOT_EXIST => "Class does not exist.",
@@ -162,6 +168,9 @@ mod tests {
             code::CLASS_HAS_WINDOWS,
             code::INVALID_INDEX,
             code::NOT_ENOUGH_QUOTA,
+            code::INVALID_MENU_HANDLE,
+            code::CHILD_WINDOW_MENU,
+            code::CONTROL_ID_NOT_FOUND,
         ] {
             let message = message(code).unwrap();
             assert!(message.ends_with('.'), "{message}");

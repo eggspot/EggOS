@@ -8,7 +8,7 @@
 //! of the table.
 
 use super::gui::{self, Gui, Next, device, send, with};
-use super::user32::{remove_window, translate};
+use super::user32::{dispatch, remove_window, translate};
 use super::window_device::{FIXED_SIZE, ROLE_DIALOG, ROLE_NORMAL};
 use super::{error, error_for, fail, heap, thread_environment};
 use crate::gui::input::{Record, kind};
@@ -276,7 +276,7 @@ fn run(window: usize) -> i32 {
             }
             Next::Message(next) => {
                 translate(&next);
-                send(next.window, next.message, next.wparam, next.lparam);
+                dispatch(&next);
             }
         }
     }

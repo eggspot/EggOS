@@ -120,6 +120,33 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
   dialog of its owner's window, with every `MB_` button set, the four icons, the default
   button, Enter, Esc, Tab, the arrows and the underlined mnemonics; it returns the button's
   `ID` value.
+- **Controls** (D145, `docs/ux/windows-controls-v0.3.md`). `CreateWindowExW` with `WS_CHILD`
+  makes a child window inside its parent's client area (it shares its top-level window's
+  buffer; the program's own classes and the system's `BUTTON`, `EDIT`, `STATIC` and `LISTBOX`).
+  Push buttons and default push buttons, check boxes (`BS_CHECKBOX`, `BS_AUTOCHECKBOX`),
+  single-line edits (`ES_READONLY`; the caret only, no selection), labels (`SS_LEFT`,
+  `SS_CENTER`, `SS_RIGHT`, word wrap, `SS_NOTIFY`) and single-selection lists (`LBS_SORT`,
+  `LBS_NOTIFY`) are drawn in Windows' light colours and tell their parent through
+  `WM_COMMAND` (`BN_CLICKED`, `EN_CHANGE`, `EN_UPDATE`, `EN_SETFOCUS`, `EN_KILLFOCUS`,
+  `LBN_SELCHANGE`, `LBN_SETFOCUS`, `LBN_KILLFOCUS`, `STN_CLICKED`). A click focuses a control;
+  the focused one gets the keys and keeps its caret while the window is inactive.
+  `IsDialogMessageW` moves the focus with Tab and Shift+Tab, and sends Enter to the default
+  button (or `IDOK`) and Esc as `IDCANCEL`.
+- **Menus.** `CreateMenu`, `CreatePopupMenu`, `AppendMenuW` (strings, drop-downs, separators,
+  `MF_GRAYED`, `MF_CHECKED`) and `SetMenu` (or `CreateWindowExW`'s menu) put a 24 px bar at the
+  top of the window's content; the client area starts below it. A click opens a drop-down
+  over the client area, a click on an item sends `WM_COMMAND` with its id (a bar item without
+  a drop-down sends it too), a click elsewhere or Esc closes it; no key reaches the program
+  while it is open.
+- **Timers.** `SetTimer` and `KillTimer`, for a window or the thread, with or without a timer
+  procedure; `WM_TIMER` comes after the paints, at most one waiting per timer, every 10 ms at
+  the fastest and `0x7fffffff` ms at the slowest.
+- **Opening and saving files.** comdlg32's `GetOpenFileNameW` and `GetSaveFileNameW` show
+  EggOS's own picker (a dialog of the owner's window): the folder in Windows' form, its
+  folders and the files the selected filter matches, the file name, and Open or Save; they
+  return the chosen path in Windows' form with `nFileOffset`, `nFileExtension` and
+  `lpstrFileTitle`, add `lpstrDefExt`, and honour `OFN_FILEMUSTEXIST` and
+  `OFN_PATHMUSTEXIST`.
 
 ## What the layer provides
 
@@ -132,7 +159,7 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | Environment | `GetEnvironmentVariableW`/`A`, `GetEnvironmentStrings`, `GetEnvironmentStringsW`/`A`, `FreeEnvironmentStringsW`/`A` |
 | Time | `GetTickCount`, `GetTickCount64`, `QueryPerformanceCounter`, `QueryPerformanceFrequency` (10 MHz), `GetSystemTimeAsFileTime`, `GetSystemTimePreciseAsFileTime`, `Sleep`, `SleepEx` |
 | Errors and TLS | `GetLastError`, `SetLastError`, `TlsAlloc`, `TlsFree`, `TlsGetValue`, `TlsSetValue`, and a program's static TLS (its TLS directory and callbacks) |
-| Modules | `GetModuleHandleW`/`A`, `GetModuleFileNameW` (the program's full path in Windows' form), `LoadLibraryW`/`A`, `LoadLibraryExW`/`A`, `FreeLibrary`, `GetProcAddress` (kernel32, ntdll, shell32, user32, gdi32; `api-ms-win-core-*` names resolve to kernel32) |
+| Modules | `GetModuleHandleW`/`A`, `GetModuleFileNameW` (the program's full path in Windows' form), `LoadLibraryW`/`A`, `LoadLibraryExW`/`A`, `FreeLibrary`, `GetProcAddress` (kernel32, ntdll, shell32, user32, gdi32, comdlg32; `api-ms-win-core-*` names resolve to kernel32) |
 | Threads | `CreateThread` (with `CREATE_SUSPENDED`), `ExitThread`, `ResumeThread`, `GetExitCodeThread`, `GetThreadId`, `GetCurrentThreadId`, `SwitchToThread`, `SetThreadPriority`, `GetThreadPriority`, `SetThreadDescription`; each thread has its own TEB, last error, TLS slots and copy of the program's static TLS (callbacks get `DLL_THREAD_ATTACH` and `DETACH`), and the process ends when its last thread does (returning from the entry point ends only the first thread) |
 | Waits and objects | `WaitForSingleObject`(`Ex`), `WaitForMultipleObjects`(`Ex`) (any or all, timeouts) on threads, events, mutexes and semaphores; `CreateEventW`/`A`/`ExW`, `SetEvent`, `ResetEvent`, `CreateMutexW`/`A`/`ExW`, `ReleaseMutex`, `CreateSemaphoreW`/`A`/`ExW`, `ReleaseSemaphore`, `DuplicateHandle`, `CloseHandle` |
 | Locks | `InitializeCriticalSection`(`AndSpinCount`, `Ex`), `EnterCriticalSection`, `TryEnterCriticalSection`, `LeaveCriticalSection`, `DeleteCriticalSection`; SRW locks (`AcquireSRWLockExclusive`/`Shared`, `TryAcquire...`, `Release...`); condition variables (`SleepConditionVariableCS`/`SRW`, `WakeConditionVariable`, `WakeAllConditionVariable`); `InitOnceExecuteOnce`, `InitOnceBeginInitialize`, `InitOnceComplete`; `WaitOnAddress`, `WakeByAddressSingle`/`All`. Interlocked operations are the compiler's own atomic instructions (lock-prefixed on x64, exclusive or LSE on ARM64) and need nothing from the layer |
@@ -140,6 +167,9 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | Directories | `FindFirstFileW`, `FindFirstFileExW`, `FindNextFileW`, `FindClose` (`*` and `?`, names compared ignoring ASCII case, `*.*` matches everything, `.` and `..` listed), `GetFileAttributesW`, `GetFileAttributesExW`, `GetFileInformationByHandle`, `CreateDirectoryW`, `DeleteFileW`, `RemoveDirectoryW`, `GetCurrentDirectoryW`, `SetCurrentDirectoryW`, `GetFullPathNameW` |
 | Windows (user32) | `RegisterClassExW`, `RegisterClassW`, `UnregisterClassW`, `CreateWindowExW`, `DestroyWindow`, `IsWindow`, `ShowWindow`, `UpdateWindow`, `GetClientRect`, `AdjustWindowRect`(`Ex`), `GetWindowLongW`, `SetWindowLongW`, `GetWindowLongPtrW`, `SetWindowLongPtrW` (the window procedure, instance, parent, id, styles, user data and the extra bytes), `DefWindowProcW`, `GetSystemMetrics`, `LoadCursorW`, `LoadIconW`, `MessageBoxW` |
 | Messages (user32) | `GetMessageW`, `PeekMessageW` (`PM_REMOVE`), `TranslateMessage`, `DispatchMessageW`, `PostMessageW`, `PostQuitMessage`, `SendMessageW`; `WM_NCCREATE`, `WM_CREATE`, `WM_SHOWWINDOW`, `WM_SIZE`, `WM_PAINT`, `WM_ERASEBKGND`, `WM_SETFOCUS`, `WM_KILLFOCUS`, `WM_SYSCOMMAND`, `WM_CLOSE`, `WM_DESTROY`, `WM_NCDESTROY`, `WM_QUIT`, `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`/`UP`, `WM_RBUTTONDOWN`/`UP`, `WM_MBUTTONDOWN`/`UP`, `WM_MOUSEWHEEL`, `WM_KEYDOWN`/`UP`, `WM_SYSKEYDOWN`/`UP`, `WM_CHAR`, `WM_SYSCHAR`, `WM_HELP` |
+| Controls and dialogs (user32) | `BUTTON`, `EDIT`, `STATIC`, `LISTBOX` (`WM_SETTEXT`, `WM_GETTEXT`, `WM_GETTEXTLENGTH`, `WM_ENABLE`, `WM_SETFONT`; `BM_GETCHECK`, `BM_SETCHECK`, `BM_GETSTATE`, `BM_SETSTATE`, `BM_SETSTYLE`, `BM_CLICK`; `EM_LIMITTEXT`, `EM_GETLIMITTEXT`, `EM_SETREADONLY`; `LB_ADDSTRING`, `LB_INSERTSTRING`, `LB_DELETESTRING`, `LB_RESETCONTENT`, `LB_SETCURSEL`, `LB_GETCURSEL`, `LB_GETTEXT`, `LB_GETTEXTLEN`, `LB_GETCOUNT`, `LB_GETITEMHEIGHT`), `SetWindowTextW`, `GetWindowTextW`, `GetWindowTextLengthW`, `GetDlgItem`, `GetDlgCtrlID`, `SetDlgItemTextW`, `GetDlgItemTextW`, `SendDlgItemMessageW`, `IsDialogMessageW`, `SetFocus`, `GetFocus`, `SetCapture`, `ReleaseCapture`, `GetCapture`, `EnableWindow`, `IsWindowEnabled`, `IsWindowVisible`, `GetParent`, `MoveWindow` (child windows) |
+| Menus and timers (user32) | `CreateMenu`, `CreatePopupMenu`, `AppendMenuW`, `SetMenu`, `GetMenu`, `DrawMenuBar`, `DestroyMenu`, `GetSubMenu`, `GetMenuItemCount`, `GetMenuItemID`, `SetTimer`, `KillTimer`; `WM_COMMAND`, `WM_TIMER` |
+| File pickers (comdlg32) | `GetOpenFileNameW`, `GetSaveFileNameW`, `CommDlgExtendedError` |
 | Painting (user32) | `BeginPaint`, `EndPaint`, `GetDC`, `ReleaseDC`, `InvalidateRect`, `FillRect`, `DrawTextW` (left, centre, right; top, centre, bottom on one line; `DT_WORDBREAK`, `DT_NOPREFIX`, `DT_EXPANDTABS`, `DT_NOCLIP`, `DT_CALCRECT`, `DT_END_ELLIPSIS`), `GetSysColor`, `GetSysColorBrush` |
 | GDI (gdi32) | `CreateSolidBrush`, `CreatePen` (solid or `PS_NULL`), `GetStockObject`, `SelectObject`, `DeleteObject`, `SetTextColor`, `SetBkColor`, `SetBkMode`, `MoveToEx`, `LineTo`, `Rectangle`, `Ellipse`, `SetPixel`, `TextOutW`, `GetTextExtentPoint32W` |
 | Strings | `MultiByteToWideChar`, `WideCharToMultiByte` (`CP_UTF8`, and `CP_ACP`/`CP_OEMCP`, which are UTF-8 too; `MB_ERR_INVALID_CHARS`, `WC_ERR_INVALID_CHARS`), `lstrlenW`/`A`, `lstrcmpW`, `lstrcmpiW`, `CompareStringOrdinal`, `CompareStringW`/`Ex` (ordinal, `NORM_IGNORECASE`), `FormatMessageW` (system messages, `FORMAT_MESSAGE_ALLOCATE_BUFFER`), user32's `CharUpperW` and `CharLowerW`, shell32's `CommandLineToArgvW` |
@@ -186,11 +216,16 @@ size needed, as each function documents.
 - **Time zones**: local time is UTC.
 - **Structured exception handling**: a fault ends the program as a signal would end a Linux
   one; no `__try`/`__except`, no vectored handlers, no unwinding.
-- **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32 and
-  gdi32 (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
+- **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32,
+  gdi32 and comdlg32 (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
   own) or a function they lack is refused. Imports by ordinal are refused.
-- **GUI programs beyond part 1** (D129): child windows and the system's controls (buttons,
-  edits, list boxes), menus, dialogs from resources, timers, `GetTextMetricsW`, fonts other
+- **GUI programs beyond parts 1 and 2** (D129, D145): multi-line edits, selection and the
+  clipboard in edits, `ES_PASSWORD` and `ES_NUMBER`, radio buttons and group boxes, combo
+  boxes, scroll bars, common controls, owner-drawn controls, subclassing a control,
+  `WM_CTLCOLOR*` (controls draw Windows' default colours), hover looks, per-control pointers,
+  double clicks, menu keys (F10, Alt and mnemonics), submenus, `TrackPopupMenu`, accelerators,
+  `EnableMenuItem` and `CheckMenuItem`, the picker's overwrite and not-found questions and its
+  filter choice, dialogs from resources, `GetTextMetricsW`, fonts other
   than Egg Mono and text
   beyond ASCII (drawn as `?`), double-click messages, screen coordinates in `MSG.pt` and
   `WM_MOUSEWHEEL` (client coordinates today), `SetCursor`, `GetWindowRect` and moving windows
