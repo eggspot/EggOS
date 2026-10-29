@@ -163,7 +163,7 @@ enum Then {
     Close,
     New,
     Open,
-    OpenFile(Path),
+    OpenFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +225,7 @@ pub struct EditorWindow<'a> {
     found: Found,
     path_field: Field,
     pending: Option<Then>,
+    file_to_open: Path,
     panel: Option<(Panel, Asked)>,
     menu: Option<Menu>,
     notice: Option<Notice>,
@@ -326,6 +327,7 @@ impl<'a> EditorWindow<'a> {
             found: Found::Nothing,
             path_field: field(""),
             pending: None,
+            file_to_open: Path::new(),
             panel: None,
             menu: None,
             notice: None,
@@ -839,7 +841,10 @@ impl<'a> EditorWindow<'a> {
                 self.after_load();
             }
             Then::Open => self.open_bar(Bar::Open),
-            Then::OpenFile(path) => self.open_path(files, path.as_bytes(), false),
+            Then::OpenFile => {
+                let path = self.file_to_open;
+                self.open_path(files, path.as_bytes(), false);
+            }
         }
     }
 
@@ -945,7 +950,10 @@ impl<'a> EditorWindow<'a> {
             return;
         };
         match self.bar {
-            Bar::Open if self.editor.is_modified() => self.ask_to_save(Then::OpenFile(path)),
+            Bar::Open if self.editor.is_modified() => {
+                self.file_to_open = path;
+                self.ask_to_save(Then::OpenFile);
+            }
             Bar::Open => self.open_path(files, path.as_bytes(), false),
             Bar::SaveAs => {
                 let other = self.path() != Some(path.as_bytes());

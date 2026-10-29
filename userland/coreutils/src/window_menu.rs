@@ -32,7 +32,7 @@ pub fn lines(pool: &[u8]) -> impl Iterator<Item = Line<'_>> {
     pool.split(|&byte| byte == b'\n')
         .filter_map(|line| match line.split_first()? {
             (&b'M', title) => Some(Line::Menu(title)),
-            (&(kind @ (b'I' | b'D')), rest) => {
+            (&kind @ (b'I' | b'D'), rest) => {
                 let tab = rest
                     .iter()
                     .position(|&byte| byte == b'\t')

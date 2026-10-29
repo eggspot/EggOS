@@ -141,14 +141,13 @@ impl Modal {
                     Input::FocusIn => application::make_key(other),
                     Input::FocusOut => application::focus_out(other),
                     Input::Resize { width, height } => window::resize(other, width, height),
-                    Input::CloseRequest => {
+                    Input::CloseRequest
                         if !self
                             .closes_asked
                             .as_slice()
-                            .contains(&u32::from(event.window))
-                        {
-                            self.closes_asked.push(u32::from(event.window));
-                        }
+                            .contains(&u32::from(event.window)) =>
+                    {
+                        self.closes_asked.push(u32::from(event.window));
                     }
                     _ => {}
                 }

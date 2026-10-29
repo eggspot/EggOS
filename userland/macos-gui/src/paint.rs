@@ -77,9 +77,6 @@ pub fn line(canvas: &mut Canvas<'_>, height: i32, from: Point, to: Point, colour
     }
 }
 
-/// The part of the line from `from` to `to` inside `clip` grown by [`LINE_CLIP_MARGIN`]: the
-/// line itself when both ends are inside, else its ends cut to that box (Liang and Barsky's
-/// clipping); `None` when it misses the box.
 fn clipped_line(from: (i32, i32), to: (i32, i32), clip: Rect) -> Option<((i64, i64), (i64, i64))> {
     let left = i64::from(clip.x) - LINE_CLIP_MARGIN;
     let top = i64::from(clip.y) - LINE_CLIP_MARGIN;
