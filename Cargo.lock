@@ -148,12 +148,29 @@ name = "eggos-macos"
 version = "0.2.0"
 dependencies = [
  "eggos-c-format",
+ "eggos-macos-gui",
  "eggos-runtime",
+ "eggos-toolkit",
 ]
 
 [[package]]
 name = "eggos-macos-console"
 version = "0.2.0"
+
+[[package]]
+name = "eggos-macos-gui"
+version = "0.2.0"
+dependencies = [
+ "eggos-toolkit",
+]
+
+[[package]]
+name = "eggos-macos-gui-tests"
+version = "0.2.0"
+dependencies = [
+ "eggos-macos-gui",
+ "eggos-toolkit",
+]
 
 [[package]]
 name = "eggos-mcp"
@@ -247,6 +264,7 @@ dependencies = [
  "eggos-eggway",
  "eggos-files",
  "eggos-linux-gui-tests",
+ "eggos-macos-gui-tests",
  "eggos-mcp",
  "eggos-png",
  "eggos-settings",

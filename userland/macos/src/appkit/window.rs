@@ -18,8 +18,7 @@ use eggos_macos_gui::keys::modifier;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 
-/// `NSWindowStyleMaskResizable`.
-const RESIZABLE: u64 = 1 << 3;
+const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 1 << 3;
 
 /// A window's fields.
 #[repr(C)]
@@ -180,7 +179,7 @@ pub fn show(window: Id) {
         let size = fields(window).content;
         let width = round(size.width).max(1) as u32;
         let height = round(size.height).max(1) as u32;
-        let flags = match fields(window).style & RESIZABLE {
+        let flags = match fields(window).style & NS_WINDOW_STYLE_MASK_RESIZABLE {
             0 => server::FIXED_SIZE,
             _ => 0,
         };

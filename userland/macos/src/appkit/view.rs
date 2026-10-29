@@ -314,8 +314,6 @@ pub fn editable_fields(view: Id, found: &mut Buffer<Id>) {
     }
 }
 
-/// Where `view` (at `frame` in the window) may draw: its frame, and for a control the 28 px
-/// the control is drawn in, which may pass a short frame.
 fn drawing_area(view: Id, frame: Frame, height: i32) -> Rect {
     let area = pixel_rect(frame, height);
     match super::is(view, &NSCONTROL) {

@@ -116,8 +116,7 @@ fn read_info() -> &'static [u8] {
     &bytes[..filled]
 }
 
-/// The bundle's `Info.plist`, read once; empty outside a bundle.
-fn info() -> &'static [u8] {
+fn info_plist_bytes() -> &'static [u8] {
     let address = INFO_ADDRESS.load(Ordering::Acquire);
     if address != 0 {
         // SAFETY: a permanent block `read_info` filled, published below.
@@ -140,7 +139,7 @@ fn info() -> &'static [u8] {
 pub fn info_string(key: &[u8]) -> Option<&'static [u8]> {
     let mut scratch = [0u8; LONGEST_VALUE];
     let mut found = None;
-    info_plist::for_each_string(info(), &mut scratch, |name, value| {
+    info_plist::for_each_string(info_plist_bytes(), &mut scratch, |name, value| {
         if found.is_none() && name == key {
             found = Some(permanent(value));
         }
@@ -171,7 +170,7 @@ fn info_dictionary_of_plist() -> Id {
         return dictionary;
     }
     let mut scratch = [0u8; LONGEST_VALUE];
-    info_plist::for_each_string(info(), &mut scratch, |key, value| {
+    info_plist::for_each_string(info_plist_bytes(), &mut scratch, |key, value| {
         send2(
             dictionary,
             sel!("setObject:forKey:"),

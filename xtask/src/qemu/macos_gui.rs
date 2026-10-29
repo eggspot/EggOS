@@ -63,11 +63,6 @@ const CHECKS: [&str; 14] = [
     "Cmd+Q: mac-paint quit, its window and menu gone",
 ];
 
-/// The `.app` bundle the host folder's archive holds.
-pub fn bundle_name() -> String {
-    format!("{NAME}.app")
-}
-
 /// The archive the host folder holds and the test installs.
 pub fn archive_name() -> String {
     format!("{NAME}{}", crate::macos::ARCHIVE_SUFFIX)
@@ -580,7 +575,6 @@ mod tests {
 
     #[test]
     fn the_session_installs_the_bundle_and_the_verdict_needs_each_line_in_order() {
-        assert_eq!(bundle_name(), "mac-paint.app");
         assert_eq!(archive_name(), "mac-paint.zip");
         assert_eq!(
             install_line(),

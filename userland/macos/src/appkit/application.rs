@@ -16,8 +16,7 @@ use eggos_macos_gui::geometry::point_of_pixel;
 use eggos_macos_gui::keys::modifier;
 use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 
-/// `NSTerminateCancel`, what `applicationShouldTerminate:` answers to keep the app running.
-const TERMINATE_CANCEL: usize = 0;
+const NS_TERMINATE_CANCEL: usize = 0;
 const RECORDS_PER_READ: usize = 16;
 const NO_WINDOW_SERVER: i32 = 1;
 
@@ -138,7 +137,7 @@ pub fn terminate() {
     let delegate = delegate();
     let should = sel!("applicationShouldTerminate:");
     if responds(delegate, should)
-        && send1(delegate, should, application() as usize) as usize == TERMINATE_CANCEL
+        && send1(delegate, should, application() as usize) as usize == NS_TERMINATE_CANCEL
     {
         return;
     }

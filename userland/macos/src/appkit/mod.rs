@@ -116,7 +116,6 @@ pub fn app_name() -> &'static str {
     core::str::from_utf8(foundation::app_name()).unwrap_or("")
 }
 
-/// One of AppKit's classes to define.
 fn define(
     runtime: &mut crate::objc::Runtime,
     name: &'static [u8],
