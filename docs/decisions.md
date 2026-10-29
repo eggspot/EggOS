@@ -10165,3 +10165,96 @@ the license, by an explicit instruction recorded here.
   that a frame comes soon enough after 1000 ms for the chip to go idle by 1.2 s (the desktop's
   tick runs with frames and at least once a second; if that is too late, a wake at the expiry
   is needed).
+
+## D157 EggOS is on the network, part 1: a polled virtio-net driver, an IPv4 stack of our own with a DHCP client, UDP and ping sockets for Linux programs, and `ip`, `ping`, `nslookup` and `net_status` (old item 26, M8; extends D18, D21, D22, D110, D125, D136, D138, D155) — Decided by the build loop (design by Claude Fable, `docs/ux/network-v0.3.md`)
+- **Why.** EggOS could reach nothing beyond the machine: no driver, no stack, no addresses. An
+  OS people switch to, and agents use, must at least get an address, resolve names and talk
+  UDP; TCP and downloads build on this (part 2), HTTPS and the network clock on that (part 3).
+- **The driver** (`drivers/src/virtio/net/`). virtio 1.2's network device, polled like the
+  other virtio drivers (D110): one receive queue whose 16 buffers of 2048 bytes stay posted and
+  one transmit queue of 16; each buffer is the 12-byte `virtio_net_hdr` (left zero: no checksum
+  offload, no segmentation, no merged buffers) then one Ethernet frame. It takes the device's
+  hardware address (`VIRTIO_NET_F_MAC`, required), its link state (`F_STATUS`; a device that
+  does not report it is up) and its MTU (`F_MTU`, 68 to 1500). The kernel binds it in the
+  driver model (`kernel/src/devices/virtio.rs`, cargo feature `virtio-net`, in the default
+  and test kernels) as the stack's `NetDevice`: the first adapter only.
+- **The stack** (`net/`, the new `no_std` crate `eggos-net`, no allocation, no clock, no
+  device: every call takes the time and the buffers, so the kernel, programs without an
+  allocator and host tests share it). Ethernet II, ARP (a 16-entry cache believed 60 s, a
+  request repeated every second three times while up to four packets wait), IPv4 (whole
+  packets with "don't fragment"; fragments that arrive are dropped), ICMP echo (it answers
+  pings to its address), UDP, a DHCP client (RFC 2131: `DISCOVER` retried after 4, 8, 16 and
+  32 s plus up to a second at random, `REQUEST`, renewing at T1 with its server and rebinding
+  at T2 with any, a lost or refused lease starting again, a minute's rest after four
+  unanswered rounds, a link that comes back rebinding), DNS messages (queries, answers with
+  compression and aliases, `resolv.conf`'s `nameserver` lines) and the status text below.
+  `eggos_net::interface::Interface` ties one adapter's protocols together; routing is its own
+  network directly and everything else through the lease's router.
+- **The kernel side** (`kernel/src/net.rs`, `net/endpoints.rs`, `net/resolv_conf.rs`). At boot
+  (release kernels, before init) the adapter's interface `eth0` is made and a kernel thread
+  polls it: every millisecond while frames moved in the last second, every 20 ms otherwise,
+  sooner when a timer is due; the boot says `net: eth0 <mac>: asking for an address by DHCP`.
+  A machine without an adapter starts no thread (D18). `lo` always exists: packets to
+  `127.0.0.0/8` or to the interface's own address go to their endpoint at once. Endpoints are
+  UDP ports and ping identifiers (ephemeral ones from 32768 to 60999, Linux's range), found
+  through a table of weak references, each queueing up to its receive limit (212992 bytes by
+  default, `SO_RCVBUF`); a datagram that finds no room, or no memory the kernel reserve lets
+  programs have (D155, `heap::may_grow_for_user`), is dropped and counted.
+- **Linux programs** (`kernel/src/linux/socket/inet.rs`). `AF_INET` `SOCK_DGRAM` sockets, UDP
+  and Linux's ping sockets (`IPPROTO_ICMP`): `bind` (unprivileged ports from 1024),
+  `connect` (and `AF_UNSPEC` to disconnect), `getsockname`, `getpeername`, `sendto`,
+  `sendmsg`, `recvfrom`, `recvmsg` (with `MSG_PEEK`, `MSG_DONTWAIT`, `MSG_TRUNC`), `shutdown`,
+  `SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_BROADCAST` (required for
+  broadcasts, `EACCES` without), `SO_REUSEADDR`, `SO_REUSEPORT`, `IP_TTL`, `read`, `write`,
+  `poll`, `FIONREAD` and `fstat`, with Linux's errors (`EDESTADDRREQ`, `EADDRNOTAVAIL`,
+  `ENETUNREACH`, `ENETDOWN`, `EMSGSIZE` beyond the MTU). musl's resolver works through
+  `/etc/resolv.conf`, which the kernel serves: a one-file file system mounted over the image's
+  empty `/etc/resolv.conf` (`vfs::mount_file`, as Linux mounts a file over another), listing
+  the lease's DNS servers. `/etc/hosts` names `localhost`. Streams (`SOCK_STREAM`) answer
+  `ESOCKTNOSUPPORT` until part 2; `AF_INET6` stays `EAFNOSUPPORT` (the sockets test now asks
+  `AF_INET6`).
+- **What the kernel reports** (`/proc/net/`): `interfaces`, EggOS's own line per interface
+  (`eggos_net::status`: name, link, hardware address, MTU, DHCP state, address, router, DNS
+  servers, DHCP server, lease left and length, counters), `route` and `arp` in Linux's
+  layouts. The five states a person sees have one vocabulary for every front-end (Fable's
+  section 0): no adapter (`none`), cable unplugged, getting an address, no address, connected.
+- **Front-ends (D22).** CLI: `ip` (`addr`, `link`, `route`, `neigh`, `-s` counters, `-j` the
+  JSON `net_status` returns), `ping` (`-c`, `-i`, `-W`, `-s`, `-q`; 4 requests unless `-c`
+  says otherwise, as Windows' `ping`, so a command an agent runs ends), `nslookup` (BIND's
+  output; `-port=`, `-timeout=`, a server) in the core utilities, which gained `eggos-net`
+  and `AF_INET` system calls. MCP: `net_status` (no grant), the twin `ip -j addr`. GUI:
+  Fable's design for a Network pane in Settings and a network indicator on the bar is
+  recorded in `docs/ux/network-v0.3.md`; it is not built yet (below).
+- **Running it.** The run scripts and `cargo xtask run` attach QEMU's user networking behind
+  the architecture's virtio-net device (`-netdev user`; EggOS is 10.0.2.15, the host
+  10.0.2.2, DNS 10.0.2.3), `--no-network` (`-NoNetwork`) attaches none (`-nic none`).
+- **Checks.** Host tests for every protocol (RFC 1071's checksum example, round trips, damaged
+  and hostile input), a whole DHCP exchange against a stand-in server, ARP waits and give-ups,
+  pings answered, routing, the endpoints' table and limits, the kernel's loopback, every
+  socket call through the system-call path, the status text both ways, `ip`, `ping` and
+  `nslookup` against a fake network, and the driver against a fake device. A QEMU network
+  boot test on every architecture (`xtask/src/qemu/network.rs`): the DHCP lease in `ip addr`,
+  `/etc/resolv.conf`, `ping 10.0.2.2`, `nslookup` against a DNS stand-in on the host, and
+  `linux-udp` (`tests/linux-udp`, `std::net` on musl) over `lo`, through `localhost` and with a
+  UDP echo server on the host. The MCP boot test calls `net_status`.
+- **Performance and size (D24).** No hot path of the existing benchmarks changes: the socket
+  system calls look up an `AF_INET` socket only after the call's own dispatch, and a kernel
+  without an adapter runs no network code. The release image grows by the driver, the stack
+  and the three utilities (to be measured by the build phase). The poll thread's wakeups (50 a
+  second when idle) are the cost of a polled adapter until part 32 moves drivers to
+  interrupts.
+- **Decided without research.** `ping` sends 4 requests by default (Windows' and BusyBox
+  `-c`'s habit for scripts, not Linux's endless default, so agents and scripts end); the lease
+  message is not written to the console (it would land in the middle of the shell's output);
+  `ip -j` prints EggOS's `net_status` object, not iproute2's JSON schema. The owner can
+  overrule any of these.
+- **Not yet.** The GUI front-end: Settings' Network pane (second in the sidebar, 15 widgets,
+  `CAPACITY` 64 in Settings and `eggos_app::dialog`, the date-time pane's rows moving down 32,
+  `settings open network`, read-only `network.*` keys in `settings list`) and the bar's
+  network indicator with its tooltip and click (`Action::OpenSettingsPane`), all specified in
+  `docs/ux/network-v0.3.md`; MCP `net_ping` and `net_lookup` (the `run` tool reaches `ping`
+  and `nslookup` meanwhile); TCP (part 2); IPv6; fragment reassembly; static addresses,
+  several adapters and their routes; multicast; reverse lookups (`nslookup` of an address);
+  interrupts instead of polling (part 32); netlink (`ip` reads `/proc/net`, so iproute2 and
+  musl's `getifaddrs` do not work yet); RISC-V's virt machine has eight virtio-mmio slots, so
+  `--mcp --apps` with a disk and the network needs `--no-network` there.

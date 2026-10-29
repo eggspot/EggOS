@@ -69,7 +69,7 @@ run-eggos.sh` the script's own path works too.
 
 | Grant | Lets the agent | Tools |
 |-------|----------------|-------|
-| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get` |
+| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock and the network's state | `ls`, `cat`, `ps`, `wm_list`, `app_list`, `clock_get`, `net_status` |
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
 | `write` | write files below `/home/root` and move them to the Trash | `tee`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
@@ -100,6 +100,7 @@ run-eggos.sh` the script's own path works too.
 | `wm_list` | Lists the windows on the desktop | `wm list` | |
 | `app_list` | Lists the installed apps | `app list` | |
 | `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
+| `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |

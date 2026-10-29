@@ -75,7 +75,10 @@ a reboot: the script creates `eggos-<arch>-disk.img` next to the image (1 GiB, s
 EggOS formats it with [EggFS](docs/eggfs.md), its own journaled file system, the first time;
 `sync` writes changes at once, and they are written within 5 s anyway. `--disk <image>` uses
 another image, `--no-disk` none (then `/home` is in memory and nothing is kept), and
-`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell). Type
+`--format-disk` erases the image (`-Disk`, `-NoDisk` and `-FormatDisk` in PowerShell).
+EggOS is on your computer's network through QEMU and gets its address by DHCP: `ip addr`,
+`ping 10.0.2.2` (your computer) and `nslookup` work ([docs/network.md](docs/network.md));
+`--no-network` (`-NoNetwork`) starts it without. Type
 `settings` to open [Settings](docs/settings.md) and pick the Windows, macOS or Linux layout
 profile (where the window controls are and which shortcuts work); it is kept on the disk.
 Type `edit notes.txt` (or double-click a text file in Files) to open it in the Text Editor

@@ -16,8 +16,17 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   2026-10-29; the release notes give each image's own figure).
 - **Devices:** the serial console, virtio-gpu (2D, polled), virtio keyboard, tablet and mouse,
   virtio-blk (polled, for the host folder), the real-time clock (x86_64 CMOS, AArch64 PL031,
-  RISC-V Goldfish, D150) and on test kernels virtio-rng. Nothing else is driven: no network,
-  no sound, no USB (D110-D113, D130).
+  RISC-V Goldfish, D150), virtio-net (polled, the first adapter only, D157) and on test
+  kernels virtio-rng. Nothing else is driven: no Wi-Fi, no sound, no USB (D110-D113, D130).
+- **Network, part 1** (D157, [network.md](network.md)). IPv4 over one wired adapter with an
+  address from DHCP, UDP and ping for programs, DNS through `/etc/resolv.conf`, `lo`; `ip`,
+  `ping`, `nslookup` and the MCP tool `net_status`. No TCP yet (so no downloads or web pages:
+  part 2), no IPv6, no fragment reassembly, no static addresses or second adapter, no
+  multicast, no reverse lookups, no netlink (iproute2 and `getifaddrs` fail; `ip` reads
+  `/proc/net`). Settings has no Network pane and the bar no network indicator yet (designed in
+  docs/ux/network-v0.3.md). The adapter is polled (50 wakeups a second when idle) until drivers
+  run on interrupts. On riscv64, `--mcp --apps` with a disk and the network takes more than
+  the machine's eight virtio slots: add `--no-network` there.
 
 ## What the system can do
 - **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
@@ -32,12 +41,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB. The desktop shows
   an `Agent` chip while a client is connected and marks what it drives for a second (D156);
   the first boot does not ask "Where are you coming from?" yet.
-- **One disk, and no network.** The root file system is the read-only initramfs inside the
+- **One disk.** The root file system is the read-only initramfs inside the
   image: `/init`, `/bin` (the shell and the core utilities), `/etc/motd`, `/etc/hostname` and
-  `/usr/share/eggos/about`. `/home`, `/Applications` and `/var` live on the disk image the run
+  `/usr/share/eggos/about`, `/etc/hosts` and `/etc/resolv.conf` (the DHCP lease's DNS servers,
+  D157). `/home`, `/Applications` and `/var` live on the disk image the run
   scripts attach, formatted with EggFS, and survive reboots (D131); `/tmp` is in memory, as `/home` is
   with `--no-disk` (together at most half of the memory), and `/proc` has `cmdline`, `meminfo`,
-  `uptime`, `ps` and `driver/rtc` (D125, D137, D150). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
+  `uptime`, `ps`, `net/interfaces`, `net/route`, `net/arp`, `net/unix` and `driver/rtc` (D125,
+  D137, D150, D157). Changes reach the disk within 5 s, at `sync` and at power-off; closing QEMU's
   window or a power cut loses the last seconds' changes, never the file system. EggFS has no
   hard or symbolic links, access times or repair tool yet, searches directories linearly,
   and keeps one request to the disk in flight; moving a file between `/home` and
@@ -88,7 +99,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `/proc/self` or `/proc/<pid>`), `/dev` holds only `window` and `agent`, no `mmap` of files but memfds, no copy-on-write `fork`
   (memory is copied at once, D104). Pipes work (D125), but `poll` on many descriptors wakes
   with every pipe, socket and console change. Local sockets work (D138): `AF_UNIX` stream
-  sockets only (no datagrams or sequenced packets, no networking), socket files only in the
+  sockets only (no datagrams or sequenced packets); `AF_INET` datagram sockets work for UDP
+  and ping (D157), streams (TCP) not yet; socket files only in the
   memory file systems (`/tmp`, `/run`, `/var` and `/home` without a disk; `bind` on the disk
   is refused), descriptors passed with `SCM_RIGHTS` but never a socket that carries sockets
   itself, and at most 4096 descriptors in flight in all; no `epoll`, `eventfd`, `timerfd` or

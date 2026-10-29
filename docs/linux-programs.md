@@ -118,15 +118,18 @@ it unlocks them:
 - **`fork` after `MAP_SHARED`.** Rust's `std::process::Command`, `posix_spawn`, `fork`,
   `vfork`, `execve` and `wait4` work (the sockets boot test starts its client with `Command`),
   but a process with shared memory cannot `fork` (D104).
-- **`/proc/self`.** `/proc` has only `cmdline`, `meminfo`, `uptime`, `ps` and `net/unix`, so
+- **`/proc/self`.** `/proc` has only `cmdline`, `meminfo`, `uptime`, `ps` and `net/` (`unix`,
+  `interfaces`, `route`, `arp`), so
   `std::env::current_exe` fails: start a copy of the program by its path. Files can be written
   in `/tmp`, `/run`, `/home` and `/var` (D125, D131).
 - **The wall clock** is UTC, read from the real-time clock at boot; there are no time zones (D150).
-- **Networking and `mmap` of files** are not implemented (`mmap` takes anonymous memory
-  only, and memfds, D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and
-  descriptors passed with `SCM_RIGHTS` (D138), and so does memory shared between programs
-  with `memfd_create` and `mmap(MAP_SHARED)` (D139); datagram sockets and `epoll` do not
-  yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
+- **`mmap` of files** is not implemented (`mmap` takes anonymous memory only, and memfds,
+  D139). Local sockets work: `AF_UNIX` stream sockets, `socketpair` and descriptors passed
+  with `SCM_RIGHTS` (D138), and so does memory shared between programs with `memfd_create`
+  and `mmap(MAP_SHARED)` (D139). The network works for datagrams (D157,
+  [network.md](network.md)): `AF_INET` UDP sockets (`std::net::UdpSocket`) and ping sockets,
+  and names through musl's resolver; TCP (`SOCK_STREAM`, `ESOCKTNOSUPPORT` for now), IPv6,
+  `AF_UNIX` datagrams and `epoll` do not yet. Wayland GUI programs work through `eggway` (D140, above), the toolkits not yet.
 - **Choosing CPUs.** `sched_getaffinity` reports every online CPU; `sched_setaffinity` is not
   there yet.
 
