@@ -170,10 +170,12 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   entries past 4 GiB or 65 535 entries), encrypted entries, methods other than stored and
   deflate, symbolic links in a `.zip`, and names longer than 255 bytes (D148); a `.zip` whose
   files would take more than 4 GiB once extracted, or holding a file named `app.manifest`,
-  `app.manifest.tmp` or `app.icon` at its top, is refused; the window's chooser for a `.zip`
-  with several programs lists four and leaves out paths longer than 64 bytes (`app install
-  --entry <path>` installs any); every entry of a `.zip` is extracted in one step of the
-  installer, so `Cancel` waits for the entry being extracted;
+  `app.manifest.tmp` or `app.icon` at its top, is refused (as is a program of one of those
+  names); the window's chooser for a `.zip` with several programs lists four (`app install
+  --entry <path>` installs any) and shows a path longer than a button's 32 bytes as `...` and
+  its end; any file starting with a zip's signature (a `.docx`, `.jar` or `.apk`) is offered
+  `Install...` in Files and refused as holding no program; every entry of a `.zip` is
+  extracted in one step of the installer, so `Cancel` waits for the entry being extracted;
 - app icons (D148): binary property lists, asset catalogues (`Assets.car`), JPEG 2000 and
   `it32` entries of an `.icns`, interlaced PNGs, 16-bit and compressed bitmap entries of a
   Windows icon, and images larger than 1024 pixels (256 for a bitmap entry) are not read (the
@@ -213,5 +215,7 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
   shown read-only; opening a file twice gives two windows; with no desktop `edit` cannot open
   it and there is no terminal editor; a file with mixed line endings is saved all CRLF once it
   holds one `\r\n`; saving replaces a symbolic link by a regular file and breaks hard links;
+  a save cut short (power lost, the editor killed) leaves its hidden `.<name>.saving` beside the
+  file, which later saves leave alone (they write `.<name>.<n>.saving` instead);
   Alt and Option with a letter type nothing (the keymap has no Option or AltGr layer yet);
 - copy and paste of text, and scaling for high-density displays.

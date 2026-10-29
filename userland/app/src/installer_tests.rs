@@ -1,6 +1,7 @@
 use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
 use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
+use crate::files::Path;
 use crate::installer::*;
 use crate::program::NotRunnable;
 use crate::program::samples::{linux_program, mach_o, windows_program};
@@ -614,6 +615,12 @@ fn a_zip_holding_a_file_the_installer_writes_is_refused() {
         );
         assert!(files.log.is_empty(), "{planted}");
     }
+    let directory_first = zip(&[stored("app.manifest/", b""), stored("Tool.exe", &program)]);
+    let mut files = host_with("/media/host/tool.zip", &directory_first);
+    assert_eq!(
+        refused(&mut files, "/media/host/tool.zip", X86_64),
+        Problem::ReservedName
+    );
     assert!(is_reserved(b"app.manifest") && is_reserved(b"App.Icon"));
     assert!(!is_reserved(b"bin/app.manifest") && !is_reserved(b"app.manifests"));
     let nested = zip(&[
@@ -680,12 +687,12 @@ fn a_zipped_bundle_s_program_is_the_one_its_info_plist_names() {
     )
     .unwrap();
     assert_eq!(chosen.run(), b"Firefox.app/Contents/MacOS/firefox");
-    let mut names = [Name::new(b""); 4];
+    let mut entries = [Path::new(); 4];
     assert_eq!(
-        archive_programs(&mut files, b"/media/host/Firefox.zip", &mut names),
+        archive_programs(&mut files, b"/media/host/Firefox.zip", &mut entries),
         (1, 0)
     );
-    assert_eq!(names[0].as_str(), "Firefox.app");
+    assert_eq!(entries[0].as_bytes(), b"Firefox.app");
 }
 
 #[test]
@@ -699,17 +706,151 @@ fn the_programs_of_a_zip_are_listed_for_the_window_s_chooser() {
         stored("c.exe", &program),
     ]);
     let mut files = host_with("/media/host/tools.zip", &archive);
-    let mut names = [Name::new(b""); 2];
+    let mut two = [Path::new(); 2];
     assert_eq!(
-        archive_programs(&mut files, b"/media/host/tools.zip", &mut names),
+        archive_programs(&mut files, b"/media/host/tools.zip", &mut two),
         (2, 2)
     );
-    assert_eq!(names[0].as_str(), "bin/a.exe");
-    assert_eq!(names[1].as_str(), "bin/b.exe");
-    let mut none = [Name::new(b""); 2];
+    assert_eq!(two[0].as_bytes(), b"bin/a.exe");
+    assert_eq!(two[1].as_bytes(), b"bin/b.exe");
+    let mut four = [Path::new(); 4];
+    assert_eq!(
+        archive_programs(&mut files, b"/media/host/tools.zip", &mut four),
+        (4, 0)
+    );
+    assert_eq!(
+        four[2].as_bytes(),
+        format!("{}.exe", "x".repeat(70)).as_bytes()
+    );
+    assert_eq!(four[3].as_bytes(), b"c.exe");
+    let mut none = [Path::new(); 2];
     assert_eq!(
         archive_programs(&mut files, b"/media/host/missing.zip", &mut none),
         (0, 0)
+    );
+}
+
+#[test]
+fn a_zip_s_programs_with_paths_longer_than_a_name_are_listed_whole_and_install() {
+    let program = windows_program(0x8664);
+    let folder = "SomeVendorTool-12.3.4-windows-x64-portable-build-2026/bin";
+    let tool = format!("{folder}/Tool.exe");
+    let updater = format!("{folder}/Updater.exe");
+    assert!(tool.len() > Name::CAPACITY);
+    let archive = zip(&[stored(&tool, &program), stored(&updater, &program)]);
+    let mut files = host_with("/media/host/tool.zip", &archive);
+    assert!(matches!(
+        refused(&mut files, "/media/host/tool.zip", X86_64),
+        Problem::SeveralPrograms(_)
+    ));
+    let mut entries = [Path::new(); 4];
+    assert_eq!(
+        archive_programs(&mut files, b"/media/host/tool.zip", &mut entries),
+        (2, 0)
+    );
+    assert_eq!(entries[0].as_bytes(), tool.as_bytes());
+    assert_eq!(entries[1].as_bytes(), updater.as_bytes());
+    let plan = plan_entry(
+        &mut files,
+        b"/media/host/tool.zip",
+        None,
+        Some(entries[1].as_bytes()),
+        X86_64,
+    )
+    .unwrap();
+    assert_eq!(plan.name(), "Updater");
+    assert_eq!(plan.run(), updater.as_bytes());
+}
+
+#[test]
+fn a_program_named_like_a_file_the_installer_writes_is_refused() {
+    for name in [
+        "app.manifest",
+        "app.manifest.tmp",
+        "app.icon",
+        "App.Manifest",
+    ] {
+        let path = format!("/media/host/{name}");
+        let mut files = host_with(&path, &linux_program(62));
+        assert_eq!(
+            refused(&mut files, &path, X86_64),
+            Problem::ReservedName,
+            "{name}"
+        );
+        assert!(files.log.is_empty(), "{name}");
+    }
+    let mut files = host_with("/media/host/app.manifest", &linux_program(62));
+    let named = plan(
+        &mut files,
+        b"/media/host/app.manifest",
+        Some(b"Tool"),
+        X86_64,
+    )
+    .unwrap_err();
+    assert_eq!(named.problem, Problem::ReservedName);
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_bundle_s_program_is_found_alike_in_a_folder_and_in_a_zip() {
+    let declares = |executable: &str| {
+        format!("<dict><key>CFBundleExecutable</key><string>{executable}</string></dict>")
+    };
+    let arm = mach_o(0x0100_000c, 2);
+    let mut files = FakeFiles::new();
+    files.directory("/media/host/Firefox.app");
+    files.directory("/media/host/Firefox.app/Contents");
+    files.file(
+        "/media/host/Firefox.app/Contents/Info.plist",
+        declares("firefox").as_bytes(),
+    );
+    files.directory("/media/host/Firefox.app/Contents/MacOS");
+    files.file("/media/host/Firefox.app/Contents/MacOS/firefox", &arm);
+    files.file(
+        "/media/host/Firefox.app/Contents/MacOS/plugin-container",
+        &arm,
+    );
+    assert_eq!(
+        planned(&mut files, "/media/host/Firefox.app", Aarch64).run(),
+        b"Firefox.app/Contents/MacOS/firefox"
+    );
+    files.directory("/media/host/Paint.app");
+    files.directory("/media/host/Paint.app/Contents");
+    files.file(
+        "/media/host/Paint.app/Contents/Info.plist",
+        declares("gone").as_bytes(),
+    );
+    files.directory("/media/host/Paint.app/Contents/MacOS");
+    files.file("/media/host/Paint.app/Contents/MacOS/Paint", &arm);
+    files.file("/media/host/Paint.app/Contents/MacOS/helper", &arm);
+    assert_eq!(
+        planned(&mut files, "/media/host/Paint.app", Aarch64).run(),
+        b"Paint.app/Contents/MacOS/Paint"
+    );
+
+    let zipped_paint = zip(&[
+        stored("Paint.app/Contents/Info.plist", declares("gone").as_bytes()),
+        stored("Paint.app/Contents/MacOS/Paint", &arm),
+        stored("Paint.app/Contents/MacOS/helper", &arm),
+    ]);
+    let mut files = host_with("/media/host/Paint.zip", &zipped_paint);
+    assert_eq!(
+        planned(&mut files, "/media/host/Paint.zip", Aarch64).run(),
+        b"Paint.app/Contents/MacOS/Paint"
+    );
+    let zipped_only = zip(&[stored("Big Tool.app/Contents/MacOS/bigtool", &arm)]);
+    let mut files = host_with("/media/host/big.zip", &zipped_only);
+    let plan = planned(&mut files, "/media/host/big.zip", Aarch64);
+    assert_eq!(plan.name(), "Big Tool");
+    assert_eq!(plan.run(), b"Big Tool.app/Contents/MacOS/bigtool");
+    let zipped_two = zip(&[
+        stored("X.app/Contents/MacOS/a", &arm),
+        stored("X.app/Contents/MacOS/b", &arm),
+    ]);
+    let mut files = host_with("/media/host/x.zip", &zipped_two);
+    assert_eq!(
+        refused(&mut files, "/media/host/x.zip", Aarch64),
+        Problem::NoProgramInArchive
     );
 }
 
@@ -730,6 +871,47 @@ fn a_damaged_entry_fails_the_install_and_leaves_nothing() {
     assert_eq!(
         install(&mut files, plan, &mut [0u8; 64]),
         Err(Problem::Archive(crate::archive::ArchiveError::Corrupt))
+    );
+    assert!(files.paths_under("/Applications/").is_empty());
+    assert_eq!(files.open_count(), 0);
+}
+
+fn replace_file(files: &mut FakeFiles, path: &str, bytes: &[u8]) {
+    files
+        .nodes
+        .retain(|(at, _)| at.as_slice() != path.as_bytes());
+    files.file(path, bytes);
+}
+
+#[test]
+fn extracting_checks_reserved_names_and_the_size_again() {
+    let program = windows_program(0x8664);
+    assert!(program.len() > 16);
+    let clean = zip(&[stored("tool.exe", &program), stored("readme.x", b"x")]);
+    let planted = zip(&[stored("tool.exe", &program), stored("app.icon", b"x")]);
+    assert_eq!(clean.len(), planted.len());
+    let mut files = host_with("/media/host/tool.zip", &clean);
+    let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+    replace_file(&mut files, "/media/host/tool.zip", &planted);
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 64]),
+        Err(Problem::ReservedName)
+    );
+    assert!(files.paths_under("/Applications/").is_empty());
+    assert_eq!(files.open_count(), 0);
+
+    let mut grown = clean.clone();
+    let central = grown
+        .windows(4)
+        .rposition(|window| window == [0x50, 0x4b, 0x01, 0x02])
+        .unwrap();
+    grown[central + 24..central + 28].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
+    let mut files = host_with("/media/host/tool.zip", &clean);
+    let plan = planned(&mut files, "/media/host/tool.zip", X86_64);
+    replace_file(&mut files, "/media/host/tool.zip", &grown);
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 64]),
+        Err(Problem::TooLarge)
     );
     assert!(files.paths_under("/Applications/").is_empty());
     assert_eq!(files.open_count(), 0);

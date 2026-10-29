@@ -29,11 +29,20 @@ pub const MAX_CANDIDATES: usize = 32;
 
 /// The most bytes of an `Info.plist` read.
 pub const PLIST_BYTES: usize = 16 * 1024;
+/// The longest file name an `Info.plist` gives, in bytes, once its XML entities are decoded.
+pub const PLIST_NAME_BYTES: usize = 255;
 
 const ICON_KEY: &[u8] = b"<key>CFBundleIconFile</key>";
 const EXECUTABLE_KEY: &[u8] = b"<key>CFBundleExecutable</key>";
 const STRING_START: &[u8] = b"<string>";
 const STRING_END: &[u8] = b"</string>";
+const XML_ENTITIES: [(&[u8], u8); 5] = [
+    (b"&amp;", b'&'),
+    (b"&lt;", b'<'),
+    (b"&gt;", b'>'),
+    (b"&quot;", b'"'),
+    (b"&apos;", b'\''),
+];
 const ICNS_SUFFIX: &[u8] = b".icns";
 const PNG_SUFFIX: &[u8] = b".png";
 const BUNDLE_PROGRAMS: &[u8] = b"/Contents/MacOS/";
@@ -384,17 +393,44 @@ pub fn bundle_of(program: &[u8]) -> Option<&[u8]> {
         .then_some(bundle)
 }
 
-/// The value of `CFBundleIconFile` in an XML property list, if it is a plain file name.
-pub fn plist_icon_file(plist: &[u8]) -> Option<&[u8]> {
-    plist_file_name(plist, ICON_KEY)
+/// The value of `CFBundleIconFile` in an XML property list, its XML entities decoded into
+/// `name`, if it is a plain file name.
+pub fn plist_icon_file<'n>(plist: &[u8], name: &'n mut [u8; PLIST_NAME_BYTES]) -> Option<&'n [u8]> {
+    plist_file_name(plist, ICON_KEY, name)
 }
 
-/// The value of `CFBundleExecutable` in an XML property list, if it is a plain file name.
-pub fn plist_executable(plist: &[u8]) -> Option<&[u8]> {
-    plist_file_name(plist, EXECUTABLE_KEY)
+/// The value of `CFBundleExecutable` in an XML property list, its XML entities decoded into
+/// `name`, if it is a plain file name.
+pub fn plist_executable<'n>(
+    plist: &[u8],
+    name: &'n mut [u8; PLIST_NAME_BYTES],
+) -> Option<&'n [u8]> {
+    plist_file_name(plist, EXECUTABLE_KEY, name)
 }
 
-fn plist_file_name<'p>(plist: &'p [u8], key_element: &[u8]) -> Option<&'p [u8]> {
+fn decode_entities<'n>(raw: &[u8], out: &'n mut [u8]) -> Option<&'n [u8]> {
+    let mut length = 0;
+    let mut at = 0;
+    while at < raw.len() {
+        let (byte, used) = match raw[at] {
+            b'&' => XML_ENTITIES
+                .iter()
+                .find(|(entity, _)| raw[at..].starts_with(entity))
+                .map_or((b'&', 1), |&(entity, byte)| (byte, entity.len())),
+            byte => (byte, 1),
+        };
+        *out.get_mut(length)? = byte;
+        length += 1;
+        at += used;
+    }
+    Some(&out[..length])
+}
+
+fn plist_file_name<'n>(
+    plist: &[u8],
+    key_element: &[u8],
+    out: &'n mut [u8; PLIST_NAME_BYTES],
+) -> Option<&'n [u8]> {
     let key = plist
         .windows(key_element.len())
         .position(|window| window == key_element)?;
@@ -404,8 +440,12 @@ fn plist_file_name<'p>(plist: &'p [u8], key_element: &[u8]) -> Option<&'p [u8]> 
     let end = value
         .windows(STRING_END.len())
         .position(|window| window == STRING_END)?;
-    let name = value[..end].trim_ascii();
-    let plain = !name.is_empty() && name != b".." && !name.contains(&b'/') && !name.contains(&0);
+    let name = decode_entities(value[..end].trim_ascii(), out)?;
+    let plain = !name.is_empty()
+        && name != b"."
+        && name != b".."
+        && !name.contains(&b'/')
+        && !name.contains(&0);
     plain.then_some(name)
 }
 
@@ -415,7 +455,8 @@ fn is_file(files: &mut impl Files, path: &Path) -> bool {
         .is_ok_and(|status| status.kind == Kind::File)
 }
 
-fn read_start(files: &mut impl Files, path: &[u8], buffer: &mut [u8]) -> usize {
+/// Reads the start of the file at `path` into `buffer`; how many bytes, 0 when it cannot.
+pub fn read_start(files: &mut impl Files, path: &[u8], buffer: &mut [u8]) -> usize {
     reader::read_file(files, path, |reader| {
         let room = buffer.len().min(reader.size() as usize);
         match reader.read_exact_at(0, &mut buffer[..room]) {
@@ -434,7 +475,8 @@ pub fn bundle_icns(files: &mut impl Files, bundle: &[u8]) -> Option<Path> {
     let resources = bundle.join(RESOURCES)?;
     let mut plist = [0u8; PLIST_BYTES];
     let length = read_start(files, bundle.join(INFO_PLIST)?.as_bytes(), &mut plist);
-    if let Some(name) = plist_icon_file(&plist[..length]) {
+    let mut file_name = [0u8; PLIST_NAME_BYTES];
+    if let Some(name) = plist_icon_file(&plist[..length], &mut file_name) {
         let mut path = resources.join(name)?;
         if !ends_with_ignoring_case(name, ICNS_SUFFIX) && !path.append(ICNS_SUFFIX) {
             return None;

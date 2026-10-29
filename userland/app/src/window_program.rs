@@ -7,9 +7,10 @@
 //! so the toolkit and its font are in the image once.
 
 use crate::architecture::Architecture;
+use crate::archive;
 use crate::command::{self, Command};
 use crate::dialog::{self, AppIcon, Dialog, Request, SIZE};
-use crate::files::{self, Files, Kind, Path};
+use crate::files::{self, Files, Kind, PATH_CAPACITY, Path};
 use crate::installer::{self, Installation, Name, Plan, Problem, Progress};
 use crate::linux::{self, LinuxFiles, STANDARD_ERROR, write_all};
 use crate::messages::{self, Line};
@@ -35,7 +36,7 @@ enum Stage {
     },
     ChoosingEntry {
         archive: Path,
-        names: [Name; dialog::MAX_CHOICES],
+        entries: [Path; dialog::MAX_CHOICES],
     },
     Prompting(Plan),
     Showing,
@@ -52,6 +53,12 @@ struct Installer {
     name: Option<Name>,
     entry: Option<Path>,
     buffer: &'static mut [u8],
+}
+
+const _: () = assert!(archive::NAME_CAPACITY < PATH_CAPACITY);
+
+fn entry_as_given(entry: &[u8]) -> Path {
+    Path::from(&entry[..entry.len().min(PATH_CAPACITY)]).unwrap_or_default()
 }
 
 fn close() -> ! {
@@ -123,7 +130,10 @@ impl Installer {
             dialog::install_prompt_entry(&mut self.files, path, name, entry, self.machine);
         match plan {
             Ok(plan) => self.show(dialog, Stage::Prompting(plan)),
-            Err(refused) if matches!(refused.problem, Problem::SeveralPrograms(_)) => {
+            Err(refused)
+                if self.entry.is_none()
+                    && matches!(refused.problem, Problem::SeveralPrograms(_)) =>
+            {
                 self.choose_entry(path)
             }
             Err(_) => self.show(dialog, Stage::Showing),
@@ -132,17 +142,17 @@ impl Installer {
 
     fn choose_entry(&mut self, path: &[u8]) {
         let archive = Path::from(path).unwrap_or_default();
-        let mut names = [Name::new(b""); dialog::MAX_CHOICES];
+        let mut entries = [Path::new(); dialog::MAX_CHOICES];
         let (count, more) =
-            installer::archive_programs(&mut self.files, archive.as_bytes(), &mut names);
+            installer::archive_programs(&mut self.files, archive.as_bytes(), &mut entries);
         let mut shown = [""; dialog::MAX_CHOICES];
-        for (slot, name) in shown.iter_mut().zip(&names[..count]) {
-            *slot = name.as_str();
+        for (slot, entry) in shown.iter_mut().zip(&entries[..count]) {
+            *slot = core::str::from_utf8(entry.as_bytes()).unwrap_or("?");
         }
         let mut place = Line::new();
         place.push_bytes(archive.as_bytes());
         let dialog = Dialog::choose_entry(place.as_str(), &shown[..count], more);
-        self.show(dialog, Stage::ChoosingEntry { archive, names });
+        self.show(dialog, Stage::ChoosingEntry { archive, entries });
     }
 
     fn start_install(&mut self, plan: Plan) {
@@ -222,10 +232,11 @@ impl Application<{ dialog::CAPACITY }> for Installer {
                             .and_then(|name| folder.join(name.as_bytes())),
                         None,
                     ),
-                    Stage::ChoosingEntry { archive, names } => {
-                        let entry = names
+                    Stage::ChoosingEntry { archive, entries } => {
+                        let entry = entries
                             .get(index)
-                            .and_then(|name| Path::from(name.as_bytes()));
+                            .copied()
+                            .filter(|entry| !entry.is_empty());
                         (entry.map(|_| *archive), entry)
                     }
                     _ => (None, None),
@@ -359,7 +370,7 @@ pub fn run(startup: &Startup) -> i32 {
         }
     };
     let (name, entry) = match command {
-        Command::Install { name, entry, .. } => (name.map(Name::new), entry.and_then(Path::from)),
+        Command::Install { name, entry, .. } => (name.map(Name::new), entry.map(entry_as_given)),
         _ => (None, None),
     };
     let (width, height) = SIZE;

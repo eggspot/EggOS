@@ -6,7 +6,7 @@
 
 use crate::document::{Document, NotText, TEXT_CAPACITY};
 use core::fmt::Write;
-use eggos_app::files::{self, Files, Kind, Path};
+use eggos_app::files::{self, Files, Handle, Kind, Path};
 use eggos_app::messages::Line;
 use eggos_runtime::errno::Errno;
 
@@ -14,6 +14,7 @@ const CHECK_CHUNK: usize = 4096;
 const FILE_MODE: u32 = 0o644;
 const SAVING_PREFIX: &[u8] = b".";
 const SAVING_SUFFIX: &[u8] = b".saving";
+const SAVING_ATTEMPTS: usize = 16;
 
 /// A streaming check that bytes are UTF-8 with no NUL, fed in pieces of any size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,13 +248,18 @@ pub fn folder_of(path: &[u8]) -> &[u8] {
     }
 }
 
-fn saving_path(path: &[u8]) -> Option<Path> {
+fn saving_path(path: &[u8], attempt: usize) -> Option<Path> {
     let folder = folder_of(path);
+    let mut number = Line::new();
+    if attempt > 0 {
+        let _ = write!(number, ".{attempt}");
+    }
     let mut saving = Path::new();
     let fits = (folder == b"/" || saving.append(folder))
         && saving.append(b"/")
         && saving.append(SAVING_PREFIX)
         && saving.append(files::file_name(path))
+        && saving.append(number.as_str().as_bytes())
         && saving.append(SAVING_SUFFIX);
     fits.then_some(saving)
 }
@@ -266,8 +272,25 @@ fn save_problem(error: Errno) -> SaveProblem {
     }
 }
 
-/// Saves `document` at `path`: written to `.<name>.saving` beside it, synced, then renamed
-/// over `path`, keeping an existing file's permissions (else `0o644`).
+fn create_saving_file(
+    files: &mut impl Files,
+    path: &[u8],
+    permissions: u32,
+) -> Result<(Path, Handle), SaveProblem> {
+    for attempt in 0..SAVING_ATTEMPTS {
+        let saving = saving_path(path, attempt).ok_or(SaveProblem::Failed(Errno::ENAMETOOLONG))?;
+        match files.create(saving.as_bytes(), permissions) {
+            Ok(file) => return Ok((saving, file)),
+            Err(Errno::EEXIST) => {}
+            Err(error) => return Err(save_problem(error)),
+        }
+    }
+    Err(SaveProblem::Failed(Errno::EEXIST))
+}
+
+/// Saves `document` at `path`: written to `.<name>.saving` beside it (`.<name>.<n>.saving`
+/// when a file of that name is already there, which is left alone), synced, then renamed over
+/// `path`, keeping an existing file's permissions (else `0o644`).
 pub fn save(
     files: &mut impl Files,
     path: &[u8],
@@ -284,13 +307,7 @@ pub fn save(
         Ok(_) => return Err(SaveProblem::Failed(Errno::EISDIR)),
         Err(_) => FILE_MODE,
     };
-    let saving = saving_path(path).ok_or(SaveProblem::Failed(Errno::ENAMETOOLONG))?;
-    if files.status(saving.as_bytes()).is_ok() {
-        files.remove_file(saving.as_bytes()).map_err(save_problem)?;
-    }
-    let file = files
-        .create(saving.as_bytes(), permissions)
-        .map_err(save_problem)?;
+    let (saving, file) = create_saving_file(files, path, permissions)?;
     let written = document
         .encode(|piece| files.write(file, piece))
         .and_then(|()| files.sync_file(file));
@@ -420,6 +437,23 @@ mod tests {
             disk.contents("/home/root/new.txt"),
             Some(&b"new\r\nold\r\n"[..])
         );
+        assert_eq!(disk.open_count(), 0);
+    }
+
+    #[test]
+    fn a_save_leaves_a_file_named_like_its_temporary_one_alone() {
+        let mut disk = disk();
+        disk.file("/home/root/.notes.txt.saving", b"mine", 0);
+        let (mut text, mut starts) = room(64);
+        let mut document = Document::new(&mut text, &mut starts);
+        document.insert(0, b"new\n").unwrap();
+        assert_eq!(save(&mut disk, b"/home/root/notes.txt", &document), Ok(()));
+        assert_eq!(disk.contents("/home/root/notes.txt"), Some(&b"new\n"[..]));
+        assert_eq!(
+            disk.contents("/home/root/.notes.txt.saving"),
+            Some(&b"mine"[..])
+        );
+        assert_eq!(disk.contents("/home/root/.notes.txt.1.saving"), None);
         assert_eq!(disk.open_count(), 0);
     }
 

@@ -33,7 +33,8 @@ pub const MACOS_LAYER: &[u8] = b"/usr/lib/eggos/macos";
 pub const TEMPORARY_MANIFEST: &[u8] = b"app.manifest.tmp";
 /// How deep folders inside an `.app` bundle may nest.
 pub const MAX_DEPTH: usize = 16;
-/// The files the installer writes in an app's folder, which no entry of a `.zip` may take.
+/// The files the installer writes in an app's folder, which no program and no entry of a
+/// `.zip` may take.
 pub const RESERVED_NAMES: [&[u8]; 3] = [
     manifest::FILE_NAME.as_bytes(),
     TEMPORARY_MANIFEST,
@@ -42,7 +43,8 @@ pub const RESERVED_NAMES: [&[u8]; 3] = [
 /// The most bytes a `.zip`'s files may take once extracted.
 pub const MAX_EXTRACTED_BYTES: u64 = 4 << 30;
 
-const MAX_DECLARED: usize = 4;
+const MAX_BUNDLES: usize = 4;
+const INFO_PLIST: &[u8] = b"Contents/Info.plist";
 const INFO_PLIST_INSIDE: &[u8] = b"/Contents/Info.plist";
 const BUNDLE_SUFFIX: &[u8] = b".app";
 const BUNDLE_PROGRAMS: &[u8] = b"Contents/MacOS";
@@ -90,7 +92,8 @@ pub enum Problem {
     SeveralPrograms(Listing),
     /// No program in the `.zip` is at the path `--entry` gives.
     NoSuchEntry,
-    /// A `.zip` holding a file the installer writes itself ([`RESERVED_NAMES`]).
+    /// A program, or a file in a `.zip`, named like a file the installer writes itself
+    /// ([`RESERVED_NAMES`]).
     ReservedName,
     /// A `.zip` whose files take more than [`MAX_EXTRACTED_BYTES`] once extracted.
     TooLarge,
@@ -334,13 +337,28 @@ pub fn read_manifest(
     manifest::parse(&file[..length], name).map(|_| length)
 }
 
+fn is_file(files: &mut impl Files, path: &Path) -> bool {
+    files
+        .status(path.as_bytes())
+        .is_ok_and(|status| status.kind == Kind::File)
+}
+
+fn declared_program(files: &mut impl Files, bundle: &Path, programs: &Path) -> Option<Path> {
+    let plist_path = bundle.join(INFO_PLIST)?;
+    let mut plist = [0u8; icon::PLIST_BYTES];
+    let length = icon::read_start(files, plist_path.as_bytes(), &mut plist);
+    let mut executable = [0u8; icon::PLIST_NAME_BYTES];
+    let program = programs.join(icon::plist_executable(&plist[..length], &mut executable)?)?;
+    is_file(files, &program).then_some(program)
+}
+
 fn bundle_program(files: &mut impl Files, bundle: &Path, stem: &[u8]) -> Result<Path, Problem> {
     let programs = bundle.join(BUNDLE_PROGRAMS).ok_or(Problem::PathTooLong)?;
+    if let Some(declared) = declared_program(files, bundle, &programs) {
+        return Ok(declared);
+    }
     let named = programs.join(stem).ok_or(Problem::PathTooLong)?;
-    if files
-        .status(named.as_bytes())
-        .is_ok_and(|status| status.kind == Kind::File)
-    {
+    if is_file(files, &named) {
         return Ok(named);
     }
     let mut name = [0u8; 256];
@@ -352,10 +370,7 @@ fn bundle_program(files: &mut impl Files, bundle: &Path, stem: &[u8]) -> Result<
     {
         index += 1;
         let candidate = programs.join(&name[..length]).ok_or(Problem::PathTooLong)?;
-        let is_file = files
-            .status(candidate.as_bytes())
-            .is_ok_and(|status| status.kind == Kind::File);
-        if is_file {
+        if is_file(files, &candidate) {
             if found.is_some() {
                 return Err(Problem::BundleWithoutProgram);
             }
@@ -486,6 +501,9 @@ fn settle(
     if !manifest::is_run(run.as_bytes()) {
         return Err(Problem::InvalidProgramPath);
     }
+    if is_reserved(run.as_bytes()) {
+        return Err(Problem::ReservedName);
+    }
     let folder = app_folder(name.as_bytes()).ok_or(Problem::PathTooLong)?;
     if folder.join(run.as_bytes()).is_none() {
         return Err(Problem::PathTooLong);
@@ -510,8 +528,8 @@ enum Role {
     Other,
 }
 
-/// Whether the archive entry `name` would take a file the installer writes: its first part is
-/// one of [`RESERVED_NAMES`], in any case.
+/// Whether `name`, a path inside an app's folder, would take a file the installer writes: its
+/// first part is one of [`RESERVED_NAMES`], in any case.
 pub fn is_reserved(name: &[u8]) -> bool {
     let first = name.split(|&byte| byte == b'/').next().unwrap_or(name);
     RESERVED_NAMES
@@ -531,38 +549,108 @@ fn bundle_end(name: &[u8]) -> Option<usize> {
     None
 }
 
-struct Declared {
-    programs: [Path; MAX_DECLARED],
+fn bundle_stem(bundle: &[u8]) -> &[u8] {
+    let part = files::file_name(bundle);
+    &part[..part.len() - BUNDLE_SUFFIX.len()]
+}
+
+#[derive(Clone, Copy)]
+struct ZippedBundle {
+    bundle: Path,
+    declared: Option<Path>,
+    declared_found: bool,
+    stem: Option<Path>,
+    first: Option<Path>,
+    files: usize,
+}
+
+impl ZippedBundle {
+    const EMPTY: Self = Self {
+        bundle: Path::new(),
+        declared: None,
+        declared_found: false,
+        stem: None,
+        first: None,
+        files: 0,
+    };
+
+    fn program(&self) -> Option<&[u8]> {
+        let declared = self.declared.as_ref().filter(|_| self.declared_found);
+        let only = self.first.as_ref().filter(|_| self.files == 1);
+        declared.or(self.stem.as_ref()).or(only).map(Path::as_bytes)
+    }
+}
+
+struct ZippedBundles {
+    bundles: [ZippedBundle; MAX_BUNDLES],
     count: usize,
 }
 
-impl Declared {
+impl ZippedBundles {
     fn new() -> Self {
         Self {
-            programs: [Path::new(); MAX_DECLARED],
+            bundles: [ZippedBundle::EMPTY; MAX_BUNDLES],
             count: 0,
         }
     }
 
-    fn of_bundle(&self, bundle: &[u8]) -> Option<&[u8]> {
-        self.programs[..self.count]
+    fn of(&self, bundle: &[u8]) -> Option<&ZippedBundle> {
+        self.bundles[..self.count]
             .iter()
-            .map(Path::as_bytes)
-            .find(|program| {
-                program
-                    .strip_prefix(bundle)
-                    .and_then(|rest| rest.strip_prefix(BUNDLE_PROGRAMS_INSIDE))
-                    .is_some()
-            })
+            .find(|found| found.bundle.as_bytes() == bundle)
+    }
+
+    fn find_or_add(&mut self, bundle: &[u8]) -> Option<&mut ZippedBundle> {
+        let at = match self.bundles[..self.count]
+            .iter()
+            .position(|found| found.bundle.as_bytes() == bundle)
+        {
+            Some(at) => at,
+            None if self.count < MAX_BUNDLES => {
+                self.bundles[self.count] = ZippedBundle {
+                    bundle: Path::from(bundle)?,
+                    ..ZippedBundle::EMPTY
+                };
+                self.count += 1;
+                self.count - 1
+            }
+            None => return None,
+        };
+        Some(&mut self.bundles[at])
+    }
+
+    fn any_declared(&self) -> bool {
+        self.bundles[..self.count]
+            .iter()
+            .any(|found| found.declared.is_some())
+    }
+
+    fn mark_declared_found(&mut self, name: &[u8]) {
+        for found in &mut self.bundles[..self.count] {
+            if found
+                .declared
+                .as_ref()
+                .is_some_and(|declared| declared.as_bytes() == name)
+            {
+                found.declared_found = true;
+            }
+        }
     }
 }
 
-fn declared_programs(
+fn declared_in(plist: &[u8], bundle: &[u8]) -> Option<Path> {
+    let mut executable = [0u8; icon::PLIST_NAME_BYTES];
+    let executable = icon::plist_executable(plist, &mut executable)?;
+    let mut program = Path::from(bundle)?;
+    (program.append(BUNDLE_PROGRAMS_INSIDE) && program.append(executable)).then_some(program)
+}
+
+fn zipped_bundles(
     zip: &mut impl Reader,
     archive: &Archive,
     window: &mut Window,
-) -> Result<Declared, Problem> {
-    let mut declared = Declared::new();
+) -> Result<ZippedBundles, Problem> {
+    let mut bundles = ZippedBundles::new();
     let mut plist = [0u8; icon::PLIST_BYTES];
     let mut cursor = archive.first();
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
@@ -570,37 +658,50 @@ fn declared_programs(
         let Some(end) = bundle_end(name) else {
             continue;
         };
-        if entry.is_metadata()
-            || entry.is_directory()
-            || &name[end..] != INFO_PLIST_INSIDE
-            || declared.count == MAX_DECLARED
-        {
+        if entry.is_metadata() || entry.is_directory() {
             continue;
         }
-        let Ok(length) = archive::head(zip, &entry, window, &mut plist) else {
+        let (bundle, rest) = name.split_at(end);
+        let Some(found) = bundles.find_or_add(bundle) else {
             continue;
         };
-        let program = icon::plist_executable(&plist[..length]).and_then(|executable| {
-            let mut program = Path::from(&name[..end])?;
-            (program.append(BUNDLE_PROGRAMS_INSIDE) && program.append(executable))
-                .then_some(program)
-        });
-        if let Some(program) = program {
-            declared.programs[declared.count] = program;
-            declared.count += 1;
+        if rest == INFO_PLIST_INSIDE {
+            if let Ok(length) = archive::head(zip, &entry, window, &mut plist) {
+                found.declared = declared_in(&plist[..length], bundle);
+            }
+            continue;
+        }
+        let Some(file) = rest.strip_prefix(BUNDLE_PROGRAMS_INSIDE) else {
+            continue;
+        };
+        if file.contains(&b'/') {
+            continue;
+        }
+        found.files += 1;
+        if found.first.is_none() {
+            found.first = Path::from(name);
+        }
+        if file == bundle_stem(bundle) {
+            found.stem = Path::from(name);
         }
     }
-    Ok(declared)
+    if bundles.any_declared() {
+        let mut cursor = archive.first();
+        while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
+            if !entry.is_metadata() && !entry.is_directory() {
+                bundles.mark_declared_found(entry.name());
+            }
+        }
+    }
+    Ok(bundles)
 }
 
-fn role(name: &[u8], declared: &Declared) -> Role {
+fn role(name: &[u8], bundles: &ZippedBundles) -> Role {
     if let Some(end) = bundle_end(name) {
         let bundle = &name[..end];
-        let part = files::file_name(bundle);
-        let stem = &part[..part.len() - BUNDLE_SUFFIX.len()];
-        let is_program = match declared.of_bundle(bundle) {
-            Some(program) => program == name,
-            None => name[end..].strip_prefix(BUNDLE_PROGRAMS_INSIDE) == Some(stem),
+        let is_program = match bundles.of(bundle) {
+            Some(found) => found.program() == Some(name),
+            None => name[end..].strip_prefix(BUNDLE_PROGRAMS_INSIDE) == Some(bundle_stem(bundle)),
         };
         return match is_program {
             true => Role::BundleProgram { bundle_end: end },
@@ -630,12 +731,12 @@ fn program_role(
     zip: &mut impl Reader,
     entry: &Entry,
     window: &mut Window,
-    declared: &Declared,
+    bundles: &ZippedBundles,
 ) -> Option<Role> {
     if entry.is_metadata() || entry.is_directory() {
         return None;
     }
-    let role = role(entry.name(), declared);
+    let role = role(entry.name(), bundles);
     let is_program = match role {
         Role::BundleProgram { .. } | Role::WindowsProgram => true,
         Role::MaybeLinuxProgram => {
@@ -661,7 +762,7 @@ fn scan(
     machine: Architecture,
 ) -> Result<Scanned, Problem> {
     let archive = Archive::open(zip).map_err(Problem::Archive)?;
-    let declared = declared_programs(zip, &archive, window)?;
+    let bundles = zipped_bundles(zip, &archive, window)?;
     let mut cursor = archive.first();
     let mut chosen: Option<(Entry, Role)> = None;
     let mut found = 0;
@@ -678,7 +779,7 @@ fn scan(
         if total > MAX_EXTRACTED_BYTES {
             return Err(Problem::TooLarge);
         }
-        let Some(role) = program_role(zip, &entry, window, &declared) else {
+        let Some(role) = program_role(zip, &entry, window, &bundles) else {
             continue;
         };
         let name = entry.name();
@@ -752,30 +853,30 @@ fn plan_archive(
 }
 
 /// The programs the `.zip` at `source` holds, each as `--entry` takes it (a bundle by its own
-/// path), in the archive's order: the first `names.len()` whose path fits a [`Name`] are put in
-/// `names`; how many were put and how many others there are. Nothing for what is no `.zip`.
+/// path), in the archive's order: the first `entries.len()` are put in `entries`, whole; how
+/// many were put and how many others there are. Nothing for what is no `.zip`.
 pub fn archive_programs(
     files: &mut impl Files,
     source: &[u8],
-    names: &mut [Name],
+    entries: &mut [Path],
 ) -> (usize, usize) {
     let mut window = Window::new();
     reader::read_file(files, source, |zip| {
         let Ok(archive) = Archive::open(zip) else {
             return (0, 0);
         };
-        let declared =
-            declared_programs(zip, &archive, &mut window).unwrap_or_else(|_| Declared::new());
+        let bundles =
+            zipped_bundles(zip, &archive, &mut window).unwrap_or_else(|_| ZippedBundles::new());
         let mut cursor = archive.first();
         let (mut count, mut more) = (0, 0);
         while let Ok(Some(entry)) = archive.next(zip, &mut cursor) {
-            let Some(role) = program_role(zip, &entry, &mut window, &declared) else {
+            let Some(role) = program_role(zip, &entry, &mut window, &bundles) else {
                 continue;
             };
-            let name = Name::whole(shown_name(entry.name(), role));
-            match (names.get_mut(count), name) {
-                (Some(slot), Some(name)) => {
-                    *slot = name;
+            let path = Path::from(shown_name(entry.name(), role));
+            match (entries.get_mut(count), path) {
+                (Some(slot), Some(path)) => {
+                    *slot = path;
                     count += 1;
                 }
                 _ => more += 1,

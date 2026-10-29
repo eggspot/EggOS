@@ -9448,7 +9448,8 @@ the license, by an explicit instruction recorded here.
   the app's folder; symbolic links and devices are refused; `__MACOSX/` is skipped. A `.zip` is
   told by its first bytes (`PK\3\4` or an empty archive's end record), as programs are (D134).
   Its program is its one `.exe`, a bundle's program (the file in `X.app/Contents/MacOS/` that
-  `CFBundleExecutable` in the bundle's XML `Info.plist` names, else `X.app/Contents/MacOS/X`),
+  `CFBundleExecutable` in the bundle's XML `Info.plist` names, else `X.app/Contents/MacOS/X`,
+  else the only file there, as for an `.app` folder since review round 2),
   or extensionless ELF outside any bundle's `Contents`; several need `--entry <path>` (`app
   install --entry`), none is `it holds no program EggOS can run`. An archive with an entry whose
   first part is `app.manifest`, `app.manifest.tmp` or `app.icon` (any case) is refused, at plan
@@ -9510,6 +9511,24 @@ the license, by an explicit instruction recorded here.
   hold the installer at its uncancellable icon step; an `.icns` `ic04`/`ic05` entry shorter than
   its `ARGB` mark is skipped. The kernel reads `app.icon` through `vfs::resolve`, which cannot
   follow a symbolic link: the kernel's VFS has none (`NodeKind`), and EggFS stores none (D131).
+- **Review round 2 (build loop).** A program (a plain file, a bundle's or a zip's) whose path
+  in the app's folder starts with a reserved name is refused at plan time too (`app install
+  /media/host/app.manifest` used to copy the program and then rename the manifest over it); the
+  message reads `it is or holds a file named app.manifest, ...`. The window's chooser keeps
+  each zip program's whole path (up to the archive's 255 bytes) for `--entry`, so long paths
+  are offered instead of counted as `more`, and a button shows `...` and the path's end when it
+  is longer than a button's 32 bytes (two programs in one long folder used to show the same
+  cut label); a chooser with no names but some not listed no longer says it holds no program.
+  `app install --window --entry` longer than 512 bytes is kept cut to 512, so it matches no
+  entry (the archive's names are at most 255 bytes) and is refused as the CLI refuses it
+  instead of being dropped; a chosen entry that is still several programs (duplicate names in
+  the archive) shows the refusal instead of the chooser again. Folder and zipped bundles find
+  their program alike: `CFBundleExecutable`, then the bundle's stem, then the only file in
+  `Contents/MacOS` (a folder used to ignore `CFBundleExecutable`, a zip had no only-file
+  fallback, and a declared file missing from the zip left the bundle without a program). The
+  `Info.plist` reader decodes the five XML entities (`Paint &amp; Draw`) and refuses `.`, as
+  the macOS layer's `info_plist.rs` does. Tests for the extraction-time reserved-name and size
+  rechecks and for a zip whose first entry is the folder `app.manifest/`.
 - **Not yet.** `app icon` and `app_icon`; icons in the installer's dialogs, title bars and
   Files; native 2x images; binary property lists, asset catalogues, JPEG 2000 and `it32`;
   interlaced PNGs; 16-bit and compressed bitmap entries; `.dmg`, `.pkg`, `.tar`, `.7z`, `.msi`;
@@ -9520,7 +9539,12 @@ the license, by an explicit instruction recorded here.
   several steps so `Cancel` answers during it (inflate is not resumable yet); decoding a PNG
   icon once for both sizes (it is decoded once per size) and a table-driven inflate (it decodes
   bit by bit), for the weekly performance pass; a bundle program found from a binary
-  `Info.plist`.
+  `Info.plist`. From review round 2: one `Info.plist` reader shared by the installer and the
+  macOS layer (the layer's `info_plist.rs` lives in the `eggos-macos` program, so sharing it
+  needs a crate of its own; the installer's reader now behaves the same: entities decoded, `.`
+  and `..` refused); telling a `.zip` from other files that start with its signature (`.docx`,
+  `.jar`, `.apk`), which Files offers to install and the installer refuses as holding no
+  program.
 
 ## D149 The Text Editor: a native GUI editor that Files opens text in, `edit`, `app open "Text Editor"` and `edit_open` (v0.3.0 item 46; replaces old item 24, the terminal `edit`; extends D133, D135, D137, D141) — Decided by the build loop (design by Claude Fable, `docs/ux/text-editor-v0.3.md`; the command's shape, headless installs, the MCP tool and the built-in name decided by research)
 - **What.** Item 46: "a native GUI editor (open, save, find) that Files uses for text; it
@@ -9637,8 +9661,10 @@ the license, by an explicit instruction recorded here.
   disk; one window per file (opening a file twice gives two windows); a terminal editor; text
   in Egg Mono only (other characters show `?`). From review round 1: a file with mixed line
   endings is saved all CRLF once it holds one `\r\n` (documented in `document.rs`); saving
-  removes a leftover `.<name>.saving` without asking, replaces a symbolic link by a regular
-  file and breaks hard links (the rename-over save); Backspace, Delete, Enter and pastes still
+  replaces a symbolic link by a regular file and breaks hard links (the rename-over save);
+  from review round 2, saving no longer removes a file named `.<name>.saving` (it may be the
+  user's): it writes `.<name>.1.saving` up to `.<name>.15.saving` instead, so a save cut short
+  leaves its hidden file behind, never cleaned up; Backspace, Delete, Enter and pastes still
   measure the widest line over the whole document (only typing a character is incremental);
   Option and AltGr characters (the keymap, `drivers/src/input/keymap.rs`, has no Option or
   AltGr layer: Alt with a letter gives the plain letter, so the editor keeps ignoring Alt

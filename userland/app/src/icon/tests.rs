@@ -140,16 +140,31 @@ const PLIST: &[u8] = b"<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\
 
 #[test]
 fn info_plists_bundles_and_pngs_beside_are_found_by_their_paths() {
-    assert_eq!(plist_icon_file(PLIST), Some(&b"Paint"[..]));
+    let mut name = [0u8; PLIST_NAME_BYTES];
+    assert_eq!(plist_icon_file(PLIST, &mut name), Some(&b"Paint"[..]));
+    assert_eq!(plist_executable(PLIST, &mut name), Some(&b"Paint"[..]));
+    for refused in [
+        &b"<key>CFBundleIconFile</key><string>../x</string>"[..],
+        b"<key>CFBundleIconFile</key><string>.</string>",
+        b"<key>CFBundleIconFile</key><string>..</string>",
+        b"<key>CFBundleIconFile</key><string> </string>",
+        b"<key>CFBundleIconFile</key><integer>1</integer>",
+        b"<dict/>",
+    ] {
+        assert_eq!(plist_icon_file(refused, &mut name), None);
+    }
     assert_eq!(
-        plist_icon_file(b"<key>CFBundleIconFile</key><string>../x</string>"),
-        None
+        plist_executable(
+            b"<key>CFBundleExecutable</key><string>Paint &amp; Draw &lt;2&gt; &bogus;</string>",
+            &mut name
+        ),
+        Some(&b"Paint & Draw <2> &bogus;"[..])
     );
-    assert_eq!(
-        plist_icon_file(b"<key>CFBundleIconFile</key><integer>1</integer>"),
-        None
+    let long = format!(
+        "<key>CFBundleExecutable</key><string>{}</string>",
+        "x".repeat(PLIST_NAME_BYTES + 1)
     );
-    assert_eq!(plist_icon_file(b"<dict/>"), None);
+    assert_eq!(plist_executable(long.as_bytes(), &mut name), None);
     assert_eq!(
         bundle_of(b"/Applications/Paint/Paint.app/Contents/MacOS/Paint"),
         Some(&b"/Applications/Paint/Paint.app"[..])

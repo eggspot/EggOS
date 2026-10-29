@@ -173,7 +173,7 @@ pub fn reason(problem: Problem) -> Line {
         ),
         Problem::NoSuchEntry => line.write_str("it holds no program at the path --entry gives"),
         Problem::ReservedName => line.write_str(
-            "it holds a file named app.manifest, app.manifest.tmp or app.icon, which the \
+            "it is or holds a file named app.manifest, app.manifest.tmp or app.icon, which the \
              installer writes itself",
         ),
         Problem::TooLarge => line.write_str("its files would take more than 4 GiB once extracted"),

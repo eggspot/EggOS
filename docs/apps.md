@@ -47,7 +47,8 @@ app list
 
 - **`app install <path>`** installs a Windows program (a PE32+ `.exe`, x86_64 or ARM64), a
   macOS program (a 64-bit Mach-O or fat file, or an `.app` folder whose `Contents/MacOS` holds
-  its program: the one named like the bundle, else its only file) or a static 64-bit Linux
+  its program: the one its XML `Info.plist`'s `CFBundleExecutable` names, else the one named
+  like the bundle, else its only file) or a static 64-bit Linux
   program (ELF), from anywhere, typically the host share at `/media/host`
   (D130). What a file is comes from its first bytes, not its
   name. The app's name is the file's name without its extension (`win-paint.exe` gives
@@ -57,8 +58,9 @@ app list
   `architecture`, `icon`) and everything is synced. It prints `Installed <name> in
   /Applications/<name>.`
 - **A `.zip`** (D148, told by its first bytes) installs the one program it holds: a `.exe`,
-  the program of an `.app` bundle in it (the file in `X.app/Contents/MacOS/` its `Info.plist`'s
-  `CFBundleExecutable` names, else `X.app/Contents/MacOS/X`), or a file without an
+  the program of an `.app` bundle in it (found as in an `.app` folder: the file in
+  `X.app/Contents/MacOS/` its `Info.plist`'s `CFBundleExecutable` names, else
+  `X.app/Contents/MacOS/X`, else the only file there), or a file without an
   extension that is an ELF; nothing inside another bundle's `Contents` counts. The whole
   archive is extracted into `/Applications/<name>/` (macOS's `__MACOSX` metadata left out), so
   the program's files and DLLs come along, and `run` is the program's path inside it; the name
@@ -67,8 +69,9 @@ app list
   b.exe): choose one with --entry <path>`); `--entry <path>` chooses one (a bundle's own path
   names its program too); the installer's window lists them to choose from instead, and the
   MCP tool `app_install` takes the path as `entry`. An archive holding a file named
-  `app.manifest`, `app.manifest.tmp` or `app.icon` at its top (the files the installer writes)
-  is refused, and so is one whose files would take more than 4 GiB once extracted. Stored and
+  `app.manifest`, `app.manifest.tmp` or `app.icon` at its top (the files the installer writes),
+  like a program with one of those names, is refused, and so is one whose files would take more
+  than 4 GiB once extracted. Stored and
   deflated entries are read (our own inflate, shared with
   the PNG decoder); ZIP64, encryption and other methods are refused as `not a zip archive EggOS
   can open`, and an entry whose name would leave the folder (absolute, `..`, a backslash or a
