@@ -1,5 +1,5 @@
 use crate::output::{FAILURE, Output};
-use crate::system::System;
+use crate::system::{Duration, System};
 use core::ffi::CStr;
 use eggos_calendar::format;
 use eggos_runtime::errno::Errno;
@@ -65,8 +65,11 @@ pub fn hwclock<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             output.write(b"+00:00\n");
             return 0;
         }
-        Function::SystemToHardware => output.system.now(),
-        Function::HardwareToSystem => hardware.max(0) as u64,
+        Function::SystemToHardware => output.system.now_with_nanoseconds(),
+        Function::HardwareToSystem => Duration {
+            seconds: hardware.max(0) as u64,
+            nanoseconds: 0,
+        },
     };
     match output.system.set_time(set) {
         Ok(()) => 0,
@@ -146,12 +149,22 @@ mod tests {
 
     #[test]
     fn it_copies_the_system_clock_to_the_hardware_one_and_back() {
-        let (status, _, _, fake) = run(with_clock(), &[c"-w"]);
+        let mut mid_second = with_clock();
+        mid_second.now_nanoseconds = 750_000_000;
+        let (status, _, _, fake) = run(mid_second, &[c"-w"]);
         assert_eq!(status, 0);
-        assert_eq!(fake.set_times, [1_700_000_000]);
+        let unmoved = Duration {
+            seconds: 1_700_000_000,
+            nanoseconds: 750_000_000,
+        };
+        assert_eq!(fake.set_times, [unmoved]);
         let (status, _, _, fake) = run(with_clock(), &[c"--hctosys"]);
         assert_eq!(status, 0);
-        assert_eq!(fake.set_times, [1_793_282_709]);
+        let hardware = Duration {
+            seconds: 1_793_282_709,
+            nanoseconds: 0,
+        };
+        assert_eq!(fake.set_times, [hardware]);
     }
 
     #[test]

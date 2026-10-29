@@ -57,8 +57,8 @@ hidden. It is refreshed in the same frame as a successful `Set`.
   clipboard). Seconds default to 00; the time-only forms keep the current UTC date. Month
   1-12, day valid for that month (Gregorian leap years), hour 0-23, minute and second 0-59.
   The year must be 2000 to 2099: every hardware clock we write stores it (CMOS's two digits
-  with the century, PL031's 32-bit seconds) and nothing below 1970-01-02 can be mistaken for
-  "unset" (section 6). The parser and the range check are the same code as `date -s` and
+  with the century, PL031's 32-bit seconds). A time-only form keeps the current date only when
+  its year is in that range; otherwise (an unset clock reads 1970) the date is needed. The parser and the range check are the same code as `date -s` and
   `clock_set` (D22: one capability).
 - **Set** is the window's default button and primary. It is disabled (`text.dim` on
   `button.bg`, section 4 of the toolkit) while the field is empty, so Enter in the sidebar's
@@ -94,11 +94,12 @@ colour): the wording tells success from failure. The widest line is about 320 px
 
 ## 6. The top bar and taskbar clock
 
-The rule of `desktop-v0.3.md` section 4 stands: realtime seconds >= 86400 means the wall clock
-is set and the clock shows `HH:MM` (24 h, UTC) in `text`; below that it shows the uptime forms
-in `text.dim`. The threshold is now crossed at boot on every machine with a hardware clock, and
-on one without it the moment Settings, `date -s` or `clock_set` sets the clock (the next tick
-switches; a CLI set back below 1970-01-02 switches back, the rule is symmetric). The shell
+The rule of `desktop-v0.3.md` section 4, as review round 2 of D150 made it: once the wall clock
+is set the clock shows `HH:MM` (24 h, UTC) in `text`; until then it shows the uptime forms in
+`text.dim`. The clock is set at boot on every machine with a readable hardware clock, and on one
+without it the moment Settings, `date -s` or `clock_set` sets the clock (the next tick
+switches). The first rule, realtime seconds >= 86400, showed `1970-01-02` after a day's uptime
+on a machine without a readable clock, so the kernel now keeps whether the clock was set. The shell
 ticks once a second as today; `HH:MM` is redrawn only when the minute changes.
 
 - **Placement**: the rectangle stays 10 glyph cells (80x16) of the bar font, centred on the bar

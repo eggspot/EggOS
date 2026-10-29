@@ -1,7 +1,7 @@
 //! The device-tree real-time clocks (D150): Arm's PL031 (QEMU's AArch64 `virt`) and Google's
 //! Goldfish clock (QEMU's RISC-V `virt`). Probing maps the clock's registers and registers it
 //! as the machine's real-time clock ([`crate::wall_clock::register`]), which reads it once at
-//! boot. The PC's CMOS clock is the platform's own ([`eggos_hal::Platform::platform_clock`]).
+//! boot; a second clock is refused before its registers are mapped. The PC's CMOS clock is the platform's own ([`eggos_hal::Platform::platform_clock`]).
 
 use super::{DeviceId, DriverDescriptor, Match, Probe, ProbeError, ProbePass};
 use alloc::boxed::Box;
@@ -24,7 +24,12 @@ pub static GOLDFISH_DRIVER: DriverDescriptor = DriverDescriptor {
     probe: probe_goldfish,
 };
 
+const ANOTHER_CLOCK_IN_USE: ProbeError = ProbeError::Refused("another real-time clock is in use");
+
 fn registers(probe: &mut dyn Probe, id: DeviceId, size: usize) -> Result<Mmio, ProbeError> {
+    if crate::wall_clock::has_clock() {
+        return Err(ANOTHER_CLOCK_IN_USE);
+    }
     let node = *probe
         .table()
         .get(id)
@@ -47,7 +52,7 @@ fn registers(probe: &mut dyn Probe, id: DeviceId, size: usize) -> Result<Mmio, P
 fn install(clock: Box<dyn RealTimeClock + Send>) -> Result<(), ProbeError> {
     match crate::wall_clock::register(clock) {
         true => Ok(()),
-        false => Err(ProbeError::Refused("another real-time clock is in use")),
+        false => Err(ANOTHER_CLOCK_IN_USE),
     }
 }
 

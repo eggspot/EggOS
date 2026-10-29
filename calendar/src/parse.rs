@@ -1,11 +1,12 @@
-use crate::{DateTime, FIRST_SETTABLE_YEAR, LAST_SETTABLE_YEAR, is_set};
+use crate::{DateTime, FIRST_SETTABLE_YEAR, LAST_SETTABLE_YEAR};
 
 /// Why a text cannot set the clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
     /// It is not a date and time in a form [`parse_setting`] takes, or not a real one.
     NotADateAndTime,
-    /// A time alone while the clock is not set, so there is no date to keep.
+    /// A time alone while the clock reads a year it cannot be set to (an unset clock reads
+    /// 1970), so there is no date to keep.
     NeedsTheDate,
     /// A year outside [`FIRST_SETTABLE_YEAR`] to [`LAST_SETTABLE_YEAR`].
     YearOutOfRange,
@@ -15,9 +16,10 @@ pub enum ParseError {
 /// rules for `date -s`, Settings and the MCP tool `clock_set`). After spaces at either end and
 /// a trailing `Z` or ` UTC`: `YYYY-MM-DD HH:MM`, `YYYY-MM-DD HH:MM:SS` (a `T` may stand for the
 /// space), `HH:MM` or `HH:MM:SS`, each field with exactly its digits, in UTC. A time alone keeps
-/// the date of the clock reading `now` seconds, if it is set ([`is_set`]). The date must be a
-/// real one, the time before 24:00:00 and the year [`FIRST_SETTABLE_YEAR`] to
-/// [`LAST_SETTABLE_YEAR`], which every real-time clock EggOS writes can hold.
+/// the date of the clock reading `now` seconds, if that date's year is one the clock can be set
+/// to. The date must be a real one, the time before 24:00:00 and the year
+/// [`FIRST_SETTABLE_YEAR`] to [`LAST_SETTABLE_YEAR`], which every real-time clock EggOS writes
+/// can hold.
 pub fn parse_setting(text: &str, now: i64) -> Result<i64, ParseError> {
     let text = text.trim_matches(' ');
     let text = match text.strip_suffix('Z') {
@@ -33,11 +35,13 @@ pub fn parse_setting(text: &str, now: i64) -> Result<i64, ParseError> {
     let (hour, minute, second) = clock_time(time).ok_or(ParseError::NotADateAndTime)?;
     let (year, month, day) = match date {
         Some(date) => calendar_date(date).ok_or(ParseError::NotADateAndTime)?,
-        None if is_set(now) => {
+        None => {
             let today = DateTime::from_unix(now);
+            if !(FIRST_SETTABLE_YEAR..=LAST_SETTABLE_YEAR).contains(&today.year) {
+                return Err(ParseError::NeedsTheDate);
+            }
             (today.year, today.month, today.day)
         }
-        None => return Err(ParseError::NeedsTheDate),
     };
     let moment = DateTime {
         year,
@@ -181,8 +185,12 @@ mod tests {
         assert_eq!(parse_setting("14:05", 12), Err(ParseError::NeedsTheDate));
         assert_eq!(parse_setting("1:05", 12), Err(ParseError::NotADateAndTime));
         assert_eq!(
-            parse_setting("14:05", 86_400),
-            Err(ParseError::YearOutOfRange)
+            parse_setting("14:05", 86_400 + 12),
+            Err(ParseError::NeedsTheDate)
+        );
+        assert_eq!(
+            parse_setting("14:05", 4_102_444_800),
+            Err(ParseError::NeedsTheDate)
         );
         for text in ["1999-12-31 23:59", "2100-01-01 00:00", "1970-01-01 00:00"] {
             assert_eq!(

@@ -15,12 +15,13 @@
 //! - `net/unix`: the bound `AF_UNIX` sockets, in Linux's format (D138,
 //!   [`super::unix_socket::proc_net_unix`]).
 //! - `driver/rtc`: the real-time clock's date and time, read from the clock when the file is
-//!   opened, in Linux's layout (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one;
-//!   `hwclock` reads it.
+//!   opened (at most once a second, [`crate::wall_clock::read_clock`]), in Linux's layout
+//!   (`rtc_time`, `rtc_date`, `24hr`), only on a machine with one; `hwclock` reads it. Opening
+//!   it fails with `EIO` when the clock cannot be read.
 
 use super::process_table::{NAME_LENGTH, TABLE};
 use crate::memory;
-use crate::vfs::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind};
+use crate::vfs::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, StorageError};
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::marker::PhantomData;
@@ -246,8 +247,8 @@ impl<P: Platform> FileSystem for Proc<P> {
         &[]
     }
 
-    fn generate(&self, node: u64) -> Option<Vec<u8>> {
-        match node {
+    fn generate(&self, node: u64) -> Result<Option<Vec<u8>>, StorageError> {
+        let generated = match node {
             MEMINFO => {
                 let free = memory::FRAMES
                     .lock()
@@ -261,10 +262,11 @@ impl<P: Platform> FileSystem for Proc<P> {
             NET_UNIX => super::unix_socket::proc_net_unix(),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
                 Some((_, Ok(nanoseconds))) => driver_rtc(nanoseconds / 1_000_000_000),
-                _ => None,
+                _ => return Err(StorageError),
             },
             _ => None,
-        }
+        };
+        Ok(generated)
     }
 
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
@@ -280,6 +282,9 @@ impl<P: Platform> FileSystem for Proc<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wall_clock::host::with_clock;
+    use alloc::boxed::Box;
+    use eggos_drivers::rtc::{RealTimeClock, RtcError};
 
     #[test]
     fn meminfo_is_in_kilobytes_aligned_as_linux_s() {
@@ -298,7 +303,7 @@ mod tests {
         );
         assert_eq!(cmdline_text(b"").unwrap(), b"\n");
         let proc = Proc::<crate::tests::TestPlatform>::new();
-        assert_eq!(proc.generate(CMDLINE).unwrap(), b"\n");
+        assert_eq!(proc.generate(CMDLINE), Ok(Some(b"\n".to_vec())));
     }
 
     #[test]
@@ -314,6 +319,38 @@ mod tests {
             driver_rtc(1_793_282_709).unwrap(),
             b"rtc_time\t: 14:05:09\nrtc_date\t: 2026-10-29\n24hr\t\t: yes\n"
         );
+    }
+
+    #[derive(Debug)]
+    struct AnsweringClock(Result<u64, RtcError>);
+
+    impl RealTimeClock for AnsweringClock {
+        fn name(&self) -> &'static str {
+            "rtc-test"
+        }
+
+        fn read(&self) -> Result<u64, RtcError> {
+            self.0
+        }
+
+        fn write(&self, _nanoseconds: u64) -> Result<(), RtcError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn driver_rtc_reads_the_clock_and_an_unreadable_one_is_an_error_not_an_empty_file() {
+        let _state = crate::thread::host::frames_for_test();
+        let proc = Proc::<crate::tests::TestPlatform>::new();
+        let readable = AnsweringClock(Ok(1_793_282_709 * 1_000_000_000));
+        let generated = with_clock(Box::new(readable), || proc.generate(DRIVER_RTC));
+        assert_eq!(generated, Ok(driver_rtc(1_793_282_709)));
+        for error in [RtcError::Busy, RtcError::Invalid] {
+            let generated = with_clock(Box::new(AnsweringClock(Err(error))), || {
+                proc.generate(DRIVER_RTC)
+            });
+            assert_eq!(generated, Err(StorageError), "{error:?}");
+        }
     }
 
     #[test]
@@ -346,7 +383,7 @@ mod tests {
         assert_eq!(proc.parent(NET), ROOT);
         assert_eq!(proc.name(NET_UNIX).as_bytes(), b"unix");
         assert_eq!(proc.entry(NET, 0).unwrap().node, NET_UNIX);
-        assert!(proc.generate(NET_UNIX).is_some());
+        assert!(matches!(proc.generate(NET_UNIX), Ok(Some(_))));
         assert_eq!(proc.lookup(ROOT, b"cmdline"), Some(CMDLINE));
         assert_eq!(proc.lookup(ROOT, b"ps"), Some(PS));
         assert_eq!(proc.lookup(ROOT, b"self"), None);

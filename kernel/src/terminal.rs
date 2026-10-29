@@ -374,15 +374,15 @@ pub fn tick<P: Platform>(input_queued: bool) {
 
 fn clock_key<P: Platform>() -> u64 {
     clock_key_at(
-        crate::wall_clock::seconds::<P>(),
+        crate::wall_clock::is_set().then(crate::wall_clock::seconds::<P>),
         P::clock_ticks() / P::clock_frequency().max(1),
     )
 }
 
-fn clock_key_at(wall_seconds: u64, uptime_seconds: u64) -> u64 {
-    match eggos_calendar::is_set(wall_seconds as i64) {
-        true => WALL_CLOCK_KEY | wall_seconds,
-        false => uptime_seconds,
+fn clock_key_at(set_wall_seconds: Option<u64>, uptime_seconds: u64) -> u64 {
+    match set_wall_seconds {
+        Some(seconds) => WALL_CLOCK_KEY | seconds,
+        None => uptime_seconds,
     }
 }
 
@@ -763,9 +763,9 @@ mod tests {
         desktop.set_time(1000);
         desktop.show_notice(LAUNCH_FAILED, &mut damage);
         assert!(desktop.set_wall_clock(wall, &mut damage));
-        let mut shown = clock_key_at(wall, 1);
+        let mut shown = clock_key_at(Some(wall), 1);
         for second in 1..=3 {
-            let key = clock_key_at(wall + second, 1 + second);
+            let key = clock_key_at(Some(wall + second), 1 + second);
             assert_ne!(key, shown, "second {second}");
             shown = key;
             let mut damage = Damage::new();
@@ -773,7 +773,8 @@ mod tests {
             assert!(!desktop.set_wall_clock(key & !WALL_CLOCK_KEY, &mut damage));
         }
         assert!(desktop.notice_area().is_none());
-        assert_eq!(clock_key_at(3600, 3600), 3600);
+        assert_eq!(clock_key_at(None, 2 * 86_400), 2 * 86_400);
+        assert_eq!(clock_key_at(Some(3600), 3600), WALL_CLOCK_KEY | 3600);
     }
 
     #[test]

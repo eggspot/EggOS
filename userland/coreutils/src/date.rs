@@ -1,5 +1,5 @@
 use crate::output::{FAILURE, Output};
-use crate::system::{SymbolicLinks, System};
+use crate::system::{Duration, SymbolicLinks, System};
 use core::ffi::CStr;
 use eggos_calendar::{DateTime, MONTHS, ParseError, WEEKDAYS, parse_setting};
 
@@ -122,7 +122,11 @@ fn set_clock<S: System>(output: &mut Output<S>, text: &CStr) -> Result<i64, i32>
             return Err(FAILURE);
         }
     };
-    match output.system.set_time(seconds as u64) {
+    let since_epoch = Duration {
+        seconds: seconds as u64,
+        nanoseconds: 0,
+    };
+    match output.system.set_time(since_epoch) {
         Ok(()) => Ok(seconds),
         Err(errno) => {
             output.error(&[b"cannot set date: ", errno.message()]);
@@ -265,6 +269,13 @@ mod tests {
         assert_eq!(errors, "date: /nope: No such file or directory\n");
     }
 
+    fn whole_seconds(seconds: u64) -> Duration {
+        Duration {
+            seconds,
+            nanoseconds: 0,
+        }
+    }
+
     #[test]
     fn set_parses_the_moment_sets_the_clock_and_shows_it() {
         let (status, out, _, fake) = run(at_now(), &[c"-s", c"2030-01-02 03:04:05"]);
@@ -272,11 +283,11 @@ mod tests {
             (status, out.as_str()),
             (0, "Wed Jan  2 03:04:05 UTC 2030\n")
         );
-        assert_eq!(fake.set_times, [1_893_553_445]);
+        assert_eq!(fake.set_times, [whole_seconds(1_893_553_445)]);
         let (_, _, _, fake) = run(at_now(), &[c"--set=15:00", c"+%s"]);
-        assert_eq!(fake.set_times, [1_793_286_000]);
+        assert_eq!(fake.set_times, [whole_seconds(1_793_286_000)]);
         let (_, _, _, fake) = run(at_now(), &[c"-u", c"--set", c"2026-10-29T14:05:09Z"]);
-        assert_eq!(fake.set_times, [NOW as u64]);
+        assert_eq!(fake.set_times, [whole_seconds(NOW as u64)]);
     }
 
     #[test]

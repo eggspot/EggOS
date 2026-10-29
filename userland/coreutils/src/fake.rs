@@ -46,7 +46,8 @@ pub struct Fake {
     pub reboot_error: Option<Errno>,
     pub cross_device: Vec<Vec<u8>>,
     pub now: i64,
-    pub set_times: Vec<u64>,
+    pub now_nanoseconds: u32,
+    pub set_times: Vec<Duration>,
     pub set_time_error: Option<Errno>,
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
@@ -94,6 +95,7 @@ impl Default for Fake {
             reboot_error: Some(Errno::EPERM),
             cross_device: Vec::new(),
             now: 1_700_000_000,
+            now_nanoseconds: 0,
             set_times: Vec::new(),
             set_time_error: None,
             windows: Vec::new(),
@@ -448,12 +450,20 @@ impl System for Fake {
         self.now.max(0) as u64
     }
 
-    fn set_time(&mut self, seconds: u64) -> Result<(), Errno> {
+    fn now_with_nanoseconds(&mut self) -> Duration {
+        Duration {
+            seconds: self.now(),
+            nanoseconds: self.now_nanoseconds,
+        }
+    }
+
+    fn set_time(&mut self, since_epoch: Duration) -> Result<(), Errno> {
         if let Some(errno) = self.set_time_error {
             return Err(errno);
         }
-        self.set_times.push(seconds);
-        self.now = seconds as i64;
+        self.set_times.push(since_epoch);
+        self.now = since_epoch.seconds as i64;
+        self.now_nanoseconds = since_epoch.nanoseconds;
         Ok(())
     }
 

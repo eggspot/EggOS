@@ -704,17 +704,19 @@ impl Platform for X86_64 {
         acpi_table(signature)
     }
 
-    fn platform_clock(clock: &mut dyn FnMut(&dyn RealTimeClock)) {
+    unsafe fn platform_clock(wait_duty: fn(), clock: &mut dyn FnMut(&dyn RealTimeClock)) {
         let acpi::CmosClock::Present { century_register } = cmos_clock() else {
             return;
         };
         // SAFETY: ports 0x70 and 0x71 are the PC real-time clock's index and data ports, which
-        // nothing but this driver uses; the kernel makes every call that reaches them, its
-        // presence probe at boot included, under its clock's lock, so they never interleave.
+        // nothing but this driver uses, and the caller holds the one lock every call of this
+        // function and every use of its clock is made under (its safety contract), so the
+        // ports' accesses never interleave.
         let ports = unsafe { PortIo::new(CMOS_CLOCK_PORT, cmos::REGISTER_BLOCK_SIZE) };
         let monotonic = cmos::MonotonicClock {
             ticks: timer::now,
             frequency: timer::frequency(),
+            wait_duty,
         };
         clock(&Cmos::new(ports, century_register, monotonic));
     }

@@ -4,8 +4,9 @@
 //! BCD or binary and a 12- or 24-hour clock (status register B); the century, if kept at all, is
 //! in a register the ACPI FADT names. A read waits while the clock updates (status register A's
 //! update-in-progress flag) and takes two snapshots in a row until they agree, so it never mixes
-//! two seconds, giving up after [`READ_TIME_LIMIT_MS`] of the machine's monotonic clock; a write
-//! holds the clock (status B's `SET`) while it stores the fields.
+//! two seconds, giving up after [`READ_TIME_LIMIT_MS`] of the machine's monotonic clock and doing
+//! the kernel's wait duty at each poll meanwhile; a write holds the clock (status B's `SET`)
+//! while it stores the fields.
 
 use super::{NANOSECONDS_PER_SECOND, RealTimeClock, RtcError};
 use crate::io::RegisterIo;
@@ -25,13 +26,17 @@ pub const LAST_CENTURY_REGISTER: u8 = 0x7f;
 pub const READ_TIME_LIMIT_MS: u64 = 10;
 
 /// The machine's monotonic clock, which bounds a read's waits in time: its count now and the
-/// counts in a second, as the platform's `clock_ticks` and `clock_frequency` give them.
+/// counts in a second, as the platform's `clock_ticks` and `clock_frequency` give them, and what
+/// the CPU does at each poll of such a wait.
 #[derive(Debug, Clone, Copy)]
 pub struct MonotonicClock {
     /// The count now; it never goes back.
     pub ticks: fn() -> u64,
     /// The counts in a second.
     pub frequency: u64,
+    /// Called at each poll while a read waits for an update to end: the kernel's wait duty, so
+    /// a CPU waiting for this one (a TLB shootdown) is answered although interrupts are masked.
+    pub wait_duty: fn(),
 }
 
 const INDEX_PORT: usize = 0;
@@ -150,6 +155,7 @@ impl<R: RegisterIo> Cmos<R> {
             if (self.monotonic.ticks)() >= deadline {
                 return Err(RtcError::Busy);
             }
+            (self.monotonic.wait_duty)();
         }
         Ok(Snapshot {
             second: self.register(SECONDS),
@@ -206,8 +212,10 @@ impl<R: RegisterIo> RealTimeClock for Cmos<R> {
         for _ in 0..READ_ATTEMPTS {
             let first = self.snapshot(deadline)?;
             if self.snapshot(deadline)? == first {
-                let seconds = self.decode(first).ok_or(RtcError::Invalid)?;
-                return Ok(seconds * NANOSECONDS_PER_SECOND);
+                return self
+                    .decode(first)
+                    .and_then(|seconds| seconds.checked_mul(NANOSECONDS_PER_SECOND))
+                    .ok_or(RtcError::Invalid);
             }
         }
         Err(RtcError::Busy)
@@ -260,19 +268,26 @@ impl<R: RegisterIo> RealTimeClock for Cmos<R> {
 mod tests {
     use super::*;
     use core::cell::{Cell, RefCell};
-    use core::sync::atomic::{AtomicU64, Ordering};
 
     const CENTURY: u8 = 0x32;
 
-    static FAKE_TICKS: AtomicU64 = AtomicU64::new(0);
+    std::thread_local! {
+        static FAKE_TICKS: Cell<u64> = const { Cell::new(0) };
+        static WAIT_DUTIES: Cell<u64> = const { Cell::new(0) };
+    }
 
     fn a_microsecond_a_look() -> u64 {
-        FAKE_TICKS.fetch_add(1, Ordering::Relaxed)
+        FAKE_TICKS.with(|ticks| ticks.replace(ticks.get() + 1))
+    }
+
+    fn count_a_wait_duty() {
+        WAIT_DUTIES.with(|duties| duties.set(duties.get() + 1));
     }
 
     const MICROSECONDS: MonotonicClock = MonotonicClock {
         ticks: a_microsecond_a_look,
         frequency: 1_000_000,
+        wait_duty: count_a_wait_duty,
     };
     const NOW: u64 = 1_793_282_709;
 
@@ -441,13 +456,24 @@ mod tests {
         fake.busy_polls.set(3);
         fake.change_after_reads.set(Some((5, SECONDS, 0x10)));
         let clock = Cmos::new(&fake, Some(CENTURY), MICROSECONDS);
+        let duties = WAIT_DUTIES.with(Cell::get);
         assert_eq!(clock.read(), Ok((NOW + 1) * NANOSECONDS_PER_SECOND));
+        assert_eq!(WAIT_DUTIES.with(Cell::get) - duties, 3);
         fake.busy_polls.set(u32::MAX);
-        let before = FAKE_TICKS.load(Ordering::Relaxed);
+        let before = FAKE_TICKS.with(Cell::get);
         assert_eq!(clock.read(), Err(RtcError::Busy));
-        let waited = FAKE_TICKS.load(Ordering::Relaxed) - before;
+        let waited = FAKE_TICKS.with(Cell::get) - before;
         let limit = READ_TIME_LIMIT_MS * 1000;
         assert!((limit..limit + 100).contains(&waited), "{waited}");
+    }
+
+    #[test]
+    fn a_year_past_what_nanoseconds_count_is_invalid() {
+        let fake = qemu_clock(0x99, 0x99);
+        assert_eq!(
+            Cmos::new(&fake, Some(CENTURY), MICROSECONDS).read(),
+            Err(RtcError::Invalid)
+        );
     }
 
     #[test]

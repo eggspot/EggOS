@@ -9696,29 +9696,47 @@ the license, by an explicit instruction recorded here.
   bus's device (ACPI's namespace, where it is `PNP0B00`, is not read yet, M13), so it is the
   platform's own, like COM1 and the PIT: `Platform::platform_clock` hands the kernel a `Cmos`
   over `PortIo` unless the FADT's `IAPC_BOOT_ARCH` says "CMOS RTC Not Present"; the default
-  has none. The first clock found is the machine's; there is no UEFI or ACPI time service.
+  has none. The first clock found is the machine's, and a later one is refused before its
+  registers are mapped (review round 2: the driver model has no unmap); there is no UEFI or
+  ACPI time service.
 - **The wall clock** (`kernel/src/wall_clock.rs`) is the monotonic clock plus a signed offset
-  in nanoseconds, one relaxed atomic: a read is one load and one addition over the monotonic
-  read (D73), with no lock and no allocation (benchmark `linux_clock_realtime_read`). Once the
+  in nanoseconds, one relaxed atomic: a read is one load and one saturating addition over the
+  monotonic read (D73), with no lock and no allocation (benchmark `linux_clock_realtime_read`;
+  review round 2: the saturating addition is eight instructions on AArch64 where a wrapping one
+  is one, but the HAL promises each CPU's monotonic clock only, so a CPU whose clock lags the
+  one that set the clock near the epoch would wrap to the year 2554). Once the
   drivers probed, the boot reads the clock once (`clock: 2026-10-29 14:05:09 UTC from
   rtc-pl031` in the log) and sets the offset; it is never polled again. `CLOCK_REALTIME`, its
   coarse variant and `CLOCK_TAI` (TAI offset 0) read it, as do `gettimeofday`, x86_64's `time`
   and file times (`file_changes::now`); the monotonic and boot-time clocks do not move. The
-  desktop's clock shows `HH:MM` once the wall clock reads at least a day (Fable's rule). The
+  desktop's clock shows `HH:MM` once the wall clock is set: read from a real-time clock at boot
+  or set since (`wall_clock::is_set`, an atomic flag; review round 2: Fable's first rule, a
+  reading of at least a day, showed `1970-01-02` after a day's uptime on a machine whose clock
+  is missing or unreadable). The
   drawing thread still looks at the desktop once a second, as D144's timers need (a close's
   timeout, a notice's expiry, a tooltip's delay), and the clock's rectangle is redrawn only
   when `HH:MM` changes, so an idle second damages nothing (review: looking only once a minute
   let those timers fire up to a minute late). The Windows layer's
   `GetSystemTimeAsFileTime` and the macOS layer's `gettimeofday` and `time` already read
   `CLOCK_REALTIME`, so they are real now; `mach_absolute_time` stays monotonic. The statics
-  are all zero (`.bss`, the lock's value an `Option<Box<_>>`).
+  are all zero (`.bss`, the lock's value an `Option<Box<_>>`, the set flag false).
 - **The clock's lock** (review). Reading the CMOS clock is some forty port accesses (each a
   VM exit under virtualisation), so the real-time clock's lock is an ordinary spin lock whose
   waiters do their wait duty, not a leaf lock. A set moves the offset and writes the clock in
   one hold of it, so two sets cannot leave the wall clock and the clock disagreeing; the
   boot's presence probe takes it too. Whether there is a clock (`/proc/driver/rtc`'s
   listing) is an atomic flag, and x86_64 reads the FADT's word on the CMOS clock once and
-  keeps it, instead of walking the ACPI tables on every read.
+  keeps it, instead of walking the ACPI tables on every read. While a CMOS read waits out an
+  update (up to 2.3 ms once a second, bounded at 10 ms) it does the kernel's wait duty at each
+  poll (`MonotonicClock::wait_duty`, passed by `Platform::platform_clock`, now an `unsafe fn`
+  whose contract is that lock; review round 2), so a TLB shootdown from another CPU is
+  answered. `/proc/driver/rtc` reads the hardware at most once a second
+  (`READING_KEPT_NANOSECONDS`): in between it answers the last good reading, or what a set
+  wrote, plus the monotonic time since, so a loop of `cat /proc/driver/rtc` by any user reaches
+  the hardware once a second at most. What is left: that one read a second can meet the update
+  window and keep its CPU busy, interrupts masked, for up to 2.3 ms (10 ms on a broken clock),
+  and the answer can be up to a second behind the hardware's, which counts whole seconds
+  anyway. A CMOS reading past what 64-bit nanoseconds count (after 2554) is `Invalid`.
 - **Setting the clock.** `clock_settime(CLOCK_REALTIME)` and `settimeofday` keep Linux's
   checks (D73) and then set the clock for a privileged process (effective user id 0, Linux's
   `CAP_SYS_TIME`, D75; decided by research), `EPERM` otherwise; `settimeofday`'s time zone is
@@ -9736,13 +9754,18 @@ the license, by an explicit instruction recorded here.
 - **The years 2000 to 2099** (Fable, decided by the build loop): what `date -s`, Settings and
   `clock_set` take (one parser, `eggos_calendar::parse_setting`: `YYYY-MM-DD HH:MM[:SS]`,
   `HH:MM[:SS]` keeping today's date, `T` for the space, a trailing `Z` or ` UTC`); every clock
-  EggOS writes can hold them, and nothing below 1970-01-02 can be mistaken for "unset".
+  EggOS writes can hold them. A time alone keeps today's date only when today's year is one of
+  them: an unset clock (1970) asks for the date (review round 2: after a day's uptime it said
+  the year must be 2000 to 2099).
 - **`hwclock` over `/proc/driver/rtc`** (decided by research): `/proc/driver/rtc` is Linux's
   text file (`rtc_time`, `rtc_date`, `24hr`), read from the clock when it is opened and listed
-  only on a machine with one; `hwclock -r` prints it as `2026-10-29 14:05:09+00:00`, `-w` sets
-  the clock to the system time (which writes the hardware clock) and `-s` the system time to
-  it. No `/dev/rtc0` and its ioctls: a new device kind for one tool (CLAUDE.md note 8); it
-  comes when a foreign program needs it.
+  only on a machine with one, and failing to open with `EIO` when the clock cannot be read
+  (review round 2: it opened empty); `hwclock -r` prints it as `2026-10-29 14:05:09+00:00`,
+  `-w` sets the clock to the system time with its nanoseconds (which writes the hardware
+  clock; the system clock steps back only by the call's latency, review round 2: whole seconds
+  stepped it back up to 999 ms) and `-s` the system time to it. No `/dev/rtc0` and its
+  ioctls: a new device kind for one tool (CLAUDE.md note 8); it comes when a foreign program
+  needs it.
 - **Three front-ends (D22).** CLI: `date` (`+format`, `-r`, `-s`, `-u`) and `hwclock` in
   coreutils (two more hard links). GUI: Fable's Settings pane `Date & time`, fifth in the
   sidebar, its container and seven widgets (the tree's 48 are full): `Now` as a sentence
@@ -9758,10 +9781,13 @@ the license, by an explicit instruction recorded here.
   <time>`); the server checks only the form, `date` the moment.
 - **Testing.** Host: the calendar both ways over 800 years, leap years, the parser's forms and
   refusals, the texts; the CMOS driver over a fake clock (BCD and binary, 12- and 24-hour, the
-  century register or none, an update in progress, a second ticking between snapshots,
-  invalid registers, writes in each format and out of range); the PL031 and Goldfish register
-  orders; the FADT's century and "not present"; the wall clock's registration, start, set and
-  write-back; `clock_settime` and `settimeofday` for root and for uid 1000; `/proc/driver/rtc`;
+  century register or none, an update in progress with the wait duty at each poll, a second
+  ticking between snapshots, invalid registers, a year past 2554, writes in each format and out
+  of range); the PL031 and Goldfish register orders; the FADT's century and "not present"; the
+  wall clock's registration, start, set and write-back, its set flag, the kept reading (one
+  hardware read for two opens, a set's write read back, failures never kept);
+  `clock_settime` and `settimeofday` for root and for uid 1000; `/proc/driver/rtc` and its
+  `EIO`;
   the bar's clock; `date`, `hwclock`; the Settings pane's layout, search words, set flow and
   refusals; the MCP tools, their arguments, question and audit. QEMU on all three
   architectures (`xtask/src/qemu/real_time.rs`): the boot log names the expected driver,
@@ -9775,8 +9801,9 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Time zones and a `TZ` setting; network time; `/dev/rtc0`, alarms and wake-ups
   (`CLOCK_REALTIME_ALARM` stays `EOPNOTSUPP`); waking absolute realtime waits when the clock is
   set; ACPI's `PNP0B00` and UEFI's `GetTime`; a `settings` key for the time.
-  `/proc/driver/rtc` reads the hardware on every open, as Linux's does (any user; each read
-  is bounded to 10 ms, and opens of it contend only for the clock's lock), with no cached
-  reading. The MCP audit log's records carry the wall clock's seconds, which `clock_set` can
+  Settings tells "no hardware clock" by reading `/proc/driver/rtc` back, so a clock that
+  exists but cannot be read (now `EIO`) is reported as none (a set's own write is read back
+  from the kept reading, so a set that wrote says saved). The MCP audit log's records carry
+  the wall clock's seconds, which `clock_set` can
   move back: their order stays the file's and each call's number, and the `clock_set` call is
   itself recorded, but a monotonic or boot-time field is a format change left for later.

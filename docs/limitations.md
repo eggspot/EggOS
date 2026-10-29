@@ -60,7 +60,8 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   clock is set meanwhile (Linux wakes it). No `/dev/rtc0` (`hwclock` reads
   `/proc/driver/rtc`), no alarms or wake-ups (`CLOCK_REALTIME_ALARM`), no UEFI or ACPI time
   services. Without a real-time clock the wall clock starts at 1970 at boot and the desktop's
-  clock shows the uptime (D73).
+  clock shows the uptime until the clock is set (D73). `/proc/driver/rtc` reads the hardware
+  clock at most once a second and may be up to a second behind it in between.
 - **Linux programs: static ones only.** The kernel runs static Linux programs through its own
   Linux system-call layer; `cargo xtask image --add` builds them into an image, and nothing
   can be added to a running system yet ([Linux programs](linux-programs.md), D117). No

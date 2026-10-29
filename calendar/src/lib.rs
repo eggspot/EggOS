@@ -54,13 +54,6 @@ const DAYS_PER_ERA: i64 = 146_097;
 const DAYS_FROM_0000_03_01_TO_EPOCH: i64 = 719_468;
 const THURSDAY: i64 = 4;
 
-/// Whether a wall clock reading `seconds` since the epoch has been set: one that started at the
-/// epoch at boot reads less than a day for its first day, so a day or more means a real-time
-/// clock or a person set it (docs/ux/desktop-v0.3.md section 4).
-pub const fn is_set(seconds: i64) -> bool {
-    seconds >= SECONDS_PER_DAY
-}
-
 /// Whether `year` has a 29 February.
 pub const fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
@@ -266,11 +259,5 @@ mod tests {
             DateTime::from_unix(951_782_400 + 306 * 86_400).day_of_year(),
             366
         );
-    }
-
-    #[test]
-    fn a_clock_is_set_from_its_first_whole_day() {
-        assert!(!is_set(0) && !is_set(SECONDS_PER_DAY - 1));
-        assert!(is_set(SECONDS_PER_DAY) && is_set(1_793_282_709));
     }
 }
