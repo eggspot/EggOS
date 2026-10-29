@@ -1,5 +1,6 @@
 //! The shell's icon set (docs/ux/desktop-v0.3-gui.md, section 7, and 6.4.1): Terminal, Files,
-//! Settings, Host share and the generic app tile, at 48x48 and 32x32, each a table of shapes
+//! Settings, Host share, the Text Editor's page (docs/ux/text-editor-v0.3.md section 13) and
+//! the generic app tile, at 48x48 and 32x32, each a table of shapes
 //! drawn with the desktop's primitives, no bitmaps; and an installed app's own icon (D148,
 //! docs/ux/app-icons-v0.3.md), the pixels of its `app.icon` blended over what is beneath. An
 //! icon draws only its own pixels.
@@ -89,6 +90,8 @@ pub enum Icon<'a> {
     Files,
     /// A grey gear.
     Settings,
+    /// An off-white page with grey lines and the yolk caret: the Text Editor (D149).
+    TextEditor,
     /// A folder with a grey front: the host's shared folder.
     HostShare,
     /// A tile with `letter` (`A`-`Z`, `0`-`9` or `?`) and, for an installed app, the badge of
@@ -194,6 +197,35 @@ const SETTINGS_SMALL: [Shape; 8] = [
     Shape::Fill(rect(5, 21, 6, 6), colour::ICON_GEAR),
     Shape::Fill(rect(21, 21, 6, 6), colour::ICON_GEAR),
     Shape::Circle((16, 16), 4, colour::ICON_GEAR_HOLE),
+];
+
+const TEXT_EDITOR_LARGE: [Shape; 7] = [
+    Shape::Tile(
+        rect(8, 0, 32, 48),
+        Corners::R4,
+        colour::ICON_PAGE,
+        colour::ICON_PAGE_EDGE,
+    ),
+    Shape::Fill(rect(14, 9, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 15, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 21, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 27, 20, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(14, 33, 10, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(26, 30, 2, 8), colour::ACCENT),
+];
+
+const TEXT_EDITOR_SMALL: [Shape; 6] = [
+    Shape::Tile(
+        rect(5, 0, 22, 32),
+        Corners::R4,
+        colour::ICON_PAGE,
+        colour::ICON_PAGE_EDGE,
+    ),
+    Shape::Fill(rect(9, 6, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 11, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 16, 14, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(9, 21, 7, 2), colour::ICON_PAGE_LINE),
+    Shape::Fill(rect(18, 19, 2, 6), colour::ACCENT),
 ];
 
 fn badge_colours(source: Source) -> (u32, u8, u32) {
@@ -315,6 +347,8 @@ pub(super) fn draw_icon(canvas: &mut Canvas<'_>, icon: Icon<'_>, size: IconSize,
         (Icon::HostShare, IconSize::Small) => &HOST_SHARE_SMALL,
         (Icon::Settings, IconSize::Large) => &SETTINGS_LARGE,
         (Icon::Settings, IconSize::Small) => &SETTINGS_SMALL,
+        (Icon::TextEditor, IconSize::Large) => &TEXT_EDITOR_LARGE,
+        (Icon::TextEditor, IconSize::Small) => &TEXT_EDITOR_SMALL,
         (Icon::App { letter, badge }, size) => {
             generic = app_shapes(letter, badge, size);
             &generic.0[..generic.1]
@@ -449,6 +483,36 @@ mod tests {
         let share = pixels(Icon::HostShare, IconSize::Small);
         assert!(share.contains(&colour::ICON_GEAR));
         assert!(!share.contains(&colour::ICON_FOLDER));
+    }
+
+    #[test]
+    fn the_text_editor_shows_a_page_with_lines_and_the_caret() {
+        let large = pixels(Icon::TextEditor, IconSize::Large);
+        assert_eq!(large[2 * 48 + 2], BACKGROUND);
+        assert_eq!(large[2 * 48 + 12], colour::ICON_PAGE);
+        assert_eq!(large[24 * 48 + 8], colour::ICON_PAGE_EDGE);
+        assert_eq!(large[10 * 48 + 20], colour::ICON_PAGE_LINE);
+        assert_eq!(large[34 * 48 + 26], colour::ACCENT);
+        assert_eq!(large[34 * 48 + 25], colour::ICON_PAGE);
+        let small = pixels(Icon::TextEditor, IconSize::Small);
+        assert_eq!(small[16 * 32 + 2], BACKGROUND);
+        assert_eq!(small[7 * 32 + 12], colour::ICON_PAGE_LINE);
+        assert_eq!(small[20 * 32 + 18], colour::ACCENT);
+        for size in [IconSize::Large, IconSize::Small] {
+            let side = size.pixels();
+            let mut pixels = vec![BACKGROUND; (3 * side * 3 * side) as usize];
+            let screen = Rect::new(0, 0, 3 * side, 3 * side);
+            let mut canvas = Canvas::new(&mut pixels, 3 * side as usize, screen).unwrap();
+            draw_icon(&mut canvas, Icon::TextEditor, size, side, side);
+            for y in 0..3 * side {
+                for x in 0..3 * side {
+                    let inside = (side..2 * side).contains(&x) && (side..2 * side).contains(&y);
+                    if !inside {
+                        assert_eq!(pixels[(y * 3 * side + x) as usize], BACKGROUND);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -48,6 +48,7 @@ const DOCK_MARK_TOP: u32 = 52;
 const DOCK_SEPARATOR_ROOM: u32 = 2 * DOCK_GAP + 1;
 const DOCK_SEPARATOR_INSET: u32 = 8;
 const DOCK_PINNED: [AppId; 3] = [AppId::Terminal, AppId::Files, AppId::Settings];
+const TEXT_EDITOR_TITLE_SUFFIX: &str = " - Text Editor";
 const DOCK_CAPACITY: usize = DOCK_PINNED.len() + MAX_WINDOWS;
 const STARTING_MS: u32 = 2000;
 const TOOLTIP_HEIGHT: u32 = 24;
@@ -257,13 +258,17 @@ impl Desktop {
     }
 
     /// The app window `slot` belongs to, if the catalogue knows it: the terminal's window is
-    /// Terminal's; another window (a dialog: its parent) is the app its title names.
+    /// Terminal's; a window whose title ends with ` - Text Editor` the Text Editor's (D149);
+    /// another window (a dialog: its parent) is the app its title names.
     pub(super) fn app_of(&self, slot: usize) -> Option<AppId> {
         let slot = self.window_at(slot).parent.map_or(slot, usize::from);
         if slot == TERMINAL_SLOT {
             return Some(AppId::Terminal);
         }
         let title = self.window_at(slot).title();
+        if title.ends_with(TEXT_EDITOR_TITLE_SUFFIX) {
+            return Some(AppId::TextEditor);
+        }
         [AppId::Files, AppId::Settings]
             .into_iter()
             .find(|&app| self.catalogue.name(app) == title)
@@ -517,8 +522,9 @@ impl Desktop {
     /// terminal's window; Settings and Files focus their window if they have one, else ask the
     /// kernel to start them (Files says it is not installed when it is not), as
     /// `Install from host share...` asks to start the installer and the host share Files on
-    /// it; installed apps, and the host share without Files, focus the terminal and ask the
-    /// kernel to type their command in it.
+    /// it; the Text Editor starts a new window each time, as Notepad does (D149); installed
+    /// apps, and the host share without Files, focus the terminal and ask the kernel to type
+    /// their command in it.
     pub fn launch(
         &mut self,
         app: AppId,
@@ -549,11 +555,19 @@ impl Desktop {
                 self.show_notice(super::launcher::FILES_MISSING, damage);
                 Action::None
             }
+            AppId::TextEditor if !self.catalogue.text_editor_present() => {
+                self.show_notice(super::launcher::TEXT_EDITOR_MISSING, damage);
+                Action::None
+            }
             AppId::HostShare if !self.catalogue.files_present() => {
                 self.activate(TERMINAL_SLOT, damage, events);
                 Action::Type(app)
             }
-            AppId::Files | AppId::Settings | AppId::InstallFromHostShare | AppId::HostShare => {
+            AppId::Files
+            | AppId::Settings
+            | AppId::TextEditor
+            | AppId::InstallFromHostShare
+            | AppId::HostShare => {
                 let starting = self.panels.starting.is_some_and(|(pending, at)| {
                     pending == app && self.now_ms.wrapping_sub(at) < STARTING_MS
                 });

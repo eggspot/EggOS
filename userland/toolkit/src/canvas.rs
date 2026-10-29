@@ -220,6 +220,25 @@ impl<'a> Canvas<'a> {
         pen
     }
 
+    /// Draws glyph `id` of Egg Mono 8x16 (`eggos_font::glyph_id`) with its cell's top-left at
+    /// (`x`, `y`): only its ink, over what is there.
+    pub fn mono_glyph(&mut self, x: i32, y: i32, id: u8, colour: u32) {
+        for (row, &bits) in eggos_font::rows(id).iter().enumerate() {
+            let mut column = 0;
+            while column < eggos_font::GLYPH_WIDTH {
+                if bits & (0x80u8 >> column) == 0 {
+                    column += 1;
+                    continue;
+                }
+                let start = column;
+                while column < eggos_font::GLYPH_WIDTH && bits & (0x80u8 >> column) != 0 {
+                    column += 1;
+                }
+                self.row(y + row as i32, x + start as i32, x + column as i32, colour);
+            }
+        }
+    }
+
     fn glyph(&mut self, x: i32, y: i32, glyph: &egg_sans::Glyph, colour: u32, size: i32) {
         for row in 0..GLYPH_HEIGHT {
             let bits = glyph.rows[row];
@@ -281,6 +300,25 @@ mod tests {
                 "..######..",
             ]
         );
+    }
+
+    #[test]
+    fn a_mono_glyph_draws_its_ink_only_and_doubles_at_scale_2() {
+        let mut pixels = vec![7u32; 8 * 16];
+        let mut canvas = Canvas::new(&mut pixels, 8, 16, 1).unwrap();
+        canvas.mono_glyph(0, 0, b'|', 1);
+        for (row, &bits) in eggos_font::rows(b'|').iter().enumerate() {
+            for column in 0..8 {
+                let ink = bits & (0x80u8 >> column) != 0;
+                let expected = if ink { 1 } else { 7 };
+                assert_eq!(pixels[row * 8 + column], expected, "{row} {column}");
+            }
+        }
+        let mut doubled = vec![0u32; 16 * 32];
+        let mut canvas = Canvas::new(&mut doubled, 16, 32, 2).unwrap();
+        canvas.mono_glyph(0, 0, b'|', 1);
+        let ink = |pixels: &[u32]| pixels.iter().filter(|&&pixel| pixel == 1).count();
+        assert_eq!(ink(&doubled), 4 * ink(&pixels));
     }
 
     #[test]

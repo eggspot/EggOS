@@ -145,6 +145,7 @@ pub struct Spawn<'a> {
     streams: [usize; 3],
     directory: Option<&'a CStr>,
     own_group: bool,
+    own_session: bool,
     exec_error: AtomicIsize,
 }
 
@@ -164,6 +165,7 @@ impl<'a> Spawn<'a> {
             streams,
             directory: None,
             own_group: false,
+            own_session: false,
             exec_error: AtomicIsize::new(0),
         }
     }
@@ -182,6 +184,15 @@ impl<'a> Spawn<'a> {
     pub fn in_own_process_group(self) -> Self {
         Self {
             own_group: true,
+            ..self
+        }
+    }
+
+    /// The same request, with the child leading a session of its own (`setsid`), so it no
+    /// longer belongs to this process's terminal or process group and outlives both.
+    pub fn in_own_session(self) -> Self {
+        Self {
+            own_session: true,
             ..self
         }
     }
@@ -244,7 +255,10 @@ extern "C" fn start_child(request: usize) -> ! {
             ],
         )
     };
-    if request.own_group {
+    if request.own_session {
+        // SAFETY: `setsid` touches no memory.
+        unsafe { syscall::call(number::SETSID, [0, 0, 0, 0, 0, 0]) };
+    } else if request.own_group {
         // SAFETY: `setpgid` touches no memory.
         unsafe { syscall::call(number::SETPGID, [0, 0, 0, 0, 0, 0]) };
     }

@@ -64,6 +64,8 @@ pub enum Kind {
     AppInstall,
     /// `app_open`.
     AppOpen,
+    /// `edit_open`: a text file in a Text Editor window (D149).
+    EditOpen,
     /// `app_uninstall`.
     AppUninstall,
     /// `wm_capture`: a window's content as a PNG.
@@ -244,7 +246,7 @@ const OPERATING: Hints = Hints {
 };
 
 /// Every tool, in `tools/list`'s order.
-pub const TOOLS: [Tool; 16] = [
+pub const TOOLS: [Tool; 17] = [
     Tool {
         name: "ls",
         title: "List a folder",
@@ -414,10 +416,10 @@ pub const TOOLS: [Tool; 16] = [
     Tool {
         name: "app_open",
         title: "Open an app",
-        description: "Opens an installed app, or the built-in Terminal, Files or Settings, by \
-                      its name, as `app open` does and as a double-click on its icon would. \
-                      Needs the install grant.",
-        input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"The app's name, as app_list shows it, or Terminal, Files or Settings."}},"required":["name"],"additionalProperties":false}"#,
+        description: "Opens an installed app, or the built-in Terminal, Files, Settings or Text \
+                      Editor, by its name, as `app open` does and as a double-click on its icon \
+                      would. Needs the install grant.",
+        input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"The app's name, as app_list shows it, or Terminal, Files, Settings or Text Editor."}},"required":["name"],"additionalProperties":false}"#,
         arguments: &["name"],
         kind: Kind::AppOpen,
         grant: Some(Grant::Install),
@@ -428,6 +430,26 @@ pub const TOOLS: [Tool; 16] = [
             idempotent: false,
         },
         twin: twin("/bin/app", &["open"], Operand::Name),
+    },
+    Tool {
+        name: "edit_open",
+        title: "Open a text file in the Text Editor",
+        description: "Opens a text file in /home or /media/host in a Text Editor window of its \
+                      own, as `edit` does, so the user sees it and can edit and save it; a path \
+                      with nothing at it opens as a new file. Returns at once. Read and write \
+                      text with cat and tee; the window is operated with the wm tools like any \
+                      other. Needs the install grant.",
+        input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"The text file's absolute path, in /home or /media/host."}},"required":["path"],"additionalProperties":false}"#,
+        arguments: &["path"],
+        kind: Kind::EditOpen,
+        grant: Some(Grant::Install),
+        confirmation: Confirmation::Never,
+        hints: Hints {
+            read_only: false,
+            destructive: false,
+            idempotent: false,
+        },
+        twin: twin("/bin/edit", &[], Operand::Path(READ_PATH)),
     },
     Tool {
         name: "app_uninstall",

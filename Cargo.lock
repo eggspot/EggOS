@@ -45,6 +45,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggos-editor"
+version = "0.2.0"
+dependencies = [
+ "eggos-app",
+ "eggos-files",
+ "eggos-font",
+ "eggos-runtime",
+ "eggos-toolkit",
+]
+
+[[package]]
 name = "eggos-eggfs"
 version = "0.2.0"
 
@@ -164,6 +175,7 @@ name = "eggos-settings"
 version = "0.2.0"
 dependencies = [
  "eggos-app",
+ "eggos-editor",
  "eggos-files",
  "eggos-runtime",
  "eggos-settings-file",
@@ -221,6 +233,7 @@ dependencies = [
  "eggos-app",
  "eggos-app-manifest",
  "eggos-drivers",
+ "eggos-editor",
  "eggos-eggfs",
  "eggos-eggway",
  "eggos-files",

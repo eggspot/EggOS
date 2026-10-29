@@ -55,7 +55,9 @@ pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
     TerminalInput,
 };
-pub use launcher::{FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS};
+pub use launcher::{
+    FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS, TEXT_EDITOR_MISSING,
+};
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
 pub use popups::{SWITCHER_ROW_HEIGHT, SWITCHER_ROWS, SWITCHER_WIDTH, WINDOW_MENU_ITEMS};
@@ -130,6 +132,9 @@ pub mod colour {
     pub const ICON_MAC: u32 = 0x00c9_d1db;
     pub const ICON_LINUX: u32 = 0x00e2_b341;
     pub const ICON_DARK: u32 = 0x000b_0e13;
+    pub const ICON_PAGE: u32 = 0x00f6_f1e7;
+    pub const ICON_PAGE_EDGE: u32 = 0x00c9_d1db;
+    pub const ICON_PAGE_LINE: u32 = 0x004a_5466;
 }
 
 /// Height of the top bar, the 1 px edge line included.

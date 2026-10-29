@@ -19,8 +19,9 @@
 //!    installed app runs in the terminal, which takes the next one when it ends), `linux-paint`
 //!    captured, covered by Settings, clicked, typed into and captured after each, every
 //!    capture compared exactly with the host's drawing, the terminal's window refused, a key
-//!    pressed in it and a scroll; then uninstalling the app; then, with a client that can ask its user, a trash
-//!    declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
+//!    pressed in it and a scroll, and `edit_open` opening the share's text file in a Text
+//!    Editor window that `wm_list` shows (D149); then uninstalling the app; then, with a
+//!    client that can ask its user, a trash declined and one accepted through `elicitation/create`; last `agentlog` through `run`,
 //!    which must show every call. The disk image read back must hold the audit log, with
 //!    `asked` records and no written content.
 
@@ -77,7 +78,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 5] = [
 
 /// Every tool that needs a grant, with arguments the first boot calls it with (refused for its
 /// grant) and the grant; the second boot runs each.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 12] = [
     (
         "tee",
         r#"{"path":"/home/root/x","content":"EGGOS-MCP-CONTENT-31f9"}"#,
@@ -95,6 +96,11 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 11] = [
         "install",
     ),
     ("app_open", r#"{"name":"win-paint"}"#, "install"),
+    (
+        "edit_open",
+        r#"{"path":"/media/host/readme.txt"}"#,
+        "install",
+    ),
     (
         "app_uninstall",
         r#"{"name":"win-paint","confirm":true}"#,
@@ -1239,6 +1245,13 @@ fn window_session(client: &mut Client, paint_title: Option<&str>) -> Result<(), 
         &format!(r#"{{"window":{terminal},"keys":"shift"}}"#),
         "pressed shift",
     )?;
+    succeeds(
+        client,
+        "edit_open",
+        r#"{"path":"/media/host/readme.txt"}"#,
+        "Opened /media/host/readme.txt in Text Editor.",
+    )?;
+    window_titled(client, "readme.txt - Text Editor")?;
     Ok(())
 }
 

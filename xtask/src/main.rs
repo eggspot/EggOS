@@ -284,6 +284,10 @@ const VAR_PATH: &str = "var";
 
 const FILES_PATH: &str = "bin/files";
 
+const TEXT_EDITOR_PATH: &str = "bin/text-editor";
+
+const EDIT_PATH: &str = "bin/edit";
+
 const PROC_PATH: &str = "proc";
 
 const DEV_PATH: &str = "dev";
@@ -688,6 +692,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::persistent::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
+    qemu::text_editor::check(arch, &kernel)?;
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
@@ -1128,6 +1133,8 @@ fn release_initramfs(
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (TEXT_EDITOR_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
         (

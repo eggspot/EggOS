@@ -539,7 +539,8 @@ pub fn reload_catalogue<P: Platform>() {
 }
 
 /// Opens the app called `name` as a double-click on its icon does (`OPEN_APP`, D134): a
-/// built-in (Terminal, Files, Settings, D141) or an installed app, after reading the catalogue
+/// built-in (Terminal, Files, Settings, D141; Text Editor, D149) or an installed app, after
+/// reading the catalogue
 /// again; `false` when there is no such app.
 pub fn open_app<P: Platform>(name: &[u8]) -> bool {
     if !is_interactive() {

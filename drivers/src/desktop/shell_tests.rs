@@ -122,7 +122,7 @@ fn super_alone_or_cmd_space_opens_the_launcher_and_typing_filters_it() {
     assert!(desktop.launcher_open() && !desktop.keys_go_to_terminal());
     assert_eq!(
         names(&desktop),
-        ["Files", "Settings", "Terminal", "Hello", "Paint"]
+        ["Files", "Settings", "Terminal", "Text Editor", "Hello", "Paint"]
     );
     type_text(&mut desktop, "pref");
     assert_eq!(desktop.launcher_query(), Some("pref"));
@@ -130,7 +130,10 @@ fn super_alone_or_cmd_space_opens_the_launcher_and_typing_filters_it() {
     tap(&mut desktop, key::BACKSPACE, Modifiers::from_bits(0));
     tap(&mut desktop, key::BACKSPACE, Modifiers::from_bits(0));
     tap(&mut desktop, key::BACKSPACE, Modifiers::from_bits(0));
-    assert_eq!(names(&desktop), ["Files", "Settings", "Paint"]);
+    assert_eq!(
+        names(&desktop),
+        ["Files", "Settings", "Text Editor", "Paint"]
+    );
     assert_eq!(
         tap(&mut desktop, key::ENTER, Modifiers::from_bits(0)),
         Action::None
@@ -544,6 +547,32 @@ fn the_switcher_and_the_taskbar_show_each_window_s_app_icon() {
             badge: Some(Source::Windows)
         }
     );
+}
+
+#[test]
+fn the_text_editor_s_windows_are_its_own_and_each_launch_starts_another() {
+    let mut desktop = desktop(Profile::Macos);
+    assert_eq!(
+        desktop.launch(AppId::TextEditor, &mut Damage::new(), &mut DiscardEvents),
+        Action::None
+    );
+    assert_eq!(desktop.notice_text(), Some(TEXT_EDITOR_MISSING));
+    let mut catalogue = catalogue();
+    catalogue.set_text_editor_present(true);
+    desktop.set_catalogue(catalogue, &mut Damage::new(), &mut DiscardEvents);
+    assert_eq!(
+        desktop.launch(AppId::TextEditor, &mut Damage::new(), &mut DiscardEvents),
+        Action::Start(AppId::TextEditor)
+    );
+    let notes = window(&mut desktop, "*notes.txt - Text Editor");
+    assert_eq!(desktop.window_icon(slot_of(notes)), Icon::TextEditor);
+    desktop.set_time(10_000);
+    assert_eq!(
+        desktop.launch(AppId::TextEditor, &mut Damage::new(), &mut DiscardEvents),
+        Action::Start(AppId::TextEditor)
+    );
+    let plain = window(&mut desktop, "Text Editor");
+    assert_ne!(desktop.window_icon(slot_of(plain)), Icon::TextEditor);
 }
 
 #[test]

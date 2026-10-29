@@ -1,5 +1,6 @@
 //! The apps the shell offers (docs/ux/desktop-v0.3-gui.md, sections 6.2 and 6.3, D133): the
-//! built-in Terminal, Files and Settings, the host's shared folder while it is mounted, and the
+//! built-in Terminal, Files, Settings and the Text Editor (D149, launcher only), the host's
+//! shared folder while it is mounted, and the
 //! apps installed under `/Applications`, read from their manifests by the kernel when the
 //! desktop starts, when the launcher opens and when the installer says the apps changed
 //! (D134); and, while the share is mounted, the launcher's `Install from host share...` row.
@@ -17,8 +18,10 @@ pub const COMMAND_CAPACITY: usize = 256;
 const TERMINAL_SYNONYMS: [&str; 5] = ["shell", "console", "cmd", "iTerm", "bash"];
 const FILES_SYNONYMS: [&str; 5] = ["Explorer", "Finder", "Dolphin", "Nautilus", "folders"];
 const SETTINGS_SYNONYMS: [&str; 4] = ["Control Panel", "System Settings", "Preferences", "options"];
+const TEXT_EDITOR_SYNONYMS: [&str; 6] = ["Notepad", "TextEdit", "gedit", "Kate", "editor", "notes"];
 const SETTINGS_PROGRAM: &str = "/bin/settings";
 const FILES_PROGRAM: &str = "/bin/files";
+const TEXT_EDITOR_PROGRAM: &str = "/bin/text-editor";
 const HOST_SHARE_LISTING: &str = "ls /media/host";
 const HOST_SHARE: &str = "/media/host";
 const PLAIN_PATH_BYTES: &[u8] = b"/._-+";
@@ -31,6 +34,13 @@ pub const INSTALLER_PROGRAM: &str = "/usr/libexec/app-window";
 /// What separates a started program's path and its arguments in a [`Command`].
 pub const ARGUMENT_SEPARATOR: u8 = 0;
 
+const BUILT_INS: [AppId; 4] = [
+    AppId::Terminal,
+    AppId::Files,
+    AppId::Settings,
+    AppId::TextEditor,
+];
+
 /// An app the shell can launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AppId {
@@ -40,6 +50,8 @@ pub enum AppId {
     Files,
     /// The Settings app (`/bin/settings`).
     Settings,
+    /// The Text Editor (`/bin/text-editor`, D149), when the build has it.
+    TextEditor,
     /// The host's shared folder at `/media/host`.
     HostShare,
     /// The launcher's row that opens the installer on the host's shared folder.
@@ -162,6 +174,7 @@ pub struct Catalogue {
     installed: Vec<InstalledApp>,
     host_share: bool,
     files_present: bool,
+    text_editor_present: bool,
 }
 
 fn contains_ignoring_case(text: &str, query: &str) -> bool {
@@ -183,7 +196,7 @@ fn ordered(first: &str, second: &str) -> core::cmp::Ordering {
 }
 
 impl Catalogue {
-    /// The built-ins alone: no host share, no Files, nothing installed.
+    /// The built-ins alone: no host share, no Files, no Text Editor, nothing installed.
     pub fn new() -> Self {
         Self::default()
     }
@@ -275,6 +288,16 @@ impl Catalogue {
         self.files_present
     }
 
+    /// Records whether the build has the Text Editor.
+    pub fn set_text_editor_present(&mut self, present: bool) {
+        self.text_editor_present = present;
+    }
+
+    /// Whether the build has the Text Editor.
+    pub fn text_editor_present(&self) -> bool {
+        self.text_editor_present
+    }
+
     /// How many apps are installed.
     pub fn installed_count(&self) -> usize {
         self.installed.len()
@@ -289,7 +312,7 @@ impl Catalogue {
         match app {
             AppId::HostShare | AppId::InstallFromHostShare => self.host_share,
             AppId::Installed(index) => self.installed(index).is_some(),
-            AppId::Terminal | AppId::Files | AppId::Settings => true,
+            AppId::Terminal | AppId::Files | AppId::Settings | AppId::TextEditor => true,
         }
     }
 
@@ -301,10 +324,10 @@ impl Catalogue {
             .map(|index| AppId::Installed(index as u8))
     }
 
-    /// The app called `name`: the built-ins Terminal, Files and Settings first, so an installed
-    /// app of the same name never stands in for one, then the installed apps.
+    /// The app called `name`: the built-ins Terminal, Files, Settings and Text Editor first, so
+    /// an installed app of the same name never stands in for one, then the installed apps.
     pub fn app_named(&self, name: &str) -> Option<AppId> {
-        [AppId::Terminal, AppId::Files, AppId::Settings]
+        BUILT_INS
             .into_iter()
             .find(|&app| self.name(app) == name)
             .or_else(|| self.installed_named(name))
@@ -316,6 +339,7 @@ impl Catalogue {
             AppId::Terminal => "Terminal",
             AppId::Files => "Files",
             AppId::Settings => "Settings",
+            AppId::TextEditor => "Text Editor",
             AppId::HostShare => "Host share",
             AppId::InstallFromHostShare => INSTALL_FROM_HOST_SHARE,
             AppId::Installed(index) => self.installed(index).map_or("", InstalledApp::name),
@@ -336,6 +360,7 @@ impl Catalogue {
             AppId::Terminal => Icon::Terminal,
             AppId::Files => Icon::Files,
             AppId::Settings => Icon::Settings,
+            AppId::TextEditor => Icon::TextEditor,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
             AppId::Installed(index) => match self.installed(index).and_then(|app| app.icon.as_ref()) {
                 Some(pixels) => Icon::Own(pixels),
@@ -347,10 +372,15 @@ impl Catalogue {
     /// The apps the launcher lists, in its order: the built-ins, then the installed apps, each
     /// alphabetically, then `Install from host share...` while the share is mounted.
     pub fn launcher_apps(&self) -> impl Iterator<Item = AppId> + '_ {
-        [AppId::Files, AppId::Settings, AppId::Terminal]
-            .into_iter()
-            .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
-            .chain(self.host_share.then_some(AppId::InstallFromHostShare))
+        [
+            AppId::Files,
+            AppId::Settings,
+            AppId::Terminal,
+            AppId::TextEditor,
+        ]
+        .into_iter()
+        .chain((0..self.installed.len()).map(|index| AppId::Installed(index as u8)))
+        .chain(self.host_share.then_some(AppId::InstallFromHostShare))
     }
 
     /// The apps the desktop shows icons for, in order: the built-ins, the host share while it
@@ -372,6 +402,7 @@ impl Catalogue {
             AppId::Terminal => &TERMINAL_SYNONYMS,
             AppId::Files => &FILES_SYNONYMS,
             AppId::Settings => &SETTINGS_SYNONYMS,
+            AppId::TextEditor => &TEXT_EDITOR_SYNONYMS,
             AppId::HostShare | AppId::InstallFromHostShare | AppId::Installed(_) => &[],
         };
         if built_in
@@ -402,6 +433,7 @@ impl Catalogue {
             AppId::Terminal => None,
             AppId::Files => Some(Launch::Start(Command::from(FILES_PROGRAM))),
             AppId::Settings => Some(Launch::Start(Command::from(SETTINGS_PROGRAM))),
+            AppId::TextEditor => Some(Launch::Start(Command::from(TEXT_EDITOR_PROGRAM))),
             AppId::InstallFromHostShare => {
                 Command::program(INSTALLER_PROGRAM, &[b"install", HOST_SHARE.as_bytes()])
                     .map(Launch::Start)
@@ -480,6 +512,7 @@ mod tests {
                 "Files",
                 "Settings",
                 "Terminal",
+                "Text Editor",
                 "Hello World",
                 "Paint",
                 "zebra"
@@ -544,8 +577,13 @@ mod tests {
         assert_eq!(found("paint.exe"), ["Paint"]);
         assert_eq!(found("hello"), ["Hello World"]);
         assert_eq!(found("zz"), Vec::<String>::new());
-        assert_eq!(found("").len(), 6);
-        assert_eq!(found("s"), ["Files", "Settings", "Terminal", "Paint"]);
+        assert_eq!(found("").len(), 7);
+        assert_eq!(
+            found("s"),
+            ["Files", "Settings", "Terminal", "Text Editor", "Paint"]
+        );
+        assert_eq!(found("notepad"), ["Text Editor"]);
+        assert_eq!(found("gedit"), ["Text Editor"]);
     }
 
     #[test]
@@ -557,6 +595,7 @@ mod tests {
         assert_eq!(catalogue.app_named("Settings"), Some(AppId::Settings));
         assert_eq!(catalogue.app_named("Files"), Some(AppId::Files));
         assert_eq!(catalogue.app_named("Terminal"), Some(AppId::Terminal));
+        assert_eq!(catalogue.app_named("Text Editor"), Some(AppId::TextEditor));
         assert_eq!(
             catalogue.app_named("Paint"),
             catalogue.installed_named("Paint")
@@ -580,6 +619,8 @@ mod tests {
         };
         assert_eq!(start(AppId::Settings), b"/bin/settings");
         assert_eq!(start(AppId::Files), b"/bin/files");
+        assert_eq!(start(AppId::TextEditor), b"/bin/text-editor");
+        assert_eq!(catalogue.icon(AppId::TextEditor), Icon::TextEditor);
         assert_eq!(catalogue.launch(AppId::Terminal), None);
         assert_eq!(typed(AppId::HostShare), b"\x15ls /media/host\r");
         let paint = catalogue.installed_named("Paint").unwrap();

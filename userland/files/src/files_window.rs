@@ -52,8 +52,10 @@ pub const MEDIA: &[u8] = b"/media";
 pub const TMP: &[u8] = b"/tmp";
 /// How long a notice shows.
 pub const NOTICE_MS: u32 = 3000;
-/// The largest text file opened in the Terminal.
+/// The largest text file opened in the Terminal, when the Text Editor is not installed.
 pub const LARGEST_SHOWN_TEXT: u64 = 256 * 1024;
+/// The Text Editor's program (D149), which opens text files when it is installed.
+pub const TEXT_EDITOR: &[u8] = b"/bin/text-editor";
 /// How many steps of a long job run per tick.
 pub const STEPS_PER_TICK: usize = 16;
 /// The longest line Files types in the Terminal.
@@ -193,6 +195,8 @@ pub enum Request {
     Uninstall(Name),
     /// Open this installed app as its icon does (`OPEN_APP`).
     OpenApp(Name),
+    /// Open this text file in a Text Editor window of its own (D149).
+    OpenInEditor(Path),
 }
 
 /// A line to type in the Terminal, at most [`LINE_CAPACITY`] bytes of printable text.
@@ -1929,6 +1933,9 @@ impl FilesWindow {
                 self.ask(Request::Install(path))
             }
             Kind::Program(manifest::Source::Linux) => self.type_in_terminal(b"", &path),
+            Kind::Text if files.status(TEXT_EDITOR).is_ok() => {
+                self.ask(Request::OpenInEditor(path))
+            }
             Kind::Text if entry.size > LARGEST_SHOWN_TEXT => self.show_notice(format_args!(
                 "{} is too large to show in the Terminal.",
                 Shown(name)

@@ -1,10 +1,10 @@
 //! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--entry <path>]
 //! [--window] <path>` (a program, an `.app` or a `.zip`; `--entry` chooses the program inside a
 //! `.zip`, D148), `app uninstall [--window] <name>` (`remove` is the same), `app open <name>`
-//! (D137; the built-in Terminal, Files and Settings too, D141) and `app list` (name, source,
-//! architecture, program and icon file, D148). Text only, the same with or without a display;
-//! `--window` shows the installer's dialogs instead. `--` ends the options, so the next word is
-//! the operand even if it starts with `-`.
+//! (D137; the built-in Terminal, Files, Settings and Text Editor too, D141, D149) and `app
+//! list` (name, source, architecture, program and icon file, D148). Text only, the same with or
+//! without a display; `--window` shows the installer's dialogs instead. `--` ends the options,
+//! so the next word is the operand even if it starts with `-`.
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub const USAGE: &str = "usage: app install [--name <name>] [--entry <path>] [--
 
 /// The built-in apps `app open` opens by name, which no installed app of the same name stands
 /// in for.
-pub const BUILT_IN_APPS: [&[u8]; 3] = [b"Terminal", b"Files", b"Settings"];
+pub const BUILT_IN_APPS: [&[u8]; 4] = [b"Terminal", b"Files", b"Settings", b"Text Editor"];
 
 /// Whether `name` is a built-in app's ([`BUILT_IN_APPS`]), which is never in `/Applications`.
 pub fn is_built_in(name: &[u8]) -> bool {
@@ -320,6 +320,7 @@ mod tests {
     #[test]
     fn the_built_in_apps_open_by_their_exact_names() {
         assert!(is_built_in(b"Settings") && is_built_in(b"Files") && is_built_in(b"Terminal"));
+        assert!(is_built_in(b"Text Editor") && !is_built_in(b"text editor"));
         assert!(!is_built_in(b"settings") && !is_built_in(b"Paint") && !is_built_in(b""));
         assert_eq!(
             parse(&[b"open", b"Settings"]),

@@ -20,6 +20,8 @@ use eggos_hal::Platform;
 pub const HOST_SHARE: &[u8] = b"/media/host";
 /// The Files app's program, when the build has it.
 pub const FILES_PROGRAM: &[u8] = b"/bin/files";
+/// The Text Editor's program, when the build has it (D149).
+pub const TEXT_EDITOR_PROGRAM: &[u8] = b"/bin/text-editor";
 
 const ENVIRONMENT: [&[u8]; 4] = [
     b"HOME=/",
@@ -42,12 +44,14 @@ fn read_small_file(node: vfs::Node, largest: usize) -> Option<Vec<u8>> {
 }
 
 /// The catalogue as the file systems hold it now: every app under `/Applications` whose
-/// manifest is valid, whether the host share is mounted and whether the build has Files.
+/// manifest is valid, whether the host share is mounted and whether the build has Files and
+/// the Text Editor.
 pub fn catalogue() -> Catalogue {
     let mut catalogue = Catalogue::new();
     let root = vfs::root();
     catalogue.set_host_share(vfs::is_mount_point(HOST_SHARE));
     catalogue.set_files_present(vfs::resolve(root, root, FILES_PROGRAM).is_ok());
+    catalogue.set_text_editor_present(vfs::resolve(root, root, TEXT_EDITOR_PROGRAM).is_ok());
     let Ok(directory) = vfs::resolve(root, root, manifest::DIRECTORY.as_bytes()) else {
         return catalogue;
     };

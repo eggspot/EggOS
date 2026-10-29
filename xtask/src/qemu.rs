@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod persistent;
 pub mod settings;
 pub mod shell;
+mod text_editor;
 mod win_controls;
 mod windows_crt;
 mod windows_gui;

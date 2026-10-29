@@ -28,7 +28,8 @@ pub enum Grant {
     View,
     /// Write and delete files below `/home/root` (`tee`, `trash`).
     Write,
-    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`).
+    /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`), and open
+    /// a text file in the Text Editor (`edit_open`).
     Install,
     /// Run any program (`run`) and operate any window (`wm_click`, `wm_type`, `wm_press`,
     /// `wm_scroll`): full control of the machine.

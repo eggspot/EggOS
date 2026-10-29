@@ -180,6 +180,7 @@ fn the_tools_are_listed_once_initialized() {
             "run",
             "app_install",
             "app_open",
+            "edit_open",
             "app_uninstall",
             "wm_capture",
             "wm_click",
@@ -632,6 +633,12 @@ fn without_grants_every_changing_tool_is_refused_naming_its_grant_before_its_pat
         ),
         (5, "app_open", r#"{"name":"x"}"#.to_owned(), "install"),
         (6, "app_uninstall", r#"{"name":"x"}"#.to_owned(), "install"),
+        (
+            7,
+            "edit_open",
+            r#"{"path":"/home/root/notes.txt"}"#.to_owned(),
+            "install",
+        ),
     ] {
         let answer = harness.call(id, tool, &arguments);
         assert!(is_error(&answer), "{tool}");
@@ -1866,6 +1873,20 @@ fn app_open_opens_the_built_in_apps_by_name() {
         harness.system.runs.last().unwrap(),
         &["/bin/app", "open", "--", "Settings"]
     );
+}
+
+#[test]
+fn edit_open_opens_a_text_file_in_the_text_editor_through_edit() {
+    let mut harness = granted_only(&[crate::grants::Grant::Install]);
+    let answer = harness.call(1, "edit_open", r#"{"path":"/home/root/./notes.txt"}"#);
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &["/bin/edit", "--", "/home/root/notes.txt"]
+    );
+    let answer = harness.call(2, "edit_open", r#"{"path":"/etc/passwd"}"#);
+    assert!(is_error(&answer), "{answer}");
+    assert_eq!(harness.system.runs.len(), 1);
 }
 
 #[test]
