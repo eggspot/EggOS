@@ -11,7 +11,7 @@ pub const MAX_CAPTURE_WIDTH: u32 = 4096;
 pub const MAX_SCALE_STEPS: u32 = 8;
 
 const BAND_BYTES: usize = 64 * 1024;
-const FILE_MODE: u32 = 0o644;
+const FILE_MODE: u32 = 0o600;
 const NAME_CAPACITY: usize = 32;
 
 #[derive(Debug)]
@@ -419,6 +419,12 @@ mod tests {
             )
         );
         assert!(fake.capture_calls > 2, "several bands");
+        let (_, (_, status)) = fake
+            .nodes
+            .iter()
+            .find(|(path, _)| path.ends_with(b"window-129.png"))
+            .unwrap();
+        assert_eq!(status.mode & 0o777, 0o600, "window contents can be private");
     }
 
     #[test]

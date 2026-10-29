@@ -19,9 +19,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
 - **Agents, under grants for the whole boot.** The built-in MCP server (D136, D137,
   docs/mcp.md) lets an MCP client read files in `/home` and `/media/host` and list processes,
   windows and installed apps; with grants given when starting EggOS (`--mcp-allow
-  write,run,install`) it also writes and trashes files below `/home/root`, runs programs and
-  installs, opens and uninstalls apps. Grants hold for the whole machine and boot: no per-agent
-  grants, no revoking them while EggOS runs; `run` is full control, the audit log included.
+  view,write,run,install`) it also sees what app windows show (`view`), writes and trashes
+  files below `/home/root`, runs programs, clicks and types in windows, and installs, opens and
+  uninstalls apps. Grants hold for the whole machine and boot: no per-agent grants, no revoking
+  them while EggOS runs; `run` is full control, the audit log included. Agents see windows as
+  pixels for now (D143); windows as structured data come after the release (item 48).
   Commands run as root (file permissions are not enforced yet). Reached only through the run
   scripts' `--mcp` (no network MCP). The audit log keeps at least 3.5 MiB and shows times since
   the boot until the RTC (item 29).
@@ -104,8 +106,9 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   sideways scrolling and non-ASCII typing are not in yet; input goes to the window named even
   when a dialog of it is open; a minimised Wayland app does not repaint after input (eggway
   sends no frame callbacks to minimised surfaces) until it is restored; every process is root
-  until users come (M10), so any program can capture and send input; agents get it through the
-  MCP server's grants next (item 47a2).
+  until users come (M10), so any program can capture and send input; agents get it only
+  through the MCP server's grants (`view` to see, `run` to operate, D143). Input to a window
+  whose program stopped reading its events is retried for 3 s, then fails.
 - **iOS apps are not in yet** (D17).
 - **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
   of every capability (D22) and the component manager (D18) come later.

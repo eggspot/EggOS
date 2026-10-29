@@ -661,7 +661,13 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     let (install_kernel, install_folder) = build_install_test(arch)?;
     qemu::install::check(arch, &install_kernel, &install_folder)?;
     qemu::files::check(arch, &install_kernel, &install_folder)?;
-    qemu::mcp::check(arch, &install_kernel, &install_folder)?;
+    let linux_gui_program = build_linux_test_program(arch, LINUX_GUI_PACKAGE, "static")?;
+    qemu::mcp::check(
+        arch,
+        &install_kernel,
+        &install_folder,
+        std::path::Path::new(&linux_gui_program),
+    )?;
     qemu::boot_test(
         arch,
         &kernel,

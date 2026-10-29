@@ -2,7 +2,8 @@
 //! (`run-eggos.sh --mcp --mcp-allow write,install`, which puts `eggos.mcp_allow=write,install`
 //! on the kernel command line) and fixed for the boot: the server reads it from
 //! `/proc/cmdline` only, which nothing in the machine can change. Without it, agents only read.
-//! `run` runs any program, which can do anything, so it implies `write` and `install`.
+//! `view` lets them see window contents (D143). `run` runs any program and operates any window,
+//! which can do anything, so it implies `view`, `write` and `install`.
 
 #![deny(
     clippy::indexing_slicing,
@@ -23,21 +24,25 @@ pub const MAX_UNKNOWN_BYTES: usize = 128;
 /// One thing the user can let agents do beyond reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grant {
+    /// See window contents (`wm_capture`).
+    View,
     /// Write and delete files below `/home/root` (`tee`, `trash`).
     Write,
     /// Install, open and uninstall apps (`app_install`, `app_open`, `app_uninstall`).
     Install,
-    /// Run any program (`run`): full control of the machine.
+    /// Run any program (`run`) and operate any window (`wm_click`, `wm_type`, `wm_press`,
+    /// `wm_scroll`): full control of the machine.
     Run,
 }
 
 impl Grant {
     /// Every grant, in the order the log names them.
-    pub const ALL: [Grant; 3] = [Grant::Write, Grant::Install, Grant::Run];
+    pub const ALL: [Grant; 4] = [Grant::View, Grant::Write, Grant::Install, Grant::Run];
 
     /// Its name on the command line and in messages.
     pub fn name(self) -> &'static str {
         match self {
+            Grant::View => "view",
             Grant::Write => "write",
             Grant::Install => "install",
             Grant::Run => "run",
@@ -49,6 +54,7 @@ impl Grant {
             Grant::Write => 1,
             Grant::Install => 2,
             Grant::Run => 4,
+            Grant::View => 8,
         }
     }
 
@@ -68,14 +74,13 @@ impl Grants {
     pub const NONE: Grants = Grants(0);
 
     /// Every grant.
-    pub const ALL: Grants = Grants(7);
+    pub const ALL: Grants = Grants(15);
 
-    /// These grants and `grant`, with what it implies: `run` brings `write` and `install`.
+    /// These grants and `grant`, with what it implies: `run` brings `view`, `write` and
+    /// `install`.
     pub fn with(self, grant: Grant) -> Self {
         match grant {
-            Grant::Run => {
-                Grants(self.0 | Grant::Run.bit() | Grant::Write.bit() | Grant::Install.bit())
-            }
+            Grant::Run => Grants::ALL,
             grant => Grants(self.0 | grant.bit()),
         }
     }
@@ -198,9 +203,22 @@ mod tests {
         assert_eq!(described(grants), "read,write,install");
         let (grants, _) = from_command_line(b"eggos.mcp_allow=run");
         assert_eq!(grants, Grants::ALL);
-        assert_eq!(described(grants), "read,write,install,run");
+        assert_eq!(described(grants), "read,view,write,install,run");
         let (grants, _) = from_command_line(b"eggos.mcp_allow=install");
         assert!(!grants.allows(Grant::Write));
+    }
+
+    #[test]
+    fn view_is_its_own_grant_and_only_run_implies_it() {
+        let (grants, _) = from_command_line(b"eggos.mcp_allow=view");
+        assert!(grants.allows(Grant::View));
+        assert!(Grant::ALL[1..].iter().all(|&grant| !grants.allows(grant)));
+        assert_eq!(described(grants), "read,view");
+        let (grants, _) = from_command_line(b"eggos.mcp_allow=write,install");
+        assert!(!grants.allows(Grant::View));
+        assert!(Grants::NONE.with(Grant::Run).allows(Grant::View));
+        let (grants, _) = from_command_line(b"eggos.mcp_allow=view,write,run,install");
+        assert_eq!(grants, Grants::ALL);
     }
 
     #[test]

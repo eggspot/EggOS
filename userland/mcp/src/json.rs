@@ -498,6 +498,18 @@ impl<'a> Number<'a> {
             total.checked_mul(10)?.checked_add(u64::from(digit - b'0'))
         })
     }
+
+    /// The number as a signed integer, if it is one written without a fraction or exponent
+    /// and fits.
+    pub fn as_i64(self) -> Option<i64> {
+        match self.0.strip_prefix(b"-") {
+            Some(digits) => {
+                let magnitude = Number(digits).as_u64()?;
+                0i64.checked_sub_unsigned(magnitude)
+            }
+            None => i64::try_from(self.as_u64()?).ok(),
+        }
+    }
 }
 
 impl<'a> Str<'a> {
@@ -637,6 +649,14 @@ impl Iterator for Chars<'_> {
             }
         })
     }
+}
+
+/// The bytes of a base64 string written in pieces ([`JsonWriter::base64_piece`]) that do not
+/// yet make a whole group of three.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Base64Carry {
+    group: [u8; 3],
+    length: usize,
 }
 
 /// Where a [`JsonWriter`] was, to go back to with [`JsonWriter::rewind`].
@@ -795,6 +815,7 @@ impl<'b> JsonWriter<'b> {
     }
 
     /// A member's key and its colon; the member's value comes next.
+    #[inline(never)]
     pub fn key(&mut self, key: &str) {
         self.string(key);
         self.put(b":");
@@ -802,6 +823,7 @@ impl<'b> JsonWriter<'b> {
     }
 
     /// A string.
+    #[inline(never)]
     pub fn string(&mut self, text: &str) {
         self.begin_string();
         self.string_piece(text);
@@ -872,17 +894,46 @@ impl<'b> JsonWriter<'b> {
     /// `bytes` in base64 (RFC 4648) as a string.
     pub fn string_base64(&mut self, bytes: &[u8]) {
         self.begin_string();
-        for group in bytes.chunks(3) {
-            let word = group.iter().enumerate().fold(0u32, |word, (index, &byte)| {
-                word | u32::from(byte) << (16 - 8 * index)
-            });
-            let mut encoded = [b'='; 4];
-            for (index, slot) in encoded.iter_mut().enumerate().take(group.len() + 1) {
-                *slot = digit(BASE64, (word >> (18 - 6 * index)) as usize);
-            }
-            self.put(&encoded);
-        }
+        let mut carry = Base64Carry::default();
+        self.base64_piece(&mut carry, bytes);
+        self.base64_end(carry);
         self.end_string();
+    }
+
+    /// Part of a base64 string begun with [`Self::begin_string`]: `bytes` encoded after what
+    /// `carry` holds, which keeps the last one or two bytes that do not make a whole group, so
+    /// pieces of any length give the same text as one piece.
+    pub fn base64_piece(&mut self, carry: &mut Base64Carry, bytes: &[u8]) {
+        for &byte in bytes {
+            if let Some(slot) = carry.group.get_mut(carry.length) {
+                *slot = byte;
+            }
+            carry.length += 1;
+            if carry.length == carry.group.len() {
+                self.put_base64_group(&carry.group, carry.length);
+                carry.length = 0;
+            }
+        }
+    }
+
+    /// Ends a base64 string written with [`Self::base64_piece`]: the bytes `carry` still
+    /// holds, padded with `=`. The closing quote is [`Self::end_string`]'s.
+    pub fn base64_end(&mut self, carry: Base64Carry) {
+        if carry.length > 0 {
+            self.put_base64_group(&carry.group, carry.length);
+        }
+    }
+
+    fn put_base64_group(&mut self, group: &[u8; 3], length: usize) {
+        let used = group.get(..length).unwrap_or(&[]);
+        let word = used.iter().enumerate().fold(0u32, |word, (index, &byte)| {
+            word | u32::from(byte) << (16 - 8 * index)
+        });
+        let mut encoded = [b'='; 4];
+        for (index, slot) in encoded.iter_mut().enumerate().take(used.len() + 1) {
+            *slot = digit(BASE64, (word >> (18 - 6 * index)) as usize);
+        }
+        self.put(&encoded);
     }
 
     /// An unsigned number.

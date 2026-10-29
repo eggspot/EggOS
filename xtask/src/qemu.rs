@@ -2877,7 +2877,7 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
 }
 
 /// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
-pub const GRANT_NAMES: [&str; 3] = ["write", "run", "install"];
+pub const GRANT_NAMES: [&str; 4] = ["view", "write", "run", "install"];
 
 /// Checks a `--mcp-allow` list: names from [`GRANT_NAMES`], lowercase, separated by single
 /// commas, none empty.
@@ -2885,7 +2885,7 @@ pub fn check_grants(list: &str) -> Result<(), String> {
     for name in list.split(',') {
         if !GRANT_NAMES.contains(&name) {
             return Err(format!(
-                "--mcp-allow: unknown grant '{name}' (write, run or install, separated by commas)"
+                "--mcp-allow: unknown grant '{name}' (view, write, run or install, separated by commas)"
             ));
         }
     }

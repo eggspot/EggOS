@@ -5,7 +5,8 @@ use crate::paths::MAX_PATH_BYTES;
 use crate::server::{
     ARGUMENTS_BYTES, ERROR_OUTPUT_LIMIT, OUTPUT_LIMIT, RESPONSE_BYTES, Scratch, Server,
 };
-use crate::system::{Ended, FileState, Invocation, RunOutcome, System};
+use crate::system::{CaptureFile, Ended, FileState, Invocation, RunOutcome, System};
+use crate::tools::CAPTURE_PATH;
 use eggos_runtime::errno::Errno;
 use std::collections::HashMap;
 
@@ -25,6 +26,12 @@ pub struct FakeSystem {
     pub reports: Vec<String>,
     pub clock: u64,
     pub monotonic: u64,
+    pub capture_png: Vec<u8>,
+    pub capture_becomes_link: bool,
+    pub capture_read_at_most: Option<usize>,
+    pub capture_read_fails_after: Option<usize>,
+    pub capture_events: Vec<String>,
+    pub capture_open: Option<(Vec<u8>, usize)>,
 }
 
 impl System for FakeSystem {
@@ -79,6 +86,19 @@ impl System for FakeSystem {
                 Ended::Exited(0),
             )),
         };
+        let captures = invocation.program == "/bin/wm"
+            && invocation.words.first() == Some(&"capture")
+            && ended == Ended::Exited(0);
+        if captures && self.files.contains_key(CAPTURE_PATH) {
+            self.files
+                .insert(CAPTURE_PATH.to_owned(), self.capture_png.clone());
+            if self.capture_becomes_link {
+                self.files.remove(CAPTURE_PATH);
+                self.links.push(CAPTURE_PATH.to_owned());
+            }
+        }
+        self.capture_events
+            .push(format!("run {}", invocation.program));
         let shown = match invocation.discard_output {
             true => Vec::new(),
             false => out,
@@ -113,6 +133,57 @@ impl System for FakeSystem {
             true => FileState::Directory,
             false => FileState::Missing,
         }
+    }
+
+    fn remove_capture(&mut self, path: &str) {
+        self.capture_events.push(format!("remove {path}"));
+        self.files.remove(path);
+        self.links.retain(|link| link != path);
+    }
+
+    fn create_capture(&mut self, path: &str) -> Result<(), Errno> {
+        self.capture_events.push(format!("create {path}"));
+        if self.files.contains_key(path) || self.links.iter().any(|link| link == path) {
+            return Err(Errno::EEXIST);
+        }
+        self.files.insert(path.to_owned(), Vec::new());
+        Ok(())
+    }
+
+    fn open_capture(&mut self, path: &str) -> Result<CaptureFile, Errno> {
+        self.capture_events.push(format!("open {path}"));
+        if self.links.iter().any(|link| link == path) {
+            return Err(Errno(40));
+        }
+        let contents = self.files.get(path).cloned().ok_or(Errno::ENOENT)?;
+        let size = contents.len() as u64;
+        self.capture_open = Some((contents, 0));
+        Ok(CaptureFile {
+            descriptor: 1000,
+            size,
+        })
+    }
+
+    fn read_capture(&mut self, file: &CaptureFile, out: &mut [u8]) -> Result<usize, Errno> {
+        assert_eq!(file.descriptor, 1000);
+        let (contents, position) = self.capture_open.as_mut().ok_or(Errno::EINVAL)?;
+        if self
+            .capture_read_fails_after
+            .is_some_and(|after| *position >= after)
+        {
+            return Err(Errno::EIO);
+        }
+        let most = self.capture_read_at_most.unwrap_or(usize::MAX);
+        let count = out.len().min(most).min(contents.len() - *position);
+        out[..count].copy_from_slice(&contents[*position..*position + count]);
+        *position += count;
+        Ok(count)
+    }
+
+    fn close_capture(&mut self, file: CaptureFile) {
+        assert_eq!(file.descriptor, 1000);
+        self.capture_events.push("close".to_owned());
+        self.capture_open = None;
     }
 
     fn append_audit(&mut self, record: &[u8]) -> Result<(), Errno> {
