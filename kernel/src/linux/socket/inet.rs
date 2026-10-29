@@ -346,9 +346,8 @@ pub fn call<P: Platform>(
                 0 => Ok(None),
                 address => read_address(process, address, sixth),
             };
-            let result = prepared.and_then(|buffers| {
-                send(process, &socket, &buffers, destination?, fourth as u32)
-            });
+            let result = prepared
+                .and_then(|buffers| send(process, &socket, &buffers, destination?, fourth as u32));
             return finish_send(process, thread, context, result, fourth as u32);
         }
         number::SENDMSG => {
@@ -484,7 +483,10 @@ pub(super) fn setsockopt<P: Platform>(
     match (level as u32, name as u32) {
         (
             SOL_SOCKET,
-            option::RCVTIMEO_OLD | option::RCVTIMEO_NEW | option::SNDTIMEO_OLD | option::SNDTIMEO_NEW,
+            option::RCVTIMEO_OLD
+            | option::RCVTIMEO_NEW
+            | option::SNDTIMEO_OLD
+            | option::SNDTIMEO_NEW,
         ) => {
             if length < TIMEVAL_SIZE {
                 return Err(Errno::EINVAL);
@@ -522,12 +524,10 @@ pub(super) fn setsockopt<P: Platform>(
                 (_, option::SNDBUF) => options
                     .send_buffer
                     .store(doubled(number), Ordering::Relaxed),
-                (_, option::RCVBUF) => socket
-                    .endpoint
-                    .set_receive_limit(doubled(number) as usize),
-                (_, option::REUSEADDR) => options
-                    .reuse_address
-                    .store(number != 0, Ordering::Relaxed),
+                (_, option::RCVBUF) => socket.endpoint.set_receive_limit(doubled(number) as usize),
+                (_, option::REUSEADDR) => {
+                    options.reuse_address.store(number != 0, Ordering::Relaxed)
+                }
                 (_, SO_REUSEPORT) => options.reuse_port.store(number != 0, Ordering::Relaxed),
                 _ => options.broadcast.store(number != 0, Ordering::Relaxed),
             }
@@ -683,12 +683,9 @@ fn send<P: Platform>(
     let (local, local_port) = ensure_bound(socket)?;
     let ttl = socket.ttl();
     let sent = match socket.endpoint.protocol() {
-        Protocol::Udp => {
-            crate::net::send_udp::<P>(local, local_port, (address, port), &data, ttl)
-        }
+        Protocol::Udp => crate::net::send_udp::<P>(local, local_port, (address, port), &data, ttl),
         Protocol::Ping => {
-            let Some((header, payload)) = data.split_first_chunk::<{ icmp::HEADER_BYTES }>()
-            else {
+            let Some((header, payload)) = data.split_first_chunk::<{ icmp::HEADER_BYTES }>() else {
                 return Err(Errno::EINVAL);
             };
             if header[0] != icmp::kind::ECHO_REQUEST || header[1] != 0 {
@@ -787,7 +784,12 @@ pub fn read<P: Platform>(
         Some(result) => result,
         None => return ControlFlow::Continue(()),
     };
-    finish(process, thread, context, result.map(|received| received.copied))
+    finish(
+        process,
+        thread,
+        context,
+        result.map(|received| received.copied),
+    )
 }
 
 fn recvmsg<P: Platform>(

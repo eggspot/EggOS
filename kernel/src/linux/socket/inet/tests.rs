@@ -92,14 +92,20 @@ impl Test {
 
     fn socket(&mut self, protocol: u32) -> u64 {
         let kind = u64::from(SOCK_DGRAM | open_flag::NONBLOCK);
-        let fd = self.call(number::SOCKET, [AF_INET.into(), kind, protocol.into(), 0, 0, 0]);
+        let fd = self.call(
+            number::SOCKET,
+            [AF_INET.into(), kind, protocol.into(), 0, 0, 0],
+        );
         assert!(fd < 1024, "socket failed: {fd:#x}");
         fd
     }
 
     fn bind(&mut self, fd: u64, address: Ipv4Address, port: u16) -> u64 {
         store_address(&self.process, address, port);
-        self.call(number::BIND, [fd, ADDRESS, SOCKADDR_IN_SIZE as u64, 0, 0, 0])
+        self.call(
+            number::BIND,
+            [fd, ADDRESS, SOCKADDR_IN_SIZE as u64, 0, 0, 0],
+        )
     }
 
     fn send_to(&mut self, fd: u64, data: &[u8], to: Option<(Ipv4Address, u16)>, flags: u32) -> u64 {
@@ -116,14 +122,25 @@ impl Test {
     }
 
     fn receive_from(&mut self, fd: u64, room: u64, flags: u32) -> u64 {
-        store(&self.process, LENGTH, &(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
+        store(
+            &self.process,
+            LENGTH,
+            &(SOCKADDR_IN_SIZE as u32).to_ne_bytes(),
+        );
         let arguments = [fd, BUFFER, room, flags.into(), ADDRESS, LENGTH];
         self.call(number::RECVFROM, arguments)
     }
 
     fn local(&mut self, fd: u64) -> (Ipv4Address, u16) {
-        store(&self.process, LENGTH, &(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
-        assert_eq!(self.call(number::GETSOCKNAME, [fd, ADDRESS, LENGTH, 0, 0, 0]), 0);
+        store(
+            &self.process,
+            LENGTH,
+            &(SOCKADDR_IN_SIZE as u32).to_ne_bytes(),
+        );
+        assert_eq!(
+            self.call(number::GETSOCKNAME, [fd, ADDRESS, LENGTH, 0, 0, 0]),
+            0
+        );
         loaded_address(&self.process).unwrap()
     }
 }
@@ -135,12 +152,21 @@ fn a_udp_datagram_goes_through_the_loopback_network_with_its_sender_s_address() 
     assert_eq!(test.bind(receiver, Ipv4Address::LOOPBACK, 5301), 0);
     assert_eq!(test.local(receiver), (Ipv4Address::LOOPBACK, 5301));
     let sender = test.socket(IPPROTO_UDP);
-    assert_eq!(test.send_to(sender, b"hello", Some((Ipv4Address::LOOPBACK, 5301)), 0), 5);
+    assert_eq!(
+        test.send_to(sender, b"hello", Some((Ipv4Address::LOOPBACK, 5301)), 0),
+        5
+    );
     let (_, port) = test.local(sender);
-    assert!(endpoints::EPHEMERAL_PORTS.contains(&port), "the sender was bound by sending");
+    assert!(
+        endpoints::EPHEMERAL_PORTS.contains(&port),
+        "the sender was bound by sending"
+    );
     assert_eq!(test.receive_from(receiver, 64, 0), 5);
     assert_eq!(load(&test.process, BUFFER, 5), b"hello");
-    assert_eq!(loaded_address(&test.process), Some((Ipv4Address::LOOPBACK, port)));
+    assert_eq!(
+        loaded_address(&test.process),
+        Some((Ipv4Address::LOOPBACK, port))
+    );
     assert_eq!(test.receive_from(receiver, 64, 0), Errno::EAGAIN.result());
 }
 
@@ -151,7 +177,15 @@ fn a_short_buffer_cuts_the_datagram_and_msg_trunc_says_its_length() {
     assert_eq!(test.bind(receiver, Ipv4Address::UNSPECIFIED, 5302), 0);
     let sender = test.socket(0);
     for _ in 0..3 {
-        assert_eq!(test.send_to(sender, b"0123456789", Some((Ipv4Address::LOOPBACK, 5302)), 0), 10);
+        assert_eq!(
+            test.send_to(
+                sender,
+                b"0123456789",
+                Some((Ipv4Address::LOOPBACK, 5302)),
+                0
+            ),
+            10
+        );
     }
     assert_eq!(test.receive_from(receiver, 4, message::PEEK), 4);
     assert_eq!(test.receive_from(receiver, 4, 0), 4);
@@ -163,7 +197,10 @@ fn a_short_buffer_cuts_the_datagram_and_msg_trunc_says_its_length() {
     header[16..24].copy_from_slice(&IOVEC.to_ne_bytes());
     header[24..32].copy_from_slice(&1u64.to_ne_bytes());
     store(&test.process, HEADER, &header);
-    assert_eq!(test.call(number::RECVMSG, [receiver, HEADER, 0, 0, 0, 0]), 3);
+    assert_eq!(
+        test.call(number::RECVMSG, [receiver, HEADER, 0, 0, 0, 0]),
+        3
+    );
     let flags = u32::from_ne_bytes(load(&test.process, HEADER + 48, 4).try_into().unwrap());
     assert_eq!(flags, MSG_TRUNC);
 }
@@ -172,7 +209,10 @@ fn a_short_buffer_cuts_the_datagram_and_msg_trunc_says_its_length() {
 fn sends_without_a_destination_route_or_broadcast_permission_fail_as_linux() {
     let mut test = Test::new();
     let fd = test.socket(0);
-    assert_eq!(test.send_to(fd, b"x", None, 0), Errno::EDESTADDRREQ.result());
+    assert_eq!(
+        test.send_to(fd, b"x", None, 0),
+        Errno::EDESTADDRREQ.result()
+    );
     assert_eq!(
         test.send_to(fd, b"x", Some((Ipv4Address::new(10, 0, 2, 2), 7)), 0),
         Errno::ENETUNREACH.result()
@@ -188,13 +228,22 @@ fn sends_without_a_destination_route_or_broadcast_permission_fail_as_linux() {
     let taken = test.socket(0);
     assert_eq!(test.bind(taken, Ipv4Address::UNSPECIFIED, 5304), 0);
     let other = test.socket(0);
-    assert_eq!(test.bind(other, Ipv4Address::LOOPBACK, 5304), Errno::EADDRINUSE.result());
-    assert_eq!(test.bind(taken, Ipv4Address::UNSPECIFIED, 5305), Errno::EINVAL.result());
+    assert_eq!(
+        test.bind(other, Ipv4Address::LOOPBACK, 5304),
+        Errno::EADDRINUSE.result()
+    );
+    assert_eq!(
+        test.bind(taken, Ipv4Address::UNSPECIFIED, 5305),
+        Errno::EINVAL.result()
+    );
     assert_eq!(
         test.call(number::GETPEERNAME, [taken, ADDRESS, LENGTH, 0, 0, 0]),
         Errno::ENOTCONN.result()
     );
-    assert_eq!(test.call(number::LISTEN, [taken, 1, 0, 0, 0, 0]), Errno::EOPNOTSUPP.result());
+    assert_eq!(
+        test.call(number::LISTEN, [taken, 1, 0, 0, 0, 0]),
+        Errno::EOPNOTSUPP.result()
+    );
 }
 
 #[test]
@@ -204,10 +253,26 @@ fn a_connected_socket_reads_and_writes_its_peer_only() {
     assert_eq!(test.bind(server, Ipv4Address::LOOPBACK, 5306), 0);
     let client = test.socket(0);
     store_address(&test.process, Ipv4Address::LOOPBACK, 5306);
-    assert_eq!(test.call(number::CONNECT, [client, ADDRESS, SOCKADDR_IN_SIZE as u64, 0, 0, 0]), 0);
-    store(&test.process, LENGTH, &(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
-    assert_eq!(test.call(number::GETPEERNAME, [client, ADDRESS, LENGTH, 0, 0, 0]), 0);
-    assert_eq!(loaded_address(&test.process), Some((Ipv4Address::LOOPBACK, 5306)));
+    assert_eq!(
+        test.call(
+            number::CONNECT,
+            [client, ADDRESS, SOCKADDR_IN_SIZE as u64, 0, 0, 0]
+        ),
+        0
+    );
+    store(
+        &test.process,
+        LENGTH,
+        &(SOCKADDR_IN_SIZE as u32).to_ne_bytes(),
+    );
+    assert_eq!(
+        test.call(number::GETPEERNAME, [client, ADDRESS, LENGTH, 0, 0, 0]),
+        0
+    );
+    assert_eq!(
+        loaded_address(&test.process),
+        Some((Ipv4Address::LOOPBACK, 5306))
+    );
     assert_eq!(test.send_to(client, b"ping", None, 0), 4);
     assert_eq!(test.receive_from(server, 16, 0), 4);
     let client_address = loaded_address(&test.process).unwrap();
@@ -216,9 +281,17 @@ fn a_connected_socket_reads_and_writes_its_peer_only() {
     assert_eq!(test.send_to(stranger, b"spam", Some(client_address), 0), 4);
     assert_eq!(test.receive_from(client, 16, 0), 4);
     assert_eq!(load(&test.process, BUFFER, 4), b"pong");
-    assert_eq!(test.receive_from(client, 16, 0), Errno::EAGAIN.result(), "the stranger's is dropped");
+    assert_eq!(
+        test.receive_from(client, 16, 0),
+        Errno::EAGAIN.result(),
+        "the stranger's is dropped"
+    );
     assert_eq!(test.call(number::SHUTDOWN, [client, 0, 0, 0, 0, 0]), 0);
-    assert_eq!(test.receive_from(client, 16, 0), 0, "a read shut down ends the stream");
+    assert_eq!(
+        test.receive_from(client, 16, 0),
+        0,
+        "a read shut down ends the stream"
+    );
 }
 
 #[test]
@@ -229,7 +302,10 @@ fn a_ping_socket_sends_echo_requests_and_reads_the_replies() {
     request[0] = icmp::kind::ECHO_REQUEST;
     request[6..8].copy_from_slice(&7u16.to_be_bytes());
     request[icmp::HEADER_BYTES..].copy_from_slice(b"egg!");
-    assert_eq!(test.send_to(fd, &request, Some((Ipv4Address::LOOPBACK, 0)), 0), 12);
+    assert_eq!(
+        test.send_to(fd, &request, Some((Ipv4Address::LOOPBACK, 0)), 0),
+        12
+    );
     let (_, identifier) = test.local(fd);
     assert_eq!(test.receive_from(fd, 64, 0), 12);
     let reply = load(&test.process, BUFFER, 12);
@@ -238,7 +314,10 @@ fn a_ping_socket_sends_echo_requests_and_reads_the_replies() {
         (echo.kind, echo.identifier, echo.sequence, echo.data),
         (icmp::kind::ECHO_REPLY, identifier, 7, &b"egg!"[..])
     );
-    assert_eq!(loaded_address(&test.process), Some((Ipv4Address::LOOPBACK, 0)));
+    assert_eq!(
+        loaded_address(&test.process),
+        Some((Ipv4Address::LOOPBACK, 0))
+    );
     let mut not_a_request = request;
     not_a_request[0] = 13;
     assert_eq!(
