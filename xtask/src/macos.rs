@@ -3,6 +3,8 @@
 //! file is a Mach-O or fat file. The boot test's programs are built from `tests/macos-console`
 //! by Apple's linker, so only on a macOS host; CI builds them on its macOS runner and hands them
 //! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
+//! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
+//! clang build the same way (D142); it is never shipped.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +19,9 @@ pub const PROGRAMS: [&str; 4] = [
     "macos-tools",
     "macos-std",
 ];
+
+/// The programs built from Objective-C sources with Apple's clang, each `tests/<name>/main.m`.
+pub const OBJC_PROGRAMS: [&str; 1] = ["macos-objc"];
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;
@@ -136,7 +141,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
         let programs = Programs {
             directory: PathBuf::from(directory),
         };
-        for program in PROGRAMS {
+        for program in PROGRAMS.iter().chain(&OBJC_PROGRAMS) {
             for cpu in ["arm64", "x86_64"] {
                 let path = programs.path(program, cpu);
                 if !path.is_file() {
@@ -166,8 +171,52 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
             std::fs::copy(release.join(program), &to)
                 .map_err(|e| format!("{}: {e}", to.display()))?;
         }
+        for program in OBJC_PROGRAMS {
+            build_objc_program(program, cpu, &directory.join(format!("{program}-{cpu}")))?;
+        }
     }
     Ok(Some(Programs { directory }))
+}
+
+/// The `clang` arguments that build `source` for `cpu` into `output`: ARC, Foundation,
+/// chained fixups (macOS 13 and later), optimized.
+pub fn objc_arguments(source: &Path, cpu: &str, output: &Path) -> Vec<String> {
+    [
+        "clang",
+        "-fobjc-arc",
+        "-framework",
+        "Foundation",
+        &format!("-mmacosx-version-min={DEPLOYMENT_TARGET}"),
+        "-arch",
+        cpu,
+        "-O2",
+        "-Wall",
+        "-Werror",
+        "-o",
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .chain([
+        output.to_string_lossy().into_owned(),
+        source.to_string_lossy().into_owned(),
+    ])
+    .collect()
+}
+
+fn build_objc_program(program: &str, cpu: &str, output: &Path) -> Result<(), String> {
+    let source = crate::workspace_root()
+        .join("tests")
+        .join(program)
+        .join("main.m");
+    let arguments = objc_arguments(&source, cpu, output);
+    let status = std::process::Command::new("xcrun")
+        .args(&arguments)
+        .status()
+        .map_err(|e| format!("xcrun clang: {e}"))?;
+    if !status.success() {
+        return Err(format!("xcrun clang {}: {status}", source.display()));
+    }
+    Ok(())
 }
 
 /// The environment `cargo build --target <target> -p eggos-macos-console --release` needs to
@@ -265,5 +314,16 @@ mod tests {
         assert!(not_built_for_this_run(Some(std::ffi::OsStr::new(""))));
         assert!(!not_built_for_this_run(Some(std::ffi::OsStr::new("out"))));
         assert!(!not_built_for_this_run(None));
+    }
+
+    #[test]
+    fn objective_c_programs_build_with_arc_foundation_and_chained_fixups() {
+        let arguments = objc_arguments(Path::new("main.m"), "arm64", Path::new("out"));
+        assert_eq!(arguments[0], "clang");
+        assert!(arguments.contains(&"-fobjc-arc".to_owned()));
+        assert!(arguments.contains(&"-mmacosx-version-min=13.0".to_owned()));
+        assert!(arguments.windows(2).any(|pair| pair == ["-arch", "arm64"]));
+        assert_eq!(&arguments[arguments.len() - 2..], ["out", "main.m"]);
+        assert_eq!(OBJC_PROGRAMS, ["macos-objc"]);
     }
 }

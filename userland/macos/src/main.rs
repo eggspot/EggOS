@@ -2,8 +2,8 @@
 //! file, and it runs that macOS console program natively, arm64 programs on aarch64 and x86_64
 //! programs on x86_64. The Mach-O format, the fat slice, chained fixups, `printf`'s formatting
 //! and Darwin's numbers and layouts are pure logic with host tests; `start.rs` loads the
-//! program, standing in for dyld, and `libsystem/` implements the libSystem functions it
-//! imports.
+//! program, standing in for dyld, `libsystem/` implements the libSystem functions it imports,
+//! and `objc/` and `foundation/` the Objective-C runtime and Foundation's core (D142).
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
@@ -47,6 +47,14 @@ mod format;
         any(target_arch = "aarch64", target_arch = "x86_64")
     )
 ))]
+mod foundation;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
 mod getopt;
 #[cfg(all(
     target_env = "musl",
@@ -66,6 +74,14 @@ mod linux;
     )
 ))]
 mod macho;
+#[cfg(any(
+    test,
+    all(
+        target_env = "musl",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )
+))]
+mod objc;
 #[cfg(all(
     target_env = "musl",
     any(target_arch = "aarch64", target_arch = "x86_64")

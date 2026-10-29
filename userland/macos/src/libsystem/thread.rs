@@ -55,6 +55,7 @@ pub struct Thread {
     exit_handler_count: usize,
     exit_handler_capacity: usize,
     pub alternate_stack: [usize; 3],
+    pub autorelease_pools: usize,
     values: [usize; KEYS],
 }
 
@@ -78,6 +79,7 @@ impl Thread {
         exit_handler_count: 0,
         exit_handler_capacity: 0,
         alternate_stack: [0; 3],
+        autorelease_pools: 0,
         values: [0; KEYS],
     };
 }
@@ -294,7 +296,20 @@ fn reap() {
     });
 }
 
+static FINISH_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets what a created thread runs first when it ends (the Objective-C runtime's pool drain).
+pub fn set_finish_hook(hook: fn()) {
+    FINISH_HOOK.store(hook as usize, Ordering::Release);
+}
+
 fn finish(result: usize) -> ! {
+    let hook = FINISH_HOOK.load(Ordering::Acquire);
+    if hook != 0 && current() != &raw mut MAIN {
+        // SAFETY: only `set_finish_hook` stores here, a `fn()`.
+        let hook: fn() = unsafe { core::mem::transmute(hook) };
+        hook();
+    }
     let thread = current();
     run_exit_handlers(thread);
     // SAFETY: the calling thread's own control block.

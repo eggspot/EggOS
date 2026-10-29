@@ -1,7 +1,8 @@
 //! `printf`'s formatting: flags, width, precision and length modifiers and the conversions
-//! `d i u o x X c s p f F e E g G %`, reading each argument from an [`Arguments`] source and
-//! writing to an [`Output`]. `%n` writes nothing: it is skipped with its argument, so a format
-//! string cannot write to memory.
+//! `d i u o x X c s p f F e E g G %`, plus Foundation's `%@` (an object's description, which the
+//! [`Output`] writes) and `%C` (a UTF-16 unit), reading each argument from an [`Arguments`]
+//! source and writing to an [`Output`]. `%n` writes nothing: it is skipped with its argument, so
+//! a format string cannot write to memory.
 
 /// Where the variadic arguments come from.
 pub trait Arguments {
@@ -19,6 +20,11 @@ pub trait Arguments {
 /// Where the formatted bytes go.
 pub trait Output {
     fn write(&mut self, bytes: &[u8]);
+    /// Writes the description of the object `%@` names and returns how many bytes it wrote;
+    /// C's formatting writes nothing for it.
+    fn object(&mut self, _object: u64) -> usize {
+        0
+    }
 }
 
 /// Formats `format` with `arguments` into `output` and returns how many bytes it wrote.
@@ -241,6 +247,20 @@ impl Spec {
             b'n' => {
                 arguments.integer();
             }
+            b'@' => {
+                let object = arguments.integer();
+                out.count += out.output.object(object);
+            }
+            b'C' => {
+                let unit = arguments.integer() as u16 as u32;
+                let code = if (0xd800..0xe000).contains(&unit) {
+                    0xfffd
+                } else {
+                    unit
+                };
+                let mut buffer = [0u8; 4];
+                self.pad(utf8(code, &mut buffer), out);
+            }
             b'%' => out.write(b"%"),
             0 => {}
             other => out.write(&[b'%', other]),
@@ -388,6 +408,22 @@ impl Spec {
 }
 
 const MAX_FLOAT_PRECISION: usize = 40;
+
+fn utf8(code: u32, buffer: &mut [u8; 4]) -> &[u8] {
+    if code < 0x80 {
+        buffer[0] = code as u8;
+        &buffer[..1]
+    } else if code < 0x800 {
+        buffer[0] = 0xc0 | (code >> 6) as u8;
+        buffer[1] = 0x80 | (code & 0x3f) as u8;
+        &buffer[..2]
+    } else {
+        buffer[0] = 0xe0 | (code >> 12) as u8;
+        buffer[1] = 0x80 | ((code >> 6) & 0x3f) as u8;
+        buffer[2] = 0x80 | (code & 0x3f) as u8;
+        &buffer[..3]
+    }
+}
 
 /// The double nearest to the x87 80-bit extended value with the 64-bit `significand` (its
 /// integer bit explicit) and the 16-bit `sign_exponent` (sign, then a bias of 16383).
@@ -815,6 +851,35 @@ mod tests {
         // SAFETY: the format has no `%s`.
         unsafe { format(b"%.1Lf %.1f", &mut LongDouble, &mut out) };
         assert_eq!(out, b"2.5 1.0");
+    }
+
+    #[test]
+    fn objects_and_utf16_units_are_written_by_the_output() {
+        struct Describing(Vec<u8>);
+        impl Output for Describing {
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.extend_from_slice(bytes);
+            }
+            fn object(&mut self, object: u64) -> usize {
+                let text = format!("<object {object}>");
+                self.0.extend_from_slice(text.as_bytes());
+                text.len()
+            }
+        }
+        struct Words(Vec<u64>);
+        impl Arguments for Words {
+            fn integer(&mut self) -> u64 {
+                self.0.remove(0)
+            }
+            fn double(&mut self) -> f64 {
+                0.0
+            }
+        }
+        let mut out = Describing(Vec::new());
+        // SAFETY: no `%s` conversion reads a pointer.
+        let count = unsafe { format(b"%@ %d %C|%@", &mut Words(vec![7, 42, 0xe9, 9]), &mut out) };
+        assert_eq!(out.0, "<object 7> 42 \u{e9}|<object 9>".as_bytes());
+        assert_eq!(count, out.0.len());
     }
 
     #[test]

@@ -8,12 +8,12 @@
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
 use crate::libsystem;
-use crate::objc;
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::macho::{
     self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, VM_PROT_EXECUTE, VM_PROT_READ,
     VM_PROT_WRITE,
 };
+use crate::objc;
 use core::ffi::{c_char, c_int};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -138,7 +138,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         || program
             .libraries()
             .any(|library| Library::provided(library.path).is_some_and(Library::is_objc));
-    if uses_objc && !objc::set_up() {
+    if uses_objc && !(objc::set_up() && foundation::set_up()) {
         return Err(Failure::Memory);
     }
     let fixups = match program.chained_fixups {
@@ -229,7 +229,6 @@ fn bind_imports<'a>(
     let count = fixups.import_count();
     let table = allocate_pages(count.max(1) * 8)?.cast::<u64>();
     let mut missing = 0;
-    let mut missing_classes = 0;
     for index in 0..count {
         let import = fixups.import(index).map_err(Failure::Invalid)?;
         let library = match import.source {
@@ -254,11 +253,7 @@ fn bind_imports<'a>(
             (Some(address), _) => address,
             (None, _) if import.weak => 0,
             (None, Some(library)) if objc::is_class_symbol(name) => {
-                if missing_classes == objc::MISSING_CLASSES {
-                    return Err(Failure::TooManyMissing);
-                }
-                missing_classes += 1;
-                objc::bind_missing_class(missing_classes - 1, library.name(), name)
+                objc::bind_missing_class(library.name(), name).ok_or(Failure::TooManyMissing)?
             }
             (None, library) => {
                 if missing == libsystem::MISSING_STUBS {
@@ -280,7 +275,6 @@ fn bind_imports<'a>(
     Ok(unsafe { core::slice::from_raw_parts(table, count) })
 }
 
-/// The libraries whose functions the layer provides itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Library {
     System,

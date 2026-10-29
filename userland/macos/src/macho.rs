@@ -20,7 +20,8 @@ pub const MAX_SEGMENTS: usize = 16;
 pub const MAX_LIBRARIES: usize = 32;
 pub const LIBSYSTEM: &[u8] = b"/usr/lib/libSystem.B.dylib";
 pub const LIBOBJC: &[u8] = b"/usr/lib/libobjc.A.dylib";
-pub const FOUNDATION: &[u8] = b"/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation";
+pub const FOUNDATION: &[u8] =
+    b"/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation";
 pub const CORE_FOUNDATION: &[u8] =
     b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
 
@@ -489,10 +490,8 @@ impl<'a> MachO<'a> {
                 self.add_thread_locals(address, size, shift)?;
             }
             let section_name = &command[at..at + 16];
-            let section_name = &section_name[..section_name
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(16)];
+            let section_name =
+                &section_name[..section_name.iter().position(|&b| b == 0).unwrap_or(16)];
             let pointer_list = section_name != b"__objc_imageinfo";
             if let Some(slot) = self.objc.slot(section_name) {
                 let address = u64_at(command, at + 32).unwrap_or(0);

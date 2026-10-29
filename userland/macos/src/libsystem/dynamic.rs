@@ -26,6 +26,12 @@ pub unsafe fn set_image(header: usize, slide: isize, path: *const c_char) {
     unsafe { EXECUTABLE_PATH = path };
 }
 
+/// The executable's path, as the kernel gave it; null before the program starts.
+pub fn executable_path() -> *const c_char {
+    // SAFETY: written once before the program runs.
+    unsafe { EXECUTABLE_PATH }
+}
+
 pub extern "C" fn image_count() -> u32 {
     1
 }

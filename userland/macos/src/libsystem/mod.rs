@@ -4,20 +4,20 @@
 //! that names it and ends the program with status 127 when it is called, so a program whose
 //! unused imports are missing still runs.
 
-mod dynamic;
+pub mod dynamic;
 mod file;
-mod heap;
+pub mod heap;
 mod locale;
 mod memory;
 mod options;
-mod process;
+pub mod process;
 mod signal;
-mod stdio;
+pub mod stdio;
 mod string;
-mod sync;
-mod thread;
+pub mod sync;
+pub mod thread;
 mod time;
-mod variadic;
+pub mod variadic;
 
 use crate::darwin;
 use crate::linux;
@@ -25,7 +25,7 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use eggos_runtime::errno::Errno;
 
 pub use dynamic::set_image;
-pub use process::{exit, set_process};
+pub use process::{abort, exit, set_process};
 pub use stdio::set_up as set_up_streams;
 pub use thread::{set_thread_local_template, set_up_main_thread};
 
@@ -64,6 +64,11 @@ impl<T> Exclusive<T> {
         sync::unlock(&self.lock);
         result
     }
+}
+
+/// Writes `bytes` to standard error, unbuffered.
+pub fn write_error(bytes: &[u8]) {
+    let _ = linux::write_all(2, bytes);
 }
 
 pub fn set_errno(value: c_int) {
