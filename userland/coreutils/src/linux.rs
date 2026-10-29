@@ -1,5 +1,5 @@
 use crate::system::{
-    Duration, STATX_SIZE, Status, SymbolicLinks, System, SystemName, UTSNAME_SIZE,
+    CapturedRows, Duration, STATX_SIZE, Status, SymbolicLinks, System, SystemName, UTSNAME_SIZE,
 };
 use crate::utilities::{self, MAX_ARGUMENTS};
 use core::ffi::CStr;
@@ -213,6 +213,47 @@ impl System for Linux {
             [descriptor, request as usize, pointer, 0, 0, 0],
         )
         .map(|_| ())
+    }
+
+    fn capture_window_rows(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        let mut request = [0u8; crate::wm::CAPTURE_SIZE];
+        request[..4].copy_from_slice(&window.to_ne_bytes());
+        request[4..8].copy_from_slice(&first_row.to_ne_bytes());
+        request[8..12].copy_from_slice(&row_count.to_ne_bytes());
+        request[24..32].copy_from_slice(&(pixels.as_mut_ptr() as u64).to_ne_bytes());
+        request[32..40].copy_from_slice(&(pixels.len() as u64).to_ne_bytes());
+        let pointer = request.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [
+                descriptor,
+                crate::wm::CAPTURE_WINDOW as usize,
+                pointer,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                request[at],
+                request[at + 1],
+                request[at + 2],
+                request[at + 3],
+            ])
+        };
+        Ok(CapturedRows {
+            width: word(12),
+            height: word(16),
+            rows: word(20),
+        })
     }
 }
 

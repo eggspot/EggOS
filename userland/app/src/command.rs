@@ -1,6 +1,6 @@
 //! The `app` command (D134, docs/apps.md): `app install [--name <name>] [--window] <path>`,
-//! `app uninstall [--window] <name>` (`remove` is the same), `app open <name>` (D137) and
-//! `app list`. Text only, the same with or without a display; `--window` shows the installer's
+//! `app uninstall [--window] <name>` (`remove` is the same), `app open <name>` (D137; the
+//! built-in Terminal, Files and Settings too, D141) and `app list`. Text only, the same with or without a display; `--window` shows the installer's
 //! dialogs instead. `--` ends the options, so the next word is the operand even if it starts
 //! with `-`.
 
@@ -27,6 +27,15 @@ pub enum Command<'a> {
 pub const USAGE: &str = "usage: app install [--name <name>] [--window] [--] <path>\n       \
                          app uninstall [--window] [--] <name>\n       \
                          app open [--] <name>\n       app list\n";
+
+/// The built-in apps `app open` opens by name, which no installed app of the same name stands
+/// in for.
+pub const BUILT_IN_APPS: [&[u8]; 3] = [b"Terminal", b"Files", b"Settings"];
+
+/// Whether `name` is a built-in app's ([`BUILT_IN_APPS`]), which is never in `/Applications`.
+pub fn is_built_in(name: &[u8]) -> bool {
+    BUILT_IN_APPS.contains(&name)
+}
 
 /// Exit status of a refused or failed command.
 pub const FAILED: i32 = 1;
@@ -170,10 +179,13 @@ mod program {
         let mut files = LinuxFiles::new();
         let shown = installer::Name::new(name);
         let mut installed = false;
-        let listed = installer::for_each_installed(&mut files, |app| {
-            installed |= app.name.as_bytes() == name;
-        });
-        if listed.is_err() || !installed {
+        let found = is_built_in(name)
+            || (installer::for_each_installed(&mut files, |app| {
+                installed |= app.name.as_bytes() == name;
+            })
+            .is_ok()
+                && installed);
+        if !found {
             let mut line = Line::new();
             let _ = write!(line, "{} is not installed", shown.as_str());
             complain(line.as_str());
@@ -294,6 +306,16 @@ pub use program::run;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_built_in_apps_open_by_their_exact_names() {
+        assert!(is_built_in(b"Settings") && is_built_in(b"Files") && is_built_in(b"Terminal"));
+        assert!(!is_built_in(b"settings") && !is_built_in(b"Paint") && !is_built_in(b""));
+        assert_eq!(
+            parse(&[b"open", b"Settings"]),
+            Some(Command::Open { name: b"Settings" })
+        );
+    }
 
     #[test]
     fn arguments_make_commands_and_anything_else_is_a_usage_error() {

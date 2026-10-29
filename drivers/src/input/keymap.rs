@@ -144,6 +144,24 @@ pub const fn printable(code: u16) -> Option<[u8; 2]> {
     if pair[0] == 0 { None } else { Some(pair) }
 }
 
+/// The key and modifiers that type the printable ASCII `character` under the US keymap: the
+/// main block's key before the keypad's, Shift only when the character is the key's shifted
+/// one; `None` for a character no key types alone.
+pub const fn key_for_ascii(character: u8) -> Option<(u16, Modifiers)> {
+    let mut code = 0;
+    while code < PRINTABLE_CODES {
+        let [plain, shifted] = PRINTABLE[code];
+        if plain != 0 && plain == character {
+            return Some((code as u16, Modifiers::NONE));
+        }
+        if plain != 0 && shifted == character {
+            return Some((code as u16, Modifiers::SHIFT));
+        }
+        code += 1;
+    }
+    None
+}
+
 const fn control(character: u8) -> u8 {
     match character {
         b' ' => 0,

@@ -69,9 +69,10 @@ app list
 - **`app uninstall <name>`** removes the app: its manifest, so it leaves the launcher and the
   desktop at once, then its folder; nothing of it is left (D18). The layer it ran through
   stays. `app: could not uninstall <name>: it is not installed` otherwise.
-- **`app open <name>`** opens an installed app as a double-click on its icon does
-  (`OPEN_APP`, D137): through its layer, a console app in a terminal. It prints `Opened
-  <name>.`; `app: <name> is not installed`, or `app: could not open <name>: <error>` without a
+- **`app open <name>`** opens an app as a double-click on its icon does (`OPEN_APP`, D137):
+  the built-in `Terminal`, `Files` or `Settings` (D141; a built-in wins over an installed app
+  of the same name), or an installed app through its layer, a console app in a terminal. It
+  prints `Opened <name>.`; `app: <name> is not installed`, or `app: could not open <name>: <error>` without a
   desktop. It is the MCP tool `app_open`'s twin.
 - **`app list`** prints one line per installed app, in `/Applications`' order: its name,
   source, architecture and program path, separated by tabs.

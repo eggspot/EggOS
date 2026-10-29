@@ -5,7 +5,9 @@
 //! 1. Without a disk: `settings` opens its window, which says the choice lasts until power-off;
 //!    a click on the Linux card moves every window's controls to the right; the close control,
 //!    now on the right, closes Settings; `settings get` and `settings list` report the Linux
-//!    profile, kept for the session in `/home`, which is in memory.
+//!    profile, kept for the session in `/home`, which is in memory. Last, a person wins
+//!    (D141): while QMP keeps moving the pointer, `wm press` into the terminal's window is
+//!    refused with status 75; two seconds after it stops, the same command goes through.
 //! 2. On a blank disk: `settings` opens, a click on the Windows card switches the desktop, the
 //!    close control closes it, and `poweroff` ends the boot; the image holds the settings file
 //!    with the Windows profile.
@@ -31,12 +33,21 @@ const CARET_HIDDEN_MS: u32 = 500;
 pub(super) const WINDOWS_CARD: usize = 0;
 pub(super) const LINUX_CARD: usize = 2;
 
-const SESSION_WITHOUT_DISK: [&[u8]; 4] = [
+const SESSION_WITHOUT_DISK: [&[u8]; 6] = [
     b"settings\r",
     b"settings get shell.profile; settings list\r",
     b"ls /home/root/.config/eggos; cat /home/root/.config/eggos/settings\r",
+    PRESS_WHILE_A_PERSON_MOVES,
+    b"sleep 2; wm press 64 shift; echo EGGOS-WM status $?\r",
     b"poweroff\r",
 ];
+
+const PRESS_WHILE_A_PERSON_MOVES: &[u8] = b"wm press 64 shift; echo EGGOS-WM status $?\r";
+const PRESS_STATUS: &str = "EGGOS-WM status";
+const PERSON_TIMEOUT: Duration = Duration::from_secs(90);
+const PERSON_MOVE_PAUSE: Duration = Duration::from_millis(100);
+const PERSON_STEP_PX: u32 = 16;
+const PERSON_LEAD_MOVES: u32 = 10;
 
 const SESSION_ON_A_BLANK_DISK: [&[u8]; 2] = [b"settings\r", b"poweroff\r"];
 
@@ -71,6 +82,11 @@ fn output_without_disk(arch: &str) -> [Vec<Line>; SESSION_WITHOUT_DISK.len()] {
             Line::Around("system.uptime_s=", ""),
         ],
         whole(&["settings", "eggos-settings 1", "shell.profile=linux"]),
+        whole(&[
+            "wm: 64: a person is using the machine; try again in a moment",
+            "EGGOS-WM status 75",
+        ]),
+        whole(&["pressed shift in window 64", "EGGOS-WM status 0"]),
         whole(&[POWER_DOWN_LINE]),
     ]
 }
@@ -462,7 +478,17 @@ fn without_disk(arch: &Arch, kernel: &Path) -> Result<(), String> {
     let mut screen = Screen::new(&boot, Profile::Macos)?;
     settings_round(&mut boot, &mut screen, false, LINUX_CARD, "Linux")?;
     for _ in 1..SESSION_WITHOUT_DISK.len() {
+        let line = SESSION_WITHOUT_DISK[boot.typed];
+        if line == PRESS_WHILE_A_PERSON_MOVES {
+            boot.wait_for_prompts(boot.typed + 1)?;
+            for step in 0..PERSON_LEAD_MOVES {
+                person_moves(&mut screen, step)?;
+            }
+        }
         boot.type_next(&SESSION_WITHOUT_DISK)?;
+        if line == PRESS_WHILE_A_PERSON_MOVES {
+            move_until_refused(&mut boot, &mut screen)?;
+        }
     }
     let (console, clean_exit) = boot.finish()?;
     session_verdict(
@@ -473,6 +499,35 @@ fn without_disk(arch: &Arch, kernel: &Path) -> Result<(), String> {
         output_without_disk(arch.name),
         "settings (no disk)",
     )
+}
+
+fn move_until_refused(boot: &mut Boot<'_>, screen: &mut Screen) -> Result<(), String> {
+    let started = Instant::now();
+    let mut moves = 0u32;
+    loop {
+        boot.console.extend(boot.output.try_iter().flatten());
+        let console = String::from_utf8_lossy(&boot.console);
+        if console.lines().any(|line| line.starts_with(PRESS_STATUS)) {
+            return Ok(());
+        }
+        if started.elapsed() > PERSON_TIMEOUT {
+            return Err(boot.fail(format!(
+                "{}: `wm press` did not answer within {}s while the pointer moved",
+                boot.arch.name,
+                PERSON_TIMEOUT.as_secs()
+            )));
+        }
+        person_moves(screen, moves)?;
+        moves += 1;
+    }
+}
+
+fn person_moves(screen: &mut Screen, step: u32) -> Result<(), String> {
+    let offset = (step % 2) * PERSON_STEP_PX;
+    let (x, y) = (screen.size.0 / 2 + offset, screen.size.1 / 2 + offset);
+    screen.pointer(x, y, None)?;
+    std::thread::sleep(PERSON_MOVE_PAUSE);
+    Ok(())
 }
 
 fn on_a_blank_disk(

@@ -15,6 +15,7 @@ eggos-wayland = { path = "../wayland" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-drivers = { path = "../drivers" }
 eggos-eggfs = { path = "../eggfs" }
+eggos-png = { path = "../png" }
 eggos-settings = { path = "../userland/settings" }
 eggos-settings-file = { path = "../settings-file" }
 eggos-toolkit = { path = "../userland/toolkit" }

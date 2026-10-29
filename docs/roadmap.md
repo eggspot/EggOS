@@ -341,6 +341,12 @@ D16):
     A QEMU test runs an Objective-C program from our own source, built by clang on CI's macOS
     runner, with the same lines as on a Mac. Next: blocks, `__weak`, exceptions, more of
     Foundation (D142's "Not yet").
+47a. **part 1 done** — users can now see and operate any app's window from the command line
+    (D141, docs/windows.md): `CAPTURE_WINDOW` copies a window's content from its own buffer
+    (covered or minimised too), `SEND_INPUT` sends clicks, keys, characters and the wheel
+    straight to its queue, a person always wins (`EBUSY`), `wm capture` writes a PNG with our
+    own encoder (`png/`), `wm click`, `type`, `press` and `scroll` operate it, and `app open`
+    opens the built-in apps by name. Part 2 next: the MCP tools, the `view` grant and the audit.
 41. macOS GUI apps, part 1.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43

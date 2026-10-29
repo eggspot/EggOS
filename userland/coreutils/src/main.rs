@@ -54,6 +54,10 @@ mod utilities;
 #[cfg(any(test, target_env = "musl"))]
 mod wc;
 #[cfg(any(test, target_env = "musl"))]
+mod window_capture;
+#[cfg(any(test, target_env = "musl"))]
+mod window_input;
+#[cfg(any(test, target_env = "musl"))]
 mod wm;
 
 #[cfg(target_env = "musl")]

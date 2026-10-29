@@ -6,12 +6,22 @@ use eggos_runtime::errno::Errno;
 pub const DEVICE: &CStr = c"/dev/window";
 pub const LIST_WINDOW: u32 = 0xc060_770b;
 pub const MANAGE_WINDOW: u32 = 0x4010_770c;
+pub const CAPTURE_WINDOW: u32 = 0xc028_7713;
+pub const SEND_INPUT: u32 = 0x4018_7714;
 pub const LIST_SIZE: usize = 96;
 pub const MANAGE_SIZE: usize = 16;
+pub const CAPTURE_SIZE: usize = 40;
+pub const SEND_INPUT_SIZE: usize = 24;
 pub const KERNEL_CLIENT: u32 = 0xffff;
 pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
+pub const USAGE_STATUS: i32 = 2;
+pub const BUSY_STATUS: i32 = 75;
 
-const USAGE_STATUS: i32 = 2;
+const USAGE: &[u8] = b"usage: wm list | wm focus|minimise|maximise|restore|close <id> | \
+      wm move <id> <x> <y> | wm size <id> <width> <height> | \
+      wm capture [-o <file.png>] [--max-width <n>] [--max-bytes <n>] [--] <id> | \
+      wm click [--button left|right|middle] [--] <id> <x> <y> | wm type [--] <id> <text> | \
+      wm press [--] <id> <keys> | wm scroll [--at <x> <y>] [--] <id> <dx> <dy> | wm help";
 const TITLE_AT: usize = 32;
 const TITLE_CAPACITY: usize = 64;
 
@@ -34,7 +44,7 @@ fn word(bytes: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn number(text: &[u8]) -> Option<i32> {
+pub fn number(text: &[u8]) -> Option<i32> {
     let (negative, digits) = match text {
         [b'-', rest @ ..] => (true, rest),
         _ => (false, text),
@@ -48,12 +58,39 @@ fn number(text: &[u8]) -> Option<i32> {
     Some(if negative { -value } else { value })
 }
 
-fn usage<S: System>(output: &mut Output<S>) -> i32 {
-    output.error(&[
-        b"usage: wm list | wm focus|minimise|maximise|restore|close <id> | \
-          wm move <id> <x> <y> | wm size <id> <width> <height>",
-    ]);
+pub fn usage<S: System>(output: &mut Output<S>) -> i32 {
+    output.error(&[USAGE]);
     USAGE_STATUS
+}
+
+pub fn open_device<S: System>(output: &mut Output<S>) -> Option<usize> {
+    match output.system.open(DEVICE) {
+        Ok(device) => Some(device),
+        Err(errno) => {
+            output.file_error(DEVICE, errno);
+            None
+        }
+    }
+}
+
+pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -> i32 {
+    match errno {
+        Errno::EBUSY => {
+            output.error(&[
+                window,
+                b": a person is using the machine; try again in a moment",
+            ]);
+            BUSY_STATUS
+        }
+        Errno::ENOENT => {
+            output.error(&[window, b": no such window"]);
+            FAILURE
+        }
+        _ => {
+            output.error(&[window, b": ", errno.message()]);
+            FAILURE
+        }
+    }
 }
 
 fn state_name(state: u32) -> &'static [u8] {
@@ -101,6 +138,19 @@ fn list<S: System>(output: &mut Output<S>, device: usize) -> i32 {
 }
 
 pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    match arguments.first().map(|verb| verb.to_bytes()) {
+        Some(b"capture") => return crate::window_capture::capture(output, &arguments[1..]),
+        Some(verb @ (b"click" | b"type" | b"press" | b"scroll")) => {
+            return crate::window_input::send(output, verb, &arguments[1..]);
+        }
+        Some(b"help") if arguments.len() == 1 => {
+            output.write(USAGE);
+            output.write(b"\n");
+            output.write(crate::window_input::HELP);
+            return 0;
+        }
+        _ => {}
+    }
     let arguments: [&[u8]; 4] = core::array::from_fn(|index| {
         arguments
             .get(index)
@@ -119,12 +169,8 @@ pub fn wm<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     if !valid {
         return usage(output);
     }
-    let device = match output.system.open(DEVICE) {
-        Ok(device) => device,
-        Err(errno) => {
-            output.file_error(DEVICE, errno);
-            return FAILURE;
-        }
+    let Some(device) = open_device(output) else {
+        return FAILURE;
     };
     let status = match action {
         None => list(output, device),

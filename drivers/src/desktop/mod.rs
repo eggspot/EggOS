@@ -17,6 +17,7 @@ mod catalogue;
 mod desktop_icons;
 mod events;
 mod icons;
+mod injection;
 mod launcher;
 pub mod layout;
 mod management;
@@ -28,6 +29,8 @@ mod shell;
 pub mod shortcuts;
 mod windows;
 
+#[cfg(test)]
+mod injection_tests;
 #[cfg(test)]
 mod management_tests;
 #[cfg(test)]
@@ -44,6 +47,10 @@ pub use catalogue::{
 pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
 pub use icons::{Icon, IconSize, Source};
+pub use injection::{
+    ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
+    TerminalInput,
+};
 pub use launcher::{FILES_MISSING, LAUNCH_FAILED, LAUNCHER_ROW_HEIGHT, NOTICE_MS};
 pub use layout::{IconSide, Layout, layout};
 pub use management::{CLOSE_TIMEOUT_MS, KEYBOARD_STEP, ListedWindow, NOT_RESPONDING_AFTER_MS};
@@ -282,6 +289,8 @@ pub struct Desktop {
     icons: DesktopIcons,
     super_alone: bool,
     now_ms: u32,
+    person_input_ms: Option<u32>,
+    person_pointer: (u32, u32),
     focus_serial: u32,
     dialogs: usize,
     clock: [u8; CLOCK_GLYPHS],
@@ -354,6 +363,8 @@ impl Desktop {
             icons: DesktopIcons::default(),
             super_alone: false,
             now_ms: 0,
+            person_input_ms: None,
+            person_pointer: (0, 0),
             focus_serial: 0,
             dialogs: 0,
             clock: [b' '; CLOCK_GLYPHS],
@@ -1416,6 +1427,7 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) {
+        self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
         if let Some(resize) = self.resize {
@@ -1535,6 +1547,7 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        self.note_person_input();
         let action = self.button_change(code, pressed, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
@@ -1725,6 +1738,7 @@ impl Desktop {
 
     /// The wheel turned by `notches`, up when positive, over the window under the pointer.
     pub fn wheel(&mut self, notches: i32, events: &mut dyn EventSink) {
+        self.note_person_input();
         let (x, y) = self.pointer;
         let target = self.grab.or_else(|| self.content_window_at(x, y));
         if let Some(slot) = target {
@@ -1748,6 +1762,7 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Action {
+        self.note_person_input();
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);

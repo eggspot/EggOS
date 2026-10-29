@@ -2,7 +2,9 @@
 //! kernel image per architecture with its initramfs embedded, `SHA256SUMS`, the run scripts and
 //! the release notes' skeleton, and the README's picture of the desktop.
 
-use crate::{ARCHES, Arch, png, qemu, sha256};
+use crate::qmp::Picture;
+use crate::{ARCHES, Arch, qemu, sha256};
+use eggos_png::{Encoder, EncoderWorkspace, PngSink};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -76,12 +78,40 @@ pub fn run() -> Result<(), String> {
     Ok(())
 }
 
+struct PngBytes(Vec<u8>);
+
+impl PngSink for PngBytes {
+    type Error = core::convert::Infallible;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.0.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// `picture` as a PNG file, by the encoder `wm capture` uses (D141).
+pub fn encode_png(picture: &Picture) -> Result<Vec<u8>, String> {
+    let failed = |error| format!("encoding the screenshot: {error:?}");
+    let mut work = Box::new(EncoderWorkspace::new());
+    let mut encoder = Encoder::new(
+        picture.width,
+        picture.height,
+        &mut work,
+        PngBytes(Vec::new()),
+    )
+    .map_err(failed)?;
+    for row in picture.pixels.chunks(picture.width.max(1) as usize) {
+        encoder.write_row(row).map_err(failed)?;
+    }
+    Ok(encoder.finish().map_err(failed)?.0)
+}
+
 /// Boots `arch`'s release image headless and writes the desktop at the shell's prompt to
 /// `docs/images/desktop.png`.
 pub fn screenshot(arch: &Arch) -> Result<(), String> {
     let kernel = crate::build_kernel(arch, None)?;
     let picture = qemu::screenshot(arch, &kernel)?;
-    let encoded = png::encode(&picture);
+    let encoded = encode_png(&picture)?;
     let path = crate::workspace_root().join(SCREENSHOT_PATH);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
