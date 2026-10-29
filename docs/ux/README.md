@@ -24,6 +24,9 @@ behaviour. A UX regression is treated like a performance regression.
   pixel art with each glyph's advance width (D132).
 - `app-icons-v0.3.md`: installed apps' own icons (item 45, D148): where they show, no badge,
   the `app.icon` file and its blend, choosing and scaling the source image, `.zip` installs.
+- `text-editor-v0.3.md`: the Text Editor (item 46, D149): the toolbar, the find bar and the
+  path bar, the text view and gutter, the status bar, panels, notices, keys, the context menu,
+  its place in the launcher and its icon.
 - `toolkit-v0.3.md`: the v0.3.0 GUI toolkit's widgets (text, buttons, checkboxes, radios,
   cards, lists, text fields, scroll views, focus and keyboard navigation) and the Settings
   app's first version (item 34).
