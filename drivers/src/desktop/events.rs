@@ -41,6 +41,11 @@ impl EventQueue {
         self.length + usize::from(self.dropped > 0)
     }
 
+    /// How many records it takes before it must drop one.
+    pub fn room(&self) -> usize {
+        QUEUE_CAPACITY.saturating_sub(self.len())
+    }
+
     /// Adds `record` at the end, making room as the module documentation says.
     pub fn push(&mut self, record: EventRecord) {
         if record.kind == event::RESIZE

@@ -11,7 +11,6 @@ mod image;
 mod initramfs;
 mod lint;
 mod macos;
-mod png;
 mod qemu;
 mod qmp;
 mod release;
@@ -197,6 +196,7 @@ const KERNEL_CRATES: &[&str] = &[
 
 const USER_CRATES: &[&str] = &[
     "eggos-runtime",
+    "eggos-png",
     "eggos-init",
     "eggos-eggsh",
     "eggos-coreutils",

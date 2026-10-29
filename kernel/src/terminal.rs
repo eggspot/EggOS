@@ -30,13 +30,14 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink};
 use eggos_drivers::desktop::{
-    Action, AppId, Contents, Desktop, GRID_SIZE, Launch, Profile, WindowId, colour, shortcut,
+    Action, AppId, Contents, Desktop, GRID_SIZE, Launch, Profile, TerminalInput, WindowId, colour,
+    shortcut,
 };
 use eggos_drivers::display::{Damage, Rect};
 use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::input::button;
-use eggos_drivers::input::keymap::Modifiers;
-use eggos_drivers::terminal::{REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea};
+use eggos_drivers::input::keymap::{self, CursorKeys, Modifiers};
+use eggos_drivers::terminal::{REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea, WHEEL_LINES};
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
 
@@ -536,8 +537,9 @@ pub fn reload_catalogue<P: Platform>() {
     }
 }
 
-/// Opens the installed app called `name` as a double-click on its icon does (`OPEN_APP`,
-/// D134), after reading the catalogue again; `false` when no such app is installed.
+/// Opens the app called `name` as a double-click on its icon does (`OPEN_APP`, D134): a
+/// built-in (Terminal, Files, Settings, D141) or an installed app, after reading the catalogue
+/// again; `false` when there is no such app.
 pub fn open_app<P: Platform>(name: &[u8]) -> bool {
     if !is_interactive() {
         return false;
@@ -545,7 +547,7 @@ pub fn open_app<P: Platform>(name: &[u8]) -> bool {
     read_catalogue_again::<P>();
     let action = with_windows::<P, _>(|desktop, _, damage, events| {
         let name = core::str::from_utf8(name).ok()?;
-        let app = desktop.catalogue().installed_named(name)?;
+        let app = desktop.catalogue().app_named(name)?;
         Some(desktop.launch(app, damage, events))
     })
     .flatten();
@@ -581,6 +583,41 @@ pub fn type_in_terminal<P: Platform>(line: &[u8]) -> bool {
     move_view::<P>(ViewMove::Live);
     console::receive_from_keyboard::<P>(&typed[..end]);
     true
+}
+
+/// Hands input sent to the terminal's window (`SEND_INPUT`, D141) to the terminal as a keyboard
+/// or a wheel would: a key's bytes, in the cursor key mode a program asked for, or a character
+/// to the console, a scroll to the view. Called with no lock held: the console's echo takes the
+/// screen's lock.
+pub fn send_to_terminal<P: Platform>(input: TerminalInput) {
+    let mut character = [0u8; 1];
+    let bytes;
+    let typed = match input {
+        TerminalInput::Key { code, modifiers } => {
+            let mode = match application_cursor_keys() {
+                true => CursorKeys::Application,
+                false => CursorKeys::Normal,
+            };
+            bytes = keymap::encode(code, modifiers, mode);
+            bytes.as_bytes()
+        }
+        TerminalInput::Character(byte) => {
+            character[0] = byte;
+            &character[..]
+        }
+        TerminalInput::Scroll { notches } => {
+            let lines = notches.unsigned_abs() as usize * WHEEL_LINES;
+            move_view::<P>(match notches > 0 {
+                true => ViewMove::Back(lines),
+                false => ViewMove::Forward(lines),
+            });
+            return;
+        }
+    };
+    if !typed.is_empty() {
+        move_view::<P>(ViewMove::Live);
+        console::receive_from_keyboard::<P>(typed);
+    }
 }
 
 /// Hands the desktop the input events queued for it, draws what they and the terminal changed

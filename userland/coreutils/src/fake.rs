@@ -1,5 +1,5 @@
 use crate::system::{
-    DIRECTORY, Duration, STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, Status, SymbolicLinks,
+    CapturedRows, DIRECTORY, Duration, STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, Status, SymbolicLinks,
     System, SystemName, UTSNAME_FIELD, UTSNAME_SIZE,
 };
 use core::ffi::CStr;
@@ -48,6 +48,12 @@ pub struct Fake {
     pub now: i64,
     pub windows: Vec<FakeWindow>,
     pub managed: Vec<[u32; 4]>,
+    pub window_pixels: BTreeMap<u32, (u32, u32, Vec<u32>)>,
+    pub sent_input: Vec<[u32; 6]>,
+    pub input_results: Vec<Option<Errno>>,
+    pub capture_calls: usize,
+    pub capture_fails_at: Option<(usize, Errno)>,
+    pub resized_at: Option<(usize, u32, u32)>,
     pub window_server: bool,
     pub working_directory: String,
     open: Vec<Option<OpenFile>>,
@@ -86,6 +92,12 @@ impl Default for Fake {
             now: 1_700_000_000,
             windows: Vec::new(),
             managed: Vec::new(),
+            window_pixels: BTreeMap::new(),
+            sent_input: Vec::new(),
+            input_results: Vec::new(),
+            capture_calls: 0,
+            capture_fails_at: None,
+            resized_at: None,
             window_server: true,
             working_directory: "/".to_owned(),
             open: Vec::new(),
@@ -478,8 +490,71 @@ impl System for Fake {
                 self.managed.push(request);
                 Ok(())
             }
+            (crate::wm::SEND_INPUT, crate::wm::SEND_INPUT_SIZE) => {
+                let request = [0, 4, 8, 12, 16, 20].map(|at| word(argument, at));
+                if !self.windows.iter().any(|window| window.id == request[0]) {
+                    return Err(Errno::ENOENT);
+                }
+                if !self.input_results.is_empty()
+                    && let Some(errno) = self.input_results.remove(0)
+                {
+                    return Err(errno);
+                }
+                self.sent_input.push(request);
+                Ok(())
+            }
             _ => Err(Errno::ENOTTY),
         }
+    }
+
+    fn capture_window_rows(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        let call = self.capture_calls;
+        self.capture_calls += 1;
+        if let Some((at, errno)) = self.capture_fails_at
+            && at == call
+        {
+            return Err(errno);
+        }
+        if let Some((at, width, height)) = self.resized_at
+            && at == call
+        {
+            let pixels = (0..width * height).map(|index| index * 0x0101).collect();
+            self.window_pixels.insert(window, (width, height, pixels));
+        }
+        let Some((width, height, content)) = self.window_pixels.get(&window) else {
+            return match self.windows.iter().find(|known| known.id == window) {
+                Some(known) if known.client == crate::wm::KERNEL_CLIENT => Err(Errno::EOPNOTSUPP),
+                _ => Err(Errno::ENOENT),
+            };
+        };
+        let (width, height) = (*width, *height);
+        let rows = height.checked_sub(first_row).ok_or(Errno::EINVAL)?.min(row_count);
+        let bytes = rows as usize * width as usize * 4;
+        if bytes > pixels.len() {
+            return Err(Errno::EINVAL);
+        }
+        let start = first_row as usize * width as usize;
+        for (pixel, place) in content[start..start + rows as usize * width as usize]
+            .iter()
+            .zip(pixels.chunks_exact_mut(4))
+        {
+            place.copy_from_slice(&pixel.to_ne_bytes());
+        }
+        Ok(CapturedRows {
+            width,
+            height,
+            rows,
+        })
     }
 }
 

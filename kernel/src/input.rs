@@ -268,6 +268,20 @@ fn events() -> Option<&'static KernelEventQueue> {
 
 static SUBSCRIBED: AtomicBool = AtomicBool::new(false);
 
+static PERSON_HOLDS_INPUT: AtomicBool = AtomicBool::new(false);
+
+/// Whether a key or a pointer button is held on any input device, as the last poll saw it: a
+/// person is using the machine, so injected input waits (D141). Reads one atomic, so callers
+/// holding the screen's or the display's lock never wait for the devices' lock.
+pub fn person_holds_input() -> bool {
+    PERSON_HOLDS_INPUT.load(Ordering::Relaxed)
+}
+
+/// Whether input events wait in the queue for the desktop to take them.
+pub fn has_pending_events() -> bool {
+    subscribed_events().is_some_and(|queue| !queue.is_empty())
+}
+
 /// Has the input layer keep its events for [`next_event`] from now on. Until a reader
 /// subscribes none are kept, so no keystroke waits in memory for a reader that does not exist.
 pub fn subscribe() {
@@ -769,6 +783,7 @@ fn poll_devices<P: Platform>(
             if last {
                 input.state.repeat_key(timing, &mut sink);
             }
+            PERSON_HOLDS_INPUT.store(input.state.anything_held(), Ordering::Relaxed);
             let next = next_poll(&input.state, timing.now, P::clock_frequency());
             (last, next)
         };

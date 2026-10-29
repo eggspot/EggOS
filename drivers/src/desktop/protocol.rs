@@ -48,6 +48,8 @@ pub mod size {
     pub const OPEN_APP: usize = 68;
     pub const TYPE_IN_TERMINAL: usize = 260;
     pub const START_MOVE_OR_RESIZE: usize = 12;
+    pub const CAPTURE_WINDOW: usize = 40;
+    pub const SEND_INPUT: usize = 24;
     /// The largest argument.
     pub const LARGEST: usize = TYPE_IN_TERMINAL;
 }
@@ -75,6 +77,8 @@ pub mod request {
     pub const OPEN_APP: u32 = encode(WRITE, 16, size::OPEN_APP);
     pub const TYPE_IN_TERMINAL: u32 = encode(WRITE, 17, size::TYPE_IN_TERMINAL);
     pub const START_MOVE_OR_RESIZE: u32 = encode(WRITE, 18, size::START_MOVE_OR_RESIZE);
+    pub const CAPTURE_WINDOW: u32 = encode(READ | WRITE, 19, size::CAPTURE_WINDOW);
+    pub const SEND_INPUT: u32 = encode(WRITE, 20, size::SEND_INPUT);
 }
 
 /// What `StartMoveOrResize` starts.
@@ -84,6 +88,23 @@ pub mod move_or_resize {
     /// The window's edges follow the pointer, as when they are dragged.
     pub const RESIZE: u32 = 1;
 }
+
+/// What `SendInput` sends to the window it names.
+pub mod input_kind {
+    /// The pointer moves to (`x`, `y`) in the window's content.
+    pub const POINTER_MOVE: u32 = 0;
+    /// Button `code` is pressed and released at (`x`, `y`).
+    pub const CLICK: u32 = 1;
+    /// The wheel turns by `value` notches (up when positive) at (`x`, `y`).
+    pub const WHEEL: u32 = 2;
+    /// Key `code` is pressed and released with the [`super::modifier`] bits in `value` held.
+    pub const KEY: u32 = 3;
+    /// The printable ASCII character `code` is typed, as the US keymap types it.
+    pub const CHARACTER: u32 = 4;
+}
+
+/// The most wheel notches one `SendInput` turns, either way; more are clamped to it.
+pub const MAX_WHEEL_NOTCHES: i32 = 16;
 
 /// The longest app name `OpenApp` carries, in bytes.
 pub const APP_NAME_CAPACITY: usize = size::OPEN_APP - 4;
@@ -213,8 +234,12 @@ pub enum WindowError {
     TableFull,
     /// Something this version does not do yet (`EOPNOTSUPP`).
     Unsupported,
-    /// No window at that place in the list (`ENOENT`).
+    /// No window at that place in the list, or no window of that id (`ENOENT`).
     NoSuchWindow,
+    /// A person is using the keyboard or pointer, so injected input waits (`EBUSY`).
+    Busy,
+    /// The window's client has no room in its queue for the input's events yet (`EAGAIN`).
+    QueueFull,
 }
 
 /// A request and its arguments, as the caller wrote them.
@@ -291,12 +316,33 @@ pub enum Request {
         kind: u32,
         edges: u32,
     },
+    CaptureWindow {
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        buffer: u64,
+        length: u64,
+    },
+    SendInput {
+        window: u32,
+        kind: u32,
+        x: i32,
+        y: i32,
+        code: u32,
+        value: u32,
+    },
 }
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
     let mut word = [0; 4];
     word.copy_from_slice(&bytes[offset..offset + 4]);
     u32::from_ne_bytes(word)
+}
+
+fn double_word(bytes: &[u8], offset: usize) -> u64 {
+    let mut word = [0; 8];
+    word.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_ne_bytes(word)
 }
 
 /// Writes `value` at `offset` of `bytes`.
@@ -331,6 +377,8 @@ impl Request {
             request::OPEN_APP => size::OPEN_APP,
             request::TYPE_IN_TERMINAL => size::TYPE_IN_TERMINAL,
             request::START_MOVE_OR_RESIZE => size::START_MOVE_OR_RESIZE,
+            request::CAPTURE_WINDOW => size::CAPTURE_WINDOW,
+            request::SEND_INPUT => size::SEND_INPUT,
             _ => return None,
         })
     }
@@ -427,6 +475,21 @@ impl Request {
                 kind: at(4),
                 edges: at(8),
             },
+            request::CAPTURE_WINDOW => Self::CaptureWindow {
+                window: at(0),
+                first_row: at(4),
+                row_count: at(8),
+                buffer: double_word(bytes, 24),
+                length: double_word(bytes, 32),
+            },
+            request::SEND_INPUT => Self::SendInput {
+                window: at(0),
+                kind: at(4),
+                x: at(8) as i32,
+                y: at(12) as i32,
+                code: at(16),
+                value: at(20),
+            },
             _ => Self::GetWorkArea,
         })
     }
@@ -446,6 +509,14 @@ pub mod set_size_reply {
     pub const WIDTH: usize = 4;
     pub const HEIGHT: usize = 8;
     pub const OFFSET: usize = 16;
+}
+
+/// Where `CaptureWindow` writes the window's content width and height and how many rows it
+/// copied back into its argument.
+pub mod capture_reply {
+    pub const WIDTH: usize = 12;
+    pub const HEIGHT: usize = 16;
+    pub const ROWS: usize = 20;
 }
 
 /// Where `ListWindow` writes the window at the index it was given: its id, state, outside
@@ -540,6 +611,11 @@ impl EventRecord {
 pub trait EventSink {
     /// Hands `record` to client `client`'s queue.
     fn send(&mut self, client: u16, record: EventRecord);
+
+    /// How many records client `client`'s queue takes before it must drop one.
+    fn room(&self, _client: u16) -> usize {
+        usize::MAX
+    }
 }
 
 /// An [`EventSink`] that drops every event.

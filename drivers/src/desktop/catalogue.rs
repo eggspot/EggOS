@@ -285,6 +285,15 @@ impl Catalogue {
             .map(|index| AppId::Installed(index as u8))
     }
 
+    /// The app called `name`: the built-ins Terminal, Files and Settings first, so an installed
+    /// app of the same name never stands in for one, then the installed apps.
+    pub fn app_named(&self, name: &str) -> Option<AppId> {
+        [AppId::Terminal, AppId::Files, AppId::Settings]
+            .into_iter()
+            .find(|&app| self.name(app) == name)
+            .or_else(|| self.installed_named(name))
+    }
+
     /// `app`'s name as the shell shows it.
     pub fn name(&self, app: AppId) -> &str {
         match app {
@@ -518,6 +527,22 @@ mod tests {
         assert_eq!(found("zz"), Vec::<String>::new());
         assert_eq!(found("").len(), 6);
         assert_eq!(found("s"), ["Files", "Settings", "Terminal", "Paint"]);
+    }
+
+    #[test]
+    fn apps_are_found_by_name_the_built_ins_first() {
+        let mut catalogue = catalogue();
+        assert!(catalogue.add_installed(b"Settings", &manifest("Settings", "linux", "/bin/fake", "")));
+        assert_eq!(catalogue.app_named("Settings"), Some(AppId::Settings));
+        assert_eq!(catalogue.app_named("Files"), Some(AppId::Files));
+        assert_eq!(catalogue.app_named("Terminal"), Some(AppId::Terminal));
+        assert_eq!(
+            catalogue.app_named("Paint"),
+            catalogue.installed_named("Paint")
+        );
+        assert!(catalogue.app_named("Paint").is_some());
+        assert_eq!(catalogue.app_named("settings"), None);
+        assert_eq!(catalogue.app_named("Host share"), None);
     }
 
     #[test]

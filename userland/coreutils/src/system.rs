@@ -78,6 +78,13 @@ pub enum SymbolicLinks {
     DoNotFollow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapturedRows {
+    pub width: u32,
+    pub height: u32,
+    pub rows: u32,
+}
+
 pub trait System {
     fn write(&mut self, descriptor: usize, bytes: &[u8]) -> Result<(), Errno>;
     fn read(&mut self, descriptor: usize, buffer: &mut [u8]) -> Result<usize, Errno>;
@@ -108,6 +115,14 @@ pub trait System {
         request: u32,
         argument: &mut [u8],
     ) -> Result<(), Errno>;
+    fn capture_window_rows(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno>;
 }
 
 impl<T: System + ?Sized> System for &mut T {
@@ -195,6 +210,17 @@ impl<T: System + ?Sized> System for &mut T {
         argument: &mut [u8],
     ) -> Result<(), Errno> {
         (**self).device_control(descriptor, request, argument)
+    }
+
+    fn capture_window_rows(
+        &mut self,
+        descriptor: usize,
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        (**self).capture_window_rows(descriptor, window, first_row, row_count, pixels)
     }
 }
 

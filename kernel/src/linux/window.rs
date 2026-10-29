@@ -14,18 +14,18 @@ use super::{Errno, Iovecs, iovec};
 use crate::process::{LentFrames, Placement, Process};
 use crate::regions::RegionError;
 use crate::terminal::{
-    desktop_profile, open_app, reload_catalogue, set_desktop_profile, type_in_terminal,
-    with_windows,
+    desktop_profile, open_app, reload_catalogue, send_to_terminal, set_desktop_profile,
+    type_in_terminal, with_windows,
 };
-use crate::window::{self, Connection, PixelBuffer, ServerError};
+use crate::window::{self, Connection, PixelBuffer, ServerError, copy_content_rows};
 use alloc::sync::Arc;
 use core::ops::ControlFlow;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
-    EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, create_reply,
-    list_reply, put_double_word, put_word, request, set_size_reply, size,
+    EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, capture_reply,
+    create_reply, list_reply, put_double_word, put_word, request, set_size_reply, size,
 };
-use eggos_drivers::desktop::{Desktop, Profile, WindowId};
+use eggos_drivers::desktop::{Desktop, InjectedInput, Injected, Profile, WindowId};
 use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
@@ -42,6 +42,8 @@ fn errno(error: ServerError) -> Errno {
         ServerError::Refused(WindowError::TableFull) => Errno::ENOSPC,
         ServerError::Refused(WindowError::Unsupported) => Errno::EOPNOTSUPP,
         ServerError::Refused(WindowError::NoSuchWindow) => Errno::ENOENT,
+        ServerError::Refused(WindowError::Busy) => Errno::EBUSY,
+        ServerError::Refused(WindowError::QueueFull) => Errno::EAGAIN,
         ServerError::NoServer => Errno::ENXIO,
         ServerError::NoClientSlot => Errno::ENFILE,
         ServerError::OutOfMemory => Errno::ENOMEM,
@@ -97,6 +99,12 @@ pub fn ioctl<P: Platform>(
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::TypeInTerminal { .. }) && !may_type_in_terminal(process) {
+        return Err(Errno::EPERM);
+    }
+    if matches!(request, Request::CaptureWindow { .. }) && !may_capture_windows(process) {
+        return Err(Errno::EPERM);
+    }
+    if matches!(request, Request::SendInput { .. }) && !may_send_input(process) {
         return Err(Errno::EPERM);
     }
     match request {
@@ -259,8 +267,92 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::ENXIO);
             }
         }
+        Request::CaptureWindow {
+            window,
+            first_row,
+            row_count,
+            buffer,
+            length,
+        } => {
+            let rows = capture::<P>(process, window, first_row, row_count, buffer, length)?;
+            put_word(bytes, capture_reply::WIDTH, rows.width);
+            put_word(bytes, capture_reply::HEIGHT, rows.height);
+            put_word(bytes, capture_reply::ROWS, rows.copied);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::SendInput {
+            window,
+            kind,
+            x,
+            y,
+            code,
+            value,
+        } => {
+            let input = InjectedInput::from_request(kind, x, y, code, value).map_err(refused)?;
+            if crate::input::person_holds_input() || crate::input::has_pending_events() {
+                return Err(Errno::EBUSY);
+            }
+            let injected = on_windows::<P, _>(|desktop, _, _, events| {
+                desktop.send_input(window, input, events)
+            })?;
+            if let Injected::ForTerminal(input) = injected {
+                send_to_terminal::<P>(input);
+            }
+        }
     }
     Ok(0)
+}
+
+struct CapturedRows {
+    width: u32,
+    height: u32,
+    copied: u32,
+}
+
+fn capture<P: Platform>(
+    process: &Process<P>,
+    window: u32,
+    first_row: u32,
+    row_count: u32,
+    buffer: u64,
+    length: u64,
+) -> Result<CapturedRows, Errno> {
+    let (layout, pixels) = on_windows::<P, _>(|desktop, buffers, _, _| {
+        let layout = desktop.content_layout(window)?;
+        let id = WindowId::try_from(window).map_err(|_| WindowError::NoSuchWindow)?;
+        Ok((layout, buffers.shared(id)))
+    })?;
+    let rows = layout
+        .height
+        .checked_sub(first_row)
+        .ok_or(Errno::EINVAL)?
+        .min(row_count);
+    let needed = u64::from(rows)
+        .checked_mul(u64::from(layout.width) * 4)
+        .filter(|&needed| needed <= length)
+        .ok_or(Errno::EINVAL)?;
+    buffer.checked_add(needed).ok_or(Errno::EFAULT)?;
+    copy_content_rows(
+        &layout,
+        pixels.as_deref(),
+        first_row,
+        rows,
+        &mut |offset, piece| {
+            let at = buffer
+                .checked_add(offset as u64)
+                .ok_or(Errno::EFAULT)?;
+            process
+                .write_user_memory(at, piece)
+                .map_err(|_| Errno::EFAULT)
+        },
+    )?;
+    Ok(CapturedRows {
+        width: layout.width,
+        height: layout.height,
+        copied: rows,
+    })
 }
 
 fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
@@ -280,6 +372,14 @@ fn may_open_apps<P: Platform>(process: &Process<P>) -> bool {
 }
 
 fn may_type_in_terminal<P: Platform>(process: &Process<P>) -> bool {
+    is_privileged(process)
+}
+
+fn may_capture_windows<P: Platform>(process: &Process<P>) -> bool {
+    is_privileged(process)
+}
+
+fn may_send_input<P: Platform>(process: &Process<P>) -> bool {
     is_privileged(process)
 }
 

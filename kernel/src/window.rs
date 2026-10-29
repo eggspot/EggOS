@@ -24,7 +24,9 @@ use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use eggos_drivers::desktop::protocol::{
     EventRecord, EventSink, MAX_CLIENTS, MAX_WINDOWS, WindowError,
 };
-use eggos_drivers::desktop::{Desktop, EventQueue, KERNEL_CLIENT, WindowId, colour, slot_of};
+use eggos_drivers::desktop::{
+    ContentLayout, Desktop, EventQueue, KERNEL_CLIENT, WindowId, colour, slot_of,
+};
 use eggos_hal::Platform;
 use eggos_hal::memory::FRAME_SIZE;
 
@@ -285,6 +287,14 @@ impl Buffers {
             .map(|attached| &*attached.buffer)
     }
 
+    /// Window `window`'s buffer, shared, so it outlives the screen's lock.
+    pub fn shared(&self, window: WindowId) -> Option<Arc<PixelBuffer>> {
+        self.slots[slot_of(window)]
+            .as_ref()
+            .filter(|attached| attached.window == window)
+            .map(|attached| Arc::clone(&attached.buffer))
+    }
+
     /// The buffer `offset` maps, and its window.
     pub fn at_offset(&self, offset: u64) -> Option<(WindowId, Arc<PixelBuffer>)> {
         if !offset.is_multiple_of(FRAME_SIZE) {
@@ -413,6 +423,52 @@ impl EventSink for Queues<'_> {
             self.sent = true;
         }
     }
+
+    fn room(&self, client: u16) -> usize {
+        self.clients
+            .get(client)
+            .map_or(0, |target| target.queue.lock().room())
+    }
+}
+
+const CAPTURE_CHUNK_PIXELS: usize = 256;
+
+/// Copies rows `first_row..first_row + rows` of a window's content as `layout` says the
+/// desktop shows it, `layout.width` pixels a row, packed `0x00RRGGBB` pixels in the machine's
+/// byte order: the buffer's pixels from `pixels` (the window background where it has none),
+/// the fill around them. Hands `put` each piece with its byte offset from the first row's
+/// start, and stops at its first error.
+pub fn copy_content_rows<E>(
+    layout: &ContentLayout,
+    pixels: Option<&PixelBuffer>,
+    first_row: u32,
+    rows: u32,
+    put: &mut dyn FnMut(usize, &[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut chunk = [0u32; CAPTURE_CHUNK_PIXELS];
+    let mut bytes = [0u8; CAPTURE_CHUNK_PIXELS * 4];
+    let row_bytes = layout.width as usize * 4;
+    for row in 0..rows {
+        let y = first_row + row;
+        let mut x = 0;
+        while x < layout.width {
+            let count = (layout.width - x).min(CAPTURE_CHUNK_PIXELS as u32) as usize;
+            let out = &mut chunk[..count];
+            layout.copy_row(x, y, out, &mut |column, line, out| match pixels {
+                Some(buffer) => buffer.copy_row(column, line, out),
+                None => out.fill(colour::WINDOW_BACKGROUND),
+            });
+            for (pixel, place) in out.iter().zip(bytes.chunks_exact_mut(4)) {
+                place.copy_from_slice(&pixel.to_ne_bytes());
+            }
+            put(
+                row as usize * row_bytes + x as usize * 4,
+                &bytes[..count * 4],
+            )?;
+            x += count as u32;
+        }
+    }
+    Ok(())
 }
 
 /// The monotonic clock in milliseconds, wrapping at 2^32 as the records carry it.
@@ -573,6 +629,71 @@ mod tests {
             .unwrap();
         buffers.release_unused(&desktop);
         assert!(buffers.of(created.window).is_none());
+        assert_eq!(owner.pinned_bytes(), 0);
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn a_capture_copies_the_content_rows_at_the_content_width() {
+        let _frames = frames_for_test();
+        let before = free();
+        let mut clients = Clients::new();
+        let owner = client(&mut clients);
+        let mut desktop = Desktop::new(1280, 800).unwrap();
+        let created = desktop.create(owner.id(), 0, 0, 300, 4, 0).unwrap();
+        desktop
+            .commit(
+                owner.id(),
+                u32::from(created.window),
+                &[],
+                &mut eggos_drivers::display::Damage::new(),
+                &mut eggos_drivers::desktop::protocol::DiscardEvents,
+            )
+            .unwrap();
+        let mut buffers = Buffers::new();
+        let buffer = PixelBuffer::new(created.width, created.height, &owner).unwrap();
+        buffers.attach(created.window, Arc::clone(&buffer));
+        let shared = buffers.shared(created.window).unwrap();
+        assert!(Arc::ptr_eq(&shared, &buffer));
+        assert!(buffers.shared(created.window + (1 << 6)).is_none());
+        let layout = desktop.content_layout(u32::from(created.window)).unwrap();
+        assert_eq!((layout.width, layout.height), (created.width, created.height));
+        let mut copied = alloc::vec::Vec::new();
+        copy_content_rows::<()>(&layout, Some(&shared), 1, 2, &mut |offset, bytes| {
+            assert_eq!(offset, copied.len());
+            copied.extend_from_slice(bytes);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(copied.len(), 2 * layout.width as usize * 4);
+        assert!(copied.iter().all(|&byte| byte == 0), "a new buffer is zeroed");
+        let mut pieces = 0;
+        let stopped = copy_content_rows(&layout, None, 0, 1, &mut |_, bytes| {
+            pieces += 1;
+            assert!(
+                bytes
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == colour::WINDOW_BACKGROUND.to_ne_bytes()
+                        || pixel == layout.fill.to_ne_bytes())
+            );
+            Err("full")
+        });
+        assert_eq!((stopped, pieces), (Err("full"), 1));
+        desktop
+            .set_state(
+                owner.id(),
+                u32::from(created.window),
+                1,
+                &mut eggos_drivers::display::Damage::new(),
+                &mut eggos_drivers::desktop::protocol::DiscardEvents,
+            )
+            .unwrap();
+        buffers.release_unused(&desktop);
+        assert!(
+            buffers.shared(created.window).is_some(),
+            "a minimised window keeps its buffer"
+        );
+        drop((buffer, shared, buffers));
         assert_eq!(owner.pinned_bytes(), 0);
         assert_eq!(free(), before);
     }
