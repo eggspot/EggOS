@@ -12,8 +12,10 @@ read), and `malloc` allocates without one.
 
 Part 1 (D120) runs console programs that use the libSystem functions listed below; part 2
 (D123) adds what small real tools and Rust's standard library need: threads, thread-local
-variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Objective-C,
-Swift, C++'s runtime and programs that need other libraries do not run yet (see below).
+variables, locks, `getopt`, calendar time, `errno` per thread and the C locale. Part 3 (D142)
+runs Objective-C console programs: the layer has its own Objective-C runtime (libobjc) and the
+core of Foundation (see "Objective-C programs"). Swift, C++'s runtime and programs that need
+other libraries do not run yet (see below).
 
 ## Add a program to the image
 
@@ -119,9 +121,9 @@ about 10^18) its last digit differs from a Mac's, which prints the exact decimal
 An import the layer lacks does not stop the program from starting: it is bound to a stub, and
 only calling it ends the program with `eggos-macos: unimplemented libSystem function <name>`
 and status 127 (as `dlsym` failures and missing weak functions surface on a Mac only when
-used). An import from a library other than libSystem refuses the program before any of its code
-runs: `macos: /bin/x: needs /usr/lib/libz.1.dylib, which EggOS does not provide yet`, status
-126.
+used). An import from a library other than libSystem, libobjc, Foundation and CoreFoundation
+refuses the program before any of its code runs:
+`macos: /bin/x: needs /usr/lib/libz.1.dylib, which EggOS does not provide yet`, status 126.
 
 Threads are Linux threads of the program's process. Each has a control block that its thread
 pointer (`tpidr_el0` on aarch64, the FS base on x86_64, neither of which macOS programs use)
@@ -132,9 +134,87 @@ return the calling thread's copy plus the variable's offset. Locks are futexes i
 own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`), and the only locale is C
 (`nl_langinfo(CODESET)` is `US-ASCII`, as on a Mac).
 
+## Objective-C programs
+
+A program built with clang for macOS 13 or later, with ARC and `-framework Foundation`, runs
+from `eggsh` like any other: `clang -fobjc-arc -framework Foundation -mmacosx-version-min=13.0
+-arch arm64 hello.m -o hello` on a Mac, then add `hello` to the image. The layer accepts
+`/usr/lib/libobjc.A.dylib`, Foundation and CoreFoundation besides libSystem and binds their
+imports to its own runtime (D142). The boot test's `macos-objc`
+(`tests/macos-objc/main.m`, built by `cargo xtask macos-programs`) prints the same lines as on a
+Mac.
+
+What works:
+
+- **Classes and categories** from `__objc_classlist` and `__objc_catlist`, on the program's own
+  classes and on Foundation's (a category on NSString merges into the layer's NSString),
+  method lists in both the pointer and the relative form, `+load` (classes, superclasses first,
+  then categories, before `main`), `+initialize` (sent before a class's first message,
+  superclasses first, other threads waiting), `[super ...]` in instance and class methods,
+  `@property` (strong, copy, assign, atomic or not), non-fragile ivars (moved when a superclass
+  is larger than the program was compiled for), ARC's `.cxx_destruct`.
+- **Messages**: `objc_msgSend` and `objc_msgSendSuper2` in assembly on arm64 and x86_64 (and
+  x86_64's `_stret` forms for large structs): a per-class method cache probed with no lock and
+  no stack, about ten instructions on a hit; a miss finds the method up the superclass chain
+  and fills the cache. A message to nil returns zeros. An unknown selector ends the program as
+  on a Mac: `*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+  reason: '-[Counter frobnicate]: unrecognized selector sent to instance 0x...'`, then
+  `libc++abi: terminating due to uncaught exception of type NSException` and `abort` (status
+  134; the Mac's call stack lines are left out).
+- **Memory**: reference counts kept in a word before each object, `retain`, `release`,
+  `autorelease`, `dealloc`, ARC's functions (`objc_retain`, `objc_release`, `objc_storeStrong`,
+  `objc_autoreleaseReturnValue`, `objc_retainAutoreleasedReturnValue`, `objc_alloc`,
+  `objc_alloc_init`, `objc_opt_new`, `objc_opt_class`, `objc_opt_isKindOfClass`,
+  `objc_opt_respondsToSelector`, the property accessors), and autorelease pools per thread
+  (`@autoreleasepool`, NSAutoreleasePool); a thread's leftover autoreleased objects are released
+  when it ends.
+- **The runtime's functions**: `objc_getClass`, `objc_lookUpClass`, `objc_getMetaClass`,
+  `object_getClass`, `object_getClassName`, `class_getName`, `class_getSuperclass`,
+  `class_isMetaClass`, `class_respondsToSelector`, `class_getInstanceSize`,
+  `class_getInstanceMethod`, `class_getClassMethod`, `method_getImplementation`,
+  `method_getName`, `class_addMethod`, `class_createInstance`, `object_dispose`,
+  `sel_registerName`, `sel_getUid`, `sel_getName`, `sel_isEqual`.
+- **Foundation's core**: NSObject (`alloc`, `new`, `init`, `class`, `isKindOfClass:`,
+  `respondsToSelector:`, `isEqual:`, `hash`, `description`, `copy`, `performSelector:`, ...);
+  NSString (constant `@"..."` literals, ASCII or UTF-16, and dynamic strings: creation from
+  UTF-8, characters and formats, `length`, `characterAtIndex:`, `UTF8String`, comparison,
+  `hasPrefix:`, `hasSuffix:`, `containsString:`, appending, substrings, ASCII case changes,
+  `componentsSeparatedByString:`, `stringByReplacingOccurrencesOfString:withString:`, number
+  values) and NSMutableString (`appendString:`, `appendFormat:`, `setString:`,
+  `insertString:atIndex:`, `deleteCharactersInRange:`); NSArray and NSMutableArray (`@[...]`
+  literals, subscripts, fast enumeration with the mutation check, `componentsJoinedByString:`,
+  `sortedArrayUsingSelector:`, the mutating methods); NSDictionary and NSMutableDictionary
+  (`@{...}` literals, subscripts, fast enumeration of keys, `allKeys`, `allValues`, the
+  mutating methods); NSNumber (`@42`, `@3.5`, `@YES`, `@(x)` and the `numberWith...:` and
+  `...Value` methods); NSBundle's `mainBundle` (the executable's directory, no identifier, an
+  empty information dictionary); `NSLog` and `NSLogv` (`YYYY-MM-DD HH:MM:SS.mmm name[pid:tid]
+  message` on standard error, in UTC); `NSStringFromClass`, `NSClassFromString`,
+  `NSStringFromSelector`, `NSSelectorFromString`; `%@` and `%C` in every format.
+- **Descriptions as a Mac prints them**: nested arrays and dictionaries with the same
+  indentation, strings quoted unless they are only ASCII letters and digits (with `\"`, `\n`
+  and `\Uxxxx` escapes), dictionaries with string keys in key order, doubles with 16
+  significant digits and floats with 7.
+
+A Foundation class the layer lacks stops the program only when it is first used:
+`eggos-macos: unimplemented CoreFoundation class NSDate`, status 127; a missing function
+names its library the same way (`unimplemented libobjc function objc_storeWeak`).
+
 ## What does not work yet
 
-- **Objective-C, Swift or C++'s runtime**, and **unwinding** (`_Unwind_*`): a Rust panic with
+- **Objective-C beyond the core**: blocks (`^{ }`, `_NSConcreteStackBlock`, `Block_copy`),
+  `__weak` references (`objc_storeWeak` and its kin), exceptions and `@try` (no unwinder:
+  `objc_exception_throw` ends the program), associated objects, key-value coding and observing,
+  `NSInvocation` and message forwarding (`forwardInvocation:`, `forwardingTargetForSelector:`,
+  `+resolveInstanceMethod:`), `method_setImplementation`, `class_replaceMethod`,
+  `conformsToProtocol:` and protocol objects, `objc_msgSend_fpret`, and most of Foundation:
+  NSDate, NSData, NSSet, NSError, NSProcessInfo, NSFileManager, character sets, path
+  methods, `rangeOfString:`, locales and time zones. Dictionaries look keys up by comparing them
+  one by one (no hash index yet), and keep their keys in insertion order where macOS's order is
+  unspecified. Subclasses of Foundation's class clusters (a custom NSString subclass) are not
+  supported. ARC's return-value handoff is not used yet, so returned objects always go
+  through the autorelease pool: correct, a little slower than on a Mac. Manual
+  retain/release programs use the same messages but are not covered by a test yet.
+- **Swift or C++'s runtime**, and **unwinding** (`_Unwind_*`): a Rust panic with
   `panic = "unwind"` stops at the first unwinder call with status 127.
 - **Signal handlers**: `sigaction` and `signal` record handlers and pass ignoring or the default
   action on to the kernel, but do not deliver signals to a handler yet; a fault ends the
@@ -144,9 +224,9 @@ own memory. Time is UTC (`localtime_r` is `gmtime_r`, `%Z` is `UTC`), and the on
   streams shared between threads (each stream assumes one thread at a time).
 - **`getopt_long` does not reorder words**: it stops at the first operand, as BSD's `getopt`
   does, so options after an operand stay operands; `getopt_long_only` is missing.
-- **Other libraries and frameworks**: no libc++, no CoreFoundation, Foundation or Cocoa, no
-  `dlopen`, no dyld shared cache; a program that links any library other than libSystem is
-  refused. Weak libraries are allowed and their imports are missing. Imports a program makes
+- **Other libraries and frameworks**: no libc++, no Cocoa or AppKit, only the core of
+  Foundation and CoreFoundation (above), no `dlopen`, no dyld shared cache; a program that links
+  any library other than libSystem, libobjc, Foundation and CoreFoundation is refused. Weak libraries are allowed and their imports are missing. Imports a program makes
   from itself (C++'s weak definitions, through its export trie) are missing too.
 - **Older programs**: files without chained fixups, which use `LC_DYLD_INFO` opcodes (arm64
   programs built for macOS 11, x86_64 ones built for macOS 12 or earlier), programs that start with `LC_UNIXTHREAD`, 32-bit programs, arm64e

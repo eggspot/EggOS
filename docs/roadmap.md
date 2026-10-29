@@ -331,7 +331,16 @@ D16):
     and `resize` through the new `/dev/window` request `START_MOVE_OR_RESIZE`. Next: `epoll`,
     `eventfd`, `timerfd` and `signalfd`, dynamic linking, then the toolkits' protocols
     (subcompositor, decorations, popups, the clipboard).
-40. the macOS Objective-C runtime and the core of Foundation.
+40. **done** — users can now run macOS Objective-C console programs from `eggsh` on aarch64
+    and x86_64 (D142, docs/macos-programs.md): our own Objective-C runtime in the macOS layer
+    (`objc_msgSend` and `objc_msgSendSuper2` in arm64 and x86_64 assembly with lock-free method
+    caches, classes and categories from the image's metadata, selectors, non-fragile ivars,
+    reference counting, ARC's functions, autorelease pools, `+load` and `+initialize`) and the
+    core of Foundation (NSObject, constant and dynamic NSString, NSArray, NSDictionary and their
+    mutable forms, NSNumber, the compiler's literals, NSBundle's main bundle, `NSLog` and `%@`).
+    A QEMU test runs an Objective-C program from our own source, built by clang on CI's macOS
+    runner, with the same lines as on a Mac. Next: blocks, `__weak`, exceptions, more of
+    Foundation (D142's "Not yet").
 41. macOS GUI apps, part 1.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43

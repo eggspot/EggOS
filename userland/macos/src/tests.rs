@@ -76,19 +76,47 @@ fn chained_fixups(pointer_format: u16) -> Vec<u8> {
     data
 }
 
+fn with_sections(mut command: Vec<u8>, sections: &[(&[u8], u64, u64)]) -> Vec<u8> {
+    let size = 72 + 80 * sections.len() as u32;
+    command[4..8].copy_from_slice(&size.to_le_bytes());
+    command[64..68].copy_from_slice(&(sections.len() as u32).to_le_bytes());
+    for &(name, address, length) in sections {
+        let mut padded = [0u8; 32];
+        padded[..name.len()].copy_from_slice(name);
+        command.extend_from_slice(&padded);
+        put64(&mut command, address);
+        put64(&mut command, length);
+        for value in [0u32, 3, 0, 0, 0, 0, 0, 0] {
+            put32(&mut command, value);
+        }
+    }
+    command
+}
+
 fn executable(cputype: u32, pointer_format: u16) -> Vec<u8> {
+    executable_with(cputype, pointer_format, &[])
+}
+
+fn executable_with(
+    cputype: u32,
+    pointer_format: u16,
+    data_sections: &[(&[u8], u64, u64)],
+) -> Vec<u8> {
     let fixups = chained_fixups(pointer_format);
     let mut commands = Vec::new();
     commands.extend(segment(b"__PAGEZERO", 0, TEXT, 0, 0, 0, 0));
     commands.extend(segment(b"__TEXT", TEXT, 0x4000, 0, 0x4000, 5, 0));
-    commands.extend(segment(
-        b"__DATA_CONST",
-        TEXT + 0x4000,
-        0x4000,
-        0x4000,
-        0x4000,
-        3,
-        0x10,
+    commands.extend(with_sections(
+        segment(
+            b"__DATA_CONST",
+            TEXT + 0x4000,
+            0x4000,
+            0x4000,
+            0x4000,
+            3,
+            0x10,
+        ),
+        data_sections,
     ));
     commands.extend(segment(
         b"__LINKEDIT",
@@ -173,6 +201,54 @@ fn an_executable_parses_with_its_segments_entry_and_library() {
     assert_eq!(program.library(2), None);
     assert_eq!(program.library(0), None);
     assert!(!program.dyld_info);
+}
+
+#[test]
+fn objective_c_sections_are_found_by_name_in_any_segment() {
+    let file = executable_with(
+        CPU_TYPE_ARM64,
+        6,
+        &[
+            (b"__objc_classlist", TEXT + 0x4100, 16),
+            (b"__objc_selrefs", TEXT + 0x4200, 24),
+            (b"__objc_imageinfo", TEXT + 0x4300, 8),
+            (b"__got", TEXT + 0x4400, 8),
+        ],
+    );
+    let program = MachO::parse(&file).unwrap();
+    let objc = program.objc;
+    assert!(objc.present());
+    assert_eq!(
+        objc.class_list,
+        Some(macho::SectionRange {
+            address: TEXT + 0x4100,
+            size: 16
+        })
+    );
+    assert_eq!(objc.selector_references.map(|range| range.size), Some(24));
+    assert_eq!(
+        objc.image_info.map(|range| range.address),
+        Some(TEXT + 0x4300)
+    );
+    assert_eq!(objc.category_list, None);
+    assert!(
+        !MachO::parse(&executable(CPU_TYPE_ARM64, 6))
+            .unwrap()
+            .objc
+            .present()
+    );
+}
+
+#[test]
+fn an_objective_c_section_outside_its_segment_or_misaligned_is_refused() {
+    for section in [
+        (&b"__objc_classlist"[..], TEXT + 0x7ff8, 16),
+        (&b"__objc_selrefs"[..], TEXT + 0x4104, 8),
+        (&b"__objc_catlist"[..], TEXT + 0x4100, 12),
+    ] {
+        let file = executable_with(CPU_TYPE_ARM64, 6, &[section]);
+        assert!(MachO::parse(&file).is_err(), "{:?}", section.0);
+    }
 }
 
 #[test]

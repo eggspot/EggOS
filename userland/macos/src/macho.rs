@@ -19,6 +19,11 @@ pub const MAX_FAT_ARCHITECTURES: u32 = 32;
 pub const MAX_SEGMENTS: usize = 16;
 pub const MAX_LIBRARIES: usize = 32;
 pub const LIBSYSTEM: &[u8] = b"/usr/lib/libSystem.B.dylib";
+pub const LIBOBJC: &[u8] = b"/usr/lib/libobjc.A.dylib";
+pub const FOUNDATION: &[u8] =
+    b"/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation";
+pub const CORE_FOUNDATION: &[u8] =
+    b"/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation";
 
 const HEADER_SIZE: usize = 32;
 const FAT_ARCH_SIZE: usize = 20;
@@ -282,6 +287,57 @@ pub struct ThreadLocalTemplate {
     pub alignment: u64,
 }
 
+/// A section's place in the image, at its unslid address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionRange {
+    pub address: u64,
+    pub size: u64,
+}
+
+/// The Objective-C metadata sections the runtime reads, found by name in any segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObjcSections {
+    pub image_info: Option<SectionRange>,
+    pub class_list: Option<SectionRange>,
+    pub non_lazy_class_list: Option<SectionRange>,
+    pub category_list: Option<SectionRange>,
+    pub non_lazy_category_list: Option<SectionRange>,
+    pub selector_references: Option<SectionRange>,
+}
+
+impl ObjcSections {
+    /// Whether the image carries Objective-C metadata at all.
+    pub fn present(&self) -> bool {
+        self.image_info.is_some()
+            || self.class_list.is_some()
+            || self.category_list.is_some()
+            || self.selector_references.is_some()
+    }
+
+    fn slot(&mut self, name: &[u8]) -> Option<&mut Option<SectionRange>> {
+        Some(match name {
+            b"__objc_imageinfo" => &mut self.image_info,
+            b"__objc_classlist" => &mut self.class_list,
+            b"__objc_nlclslist" => &mut self.non_lazy_class_list,
+            b"__objc_catlist" => &mut self.category_list,
+            b"__objc_nlcatlist" => &mut self.non_lazy_category_list,
+            b"__objc_selrefs" => &mut self.selector_references,
+            _ => return None,
+        })
+    }
+
+    fn all(&self) -> [Option<SectionRange>; 6] {
+        [
+            self.image_info,
+            self.class_list,
+            self.non_lazy_class_list,
+            self.category_list,
+            self.non_lazy_category_list,
+            self.selector_references,
+        ]
+    }
+}
+
 /// A parsed 64-bit Mach-O executable.
 #[derive(Debug, Clone, Copy)]
 pub struct MachO<'a> {
@@ -296,6 +352,7 @@ pub struct MachO<'a> {
     pub chained_fixups: Option<Range>,
     pub dyld_info: bool,
     pub thread_locals: Option<ThreadLocalTemplate>,
+    pub objc: ObjcSections,
 }
 
 impl<'a> MachO<'a> {
@@ -331,6 +388,7 @@ impl<'a> MachO<'a> {
             chained_fixups: None,
             dyld_info: false,
             thread_locals: None,
+            objc: ObjcSections::default(),
         };
         let mut entry = None;
         let mut at = HEADER_SIZE;
@@ -431,6 +489,27 @@ impl<'a> MachO<'a> {
                 let shift = u32_at(command, at + 52).unwrap_or(0);
                 self.add_thread_locals(address, size, shift)?;
             }
+            let section_name = &command[at..at + 16];
+            let section_name =
+                &section_name[..section_name.iter().position(|&b| b == 0).unwrap_or(16)];
+            let pointer_list = section_name != b"__objc_imageinfo";
+            if let Some(slot) = self.objc.slot(section_name) {
+                let address = u64_at(command, at + 32).unwrap_or(0);
+                let size = u64_at(command, at + 40).unwrap_or(0);
+                let inside = address >= segment.vmaddr
+                    && address
+                        .checked_add(size)
+                        .zip(segment.vmaddr.checked_add(segment.vmsize))
+                        .is_some_and(|(end, segment_end)| end <= segment_end);
+                let aligned =
+                    !pointer_list || (size.is_multiple_of(8) && address.is_multiple_of(8));
+                if !inside || !aligned {
+                    return Err(invalid(
+                        "an Objective-C section is outside its segment or misaligned",
+                    ));
+                }
+                *slot = Some(SectionRange { address, size });
+            }
         }
         if segment.is_page_zero() {
             return Ok(());
@@ -529,6 +608,14 @@ impl<'a> MachO<'a> {
                     "the thread-local template is outside every segment",
                 ));
             }
+        }
+        let mapped = |range: SectionRange| {
+            segments.iter().any(|segment| {
+                range.address >= segment.vmaddr && range.address + range.size <= segment.end()
+            })
+        };
+        if !self.objc.all().into_iter().flatten().all(mapped) {
+            return Err(invalid("an Objective-C section is outside every segment"));
         }
         if let Some(range) = self.chained_fixups {
             let linkedit = segments.iter().any(|segment| {

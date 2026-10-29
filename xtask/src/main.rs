@@ -1464,6 +1464,10 @@ fn build_macos_programs_test_kernel(arch: &Arch) -> Result<Option<std::path::Pat
             host: host("macos-std", own),
             path: "bin/macos-std".to_owned(),
         },
+        image::AddedFile {
+            host: host("macos-objc", own),
+            path: "bin/macos-objc".to_owned(),
+        },
     ];
     let layer = macos_layer_for(arch, &added)?;
     let mut extra = vec![(

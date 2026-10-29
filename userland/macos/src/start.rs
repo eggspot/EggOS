@@ -6,12 +6,14 @@
 //! segment and calls `main(argc, argv, envp, apple)`, whose return value goes to `exit`.
 
 use crate::fixups::{ChainedFixups, Source};
+use crate::foundation;
 use crate::libsystem;
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::macho::{
     self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, VM_PROT_EXECUTE, VM_PROT_READ,
     VM_PROT_WRITE,
 };
+use crate::objc;
 use core::ffi::{c_char, c_int};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
@@ -128,9 +130,16 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         return Err(Failure::OtherCpus([Some(program.cpu), None, None, None]));
     }
     for library in program.libraries() {
-        if library.path != macho::LIBSYSTEM && !library.weak {
+        if Library::provided(library.path).is_none() && !library.weak {
             return Err(Failure::Library(library.path));
         }
+    }
+    let uses_objc = program.objc.present()
+        || program
+            .libraries()
+            .any(|library| Library::provided(library.path).is_some_and(Library::is_objc));
+    if uses_objc && !(objc::set_up() && foundation::set_up()) {
+        return Err(Failure::Memory);
     }
     let fixups = match program.chained_fixups {
         Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
@@ -165,6 +174,12 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             .apply(&program, image, base as u64, imports)
             .map_err(Failure::Invalid)?;
     }
+    let slide = (base as isize).wrapping_sub(program.base_address() as isize);
+    if uses_objc {
+        // SAFETY: the image is mapped, bound and rebased, still writable everywhere, and no
+        // program code has run.
+        unsafe { objc::register_image(slide, &program.objc) }.map_err(Failure::Invalid)?;
+    }
     protect(&program, base)?;
     if let Some(template) = program.thread_locals {
         let address = base + (template.address - program.base_address()) as usize;
@@ -184,13 +199,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let arguments = argument_vector(&startup)?;
     let environment = environment_vector(&startup)?;
     let (apple, executable_path) = apple_vector(path.to_bytes())?;
-    let slide = (base as isize).wrapping_sub(program.base_address() as isize);
     // SAFETY: the program has not started; these record its image, arguments and streams.
     unsafe { libsystem::set_image(base, slide, executable_path) };
     // SAFETY: as above; the arrays are never freed.
     unsafe { libsystem::set_process(argument_count(&startup), arguments, environment) };
     // SAFETY: as above.
     unsafe { libsystem::set_up_streams() };
+    if uses_objc {
+        objc::run_load_methods();
+    }
     let entry = base + program.entry as usize;
     // SAFETY: `entry` is LC_MAIN's checked entry point inside an executable segment of the
     // image, mapped, bound, rebased and protected; dyld calls it as
@@ -214,35 +231,37 @@ fn bind_imports<'a>(
     let mut missing = 0;
     for index in 0..count {
         let import = fixups.import(index).map_err(Failure::Invalid)?;
-        let from_libsystem = match import.source {
-            Source::Library(ordinal) => {
+        let library = match import.source {
+            Source::Library(ordinal) => Some(
                 program
                     .library(ordinal)
                     .ok_or(Failure::Invalid(InvalidMachO(
                         "an import from a library it does not link",
                     )))?
-                    .path
-                    == macho::LIBSYSTEM
-            }
-            Source::Flat | Source::Weak => true,
-            Source::Executable => false,
+                    .path,
+            ),
+            Source::Flat | Source::Weak => Some(macho::LIBSYSTEM),
+            Source::Executable => None,
         };
-        let found = from_libsystem
-            .then(|| libsystem::resolve(import.name))
-            .flatten();
-        let address = match found {
-            Some(address) => address,
-            None if import.weak => 0,
-            None => {
+        let library = library.and_then(Library::provided);
+        let found = library.and_then(|_| resolve(import.name));
+        // SAFETY: the file's mapping stays for as long as the program runs, so the name does
+        // too.
+        let name: &'static [u8] =
+            unsafe { core::slice::from_raw_parts(import.name.as_ptr(), import.name.len()) };
+        let address = match (found, library) {
+            (Some(address), _) => address,
+            (None, _) if import.weak => 0,
+            (None, Some(library)) if objc::is_class_symbol(name) => {
+                objc::bind_missing_class(library.name(), name).ok_or(Failure::TooManyMissing)?
+            }
+            (None, library) => {
                 if missing == libsystem::MISSING_STUBS {
                     return Err(Failure::TooManyMissing);
                 }
-                // SAFETY: the file's mapping stays for as long as the program runs, so the
-                // name does too.
-                let name: &'static [u8] =
-                    unsafe { core::slice::from_raw_parts(import.name.as_ptr(), import.name.len()) };
                 missing += 1;
-                libsystem::bind_missing(missing - 1, name)
+                let library = library.unwrap_or(Library::System);
+                libsystem::bind_missing(missing - 1, library.name(), name)
             }
         };
         // SAFETY: `table` holds `count` entries.
@@ -254,6 +273,45 @@ fn bind_imports<'a>(
     }
     // SAFETY: the `count` entries written above, in a block that is never freed.
     Ok(unsafe { core::slice::from_raw_parts(table, count) })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Library {
+    System,
+    Objc,
+    Foundation,
+    CoreFoundation,
+}
+
+impl Library {
+    fn provided(path: &[u8]) -> Option<Self> {
+        Some(match path {
+            macho::LIBSYSTEM => Self::System,
+            macho::LIBOBJC => Self::Objc,
+            macho::FOUNDATION => Self::Foundation,
+            macho::CORE_FOUNDATION => Self::CoreFoundation,
+            _ => return None,
+        })
+    }
+
+    fn is_objc(self) -> bool {
+        self != Self::System
+    }
+
+    fn name(self) -> &'static [u8] {
+        match self {
+            Self::System => b"libSystem",
+            Self::Objc => b"libobjc",
+            Self::Foundation => b"Foundation",
+            Self::CoreFoundation => b"CoreFoundation",
+        }
+    }
+}
+
+fn resolve(name: &[u8]) -> Option<u64> {
+    objc::resolve(name)
+        .or_else(|| foundation::resolve(name))
+        .or_else(|| libsystem::resolve(name))
 }
 
 fn allocate_pages(size: usize) -> Result<*mut u8, Failure> {
