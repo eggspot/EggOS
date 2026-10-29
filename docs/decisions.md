@@ -9038,6 +9038,8 @@ the license, by an explicit instruction recorded here.
   with a display (every windowed boot and every test and benchmark boot with the GPU) pays
   nothing; then it says `boot: offscreen display 1280x800`, and the first frame, the desktop,
   the terminal's window, `/dev/window` and eggway (D140) follow as with a GPU. No `unsafe`.
+  This is the first kernel command line key the kernel itself reads (D116 noted it read none;
+  eggmcpd reads its own, D137).
 - **No input, no person.** Without input devices no poller runs, `person_holds_input` and the
   input queue stay empty and the desktop's 500 ms rule (D141) never starts: injected input is
   never `EBUSY` because of a person, which is the point, since the agent is the only one at the

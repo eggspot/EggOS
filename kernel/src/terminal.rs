@@ -354,7 +354,8 @@ pub fn move_view<P: Platform>(change: ViewMove) {
 }
 
 /// Has the drawing thread look at the desktop when `input_queued` says input events wait for
-/// it, or when the clock's second changed since it last looked; called by the input poller.
+/// it, or when the clock's second changed since it last looked; called by the input poller, or
+/// without one by the thread [`start_clock`] starts.
 pub fn tick<P: Platform>(input_queued: bool) {
     if !is_active() {
         return;
