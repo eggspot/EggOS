@@ -2130,6 +2130,7 @@ impl<'o> Text<'o> {
         self.put_bytes(text.as_bytes());
     }
 
+    #[inline(never)]
     fn put_bytes(&mut self, bytes: &[u8]) {
         if let Some(place) = self.out.get_mut(self.length..self.length + bytes.len()) {
             place.copy_from_slice(bytes);
@@ -2137,6 +2138,7 @@ impl<'o> Text<'o> {
         }
     }
 
+    #[inline(never)]
     fn number(&mut self, value: i64) {
         let mut digits = [0u8; 24];
         let mut writer = JsonWriter::new(&mut digits);

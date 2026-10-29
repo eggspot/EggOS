@@ -815,6 +815,7 @@ impl<'b> JsonWriter<'b> {
     }
 
     /// A member's key and its colon; the member's value comes next.
+    #[inline(never)]
     pub fn key(&mut self, key: &str) {
         self.string(key);
         self.put(b":");
@@ -822,6 +823,7 @@ impl<'b> JsonWriter<'b> {
     }
 
     /// A string.
+    #[inline(never)]
     pub fn string(&mut self, text: &str) {
         self.begin_string();
         self.string_piece(text);
