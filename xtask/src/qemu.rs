@@ -2,6 +2,7 @@
 //! must change with the kernel's and the test programs' own) and why QEMU gets the arguments it
 //! does: docs/build.md, "Developer commands".
 
+pub mod dynamic_linking;
 pub mod files;
 pub mod install;
 mod linux_gui;
@@ -242,13 +243,14 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"exit 7\r",
 ];
 
-const LINUX_PROGRAM_SESSION: [&[u8]; 7] = [
+const LINUX_PROGRAM_SESSION: [&[u8]; 8] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
     b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
     b"linux-static exit 42; echo LINUX-STATIC status $?\r",
     b"linux-static-pie panic; echo LINUX-STATIC status $?\r",
     b"linux-sockets; echo LINUX-SOCKETS status $?\r",
     b"linux-memory; echo LINUX-MEMORY status $?\r",
+    b"linux-mappings; echo LINUX-MAPPINGS status $?\r",
     b"exit 7\r",
 ];
 
@@ -274,6 +276,18 @@ const LINUX_MEMORY_LINES: [&str; 7] = [
     "LINUX-MEMORY windows ENOMEM within a quarter of memory",
     "LINUX-MEMORY memory back",
     "LINUX-MEMORY status 0",
+];
+
+const LINUX_MAPPINGS_LINES: [&str; 9] = [
+    "LINUX-MAPPINGS private read ok",
+    "LINUX-MAPPINGS past the end SIGBUS",
+    "LINUX-MAPPINGS private writes stay private, DONTNEED reads the file again",
+    "LINUX-MAPPINGS shared read-only, EACCES for writing",
+    "LINUX-MAPPINGS the program's own file",
+    "LINUX-MAPPINGS fork reads the file's pages",
+    "LINUX-MAPPINGS mremap grows into the file",
+    "LINUX-MAPPINGS msync 0 ENOMEM",
+    "LINUX-MAPPINGS status 0",
 ];
 
 const HOST_FOLDER_SESSION: [&[u8]; 7] = [
@@ -1020,6 +1034,10 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
             .map(|line| Line::Whole((*line).into()))
             .collect(),
         LINUX_MEMORY_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
+        LINUX_MAPPINGS_LINES
             .iter()
             .map(|line| Line::Whole((*line).into()))
             .collect(),

@@ -148,6 +148,51 @@ jobs:
           path: target
           key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.run_id }}
 
+  dynamic-linking:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install the glibc target and cross compilers (test data only, never shipped)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu
+          rustup target add ${{ matrix.arch == 'riscv64' && 'riscv64gc' || matrix.arch }}-unknown-linux-gnu
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: Dynamically linked glibc and musl programs boot
+        run: cargo xtask dynamic-linking --arch ${{ matrix.arch }}
+
   bench:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -346,7 +391,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
+    needs: [changes, fast, qemu, dynamic-linking, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

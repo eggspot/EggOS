@@ -117,6 +117,7 @@ pub mod number {
         pub const WRITEV: u64 = 20;
         pub const SCHED_YIELD: u64 = 24;
         pub const MREMAP: u64 = 25;
+        pub const MSYNC: u64 = 26;
         pub const MADVISE: u64 = 28;
         pub const DUP: u64 = 32;
         pub const DUP2: u64 = 33;
@@ -335,6 +336,7 @@ pub mod number {
         pub const MREMAP: u64 = 216;
         pub const MMAP: u64 = 222;
         pub const MPROTECT: u64 = 226;
+        pub const MSYNC: u64 = 227;
         pub const MADVISE: u64 = 233;
         pub const RT_TGSIGQUEUEINFO: u64 = 240;
         pub const WAIT4: u64 = 260;
@@ -424,6 +426,7 @@ pub mod number {
             MUNMAP,
             MPROTECT,
             MREMAP,
+            MSYNC,
             MADVISE,
             GETPID,
             GETPPID,
@@ -554,6 +557,9 @@ impl Errno {
     pub const E2BIG: Self = Self(7);
     /// Not a program the kernel can run (`execve`).
     pub const ENOEXEC: Self = Self(8);
+    /// A program's interpreter (its dynamic loader) is not one the kernel can run (`execve`,
+    /// D167).
+    pub const ELIBBAD: Self = Self(80);
     /// Bad file descriptor: one that is not open, or not open for what the call does (D101),
     /// or a target above the open-file limit (`dup2`, `dup3`).
     pub const EBADF: Self = Self(9);
@@ -819,6 +825,11 @@ fn user_exception<P: Platform>(
     match process.resolve_page_fault(address, page_fault) {
         Ok(()) => ControlFlow::Continue(()),
         Err(UnresolvedFault::NotAllowed) => signal_fault(process, thread, context),
+        Err(UnresolvedFault::BusError) => {
+            let exception = context.last_exception();
+            let fault = fault::bus_error(process, &exception, context.stack());
+            signals::deliver_fault(process, thread, context, &fault)
+        }
         Err(UnresolvedFault::OutOfMemory) => end_process(
             process,
             ProcessExit::Killed {
@@ -1205,6 +1216,7 @@ fn out_of_line_result<P: Platform>(
         number::SETGROUPS => credentials::setgroups(process, first, second),
         number::MREMAP => memory::mremap::<P>(process, first, second, third, fourth, fifth),
         number::MADVISE => memory::madvise::<P>(process, first, second, third),
+        number::MSYNC => memory::msync::<P>(process, first, second, third),
         number::SCHED_YIELD => {
             crate::thread::yield_now::<P>();
             Ok(0)

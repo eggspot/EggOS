@@ -7,6 +7,7 @@
 mod android;
 mod bench;
 mod ci_artifact;
+mod dynamic_linking;
 mod elf;
 mod image;
 mod initramfs;
@@ -87,6 +88,12 @@ commands:
                          scripts' --apps: win-paint.exe and win-controls.exe (x86_64 and
                          aarch64), linux-paint, and mac-paint.zip (aarch64 and x86_64,
                          built on a macOS host) (<arch> may be `all`)
+  dynamic-linking --arch <arch>
+                         build our dynamically linked hello against glibc and musl, add it
+                         with their dynamic loaders and C libraries (test data: glibc from
+                         this Linux host's cross compilers' packages, musl downloaded from
+                         Alpine into target/dynamic-linking) to the release image, boot it
+                         and check both run (<arch> may be `all`)
   fuzz mcp [--seconds <n>]
                          hand the MCP server's message handling hostile lines for <n>
                          seconds (default 60) and fail on a panic or a wrong answer
@@ -268,6 +275,8 @@ const USER_CRATES: &[&str] = &[
     "eggos-linux-static",
     "eggos-linux-sockets",
     "eggos-linux-memory",
+    "eggos-linux-mappings",
+    "eggos-linux-dynamic",
     "eggos-linux-udp",
     "eggos-linux-tcp",
     "eggos-linux-gui-tests",
@@ -469,6 +478,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("sample-apps") => {
             for arch in arch()? {
                 println!("{}", build_sample_apps(arch)?.display());
+            }
+            Ok(())
+        }
+        Some("dynamic-linking") => {
+            for arch in arch()? {
+                dynamic_linking::check(arch)?;
             }
             Ok(())
         }
@@ -1490,6 +1505,10 @@ const LINUX_MEMORY_PACKAGE: &str = "eggos-linux-memory";
 
 const LINUX_MEMORY_PATH: &str = "bin/linux-memory";
 
+const LINUX_MAPPINGS_PACKAGE: &str = "eggos-linux-mappings";
+
+const LINUX_MAPPINGS_PATH: &str = "bin/linux-mappings";
+
 const LINUX_UDP_PACKAGE: &str = "eggos-linux-udp";
 
 const LINUX_TCP_PACKAGE: &str = "eggos-linux-tcp";
@@ -1560,6 +1579,10 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
     added.push(image::AddedFile {
         host: build_linux_test_program(arch, LINUX_MEMORY_PACKAGE, "static")?,
         path: LINUX_MEMORY_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_MAPPINGS_PACKAGE, "static")?,
+        path: LINUX_MAPPINGS_PATH.to_owned(),
     });
     let mut extra = vec![(
         "etc/eggos/init.conf",

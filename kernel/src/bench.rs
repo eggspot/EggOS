@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 57] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -134,6 +134,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 56] {
         ("linux_page_fault", linux_page_fault::<P>),
         ("linux_mmap_munmap", linux_mmap_munmap::<P>),
         ("linux_memfd_map_unmap", linux_memfd_map_unmap::<P>),
+        ("linux_file_map_read_unmap", linux_file_map_read_unmap::<P>),
         ("linux_dup3_close", linux_dup3_close::<P>),
         ("linux_descriptor_lookup", |_, n| linux_descriptor_lookup(n)),
         ("linux_openat_close", linux_openat_close::<P>),
@@ -1498,6 +1499,53 @@ fn linux_memfd_map_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
     });
 }
 
+/// A private `mmap` of 16 pages of a file (the runtime's self-test program in the initramfs),
+/// each page then read once, as a kernel copy reads it, so each is a file page's fault without
+/// the trap (a frame taken, filled from the file, zeroed past its bytes and mapped), and the
+/// `munmap` that frees them (D167): what a dynamic loader does for a library's pages.
+fn linux_file_map_read_unmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{Descriptors, FileKind, OpenFile, open_flag};
+    use linux::memory::{MappedFile, map, prot};
+    const PROGRAM: &[u8] = b"/usr/libexec/eggos-selftest";
+    const PAGES: u64 = 16;
+    let Ok(node) = crate::vfs::resolve(crate::vfs::root(), crate::vfs::root(), PROGRAM) else {
+        return;
+    };
+    let length = (node.attributes().size / FRAME_SIZE).min(PAGES) * FRAME_SIZE;
+    if length == 0 {
+        return;
+    }
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let files = Descriptors::with_console_streams();
+    let open = alloc::sync::Arc::new(OpenFile::new(FileKind::Regular(node), open_flag::RDONLY));
+    let fd = files
+        .lock()
+        .open(open, false, 64)
+        .expect("descriptor 3 is free");
+    let mapped = MappedFile {
+        files: &files,
+        fd: u64::from(fd),
+    };
+    let mut word = [0u8; 8];
+    program.with_active(|| {
+        for _ in 0..n {
+            let start =
+                linux::memory::mmap_file(&program, 0, length, prot::READ, map::PRIVATE, mapped, 0)
+                    .expect("16 pages fit");
+            for page in (start..start + length).step_by(FRAME_SIZE as usize) {
+                program
+                    .read_user_memory(page, &mut word)
+                    .expect("the file's pages are read");
+            }
+            black_box(word);
+            linux::memory::munmap(&program, black_box(start), length)
+                .expect("the pages were just mapped");
+        }
+    });
+}
+
 fn linux_descriptor_lookup(n: u64) {
     let files = linux::descriptors::Descriptors::with_console_streams();
     for _ in 0..n {
@@ -1812,8 +1860,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 23..].split_at(16);
-        let benchmarks = &[&all[..all.len() - 23], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 24..].split_at(17);
+        let benchmarks = &[&all[..all.len() - 24], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1825,6 +1873,7 @@ mod tests {
             (linux_page_fault, _),
             (linux_mmap_munmap, _),
             (linux_memfd_map_unmap, _),
+            (linux_file_map_read_unmap, _),
             (linux_dup3_close, _),
             (linux_descriptor_lookup, _),
             (linux_openat_close, _),
@@ -1859,6 +1908,7 @@ mod tests {
                 *linux_page_fault,
                 *linux_mmap_munmap,
                 *linux_memfd_map_unmap,
+                *linux_file_map_read_unmap,
                 *linux_dup3_close,
                 *linux_descriptor_lookup,
                 *linux_openat_close,
@@ -1877,6 +1927,7 @@ mod tests {
                 "linux_page_fault",
                 "linux_mmap_munmap",
                 "linux_memfd_map_unmap",
+                "linux_file_map_read_unmap",
                 "linux_dup3_close",
                 "linux_descriptor_lookup",
                 "linux_openat_close",

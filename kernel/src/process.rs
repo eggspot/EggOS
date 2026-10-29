@@ -37,8 +37,11 @@ use crate::linux::process_table;
 use crate::linux::signals::Signals;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
-use crate::regions::{Access, Region, RegionError, Regions, is_page_range};
-use crate::sync::SpinLock;
+use crate::regions::{
+    Access, FilePages, FileRange, FileRanges, Region, RegionError, Regions, WHOLE_FILE,
+    is_page_range,
+};
+use crate::sync::{LeafSpinLock, SpinLock};
 use crate::thread::{self, FpStart, JoinHandle, SpawnError};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -80,6 +83,9 @@ pub enum UnresolvedFault {
     NotAllowed,
     /// There was no frame for the page (Linux's out-of-memory killer sends `SIGKILL`).
     OutOfMemory,
+    /// The page maps a file and is past the file's end, or the file could not be read (Linux
+    /// sends `SIGBUS`, D167).
+    BusError,
 }
 
 /// Where [`Process::map_region`] puts a new region.
@@ -118,6 +124,8 @@ pub enum PopulateError {
     OutOfMemory,
     /// Part of the range is in no region; the rest is ready.
     NotCovered,
+    /// A page maps a file and is past its end, or the file could not be read.
+    BusError,
 }
 
 /// Where [`Process::remap_region`] may put a region it resizes or moves.
@@ -206,6 +214,8 @@ struct Memory<P: Platform> {
     shared_anonymous: AtomicBool,
     lent: SpinLock<Vec<LentRange>>,
     has_lent: AtomicBool,
+    files: LeafSpinLock<FileRanges>,
+    has_files: AtomicBool,
 }
 
 /// Frames a device or a memory file lends to user space ([`Process::map_lent_frames`]): owned
@@ -245,6 +255,8 @@ impl<P: Platform> Memory<P> {
             shared_anonymous: AtomicBool::new(false),
             lent: SpinLock::new(Vec::new()),
             has_lent: AtomicBool::new(false),
+            files: LeafSpinLock::new_leaf(FileRanges::new()),
+            has_files: AtomicBool::new(false),
         }
     }
 
@@ -262,6 +274,7 @@ impl<P: Platform> Memory<P> {
             return Err(CopyError::SharedAnonymous);
         }
         let copied_regions = regions.try_copy().ok_or(CopyError::OutOfMemory)?;
+        let copied_files = self.files.lock().try_copy().ok_or(CopyError::OutOfMemory)?;
         let frame_offset = self.frame_offset;
         let at = |frame: u64| (frame as usize).wrapping_add(frame_offset) as *mut u8;
         self.space
@@ -287,7 +300,19 @@ impl<P: Platform> Memory<P> {
             shared_anonymous: AtomicBool::new(false),
             lent: SpinLock::new(Vec::new()),
             has_lent: AtomicBool::new(false),
+            has_files: AtomicBool::new(!copied_files.is_empty()),
+            files: LeafSpinLock::new_leaf(copied_files),
         })
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unmap_files(&self, start: u64, end: u64) -> Result<(), RegionError> {
+        self.files.lock().remove(start, end)
+    }
+
+    fn maps_file_in(&self, start: u64, end: u64) -> bool {
+        self.has_files.load(Ordering::Relaxed) && self.files.lock().overlaps(start, end)
     }
 
     #[cold]
@@ -736,6 +761,16 @@ impl<P: Platform> Process<P> {
             .insert(start, end, Some(attributes))
     }
 
+    /// Records that `range`'s pages hold its file (a program's segment, D167): a page there
+    /// that is not mapped, or that `MADV_DONTNEED` discards, is read from the file when next
+    /// touched. While the process is built; the pages are in a region already.
+    pub fn add_file_range(&mut self, range: FileRange) -> Result<(), RegionError> {
+        let memory = self.memory_mut();
+        memory.files.get_mut().insert(range)?;
+        *memory.has_files.get_mut() = true;
+        Ok(())
+    }
+
     /// Sets the program break's start and end to `start`, page-aligned: where the heap `brk`
     /// grows begins (Linux: the end of the program's last segment). While the process is
     /// built.
@@ -889,6 +924,49 @@ impl<P: Platform> Process<P> {
         Ok(start)
     }
 
+    /// Adds a region of `length` bytes with `attributes` where `placement` says, as
+    /// [`Self::map_region`], whose pages hold `file` from `offset`, page-aligned (a file mapping,
+    /// D167), and returns its start. Each page is read into a frame of its own when first
+    /// touched, and again after `MADV_DONTNEED`; a page wholly past the file's end is a bus
+    /// error ([`UnresolvedFault::BusError`]). Unless `writable`, the range may never be made
+    /// writable (a shared mapping, whose pages are read as the file was). The pages are the
+    /// process's own: `fork` copies them, and their file goes with them.
+    pub fn map_file_region(
+        &self,
+        placement: Placement,
+        length: u64,
+        attributes: Option<Attributes>,
+        file: Arc<dyn FilePages>,
+        offset: u64,
+        writable: bool,
+    ) -> Result<u64, RegionError> {
+        let memory = &*self.memory;
+        let mut regions = memory.regions.lock();
+        let start = Self::place_locked(memory, &mut regions, placement, length)?;
+        memory.files.lock().insert(FileRange {
+            start,
+            end: start + length,
+            offset,
+            file_bytes_end: WHOLE_FILE,
+            writable,
+            file,
+        })?;
+        if let Err(error) = regions.insert(start, start + length, attributes) {
+            memory.files.lock().remove(start, start + length)?;
+            return Err(error);
+        }
+        memory.has_files.store(true, Ordering::Relaxed);
+        Ok(start)
+    }
+
+    /// Whether part of user addresses `start..end` holds a file ([`Self::map_file_region`],
+    /// [`Self::add_file_range`]).
+    pub fn maps_file_in(&self, start: u64, end: u64) -> bool {
+        let memory = &*self.memory;
+        let _regions = memory.regions.lock();
+        memory.maps_file_in(start, end)
+    }
+
     /// Adds a region of one page with `attributes` where `placement` says, as
     /// [`Self::map_region`], and maps it at once with a frame of its own holding `contents`
     /// and zero after them, made visible to instruction fetch if executable: a page the
@@ -938,6 +1016,9 @@ impl<P: Platform> Process<P> {
     ) -> Result<(), RegionError> {
         if end > <P::PageTableFormat as Format>::USER_END {
             return Err(RegionError::Invalid);
+        }
+        if memory.has_files.load(Ordering::Relaxed) {
+            memory.unmap_files(start, end)?;
         }
         regions.remove(start, end, |_| ())?;
         if memory.has_lent.load(Ordering::Relaxed) {
@@ -1083,6 +1164,7 @@ impl<P: Platform> Process<P> {
                         match error {
                             UnresolvedFault::NotAllowed => PopulateError::NotAllowed,
                             UnresolvedFault::OutOfMemory => PopulateError::OutOfMemory,
+                            UnresolvedFault::BusError => PopulateError::BusError,
                         }
                     })?;
                 }
@@ -1157,6 +1239,11 @@ impl<P: Platform> Process<P> {
                 && old_end == region.end
                 && regions.is_free(old_end, new_end)
             {
+                if memory.has_files.load(Ordering::Relaxed) {
+                    let mut files = memory.files.lock();
+                    let grown = files.moved_parts(start, old_length, start, new_length)?;
+                    files.finish_move(start, old_end, grown, false)?;
+                }
                 regions.insert(old_end, new_end, region.attributes)?;
                 return Ok(start);
             }
@@ -1174,6 +1261,15 @@ impl<P: Platform> Process<P> {
                 to
             }
         };
+        let moved_files = match memory.has_files.load(Ordering::Relaxed) {
+            true => Some(
+                memory
+                    .files
+                    .lock()
+                    .moved_parts(start, old_length, to, new_length)?,
+            ),
+            false => None,
+        };
         regions.insert(to, to + new_length, region.attributes)?;
         if let Err(error) = memory.space.move_pages(start, to, old_length) {
             regions.remove(to, to + new_length, |_| ())?;
@@ -1181,6 +1277,12 @@ impl<P: Platform> Process<P> {
                 MapError::OutOfMemory => RegionError::OutOfMemory,
                 _ => RegionError::Invalid,
             });
+        }
+        if let Some(moved) = moved_files {
+            memory
+                .files
+                .lock()
+                .finish_move(start, old_end, moved, keep_source)?;
         }
         if !keep_source {
             regions.remove(start, old_end, |_| ())?;
@@ -1211,6 +1313,12 @@ impl<P: Platform> Process<P> {
         }
         let writes = attributes.is_some_and(|attributes| attributes.writable);
         if writes && memory.lends_read_only_in(start, end) {
+            return Err(RegionError::NotWritable);
+        }
+        if writes
+            && memory.has_files.load(Ordering::Relaxed)
+            && memory.files.lock().read_only_in(start, end)
+        {
             return Err(RegionError::NotWritable);
         }
         let mut changed_end = start;
@@ -1328,6 +1436,11 @@ impl<P: Platform> Process<P> {
             .filter(|&attributes| access.allowed_by(attributes))
             .ok_or(UnresolvedFault::NotAllowed)?;
         if mapped_is_ready {
+            if memory.has_files.load(Ordering::Relaxed)
+                && let Some(read) = Self::populate_from_file(memory, page, attributes)
+            {
+                return read;
+            }
             match Self::map_frame(memory, page, attributes, &[]) {
                 Ok(frame) => return Ok((frame, attributes)),
                 Err(MapError::AlreadyMapped) => {}
@@ -1342,11 +1455,101 @@ impl<P: Platform> Process<P> {
                 Ok((frame, mapped))
             }
             Some(_) => Err(UnresolvedFault::NotAllowed),
-            None => match Self::map_frame(memory, page, attributes, &[]) {
-                Ok(frame) => Ok((frame, attributes)),
-                Err(MapError::OutOfMemory) => Err(UnresolvedFault::OutOfMemory),
-                Err(_) => Err(UnresolvedFault::NotAllowed),
-            },
+            None => {
+                if memory.has_files.load(Ordering::Relaxed)
+                    && let Some(read) = Self::populate_from_file(memory, page, attributes)
+                {
+                    return read;
+                }
+                match Self::map_frame(memory, page, attributes, &[]) {
+                    Ok(frame) => Ok((frame, attributes)),
+                    Err(MapError::OutOfMemory) => Err(UnresolvedFault::OutOfMemory),
+                    Err(_) => Err(UnresolvedFault::NotAllowed),
+                }
+            }
+        }
+    }
+
+    /// For [`Self::populate`], in a process with file ranges: if user page `page` is in one
+    /// and not mapped, maps it with `attributes` and a frame of its own holding the file's
+    /// bytes for it, zero after them (D167); `None` for a page in no file range, or one mapped
+    /// already, which the anonymous path handles. The regions' lock is held, so nothing maps or
+    /// unmaps the page meanwhile; the file is read under it (file systems read their storage
+    /// by polling, never by sleeping).
+    #[cold]
+    #[inline(never)]
+    fn populate_from_file(
+        memory: &Memory<P>,
+        page: u64,
+        attributes: Attributes,
+    ) -> Option<Result<(u64, Attributes), UnresolvedFault>> {
+        let (file, offset, readable) = {
+            let files = memory.files.lock();
+            let range = files.find(page)?;
+            (
+                Arc::clone(&range.file),
+                range.offset_of(page),
+                range.file_bytes_in(page),
+            )
+        };
+        if memory.space.translate(page).is_some() {
+            return None;
+        }
+        Some(Self::map_file_page(
+            memory,
+            page,
+            attributes,
+            &*file,
+            offset,
+            readable as usize,
+        ))
+    }
+
+    /// Maps user page `page` with `attributes` and a new frame holding the first `readable`
+    /// bytes of `file` from `offset` and zero after them: [`UnresolvedFault::BusError`] if the
+    /// file has no byte at `offset` although `readable` is not 0 (the page is past its end), or
+    /// cannot be read.
+    fn map_file_page(
+        memory: &Memory<P>,
+        page: u64,
+        attributes: Attributes,
+        file: &dyn FilePages,
+        offset: u64,
+        readable: usize,
+    ) -> Result<(u64, Attributes), UnresolvedFault> {
+        let frame = {
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames.as_mut().ok_or(UnresolvedFault::OutOfMemory)?;
+            frames
+                .allocate_for_user()
+                .ok_or(UnresolvedFault::OutOfMemory)?
+        };
+        let bytes = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
+        // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
+        // it through its offset, the process's `frame_offset`; `readable` is at most a page.
+        let buffer = unsafe { core::slice::from_raw_parts_mut(bytes, readable) };
+        let read = match file.read_at(offset, buffer) {
+            Some(0) if readable > 0 => None,
+            read => read,
+        };
+        let Some(read) = read else {
+            free_frame(frame);
+            return Err(UnresolvedFault::BusError);
+        };
+        // SAFETY: as above: the rest of the frame, after the file's bytes.
+        unsafe { eggos_hal::memory::zero(bytes.wrapping_add(read), FRAME_SIZE as usize - read) };
+        if attributes.executable {
+            P::make_instructions_visible(bytes as usize, FRAME_SIZE as usize);
+        }
+        match memory.space.map(page, frame, FRAME_SIZE, attributes) {
+            Ok(()) => Ok((frame, attributes)),
+            Err(error) => {
+                free_frame(frame);
+                Err(match error {
+                    MapError::OutOfMemory => UnresolvedFault::OutOfMemory,
+                    _ => UnresolvedFault::NotAllowed,
+                })
+            }
         }
     }
 
@@ -2738,5 +2941,159 @@ mod tests {
         }
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert_eq!(free(), before, "every frame went back exactly once");
+    }
+
+    /// A file of `pages` pages and `tail` bytes, each byte its offset's low byte plus 1.
+    fn test_file(pages: u64, tail: u64) -> Arc<crate::regions::BytesFile> {
+        let length = pages * FRAME_SIZE + tail;
+        Arc::new(crate::regions::BytesFile(
+            (0..length).map(|at| (at as u8).wrapping_add(1)).collect(),
+        ))
+    }
+
+    const READ_FAULT: PageFault = PageFault {
+        access: Access::Read,
+        may_be_stale: false,
+    };
+
+    /// The page at `virt` as a kernel copy reads it, which maps it first if it is not.
+    fn read_page(process: &Process<P>, virt: u64) -> Vec<u8> {
+        let mut bytes = alloc::vec![0; FRAME_SIZE as usize];
+        process.read_user_memory(virt, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn file_pages_are_read_when_touched_and_past_the_end_are_a_bus_error() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let before = free();
+        {
+            // SAFETY: test tables, never active; the test platform's switch only records roots.
+            let process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+            let file = test_file(2, 100);
+            let start = process
+                .map_file_region(
+                    Placement::Exactly(DATA),
+                    4 * FRAME_SIZE,
+                    Some(Attributes::USER_READ_WRITE),
+                    file.clone() as Arc<dyn FilePages>,
+                    FRAME_SIZE,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(start, DATA);
+            assert_eq!(process.address_space().translate(DATA), None);
+            let page = read_page(&process, DATA);
+            assert_eq!(
+                page[..],
+                file.0[FRAME_SIZE as usize..2 * FRAME_SIZE as usize]
+            );
+            let tail = read_page(&process, DATA + FRAME_SIZE);
+            assert_eq!(tail[..100], file.0[2 * FRAME_SIZE as usize..]);
+            assert!(tail[100..].iter().all(|&byte| byte == 0));
+            let past = DATA + 2 * FRAME_SIZE;
+            assert_eq!(
+                process.resolve_page_fault(past, READ_FAULT),
+                Err(UnresolvedFault::BusError)
+            );
+            assert_eq!(process.address_space().translate(past), None);
+            assert_eq!(
+                process.read_user_memory(past, &mut [0; 8]),
+                Err(InvalidUserAddress)
+            );
+            assert_eq!(
+                process.populate_range(DATA, DATA + 4 * FRAME_SIZE, Access::Write),
+                Err(PopulateError::BusError)
+            );
+            process.write_user_memory(DATA, b"changed").unwrap();
+            assert_eq!(&file.0[FRAME_SIZE as usize..][..7], &page[..7]);
+            process.discard_pages(DATA, DATA + FRAME_SIZE).unwrap();
+            assert_eq!(read_page(&process, DATA), page, "read from the file again");
+            process
+                .unmap_range(DATA + FRAME_SIZE, DATA + 2 * FRAME_SIZE)
+                .unwrap();
+            assert!(process.maps_file_in(DATA, DATA + FRAME_SIZE));
+            assert!(!process.maps_file_in(DATA + FRAME_SIZE, DATA + 2 * FRAME_SIZE));
+            process
+                .map_region(
+                    Placement::Exactly(DATA + FRAME_SIZE),
+                    FRAME_SIZE,
+                    Some(Attributes::USER_READ_WRITE),
+                )
+                .unwrap();
+            assert!(
+                read_page(&process, DATA + FRAME_SIZE)
+                    .iter()
+                    .all(|&byte| byte == 0),
+                "an anonymous mapping where the file was reads zeros"
+            );
+        }
+        assert_eq!(free(), before);
+    }
+
+    #[test]
+    fn file_pages_move_with_mremap_and_go_with_fork_and_shared_ones_stay_read_only() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        // SAFETY: as above.
+        let process = unsafe { Process::<P>::new(&kernel) }.unwrap();
+        let file = test_file(8, 0);
+        process
+            .map_file_region(
+                Placement::Exactly(DATA),
+                2 * FRAME_SIZE,
+                Some(Attributes::USER_READ_ONLY),
+                file.clone() as Arc<dyn FilePages>,
+                0,
+                true,
+            )
+            .unwrap();
+        let first = read_page(&process, DATA);
+        let to = DATA + 64 * FRAME_SIZE;
+        assert_eq!(
+            process.remap_region(
+                DATA,
+                2 * FRAME_SIZE,
+                3 * FRAME_SIZE,
+                Remap::Replace(to),
+                false
+            ),
+            Ok(to)
+        );
+        assert_eq!(read_page(&process, to), first, "the mapped page moved");
+        assert_eq!(
+            read_page(&process, to + 2 * FRAME_SIZE)[..],
+            file.0[2 * FRAME_SIZE as usize..3 * FRAME_SIZE as usize],
+            "the grown page is the file's next"
+        );
+        let child = process.new_child(ChildMemory::Copied).unwrap();
+        assert_eq!(
+            read_page(&child, to + FRAME_SIZE)[..],
+            file.0[FRAME_SIZE as usize..2 * FRAME_SIZE as usize],
+            "the child reads an untouched page from the file"
+        );
+        let shared = process
+            .map_file_region(
+                Placement::Exactly(DATA),
+                FRAME_SIZE,
+                Some(Attributes::USER_READ_ONLY),
+                file.clone() as Arc<dyn FilePages>,
+                0,
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            process.protect_range(
+                shared,
+                shared + FRAME_SIZE,
+                Some(Attributes::USER_READ_WRITE)
+            ),
+            Err(RegionError::NotWritable)
+        );
+        assert_eq!(
+            process.protect_range(to, to + FRAME_SIZE, Some(Attributes::USER_READ_WRITE)),
+            Ok(())
+        );
     }
 }

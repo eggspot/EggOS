@@ -301,6 +301,24 @@ impl PartialEq for Node {
 
 impl Eq for Node {}
 
+impl crate::regions::FilePages for Node {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let at = offset.saturating_add(filled as u64);
+            match self
+                .file_system
+                .read_into(self.id, at, &mut buffer[filled..])
+            {
+                Ok(0) => break,
+                Ok(read) => filled += read,
+                Err(StorageError) => return None,
+            }
+        }
+        Some(filled)
+    }
+}
+
 impl Node {
     /// The root of `file_system`.
     pub fn root_of(file_system: &'static dyn FileSystem) -> Self {

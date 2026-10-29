@@ -16,7 +16,13 @@
 //! range other attributes (`mprotect`), and [`Regions::free_below`] finds room for a new one
 //! (`mmap`). A region whose pages the program may not touch at all (`PROT_NONE`) has no
 //! attributes.
+//!
+//! Regions know what backs them (D167): a part of user space whose pages come from a file is a
+//! [`FileRange`] in the process's [`FileRanges`], kept apart from the regions, so the regions'
+//! hot paths stay as they were. A page there is read from the file when first touched, and
+//! again after `MADV_DONTNEED`; every other page of a region is zero when first touched.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use eggos_hal::memory::FRAME_SIZE;
 pub use eggos_hal::paging::Access;
@@ -264,6 +270,247 @@ impl Regions {
 /// Whether `start..end` is a non-empty, page-aligned range.
 pub fn is_page_range(start: u64, end: u64) -> bool {
     start < end && (start | end).is_multiple_of(FRAME_SIZE)
+}
+
+/// A file that a [`FileRange`]'s pages are read from: a node of a file system (D167).
+pub trait FilePages: Send + Sync {
+    /// Copies the file's bytes from `offset` into `buffer`: how many, fewer at its end and 0
+    /// past it; `None` if the storage under the file failed.
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize>;
+}
+
+/// [`FileRange::file_bytes_end`] of a range that maps the whole file: its pages past the
+/// file's end are not the file's (`SIGBUS`), as an `mmap` of a file has them.
+pub const WHOLE_FILE: u64 = u64::MAX;
+
+/// User addresses `start..end`, page-aligned, whose pages hold `file` from `offset`, a page
+/// boundary of the file: a private file mapping (`mmap`) or a program's segment (`execve`).
+#[derive(Clone)]
+pub struct FileRange {
+    pub start: u64,
+    pub end: u64,
+    /// Where `start` is in the file.
+    pub offset: u64,
+    /// Where the file's bytes stop counting: bytes at or past this offset of the file read as
+    /// zero, and no page reaches past the file's end (a segment's file bytes, then its
+    /// `.bss`); [`WHOLE_FILE`] for an `mmap`.
+    pub file_bytes_end: u64,
+    /// Whether the program may make the pages writable (`mprotect`): `false` for a shared
+    /// mapping, whose pages are the file's as it was read.
+    pub writable: bool,
+    pub file: Arc<dyn FilePages>,
+}
+
+impl FileRange {
+    /// Where page `page` of the range is in the file.
+    pub fn offset_of(&self, page: u64) -> u64 {
+        self.offset + (page - self.start)
+    }
+
+    /// How many bytes of page `page` of the range come from the file: a page's worth, fewer
+    /// where [`Self::file_bytes_end`] cuts it.
+    pub fn file_bytes_in(&self, page: u64) -> u64 {
+        self.file_bytes_end
+            .saturating_sub(self.offset_of(page))
+            .min(FRAME_SIZE)
+    }
+
+    fn clipped(&self, start: u64, end: u64) -> Self {
+        let from = self.start.max(start);
+        Self {
+            start: from,
+            end: self.end.min(end),
+            offset: self.offset_of(from),
+            ..self.clone()
+        }
+    }
+}
+
+impl core::fmt::Debug for FileRange {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("FileRange")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("offset", &self.offset)
+            .field("file_bytes_end", &self.file_bytes_end)
+            .field("writable", &self.writable)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A process's [`FileRange`]s, sorted and disjoint, each within its regions. Removing,
+/// moving and copying them follows what the regions' calls do to the same addresses.
+#[derive(Debug, Default)]
+pub struct FileRanges {
+    ranges: Vec<FileRange>,
+}
+
+impl FileRanges {
+    pub const fn new() -> Self {
+        Self { ranges: Vec::new() }
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// Every range, in address order.
+    pub fn iter(&self) -> impl Iterator<Item = &FileRange> {
+        self.ranges.iter()
+    }
+
+    /// The range that holds `address`, if any.
+    pub fn find(&self, address: u64) -> Option<&FileRange> {
+        let at = self.ranges.partition_point(|range| range.end <= address);
+        self.ranges.get(at).filter(|range| range.start <= address)
+    }
+
+    fn bounds(&self, start: u64, end: u64) -> (usize, usize) {
+        let first = self.ranges.partition_point(|range| range.end <= start);
+        let last = self.ranges.partition_point(|range| range.start < end);
+        (first, last.max(first))
+    }
+
+    /// Whether any range holds part of `start..end`.
+    pub fn overlaps(&self, start: u64, end: u64) -> bool {
+        let (first, last) = self.bounds(start, end);
+        first < last
+    }
+
+    /// Whether a range that may not be made writable holds part of `start..end`.
+    pub fn read_only_in(&self, start: u64, end: u64) -> bool {
+        let (first, last) = self.bounds(start, end);
+        self.ranges[first..last].iter().any(|range| !range.writable)
+    }
+
+    /// Adds `range`, page-aligned, where no range is: [`RegionError::Invalid`] for an empty or
+    /// unaligned one, [`RegionError::Overlaps`] where one is, [`RegionError::OutOfMemory`]
+    /// without memory for it.
+    pub fn insert(&mut self, range: FileRange) -> Result<(), RegionError> {
+        if !is_page_range(range.start, range.end) || !range.offset.is_multiple_of(FRAME_SIZE) {
+            return Err(RegionError::Invalid);
+        }
+        let at = self
+            .ranges
+            .partition_point(|other| other.end <= range.start);
+        if self
+            .ranges
+            .get(at)
+            .is_some_and(|next| next.start < range.end)
+        {
+            return Err(RegionError::Overlaps);
+        }
+        self.ranges
+            .try_reserve(1)
+            .map_err(|_| RegionError::OutOfMemory)?;
+        self.ranges.insert(at, range);
+        Ok(())
+    }
+
+    /// Takes `start..end`, page-aligned, out of every range, keeping what lies outside it of
+    /// the ranges it cuts. Nothing changes unless it all can: [`RegionError::Invalid`] for an
+    /// empty or unaligned range, [`RegionError::OutOfMemory`] when a cut needs memory there is
+    /// none of.
+    pub fn remove(&mut self, start: u64, end: u64) -> Result<(), RegionError> {
+        if !is_page_range(start, end) {
+            return Err(RegionError::Invalid);
+        }
+        let (first, last) = self.bounds(start, end);
+        if first == last {
+            return Ok(());
+        }
+        let lowest = &self.ranges[first];
+        let highest = &self.ranges[last - 1];
+        let below = (lowest.start < start).then(|| lowest.clipped(lowest.start, start));
+        let above = (highest.end > end).then(|| highest.clipped(end, highest.end));
+        let kept = usize::from(below.is_some()) + usize::from(above.is_some());
+        if kept > last - first {
+            self.ranges
+                .try_reserve(kept - (last - first))
+                .map_err(|_| RegionError::OutOfMemory)?;
+        }
+        self.ranges
+            .splice(first..last, below.into_iter().chain(above));
+        Ok(())
+    }
+
+    /// A copy of every range, for a new process's memory (`fork`); `None` without memory.
+    pub fn try_copy(&self) -> Option<Self> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(self.ranges.len()).ok()?;
+        ranges.extend(self.ranges.iter().cloned());
+        Some(Self { ranges })
+    }
+
+    /// The first half of moving `old_length` bytes from `start` to `to` with `new_length`
+    /// bytes there (`mremap`, the [`crate::process::Process::remap_region`] that goes with it):
+    /// the parts of the ranges in the old range, moved, the one that reached its end grown to
+    /// the new end, as a file mapping that grows maps more of its file. Takes the memory
+    /// [`Self::finish_move`] needs, so that cannot run out; changes nothing.
+    pub fn moved_parts(
+        &mut self,
+        start: u64,
+        old_length: u64,
+        to: u64,
+        new_length: u64,
+    ) -> Result<Vec<FileRange>, RegionError> {
+        let old_end = start + old_length;
+        let (first, last) = self.bounds(start, old_end);
+        let mut moved = Vec::new();
+        moved
+            .try_reserve_exact(last - first)
+            .map_err(|_| RegionError::OutOfMemory)?;
+        for range in &self.ranges[first..last] {
+            let mut part = range.clipped(start, old_end);
+            let reaches_end = part.end == old_end;
+            part.start = part.start - start + to;
+            part.end = if reaches_end {
+                to + new_length
+            } else {
+                part.end - start + to
+            };
+            moved.push(part);
+        }
+        self.ranges
+            .try_reserve(moved.len() + 1)
+            .map_err(|_| RegionError::OutOfMemory)?;
+        Ok(moved)
+    }
+
+    /// The second half of a move ([`Self::moved_parts`]): takes the old range out unless
+    /// `keep_source`, then adds `moved` where it went.
+    pub fn finish_move(
+        &mut self,
+        start: u64,
+        old_end: u64,
+        moved: Vec<FileRange>,
+        keep_source: bool,
+    ) -> Result<(), RegionError> {
+        if !keep_source {
+            self.remove(start, old_end)?;
+        }
+        for part in moved {
+            self.insert(part)?;
+        }
+        Ok(())
+    }
+}
+
+/// A file held in memory, for tests of what reads [`FilePages`].
+#[cfg(test)]
+#[derive(Debug)]
+pub struct BytesFile(pub Vec<u8>);
+
+#[cfg(test)]
+impl FilePages for BytesFile {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+        let from = usize::try_from(offset).ok()?.min(self.0.len());
+        let count = buffer.len().min(self.0.len() - from);
+        buffer[..count].copy_from_slice(&self.0[from..from + count]);
+        Some(count)
+    }
 }
 
 #[cfg(test)]
@@ -542,5 +789,115 @@ mod tests {
         assert!(regions.is_free(30 * PAGE, 80 * PAGE));
         assert!(!regions.is_free(29 * PAGE, 31 * PAGE));
         assert!(!regions.is_free(0, 200 * PAGE));
+    }
+
+    fn file_range(start: u64, end: u64, offset: u64, file: &Arc<BytesFile>) -> FileRange {
+        FileRange {
+            start: start * PAGE,
+            end: end * PAGE,
+            offset: offset * PAGE,
+            file_bytes_end: WHOLE_FILE,
+            writable: true,
+            file: Arc::clone(file) as Arc<dyn FilePages>,
+        }
+    }
+
+    /// File ranges as (start page, end page, file offset in pages).
+    fn files(ranges: &FileRanges) -> Vec<(u64, u64, u64)> {
+        ranges
+            .iter()
+            .map(|range| (range.start / PAGE, range.end / PAGE, range.offset / PAGE))
+            .collect()
+    }
+
+    #[test]
+    fn file_ranges_are_cut_and_found_with_their_offsets() {
+        let file = Arc::new(BytesFile(Vec::new()));
+        let mut ranges = FileRanges::new();
+        ranges.insert(file_range(10, 20, 0, &file)).unwrap();
+        ranges.insert(file_range(30, 34, 8, &file)).unwrap();
+        assert_eq!(
+            ranges.insert(file_range(19, 21, 0, &file)).unwrap_err(),
+            RegionError::Overlaps
+        );
+        assert_eq!(
+            ranges.insert(file_range(40, 40, 0, &file)).unwrap_err(),
+            RegionError::Invalid
+        );
+        let found = ranges.find(15 * PAGE + 7).unwrap();
+        assert_eq!(found.offset_of(15 * PAGE), 5 * PAGE);
+        assert!(ranges.find(20 * PAGE).is_none());
+        ranges.remove(12 * PAGE, 14 * PAGE).unwrap();
+        assert_eq!(files(&ranges), [(10, 12, 0), (14, 20, 4), (30, 34, 8)]);
+        ranges.remove(16 * PAGE, 31 * PAGE).unwrap();
+        assert_eq!(files(&ranges), [(10, 12, 0), (14, 16, 4), (31, 34, 9)]);
+        assert!(ranges.overlaps(11 * PAGE, 13 * PAGE));
+        assert!(!ranges.overlaps(12 * PAGE, 14 * PAGE));
+        ranges.remove(0, 64 * PAGE).unwrap();
+        assert!(ranges.is_empty());
+        assert_eq!(ranges.remove(PAGE, PAGE + 1), Err(RegionError::Invalid));
+    }
+
+    #[test]
+    fn a_file_range_reads_its_bytes_up_to_where_they_end() {
+        let file = Arc::new(BytesFile(Vec::new()));
+        let segment = FileRange {
+            file_bytes_end: 2 * PAGE + 100,
+            ..file_range(4, 8, 1, &file)
+        };
+        assert_eq!(segment.file_bytes_in(4 * PAGE), PAGE);
+        assert_eq!(segment.file_bytes_in(5 * PAGE), 100);
+        assert_eq!(
+            segment.file_bytes_in(7 * PAGE),
+            0,
+            "a segment's .bss is zeros"
+        );
+        let mapping = file_range(4, 8, 1, &file);
+        assert_eq!(mapping.file_bytes_in(7 * PAGE), PAGE);
+    }
+
+    #[test]
+    fn moving_file_ranges_keeps_their_offsets_and_grows_the_last_one() {
+        let file = Arc::new(BytesFile(Vec::new()));
+        let mut ranges = FileRanges::new();
+        ranges.insert(file_range(10, 14, 2, &file)).unwrap();
+        ranges.insert(file_range(14, 16, 9, &file)).unwrap();
+        let moved = ranges
+            .moved_parts(11 * PAGE, 5 * PAGE, 40 * PAGE, 8 * PAGE)
+            .unwrap();
+        assert_eq!(ranges.iter().count(), 2, "nothing changes yet");
+        ranges
+            .finish_move(11 * PAGE, 16 * PAGE, moved, false)
+            .unwrap();
+        assert_eq!(files(&ranges), [(10, 11, 2), (40, 43, 3), (43, 48, 9)]);
+        let moved = ranges
+            .moved_parts(10 * PAGE, PAGE, 10 * PAGE, 3 * PAGE)
+            .unwrap();
+        ranges
+            .finish_move(10 * PAGE, 11 * PAGE, moved, false)
+            .unwrap();
+        assert_eq!(files(&ranges), [(10, 13, 2), (40, 43, 3), (43, 48, 9)]);
+        let moved = ranges
+            .moved_parts(40 * PAGE, 3 * PAGE, 60 * PAGE, 3 * PAGE)
+            .unwrap();
+        ranges
+            .finish_move(40 * PAGE, 43 * PAGE, moved, true)
+            .unwrap();
+        assert_eq!(
+            files(&ranges),
+            [(10, 13, 2), (40, 43, 3), (43, 48, 9), (60, 63, 3)]
+        );
+        let copy = ranges.try_copy().unwrap();
+        assert_eq!(files(&copy), files(&ranges));
+    }
+
+    #[test]
+    fn a_file_in_memory_reads_fewer_bytes_at_its_end() {
+        let file = BytesFile(b"0123456789".to_vec());
+        let mut buffer = [0u8; 8];
+        assert_eq!(file.read_at(6, &mut buffer), Some(4));
+        assert_eq!(&buffer[..4], b"6789");
+        assert_eq!(file.read_at(10, &mut buffer), Some(0));
+        assert_eq!(file.read_at(u64::MAX, &mut buffer), Some(0));
     }
 }

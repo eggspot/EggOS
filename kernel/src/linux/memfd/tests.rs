@@ -471,7 +471,7 @@ fn private_mappings_are_read_only_and_other_files_cannot_be_mapped() {
             &process,
             &mut thread,
             PAGE_BYTES,
-            prot::READ,
+            prot::READ | prot::WRITE,
             SHARED,
             u64::from(regular_fd),
             0
