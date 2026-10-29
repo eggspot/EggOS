@@ -629,6 +629,9 @@ fn a_scroll_bar_over_very_tall_content_keeps_its_thumb_in_its_track() {
     let (_, top) = scroll_bar(rect, content, 0).unwrap();
     assert_eq!(top.y, rect.y);
     let (_, middle) = scroll_bar(rect, content, (content - rect.height) / 2).unwrap();
-    assert_eq!(middle.y, rect.y + (rect.height - crate::widget::MIN_THUMB) / 2);
+    assert_eq!(
+        middle.y,
+        rect.y + (rect.height - crate::widget::MIN_THUMB) / 2
+    );
     assert!(scroll_bar(rect, rect.height, 0).is_none());
 }

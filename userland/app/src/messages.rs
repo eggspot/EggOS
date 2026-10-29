@@ -285,7 +285,11 @@ mod tests {
             reason(Problem::TooLarge).as_str(),
             "its files would take more than 4 GiB once extracted"
         );
-        assert!(reason(Problem::ReservedName).as_str().contains("app.manifest"));
+        assert!(
+            reason(Problem::ReservedName)
+                .as_str()
+                .contains("app.manifest")
+        );
         assert_eq!(crate::installer::MAX_EXTRACTED_BYTES, 4 << 30);
     }
 

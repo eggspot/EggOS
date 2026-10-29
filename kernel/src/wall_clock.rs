@@ -262,9 +262,12 @@ mod tests {
         }
 
         fn write(&self, _nanoseconds: u64) -> Result<(), RtcError> {
-            self.locked_at_write.store(CLOCK.try_lock().is_none(), Ordering::Relaxed);
-            self.offset_at_write
-                .store(OFFSET_NANOSECONDS.load(Ordering::Relaxed), Ordering::Relaxed);
+            self.locked_at_write
+                .store(CLOCK.try_lock().is_none(), Ordering::Relaxed);
+            self.offset_at_write.store(
+                OFFSET_NANOSECONDS.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
             Ok(())
         }
     }

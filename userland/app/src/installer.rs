@@ -640,8 +640,7 @@ fn program_role(
         Role::BundleProgram { .. } | Role::WindowsProgram => true,
         Role::MaybeLinuxProgram => {
             let mut head = [0u8; 4];
-            archive::head(zip, entry, window, &mut head) == Ok(head.len())
-                && head[..] == *ELF_MAGIC
+            archive::head(zip, entry, window, &mut head) == Ok(head.len()) && head[..] == *ELF_MAGIC
         }
         Role::Other => false,
     };

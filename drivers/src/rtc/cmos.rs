@@ -130,8 +130,8 @@ impl<R: RegisterIo> Cmos<R> {
     }
 
     fn read_deadline(&self) -> u64 {
-        let limit = self.monotonic.frequency.saturating_mul(READ_TIME_LIMIT_MS)
-            / MILLISECONDS_PER_SECOND;
+        let limit =
+            self.monotonic.frequency.saturating_mul(READ_TIME_LIMIT_MS) / MILLISECONDS_PER_SECOND;
         (self.monotonic.ticks)().saturating_add(limit.max(1))
     }
 
