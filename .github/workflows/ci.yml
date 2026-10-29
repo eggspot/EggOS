@@ -309,9 +309,44 @@ jobs:
         shell: bash
         run: for arch in aarch64 riscv64 x86_64; do cargo xtask build --arch "$arch"; done
 
+  run-scripts-windows:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Detect run script and MCP channel changes
+        id: scripts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(gh api --paginate repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --jq ".[].filename")
+          if echo "$files" | grep -qE '^(xtask/src/release\.rs|xtask/src/qemu|userland/mcp/|kernel/src/agent_channel\.rs|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No change to the run scripts or the MCP channel: run-eggos.ps1 not booted."
+          fi
+      - uses: actions/checkout@v7
+        if: steps.scripts.outputs.run == 'true'
+        with:
+          fetch-depth: 1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.scripts.outputs.run == 'true'
+        run: rustup toolchain install
+      - name: Install QEMU
+        if: steps.scripts.outputs.run == 'true'
+        run: choco install qemu --no-progress -y
+      - name: Boot the release image through run-eggos.ps1 (serial, host folder, MCP)
+        if: steps.scripts.outputs.run == 'true'
+        run: cargo xtask run-scripts --arch x86_64
+
   check:
     if: always()
-    needs: [changes, fast, qemu, bench, macos-programs, windows-programs, hosts]
+    needs: [changes, fast, qemu, bench, macos-programs, windows-programs, hosts, run-scripts-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

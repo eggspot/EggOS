@@ -434,6 +434,10 @@ The release path (the release-path review's issues #141-#145, after the items ab
   on every architecture), QEMU 8.2 or later and no acceleration stated, one measured boot time,
   one-line PowerShell usage errors with status 2, the docs reconciled with the MCP server, and
   release notes whose "What's new" comes from the merged pull requests.
+- #145 **done** — Windows users' `run-eggos.ps1` is booted by CI (D154): `cargo xtask
+  run-scripts` drives the release's own script, serial with a host folder, the disk lock and
+  `-Mcp` over piped standard input and output, through `run-eggos.ps1` in a new
+  `run-scripts-windows` job and through `run-eggos.sh` in the `qemu` jobs.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

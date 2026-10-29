@@ -43,7 +43,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TEST_DISK_BYTES: u64 = 64 << 20;
-const FIRST_ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const FIRST_ANSWER_TIMEOUT: Duration = Duration::from_secs(120);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 const SLOW_CLIENT_PAUSE: Duration = Duration::from_secs(2);
 const BIG_FILE_BYTES: usize = 200 * 1024;
@@ -132,7 +132,7 @@ const REFUSED_PATHS: [&str; 2] = [
     r#""/home/\u002e\u002e/etc/eggos/init.conf""#,
 ];
 
-struct Client {
+pub(super) struct Client {
     child: std::process::Child,
     input: std::process::ChildStdin,
     lines: mpsc::Receiver<Result<Vec<u8>, String>>,
@@ -142,7 +142,7 @@ struct Client {
 }
 
 impl Client {
-    fn start(
+    pub(super) fn start(
         arch: &Arch,
         script: &Path,
         apps: &Path,
@@ -227,7 +227,7 @@ impl Client {
         format!("{}: MCP check: {message}", self.arch)
     }
 
-    fn send(&mut self, line: &[u8]) -> Result<(), String> {
+    pub(super) fn send(&mut self, line: &[u8]) -> Result<(), String> {
         self.input
             .write_all(line)
             .and_then(|()| self.input.write_all(b"\n"))
@@ -235,7 +235,7 @@ impl Client {
             .map_err(|e| self.fail(format!("could not write to the script: {e}")))
     }
 
-    fn receive(&mut self, timeout: Duration) -> Result<String, String> {
+    pub(super) fn receive(&mut self, timeout: Duration) -> Result<String, String> {
         let line = match self.lines.recv_timeout(timeout) {
             Ok(Ok(line)) => line,
             Ok(Err(error)) => return Err(self.fail(format!("reading stdout: {error}"))),
@@ -253,7 +253,7 @@ impl Client {
         String::from_utf8(line.to_vec()).map_err(|_| self.fail("an answer is not UTF-8"))
     }
 
-    fn request(&mut self, method: &str, params: &str) -> Result<String, String> {
+    pub(super) fn request(&mut self, method: &str, params: &str) -> Result<String, String> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(
@@ -268,7 +268,7 @@ impl Client {
         Ok(answer)
     }
 
-    fn call(&mut self, tool: &str, arguments: &str) -> Result<ToolResult, String> {
+    pub(super) fn call(&mut self, tool: &str, arguments: &str) -> Result<ToolResult, String> {
         let answer = self.request(
             "tools/call",
             &format!(r#"{{"name":"{tool}","arguments":{arguments}}}"#),
@@ -318,15 +318,14 @@ impl Client {
         ToolResult::of(&answer).ok_or_else(|| self.fail(format!("not a tool result: {answer}")))
     }
 
-    fn stop(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    pub(super) fn stop(mut self) {
+        kill_process_tree(&mut self.child);
     }
 }
 
-struct ToolResult {
+pub(super) struct ToolResult {
     texts: Vec<String>,
-    is_error: bool,
+    pub(super) is_error: bool,
     png: Option<Vec<u8>>,
     scale: Option<u64>,
 }
@@ -369,7 +368,7 @@ impl ToolResult {
         })
     }
 
-    fn all(&self) -> String {
+    pub(super) fn all(&self) -> String {
         self.texts.join("\n")
     }
 }
@@ -382,7 +381,7 @@ fn error_code(answer: &str) -> Option<i64> {
         .ok()
 }
 
-fn result_field(answer: &str, key: &str) -> Option<String> {
+pub(super) fn result_field(answer: &str, key: &str) -> Option<String> {
     let result = json::parse(answer.as_bytes()).ok()?.value.get("result")?;
     Some(result.get(key)?.as_str()?.chars().collect())
 }

@@ -59,6 +59,7 @@ shows it), add the script as a server ([docs/mcp.md](docs/mcp.md)):
 ```
 claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp
 claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
+claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
 `run` (`--mcp-allow run`) lets the agent run any program, which is full control of the machine.

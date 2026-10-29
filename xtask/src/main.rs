@@ -92,6 +92,12 @@ commands:
                          run only the Windows C runtime boot test (eggpad.exe, built by MSVC
                          here or taken from EGGOS_WINDOWS_PROGRAMS), as `qemu` runs it
                          (<arch> may be `all`)
+  run-scripts --arch <arch>
+                         build the release image and boot it through the run script the
+                         release ships for this host (run-eggos.ps1 on Windows, run-eggos.sh
+                         elsewhere): a serial session with a host folder, then an MCP
+                         session over the script's piped standard input and output, as
+                         `qemu` runs it (<arch> may be `all`)
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -423,6 +429,13 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("run-scripts") => {
+            for arch in arch()? {
+                let kernel = build_kernel(arch, None)?;
+                qemu::run_scripts::check(arch, &kernel)?;
+            }
+            Ok(())
+        }
         Some("release") if args.len() == 1 => release::run(),
         Some("sample-apps") => {
             for arch in arch()? {
@@ -710,6 +723,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     qemu::real_time::check(arch, &kernel)?;
     qemu::text_editor::check(arch, &kernel)?;
     qemu::reboot::check(arch, &kernel)?;
+    qemu::run_scripts::check(arch, &kernel)?;
     if let Some(folder) = build_macos_gui_folder(arch)? {
         qemu::macos_gui::check(arch, &kernel, &folder)?;
     }

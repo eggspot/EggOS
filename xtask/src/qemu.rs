@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod persistent;
 pub mod real_time;
 pub mod reboot;
+pub mod run_scripts;
 pub mod settings;
 pub mod shell;
 pub mod text_editor;
@@ -1700,6 +1701,18 @@ fn send_pointer_and_key_events(port: u16) -> Result<(), String> {
         std::thread::sleep(DEVICE_PAUSE);
     }
     Ok(())
+}
+
+fn kill_process_tree(child: &mut std::process::Child) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn echo_console_to_stderr(mut stdout: std::process::ChildStdout) -> mpsc::Receiver<Vec<u8>> {

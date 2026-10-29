@@ -189,6 +189,15 @@ holds what used to be written in them.
   image with `qemu::interactive_args`' serial arguments, as `run-eggos.sh --serial` does,
   types `reboot` at the prompt and must see the restart, a second boot and its prompt in the
   same QEMU, then powers off with `poweroff` (D153).
+- **The run scripts boot test** (`xtask/src/qemu/run_scripts.rs`, every architecture; alone:
+  `cargo xtask run-scripts --arch <arch>`) writes the release image and both scripts as `cargo
+  xtask release` does and runs the host's script (`run-eggos.ps1` through `powershell -File` on
+  Windows, `run-eggos.sh` through `sh` elsewhere): `--serial --apps --format-disk`, where it
+  types `uname`, `ls /media/host` and `poweroff`; then `--mcp --no-window` as a child with piped
+  standard input and output (`initialize`, `tools/list`, a `cat` of the shared folder's file,
+  every line on standard output JSON-RPC); and meanwhile a second start on the same disk image,
+  which must be refused for the lock (D154). On Windows a stopped script's QEMU is ended with
+  its process tree (`taskkill /T`), since killing PowerShell leaves its child running.
 - **The install, Files and MCP boot tests boot the release image itself**, the kernel `cargo
   xtask release` copies to `target/release-dist/`, with no `--add`: they install
   `win-paint.exe` (x86_64 and aarch64) or the static Linux program (riscv64) from the host
@@ -325,7 +334,7 @@ holds what used to be written in them.
   `fast` (format, `cargo xtask lint`, clippy on the host and the kernel targets, docs, host unit
   tests), `qemu` (the boot tests, one job per architecture), `bench` (the benchmarks, one job per
   architecture), `macos-programs` (the Mach-O test programs), `windows-programs` (the MSVC test
-  programs, D146) and, on PRs, `hosts` (macOS and Windows). Runners are free for this public repository, so the goal is wall-clock time: the run
+  programs, D146) and, on PRs, `hosts` (macOS and Windows) and `run-scripts-windows` (D154). Runners are free for this public repository, so the goal is wall-clock time: the run
   takes as long as its slowest job.
 - **`check` is the only required status check on `main`.** It is the last job (`needs` every other
   job, `if: always()`) and fails if any of them failed or was cancelled; a skipped job passes. The
@@ -356,6 +365,16 @@ holds what used to be written in them.
 - **Hosts.** Development hosts are macOS and Windows, so on PRs into `main`, when code changed, a
   small job on each builds, lints and tests the workspace and builds the kernel for every
   architecture.
+- **`run-eggos.ps1` on Windows (D154).** On PRs into `main` that change `xtask/src/release.rs`,
+  `xtask/src/qemu*`, `userland/mcp/`, `kernel/src/agent_channel.rs` or the workflow,
+  `run-scripts-windows` installs QEMU (`choco install qemu`, which the script finds under
+  `Program Files\qemu`) and runs `cargo xtask run-scripts --arch x86_64`: the release image
+  booted through `run-eggos.ps1` with `-Serial -Apps -FormatDisk` (`uname`, `ls /media/host`,
+  `poweroff`), then with `-Mcp -NoWindow` as a child with piped standard input and output, as
+  Claude Code starts it (`initialize`, `tools/list`, a `cat` of the shared folder's file, every
+  line on standard output JSON-RPC), and a second start on the disk in use, which the script
+  must refuse. It runs beside the `qemu` jobs, with a 30-minute timeout; on Linux the `qemu`
+  jobs run the same check through `run-eggos.sh`.
 - **Billing**: the global rules in `~/.claude/CLAUDE.md` (CI section) and D8: concurrency
   cancels superseded PR runs only, every job has a timeout, checkouts are shallow.
 

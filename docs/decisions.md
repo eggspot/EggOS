@@ -9996,3 +9996,45 @@ the license, by an explicit instruction recorded here.
   that "What's new" keeps only user-facing subjects.
 - **Not yet.** A QEMU version check in the scripts themselves (they name the minimum but do not
   read `qemu-system-<arch> --version`); `run-eggos.ps1` run by CI on Windows (D154).
+
+## D154 CI boots EggOS through `run-eggos.ps1` on Windows: serial, the host folder, the disk lock and `-Mcp` over piped standard input and output (issue #145; extends D116, D136, D153) — Decided by the build loop
+- **Why.** `run-eggos.ps1` is how Windows users run EggOS and connect Claude Code, yet CI only
+  checked its text: every boot, MCP and script test ran `run-eggos.sh` on Ubuntu. The
+  Windows-only paths were never run: QEMU's `-chardev stdio` on a piped standard input,
+  whether PowerShell passes QEMU's standard output through untouched (the MCP channel needs
+  exact bytes), `vvfat` with `C:\...` paths, the disk made by `qemu-img create` or
+  `SetLength`, and the exclusive-open check that stops a second EggOS on the same disk.
+- **The check** (`xtask/src/qemu/run_scripts.rs`, `cargo xtask run-scripts --arch <arch>`)
+  writes the release image and both scripts as `cargo xtask release` does
+  (`release::write_test_dist`) and runs the host's script the way people and Claude Code do:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File run-eggos.ps1` on Windows, `sh
+  run-eggos.sh` elsewhere. First `-Serial -Apps <folder> -Disk <image> -FormatDisk`: the
+  script makes the disk, the prompt comes on its standard output, `uname` prints `Linux`, `ls
+  /media/host` lists the folder's file and `poweroff` ends the script with status 0. Then
+  `-Mcp -NoWindow` on the same folder and disk through the MCP check's client (D136), a child
+  with piped standard input and output: `ping`, `initialize`, `tools/list` and a `cat` of the
+  folder's file, every line on standard output a JSON-RPC message. While it runs, a second
+  `-Serial` start on the same disk must end at once with an error about the lock. The `qemu`
+  jobs run it through `run-eggos.sh` on every architecture.
+- **The CI job** `run-scripts-windows` runs on `windows-latest` on pull requests into `main`
+  whose files touch `xtask/src/release.rs`, `xtask/src/qemu*`, `userland/mcp/`,
+  `kernel/src/agent_channel.rs` or the workflow (gated inside the job, so the required `check`
+  never waits on a skipped workflow), installs QEMU with `choco install qemu` (a step that only
+  installs a tool), and runs `cargo xtask run-scripts --arch x86_64`; it is in `check`'s
+  `needs`, with a 30-minute timeout, beside the `qemu` jobs. The issue asked for main as well;
+  the repository's rule (Windows jobs only on pull requests into `main`, CLAUDE.md) wins, and a
+  change reaches `main` only through such a pull request. It builds the x86_64 image on the
+  Windows runner, as `hosts` already builds kernels there, rather than downloading one from a
+  Linux job, which would put that job's whole build ahead of this one on the critical path.
+- **Killing a script kills its QEMU.** On Windows, ending PowerShell leaves QEMU running (it is
+  PowerShell's child, not a replacement as `exec` makes it in `sh`), holding the step's output
+  and the disk. The MCP check's client and the new check end the whole process tree
+  (`taskkill /T /F`) when they stop a script.
+- **What changed in the docs.** docs/mcp.md says the Windows `claude mcp add ... powershell
+  ... -Mcp` line is the one CI runs; the README lists it beside the `sh` lines; docs/build.md
+  describes the check and the job.
+- **Not yet.** The job's wall-clock time is measured on its first run and stated in the pull
+  request. If PowerShell turns out to alter QEMU's standard output on the MCP channel, the
+  release notes must say `-Mcp` does not work on Windows and `run-eggos.ps1 -Mcp` must say so
+  instead of hanging (issue #145's fallback); that is decided by the first run. aarch64 Windows
+  hosts and riscv64 are not run on Windows.

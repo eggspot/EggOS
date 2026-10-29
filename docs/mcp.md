@@ -25,6 +25,10 @@ claude mcp add eggos -- sh /path/to/run-eggos.sh --mcp --mcp-allow write,install
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp -McpAllow view,write,run,install
 ```
 
+On Windows, the `powershell` line is the way CI starts `run-eggos.ps1 -Mcp` on every pull
+request that touches the scripts or the MCP channel (D154): a child process with piped
+standard input and output that must carry nothing but JSON-RPC.
+
 Claude Code starts the script when it needs EggOS; the script boots EggOS in QEMU and connects
 its own standard input and output to EggOS's agent channel. The QEMU window still shows the
 desktop. Other clients take the same command: run `sh run-eggos.sh --mcp` as a stdio MCP server.
