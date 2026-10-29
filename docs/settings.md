@@ -51,7 +51,7 @@ and `hwclock` (docs/coreutils.md), not `settings`.
 | `settings` | Opens the window and serves it until it is closed. | 0; 1 without a display |
 | `settings list` | Writes every setting as `key=value`, one per line. | 0 |
 | `settings get <key>` | Writes the setting's value. | 0; 1 for an unknown key |
-| `settings set <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |
+| `settings set [--dry-run] <key> <value>` | Sets it: saved in the settings file, then applied at once on the display (with no display it applies at the next boot). `--dry-run` checks the key and the value and says `would set <key> from <old> to <new>`, changing nothing (D164). | 0; 1 for an unknown or read-only key, or when saving or applying failed (`settings: <key>: <why>`); 2 for an invalid value or a bad command |
 
 | Key | Value | Settable |
 |-----|-------|----------|

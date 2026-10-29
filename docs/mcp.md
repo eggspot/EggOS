@@ -94,28 +94,28 @@ run-eggos.sh` the script's own path works too.
 
 | Tool | What it does | CLI twin | Grant |
 |------|--------------|----------|-------|
-| `ls` | Lists a folder (`path`, default `/home`) as `ls -l` does | `ls -l -- <path>` | |
+| `ls` | Lists a folder (`path`, default `/home`) as `ls -l` does; `limit` (1 to 500) and `after` page it by name, however many entries it holds (D164) | `ls -l [--limit <n>] [--after <cursor>] -- <path>` | |
 | `cat` | Reads a file (`path`): text as text, other files as base64; at most 128 KiB | `cat -- <path>` | |
-| `ps` | Lists the processes | `ps` | |
-| `wm_list` | Lists the windows on the desktop | `wm list` | |
-| `app_list` | Lists the installed apps | `app list` | |
+| `ps` | Lists the processes; `limit` (1 to 100) and `after` page them by id (D164) | `ps [--limit <n>] [--after <cursor>]` | |
+| `wm_list` | Lists the windows on the desktop; `limit` and `after` page them by id (D164) | `wm list [--limit <n>] [--after <cursor>]` | |
+| `app_list` | Lists the installed apps; `limit` and `after` page them by name (D164) | `app list [--limit <n>] [--after <cursor>]` | |
 | `clock_get` | The machine's date and time in UTC, `YYYY-MM-DDTHH:MM:SSZ` (D150) | `date -u +%Y-%m-%dT%H:%M:%SZ` | |
 | `net_status` | The network's state as JSON (D157, docs/network.md): `state` (`connected`, `getting-address`, `no-address`, `cable-unplugged`, or `none` without an adapter) and an `adapters` array, each interface's link, DHCP state, hardware address, MTU, address, prefix and mask, router, DNS servers, DHCP server, lease and counters | `ip -j addr` | |
 | `net_ping` | Pings a host (`host`, an IPv4 address or a name; `count`, 1 to 5, 4 by default) and returns ping's report; an error when no reply came (D158) | `ping -W 1 -c <count> <host>` | |
 | `net_lookup` | Looks a host name up (`host`) with the network's DNS servers and returns nslookup's report (D158) | `nslookup <host>` | |
 | `settings_list` | Every setting and its value, `key=value` a line: `shell.profile` can be set, the others report facts (display, keyboard, version, architecture, CPUs, memory, uptime) (D163) | `settings list` | |
 | `settings_get` | One setting's value (`key`, such as `shell.profile`); `no_such_setting` for an unknown key (D163) | `settings get -- <key>` | |
-| `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
-| `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
+| `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`, `dry_run`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
+| `trash` | Moves a file or folder to the Trash (`path`, `confirm`, `dry_run`); you can restore it | `trash -- <path>` | `write` |
 | `fetch` | Downloads an `http://` or `https://` URL (`url`, at most 2048 bytes; `https://` over TLS 1.3 with the server's certificate checked against the roots in `/etc/ssl/roots.pem`, D159) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
 | `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
-| `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout; the other keys fail with `setting_read_only` (D163) | `settings set -- <key> <value>` | `run` |
+| `settings_set` | Sets a setting (`key`, `value`) and applies it at once, as the Settings window would: `shell.profile` takes `windows`, `macos` or `linux`, the desktop's layout; the other keys fail with `setting_read_only` (D163); answers `Set <key> to <value>.`, and with `dry_run` what would change (D164) | `settings set [--dry-run] -- <key> <value>` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |
-| `app_uninstall` | Uninstalls an app (`name`, `confirm`) | `app uninstall -- <name>` | `install` |
+| `app_uninstall` | Uninstalls an app (`name`, `confirm`, `dry_run`) | `app uninstall -- <name>` | `install` |
 | `wm_capture` | A window's content as a PNG image (`window`; `max_width`, 16 to 1568, 1024 by default) | `wm capture -o /run/eggmcpd-capture.png --max-width <n> --max-bytes 716800 -- <window>` | `view` |
 | `wm_click` | Clicks in a window (`window`, `x`, `y`, `button`: `left`, `right` or `middle`; `double: true` double-clicks, D162) | `wm click --button <button> [--double] -- <window> <x> <y>` | `run` |
 | `wm_type` | Types printable ASCII into a window (`window`, `text`, at most 96 characters) | `wm type -- <window> <text>` | `run` |
@@ -222,6 +222,23 @@ Replacing an existing file with `tee` (not adding to it with `append`, not creat
   gets every destructive call refused after 120 s.
 - While a call waits for your answer, other calls that need a grant are refused; reading
   goes on.
+- **Dry runs** (D164): `tee`, `trash` and `app_uninstall` take `dry_run: true`, which EggOS
+  answers itself from the path, the file and the app it checked (`Dry run: trash would move
+  /home/root/notes.txt (812 bytes) to the Trash. Nothing was changed and the user was not
+  asked.`), without running the command or asking you, since nothing changes; the call still
+  needs its grant and is logged with `dry_run: nothing changed`. `settings_set` passes
+  `--dry-run` to `settings set`, which checks the key and value. Which calls need a yes is one
+  rule in the command model's registry, the same for every tool.
+
+## Pages
+
+`ls`, `ps`, `wm_list` and `app_list` take `limit` and `after` (D164). With either, the result
+keeps its text and adds `structuredContent`: `{"truncated":true,"truncated_by":"limit",
+"next_cursor":"<cursor>"}` when more follow (and a line saying to call again with `after`),
+`{"truncated":false}` on the last page, and `{"truncated":true,"truncated_by":"bytes"}` when
+the output was cut before the page's end, so call again with a smaller `limit`. The cursor is
+the page's last name or id as the command wrote it (`my%20notes` for `my notes`); a call
+without `limit` and `after` answers exactly as before.
 
 ## Text from EggOS is data
 
@@ -338,7 +355,8 @@ clock at boot (D150). The log in Settings comes after the release.
 
 The 2026-07-28 protocol version, resources and prompts; tools for the commands that have none
 (the file utilities are reached through `run`); coded errors for a command that fails rather than being refused (its text error
-is returned as before); `outputSchema`; element trees from macOS apps (D161, D162); non-ASCII typing; capturing the
+is returned as before); `outputSchema`; pages for `agentlog`, `settings_list` and tools added
+later, and dry runs for `fetch`, `clock_set` and `app_install`; element trees from macOS apps (D161, D162); non-ASCII typing; capturing the
 terminal's window; per-agent grants and revoking them while EggOS runs; MCP over the network
 (after networking); the log in Settings. A window whose program stopped answering keeps input
 waiting: the input tools retry for 3 s, then fail.

@@ -105,9 +105,18 @@ EggOS it is the CLI and MCP part of D22's capability registry; `surface` records
 - **New field names** are `snake_case`; sizes are integers in bytes (`size_bytes`), times RFC
   3339 in UTC (`modified_at`), durations integers in milliseconds (`..._ms`). Shipped fields
   keep their names.
-- **Pages (slice 3):** new list commands take `--limit <n>` and `--after <cursor>`; new list
-  tools answer `{"items": [...], "truncated": ..., "truncated_by": "limit"|"bytes",
-  "next_cursor": "..."}`. Shipped tools keep their own arguments and fields.
+- **Pages (slice 3):** list commands take `--limit <n>` and `--after <cursor>`; a page holds
+  the next items by their key (a name, an id) after the cursor. A cursor is the page's last
+  key with every byte outside letters, digits and `._~@+,=:-`, and a leading `-`, written as
+  `%XX`: one word that never reads as an option. When more follow, the command's last line
+  on standard error is `more: --after <cursor>`; with `--json` it is
+  `{"page":{"truncated":true,"truncated_by":"limit","next_cursor":"<cursor>"}}`, so standard
+  output stays records. More to come is not an error: the exit status is 0. A cursor that is
+  not one is the product's usage-category code (EggOS `bad_cursor`). New list tools answer
+  `{"items": [...], "truncated": ..., "truncated_by": "limit"|"bytes", "next_cursor": "..."}`.
+  Shipped tools keep their own arguments and fields; one that gains `limit` and `after` keeps
+  its result and adds `structuredContent` `{"truncated", "truncated_by", "next_cursor"}` when
+  the call paged (`"bytes"` when its output was cut before the page's end).
 - What goes around results stays: EggOS's data notice before each result, EggDB's per-call
   limits.
 - `outputSchema`, where a tool declares one, covers its result and its error result
@@ -142,8 +151,14 @@ EggOS it is the CLI and MCP part of D22's capability registry; `surface` records
 Confirmation is MCP elicitation where the client supports it, otherwise a `confirm: true`
 argument, refused with `needs_confirmation` when missing; a decline is `declined_by_user`, a
 client failure `confirmation_failed`. Grants and flags are for agents only: a person at the CLI
-has the system's own permissions. `--dry-run` only where it is exact. The registry states the
-safety; the products' existing checks still enforce it.
+has the system's own permissions. `--dry-run` only where it is exact: it checks what the
+command would check, says what it would do ("would ...") and changes nothing. A dry run needs
+the tool's grant but never confirmation, since nothing changes; a tool that asks for
+confirmation has its dry runs answered by the server from what it checked, never by its
+command, so a command that ignored `--dry-run` could not change anything unasked. Whether a
+call needs a yes is one rule over the registry's `confirm` (never, when it would replace
+something, always) and the dry run. The registry states the safety; the products' existing
+checks still enforce it.
 
 ## Tests
 
@@ -163,14 +178,14 @@ safety; the products' existing checks still enforce it.
 1. JSON and clear errors from the commands agents use (EggOS D160).
 2. JSON, the shared errors, examples and `help --json` from every command (EggOS D163).
 3. Previews and pages: `--limit`, `--after`, `confirm` checks, `--dry-run` where exact, a
-   security review.
+   security review (EggOS D164).
 4. Apps' own actions (M14) and `tools.listChanged`.
 
 Between slices 1 and 2, EggOS item 48: windows as an element tree (`wm show`, `wm act`).
 
 ---
 
-## EggOS's tables (slices 1 and 2, D160 and D163)
+## EggOS's tables (slices 1 to 3, D160, D163 and D164)
 
 The registry is `userland/commands` (`eggos-commands`, `no_std`, no allocator):
 `COMMANDS`, `TOOLS`, `errors`, `CORE_VERBS`, `NOUN_VERBS`, `KEPT_NAMES`, `SHELL_BUILTINS`. The
@@ -216,6 +231,11 @@ get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`
 | `settings list --json`, `settings get --json` | `key`, `value`, `settable`: one per setting, or one object (D163) |
 | `ip -j` | one object: `state`, `adapters` (D157, as shipped) |
 
+**Pages and previews** (D164): `ls` (at most 500 a page, one folder however many entries it
+holds), `ps`, `wm list` and `app list` (at most 100) take `--limit` and `--after`, keyed by
+name, process id, window id and app name; `ps` lists by id, `wm list` and `app list` keep their
+own order within a page. `trash`, `app uninstall` and `settings set` take `--dry-run`.
+
 **Error codes:**
 
 | Code | Category | Where | Fix command |
@@ -232,7 +252,8 @@ get|list|set`, `sleep`, `sync`, `tail`, `tee`, `touch`, `trash`, `true`, `uname`
 | `io_error` | damaged | EIO | |
 | `out_of_memory` | too_large | ENOMEM | |
 | `failed` | failed | anything else | |
-| `too_many_entries` | too_large | `ls` (exit 1) | |
+| `too_many_entries` | too_large | `ls` without `--limit` (exit 1) | |
+| `bad_cursor` | usage | `--after` of `ls`, `wm list`, `app list` (exit 2) and `ps` (exit 1) (D164) | |
 | `no_such_window` | not_found | `wm` (exit 1) | `wm list` |
 | `person_active` | busy | `wm` (exit 75) | |
 | `no_window_server` | not_found | `wm` (exit 1) | |
@@ -265,7 +286,13 @@ effect `control`, grant `run`) and two optional arguments to shipped tools, `wm_
 effects: `read` for the reading tools, `wm_capture` and `wm_menu_list`; `change` for
 `clock_sync`, `app_install`, `app_open`, `edit_open` and the seven new `wm` tools; `destroy` for
 `tee`, `trash`, `fetch`, `clock_set` and `app_uninstall`; `control` for `run`, the input tools
-and `wm_menu_choose`. No tool is `openWorldHint` yet, as shipped.
+and `wm_menu_choose`. No tool is `openWorldHint` yet, as shipped. D164 appends optional
+arguments to shipped schemas (old calls are unchanged): `limit` and `after` to `ls` (`limit`
+1 to 500), `ps`, `wm_list` and `app_list` (1 to 100), `dry_run` to `tee`, `trash` and
+`app_uninstall`, which the server answers itself, and to `settings_set`, whose twin runs `settings
+set --dry-run`; `settings_set`'s result says `Set <key> to <value>.`. The confirming tools are
+exactly the `destroy` tools, each with a `confirm` argument; `run` and the input tools, though
+`control`, ask for none (their `run` grant is the user's consent).
 
 **GUI surfaces** (D22): each command's `surface` names its GUI (Files for `ls`, the Text
 Editor for `cat` and `tee`, the title bar's buttons for `wm`'s verbs, the launcher for `app`,

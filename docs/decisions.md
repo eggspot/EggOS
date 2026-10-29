@@ -10791,3 +10791,113 @@ the license, by an explicit instruction recorded here.
   answers first); a done text for `settings_set` (its result is the command's empty output);
   MCP tools for the file utilities (agents use `run`); slice 3 (`--limit`, `--after`,
   `--dry-run`, the security review); `outputSchema`.
+
+## D164 The Egg command model, slice 3: agents and scripts page lists with `--limit` and `--after`, preview changes with `--dry-run`, and every tool asks for confirmation by one rule, with a security review (the owner's approved design of 2026-10-28, slice 3; extends D136, D137, D160, D163) — Decided by the build loop (the cursor's format, the paged result and the dry runs' safety decided by research)
+- **Why.** An agent could not list a folder of more than 1024 entries at all (`ls` failed with
+  `too_many_entries`), nor take a long list in pieces that fit its context; it could not see
+  what a destructive call would do without doing it; and which calls asked for the user's yes
+  was decided per tool in the server's code, so a new destructive tool could be added without
+  its question (the refusal text fell back to `app_uninstall`'s).
+- **Pages, the CLI.** `ls` (one folder; at most 500 entries a page), `ps`, `wm list` and `app
+  list` (at most 100) take `--limit <count>` and `--after <cursor>` (`AFTER_OPTION`,
+  `limit_option` in the registry): a page holds the next items by their key (name, process id,
+  window id, app name) after the cursor. A cursor is the page's last key with every byte
+  outside letters, digits and `._~@+,=:-`, and a leading `-`, written as `%XX`
+  (`eggos_commands::page::{encode, decode}`): `notes.txt` and `129` stay readable, any name is
+  one word that never reads as an option. When more follow, the last line on standard error
+  is `more: --after <cursor>`, or with `--json` `{"page":{"truncated":true,
+  "truncated_by":"limit","next_cursor":"<cursor>"}}`, so standard output stays records; the
+  exit status stays 0. A bad cursor is the new code `bad_cursor` (usage; exit 2, `ps` 1); a
+  bad count a usage error. `ls` pages a folder of any size in its fixed listing: past the
+  cursor it keeps the smallest names, and when the 1024 entries or 32 KiB of names fill it
+  keeps the smallest `limit + 1` (or half), compacts their names and then refuses every larger
+  name, so the page is exact and the memory fixed; the per-entry `stat` of `-l` and `--json`
+  runs for the page only. `ps` streams `/proc/ps`, which the kernel's process table keeps in
+  id order. `wm list` and `app list` read their items twice: once to find the page's ids or
+  names (`eggos_commands::page::Smallest`, at most 101 keys on the stack), once to print them
+  in their own order (oldest window first, `/Applications`' order). `wm list` now reads its
+  options from its definition (`--json` anywhere, D163's leftover for `list`).
+- **Pages, MCP.** The shipped tools `ls` (`limit` 1 to 500), `ps`, `wm_list` and `app_list` (1
+  to 100) gain optional `limit` and `after` (a cursor: the schema's pattern, 1 to 765 bytes),
+  appended to their schemas, so every earlier call is answered exactly as before. With either,
+  the twin gets `--limit <n> --after <cursor>`, the result keeps its text and adds
+  `structuredContent` `{"truncated":true,"truncated_by":"limit","next_cursor":...}` and a
+  line saying to call again with `after`, or `{"truncated":false}` on the last page; the cursor
+  is read from the twin's last line of errors only, and only when it is a well-formed cursor
+  (`page::next_cursor`). When the output or the errors were cut at their limits the page's end
+  is unknown: `{"truncated":true,"truncated_by":"bytes"}` and "call again with a smaller
+  limit". The audit log records `limit` and `after`.
+- **Dry runs.** `trash --dry-run` (checks each path is there; `would move '<path>' to the
+  Trash`), `app uninstall --dry-run` (checks the app is installed; `would uninstall <name>:
+  removes /Applications/<name> and everything in it`) and `settings set --dry-run` (checks the
+  key and the value; `would set shell.profile from macos to windows`) change nothing. MCP:
+  `dry_run` on `tee`, `trash` and `app_uninstall` is answered by the server from the grant,
+  the resolved path, the file's state and the installed app it already checks (`Dry run: tee
+  would replace /home/root/a.txt (3 bytes) with 5 bytes. Nothing was changed and the user was
+  not asked.`), never by running the twin; on `settings_set`, which asks for no confirmation,
+  the twin runs with `--dry-run`. A dry run needs the tool's grant, asks no one and writes one
+  audit record, `ok` with `<target>; dry run: nothing changed`. Not for `fetch` (the network),
+  `clock_set`, `app_install`, `cp`, `mv` or `rm`: theirs would not be exact.
+- **Confirmation by one rule.** `Confirmation::needed(replaces, dry_run)` in the registry is
+  the server's only decision of whether a call needs the user's yes (never for a dry run); the
+  file's state is read for every tool whose confirmation is not `Never` (as before: `tee`,
+  `trash`, `fetch`); the refusal and the question name any tool without one of their own
+  rather than borrowing `app_uninstall`'s words. The registry test holds the rule: a tool
+  asks for confirmation exactly when it takes `confirm`, every `destroy` tool asks, a tool
+  whose dry run its twin answers has a `--dry-run` example run as a test, and a `read` or
+  `control` tool takes no `dry_run`. `settings_set`'s result now says `Set <key> to
+  <value>.` (D163's leftover).
+- **Front-ends (D22).** CLI and MCP from one definition. The GUI's counterparts are already
+  there: Files scrolls a folder of any size, and the installer's uninstall window names the
+  app it will remove before it does.
+- **Security review** (as for item 28, on the change before it was committed; a reviewer that
+  only read the code). Grants: unchanged for every tool; a dry run needs the tool's grant and is
+  refused while another call waits for the user, as before. No path changes anything unasked:
+  every confirming tool's dry run is the server's own text. Argument words: `limit` is a range-
+  checked number, `after` must be a cursor (no leading `-`, no space, NUL or control byte, at
+  most 765 bytes), both before `--`. Findings and what was done: (1) the twin's errors are kept
+  to 32 KiB, so `ls` errors for hundreds of unreadable entries could drop the `more:` line and
+  the page would read as the last: fixed, a cut output or full errors give
+  `truncated_by: "bytes"` and no cursor; (2) at such a cut a hostile file name holding a
+  newline could line up a forged `more:` line: closed by (1), and without a cut the real
+  `more:` line is always written last (a name inside an error line ends with the errno's text,
+  which no cursor holds); (3) the dry run's audit record lacked its target: fixed; (4) a dry
+  run the twin answers relies on the twin: only tools that never ask for confirmation may do it
+  (the registry test), and each needs an example of it run as a test; (5) the fallback question
+  showed the agent's arguments: fixed, it names the tool only; (6) `app uninstall --dry-run`
+  reads the manifests while the server checks the folder: they agree but for a damaged
+  manifest, where the real uninstall fails too (left as is). A dry run tells an agent a file's
+  size or that an app exists, which `ls` and `app_list` already tell it without a grant.
+- **Checks.** Host tests: the cursor's encoding round trip, its refusals and the last-line
+  rule; `Smallest`; `Confirmation::needed`; the registry's paging, dry-run and confirmation
+  rules; `ls` paging a folder of 2,055 entries (twice the listing) in pages of 500 that join to
+  the whole sorted folder, cursors with spaces and dots, `--json`'s page line, the one-folder
+  rule; `ps`, `wm list` (two pages of three windows) and `app list` (four apps, two pages) by
+  key; `trash`, `app uninstall` and `settings set` dry runs; the MCP arguments; the server's
+  pages (twin words, `structuredContent`, a forged or non-final `more:` line ignored, a cut page),
+  its dry runs (no question, no twin, the file unchanged, the grant still needed, the audit
+  record) and `settings_set`'s result; the shipped schemas with their appended arguments. QEMU
+  (the MCP boot, all three architectures): the first session lists the host folder one entry
+  at a time (`big.txt`, its `next_cursor`) and then the rest after it; the second dry-runs
+  `trash` before trashing.
+- **Performance and size (D24).** No kernel path changes. `ls` needs no new buffer (a 255-byte
+  cursor); a page never costs more than the listing it already had. The registry grows by a
+  few options and texts; `coreutils`, `app`, `settings` and `eggmcpd` grow by the paging and
+  preview code; the build phase measures them.
+- **Decided by research.** The cursor's form and place (standard error, the same line for every
+  command, so stdout stays records for `jq` and the server needs no per-command parsing;
+  percent-encoding over raw keys, which may hold spaces, newlines or a leading `-`); exit status
+  0 when more follow; the paged result of a shipped tool (its text plus `structuredContent`,
+  present exactly when the call paged); a dry run needs the grant, skips the confirmation and
+  is logged; the server answers the dry runs of the confirming tools itself, so a twin that
+  ignored `--dry-run` could never change anything unasked; which commands have an exact dry
+  run.
+- **Decided without research.** The page sizes (500 for `ls`, 100 for the others: a page fits
+  the MCP output limit); `ls` pages one folder only (`--limit` with several operands or `-d`
+  is a usage error); `wm list` and `app list` keep their own order within a page; `ps` relies
+  on `/proc/ps`'s id order; `trash --dry-run` checks only that each path is there; the dry runs'
+  texts; `settings_set`'s result text; `too_many_entries`'s fix now points at `--limit`. The
+  owner can overrule any of these.
+- **Not yet.** Pages for `agentlog`, `settings list`, `help` and `trash -l`; new list tools with
+  the `items` envelope; dry runs for `fetch`, `clock_set`, `app_install`, `cp`, `mv` and `rm`;
+  escaping control characters of names inside text error lines; `outputSchema`.

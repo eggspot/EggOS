@@ -192,7 +192,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   `uname`, `uptime`, `wc` and `wm`, each with the common options only ([core utilities](coreutils.md));
   they are command-line only, with no GUI or MCP front-end yet (`wm` is the window
   capability's CLI; its GUI is the desktop's own chrome and keys).
-- **The command model, slices 1 and 2 (D160, D163, docs/ux/command-model.md).** Every command
+- **The command model, slices 1 to 3 (D160, D163, D164, docs/ux/command-model.md).** Every command
   is in the registry, but `eggsh`'s built-ins are only named there (the shell does not link it).
   `--json` exists where a command's output is records or an object (`ls`, `ps`, `wm list`, `wm
   show`, `app list`, `agentlog`, `help`, `wc`, `free`, `uptime`, `uname`, `settings list` and
@@ -200,8 +200,12 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   commands have none, so their errors are coded only in the text's wording. `date`, `hwclock`,
   `ip`, `nslookup`, `fetch`, `cat`, `tee`, `trash`, `agentlog` and `wm`'s verbs keep their own
   option parsers; `app install|open|uninstall` write text errors only. Examples exist for the
-  commands a fake can show (not for the network, the clock, windows or apps). There is no
-  paging (`--limit`, `--after`) or `--dry-run` (slice 3).
+  commands a fake can show (not for the network, the clock, windows or apps). Pages
+  (`--limit`, `--after`) exist for `ls`, `ps`, `wm list` and `app list` and their tools, not
+  for `agentlog`, `settings list`, `help` or `trash -l`; `--dry-run` for `trash`, `app
+  uninstall` and `settings set` (and MCP `tee`), not for `fetch`, `date -s`, `app install`,
+  `cp`, `mv` or `rm`, whose previews would not be exact. Names inside text error lines are
+  written as they are, control characters included.
   An MCP tool whose command fails (rather than being refused) still returns that command's
   text error without a code: the twins run in text mode.
 - The keyboard layout is US only (D113).

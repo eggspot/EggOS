@@ -38,9 +38,9 @@ the app appears there and on the desktop.
 
 ```
 app install [--name <name>] [--entry <path>] [--window] [--] <path>
-app uninstall [--window] [--] <name>   (app remove is the same)
+app uninstall [--window] [--dry-run] [--] <name>   (app remove is the same)
 app open [--] <name>
-app list
+app list [--json] [--limit <count>] [--after <cursor>]
 ```
 
 `--` ends the options: the word after it is the path or name even if it starts with `-`.
@@ -129,7 +129,9 @@ is built on a Mac (Apple's linker builds it).
   is replaced.
 - **`app uninstall <name>`** removes the app: its manifest, so it leaves the launcher and the
   desktop at once, then its folder; nothing of it is left (D18). The layer it ran through
-  stays. `app: could not uninstall <name>: it is not installed` otherwise.
+  stays. `app: could not uninstall <name>: it is not installed` otherwise. `--dry-run` says
+  `would uninstall <name>: removes /Applications/<name> and everything in it` and removes
+  nothing (D164).
 - **`app open <name>`** opens an app as a double-click on its icon does (`OPEN_APP`, D137):
   the built-in `Terminal`, `Files`, `Settings` or `Text Editor` (D141, D149; a built-in wins
   over an installed app
@@ -140,7 +142,9 @@ is built on a Mac (Apple's linker builds it).
   source, architecture, program path and own icon file (`app.icon`, or `-` for the generic
   tile), separated by tabs; the MCP tool `app_list` answers the same. `app list --json`
   writes a JSON record per app instead (`name`, `source`, `architecture`, `program`, `icon`,
-  `null` for no architecture or icon; D160, docs/ux/command-model.md).
+  `null` for no architecture or icon; D160, docs/ux/command-model.md). `--limit` and `--after`
+  page them (D164): the next apps by name after the cursor, at most 100, each page in
+  `/Applications`' order, then `more: --after <cursor>` on standard error when more follow.
 - Status: 0 done, 1 refused or failed, 2 a usage error. With a desktop running, `install`
   and `uninstall` tell it (`APPS_CHANGED`, [Windows](windows.md)), so its launcher and icons
   follow at once.
