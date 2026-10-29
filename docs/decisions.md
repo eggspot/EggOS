@@ -9838,3 +9838,39 @@ the license, by an explicit instruction recorded here.
   the wall clock's seconds, which `clock_set` can
   move back: their order stays the file's and each call's number, and the `clock_set` call is
   itself recorded, but a monotonic or boot-time field is a format change left for later.
+
+## D151 ARM64 programs' `CurrentEL` probe and `KUSER_SHARED_DATA`, and a line for a Windows program's fault (fixes item 43 on aarch64; extends D124, D146) — Decided by the build loop
+- **What broke.** The first MSVC build of `eggpad.exe` ran on x64 but died at once on ARM64
+  with "Illegal instruction". MSVC's ARM64 C runtime links outlined atomics helpers into every
+  program; on first use they learn once whether to use the ARMv8.1 atomic instructions
+  (`casal`, `swpal`) or exclusive pairs (`ldaxr`/`stlxr`). To tell kernel from user code they
+  read `CurrentEL` (`mrs x16, CurrentEL`, after `mov x16, #0`), which user code cannot read: the
+  processor refuses it as undefined, and on Windows the helper's own exception handler, found
+  through the image's `.pdata`, sees `STATUS_ILLEGAL_INSTRUCTION` at that instruction and
+  steps over it, so `x16` stays 0 (user mode). The helper then reads
+  `PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE` from `KUSER_SHARED_DATA` at `0x7ffe0296`. The
+  layer had neither exception dispatch (D146) nor that page.
+- **The fix.** The layer handles `SIGILL`, `SIGTRAP`, `SIGBUS`, `SIGFPE` and `SIGSEGV` for
+  every thread (`fault_handler.rs`). On aarch64, an illegal instruction inside the program's
+  image that is `mrs <Xt>, CurrentEL` is completed as reading exception level 0 (what the
+  register holds for user code; the same result as the helper's handler) and the program
+  resumes at the next instruction: one signal per process, at the helper's first use. Every
+  other fault the kernel raised writes `windows: <program>: <fault> at <pc> (<module>+<offset>)`
+  (and the address of a memory fault) to standard error, then gives the signal back its default
+  action and raises it again, so the process ends as before with the same status. A signal
+  another process sent is not reported. The layer also maps `KUSER_SHARED_DATA` read-only at
+  `0x7ffe0000` in every process (one page, only while a Windows program runs, D18) with
+  `ProcessorFeatures` filled from the same table `IsProcessorFeaturePresent` now answers from:
+  the baseline features, plus the ARMv8.1 atomics on aarch64 when the kernel's `AT_HWCAP` has
+  `HWCAP_ATOMICS`, which the aarch64 HAL now sets from `ID_AA64ISAR0_EL1.Atomic`, as Linux
+  does. On QEMU's `cortex-a72` (ARMv8.0) the helpers take the exclusive pairs; on a processor
+  with LSE, the single atomic instructions.
+- **Why not exception dispatch.** Dispatching the fault to the program's handler (looking up
+  `.pdata`, building a Windows `CONTEXT`, calling the language handler) is the faithful
+  mechanism and comes with structured exception handling as a whole (still "Not yet"). Until
+  then, completing the one instruction gives MSVC's helpers the result their handler would,
+  costs nothing on any other path, and stays correct once dispatch exists (a program whose
+  handler would step over it sees the same register). Emulating it in the kernel instead would
+  change what Linux programs see (a `SIGILL`, as on Linux).
+- **Running the test alone.** `cargo xtask windows-crt --arch <arch>` runs only the Windows C
+  runtime boot test, with the programs from MSVC or `EGGOS_WINDOWS_PROGRAMS`.

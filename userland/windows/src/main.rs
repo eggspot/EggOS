@@ -5,7 +5,8 @@
 //! runtime's streams, numbers and counted `printf` endings (`stream.rs`, `c_text.rs`,
 //! `counted_print.rs`) are pure logic with host tests;
 //! `start.rs` loads the program and `win32/` implements the Win32 and C runtime functions it
-//! imports.
+//! imports; `fault_handler.rs` handles its hardware faults, and `user_shared_data.rs` lays out
+//! the page Windows shares with every process.
 
 #![cfg_attr(target_env = "musl", no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
@@ -20,6 +21,10 @@ mod command_line;
 mod counted_print;
 #[cfg(any(test, runs_windows_programs))]
 mod errors;
+#[cfg(any(test, runs_windows_programs))]
+mod fault;
+#[cfg(runs_windows_programs)]
+mod fault_handler;
 #[cfg(any(test, runs_windows_programs))]
 mod find;
 #[cfg(any(test, runs_windows_programs))]
@@ -38,6 +43,8 @@ mod start;
 mod stream;
 #[cfg(any(test, runs_windows_programs))]
 mod text;
+#[cfg(any(test, runs_windows_programs))]
+mod user_shared_data;
 #[cfg(runs_windows_programs)]
 mod win32;
 

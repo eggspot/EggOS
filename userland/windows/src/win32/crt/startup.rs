@@ -7,17 +7,13 @@
 
 use super::super::{Bool, FALSE, TRUE};
 use crate::library::Export;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const STARTUP_INFO_SIZE: usize = 104;
 const SINGLE_LIST_HEADER_SIZE: usize = 16;
 const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 const EXCEPTION_DISPOSITION_CONTINUE_SEARCH: i32 = 1;
-#[cfg(target_arch = "x86_64")]
-const FEATURES_PRESENT: &[u32] = &[6, 8, 10, 12];
-#[cfg(target_arch = "aarch64")]
-const FEATURES_PRESENT: &[u32] = &[12, 19, 29];
-
+static PROCESSOR_FEATURES: AtomicU64 = AtomicU64::new(0);
 static UNHANDLED_EXCEPTION_FILTER: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_EXCEPTION: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_EXCEPTION_CONTEXT: AtomicUsize = AtomicUsize::new(0);
@@ -26,8 +22,14 @@ extern "efiapi" fn is_debugger_present() -> Bool {
     FALSE
 }
 
+/// Sets the features `IsProcessorFeaturePresent` answers for, one bit per feature number.
+pub fn set_processor_features(features: u64) {
+    PROCESSOR_FEATURES.store(features, Ordering::Relaxed);
+}
+
 extern "efiapi" fn is_processor_feature_present(feature: u32) -> Bool {
-    match FEATURES_PRESENT.contains(&feature) {
+    let features = PROCESSOR_FEATURES.load(Ordering::Relaxed);
+    match crate::user_shared_data::present(features, feature) {
         true => TRUE,
         false => FALSE,
     }

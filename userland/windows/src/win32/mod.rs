@@ -49,6 +49,7 @@ use eggos_runtime::errno::Errno;
 
 pub use abi::call_program;
 pub use console::set_gui_program;
+pub use crt::set_processor_features;
 pub use heap::{allocate as heap_allocate, process_heap};
 pub use process::set_process;
 pub use thread::finish as end_thread;

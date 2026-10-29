@@ -195,7 +195,7 @@ the files or pipes the shell redirected them to otherwise (`win-paint.exe > /tmp
 | File pickers (comdlg32) | `GetOpenFileNameW`, `GetSaveFileNameW`, `CommDlgExtendedError` |
 | Painting (user32) | `BeginPaint`, `EndPaint`, `GetDC`, `ReleaseDC`, `InvalidateRect`, `FillRect`, `DrawTextW` (left, centre, right; top, centre, bottom on one line; `DT_WORDBREAK`, `DT_NOPREFIX`, `DT_EXPANDTABS`, `DT_NOCLIP`, `DT_CALCRECT`, `DT_END_ELLIPSIS`), `GetSysColor`, `GetSysColorBrush` |
 | GDI (gdi32) | `CreateSolidBrush`, `CreatePen` (solid or `PS_NULL`), `GetStockObject`, `SelectObject`, `DeleteObject`, `SetTextColor`, `SetBkColor`, `SetBkMode`, `MoveToEx`, `LineTo`, `Rectangle`, `Ellipse`, `SetPixel`, `TextOutW`, `GetTextExtentPoint32W` |
-| C runtime startup (kernel32) | `IsDebuggerPresent`, `IsProcessorFeaturePresent` (the baseline features), `InitializeSListHead`, `GetStartupInfoW`/`A`, `SetUnhandledExceptionFilter`, `UnhandledExceptionFilter`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind` (no unwinding yet: no function entry is found) |
+| C runtime startup (kernel32) | `IsDebuggerPresent`, `IsProcessorFeaturePresent` (the baseline features, and the ARMv8.1 atomics on ARM64 processors that have them; the same table is at `0x7ffe0000` in `KUSER_SHARED_DATA`, D151), `InitializeSListHead`, `GetStartupInfoW`/`A`, `SetUnhandledExceptionFilter`, `UnhandledExceptionFilter`, `RtlCaptureContext`, `RtlLookupFunctionEntry`, `RtlVirtualUnwind` (no unwinding yet: no function entry is found) |
 | C runtime (vcruntime140) | `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strchr`, `strrchr`, `strstr`, `wcschr`, `wcsrchr`, `wcsstr`, `__C_specific_handler`, `__current_exception`, `__current_exception_context`, `__std_type_info_destroy_list`, `_purecall` |
 | C runtime (ucrtbase, `api-ms-win-crt-*`): startup and exit | `_initterm`, `_initterm_e`, `_configure_narrow_argv`, `_configure_wide_argv`, `__p___argc`, `__p___argv`, `__p___wargv`, `_initialize_narrow_environment`, `_initialize_wide_environment`, `_get_initial_narrow_environment`, `_get_initial_wide_environment`, `__p__environ`, `__p__wenviron`, `_get_narrow_winmain_command_line`, `_get_wide_winmain_command_line`, `_set_app_type`, `__setusermatherr`, `_configthreadlocale`, `_set_new_mode`, `_query_new_mode`, `__p__commode`, `__p__fmode`, `_set_fmode`, `_get_fmode`, `_seh_filter_exe`, `_register_thread_local_exe_atexit_callback`, `_crt_atexit`, `_crt_at_quick_exit`, `_initialize_onexit_table`, `_register_onexit_function`, `_execute_onexit_table`, `exit`, `quick_exit`, `_exit`, `_Exit`, `_cexit`, `_c_exit`, `abort`, `terminate`, `_invalid_parameter_noinfo`(`_noreturn`), `_errno`, `_get_errno`, `_set_errno`, `__doserrno` |
 | C runtime: heap | `malloc`, `calloc`, `realloc`, `_recalloc`, `free`, `_msize` (the process heap) |
@@ -250,7 +250,12 @@ size needed, as each function documents.
   fail with `ERROR_ACCESS_DENIED`.
 - **Time zones**: local time is UTC.
 - **Structured exception handling**: a fault ends the program as a signal would end a Linux
-  one; no `__try`/`__except`, no vectored handlers, no unwinding.
+  one, after a line on standard error naming the fault and its address as the program's
+  module and offset (D151); no `__try`/`__except`, no vectored handlers, no unwinding. The one
+  exception: on ARM64, a read of `CurrentEL`, which MSVC's atomics helpers make once and step
+  over in their own handler, reads exception level 0 and the program goes on.
+- **`KUSER_SHARED_DATA`**: the page at `0x7ffe0000` holds only `ProcessorFeatures`; its clocks,
+  version numbers and the rest read as zero.
 - **DLLs**: only the layer's own kernel32, ntdll, shell32 (`CommandLineToArgvW`), user32,
   gdi32, comdlg32, vcruntime140 and the Universal C Runtime (what the tables above list); a program that imports another DLL (comctl32, ws2_32, its
   own) or a function they lack is refused. Imports by ordinal are refused.
