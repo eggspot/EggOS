@@ -25,9 +25,8 @@ registry (`userland/commands`): each utility here, `app`, `wm`, `edit` and `sett
 lists them, `help <words>` shows one's usage, options, error codes, examples and GUI, and
 `help --json` writes the definitions as JSON lines. The examples run as tests against the
 utilities' fake system, so they are what the commands print. Every utility reads its options
-from its definition except `date`, `hwclock`, `ip`, `nslookup`, `fetch`, `sleep`, `echo`,
-`sync`, the power commands, `cat`, `tee`, `trash`, `agentlog` and `wm`'s verbs, whose own
-parsers take the same options. `ls`, `ps`, `wm list`, `wm show`, `app list`, `agentlog`,
+from its definition except `date`, `hwclock`, `ip`, `nslookup`, `fetch`, `echo`, `trash`,
+`agentlog` and `wm`'s verbs other than `list`, whose own parsers take the same options (D165). `ls`, `ps`, `wm list`, `wm show`, `app list`, `agentlog`,
 `help`, `wc`, `free`, `uptime`, `uname` and `settings list|get` take `--json` (`ip` its `-j`): one JSON record per line on standard output, and each error as one line
 `{"error":{"code":"...","category":"...","message":"...","fix":"...","fix_command":"..."}}` on
 standard error, with the same exit status as in text. In `eggsh`, `help` alone describes the

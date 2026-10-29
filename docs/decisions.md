@@ -10901,3 +10901,32 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Pages for `agentlog`, `settings list`, `help` and `trash -l`; new list tools with
   the `items` envelope; dry runs for `fetch`, `clock_set`, `app_install`, `cp`, `mv` and `rm`;
   escaping control characters of names inside text error lines; `outputSchema`.
+
+## D165 The Egg command model, slice 2's leftovers, part 1: `sleep`, `sync`, the power commands, `cat` and `tee` read their options from the registry, `eggsh`'s built-ins get definitions, and `date` and `wm list` get examples run as tests (D163's "Not yet"; extends D107, D163, D164) — Decided by the build loop
+- **Why.** D163 left a few utilities on parsers of their own, `eggsh`'s built-ins named only,
+  and no examples for the clock and the windows, so `help` could not show them and nothing
+  checked that their definitions say what they do.
+- **Options from the registry.** `sleep`, `sync`, `halt`, `poweroff`, `reboot`, `cat` and
+  `tee` parse with `parse_defined` from their definitions (`wm list` already did, D164): the
+  same options, messages and exit statuses as before (`tee` still adds its usage line); an
+  extra operand to `sync` or a power command now carries the `usage` code.
+- **The shell's built-ins.** `eggos_commands::shell::SHELL_COMMANDS` defines `.`, `:`, `cd`,
+  `echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type` and `unset` as
+  command-line-only definitions (operands, outputs, effects, errors with their exit statuses,
+  the shell as their surface), in `SHELL_BUILTINS`' order, which a test checks. `eggsh` still
+  does not link the registry (D107's size); the definitions are for the docs and the tests,
+  not in `COMMANDS` or `help --json`.
+- **Examples.** The core utilities' example machine gains a clock (2026-10-29 14:05:09 UTC)
+  and a window (129, `Notes`), so `date -u`, `date -u +%Y-%m-%dT%H:%M:%SZ` (`clock_get`'s
+  twin), `wm list` and `wm list --json` have examples that run as tests and that `help` shows.
+- **Decided without research.** The example machine's clock and window; the built-ins'
+  summaries and effects (`.` is `control`, since a file it runs can do anything); keeping
+  `tee`'s usage line after a bad option.
+- **Not yet** (D163's list, still open). `parse_defined` in `date`, `hwclock`, `ip`,
+  `nslookup`, `fetch`, `echo` (whose options are words by POSIX), `trash`, `agentlog` and `wm`'s
+  verbs other than `list`; coded JSON errors from `app install|open|uninstall`; codes for an MCP
+  twin that fails rather than being refused: a way for the server to ask a twin for coded
+  errors without changing its text, such as an environment variable the twins' environment
+  carries (not `run`'s) that makes `Output::coded` add one `{"error":{...}}` line after the
+  text line, which the server moves into `structuredContent.error` and leaves out of the text;
+  examples for the network commands, `hwclock` and `app` (their fakes need fixed answers).

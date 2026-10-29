@@ -198,9 +198,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   show`, `app list`, `agentlog`, `help`, `wc`, `free`, `uptime`, `uname`, `settings list` and
   `get`, `ip -j`); `grep`, `head`, `date`, `ping`, `fetch` and the other text or content
   commands have none, so their errors are coded only in the text's wording. `date`, `hwclock`,
-  `ip`, `nslookup`, `fetch`, `cat`, `tee`, `trash`, `agentlog` and `wm`'s verbs keep their own
-  option parsers; `app install|open|uninstall` write text errors only. Examples exist for the
-  commands a fake can show (not for the network, the clock, windows or apps). Pages
+  `ip`, `nslookup`, `fetch`, `trash`, `agentlog` and `wm`'s verbs but `list` keep their own
+  option parsers (D165); `app install|open|uninstall` write text errors only. Examples exist
+  for the commands a fake can show, `date` and `wm list` included (not for the network,
+  `hwclock` or apps). Pages
   (`--limit`, `--after`) exist for `ls`, `ps`, `wm list` and `app list` and their tools, not
   for `agentlog`, `settings list`, `help` or `trash -l`; `--dry-run` for `trash`, `app
   uninstall` and `settings set` (and MCP `tee`), not for `fetch`, `date -s`, `app install`,

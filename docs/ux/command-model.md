@@ -200,7 +200,8 @@ facts).
 `free`, `grep`, `halt`, `head`, `help`, `hwclock`, `ip`, `ls`, `mkdir`, `mv`, `nslookup`,
 `ping`, `poweroff`, `ps`, `reboot`, `rm`, `settings`, `sleep`, `sync`, `tail`, `tee`, `touch`,
 `trash`, `true`, `uname`, `uptime`, `wc`, `wm`; and `eggsh`'s built-ins `.`, `:`, `cd`,
-`echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type`, `unset` (CLI only).
+`echo`, `exit`, `export`, `false`, `help`, `pwd`, `set`, `true`, `type`, `unset` (CLI only;
+defined in `eggos_commands::shell::SHELL_COMMANDS` for the docs and the tests, D165).
 
 **`wm`'s own verbs:** `focus`, `minimise`, `maximise`, `size`, `move`, `restore`, `close`
 (D128), `capture`, `click`, `type`, `press`, `scroll` (D141), `menu` (D147), `act` (D161,

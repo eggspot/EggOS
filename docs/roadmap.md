@@ -513,8 +513,11 @@ The release path (the release-path review's issues #141-#145, after the items ab
   `limit` and `after` and answer `next_cursor`; `trash`, `app uninstall` and `settings set`
   take `--dry-run`, MCP `tee`, `trash` and `app_uninstall` answer `dry_run` from what the
   server checked, `settings_set` through its twin; one confirmation rule in the registry; a
-  security review; the MCP boot pages `ls` and dry-runs `trash`. Next: the macOS layer's
-  NSView tree, slice 4 (apps' own actions).
+  security review; the MCP boot pages `ls` and dry-runs `trash`. Slice 2's leftovers **partly
+  done** (D165): `sleep`, `sync`, the power commands, `cat` and `tee` on the registry's option
+  parsing, `eggsh`'s built-ins defined, examples for `date` and `wm list`. Next: the rest of
+  slice 2's leftovers (D165 "Not yet"), the macOS layer's NSView tree, slice 4 (apps' own
+  actions).
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text
