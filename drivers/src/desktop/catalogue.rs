@@ -532,7 +532,9 @@ mod tests {
     #[test]
     fn apps_are_found_by_name_the_built_ins_first() {
         let mut catalogue = catalogue();
-        assert!(catalogue.add_installed(b"Settings", &manifest("Settings", "linux", "/bin/fake", "")));
+        assert!(
+            catalogue.add_installed(b"Settings", &manifest("Settings", "linux", "/bin/fake", ""))
+        );
         assert_eq!(catalogue.app_named("Settings"), Some(AppId::Settings));
         assert_eq!(catalogue.app_named("Files"), Some(AppId::Files));
         assert_eq!(catalogue.app_named("Terminal"), Some(AppId::Terminal));

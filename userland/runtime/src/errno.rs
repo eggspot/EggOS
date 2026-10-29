@@ -53,6 +53,8 @@ impl Errno {
     pub const ENOMEM: Self = Self(12);
     /// `ENODEV`.
     pub const ENODEV: Self = Self(19);
+    /// `EOPNOTSUPP`.
+    pub const EOPNOTSUPP: Self = Self(95);
     /// `ECONNREFUSED`.
     pub const ECONNREFUSED: Self = Self(111);
 

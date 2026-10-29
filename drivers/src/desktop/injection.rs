@@ -260,9 +260,12 @@ impl Desktop {
         let target = *self.window_at(slot);
         if target.client == KERNEL_CLIENT {
             return match input {
-                InjectedInput::Key { code, modifiers } => Ok(Injected::ForTerminal(
-                    TerminalInput::Key { code, modifiers },
-                )),
+                InjectedInput::Key { code, modifiers } => {
+                    Ok(Injected::ForTerminal(TerminalInput::Key {
+                        code,
+                        modifiers,
+                    }))
+                }
                 InjectedInput::Character(byte) => {
                     Ok(Injected::ForTerminal(TerminalInput::Character(byte)))
                 }
@@ -307,10 +310,7 @@ impl Desktop {
             return Err(WindowError::QueueFull);
         }
         let send = |kind: u16, a: i32, b: i32, c: u32, d: u32, events: &mut dyn EventSink| {
-            events.send(
-                target.client,
-                EventRecord::new(kind, target.id, a, b, c, d),
-            );
+            events.send(target.client, EventRecord::new(kind, target.id, a, b, c, d));
         };
         if focus {
             send(event::FOCUS_IN, 0, 0, 0, 0, events);
@@ -336,16 +336,17 @@ impl Desktop {
             }
         }
         if let InjectedInput::Key { code, modifiers } = input {
-            let key_record = |code: u16, pressed: bool, held: Modifiers, events: &mut dyn EventSink| {
-                send(
-                    event::KEY,
-                    i32::from(code),
-                    i32::from(pressed),
-                    key_modifiers(held),
-                    codepoint(code, held),
-                    events,
-                );
-            };
+            let key_record =
+                |code: u16, pressed: bool, held: Modifiers, events: &mut dyn EventSink| {
+                    send(
+                        event::KEY,
+                        i32::from(code),
+                        i32::from(pressed),
+                        key_modifiers(held),
+                        codepoint(code, held),
+                        events,
+                    );
+                };
             let mut held = Modifiers::NONE;
             for (modifier, modifier_key) in MODIFIER_KEYS {
                 if modifiers.contains(modifier) && code != modifier_key {

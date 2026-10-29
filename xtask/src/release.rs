@@ -93,8 +93,13 @@ impl PngSink for PngBytes {
 pub fn encode_png(picture: &Picture) -> Result<Vec<u8>, String> {
     let failed = |error| format!("encoding the screenshot: {error:?}");
     let mut work = Box::new(EncoderWorkspace::new());
-    let mut encoder = Encoder::new(picture.width, picture.height, &mut work, PngBytes(Vec::new()))
-        .map_err(failed)?;
+    let mut encoder = Encoder::new(
+        picture.width,
+        picture.height,
+        &mut work,
+        PngBytes(Vec::new()),
+    )
+    .map_err(failed)?;
     for row in picture.pixels.chunks(picture.width.max(1) as usize) {
         encoder.write_row(row).map_err(failed)?;
     }

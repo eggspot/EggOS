@@ -31,12 +31,7 @@ const KIND_CHARACTER: u32 = 4;
 
 pub const BUTTONS: [(&[u8], u32); 3] = [(b"left", 0x110), (b"right", 0x111), (b"middle", 0x112)];
 
-pub const MODIFIERS: [(&[u8], u32); 4] = [
-    (b"shift", 1),
-    (b"ctrl", 2),
-    (b"alt", 4),
-    (b"super", 8),
-];
+pub const MODIFIERS: [(&[u8], u32); 4] = [(b"shift", 1), (b"ctrl", 2), (b"alt", 4), (b"super", 8)];
 
 pub const KEYS: [(&[u8], u16); 70] = [
     (b"a", 30),
@@ -123,9 +118,7 @@ pub struct Arguments<'a> {
 }
 
 fn is_option(argument: &[u8]) -> bool {
-    argument.len() > 1
-        && argument[0] == b'-'
-        && !argument[1].is_ascii_digit()
+    argument.len() > 1 && argument[0] == b'-' && !argument[1].is_ascii_digit()
 }
 
 pub fn parse<'a>(arguments: &[&'a CStr], options: &[&[u8]]) -> Option<Arguments<'a>> {
@@ -289,7 +282,10 @@ fn click<S: System>(
     parsed: &Arguments<'_>,
 ) -> i32 {
     let name = parsed.button.unwrap_or(b"left");
-    let Some(&(_, code)) = BUTTONS.iter().find(|(known, _)| lowercase_equals(name, known)) else {
+    let Some(&(_, code)) = BUTTONS
+        .iter()
+        .find(|(known, _)| lowercase_equals(name, known))
+    else {
         output.error(&[b"unknown button '", name, b"' (left, right or middle)"]);
         return USAGE_STATUS;
     };
@@ -297,7 +293,12 @@ fn click<S: System>(
         coordinate(parsed.positionals[1]),
         coordinate(parsed.positionals[2]),
     ) else {
-        output.error(&[b"invalid point ", parsed.positionals[1], b" ", parsed.positionals[2]]);
+        output.error(&[
+            b"invalid point ",
+            parsed.positionals[1],
+            b" ",
+            parsed.positionals[2],
+        ]);
         return USAGE_STATUS;
     };
     let request = Request {
@@ -408,8 +409,14 @@ fn scroll<S: System>(
     window: u32,
     parsed: &Arguments<'_>,
 ) -> i32 {
-    let (Some(dx), Some(dy)) = (number(parsed.positionals[1]), number(parsed.positionals[2])) else {
-        output.error(&[b"invalid scroll ", parsed.positionals[1], b" ", parsed.positionals[2]]);
+    let (Some(dx), Some(dy)) = (number(parsed.positionals[1]), number(parsed.positionals[2]))
+    else {
+        output.error(&[
+            b"invalid scroll ",
+            parsed.positionals[1],
+            b" ",
+            parsed.positionals[2],
+        ]);
         return USAGE_STATUS;
     };
     let window_text = parsed.positionals[0];
@@ -467,7 +474,7 @@ mod tests {
     use eggos_drivers::desktop::protocol::{input_kind, modifier, request, size};
     use eggos_drivers::input::{button, key, keymap};
 
-    fn fake() -> Fake {
+    fn machine() -> Fake {
         let mut fake = Fake::default();
         for (id, client) in [(64, KERNEL_CLIENT), (129, 67)] {
             fake.windows.push(FakeWindow {
@@ -510,7 +517,12 @@ mod tests {
         );
         assert_eq!(
             MODIFIERS.map(|(_, bit)| bit),
-            [modifier::SHIFT, modifier::CTRL, modifier::ALT, modifier::SUPER]
+            [
+                modifier::SHIFT,
+                modifier::CTRL,
+                modifier::ALT,
+                modifier::SUPER
+            ]
         );
     }
 
@@ -562,13 +574,13 @@ mod tests {
 
     #[test]
     fn a_click_sends_the_button_and_point() {
-        let (status, fake) = run(&[c"click", c"129", c"10", c"20"], fake());
+        let (status, fake) = run(&[c"click", c"129", c"10", c"20"], machine());
         assert_eq!((status, fake.errors().as_str()), (0, ""));
         assert_eq!(fake.sent_input, [[129, KIND_CLICK, 10, 20, 0x110, 0]]);
         assert_eq!(fake.output(), "clicked left at 10,20 in window 129\n");
         let (status, fake) = run(
             &[c"click", c"--button", c"right", c"--", c"129", c"0", c"49"],
-            fake(),
+            machine(),
         );
         assert_eq!(status, 0);
         assert_eq!(fake.sent_input, [[129, KIND_CLICK, 0, 49, 0x111, 0]]);
@@ -576,22 +588,22 @@ mod tests {
 
     #[test]
     fn typing_sends_each_character_and_says_how_many_went() {
-        let (status, fake) = run(&[c"type", c"--", c"129", c"a B"], fake());
+        let (status, fake) = run(&[c"type", c"--", c"129", c"a B"], machine());
         assert_eq!(status, 0);
         assert_eq!(
             fake.sent_input,
-            [b'a', b' ', b'B'].map(|byte| [129, KIND_CHARACTER, 0, 0, u32::from(byte), 0])
+            b"a B".map(|byte| [129, KIND_CHARACTER, 0, 0, u32::from(byte), 0])
         );
         assert_eq!(fake.output(), "typed 3 of 3 characters into window 129\n");
-        let (status, _) = run(&[c"type", c"129", c"-x"], fake());
+        let (status, _) = run(&[c"type", c"129", c"-x"], machine());
         assert_eq!(status, 2, "an option-like text needs --");
-        let (status, fake) = run(&[c"type", c"--", c"129", c"-x"], fake());
+        let (status, fake) = run(&[c"type", c"--", c"129", c"-x"], machine());
         assert_eq!((status, fake.sent_input.len()), (0, 2));
     }
 
     #[test]
     fn a_person_stops_typing_partway_and_says_how_far_it_got() {
-        let mut busy = fake();
+        let mut busy = machine();
         busy.input_results = vec![None, Some(Errno::EBUSY)];
         let (status, fake) = run(&[c"type", c"129", c"abc"], busy);
         assert_eq!(status, BUSY_STATUS);
@@ -604,11 +616,11 @@ mod tests {
 
     #[test]
     fn a_full_queue_is_retried_within_the_budget() {
-        let mut waiting = fake();
+        let mut waiting = machine();
         waiting.input_results = vec![Some(Errno::EAGAIN), Some(Errno::EAGAIN)];
         let (status, fake) = run(&[c"type", c"129", c"a"], waiting);
         assert_eq!((status, fake.slept.len(), fake.sent_input.len()), (0, 2, 1));
-        let mut stuck = fake();
+        let mut stuck = machine();
         stuck.input_results = vec![Some(Errno::EAGAIN); MAX_RETRIES as usize + 1];
         let (status, fake) = run(&[c"type", c"129", c"ab"], stuck);
         assert_eq!(status, FAILURE);
@@ -619,7 +631,7 @@ mod tests {
     #[test]
     fn typing_refuses_control_characters_and_other_text() {
         for text in [c"", c"line\r", c"tab\there", c"caf\xc3\xa9"] {
-            let (status, fake) = run(&[c"type", c"129", text], fake());
+            let (status, fake) = run(&[c"type", c"129", text], machine());
             assert_eq!(status, 2, "{text:?}");
             assert!(fake.sent_input.is_empty());
         }
@@ -633,30 +645,33 @@ mod tests {
             (c"shift", 42, 0),
             (c"alt+F4", 62, modifier::ALT),
         ] {
-            let (status, fake) = run(&[c"press", c"129", keys], fake());
+            let (status, fake) = run(&[c"press", c"129", keys], machine());
             assert_eq!(status, 0, "{keys:?}");
             assert_eq!(fake.sent_input, [[129, KIND_KEY, 0, 0, code, modifiers]]);
         }
-        let (status, fake) = run(&[c"press", c"129", c"ctrl+nothing"], fake());
+        let (status, fake) = run(&[c"press", c"129", c"ctrl+nothing"], machine());
         assert_eq!(status, 2);
         assert!(fake.errors().contains("unknown keys"));
     }
 
     #[test]
     fn scrolling_turns_the_wheel_at_the_centre_or_a_point() {
-        let (status, fake) = run(&[c"scroll", c"129", c"0", c"-3"], fake());
+        let (status, fake) = run(&[c"scroll", c"129", c"0", c"-3"], machine());
         assert_eq!(status, 0);
-        assert_eq!(fake.sent_input, [[129, KIND_WHEEL, 50, 25, 0, -3i32 as u32]]);
+        assert_eq!(
+            fake.sent_input,
+            [[129, KIND_WHEEL, 50, 25, 0, -3i32 as u32]]
+        );
         let (status, fake) = run(
             &[c"scroll", c"--at", c"5", c"6", c"129", c"0", c"2"],
-            fake(),
+            machine(),
         );
         assert_eq!(status, 0);
         assert_eq!(fake.sent_input, [[129, KIND_WHEEL, 5, 6, 0, 2]]);
-        let (status, fake) = run(&[c"scroll", c"64", c"0", c"1"], fake());
+        let (status, fake) = run(&[c"scroll", c"64", c"0", c"1"], machine());
         assert_eq!(status, 0, "the terminal scrolls its view");
         assert_eq!(fake.sent_input, [[64, KIND_WHEEL, 0, 0, 0, 1]]);
-        let (status, fake) = run(&[c"scroll", c"129", c"2", c"0"], fake());
+        let (status, fake) = run(&[c"scroll", c"129", c"2", c"0"], machine());
         assert_eq!(status, FAILURE);
         assert!(fake.errors().contains("sideways"));
         assert!(fake.sent_input.is_empty());
@@ -664,10 +679,10 @@ mod tests {
 
     #[test]
     fn refusals_name_the_window_and_bad_commands_are_usage_errors() {
-        let (status, fake) = run(&[c"click", c"7", c"1", c"1"], fake());
+        let (status, fake) = run(&[c"click", c"7", c"1", c"1"], machine());
         assert_eq!(status, FAILURE);
         assert_eq!(fake.errors(), "wm: 7: no such window\n");
-        let mut busy = fake();
+        let mut busy = machine();
         busy.input_results = vec![Some(Errno::EBUSY)];
         let (status, _) = run(&[c"press", c"129", c"a"], busy);
         assert_eq!(status, BUSY_STATUS);
@@ -679,19 +694,22 @@ mod tests {
             &[c"type"][..],
             &[c"scroll", c"129", c"0"][..],
         ] {
-            let (status, fake) = run(arguments, fake());
+            let (status, fake) = run(arguments, machine());
             assert_eq!(status, 2, "{arguments:?}");
             assert!(fake.sent_input.is_empty());
         }
-        let (status, _) = run(&[c"click", c"--button", c"side", c"129", c"1", c"1"], fake());
+        let (status, _) = run(
+            &[c"click", c"--button", c"side", c"129", c"1", c"1"],
+            machine(),
+        );
         assert_eq!(status, 2);
-        let (status, _) = run(&[c"click", c"129", c"-1", c"1"], fake());
+        let (status, _) = run(&[c"click", c"129", c"-1", c"1"], machine());
         assert_eq!(status, 2);
     }
 
     #[test]
     fn help_lists_the_verbs_and_key_names() {
-        let (status, fake) = run(&[c"help"], fake());
+        let (status, fake) = run(&[c"help"], machine());
         assert_eq!(status, 0);
         let help = fake.output();
         for word in ["wm capture", "wm press", "PageDown", "ctrl+", "75"] {

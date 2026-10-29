@@ -232,10 +232,22 @@ impl System for Linux {
         let pointer = request.as_mut_ptr() as usize;
         call(
             number::IOCTL,
-            [descriptor, crate::wm::CAPTURE_WINDOW as usize, pointer, 0, 0, 0],
+            [
+                descriptor,
+                crate::wm::CAPTURE_WINDOW as usize,
+                pointer,
+                0,
+                0,
+                0,
+            ],
         )?;
         let word = |at: usize| {
-            u32::from_ne_bytes([request[at], request[at + 1], request[at + 2], request[at + 3]])
+            u32::from_ne_bytes([
+                request[at],
+                request[at + 1],
+                request[at + 2],
+                request[at + 3],
+            ])
         };
         Ok(CapturedRows {
             width: word(12),

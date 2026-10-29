@@ -25,7 +25,7 @@ use eggos_drivers::desktop::protocol::{
     EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, Request, WindowError, capture_reply,
     create_reply, list_reply, put_double_word, put_word, request, set_size_reply, size,
 };
-use eggos_drivers::desktop::{Desktop, InjectedInput, Injected, Profile, WindowId};
+use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, Profile, WindowId};
 use eggos_drivers::display::Damage;
 use eggos_hal::Platform;
 use eggos_hal::paging::Attributes;
@@ -340,9 +340,7 @@ fn capture<P: Platform>(
         first_row,
         rows,
         &mut |offset, piece| {
-            let at = buffer
-                .checked_add(offset as u64)
-                .ok_or(Errno::EFAULT)?;
+            let at = buffer.checked_add(offset as u64).ok_or(Errno::EFAULT)?;
             process
                 .write_user_memory(at, piece)
                 .map_err(|_| Errno::EFAULT)

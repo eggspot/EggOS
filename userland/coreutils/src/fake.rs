@@ -1,6 +1,6 @@
 use crate::system::{
-    CapturedRows, DIRECTORY, Duration, STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, Status, SymbolicLinks,
-    System, SystemName, UTSNAME_FIELD, UTSNAME_SIZE,
+    CapturedRows, DIRECTORY, Duration, STANDARD_ERROR, STANDARD_INPUT, STANDARD_OUTPUT, Status,
+    SymbolicLinks, System, SystemName, UTSNAME_FIELD, UTSNAME_SIZE,
 };
 use core::ffi::CStr;
 use eggos_runtime::errno::Errno;
@@ -538,7 +538,10 @@ impl System for Fake {
             };
         };
         let (width, height) = (*width, *height);
-        let rows = height.checked_sub(first_row).ok_or(Errno::EINVAL)?.min(row_count);
+        let rows = height
+            .checked_sub(first_row)
+            .ok_or(Errno::EINVAL)?
+            .min(row_count);
         let bytes = rows as usize * width as usize * 4;
         if bytes > pixels.len() {
             return Err(Errno::EINVAL);
@@ -546,7 +549,7 @@ impl System for Fake {
         let start = first_row as usize * width as usize;
         for (pixel, place) in content[start..start + rows as usize * width as usize]
             .iter()
-            .zip(pixels.chunks_exact_mut(4))
+            .zip(pixels.as_chunks_mut::<4>().0.iter_mut())
         {
             place.copy_from_slice(&pixel.to_ne_bytes());
         }

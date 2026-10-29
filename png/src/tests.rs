@@ -42,10 +42,7 @@ fn decoded(png: &[u8]) -> (u32, u32, Vec<u32>) {
     let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
     let mut inflated = vec![0u8; decoded_size(width, height).unwrap()];
     let mut pixels = vec![0u32; (width * height) as usize];
-    assert_eq!(
-        decode(png, &mut inflated, &mut pixels),
-        Ok((width, height))
-    );
+    assert_eq!(decode(png, &mut inflated, &mut pixels), Ok((width, height)));
     (width, height, pixels)
 }
 
@@ -89,7 +86,9 @@ fn images_round_trip_through_the_decoder() {
 fn data_past_the_history_and_many_chunks_still_round_trip() {
     let (width, height) = (640, 200);
     let mut pixels = noise(width * height / 2, 7);
-    pixels.extend((0..width * height / 2).map(|index| (index as u32 / 37) * 0x0001_0203));
+    pixels.extend(
+        (0..width * height / 2).map(|index| ((index as u32 / 37) * 0x0001_0203) & 0x00ff_ffff),
+    );
     let png = encode(width as u32, height as u32, &pixels);
     let idat: Vec<usize> = chunks(&png)
         .into_iter()
@@ -97,7 +96,11 @@ fn data_past_the_history_and_many_chunks_still_round_trip() {
         .map(|(_, length)| length)
         .collect();
     assert!(idat.len() > 2, "{idat:?}");
-    assert!(idat[..idat.len() - 1].iter().all(|&length| length == IDAT_BYTES));
+    assert!(
+        idat[..idat.len() - 1]
+            .iter()
+            .all(|&length| length == IDAT_BYTES)
+    );
     assert_eq!(decoded(&png).2, pixels);
 }
 
@@ -135,7 +138,10 @@ fn the_header_and_every_chunk_are_checked() {
     for at in [20, 40, png.len() - 6] {
         let mut broken = png.clone();
         broken[at] ^= 1;
-        assert!(decode(&broken, &mut inflated, &mut pixels).is_err(), "byte {at}");
+        assert!(
+            decode(&broken, &mut inflated, &mut pixels).is_err(),
+            "byte {at}"
+        );
     }
     assert_eq!(
         decode(&png[..png.len() - 3], &mut inflated, &mut pixels),
@@ -248,8 +254,8 @@ fn shrinking_averages_each_cell_the_edges_included() {
             }
         }
         for shift in [16, 8, 0] {
-            let mean = cell.iter().map(|&pixel| channel(pixel, shift)).sum::<u64>()
-                / cell.len() as u64;
+            let mean =
+                cell.iter().map(|&pixel| channel(pixel, shift)).sum::<u64>() / cell.len() as u64;
             assert_eq!(channel(out, shift), mean, "cell {column},{row}");
         }
     }

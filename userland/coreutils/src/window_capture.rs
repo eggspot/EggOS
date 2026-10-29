@@ -121,8 +121,8 @@ fn encode_once<S: System>(system: &mut S, target: &Target, buffers: &mut Buffers
             return Attempt::Broken;
         }
         for line in band[..got.rows as usize * row_bytes].chunks_exact(row_bytes) {
-            for (pixel, bytes) in row.iter_mut().zip(line.chunks_exact(4)) {
-                *pixel = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            for (pixel, bytes) in row.iter_mut().zip(line.as_chunks::<4>().0) {
+                *pixel = u32::from_ne_bytes(*bytes);
             }
             if downscale.push_row(&row[..width as usize], out)
                 && let Err(error) = encoder.write_row(&out[..out_width as usize])
@@ -185,7 +185,15 @@ pub fn capture<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let Some(device) = open_device(output) else {
         return FAILURE;
     };
-    let status = capture_to(output, device, window, window_text, file, max_width, max_bytes);
+    let status = capture_to(
+        output,
+        device,
+        window,
+        window_text,
+        file,
+        max_width,
+        max_bytes,
+    );
     output.system.close(device);
     status
 }
@@ -308,7 +316,10 @@ fn report<S: System>(
     output.write(b"window ");
     output.write(window_text);
     output.write(b": ");
-    for (index, value) in [width, height, out_width, out_height].into_iter().enumerate() {
+    for (index, value) in [width, height, out_width, out_height]
+        .into_iter()
+        .enumerate()
+    {
         output.write_number(u64::from(value), 0);
         output.write(match index {
             0 | 2 => b"x",
@@ -348,7 +359,7 @@ mod tests {
             .collect()
     }
 
-    fn fake(width: u32, height: u32) -> Fake {
+    fn machine(width: u32, height: u32) -> Fake {
         let mut fake = Fake::default();
         for (id, client) in [(64, KERNEL_CLIENT), (129, 67)] {
             fake.windows.push(FakeWindow {
@@ -395,7 +406,7 @@ mod tests {
 
     #[test]
     fn a_capture_writes_the_window_s_content_as_a_png() {
-        let (status, fake) = run(&[c"capture", c"129"], fake(300, 200));
+        let (status, fake) = run(&[c"capture", c"129"], machine(300, 200));
         assert_eq!((status, fake.errors().as_str()), (0, ""));
         let png = fake.contents("window-129.png");
         assert_eq!(image(&png), (300, 200, pattern(300, 200)));
@@ -413,8 +424,15 @@ mod tests {
     #[test]
     fn a_wide_window_is_shrunk_to_the_maximum_width() {
         let (status, fake) = run(
-            &[c"capture", c"-o", c"/home/shot.png", c"--max-width", c"150", c"129"],
-            fake(301, 100),
+            &[
+                c"capture",
+                c"-o",
+                c"/home/shot.png",
+                c"--max-width",
+                c"150",
+                c"129",
+            ],
+            machine(301, 100),
         );
         assert_eq!(status, 0);
         let (width, height, pixels) = image(&fake.contents("/home/shot.png"));
@@ -426,17 +444,20 @@ mod tests {
 
     #[test]
     fn a_png_over_the_byte_limit_is_redone_one_step_smaller() {
-        let (_, whole) = run(&[c"capture", c"129"], fake(256, 256));
+        let (_, whole) = run(&[c"capture", c"129"], machine(256, 256));
         let full = whole.contents("window-129.png").len();
         let limit = std::ffi::CString::new((full - 1).to_string()).unwrap();
         let (status, fake) = run(
             &[c"capture", c"--max-bytes", &limit, c"129"],
-            fake(256, 256),
+            machine(256, 256),
         );
         assert_eq!(status, 0);
         assert!(fake.output().contains("as 128x128 (scale 1/2)"));
         assert!(fake.contents("window-129.png").len() < full);
-        let (status, fake) = run(&[c"capture", c"--max-bytes", c"40", c"129"], fake(256, 256));
+        let (status, fake) = run(
+            &[c"capture", c"--max-bytes", c"40", c"129"],
+            machine(256, 256),
+        );
         assert_eq!(status, FAILURE);
         assert!(fake.errors().contains("does not fit"));
         assert!(!fake.nodes.contains_key(&b"window-129.png"[..]));
@@ -444,20 +465,20 @@ mod tests {
 
     #[test]
     fn the_terminal_and_unknown_windows_are_refused_by_name() {
-        let (status, fake) = run(&[c"capture", c"64"], fake(10, 10));
+        let (status, fake) = run(&[c"capture", c"64"], machine(10, 10));
         assert_eq!(status, FAILURE);
         assert_eq!(
             fake.errors(),
             "wm: 64: drawn by the kernel (the Terminal), which can't be captured yet\n"
         );
-        let (status, fake) = run(&[c"capture", c"7"], fake(10, 10));
+        let (status, fake) = run(&[c"capture", c"7"], machine(10, 10));
         assert_eq!(status, FAILURE);
         assert_eq!(fake.errors(), "wm: 7: no such window\n");
     }
 
     #[test]
     fn a_window_closed_between_bands_is_reported() {
-        let mut closing = fake(1024, 64);
+        let mut closing = machine(1024, 64);
         closing.capture_fails_at = Some((2, Errno::ENOENT));
         let (status, fake) = run(&[c"capture", c"129"], closing);
         assert_eq!(status, FAILURE);
@@ -467,7 +488,7 @@ mod tests {
 
     #[test]
     fn a_window_resized_during_the_capture_is_captured_again_once() {
-        let mut resizing = fake(1024, 64);
+        let mut resizing = machine(1024, 64);
         resizing.resized_at = Some((2, 30, 20));
         let (status, fake) = run(&[c"capture", c"129"], resizing);
         assert_eq!(status, 0);
@@ -485,7 +506,7 @@ mod tests {
             &[c"capture", c"--scale", c"2", c"129"][..],
             &[c"capture", c"-o"][..],
         ] {
-            let (status, fake) = run(arguments, fake(10, 10));
+            let (status, fake) = run(arguments, machine(10, 10));
             assert_eq!(status, 2, "{arguments:?}");
             assert_eq!(fake.capture_calls, 0);
         }

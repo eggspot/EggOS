@@ -182,7 +182,7 @@ pub fn decode(
     unfilter(inflated, width as usize)?;
     let stride = width as usize * 3 + 1;
     for (row, line) in inflated.chunks_exact(stride).enumerate() {
-        for (column, rgb) in line[1..].chunks_exact(3).enumerate() {
+        for (column, rgb) in line[1..].as_chunks::<3>().0.iter().enumerate() {
             pixels[row * width as usize + column] =
                 u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2]);
         }
@@ -242,7 +242,11 @@ fn inflate(png: &[u8], first_chunk: usize, out: &mut [u8]) -> Result<(), DecodeE
     Ok(())
 }
 
-fn inflate_fixed(bits: &mut Bits<'_>, out: &mut [u8], mut length: usize) -> Result<usize, DecodeError> {
+fn inflate_fixed(
+    bits: &mut Bits<'_>,
+    out: &mut [u8],
+    mut length: usize,
+) -> Result<usize, DecodeError> {
     loop {
         let symbol = bits.literal_or_length()?;
         match symbol {

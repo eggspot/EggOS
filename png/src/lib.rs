@@ -108,7 +108,9 @@ impl Default for EncoderWorkspace {
 
 impl core::fmt::Debug for EncoderWorkspace {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("EncoderWorkspace").finish_non_exhaustive()
+        formatter
+            .debug_struct("EncoderWorkspace")
+            .finish_non_exhaustive()
     }
 }
 
@@ -241,7 +243,9 @@ impl<'w, S: PngSink> Encoder<'w, S> {
     fn push(&mut self, byte: u8) {
         if self.filled == HISTORY_BYTES {
             self.compress(false);
-            self.work.history.copy_within(WINDOW_BYTES..HISTORY_BYTES, 0);
+            self.work
+                .history
+                .copy_within(WINDOW_BYTES..HISTORY_BYTES, 0);
             self.base += WINDOW_BYTES as u64;
             self.filled -= WINDOW_BYTES;
             self.cursor -= WINDOW_BYTES;

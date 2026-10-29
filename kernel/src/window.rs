@@ -443,7 +443,7 @@ pub fn copy_content_rows<E>(
     pixels: Option<&PixelBuffer>,
     first_row: u32,
     rows: u32,
-    put: &mut dyn FnMut(usize, &[u8]) -> Result<(), E>,
+    put: &mut impl FnMut(usize, &[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut chunk = [0u32; CAPTURE_CHUNK_PIXELS];
     let mut bytes = [0u8; CAPTURE_CHUNK_PIXELS * 4];
@@ -458,7 +458,7 @@ pub fn copy_content_rows<E>(
                 Some(buffer) => buffer.copy_row(column, line, out),
                 None => out.fill(colour::WINDOW_BACKGROUND),
             });
-            for (pixel, place) in out.iter().zip(bytes.chunks_exact_mut(4)) {
+            for (pixel, place) in out.iter().zip(bytes.as_chunks_mut::<4>().0.iter_mut()) {
                 place.copy_from_slice(&pixel.to_ne_bytes());
             }
             put(
@@ -657,7 +657,10 @@ mod tests {
         assert!(Arc::ptr_eq(&shared, &buffer));
         assert!(buffers.shared(created.window + (1 << 6)).is_none());
         let layout = desktop.content_layout(u32::from(created.window)).unwrap();
-        assert_eq!((layout.width, layout.height), (created.width, created.height));
+        assert_eq!(
+            (layout.width, layout.height),
+            (created.width, created.height)
+        );
         let mut copied = alloc::vec::Vec::new();
         copy_content_rows::<()>(&layout, Some(&shared), 1, 2, &mut |offset, bytes| {
             assert_eq!(offset, copied.len());
@@ -666,15 +669,20 @@ mod tests {
         })
         .unwrap();
         assert_eq!(copied.len(), 2 * layout.width as usize * 4);
-        assert!(copied.iter().all(|&byte| byte == 0), "a new buffer is zeroed");
+        assert!(
+            copied.iter().all(|&byte| byte == 0),
+            "a new buffer is zeroed"
+        );
         let mut pieces = 0;
         let stopped = copy_content_rows(&layout, None, 0, 1, &mut |_, bytes| {
             pieces += 1;
             assert!(
                 bytes
-                    .chunks_exact(4)
-                    .all(|pixel| pixel == colour::WINDOW_BACKGROUND.to_ne_bytes()
-                        || pixel == layout.fill.to_ne_bytes())
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| *pixel == colour::WINDOW_BACKGROUND.to_ne_bytes()
+                        || *pixel == layout.fill.to_ne_bytes())
             );
             Err("full")
         });

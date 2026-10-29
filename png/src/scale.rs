@@ -66,7 +66,7 @@ impl<'s> Downscale<'s> {
         if self.row >= self.height {
             return false;
         }
-        for (column, sums) in self.sums.chunks_exact_mut(3).enumerate() {
+        for (column, sums) in self.sums.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let start = column * self.factor as usize;
             let end = (start + self.factor as usize).min(self.width as usize);
             for &pixel in row.get(start..end.min(row.len())).unwrap_or_default() {
@@ -81,7 +81,13 @@ impl<'s> Downscale<'s> {
         if self.row - cell_top < cell_rows {
             return false;
         }
-        for (column, (sums, place)) in self.sums.chunks_exact_mut(3).zip(out.iter_mut()).enumerate()
+        for (column, (sums, place)) in self
+            .sums
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(out.iter_mut())
+            .enumerate()
         {
             let start = column as u32 * self.factor;
             let cell_columns = (self.width - start).min(self.factor);

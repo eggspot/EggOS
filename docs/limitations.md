@@ -98,6 +98,14 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   x86_64, added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120).
   Programs on Rust's std, Objective-C or Swift, threads, signal handlers, `mmap`, other
   libraries and frameworks, `.app` bundles and riscv64 do not run yet.
+- **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
+  app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
+  the terminal's window can't be captured, takes no pointer input, and drag, double-click,
+  sideways scrolling and non-ASCII typing are not in yet; input goes to the window named even
+  when a dialog of it is open; a minimised Wayland app does not repaint after input (eggway
+  sends no frame callbacks to minimised surfaces) until it is restored; every process is root
+  until users come (M10), so any program can capture and send input; agents get it through the
+  MCP server's grants next (item 47a2).
 - **iOS apps are not in yet** (D17).
 - **No MCP server, no components.** The built-in MCP server (D21), the CLI and MCP front-ends
   of every capability (D22) and the component manager (D18) come later.

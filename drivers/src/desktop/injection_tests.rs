@@ -131,7 +131,13 @@ fn hostile_input_arguments_are_invalid() {
         (input_kind::KEY, 0, 0, u32::from(button::LEFT), 0),
         (input_kind::KEY, 0, 0, u32::from(button::FIRST), 0),
         (input_kind::KEY, 0, 0, u32::MAX, 0),
-        (input_kind::KEY, 0, 0, u32::from(key::A), modifier::CAPS_LOCK),
+        (
+            input_kind::KEY,
+            0,
+            0,
+            u32::from(key::A),
+            modifier::CAPS_LOCK,
+        ),
         (input_kind::KEY, 0, 0, u32::from(key::A), 1 << 31),
         (input_kind::WHEEL, 0, 0, 0, 0),
         (input_kind::CHARACTER, 0, 0, 0x0d, 0),
@@ -200,7 +206,10 @@ fn a_click_goes_straight_to_its_window_bracketed_and_changes_nothing_else() {
         ]
     );
     assert!(records.iter().all(|record| record.window == first));
-    assert_eq!((records[3].a, records[3].b, records[3].c, records[3].d), (10, 20, 0x110, 1));
+    assert_eq!(
+        (records[3].a, records[3].b, records[3].c, records[3].d),
+        (10, 20, 0x110, 1)
+    );
     assert_eq!(records[4].d, 0);
     assert_eq!(desktop.focused_window(), focused);
     assert_eq!(desktop.stacking().collect::<Vec<_>>(), stacking);
@@ -228,7 +237,10 @@ fn a_key_brings_its_modifiers_down_and_up_around_it() {
     let (mut desktop, _, second) = desktop_with_two_windows();
     let mut events = Recorded::default();
     let held = Modifiers::CTRL.with(Modifiers::SHIFT);
-    let input = InjectedInput::Key { code: 20, modifiers: held };
+    let input = InjectedInput::Key {
+        code: 20,
+        modifiers: held,
+    };
     send(&mut desktop, second, input, &mut events).unwrap();
     let keys: Vec<(i32, i32, u32)> = events
         .take()
@@ -248,10 +260,19 @@ fn a_key_brings_its_modifiers_down_and_up_around_it() {
             (shift, 0, 0)
         ]
     );
-    send(&mut desktop, second, InjectedInput::Character(b'A'), &mut events).unwrap();
+    send(
+        &mut desktop,
+        second,
+        InjectedInput::Character(b'A'),
+        &mut events,
+    )
+    .unwrap();
     let records = events.take();
     assert_eq!(records.len(), 4);
-    assert_eq!((records[1].a, records[1].d), (i32::from(key::A), u32::from(b'A')));
+    assert_eq!(
+        (records[1].a, records[1].d),
+        (i32::from(key::A), u32::from(b'A'))
+    );
     send(
         &mut desktop,
         second,
@@ -270,7 +291,13 @@ fn minimised_and_covered_windows_still_get_input() {
     let (mut desktop, first, second) = desktop_with_two_windows();
     let mut events = Recorded::default();
     desktop
-        .set_state(CLIENT, u32::from(second), 1, &mut Damage::new(), &mut events)
+        .set_state(
+            CLIENT,
+            u32::from(second),
+            1,
+            &mut Damage::new(),
+            &mut events,
+        )
         .unwrap();
     events.take();
     for window in [first, second] {
@@ -304,7 +331,12 @@ fn the_terminal_s_input_comes_back_for_its_own_handlers() {
         }))
     );
     assert_eq!(
-        send(&mut desktop, terminal, InjectedInput::Character(b'x'), &mut events),
+        send(
+            &mut desktop,
+            terminal,
+            InjectedInput::Character(b'x'),
+            &mut events
+        ),
         Ok(Injected::ForTerminal(TerminalInput::Character(b'x')))
     );
     let wheel = InjectedInput::Wheel {
@@ -339,7 +371,12 @@ fn points_outside_the_content_and_unknown_windows_are_refused() {
     let mut events = Recorded::default();
     for (x, y) in [(content.width, 0), (0, content.height)] {
         assert_eq!(
-            send(&mut desktop, first, InjectedInput::PointerMove { x, y }, &mut events),
+            send(
+                &mut desktop,
+                first,
+                InjectedInput::PointerMove { x, y },
+                &mut events
+            ),
             Err(WindowError::Invalid)
         );
     }
@@ -365,8 +402,20 @@ fn a_person_wins_while_holding_a_button_and_for_half_a_second_after() {
     let input = InjectedInput::Character(b'a');
     let at = QUIET_MS;
     desktop.set_time(at);
-    desktop.key(key::A, true, Modifiers::NONE, &mut Damage::new(), &mut events);
-    desktop.key(key::A, false, Modifiers::NONE, &mut Damage::new(), &mut events);
+    desktop.key(
+        key::A,
+        true,
+        Modifiers::NONE,
+        &mut Damage::new(),
+        &mut events,
+    );
+    desktop.key(
+        key::A,
+        false,
+        Modifiers::NONE,
+        &mut Damage::new(),
+        &mut events,
+    );
     for (now, busy) in [(at, true), (at + 499, true), (at + 500, false)] {
         desktop.set_time(now);
         assert_eq!(
@@ -450,7 +499,10 @@ fn a_capture_reads_the_content_at_its_size_with_the_fill_around_the_buffer() {
     let (mut desktop, first, _) = desktop_with_two_windows();
     let layout = desktop.content_layout(u32::from(first)).unwrap();
     let content = desktop.content_rect(first).unwrap();
-    assert_eq!((layout.width, layout.height), (content.width, content.height));
+    assert_eq!(
+        (layout.width, layout.height),
+        (content.width, content.height)
+    );
     desktop
         .manage(
             u32::from(first),
@@ -463,7 +515,10 @@ fn a_capture_reads_the_content_at_its_size_with_the_fill_around_the_buffer() {
         .unwrap();
     let layout = desktop.content_layout(u32::from(first)).unwrap();
     let content = desktop.content_rect(first).unwrap();
-    assert_eq!((layout.width, layout.height), (content.width, content.height));
+    assert_eq!(
+        (layout.width, layout.height),
+        (content.width, content.height)
+    );
     assert_eq!(
         desktop.content_layout(u32::MAX),
         Err(WindowError::NoSuchWindow)
@@ -485,7 +540,9 @@ fn a_capture_reads_the_content_at_its_size_with_the_fill_around_the_buffer() {
     let buffer = 0x0011_1111;
     assert_eq!(
         row,
-        [fill, fill, buffer, buffer, buffer, buffer, buffer, fill, fill, fill]
+        [
+            fill, fill, buffer, buffer, buffer, buffer, buffer, fill, fill, fill
+        ]
     );
     partial.copy_row(0, 3, &mut row, &mut |_, _, _| panic!("outside the buffer"));
     assert_eq!(row, [fill; 10]);
@@ -501,7 +558,11 @@ fn a_capture_reads_the_content_at_its_size_with_the_fill_around_the_buffer() {
 fn every_printable_character_has_a_key_that_types_it() {
     for character in b' '..=b'~' {
         let (code, modifiers) = key_for_ascii(character).unwrap();
-        assert_eq!(codepoint(code, modifiers), u32::from(character), "{character}");
+        assert_eq!(
+            codepoint(code, modifiers),
+            u32::from(character),
+            "{character}"
+        );
     }
     assert_eq!(key_for_ascii(b'\r'), None);
     assert_eq!(key_for_ascii(0x80), None);

@@ -8754,3 +8754,90 @@ the license, by an explicit instruction recorded here.
   host test covers eggway's serial check); asking the window server for the work area once
   instead of opening `/dev/window` at each `wl_output` bind; and what real toolkits need
   (docs/linux-programs.md).
+
+## D141 Seeing and operating any window: `CAPTURE_WINDOW`, `SEND_INPUT`, a person wins, `wm capture`, `click`, `type`, `press` and `scroll`, the `eggos-png` encoder, and the built-in apps by name (v0.3.0 item 47a1) — Decided (owner, 2026-10-28: "the mcp is not enough … if windows app open gui, our os will support the ai to work with it"); the design decided by the build loop (the points below marked so decided by research)
+- **What.** A program, and through it a person or (next, 47a2) an agent, sees any app
+  window's content and operates it: `wm capture <id>` writes the content as a PNG, `wm click`,
+  `type`, `press` and `scroll` send input to it. It works on a covered or minimised window and
+  never moves the person's pointer. This is the CLI front-end (D22); the GUI front-end of
+  seeing and clicking a window is the desktop itself; the MCP tools come in 47a2, under a
+  grant, with their own decision extending this one.
+- **Capture from the window's own buffer** (`CAPTURE_WINDOW`, 19, 40 bytes). The request
+  carries a user pointer, a length and a band of rows; the pixels never pass through the
+  request buffer. The kernel takes the window's content layout (its content size, where the
+  buffer sits in it, the fill colour around it, as the desktop draws it: `ContentLayout`) and a
+  shared reference to its buffer under the screen's lock, drops the locks, then copies row by
+  row through a 1 KiB stack bounce into the program's memory, where faults are allowed. Rows
+  are cut at the content's height; `rows * width * 4` and every `buffer + offset` are checked;
+  the reply (content width and height, rows copied) is written only after all pixels; a fault
+  partway is `EFAULT` with no reply. The content size, not the buffer's, is the size reported
+  and the bound for input, so capture and input share one coordinate space even while a resize
+  is pending. The terminal's window, which the kernel draws into its own grid, is refused
+  (`EOPNOTSUPP`, `wm` names it). Captures can tear if the client draws meanwhile.
+- **Input straight to the window's queue** (`SEND_INPUT`, 20, 24 bytes): a pointer move, a click
+  (move, press, release), the wheel, a key with modifiers (the modifiers' left keys pressed
+  around it), or a printable ASCII character the US keymap types (`keymap::key_for_ascii`, the
+  reverse of `encode`). Never through the shortcuts, popups or hit-testing; `FocusIn`/
+  `FocusOut` around it unless the window is focused and `PointerEnter`/`PointerLeave` unless the
+  pointer is over it; focus, hover, stacking and the pointer stay as they were. Each request is
+  one atomic step under the screen lock, and the client's queue must have room for the whole
+  step first (`EAGAIN` otherwise, nothing sent; `wm` retries for up to 3 s), so no click or key
+  is ever split. Hostile fields are `EINVAL`: an unknown kind, a negative or outside point,
+  another button, key code 0 or a button's, modifier bits beyond Shift/Ctrl/Alt/Super, no notch,
+  a non-printable character; notches are clamped to 16. The terminal's window takes keys,
+  characters and the wheel through its own handlers (the console's line discipline in the
+  cursor-key mode a program asked for, and the scrollback), fed after the screen's lock is
+  released because the console's echo takes it; pointer input to it is `EOPNOTSUPP`.
+- **A person wins.** `SEND_INPUT` is `EBUSY` while a person holds a key or button on any device
+  (an atomic the input poller sets at the end of each poll, so the request never takes the
+  devices' lock under the screen's), while the desktop holds a button, a grab, a drag or a
+  resize, while real events wait in the input queue for the desktop, and for 500 ms after the
+  last real key, button, wheel notch or pointer move of more than 4 screen pixels from where
+  one last counted. Injected input never counts. `wm` exits 75 for it. Every process is root
+  until M10, so "root only" is not a boundary here: the agent boundary is eggmcpd's grants
+  (47a2).
+- **Built-in apps by name** (decided by research). The MCP check and agents need to open
+  Settings, which `OPEN_APP` could not (installed apps only). `Catalogue::app_named` checks the
+  built-ins Terminal, Files and Settings first, then the installed apps: a built-in wins a
+  clash, so an installed app can't pose as Settings. `app open` skips its installed check for
+  those names. Rejected: starting Settings through `run` with a shell `&` (the call's processes
+  end with it) and leaving Settings out of the checks (the item names it).
+- **`eggos-png`** (`png/`, no_std, no allocator, no `unsafe`): a streaming encoder (8-bit RGB,
+  the Sub filter on every row, one fixed-Huffman DEFLATE block, LZ77 over a 64 KiB history for
+  the 32 KiB window probing one earlier position per byte, so time is linear; 16 KiB IDAT
+  chunks), its 144 KiB workspace valid all zero (on `wm`'s stack, untouched by other
+  utilities); `scale::Downscale`, a whole-factor box average (contract in the module: output
+  `ceil(w/k)` by `ceil(h/k)`, each pixel the per-channel integer mean of its cell's existing
+  pixels); and a decoder for stored and fixed blocks, for tests and the host's checks. It
+  replaces xtask's own writer, which chose the best of PNG's five filters per row (D116):
+  screenshots are a little larger, the shared encoder stays small and bounded.
+- **`wm`** (`window_capture.rs`, `window_input.rs`): options, then `--`, then the positional
+  words. `capture` streams bands of rows through `Downscale` into the encoder and the file;
+  the factor is the smallest k with `ceil(W/k) <= --max-width`; a PNG over `--max-bytes` is
+  made again with k+1, at most 8 times; a size change between bands starts again once; a window
+  closed between bands is reported. `type` sends one character a request and reports `typed N
+  of M characters`; `press` takes one key after `ctrl+`, `shift+`, `alt+`, `super+`, or a
+  modifier alone; `scroll` turns the wheel `dy` notches (sideways not yet).
+- **Check.** Host tests: the protocol, the hostile-argument table, records and brackets per
+  kind, minimised and covered windows, the terminal's routing, `QueueFull`, the person-wins
+  rule with the desktop's clock (busy at 0 and 499 ms, free at 500, busy while a button is held,
+  jitter ignored, the clock's wrap), the content layout and its row copy, the kernel's band copy
+  and that a minimised window keeps its buffer, every printable character's key, the PNG round
+  trips, checksums and `Downscale`'s contract, and every `wm` verb against the fake (bands,
+  shrinking, the byte limit, a window closed or resized between bands, partial typing, the retry
+  budget, the key table against the keymap). QEMU: the Settings boot's last step keeps the
+  pointer moving through QMP while `wm press 64 shift` (a key with no bytes, into the terminal)
+  is refused with 75, then two seconds after the moves stop it goes through; on all three
+  architectures, never timing the 500 ms itself.
+- **D24.** The kernel grows by the two requests and the injection code, coreutils by the
+  encoder and the verbs; the PR states the measured image sizes. No buffer grows: capture
+  buffers are the caller's, and `wm`'s 336 KiB of working memory is on its stack only while
+  `wm capture` runs.
+- **Not yet.** Capturing the terminal's window and pointer input to it; drag and double-click;
+  sideways scrolling and non-ASCII typing; input to a window that has a dialog open goes to the
+  window named, not the dialog; a minimised Wayland app does not repaint after input (eggway
+  withholds frame callbacks from minimised surfaces) until it is restored; every process is
+  root until M10.
+- **Risks.** Each `SEND_INPUT` is its own focus session (`FocusIn` and `FocusOut` around it),
+  so a click and a later `wm type` reach the window in two sessions; Win32 controls (item 42's
+  EDIT) may reset their focused child or caret between them, which item 42 has to handle.
