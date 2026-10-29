@@ -15,6 +15,7 @@ mod qemu;
 mod qmp;
 mod release;
 mod sha256;
+mod windows;
 
 use std::process::{Command, ExitCode};
 
@@ -75,6 +76,10 @@ commands:
   macos-programs         build the macOS programs boot test's Mach-O programs with Apple's
                          linker (macOS hosts only) into target/macos-console/programs and
                          print that folder, which EGGOS_MACOS_PROGRAMS can name elsewhere
+  windows-programs       build the Windows C runtime boot test's programs with MSVC (Windows
+                         hosts with Visual Studio's C++ tools only) into
+                         target/windows-crt/programs and print that folder, which
+                         EGGOS_WINDOWS_PROGRAMS can name elsewhere
 
 architectures: aarch64, riscv64, x86_64";
 
@@ -388,6 +393,13 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", programs.directory.display());
             Ok(())
         }
+        Some("windows-programs") if args.len() == 1 => {
+            let programs = windows::find_or_build_programs(&target_directory())?.ok_or(
+                "MSVC builds the Windows C runtime test programs: run this on a Windows host",
+            )?;
+            println!("{}", programs.directory.display());
+            Ok(())
+        }
         Some("release") if args.len() == 1 => release::run(),
         Some("fuzz") => match &args[1..] {
             [target] if target == "mcp" => fuzz_mcp(60),
@@ -632,6 +644,16 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         qemu::Display::Attached,
         &[],
     )?;
+    if let Some(kernel) = build_windows_crt_test_kernel(arch)? {
+        qemu::boot_test(
+            arch,
+            &kernel,
+            qemu::Expect::WindowsCrt,
+            qemu::TEST_CPUS,
+            qemu::Display::Attached,
+            &[],
+        )?;
+    }
     let kernel = build_linux_gui_test_kernel(arch)?;
     qemu::boot_test(
         arch,
@@ -1022,6 +1044,60 @@ fn build_windows_gui_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, Stri
         &format!("initramfs-windows-gui-{}.cpio", arch.user_target),
     )?;
     build_release_kernel(arch, &initramfs)
+}
+
+const EGGPAD: (&str, &str) = ("eggpad", "bin/eggpad.exe");
+
+fn build_windows_crt_test_kernel(arch: &Arch) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(target) = windows::msvc_target(arch.name) else {
+        return Ok(None);
+    };
+    if windows::not_built_for_this_run(std::env::var_os(windows::PROGRAMS_VARIABLE).as_deref()) {
+        eprintln!(
+            "xtask: {}: Windows C runtime boot test skipped: {} is empty, so this CI run built \
+             no MSVC programs (pull requests that change code build them)",
+            arch.name,
+            windows::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    }
+    let Some(programs) = windows::find_or_build_programs(&target_directory())? else {
+        if std::env::var_os("CI").is_some() {
+            return Err(format!(
+                "{}: the Windows C runtime boot test needs the MSVC test programs in CI: set {}",
+                arch.name,
+                windows::PROGRAMS_VARIABLE
+            ));
+        }
+        eprintln!(
+            "xtask: {}: Windows C runtime boot test skipped: MSVC builds its programs, so it \
+             runs on a Windows host or with {} naming a folder of them; CI runs it",
+            arch.name,
+            windows::PROGRAMS_VARIABLE
+        );
+        return Ok(None);
+    };
+    let (program, path) = EGGPAD;
+    let added = [image::AddedFile {
+        host: programs
+            .path(program, target)
+            .to_string_lossy()
+            .into_owned(),
+        path: path.to_owned(),
+    }];
+    let layer = windows_layer_for(arch, &added)?;
+    let mut extra = vec![(
+        "etc/eggos/init.conf",
+        initramfs::Content::Text(SHELL_TEST_CONFIG),
+    )];
+    extra.extend(image::members(&added));
+    extra.extend(layer.iter().map(|layer| layer.member()));
+    let initramfs = release_initramfs(
+        arch,
+        &extra,
+        &format!("initramfs-windows-crt-{}.cpio", arch.user_target),
+    )?;
+    build_release_kernel(arch, &initramfs).map(Some)
 }
 
 fn release_initramfs(

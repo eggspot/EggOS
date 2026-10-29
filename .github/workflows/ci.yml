@@ -155,9 +155,30 @@ jobs:
           done
           echo "macos-programs: no artifact after 10 minutes"; exit 1
 
+      - name: Wait for the MSVC test programs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=${{ github.run_id }}; repo=${{ github.repository }}
+          for attempt in $(seq 1 120); do
+            if gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx windows-programs; then
+              gh run download "$run" --repo "$repo" --name windows-programs --dir target/windows-programs
+              exit 0
+            fi
+            state=$(gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[] | select(.name == "windows-programs") | .conclusion // ""')
+            case "$state" in
+              failure|cancelled|skipped|timed_out) echo "windows-programs: $state"; exit 1;;
+              success) gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name' | grep -qx windows-programs || { echo "windows-programs finished without its artifact"; exit 1; };;
+            esac
+            sleep 5
+          done
+          echo "windows-programs: no artifact after 10 minutes"; exit 1
+
       - name: QEMU boot tests
         env:
           EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
+          EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/windows-programs' || '' }}
         run: cargo xtask qemu --arch ${{ matrix.arch }}
 
       - uses: actions/cache/save@v6
@@ -264,6 +285,44 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  windows-programs:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Detect code changes
+        id: changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only)
+          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE(-MIT|-APACHE)?$|^\.github/FUNDING\.yml$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"; echo "Docs-only change: no MSVC programs to build."
+          fi
+      - uses: actions/checkout@v7
+        if: steps.changes.outputs.code == 'true'
+        with:
+          fetch-depth: 1
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        if: steps.changes.outputs.code == 'true'
+        run: rustup toolchain install
+      - name: Build the C runtime test programs with MSVC
+        if: steps.changes.outputs.code == 'true'
+        run: cargo xtask windows-programs
+      - uses: actions/upload-artifact@v7
+        if: steps.changes.outputs.code == 'true'
+        with:
+          name: windows-programs
+          path: target/windows-crt/programs
+          retention-days: 1
+          if-no-files-found: error
+
   hosts:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
@@ -291,7 +350,7 @@ jobs:
 
   check:
     if: always()
-    needs: [changes, fast, qemu, bench, macos-programs, hosts]
+    needs: [changes, fast, qemu, bench, macos-programs, windows-programs, hosts]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

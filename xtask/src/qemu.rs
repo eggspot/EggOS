@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod persistent;
 pub mod settings;
 pub mod shell;
+mod windows_crt;
 mod windows_gui;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
@@ -183,6 +184,16 @@ pub enum Expect {
     /// the close control closes the window (D129); then the program's lines in the file, its
     /// status 0, and on riscv64 `ENOEXEC`.
     WindowsGui,
+    /// The release kernel with `eggpad.exe`, our own C notepad built by MSVC as a `/MD` program
+    /// on the C runtime's DLLs for this CPU (x86_64 and aarch64 only), added with the Windows
+    /// layer as `cargo xtask image --add` adds it, boots to the shell's prompt; the test writes
+    /// a file from the shell and runs eggpad on it with its standard output redirected to a
+    /// file, checks the display against the host's render as the window shows the file, three
+    /// typed letters and Enter appear, Ctrl+S saves (its status line says so) and the close
+    /// control closes it (D145); then the program's lines in the file (its arguments, the bytes
+    /// it opened and saved, the keys it took and its `atexit` handler), the saved file read
+    /// back by `cat`, and its status 0.
+    WindowsCrt,
     /// The release kernel with `linux-paint`, a Wayland client built from our own source with
     /// Rust's standard library on musl, added at `/bin/linux-paint`, boots to the shell's prompt
     /// with `eggway` started by init; the test runs it with its standard output redirected to a
@@ -436,6 +447,36 @@ const WIN_PAINT_LINES: [&str; 14] = [
     "WIN-PAINT destroyed",
     "WIN-PAINT quit 0",
 ];
+
+const WINDOWS_CRT_SESSION: [&[u8]; 4] = [
+    b"echo Hello from the shell > /tmp/note.txt; eggpad.exe 'C:\\tmp\\note.txt' > /tmp/eggpad.log; echo EGGPAD status $?\r",
+    b"cat /tmp/eggpad.log\r",
+    b"cat /tmp/note.txt\r",
+    b"exit 7\r",
+];
+
+const EGGPAD_LINES: [&str; 5] = [
+    "EGGPAD arguments 2 C:\\tmp\\note.txt",
+    "EGGPAD opened 21 bytes",
+    "EGGPAD saved 27 bytes",
+    "EGGPAD closed typed 4",
+    "EGGPAD exit",
+];
+
+fn windows_crt_output() -> [Vec<Line>; WINDOWS_CRT_SESSION.len()] {
+    let whole = |lines: &[&str]| -> Vec<Line> {
+        lines
+            .iter()
+            .map(|line| Line::Whole(line.to_string()))
+            .collect()
+    };
+    [
+        whole(&["EGGPAD status 0"]),
+        whole(&EGGPAD_LINES),
+        whole(&["Hello from the shell", "abc"]),
+        whole(&[SHELL_EXIT_LINE, POWER_DOWN_LINE]),
+    ]
+}
 
 fn runs_windows_programs(arch: &str) -> bool {
     matches!(arch, "x86_64" | "aarch64")
@@ -1416,6 +1457,25 @@ fn boot(
                     &mut shell_typed,
                 )
             }
+            Expect::WindowsCrt => {
+                if let Some(port) = qmp_port
+                    && shell_typed.lines >= 1
+                    && terminal_frames.is_empty()
+                {
+                    let checked = windows_crt::check(arch, port, &mut console, &rx);
+                    if let Err(error) = checked {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    terminal_frames.push(Ok(()));
+                }
+                shell_scripts_to_type(
+                    &String::from_utf8_lossy(&console),
+                    &WINDOWS_CRT_SESSION,
+                    &mut shell_typed,
+                )
+            }
             Expect::LinuxGui => {
                 if let Some(port) = qmp_port
                     && shell_typed.lines >= 1
@@ -1744,6 +1804,16 @@ fn verdict(arch: &str, expect: Expect, clean_exit: bool, console: &str) -> Resul
                 &WINDOWS_GUI_SESSION,
                 windows_gui_output(arch),
                 "Windows GUI",
+            );
+        }
+        Expect::WindowsCrt => {
+            return session_verdict(
+                arch,
+                clean_exit,
+                console,
+                &WINDOWS_CRT_SESSION,
+                windows_crt_output(),
+                "Windows C runtime",
             );
         }
         Expect::LinuxGui => {
@@ -3380,6 +3450,45 @@ mod tests {
         let arm = windows_programs_console("aarch64");
         assert!(arm.contains("system arch 12 "));
         assert!(arm.contains("other-cpu.exe: an x64 program"));
+    }
+
+    fn windows_crt_console() -> String {
+        let mut console = "EggOS 0.2.0 (x86_64)\r\n".to_owned();
+        for (typed, output) in WINDOWS_CRT_SESSION.iter().zip(windows_crt_output()) {
+            let command = String::from_utf8_lossy(typed);
+            console.push_str(&format!("{SHELL_PROMPT}# {}\r\n", command.trim_end()));
+            for line in output {
+                if let Line::Whole(whole) = line {
+                    console.push_str(&format!("{whole}\r\n"));
+                }
+            }
+        }
+        console
+    }
+
+    #[test]
+    fn the_windows_crt_session_checks_eggpad_s_lines_and_the_saved_file() {
+        let ok = windows_crt_console();
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &ok).is_ok());
+        assert!(verdict("x86_64", Expect::WindowsCrt, false, &ok).is_err());
+        let unsaved = ok.replace("EGGPAD saved 27 bytes\r\n", "");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &unsaved).is_err());
+        let lost = ok.replace("abc\r\n", "");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &lost).is_err());
+        let failed = ok.replace("EGGPAD status 0", "EGGPAD status 126");
+        assert!(verdict("x86_64", Expect::WindowsCrt, true, &failed).is_err());
+    }
+
+    #[test]
+    fn the_windows_crt_session_matches_the_display_check() {
+        let typed = String::from_utf8_lossy(WINDOWS_CRT_SESSION[0]);
+        let seeded = windows_crt::SEEDED_TEXT.trim_end();
+        assert!(typed.starts_with(&format!("echo {seeded} > /tmp/note.txt; ")));
+        let saved = format!("EGGPAD {}", windows_crt::SAVED_STATUS.to_lowercase());
+        assert!(EGGPAD_LINES.contains(&saved.as_str()));
+        assert!(
+            EGGPAD_LINES.contains(&format!("EGGPAD opened {} bytes", seeded.len() + 1).as_str())
+        );
     }
 
     fn windows_gui_console(arch: &str) -> String {
