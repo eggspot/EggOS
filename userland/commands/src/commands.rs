@@ -175,6 +175,11 @@ const PS_EXAMPLE: &str = concat!(
     "    7     1     7 R eggsh\n",
 );
 
+const WM_LIST_EXAMPLE: &str = concat!(
+    "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n",
+    "129 normal 100 80 640 480 67 Notes\n",
+);
+
 const PS_PAGE_EXAMPLE: &str = concat!("  PID  PPID  PGID S CMD\n", "    7     1     7 R eggsh\n");
 
 /// The most entries a page of `ls` holds (D164).
@@ -308,7 +313,14 @@ pub const WM_LIST: CommandDefinition = CommandDefinition {
         exits(&NO_WINDOW_SERVER, 1),
         exits(&BAD_CURSOR, 2),
     ],
-    examples: &[],
+    examples: &[
+        example("wm list", WM_LIST_EXAMPLE),
+        example(
+            "wm list --json",
+            "{\"id\":129,\"state\":\"normal\",\"x\":100,\"y\":80,\"width\":640,\
+             \"height\":480,\"client_pid\":67,\"title\":\"Notes\"}\n",
+        ),
+    ],
     surface: Surface::Gui("the taskbar, dock or top bar, and the window switcher"),
 };
 
@@ -1310,7 +1322,10 @@ pub const DATE: CommandDefinition = CommandDefinition {
         exits(&TIMED_OUT, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[],
+    examples: &[
+        example("date -u", "Thu Oct 29 14:05:09 UTC 2026\n"),
+        example("date -u +%Y-%m-%dT%H:%M:%SZ", "2026-10-29T14:05:09Z\n"),
+    ],
     surface: Surface::Gui("Settings: Date & time"),
 };
 

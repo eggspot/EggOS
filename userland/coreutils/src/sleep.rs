@@ -1,26 +1,20 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::{Duration, System};
 use core::ffi::CStr;
-use eggos_commands::errors;
+use eggos_commands::{commands, errors};
 
 const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 const FRACTION_DIGITS: usize = 9;
 
 pub fn sleep<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
+    let Ok(operands) = parse_defined(output, arguments, &commands::SLEEP, |_, _| Ok(())) else {
+        return FAILURE;
+    };
     let mut total: u128 = 0;
-    let mut operands = 0;
     let mut status = 0;
-    let mut options_end = false;
-    for argument in arguments {
+    for argument in operands.all() {
         let bytes = argument.to_bytes();
-        if !options_end && bytes == b"--" {
-            options_end = true;
-            continue;
-        }
-        if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
-            return output.invalid_option(bytes);
-        }
-        operands += 1;
         match interval(bytes) {
             Some(nanoseconds) => total = total.saturating_add(nanoseconds),
             None => {
@@ -29,7 +23,7 @@ pub fn sleep<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
             }
         }
     }
-    if operands == 0 {
+    if operands.all().is_empty() {
         output.coded(&errors::USAGE, &[b"missing operand"]);
         return FAILURE;
     }

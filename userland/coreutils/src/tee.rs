@@ -1,6 +1,8 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::{STANDARD_INPUT, System};
 use core::ffi::CStr;
+use eggos_commands::commands;
 use eggos_runtime::errno::Errno;
 
 const PIECE: usize = 512;
@@ -15,31 +17,17 @@ struct Target<'a> {
 
 pub fn tee<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let mut append = false;
-    let mut options_end = false;
+    let parsed = parse_defined(output, arguments, &commands::TEE, |_, _| {
+        append = true;
+        Ok(())
+    });
+    let Ok(operands) = parsed else {
+        output.error(&[USAGE]);
+        return FAILURE;
+    };
     let mut targets: [Option<Target<'_>>; MAX_FILES] = [const { None }; MAX_FILES];
     let mut count = 0;
-    for &argument in arguments {
-        let bytes = argument.to_bytes();
-        if !options_end && bytes.len() > 1 && bytes[0] == b'-' {
-            match bytes {
-                b"--" => options_end = true,
-                b"-a" | b"--append" => append = true,
-                _ if bytes.starts_with(b"--") => {
-                    output.invalid_option(bytes);
-                    output.error(&[USAGE]);
-                    return FAILURE;
-                }
-                _ => match bytes[1..].iter().find(|&&letter| letter != b'a') {
-                    Some(&letter) => {
-                        output.invalid_option(&[b'-', letter]);
-                        output.error(&[USAGE]);
-                        return FAILURE;
-                    }
-                    None => append = true,
-                },
-            }
-            continue;
-        }
+    for &argument in operands.all() {
         if count == MAX_FILES {
             output.error(&[b"too many files"]);
             return FAILURE;

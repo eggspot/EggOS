@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod errors;
 pub mod page;
+pub mod shell;
 pub mod tools;
 
 #[cfg(test)]
@@ -581,8 +582,8 @@ pub const KEPT_NAMES: [&str; 37] = [
     "uname", "uptime", "wc", "wm",
 ];
 
-/// `eggsh`'s built-ins: CLI only, named for the docs and the tests; `eggsh` does not link the
-/// registry, so they are not in [`COMMANDS`].
+/// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the
+/// tests (D165); `eggsh` does not link the registry, so they are not in [`COMMANDS`].
 pub const SHELL_BUILTINS: [&str; 13] = [
     ".", ":", "cd", "echo", "exit", "export", "false", "help", "pwd", "set", "true", "type",
     "unset",

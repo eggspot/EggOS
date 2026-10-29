@@ -1,11 +1,11 @@
-use crate::fake::Fake;
+use crate::fake::{Fake, FakeWindow};
 use crate::utilities::{Utility, run};
 use core::ffi::CStr;
 use eggos_commands::COMMANDS;
 use std::ffi::CString;
 
 fn machine() -> Fake {
-    Fake::default()
+    let mut fake = Fake::default()
         .with_directory("/home", 0)
         .with_directory("/home/root", 0)
         .with_file("/home/root/notes.txt", 0o644, b"eggs\nmilk\nbread\n", 0)
@@ -17,7 +17,16 @@ fn machine() -> Fake {
             b"MemTotal: 131072 kB\nMemFree: 100000 kB\nMemAvailable: 100000 kB\n",
             0,
         )
-        .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0)
+        .with_file("/proc/uptime", 0o444, b"3725.42 0.00\n", 0);
+    fake.now = 1_793_282_709;
+    fake.windows = vec![FakeWindow {
+        id: 129,
+        state: 0,
+        rect: [100, 80, 640, 480],
+        client: 67,
+        title: b"Notes".to_vec(),
+    }];
+    fake
 }
 
 #[test]

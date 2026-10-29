@@ -1,42 +1,49 @@
+use crate::options::parse_defined;
 use crate::output::{FAILURE, Output};
 use crate::system::System;
 use core::ffi::CStr;
+use eggos_commands::{CommandDefinition, commands, errors};
 
 pub const POWER_OFF: u32 = 0x4321_fedc;
 pub const RESTART: u32 = 0x0123_4567;
 pub const HALT: u32 = 0xcdef_0123;
 
+fn no_operands<S: System>(
+    output: &mut Output<S>,
+    arguments: &[&CStr],
+    definition: &'static CommandDefinition,
+) -> bool {
+    let Ok(operands) = parse_defined(output, arguments, definition, |_, _| Ok(())) else {
+        return false;
+    };
+    match operands.all().first() {
+        Some(extra) => {
+            output.coded(
+                &errors::USAGE,
+                &[b"extra operand '", extra.to_bytes(), b"'"],
+            );
+            false
+        }
+        None => true,
+    }
+}
+
 pub fn sync<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
-    if let Some(argument) = arguments.first() {
-        return match argument.to_bytes() {
-            option @ [b'-', _, ..] => output.invalid_option(option),
-            operand => {
-                output.error(&[b"extra operand '", operand, b"'"]);
-                FAILURE
-            }
-        };
+    if !no_operands(output, arguments, &commands::SYNC) {
+        return FAILURE;
     }
     output.system.sync();
     0
 }
 
 pub fn power<S: System>(output: &mut Output<S>, arguments: &[&CStr], command: u32) -> i32 {
-    for argument in arguments {
-        match argument.to_bytes() {
-            b"-f" | b"--force" => {}
-            option @ [b'-', _, ..] if option.starts_with(b"--") => {
-                return output.invalid_option(option);
-            }
-            [b'-', letters @ ..] if !letters.is_empty() => {
-                if let Some(&letter) = letters.iter().find(|&&letter| letter != b'f') {
-                    return output.invalid_option(&[b'-', letter]);
-                }
-            }
-            operand => {
-                output.error(&[b"extra operand '", operand, b"'"]);
-                return FAILURE;
-            }
-        }
+    let definition = match command {
+        HALT => &commands::HALT,
+        RESTART => &commands::REBOOT,
+        _ => &commands::POWEROFF,
+    };
+    if !no_operands(output, arguments, definition) {
+        return FAILURE;
     }
     output.flush();
     output.system.sync();
