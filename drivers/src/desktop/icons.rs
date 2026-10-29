@@ -595,7 +595,10 @@ mod tests {
     #[test]
     fn a_channel_above_its_alpha_draws_as_the_alpha_and_other_files_are_no_icon() {
         let own = own_from(&[0x80ff_0000]);
-        assert_eq!(pixels(Icon::Own(&own), IconSize::Large)[0], blend(0x8080_0000, BACKGROUND));
+        assert_eq!(
+            pixels(Icon::Own(&own), IconSize::Large)[0],
+            blend(0x8080_0000, BACKGROUND)
+        );
         assert!(IconPixels::from_file(&[0u8; icon_file::FILE_BYTES - 1]).is_none());
         assert!(IconPixels::from_file(&[0u8; icon_file::FILE_BYTES + 1]).is_none());
     }

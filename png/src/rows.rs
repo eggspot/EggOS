@@ -87,7 +87,9 @@ impl Default for RowWorkspace {
 
 impl core::fmt::Debug for RowWorkspace {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("RowWorkspace").finish_non_exhaustive()
+        formatter
+            .debug_struct("RowWorkspace")
+            .finish_non_exhaustive()
     }
 }
 
@@ -259,7 +261,11 @@ impl<'s, S: ByteSource> RowDecoder<'s, S> {
             return Err(DecodeError::Corrupt);
         }
         for entry in 0..length / 3 {
-            let rgb = [self.chunks.data()?, self.chunks.data()?, self.chunks.data()?];
+            let rgb = [
+                self.chunks.data()?,
+                self.chunks.data()?,
+                self.chunks.data()?,
+            ];
             self.palette[entry] =
                 OPAQUE | u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2]);
         }

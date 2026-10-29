@@ -98,10 +98,7 @@ impl Pool {
     }
 
     fn entry(&mut self, kind: u8, label: &[u8], key_label: Option<&[u8]>) -> bool {
-        if self.menus == 0
-            || self.entries == MAX_ENTRIES
-            || !self.append(kind, label, key_label)
-        {
+        if self.menus == 0 || self.entries == MAX_ENTRIES || !self.append(kind, label, key_label) {
             return false;
         }
         self.entries += 1;
@@ -187,9 +184,7 @@ pub fn answers(key: u32, mask: u64, typed: u32, flags: u64) -> bool {
         return false;
     }
     let lower = |value: u32| {
-        char::from_u32(value).map_or(value, |character| {
-            u32::from(character.to_ascii_lowercase())
-        })
+        char::from_u32(value).map_or(value, |character| u32::from(character.to_ascii_lowercase()))
     };
     let typed_return = typed == 0x0d && key == 0x03;
     (lower(key) == lower(typed) || typed_return)
@@ -239,7 +234,10 @@ mod tests {
 
     #[test]
     fn key_labels_spell_the_modifiers_in_macos_order() {
-        assert_eq!(key_label(u32::from(b'q'), modifier::COMMAND).as_str(), "Cmd+Q");
+        assert_eq!(
+            key_label(u32::from(b'q'), modifier::COMMAND).as_str(),
+            "Cmd+Q"
+        );
         assert_eq!(
             key_label(u32::from(b'Q'), modifier::COMMAND).as_str(),
             "Shift+Cmd+Q"
@@ -253,8 +251,14 @@ mod tests {
             "Ctrl+Alt+Cmd+K"
         );
         assert_eq!(key_label(0x0d, 0).as_str(), "Enter");
-        assert_eq!(key_label(u32::from(b','), modifier::COMMAND).as_str(), "Cmd+,");
-        assert_eq!(key_label(function::F1 + 4, modifier::SHIFT).as_str(), "Shift+F5");
+        assert_eq!(
+            key_label(u32::from(b','), modifier::COMMAND).as_str(),
+            "Cmd+,"
+        );
+        assert_eq!(
+            key_label(function::F1 + 4, modifier::SHIFT).as_str(),
+            "Shift+F5"
+        );
         assert_eq!(key_label(function::F12, 0).as_str(), "F12");
         assert_eq!(key_label(0, modifier::COMMAND).as_str(), "");
     }

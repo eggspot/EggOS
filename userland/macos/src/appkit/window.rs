@@ -11,7 +11,7 @@ use super::{
 };
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
-use crate::objc::{Runtime, message, methods, sel, send1, send_bool};
+use crate::objc::{Runtime, message, methods, sel, send_bool, send1};
 use eggos_macos_gui::colour;
 use eggos_macos_gui::geometry::{Frame, Point, Size, round};
 use eggos_macos_gui::keys::modifier;

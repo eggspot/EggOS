@@ -110,7 +110,12 @@ impl EditorTest<'_, '_> {
         self.shell
             .screen
             .desktop
-            .set_title(EDITOR_CLIENT, u32::from(*id), title.as_bytes(), &mut Damage::new())
+            .set_title(
+                EDITOR_CLIENT,
+                u32::from(*id),
+                title.as_bytes(),
+                &mut Damage::new(),
+            )
             .map_err(|error| format!("{arch}: the host's desktop refused a title: {error:?}"))
     }
 
@@ -176,9 +181,8 @@ impl EditorTest<'_, '_> {
 
     fn type_text(&mut self, text: &str) -> Result<(), String> {
         for character in text.chars() {
-            let (qcode, code) = key_of(character).ok_or_else(|| {
-                format!("{}: the test cannot type {character:?}", self.arch())
-            })?;
+            let (qcode, code) = key_of(character)
+                .ok_or_else(|| format!("{}: the test cannot type {character:?}", self.arch()))?;
             self.key(qcode, code, character, false)?;
         }
         Ok(())
@@ -221,11 +225,18 @@ fn open_the_file<'b>(test: &mut EditorTest<'_, 'b>, room: &'b mut Room) -> Resul
         Some(MINIMUM_SIZE),
     )?;
     let now = test.shell.now_ms;
-    let mut editor =
-        EditorWindow::new(room.editor(), &mut test.disk, Some(NOTES_PATH.as_bytes()), now);
+    let mut editor = EditorWindow::new(
+        room.editor(),
+        &mut test.disk,
+        Some(NOTES_PATH.as_bytes()),
+        now,
+    );
     let _ = editor.take_title();
     test.editor = Some((id, editor));
-    test.check("the Text Editor opened by `edit` on notes.txt", WINDOW_TIMEOUT)
+    test.check(
+        "the Text Editor opened by `edit` on notes.txt",
+        WINDOW_TIMEOUT,
+    )
 }
 
 fn type_find_and_save(test: &mut EditorTest<'_, '_>) -> Result<(), String> {
@@ -256,7 +267,9 @@ fn close_the_editor(test: &mut EditorTest<'_, '_>) -> Result<(), String> {
         .take()
         .ok_or_else(|| format!("{arch}: the Text Editor is not open"))?;
     if !editor.close_requested() {
-        return Err(format!("{arch}: the host's editor asked before closing a saved file"));
+        return Err(format!(
+            "{arch}: the host's editor asked before closing a saved file"
+        ));
     }
     let close = test.shell.rect(
         test.shell.screen.desktop.close_control(id),
@@ -265,7 +278,10 @@ fn close_the_editor(test: &mut EditorTest<'_, '_>) -> Result<(), String> {
     test.shell.click(close)?;
     super::install::host_destroy(&mut test.shell, EDITOR_CLIENT, id)?;
     test.shell.screen.park_pointer()?;
-    test.check("the Text Editor closed by its close control", WINDOW_TIMEOUT)
+    test.check(
+        "the Text Editor closed by its close control",
+        WINDOW_TIMEOUT,
+    )
 }
 
 fn editor_steps<'b>(test: &mut EditorTest<'_, 'b>, room: &'b mut Room) -> Result<(), String> {

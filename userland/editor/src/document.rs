@@ -255,8 +255,7 @@ impl<'a> Document<'a> {
         let mut length = length.min(self.text.len());
         let marked = self.text[..length].starts_with(BYTE_ORDER_MARK);
         if marked {
-            self.text
-                .copy_within(BYTE_ORDER_MARK.len()..length, 0);
+            self.text.copy_within(BYTE_ORDER_MARK.len()..length, 0);
             length -= BYTE_ORDER_MARK.len();
         }
         let mut check = TextCheck::new();
@@ -265,9 +264,7 @@ impl<'a> Document<'a> {
             self.clear();
             return Err(NotText);
         }
-        let crlf = self.text[..length]
-            .windows(2)
-            .any(|pair| pair == b"\r\n");
+        let crlf = self.text[..length].windows(2).any(|pair| pair == b"\r\n");
         if crlf {
             let mut kept = 0;
             let mut read = 0;

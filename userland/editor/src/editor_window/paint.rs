@@ -1,7 +1,6 @@
 use super::{
-    Bar, CELL_WIDTH, Drag, EditorWindow, FIND_FIELD, Focus, MATCH_CASE, MATCH_CASE_X,
-    NEXT_BUTTON, PREVIOUS_BUTTON, Part, RESULT_FROM_RIGHT, RESULT_LEFT, ROW_HEIGHT, TOOLBAR_HEIGHT,
-    TOOLS,
+    Bar, CELL_WIDTH, Drag, EditorWindow, FIND_FIELD, Focus, MATCH_CASE, MATCH_CASE_X, NEXT_BUTTON,
+    PREVIOUS_BUTTON, Part, RESULT_FROM_RIGHT, RESULT_LEFT, ROW_HEIGHT, TOOLBAR_HEIGHT, TOOLS,
 };
 use crate::columns::TAB_COLUMNS;
 use core::fmt::Write;
@@ -76,14 +75,7 @@ impl EditorWindow<'_> {
         }
     }
 
-    fn flat_button(
-        &self,
-        canvas: &mut Canvas<'_>,
-        rect: Rect,
-        words: &str,
-        part: Part,
-        on: bool,
-    ) {
+    fn flat_button(&self, canvas: &mut Canvas<'_>, rect: Rect, words: &str, part: Part, on: bool) {
         let fill = match () {
             () if !on => None,
             () if self.pressed == Some(part) && self.hover == Some(part) => {
@@ -192,7 +184,13 @@ impl EditorWindow<'_> {
                 colour::TEXT_DIM,
             );
         }
-        self.flat_button(canvas, self.close_find_rect(), "\u{d7}", Part::CloseFind, true);
+        self.flat_button(
+            canvas,
+            self.close_find_rect(),
+            "\u{d7}",
+            Part::CloseFind,
+            true,
+        );
     }
 
     fn paint_path_bar(&self, canvas: &mut Canvas<'_>, caret_shown: bool) {
@@ -243,10 +241,8 @@ impl EditorWindow<'_> {
         for line in first..last {
             self.paint_line(canvas, line, (start, end));
         }
-        let caret_drawn = caret_shown
-            && self.focus == Focus::Text
-            && self.window_focused
-            && self.panel.is_none();
+        let caret_drawn =
+            caret_shown && self.focus == Focus::Text && self.window_focused && self.panel.is_none();
         if caret_drawn {
             let x = self.column_left(self.editor.view_column()) - CARET_WIDTH;
             canvas.fill(

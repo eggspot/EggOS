@@ -54,9 +54,10 @@ fn near(read: u64, expected: u64, tolerance: u64) -> bool {
 
 fn verdict(arch: &str, console: &str, host: u64, clean_exit: bool) -> Result<(), String> {
     let driver = clock_driver(arch);
-    let started = console.lines().map(str::trim_end).any(|line| {
-        line.starts_with("clock: ") && line.ends_with(&format!(" UTC from {driver}"))
-    });
+    let started = console
+        .lines()
+        .map(str::trim_end)
+        .any(|line| line.starts_with("clock: ") && line.ends_with(&format!(" UTC from {driver}")));
     if !started {
         return Err(format!(
             "{arch}: the boot log has no `clock: ... UTC from {driver}` line"
@@ -156,7 +157,13 @@ mod tests {
         assert!(verdict("x86_64", &good, host, true).is_err());
         assert!(verdict("aarch64", &good, host, false).is_err());
         assert!(verdict("aarch64", &good, host + 3600, true).is_err());
-        let stale_file = console(host, host - 60, "2026-10-29 14:05:09", SET_TO_SECONDS, SET_TO);
+        let stale_file = console(
+            host,
+            host - 60,
+            "2026-10-29 14:05:09",
+            SET_TO_SECONDS,
+            SET_TO,
+        );
         assert!(verdict("aarch64", &stale_file, host, true).is_err());
         let unsaved = console(
             host,

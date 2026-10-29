@@ -325,7 +325,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [&b"cmdline"[..], b"driver", b"meminfo", b"net", b"ps", b"uptime"]
+            [
+                &b"cmdline"[..],
+                b"driver",
+                b"meminfo",
+                b"net",
+                b"ps",
+                b"uptime"
+            ]
         );
         assert_eq!(proc.kind(NET), NodeKind::Directory);
         assert_eq!(proc.entry(ROOT, 3).unwrap().kind, NodeKind::Directory);

@@ -122,7 +122,10 @@ fn a_windows_program_s_bitmaps_give_both_sizes() {
 
 #[test]
 fn an_icns_png_entry_is_scaled_and_a_small_planar_one_grows() {
-    let file = icns(&[(b"ic07", solid_png(128, 0x00ff_0000)), (b"is32", vec![0x40; 3 * 256])]);
+    let file = icns(&[
+        (b"ic07", solid_png(128, 0x00ff_0000)),
+        (b"is32", vec![0x40; 3 * 256]),
+    ]);
     let mut work = Box::new(Workspace::new());
     let mut icon = OwnIcon::new();
     assert!(from_icns(&mut Bytes(&file), &mut work, &mut icon));
@@ -197,8 +200,14 @@ fn a_bundle_s_icon_is_the_one_its_info_plist_names_else_the_only_one() {
     ] {
         let mut files = bundle_files(icon_name, plist);
         let mut icon = OwnIcon::new();
-        assert!(find(&mut files, PROGRAM, None, &mut work, &mut icon), "{icon_name}");
-        assert!(icon.small().iter().all(|&pixel| pixel == 0xff00_ff00), "{icon_name}");
+        assert!(
+            find(&mut files, PROGRAM, None, &mut work, &mut icon),
+            "{icon_name}"
+        );
+        assert!(
+            icon.small().iter().all(|&pixel| pixel == 0xff00_ff00),
+            "{icon_name}"
+        );
         assert_eq!(files.open_count(), 0);
     }
     let mut files = bundle_files("Paint.icns", PLIST);
@@ -206,7 +215,9 @@ fn a_bundle_s_icon_is_the_one_its_info_plist_names_else_the_only_one() {
         "/Applications/Paint/Paint.app/Contents/Resources/Second.icns",
         b"icns",
     );
-    files.nodes.retain(|(path, _)| !path.ends_with(b"Info.plist"));
+    files
+        .nodes
+        .retain(|(path, _)| !path.ends_with(b"Info.plist"));
     let mut icon = OwnIcon::new();
     assert!(find(&mut files, PROGRAM, None, &mut work, &mut icon));
 }
@@ -219,7 +230,13 @@ fn a_program_without_an_icon_takes_the_png_beside_it_or_has_none() {
     files.file("/media/host/tool.png", &solid_png(32, 0x0001_0203));
     let mut work = Box::new(Workspace::new());
     let mut icon = OwnIcon::new();
-    assert!(!find(&mut files, b"/Applications/tool/tool", None, &mut work, &mut icon));
+    assert!(!find(
+        &mut files,
+        b"/Applications/tool/tool",
+        None,
+        &mut work,
+        &mut icon
+    ));
     assert!(find(
         &mut files,
         b"/Applications/tool/tool",

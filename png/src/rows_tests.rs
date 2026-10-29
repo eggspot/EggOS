@@ -120,10 +120,7 @@ fn a_palette_at_two_bits_takes_its_alpha_from_trns() {
     };
     let raw = [0, 0b0001_1000];
     let png = build(&image, &[&stored(&raw)]);
-    assert_eq!(
-        pixels_of(&png),
-        [[0x000a_141e, 0x8028_323c, 0xff46_505a]]
-    );
+    assert_eq!(pixels_of(&png), [[0x000a_141e, 0x8028_323c, 0xff46_505a]]);
     let raw = [0, 0b1100_0000];
     let png = build(&image, &[&stored(&raw)]);
     assert_eq!(rows_of(&png), Err(DecodeError::Corrupt));
@@ -241,7 +238,9 @@ impl PngSink for Bytes {
 
 #[test]
 fn what_the_encoder_writes_decodes_row_by_row() {
-    let pixels: Vec<u32> = (0..40 * 7).map(|index| index * 0x0001_0307 & 0x00ff_ffff).collect();
+    let pixels: Vec<u32> = (0..40 * 7)
+        .map(|index| index * 0x0001_0307 & 0x00ff_ffff)
+        .collect();
     let mut work = Box::new(EncoderWorkspace::new());
     let mut encoder = Encoder::new(40, 7, &mut work, Bytes(Vec::new())).unwrap();
     for row in pixels.chunks(40) {

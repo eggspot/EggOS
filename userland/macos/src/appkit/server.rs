@@ -86,7 +86,13 @@ fn request(number: usize, argument: &mut [u8]) -> Result<(), Errno> {
 
 /// A window of `role` (a dialog of server window `parent`) with content `width` by `height`
 /// (the server may clamp it) and `flags`, its buffer mapped.
-pub fn create(role: u32, parent: u32, width: u32, height: u32, flags: u32) -> Result<Buffer, Errno> {
+pub fn create(
+    role: u32,
+    parent: u32,
+    width: u32,
+    height: u32,
+    flags: u32,
+) -> Result<Buffer, Errno> {
     let mut create = [0u8; 32];
     put(&mut create, 0, role);
     put(&mut create, 4, parent);

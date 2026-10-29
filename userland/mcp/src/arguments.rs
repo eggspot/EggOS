@@ -414,7 +414,9 @@ pub fn check(
         checked.time = Some(match get("time") {
             Some(Value::Str(text)) => {
                 let mut bytes = [0u8; TIME_BYTES];
-                let decoded = text.decode_into(&mut bytes).ok_or(ArgumentProblem::BadTime)?;
+                let decoded = text
+                    .decode_into(&mut bytes)
+                    .ok_or(ArgumentProblem::BadTime)?;
                 TimeText::of(decoded.as_bytes())?
             }
             Some(_) => return Err(ArgumentProblem::BadTime),

@@ -35,8 +35,7 @@ pub fn bundle_path(executable: &[u8]) -> Option<&[u8]> {
     let at = found?;
     let name = &executable[at + MACOS_FOLDER.len()..];
     let bundle = &executable[..at];
-    (!name.is_empty() && !name.contains(&b'/') && bundle.ends_with(BUNDLE_SUFFIX))
-        .then_some(bundle)
+    (!name.is_empty() && !name.contains(&b'/') && bundle.ends_with(BUNDLE_SUFFIX)).then_some(bundle)
 }
 
 fn decode<'a>(raw: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
@@ -46,8 +45,8 @@ fn decode<'a>(raw: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
         let (byte, used) = match raw[at] {
             b'&' => ENTITIES
                 .iter()
-            .find(|(entity, _)| raw[at..].starts_with(entity))
-            .map_or((b'&', 1), |(entity, byte)| (*byte, entity.len())),
+                .find(|(entity, _)| raw[at..].starts_with(entity))
+                .map_or((b'&', 1), |(entity, byte)| (*byte, entity.len())),
             byte => (byte, 1),
         };
         *out.get_mut(length)? = byte;

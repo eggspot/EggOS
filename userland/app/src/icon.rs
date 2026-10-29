@@ -214,7 +214,9 @@ impl Workspace {
 /// or it is not square or larger than [`MAX_SIDE`].
 pub(crate) fn png_side(reader: &mut impl Reader, offset: u64) -> Option<u32> {
     let mut head = [0u8; 24];
-    if !reader.read_exact_at(offset, &mut head) || head[..8] != SIGNATURE || &head[12..16] != b"IHDR"
+    if !reader.read_exact_at(offset, &mut head)
+        || head[..8] != SIGNATURE
+        || &head[12..16] != b"IHDR"
     {
         return None;
     }
@@ -238,7 +240,8 @@ pub fn order(list: &Candidates, target: u32) -> ([usize; MAX_CANDIDATES], usize)
     for (index, slot) in order.iter_mut().enumerate().take(list.len()) {
         *slot = index;
     }
-    order[..list.len()].sort_unstable_by_key(|&index| (order_key(&list.items[index], target), index));
+    order[..list.len()]
+        .sort_unstable_by_key(|&index| (order_key(&list.items[index], target), index));
     (order, list.len())
 }
 

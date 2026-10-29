@@ -17,8 +17,9 @@ const MAX_LITERAL_LENGTHS: usize = 286;
 const MAX_DISTANCE_LENGTHS: usize = 30;
 const END_OF_BLOCK: u16 = 256;
 const WINDOW_MASK: usize = WINDOW_BYTES - 1;
-const CODE_LENGTH_ORDER: [usize; CODE_LENGTH_SYMBOLS] =
-    [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const CODE_LENGTH_ORDER: [usize; CODE_LENGTH_SYMBOLS] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 /// Where compressed bytes come from, one at a time.
 pub trait ByteSource {
@@ -385,8 +386,8 @@ fn codes<S: ByteSource, O: Output>(
                     + bits.bits(u32::from(LENGTH_EXTRA_BITS[code]))? as usize;
                 let code = usize::from(distances.decode(bits)?);
                 let base = *DISTANCE_BASES.get(code).ok_or(InflateError::Corrupt)?;
-                let distance = usize::from(base)
-                    + bits.bits(u32::from(DISTANCE_EXTRA_BITS[code]))? as usize;
+                let distance =
+                    usize::from(base) + bits.bits(u32::from(DISTANCE_EXTRA_BITS[code]))? as usize;
                 output.copy(distance, length)?;
             }
             _ => return Err(InflateError::Corrupt),

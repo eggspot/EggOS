@@ -1082,7 +1082,10 @@ impl Installation {
             make_directory_once(files, to.as_bytes())?;
             return Ok(Progress::Copying(self.done_bytes));
         }
-        let permissions = match (entry.permissions(), entry.name() == self.plan.run.as_bytes()) {
+        let permissions = match (
+            entry.permissions(),
+            entry.name() == self.plan.run.as_bytes(),
+        ) {
             (_, true) => PROGRAM_PERMISSIONS,
             (Some(permissions), false) => permissions,
             (None, false) => FILE_PERMISSIONS,

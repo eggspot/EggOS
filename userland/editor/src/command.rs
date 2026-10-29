@@ -104,8 +104,8 @@ mod program {
             Some(_) => &arguments[..],
             None => &arguments[..2],
         };
-        let request = Spawn::new(EDITOR, ended, &environment, [reading, writing, writing])
-            .in_own_session();
+        let request =
+            Spawn::new(EDITOR, ended, &environment, [reading, writing, writing]).in_own_session();
         let mut stack = ChildStack::new();
         let started = spawn(&mut stack, &request);
         let _ = call(number::CLOSE, [reading, 0, 0, 0, 0, 0]);

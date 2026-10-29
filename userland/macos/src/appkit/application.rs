@@ -202,7 +202,9 @@ fn deliver(event: Id) {
 
 fn mouse(window: Id, event_kind: usize, x: i32, y: i32, button: isize, delta: f64, time: u32) {
     let location = point_of_pixel(x, y, content_height(window));
-    deliver(event::mouse(event_kind, window, location, button, delta, time));
+    deliver(event::mouse(
+        event_kind, window, location, button, delta, time,
+    ));
 }
 
 /// Handles one of the window server's records outside a modal alert.
@@ -250,14 +252,29 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             mouse(window, event_kind, x, y, number, 0.0, time);
         }
         Input::Wheel { x, y, notches } => {
-            mouse(window, kind::SCROLL_WHEEL, x, y, 0, f64::from(notches), time);
+            mouse(
+                window,
+                kind::SCROLL_WHEEL,
+                x,
+                y,
+                0,
+                f64::from(notches),
+                time,
+            );
         }
         Input::Key {
             code,
             pressed,
             modifiers,
             character,
-        } => deliver(event::key(window, code, pressed, modifiers.0, character, time)),
+        } => deliver(event::key(
+            window,
+            code,
+            pressed,
+            modifiers.0,
+            character,
+            time,
+        )),
         Input::FocusIn => {
             KEY_WINDOW.store(window as usize, Ordering::Release);
             window::set_key(window, true);
@@ -389,8 +406,7 @@ extern "C" fn send_event(this: Id, _: Sel, event: Id) {
         if menu::perform_key_equivalent(event) {
             return;
         }
-        let only_command =
-            fields.flags & modifier::KEY_EQUIVALENT == modifier::COMMAND;
+        let only_command = fields.flags & modifier::KEY_EQUIVALENT == modifier::COMMAND;
         if only_command && event::typed(event) == u32::from(b'q') {
             send1(this, sel!("terminate:"), this as usize);
             return;

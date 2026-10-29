@@ -233,7 +233,10 @@ mod tests {
         let moment = DateTime::from_unix(0);
         for invalid in [
             DateTime { month: 0, ..moment },
-            DateTime { month: 13, ..moment },
+            DateTime {
+                month: 13,
+                ..moment
+            },
             DateTime { day: 0, ..moment },
             DateTime {
                 year: 2026,
@@ -259,7 +262,10 @@ mod tests {
     fn the_day_of_the_year_counts_from_one() {
         assert_eq!(DateTime::from_unix(0).day_of_year(), 1);
         assert_eq!(DateTime::from_unix(1_793_282_709).day_of_year(), 302);
-        assert_eq!(DateTime::from_unix(951_782_400 + 306 * 86_400).day_of_year(), 366);
+        assert_eq!(
+            DateTime::from_unix(951_782_400 + 306 * 86_400).day_of_year(),
+            366
+        );
     }
 
     #[test]

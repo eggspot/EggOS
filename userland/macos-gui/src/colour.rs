@@ -144,7 +144,10 @@ mod tests {
             Some(0x004f_8fe0)
         );
         assert_eq!(named(b"clearColor"), Some(Colour::CLEAR));
-        assert_eq!(named(b"redColor").map(|colour| colour.pixel), Some(0x00ff_0000));
+        assert_eq!(
+            named(b"redColor").map(|colour| colour.pixel),
+            Some(0x00ff_0000)
+        );
         assert_eq!(named(b"colorWithRed:green:blue:alpha:"), None);
     }
 }

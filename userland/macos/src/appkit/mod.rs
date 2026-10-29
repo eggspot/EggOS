@@ -49,8 +49,7 @@ class_pairs! {
 
 /// Sends `sel` with one `NSRect` argument.
 pub fn send_frame(receiver: Id, sel: Sel, frame: eggos_macos_gui::geometry::Frame) {
-    let function: extern "C" fn(Id, Sel, eggos_macos_gui::geometry::Frame) =
-        message::msg_send_as();
+    let function: extern "C" fn(Id, Sel, eggos_macos_gui::geometry::Frame) = message::msg_send_as();
     function(receiver, sel, frame);
 }
 
@@ -102,7 +101,9 @@ pub fn with_text<R>(object: Id, work: impl FnOnce(&str) -> R) -> R {
     if object.is_null() {
         return work("");
     }
-    foundation::with_utf8(object, |bytes| work(core::str::from_utf8(bytes).unwrap_or("")))
+    foundation::with_utf8(object, |bytes| {
+        work(core::str::from_utf8(bytes).unwrap_or(""))
+    })
 }
 
 /// A new autoreleased string of `text`.

@@ -474,7 +474,9 @@ impl Desktop {
         let bar = self.layout.top_bar?;
         let width = menu.width(open.menu);
         Some(Rect::new(
-            title.x.min(self.width.saturating_sub(SCREEN_MARGIN + width)),
+            title
+                .x
+                .min(self.width.saturating_sub(SCREEN_MARGIN + width)),
             bar.bottom() + MENU_GAP,
             width,
             menu.height(open.menu),
@@ -579,7 +581,11 @@ impl Desktop {
             false => None,
         };
         self.damage_open_main_menu(damage);
-        self.open_main_menu = Some(OpenMainMenu { menu, hover, ..open });
+        self.open_main_menu = Some(OpenMainMenu {
+            menu,
+            hover,
+            ..open
+        });
         self.damage_open_main_menu(damage);
         self.damage_menu_titles(damage);
     }
@@ -611,14 +617,7 @@ impl Desktop {
         self.close_main_menu(damage);
         self.send(
             open.window,
-            EventRecord::new(
-                event::MENU_CHOSEN,
-                0,
-                open.menu as i32,
-                entry as i32,
-                0,
-                0,
-            ),
+            EventRecord::new(event::MENU_CHOSEN, 0, open.menu as i32, entry as i32, 0, 0),
             events,
         );
     }
@@ -759,10 +758,7 @@ impl Desktop {
                 (false, false) => None,
             };
             if let Some(fill) = fill {
-                canvas.fill(
-                    Rect::new(rect.x, rect.y, rect.width, rect.height - 1),
-                    fill,
-                );
+                canvas.fill(Rect::new(rect.x, rect.y, rect.width, rect.height - 1), fill);
             }
             canvas.text(
                 rect.x + MENU_TITLE_PADDING,

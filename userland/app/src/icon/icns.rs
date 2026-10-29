@@ -42,7 +42,9 @@ pub fn candidates(reader: &mut impl Reader, list: &mut Candidates) {
     if !reader.read_exact_at(0, &mut header) || &header[..4] != MAGIC {
         return;
     }
-    let declared = u64::from(u32::from_be_bytes([header[4], header[5], header[6], header[7]]));
+    let declared = u64::from(u32::from_be_bytes([
+        header[4], header[5], header[6], header[7],
+    ]));
     let end = declared.min(reader.size());
     let mut masks: [Option<(u64, u64)>; 3] = [None; 3];
     let mut at = ENTRY_HEADER;
@@ -51,7 +53,9 @@ pub fn candidates(reader: &mut impl Reader, list: &mut Candidates) {
             break;
         }
         let kind = [header[0], header[1], header[2], header[3]];
-        let length = u64::from(u32::from_be_bytes([header[4], header[5], header[6], header[7]]));
+        let length = u64::from(u32::from_be_bytes([
+            header[4], header[5], header[6], header[7],
+        ]));
         if length < ENTRY_HEADER || at + length > end {
             break;
         }
@@ -121,7 +125,8 @@ fn unpack(packed: &[u8], out: &mut [u8]) -> bool {
             to += count;
         } else {
             let count = usize::from(control) + 1;
-            let (Some(bytes), Some(run)) = (packed.get(from..from + count), out.get_mut(to..to + count))
+            let (Some(bytes), Some(run)) =
+                (packed.get(from..from + count), out.get_mut(to..to + count))
             else {
                 return false;
             };
@@ -260,20 +265,30 @@ mod tests {
         let mut rows = Vec::new();
         let rgb = list.iter().find(|candidate| candidate.side == 16).unwrap();
         assert_eq!(rgb.rank, RGB_RANK);
-        assert!(decode(&mut Bytes(&file), rgb, &mut packed, &mut planes, |_, row| {
-            rows.push(row.to_vec())
-        }));
+        assert!(decode(
+            &mut Bytes(&file),
+            rgb,
+            &mut packed,
+            &mut planes,
+            |_, row| { rows.push(row.to_vec()) }
+        ));
         assert_eq!(rows[0][0], 0x0010_2030);
         assert_eq!(rows[0][1], 0xff10_2030);
         assert_eq!(rows.len(), 16);
         let argb = *list.iter().find(|candidate| candidate.side == 32).unwrap();
         assert_eq!(argb.rank, ARGB_RANK);
         let mut first = None;
-        assert!(decode(&mut Bytes(&file), &argb, &mut packed, &mut planes, |y, row| {
-            if y == 0 {
-                first = Some(row[0]);
+        assert!(decode(
+            &mut Bytes(&file),
+            &argb,
+            &mut packed,
+            &mut planes,
+            |y, row| {
+                if y == 0 {
+                    first = Some(row[0]);
+                }
             }
-        }));
+        ));
         assert_eq!(first, Some(0x8001_0203));
     }
 

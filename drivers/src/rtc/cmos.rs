@@ -188,8 +188,8 @@ impl<R: RegisterIo> RealTimeClock for Cmos<R> {
     }
 
     fn write(&self, nanoseconds: u64) -> Result<(), RtcError> {
-        let seconds =
-            i64::try_from(nanoseconds / NANOSECONDS_PER_SECOND).map_err(|_| RtcError::OutOfRange)?;
+        let seconds = i64::try_from(nanoseconds / NANOSECONDS_PER_SECOND)
+            .map_err(|_| RtcError::OutOfRange)?;
         let moment = DateTime::from_unix(seconds);
         let years = match self.century {
             Some(_) => 0..=LAST_YEAR_WITH_CENTURY,

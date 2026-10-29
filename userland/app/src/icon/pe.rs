@@ -109,8 +109,7 @@ impl Image {
         let types = self.find(reader, 0, Some(kind))?;
         let names = self.find(reader, types & !SUBDIRECTORY, id)?;
         let languages = self.find(reader, names & !SUBDIRECTORY, None)?;
-        if types & SUBDIRECTORY == 0 || names & SUBDIRECTORY == 0 || languages & SUBDIRECTORY != 0
-        {
+        if types & SUBDIRECTORY == 0 || names & SUBDIRECTORY == 0 || languages & SUBDIRECTORY != 0 {
             return None;
         }
         let entry = self.offset_of(reader, self.resources.checked_add(languages)?)?;
@@ -200,7 +199,10 @@ pub(crate) mod samples {
         let payload = data_entries + 16 * (count + 1);
         table(
             &mut resources,
-            &[(3, 0x8000_0000 | icon_names), (14, 0x8000_0000 | group_names)],
+            &[
+                (3, 0x8000_0000 | icon_names),
+                (14, 0x8000_0000 | group_names),
+            ],
         );
         table(
             &mut resources,
@@ -208,7 +210,10 @@ pub(crate) mod samples {
                 .iter()
                 .enumerate()
                 .map(|(index, (id, _))| {
-                    (u32::from(*id), 0x8000_0000 | (icon_languages + index as u32 * 24))
+                    (
+                        u32::from(*id),
+                        0x8000_0000 | (icon_languages + index as u32 * 24),
+                    )
                 })
                 .collect::<Vec<_>>(),
         );
@@ -245,12 +250,24 @@ pub(crate) mod samples {
         put(&mut file, 0x94, &240u16.to_le_bytes());
         put(&mut file, 0x98 + 108, &16u32.to_le_bytes());
         put(&mut file, 0x98 + 128, &ADDRESS.to_le_bytes());
-        put(&mut file, 0x98 + 132, &(resources.len() as u32).to_le_bytes());
+        put(
+            &mut file,
+            0x98 + 132,
+            &(resources.len() as u32).to_le_bytes(),
+        );
         let section = 0x98 + 240;
         put(&mut file, section, b".rsrc\0\0\0");
-        put(&mut file, section + 8, &(resources.len() as u32).to_le_bytes());
+        put(
+            &mut file,
+            section + 8,
+            &(resources.len() as u32).to_le_bytes(),
+        );
         put(&mut file, section + 12, &ADDRESS.to_le_bytes());
-        put(&mut file, section + 16, &(resources.len() as u32).to_le_bytes());
+        put(
+            &mut file,
+            section + 16,
+            &(resources.len() as u32).to_le_bytes(),
+        );
         put(&mut file, section + 20, &RAW.to_le_bytes());
         file.resize(RAW as usize, 0);
         file.extend_from_slice(&resources);
@@ -268,7 +285,13 @@ mod tests {
     #[test]
     fn the_first_group_s_images_are_found_through_the_resource_tree() {
         let small = bitmap(16, 32, &[], &vec![vec![0; 64]; 16], &vec![vec![0; 4]; 16]);
-        let paletted = bitmap(32, 4, &[0x00ff_0000; 16], &vec![vec![0; 16]; 32], &vec![vec![0; 4]; 32]);
+        let paletted = bitmap(
+            32,
+            4,
+            &[0x00ff_0000; 16],
+            &vec![vec![0; 16]; 32],
+            &vec![vec![0; 4]; 32],
+        );
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
         png.extend_from_slice(&256u32.to_be_bytes());
         png.extend_from_slice(&256u32.to_be_bytes());

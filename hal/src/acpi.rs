@@ -171,7 +171,10 @@ pub fn cmos_clock(fadt: &[u8]) -> CmosClock {
         return CmosClock::Absent;
     }
     CmosClock::Present {
-        century_register: fadt.get(FADT_CENTURY).copied().filter(|&register| register != 0),
+        century_register: fadt
+            .get(FADT_CENTURY)
+            .copied()
+            .filter(|&register| register != 0),
     }
 }
 

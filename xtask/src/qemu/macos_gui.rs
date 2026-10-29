@@ -126,7 +126,10 @@ fn catalogue(arch: &Arch, installed: bool) -> Result<Catalogue, String> {
     if installed {
         catalogue.add_installed(NAME.as_bytes(), &manifest_of(arch));
         if !catalogue.set_icon(NAME.as_bytes(), &expected_icon_file()?) {
-            return Err(format!("{}: the host's catalogue refused mac-paint's icon", arch.name));
+            return Err(format!(
+                "{}: the host's catalogue refused mac-paint's icon",
+                arch.name
+            ));
         }
     }
     Ok(catalogue)
@@ -427,9 +430,10 @@ impl MacGui<'_> {
     }
 
     fn file_menu(&mut self) -> Result<(), String> {
-        let title = self
-            .shell
-            .rect(self.shell.screen.desktop.menu_title(FILE_MENU), "File title")?;
+        let title = self.shell.rect(
+            self.shell.screen.desktop.menu_title(FILE_MENU),
+            "File title",
+        )?;
         self.shell.click(title)?;
         self.shell.screen.park_pointer()?;
         self.shell
@@ -497,11 +501,9 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
         Ok(empty) => empty,
         Err(error) => return Err(boot.fail(error)),
     };
-    screen.desktop.set_catalogue(
-        empty,
-        &mut Damage::new(),
-        &mut DiscardEvents,
-    );
+    screen
+        .desktop
+        .set_catalogue(empty, &mut Damage::new(), &mut DiscardEvents);
     let mut gui = MacGui {
         shell: Shell {
             boot,
@@ -558,9 +560,7 @@ mod tests {
         assert!(before.host_share());
         assert_eq!(before.installed_count(), 0);
         let after = catalogue(arch("aarch64"), true).unwrap();
-        let id = after
-            .installed_named(NAME)
-            .expect("mac-paint is installed");
+        let id = after.installed_named(NAME).expect("mac-paint is installed");
         let Some(eggos_drivers::desktop::Launch::Type(line)) = after.launch(id) else {
             panic!("an installed app is typed in the terminal");
         };
@@ -569,7 +569,10 @@ mod tests {
             b"\x15/Applications/mac-paint/mac-paint.app/Contents/MacOS/mac-paint\r"
         );
         assert!(launched_program().ends_with("Contents/MacOS/mac-paint"));
-        assert!(matches!(after.icon(id), eggos_drivers::desktop::Icon::Own(_)));
+        assert!(matches!(
+            after.icon(id),
+            eggos_drivers::desktop::Icon::Own(_)
+        ));
         let icon = expected_icon_file().unwrap();
         assert_eq!(icon.len(), manifest::icon::FILE_BYTES);
         assert_ne!(icon[..4], icon[24 * 4..24 * 4 + 4]);

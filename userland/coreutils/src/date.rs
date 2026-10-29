@@ -227,7 +227,10 @@ mod tests {
     #[test]
     fn with_no_format_it_shows_the_time_as_date_does_in_the_c_locale() {
         let (status, out, _, _) = run(at_now(), &[]);
-        assert_eq!((status, out.as_str()), (0, "Thu Oct 29 14:05:09 UTC 2026\n"));
+        assert_eq!(
+            (status, out.as_str()),
+            (0, "Thu Oct 29 14:05:09 UTC 2026\n")
+        );
         let (_, out, _, _) = run(at_now(), &[c"-u"]);
         assert_eq!(out, "Thu Oct 29 14:05:09 UTC 2026\n");
     }
@@ -265,7 +268,10 @@ mod tests {
     #[test]
     fn set_parses_the_moment_sets_the_clock_and_shows_it() {
         let (status, out, _, fake) = run(at_now(), &[c"-s", c"2030-01-02 03:04:05"]);
-        assert_eq!((status, out.as_str()), (0, "Wed Jan  2 03:04:05 UTC 2030\n"));
+        assert_eq!(
+            (status, out.as_str()),
+            (0, "Wed Jan  2 03:04:05 UTC 2030\n")
+        );
         assert_eq!(fake.set_times, [1_893_553_445]);
         let (_, _, _, fake) = run(at_now(), &[c"--set=15:00", c"+%s"]);
         assert_eq!(fake.set_times, [1_793_286_000]);

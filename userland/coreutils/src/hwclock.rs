@@ -22,7 +22,10 @@ struct Line {
 impl core::fmt::Write for Line {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
         let end = self.length + text.len();
-        let room = self.bytes.get_mut(self.length..end).ok_or(core::fmt::Error)?;
+        let room = self
+            .bytes
+            .get_mut(self.length..end)
+            .ok_or(core::fmt::Error)?;
         room.copy_from_slice(text.as_bytes());
         self.length = end;
         Ok(())

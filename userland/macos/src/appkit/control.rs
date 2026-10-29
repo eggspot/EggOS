@@ -443,8 +443,8 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
     }
     let fields_of_event = event::fields(event);
     let code = fields_of_event.linux_code;
-    let command = fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL | modifier::OPTION)
-        != 0;
+    let command =
+        fields_of_event.flags & (modifier::COMMAND | modifier::CONTROL | modifier::OPTION) != 0;
     if code == key::ENTER && !command {
         send_action(this);
         return;
@@ -454,7 +454,13 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
     }
     let mut field = field_of(text_field(this));
     let before = field.text;
-    match widget::field_key(&mut field, code, fields_of_event.character, command, &before) {
+    match widget::field_key(
+        &mut field,
+        code,
+        fields_of_event.character,
+        command,
+        &before,
+    ) {
         FieldKey::Unused => {}
         FieldKey::Moved | FieldKey::Changed => {
             widget::keep_caret_visible(&mut field, control_rect(this));
@@ -467,14 +473,14 @@ extern "C" fn field_key_down(this: Id, _: Sel, event: Id) {
 extern "C" fn field_draw_rect(this: Id, _: Sel, _: Frame) {
     let size = view::fields(this).frame;
     let window = view::fields(this).window;
-    let focused = !window.is_null()
-        && window::is_key(window)
-        && window::first_responder(window) == this;
+    let focused =
+        !window.is_null() && window::is_key(window) && window::first_responder(window) == this;
     let enabled = !control(this).disabled;
     let fields = text_field(this);
     let field = field_of(fields);
     let label = fields.read_only || fields.plain;
-    let colour = drawing::colour_of(fields.text_colour).unwrap_or(eggos_macos_gui::colour::DEFAULT_TEXT);
+    let colour =
+        drawing::colour_of(fields.text_colour).unwrap_or(eggos_macos_gui::colour::DEFAULT_TEXT);
     let align = match fields.alignment {
         ALIGN_RIGHT => Align::End,
         ALIGN_CENTRE => Align::Centre,

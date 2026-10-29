@@ -362,10 +362,12 @@ impl Catalogue {
             AppId::Settings => Icon::Settings,
             AppId::TextEditor => Icon::TextEditor,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
-            AppId::Installed(index) => match self.installed(index).and_then(|app| app.icon.as_ref()) {
-                Some(pixels) => Icon::Own(pixels),
-                None => Icon::named(self.name(app), self.source(app)),
-            },
+            AppId::Installed(index) => {
+                match self.installed(index).and_then(|app| app.icon.as_ref()) {
+                    Some(pixels) => Icon::Own(pixels),
+                    None => Icon::named(self.name(app), self.source(app)),
+                }
+            }
         }
     }
 

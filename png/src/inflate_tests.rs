@@ -173,7 +173,11 @@ pub(crate) fn dynamic_block(writer: &mut BitWriter, tokens: &[Token], last: bool
     }
     let code_lengths = complete_lengths(&used(&code_length_used), 19);
     let code_length_count = (4..=19)
-        .find(|&count| ORDER[count..].iter().all(|&symbol| code_lengths[symbol] == 0))
+        .find(|&count| {
+            ORDER[count..]
+                .iter()
+                .all(|&symbol| code_lengths[symbol] == 0)
+        })
         .unwrap();
     let literal_codes = canonical(&literal_lengths);
     let distance_codes = canonical(&distance_lengths);
@@ -338,7 +342,10 @@ fn the_window_reaches_back_32_kib_across_its_flushes() {
 fn malformed_streams_are_errors_not_panics() {
     assert_eq!(inflated(&[0b111], 8), Err(InflateError::Corrupt));
     assert_eq!(inflated(&[1, 3, 0, 0, 0], 8), Err(InflateError::Corrupt));
-    assert_eq!(inflated(&[1, 3, 0, 0xfc, 0xff], 8), Err(InflateError::Truncated));
+    assert_eq!(
+        inflated(&[1, 3, 0, 0xfc, 0xff], 8),
+        Err(InflateError::Truncated)
+    );
     assert_eq!(inflated(&[], 8), Err(InflateError::Truncated));
     let stream = dynamic_stream(&literals(b"too long for the room"));
     assert_eq!(inflated(&stream, 4), Err(InflateError::TooLong));

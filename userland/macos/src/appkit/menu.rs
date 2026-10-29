@@ -81,7 +81,9 @@ fn add_entry(entry: Id, pool: &mut Pool) -> bool {
     }
     let enabled = !fields.disabled && fields.action != 0 && fields.submenu.is_null();
     let label = key_label(first_character(fields.key_equivalent), fields.key_mask);
-    with_text(fields.title, |title| pool.item(title, label.as_str(), enabled))
+    with_text(fields.title, |title| {
+        pool.item(title, label.as_str(), enabled)
+    })
 }
 
 fn build_pool() -> Pool {
@@ -185,7 +187,12 @@ fn find_key_equivalent(menu: Id, typed: u32, flags: u64) -> Option<Id> {
         if fields.separator || fields.disabled || fields.action == 0 {
             continue;
         }
-        if answers(first_character(fields.key_equivalent), fields.key_mask, typed, flags) {
+        if answers(
+            first_character(fields.key_equivalent),
+            fields.key_mask,
+            typed,
+            flags,
+        ) {
             return Some(item);
         }
     }
@@ -320,7 +327,11 @@ extern "C" fn yes(_: Id, _: Sel) -> u8 {
 }
 
 extern "C" fn separator_item(_: Id, _: Sel) -> Id {
-    let item = new_item(core::ptr::null_mut(), core::ptr::null(), core::ptr::null_mut());
+    let item = new_item(
+        core::ptr::null_mut(),
+        core::ptr::null(),
+        core::ptr::null_mut(),
+    );
     if item.is_null() {
         return item;
     }

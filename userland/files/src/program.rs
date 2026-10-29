@@ -147,11 +147,7 @@ impl Program {
         let Some(path) = c_string(path) else {
             return;
         };
-        let arguments = [
-            EDITOR_PROGRAM.as_ptr() as usize,
-            path.as_ptr() as usize,
-            0,
-        ];
+        let arguments = [EDITOR_PROGRAM.as_ptr() as usize, path.as_ptr() as usize, 0];
         self.start_child_program(EDITOR_PROGRAM, &arguments, b"the Text Editor");
     }
 

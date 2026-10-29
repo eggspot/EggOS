@@ -660,7 +660,10 @@ fn clock_near(client: &mut Client, expected: u64, at: &str) -> Result<(), String
         !result.is_error
             && read.is_some_and(|read| read.abs_diff(expected) <= CLOCK_TOLERANCE_SECONDS),
         client.arch,
-        &format!("at {at}, clock_get is not near {expected}: {}", result.all()),
+        &format!(
+            "at {at}, clock_get is not near {expected}: {}",
+            result.all()
+        ),
     )
 }
 

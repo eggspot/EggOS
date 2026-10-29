@@ -306,8 +306,8 @@ const HOME_PATH: &str = "home";
 const APPLICATIONS_PATH: &str = "Applications";
 
 const COREUTILS: [&str; 29] = [
-    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock", "ls",
-    "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
+    "agentlog", "cat", "cp", "date", "echo", "false", "free", "grep", "halt", "head", "hwclock",
+    "ls", "mkdir", "mv", "poweroff", "ps", "reboot", "rm", "sleep", "sync", "tail", "tee", "touch",
     "trash", "true", "uname", "uptime", "wc", "wm",
 ];
 
@@ -1135,7 +1135,10 @@ fn release_initramfs(
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (FILES_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
-        (TEXT_EDITOR_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
+        (
+            TEXT_EDITOR_PATH,
+            initramfs::Content::HardLink(SETTINGS_PATH),
+        ),
         (EDIT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (APP_PATH, initramfs::Content::Program(&app)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),

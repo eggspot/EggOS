@@ -77,9 +77,7 @@ impl Alert {
 
     fn added(&self, response: PanelResponse) -> Option<usize> {
         match response {
-            PanelResponse::Pressed(shown) if shown < self.buttons => {
-                Some(self.buttons - 1 - shown)
-            }
+            PanelResponse::Pressed(shown) if shown < self.buttons => Some(self.buttons - 1 - shown),
             _ => None,
         }
     }

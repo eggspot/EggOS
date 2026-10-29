@@ -146,7 +146,10 @@ fn a_path_with_nothing_there_is_a_new_file_the_first_save_makes() {
 fn what_is_not_text_does_not_open_and_says_why() {
     let mut owned = Owned::new(4096);
     let mut driver = Driver::new(&mut owned, Some(b"/home/root/photo.png"));
-    assert_eq!(driver.window.notice(), Some("photo.png is not a text file."));
+    assert_eq!(
+        driver.window.notice(),
+        Some("photo.png is not a text file.")
+    );
     assert_eq!(driver.window.path(), None);
     assert_eq!(driver.window.title(), "Untitled - Text Editor");
     let mut owned = Owned::new(4096);
@@ -209,7 +212,10 @@ fn closing_with_changes_asks_and_each_answer_does_what_it_says() {
     assert!(driver.window.close_requested());
     driver.type_text("x");
     assert!(!driver.window.close_requested());
-    assert_eq!(driver.window.dialog_line(0), Some("Save changes to notes.txt?"));
+    assert_eq!(
+        driver.window.dialog_line(0),
+        Some("Save changes to notes.txt?")
+    );
     assert!(driver.press(key::ESC, '\u{1b}', 0));
     assert_eq!(driver.window.dialog_line(0), None);
     assert!(!driver.window.close_requested());
@@ -286,7 +292,10 @@ fn a_read_only_place_and_a_missing_folder_refuse_a_save() {
     let mut owned = Owned::new(4096);
     let mut driver = Driver::new(&mut owned, Some(b"/home/root/gone/new.txt"));
     driver.command(code::S);
-    assert_eq!(driver.window.notice(), Some("/home/root/gone does not exist."));
+    assert_eq!(
+        driver.window.notice(),
+        Some("/home/root/gone does not exist.")
+    );
 }
 
 #[test]
@@ -315,7 +324,10 @@ fn new_asks_about_changes_first() {
     let mut driver = Driver::new(&mut owned, Some(NOTES));
     driver.type_text("x");
     driver.command(code::N);
-    assert_eq!(driver.window.dialog_line(0), Some("Save changes to notes.txt?"));
+    assert_eq!(
+        driver.window.dialog_line(0),
+        Some("Save changes to notes.txt?")
+    );
     let dont_save = driver.window.dialog_button_rect(0).unwrap();
     driver.click(dont_save);
     assert_eq!(driver.text(), "");

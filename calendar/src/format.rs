@@ -81,10 +81,7 @@ mod tests {
             text(sentence, 1_793_282_709),
             "Thursday 29 October 2026, 14:05:09 UTC"
         );
-        assert_eq!(
-            text(sentence, 12),
-            "Thursday 1 January 1970, 00:00:12 UTC"
-        );
+        assert_eq!(text(sentence, 12), "Thursday 1 January 1970, 00:00:12 UTC");
         let proc = text(proc_driver_rtc, 1_793_282_709);
         assert_eq!(
             proc,

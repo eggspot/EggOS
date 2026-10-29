@@ -180,7 +180,10 @@ mod tests {
     fn a_time_alone_needs_a_set_clock_and_the_year_its_range() {
         assert_eq!(parse_setting("14:05", 12), Err(ParseError::NeedsTheDate));
         assert_eq!(parse_setting("1:05", 12), Err(ParseError::NotADateAndTime));
-        assert_eq!(parse_setting("14:05", 86_400), Err(ParseError::YearOutOfRange));
+        assert_eq!(
+            parse_setting("14:05", 86_400),
+            Err(ParseError::YearOutOfRange)
+        );
         for text in ["1999-12-31 23:59", "2100-01-01 00:00", "1970-01-01 00:00"] {
             assert_eq!(
                 parse_setting(text, NOW),

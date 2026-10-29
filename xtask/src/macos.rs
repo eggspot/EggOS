@@ -290,12 +290,7 @@ pub fn find_or_build_programs(target_directory: &Path) -> Result<Option<Programs
 
 /// The `clang` arguments that build `source` for `cpu` into `output` linked with `frameworks`:
 /// ARC, chained fixups (macOS 13 and later), optimized.
-pub fn objc_arguments(
-    source: &Path,
-    frameworks: &[&str],
-    cpu: &str,
-    output: &Path,
-) -> Vec<String> {
+pub fn objc_arguments(source: &Path, frameworks: &[&str], cpu: &str, output: &Path) -> Vec<String> {
     let mut arguments = vec!["clang".to_owned(), "-fobjc-arc".to_owned()];
     for framework in frameworks {
         arguments.push("-framework".to_owned());
@@ -319,7 +314,9 @@ pub fn source_folder(program: &ObjcProgram) -> PathBuf {
 
 /// The Objective-C program named `name`.
 pub fn objc_program(name: &str) -> Option<ObjcProgram> {
-    OBJC_PROGRAMS.into_iter().find(|program| program.name == name)
+    OBJC_PROGRAMS
+        .into_iter()
+        .find(|program| program.name == name)
 }
 
 /// Writes the `.app` bundle of the app `name` in `folder`: `<name>.app/Contents/Info.plist`
@@ -467,8 +464,16 @@ mod tests {
         assert!(arguments.contains(&"-fobjc-arc".to_owned()));
         assert!(arguments.contains(&"-mmacosx-version-min=13.0".to_owned()));
         assert!(arguments.windows(2).any(|pair| pair == ["-arch", "arm64"]));
-        assert!(arguments.windows(2).any(|pair| pair == ["-framework", "AppKit"]));
-        assert!(arguments.windows(2).any(|pair| pair == ["-framework", "Foundation"]));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-framework", "AppKit"])
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["-framework", "Foundation"])
+        );
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 2..], ["out", "main.m"]);
         let names: Vec<&str> = OBJC_PROGRAMS.iter().map(|program| program.name).collect();
@@ -499,7 +504,10 @@ mod tests {
         let again = assemble_app(&folder, GUI_APP, &plist, &program).unwrap();
         assert_eq!(again, bundle);
         let contents = bundle.join("Contents");
-        assert_eq!(std::fs::read(contents.join("Info.plist")).unwrap(), b"<plist/>");
+        assert_eq!(
+            std::fs::read(contents.join("Info.plist")).unwrap(),
+            b"<plist/>"
+        );
         let installed = std::fs::read(contents.join("MacOS").join("mac-paint")).unwrap();
         assert!(is_mach_o(&installed));
         let mut entries: Vec<String> = std::fs::read_dir(&contents)

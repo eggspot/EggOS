@@ -62,7 +62,10 @@ mod tests {
         let mut file = [0u8; FILE_BYTES];
         write(&pixels, &mut file);
         assert_eq!(file[..4], [0x33, 0x22, 0x11, 0xff]);
-        assert_eq!(file[LARGE_PIXELS * 4..LARGE_PIXELS * 4 + 4], [0x10, 0x20, 0x40, 0x80]);
+        assert_eq!(
+            file[LARGE_PIXELS * 4..LARGE_PIXELS * 4 + 4],
+            [0x10, 0x20, 0x40, 0x80]
+        );
         let read: Vec<u32> = super::pixels(&file).unwrap().collect();
         assert_eq!(read, pixels);
     }

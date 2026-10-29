@@ -379,10 +379,7 @@ fn report_devices<W: Write>(console: &mut W, report: devices::Report) -> core::f
     result
 }
 
-fn report_wall_clock<W: Write>(
-    console: &mut W,
-    started: wall_clock::Started,
-) -> core::fmt::Result {
+fn report_wall_clock<W: Write>(console: &mut W, started: wall_clock::Started) -> core::fmt::Result {
     match started {
         wall_clock::Started::FromClock { name, seconds } => {
             write!(console, "clock: ")?;

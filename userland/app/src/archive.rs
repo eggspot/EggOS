@@ -55,7 +55,8 @@ pub enum ArchiveError {
 
 /// The first bytes of a `.zip`: a local header, or the end record of an empty archive.
 pub fn is_archive(head: &[u8]) -> bool {
-    head.starts_with(&LOCAL_SIGNATURE.to_le_bytes()) || head.starts_with(&END_SIGNATURE.to_le_bytes())
+    head.starts_with(&LOCAL_SIGNATURE.to_le_bytes())
+        || head.starts_with(&END_SIGNATURE.to_le_bytes())
 }
 
 /// Whether `name` (an entry's path without its trailing `/`) stays inside the folder it is
@@ -301,8 +302,7 @@ impl Archive {
 
 fn data_range(reader: &mut impl Reader, entry: &Entry) -> Result<(u64, u64), ArchiveError> {
     let mut header = [0u8; LOCAL_BYTES];
-    if !reader.read_exact_at(entry.local, &mut header) || u32_at(&header, 0) != LOCAL_SIGNATURE
-    {
+    if !reader.read_exact_at(entry.local, &mut header) || u32_at(&header, 0) != LOCAL_SIGNATURE {
         return Err(ArchiveError::Corrupt);
     }
     let start = entry.local
@@ -586,10 +586,17 @@ mod tests {
             },
             Member {
                 mode: Some(0o100_755),
-                ..stored("Paint.app/Contents/MacOS/Paint", b"\xcf\xfa\xed\xfe program")
+                ..stored(
+                    "Paint.app/Contents/MacOS/Paint",
+                    b"\xcf\xfa\xed\xfe program",
+                )
             },
             deflated("notes.txt", text, deflate_fixed_literals(text)),
-            deflated("raw.bin", b"\x00\xff\x10", deflate_stored_block(b"\x00\xff\x10")),
+            deflated(
+                "raw.bin",
+                b"\x00\xff\x10",
+                deflate_stored_block(b"\x00\xff\x10"),
+            ),
         ]);
         assert!(is_archive(&zip));
         let found = entries(&zip).unwrap();
@@ -645,7 +652,10 @@ mod tests {
             mode: Some(0o120_777),
             ..stored("link", b"target")
         };
-        assert_eq!(entries(&zip(&[link])).err(), Some(ArchiveError::Unsupported));
+        assert_eq!(
+            entries(&zip(&[link])).err(),
+            Some(ArchiveError::Unsupported)
+        );
     }
 
     #[test]
@@ -663,7 +673,10 @@ mod tests {
 
     #[test]
     fn damaged_archives_are_errors() {
-        assert_eq!(entries(b"not a zip at all, just text"), Err(ArchiveError::NotArchive));
+        assert_eq!(
+            entries(b"not a zip at all, just text"),
+            Err(ArchiveError::NotArchive)
+        );
         assert_eq!(entries(b""), Err(ArchiveError::NotArchive));
         let good = zip(&[stored("a", b"abcdef")]);
         let found = entries(&good).unwrap();

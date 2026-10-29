@@ -66,7 +66,10 @@ mod tests {
         clock.write(NOW + 1).unwrap();
         assert_eq!(
             clock.regs.writes(),
-            [(TIME_HIGH, ((NOW + 1) >> 32) as u32), (TIME_LOW, (NOW + 1) as u32)]
+            [
+                (TIME_HIGH, ((NOW + 1) >> 32) as u32),
+                (TIME_LOW, (NOW + 1) as u32)
+            ]
         );
         assert_eq!(clock.name(), "rtc-goldfish");
     }

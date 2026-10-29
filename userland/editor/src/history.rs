@@ -279,8 +279,7 @@ impl<'a> History<'a> {
             self.open = false;
             return;
         }
-        while self.steps > 0 && (self.used + length > self.log.len() || self.steps >= MOST_STEPS)
-        {
+        while self.steps > 0 && (self.used + length > self.log.len() || self.steps >= MOST_STEPS) {
             self.drop_oldest();
         }
         let start = self.used;

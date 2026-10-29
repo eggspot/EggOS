@@ -112,7 +112,10 @@ pub fn oval(canvas: &mut Canvas<'_>, height: i32, frame: Frame, colour: Colour, 
         match (filled, oval_span(inner, row)) {
             (false, Some((inner_left, inner_right))) => {
                 canvas.fill(Rect::new(left, row, inner_left - left, 1), colour.pixel);
-                canvas.fill(Rect::new(inner_right, row, right - inner_right, 1), colour.pixel);
+                canvas.fill(
+                    Rect::new(inner_right, row, right - inner_right, 1),
+                    colour.pixel,
+                );
             }
             _ => canvas.fill(Rect::new(left, row, right - left, 1), colour.pixel),
         }
@@ -253,7 +256,13 @@ mod tests {
             Point::new(40.0, 40.0),
             INK,
         );
-        oval(&mut canvas, HEIGHT, Frame::new(40.0, 0.0, 20.0, 20.0), INK, false);
+        oval(
+            &mut canvas,
+            HEIGHT,
+            Frame::new(40.0, 0.0, 20.0, 20.0),
+            INK,
+            false,
+        );
         assert_eq!(at(&pixels, 10, 28), INK.pixel);
         assert_eq!(at(&pixels, 19, 37), INK.pixel);
         assert_eq!(at(&pixels, 15, 33), 0);
@@ -264,7 +273,13 @@ mod tests {
         assert_eq!(at(&pixels, 40, 37), INK.pixel);
         let mut filled = canvas_pixels();
         let mut canvas = Canvas::new(&mut filled, WIDTH, HEIGHT as u32, 1).unwrap();
-        oval(&mut canvas, HEIGHT, Frame::new(40.0, 0.0, 20.0, 20.0), INK, true);
+        oval(
+            &mut canvas,
+            HEIGHT,
+            Frame::new(40.0, 0.0, 20.0, 20.0),
+            INK,
+            true,
+        );
         assert_eq!(at(&filled, 50, 37), INK.pixel);
         assert_eq!(at(&filled, 40, 28), 0);
     }

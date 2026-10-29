@@ -941,7 +941,10 @@ mod tests {
                 "2026-02-30 10:00",
                 "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM.",
             ),
-            ("29/10/2026", "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM."),
+            (
+                "29/10/2026",
+                "Not a date and time. Type YYYY-MM-DD HH:MM or HH:MM.",
+            ),
             ("1999-12-31 23:59", "The year must be 2000 to 2099."),
         ] {
             type_text(&mut window, typed);

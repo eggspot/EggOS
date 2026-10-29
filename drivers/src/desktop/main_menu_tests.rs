@@ -257,7 +257,11 @@ fn titles_past_the_clock_s_left_less_16_are_dropped_with_those_after_them() {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let window = shown(&mut desktop, CLIENT);
     let mut pool = Vec::new();
-    for title in ["Twenty glyphs title1", "Twenty glyphs title2", "Twenty glyphs title3"] {
+    for title in [
+        "Twenty glyphs title1",
+        "Twenty glyphs title2",
+        "Twenty glyphs title3",
+    ] {
         pool.push(b'M');
         pool.extend_from_slice(title.as_bytes());
         pool.push(b'\n');
@@ -285,7 +289,10 @@ fn a_click_on_a_title_opens_its_menu_under_it_and_a_click_on_an_item_chooses_it(
     desktop.left_button(false, &mut damage, &mut events);
     assert_eq!(desktop.main_menu_area(), Some(Rect::new(192, 32, 160, 66)));
     assert!(
-        damage.rects().iter().all(|rect| rect.bottom() <= 32 + 66 + 4),
+        damage
+            .rects()
+            .iter()
+            .all(|rect| rect.bottom() <= 32 + 66 + 4),
         "{:?}",
         damage.rects()
     );
@@ -317,10 +324,7 @@ fn entry_indices_count_separators_and_separators_choose_nothing() {
     let window = with_menu(&mut desktop, CLIENT, MAC_PAINT);
     click(&mut desktop, 120, 10, &mut events);
     assert_eq!(desktop.main_menu_area(), Some(Rect::new(104, 32, 208, 75)));
-    assert_eq!(
-        desktop.main_menu_entry(1),
-        Some(Rect::new(104, 65, 208, 9))
-    );
+    assert_eq!(desktop.main_menu_entry(1), Some(Rect::new(104, 65, 208, 9)));
     assert_eq!(
         desktop.main_menu_entry(2),
         Some(Rect::new(104, 74, 208, 32))
@@ -348,8 +352,16 @@ fn a_disabled_item_is_dim_and_ignores_the_pointer() {
     move_to(&mut desktop, 150, redo.y + 16, &mut events);
     let pixels = painted(&desktop);
     assert_eq!(at(&pixels, 107, redo.y + 5), colour::MENU);
-    assert!(lit(&pixels, Rect::new(116, redo.y + 8, 32, 16), colour::TEXT_DIM));
-    assert!(!lit(&pixels, Rect::new(116, redo.y + 8, 32, 16), colour::TEXT));
+    assert!(lit(
+        &pixels,
+        Rect::new(116, redo.y + 8, 32, 16),
+        colour::TEXT_DIM
+    ));
+    assert!(!lit(
+        &pixels,
+        Rect::new(116, redo.y + 8, 32, 16),
+        colour::TEXT
+    ));
     click(&mut desktop, 150, redo.y + 16, &mut events);
     assert!(events.chosen().is_empty());
     assert!(desktop.main_menu_area().is_some());
@@ -455,7 +467,12 @@ fn focus_moving_to_another_window_closes_the_menu_and_swaps_the_titles() {
     click(&mut desktop, 110, 10, &mut events);
     assert!(desktop.main_menu_area().is_some());
     let first_rect = desktop.window_rect(first).unwrap();
-    click(&mut desktop, first_rect.x + 8, first_rect.y + 100, &mut events);
+    click(
+        &mut desktop,
+        first_rect.x + 8,
+        first_rect.y + 100,
+        &mut events,
+    );
     assert_eq!(desktop.focused_window(), Some(first));
     assert_eq!(desktop.main_menu_area(), None);
     assert_eq!(desktop.menu_title(0), Some(Rect::new(104, 0, 88, 28)));
@@ -463,13 +480,7 @@ fn focus_moving_to_another_window_closes_the_menu_and_swaps_the_titles() {
     click(&mut desktop, 200, 10, &mut events);
     assert!(desktop.main_menu_area().is_some());
     let mut damage = Damage::new();
-    desktop.key(
-        key::TAB,
-        true,
-        Modifiers::SUPER,
-        &mut damage,
-        &mut events,
-    );
+    desktop.key(key::TAB, true, Modifiers::SUPER, &mut damage, &mut events);
     assert!(desktop.main_menu_area().is_some());
     let terminal = desktop.window();
     click(&mut desktop, terminal.x + 8, terminal.y + 300, &mut events);
@@ -492,8 +503,18 @@ fn destroying_the_window_closes_its_menu_and_its_titles() {
         .unwrap();
     assert_eq!(desktop.main_menu_area(), None);
     assert_eq!(desktop.menu_title(0), None);
-    assert!(damage.rects().iter().any(|rect| rect.overlaps(&Rect::new(192, 32, 160, 66))));
-    assert!(damage.rects().iter().any(|rect| rect.overlaps(&Rect::new(104, 0, 88, 28))));
+    assert!(
+        damage
+            .rects()
+            .iter()
+            .any(|rect| rect.overlaps(&Rect::new(192, 32, 160, 66)))
+    );
+    assert!(
+        damage
+            .rects()
+            .iter()
+            .any(|rect| rect.overlaps(&Rect::new(104, 0, 88, 28)))
+    );
     let again = shown(&mut desktop, CLIENT);
     assert_eq!(slot_of(again), slot_of(window));
     assert_eq!(desktop.menu_title(0), None);
@@ -569,10 +590,22 @@ fn super_and_a_letter_the_profile_does_not_take_reach_the_focused_window() {
             let (code, _) = key_for_ascii(letter).unwrap();
             events.take();
             let mut damage = Damage::new();
-            desktop.key(key::LEFT_SUPER, true, Modifiers::SUPER, &mut damage, &mut events);
+            desktop.key(
+                key::LEFT_SUPER,
+                true,
+                Modifiers::SUPER,
+                &mut damage,
+                &mut events,
+            );
             desktop.key(code, true, Modifiers::SUPER, &mut damage, &mut events);
             desktop.key(code, false, Modifiers::SUPER, &mut damage, &mut events);
-            desktop.key(key::LEFT_SUPER, false, Modifiers::NONE, &mut damage, &mut events);
+            desktop.key(
+                key::LEFT_SUPER,
+                false,
+                Modifiers::NONE,
+                &mut damage,
+                &mut events,
+            );
             let pressed = events
                 .of_kind(event::KEY)
                 .into_iter()
@@ -586,8 +619,20 @@ fn super_and_a_letter_the_profile_does_not_take_reach_the_focused_window() {
             assert_eq!(desktop.focused_window(), Some(window));
         }
         let mut damage = Damage::new();
-        desktop.key(key::LEFT_SUPER, true, Modifiers::SUPER, &mut damage, &mut events);
-        desktop.key(key::LEFT_SUPER, false, Modifiers::NONE, &mut damage, &mut events);
+        desktop.key(
+            key::LEFT_SUPER,
+            true,
+            Modifiers::SUPER,
+            &mut damage,
+            &mut events,
+        );
+        desktop.key(
+            key::LEFT_SUPER,
+            false,
+            Modifiers::NONE,
+            &mut damage,
+            &mut events,
+        );
         assert!(desktop.launcher_open(), "{profile:?}");
     }
 }

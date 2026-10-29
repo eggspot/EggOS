@@ -372,8 +372,9 @@ pub fn clock_nanosleep<P: Platform>(
     let relative = flags & TIMER_ABSTIME == 0;
     let deadline = clock_for_sleep(process, clock_id, req).and_then(|clock| match relative {
         true => deadline_after_request::<P>(process, req),
-        false => Ok(poll::read_timeout(process, req)?
-            .map_or(u64::MAX, |time| clock.monotonic_at(time))),
+        false => {
+            Ok(poll::read_timeout(process, req)?.map_or(u64::MAX, |time| clock.monotonic_at(time)))
+        }
     });
     match deadline {
         Ok(deadline) => {

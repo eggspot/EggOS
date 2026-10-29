@@ -102,7 +102,14 @@ pub fn is_modifier_key(code: u16) -> bool {
 
 /// A new autoreleased key event for Linux key `code` going down (`pressed`) or up in `window`,
 /// with the record's modifier bits and character.
-pub fn key(window: Id, code: u16, pressed: bool, modifiers: u32, character: u32, time_ms: u32) -> Id {
+pub fn key(
+    window: Id,
+    code: u16,
+    pressed: bool,
+    modifiers: u32,
+    character: u32,
+    time_ms: u32,
+) -> Id {
     let flags = keys::modifier_flags(modifiers);
     MODIFIER_FLAGS.store(flags, Ordering::Relaxed);
     let kind = match (is_modifier_key(code), pressed) {
@@ -120,7 +127,8 @@ pub fn key(window: Id, code: u16, pressed: bool, modifiers: u32, character: u32,
     fields.linux_code = code;
     fields.character = character;
     fields.characters = characters_string(keys::characters(code, character));
-    fields.ignoring = characters_string(keys::characters_ignoring_modifiers(code, character, flags));
+    fields.ignoring =
+        characters_string(keys::characters_ignoring_modifiers(code, character, flags));
     event
 }
 
@@ -163,7 +171,9 @@ extern "C" fn key_code(this: Id, _: Sel) -> usize {
 
 extern "C" fn click_count(this: Id, _: Sel) -> isize {
     match fields(this).kind {
-        kind::LEFT_MOUSE_DOWN | kind::LEFT_MOUSE_UP | kind::RIGHT_MOUSE_DOWN
+        kind::LEFT_MOUSE_DOWN
+        | kind::LEFT_MOUSE_UP
+        | kind::RIGHT_MOUSE_DOWN
         | kind::RIGHT_MOUSE_UP => 1,
         _ => 0,
     }

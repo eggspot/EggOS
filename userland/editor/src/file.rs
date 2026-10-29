@@ -311,7 +311,9 @@ mod tests {
 
     fn disk() -> MemoryFiles {
         let mut disk = MemoryFiles::new();
-        disk.folder("/home").folder("/home/root").folder("/media/host");
+        disk.folder("/home")
+            .folder("/home/root")
+            .folder("/media/host");
         disk.read_only("/media/host");
         disk
     }
@@ -353,7 +355,10 @@ mod tests {
             .file("/home/root/marked.txt", b"\xef\xbb\xbfhi", 0);
         let (mut text, mut starts) = room(64);
         let mut document = Document::new(&mut text, &mut starts);
-        assert_eq!(load(&mut disk, b"/home/root/notes.txt", &mut document), Ok(()));
+        assert_eq!(
+            load(&mut disk, b"/home/root/notes.txt", &mut document),
+            Ok(())
+        );
         assert_eq!(document.bytes(), b"hello\n");
         assert_eq!(
             load(&mut disk, b"/home/root/photo.png", &mut document),
@@ -368,7 +373,10 @@ mod tests {
             load(&mut disk, b"/home/root/gone.txt", &mut document),
             Err(OpenProblem::Missing)
         );
-        assert_eq!(load(&mut disk, b"/home/root/marked.txt", &mut document), Ok(()));
+        assert_eq!(
+            load(&mut disk, b"/home/root/marked.txt", &mut document),
+            Ok(())
+        );
         assert_eq!(document.bytes(), b"hi");
         assert!(document.has_byte_order_mark());
         assert_eq!(disk.open_count(), 0);
@@ -381,7 +389,10 @@ mod tests {
             .file("/home/root/over.txt", &vec![b'a'; TEXT_CAPACITY + 1], 0);
         let (mut text, mut starts) = room(TEXT_CAPACITY);
         let mut document = Document::new(&mut text, &mut starts);
-        assert_eq!(load(&mut disk, b"/home/root/full.txt", &mut document), Ok(()));
+        assert_eq!(
+            load(&mut disk, b"/home/root/full.txt", &mut document),
+            Ok(())
+        );
         assert_eq!(document.len(), TEXT_CAPACITY);
         assert_eq!(
             load(&mut disk, b"/home/root/over.txt", &mut document),

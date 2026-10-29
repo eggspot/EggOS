@@ -213,7 +213,9 @@ fn new_font(size: f64) -> Id {
         return object;
     }
     // SAFETY: a new NSFont instance.
-    unsafe { (*object.cast::<FontFields>()).size = if size > 0.0 { size } else { SYSTEM_FONT_SIZE } };
+    unsafe {
+        (*object.cast::<FontFields>()).size = if size > 0.0 { size } else { SYSTEM_FONT_SIZE }
+    };
     autoreleased(object)
 }
 

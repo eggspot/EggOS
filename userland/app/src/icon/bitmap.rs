@@ -91,7 +91,8 @@ pub fn decode(
         if !reader.read_exact_at(offset + info.header + 4 * index as u64, &mut entry) {
             return false;
         }
-        *colour = OPAQUE | u32::from(entry[2]) << 16 | u32::from(entry[1]) << 8 | u32::from(entry[0]);
+        *colour =
+            OPAQUE | u32::from(entry[2]) << 16 | u32::from(entry[1]) << 8 | u32::from(entry[0]);
     }
     let colour_stride = stride(info.side, info.bits);
     let mask_stride = stride(info.side, 1);
@@ -126,7 +127,8 @@ pub fn decode(
             let colour = match info.bits {
                 32 => {
                     let bytes = &line[4 * x..4 * x + 4];
-                    let rgb = u32::from(bytes[2]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[0]);
+                    let rgb =
+                        u32::from(bytes[2]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[0]);
                     match own_alpha {
                         true => u32::from(bytes[3]) << 24 | rgb,
                         false => OPAQUE | rgb,
@@ -134,7 +136,10 @@ pub fn decode(
                 }
                 24 => {
                     let bytes = &line[3 * x..3 * x + 3];
-                    OPAQUE | u32::from(bytes[2]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[0])
+                    OPAQUE
+                        | u32::from(bytes[2]) << 16
+                        | u32::from(bytes[1]) << 8
+                        | u32::from(bytes[0])
                 }
                 bits => {
                     let bits = usize::from(bits);
@@ -159,7 +164,13 @@ pub fn decode(
 
 #[cfg(test)]
 pub(crate) mod samples {
-    pub fn bitmap(side: u32, bits: u16, palette: &[u32], rows: &[Vec<u8>], mask: &[Vec<u8>]) -> Vec<u8> {
+    pub fn bitmap(
+        side: u32,
+        bits: u16,
+        palette: &[u32],
+        rows: &[Vec<u8>],
+        mask: &[Vec<u8>],
+    ) -> Vec<u8> {
         let mut entry = vec![0u8; 40];
         entry[..4].copy_from_slice(&40u32.to_le_bytes());
         entry[4..8].copy_from_slice(&side.to_le_bytes());
@@ -231,7 +242,12 @@ mod tests {
             vec![0; 4],
             vec![0; 4],
         ];
-        let mask = vec![vec![0, 0, 0, 0], vec![0x80, 0, 0, 0], vec![0; 4], vec![0; 4]];
+        let mask = vec![
+            vec![0, 0, 0, 0],
+            vec![0x80, 0, 0, 0],
+            vec![0; 4],
+            vec![0; 4],
+        ];
         let palette = [0x0000_0000, 0x00ff_8040];
         let entry = bitmap(4, 1, &palette, &rows, &mask);
         assert_eq!(
@@ -248,10 +264,22 @@ mod tests {
 
     #[test]
     fn bitmaps_that_are_not_square_icons_are_refused() {
-        let mut entry = bitmap(2, 32, &[], &[vec![0; 8], vec![0; 8]], &[vec![0; 4], vec![0; 4]]);
+        let mut entry = bitmap(
+            2,
+            32,
+            &[],
+            &[vec![0; 8], vec![0; 8]],
+            &[vec![0; 4], vec![0; 4]],
+        );
         entry[8] = 2;
         assert!(rows_of(&entry).is_none());
-        let mut entry = bitmap(2, 16, &[], &[vec![0; 4], vec![0; 4]], &[vec![0; 4], vec![0; 4]]);
+        let mut entry = bitmap(
+            2,
+            16,
+            &[],
+            &[vec![0; 4], vec![0; 4]],
+            &[vec![0; 4], vec![0; 4]],
+        );
         assert!(rows_of(&entry).is_none());
         entry[14] = 32;
         entry.truncate(45);

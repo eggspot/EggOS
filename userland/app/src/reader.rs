@@ -97,7 +97,10 @@ pub fn read_file<F: Files, T>(
     path: &[u8],
     body: impl FnOnce(&mut FileReader<'_, F>) -> T,
 ) -> Option<T> {
-    let status = files.status(path).ok().filter(|status| status.kind == Kind::File)?;
+    let status = files
+        .status(path)
+        .ok()
+        .filter(|status| status.kind == Kind::File)?;
     let file = files.open(path).ok()?;
     let result = body(&mut FileReader::new(files, file, status.size));
     files.close(file);

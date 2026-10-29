@@ -432,12 +432,7 @@ impl<'a> EditorWindow<'a> {
             .iter()
             .position(|(each, _)| *each == tool)
             .unwrap_or(0) as i32;
-        Rect::new(
-            TOOL_X + index * TOOL_PITCH,
-            TOOL_Y,
-            TOOL_WIDTH,
-            TOOL_HEIGHT,
-        )
+        Rect::new(TOOL_X + index * TOOL_PITCH, TOOL_Y, TOOL_WIDTH, TOOL_HEIGHT)
     }
 
     pub(crate) fn bar_rect(&self) -> Rect {
@@ -492,7 +487,12 @@ impl<'a> EditorWindow<'a> {
             Bar::Closed => TOOLBAR_HEIGHT,
             _ => TOOLBAR_HEIGHT + BAR_HEIGHT,
         };
-        Rect::new(0, top, self.width, (self.height - STATUS_HEIGHT - top).max(0))
+        Rect::new(
+            0,
+            top,
+            self.width,
+            (self.height - STATUS_HEIGHT - top).max(0),
+        )
     }
 
     pub(crate) fn status_bar(&self) -> Rect {
@@ -599,10 +599,7 @@ impl<'a> EditorWindow<'a> {
     fn clamp_scroll(&mut self) {
         self.widest();
         let (width, height) = self.view_size();
-        self.scroll_y = self
-            .scroll_y
-            .min(self.content_height() - height)
-            .max(0);
+        self.scroll_y = self.scroll_y.min(self.content_height() - height).max(0);
         self.scroll_x = self.scroll_x.min(self.content_width() - width).max(0);
     }
 
@@ -1463,13 +1460,7 @@ impl<'a> EditorWindow<'a> {
         }
     }
 
-    fn path_field_key(
-        &mut self,
-        files: &mut impl Files,
-        code: u16,
-        primary: bool,
-        character: u32,
-    ) {
+    fn path_field_key(&mut self, files: &mut impl Files, code: u16, primary: bool, character: u32) {
         match code {
             key::ENTER => return self.path_action(files),
             key::TAB => return,

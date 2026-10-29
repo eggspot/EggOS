@@ -168,7 +168,10 @@ mod tests {
     #[test]
     fn a_smaller_image_grows_by_a_whole_factor_centred() {
         let out = scaled(48, 16, &[0xff12_3456; 256]);
-        assert_eq!(out.iter().filter(|&&pixel| pixel == 0xff12_3456).count(), 48 * 48);
+        assert_eq!(
+            out.iter().filter(|&&pixel| pixel == 0xff12_3456).count(),
+            48 * 48
+        );
         let out = scaled(48, 32, &[0xff12_3456; 1024]);
         assert_eq!(out[8 * 48 + 8], 0xff12_3456);
         assert_eq!(out[8 * 48 + 7], 0);

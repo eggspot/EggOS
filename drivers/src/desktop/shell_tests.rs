@@ -122,7 +122,14 @@ fn super_alone_or_cmd_space_opens_the_launcher_and_typing_filters_it() {
     assert!(desktop.launcher_open() && !desktop.keys_go_to_terminal());
     assert_eq!(
         names(&desktop),
-        ["Files", "Settings", "Terminal", "Text Editor", "Hello", "Paint"]
+        [
+            "Files",
+            "Settings",
+            "Terminal",
+            "Text Editor",
+            "Hello",
+            "Paint"
+        ]
     );
     type_text(&mut desktop, "pref");
     assert_eq!(desktop.launcher_query(), Some("pref"));

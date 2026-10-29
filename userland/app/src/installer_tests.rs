@@ -1,8 +1,8 @@
 use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
+use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
 use crate::fake::{FakeFiles, Node, Operation};
 use crate::installer::*;
 use crate::program::NotRunnable;
-use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
 use crate::program::samples::{linux_program, mach_o, windows_program};
 use eggos_app_manifest::Source;
 
@@ -458,10 +458,7 @@ fn a_zip_s_one_program_installs_with_everything_beside_it_and_no_mac_metadata() 
     assert_eq!(plan.name(), "win-paint");
     assert_eq!(plan.run(), b"bin/win-paint.exe");
     assert_eq!(plan.source(), b"/media/host/Paint-1.2.zip");
-    assert_eq!(
-        plan.total_bytes(),
-        (program.len() + readme.len()) as u64
-    );
+    assert_eq!(plan.total_bytes(), (program.len() + readme.len()) as u64);
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     assert_eq!(
         files.paths_under("/Applications/"),
@@ -492,7 +489,10 @@ fn a_zipped_bundle_installs_with_its_own_icon() {
     let zip = zip(&[
         stored("mac-paint.app/", b""),
         stored("mac-paint.app/Contents/Info.plist", plist),
-        stored("mac-paint.app/Contents/MacOS/mac-paint", &mach_o(0x0100_000c, 2)),
+        stored(
+            "mac-paint.app/Contents/MacOS/mac-paint",
+            &mach_o(0x0100_000c, 2),
+        ),
         stored(
             "mac-paint.app/Contents/Resources/AppIcon.icns",
             &icns_holding(&png),
@@ -505,10 +505,15 @@ fn a_zipped_bundle_installs_with_its_own_icon() {
     assert_eq!(plan.program().source, Source::Macos);
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     let manifest = manifest_of(&files, "mac-paint");
-    assert!(manifest.ends_with("run=mac-paint.app/Contents/MacOS/mac-paint\narchitecture=aarch64\nicon=app.icon\n"));
+    assert!(manifest.ends_with(
+        "run=mac-paint.app/Contents/MacOS/mac-paint\narchitecture=aarch64\nicon=app.icon\n"
+    ));
     let icon = icon_of(&files, "mac-paint");
     assert_eq!(icon.len(), 13_312);
-    assert!(icon.chunks(4).all(|pixel| pixel == [0x56, 0x34, 0x12, 0xff]));
+    assert!(
+        icon.chunks(4)
+            .all(|pixel| pixel == [0x56, 0x34, 0x12, 0xff])
+    );
     let mut listed = Vec::new();
     for_each_installed(&mut files, |app| listed.push(app.icon.map(str::to_owned))).unwrap();
     assert_eq!(listed, [Some("app.icon".to_owned())]);
@@ -519,7 +524,10 @@ fn a_zipped_bundle_installs_with_its_own_icon() {
 #[test]
 fn a_program_with_a_png_beside_it_gets_that_icon() {
     let mut files = host_with("/media/host/tool", &linux_program(62));
-    files.file("/media/host/tool.png", &crate::icon::tests::solid_png(48, 0x00ab_cdef));
+    files.file(
+        "/media/host/tool.png",
+        &crate::icon::tests::solid_png(48, 0x00ab_cdef),
+    );
     let plan = planned(&mut files, "/media/host/tool", X86_64);
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     let icon = icon_of(&files, "tool");
@@ -557,9 +565,15 @@ fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
     .unwrap();
     assert_eq!(plan.name(), "b");
     assert_eq!(
-        plan_entry(&mut files, b"/media/host/tools.zip", None, Some(b"c.exe"), X86_64)
-            .unwrap_err()
-            .problem,
+        plan_entry(
+            &mut files,
+            b"/media/host/tools.zip",
+            None,
+            Some(b"c.exe"),
+            X86_64
+        )
+        .unwrap_err()
+        .problem,
         Problem::NoSuchEntry
     );
     let notes = zip(&[stored("notes.txt", b"just text"), stored("LICENSE", b"MIT")]);
@@ -584,8 +598,14 @@ fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
 #[test]
 fn a_damaged_entry_fails_the_install_and_leaves_nothing() {
     let program = windows_program(0x8664);
-    let mut zip = zip(&[stored("paint.exe", &program), stored("data.bin", b"0123456789")]);
-    let data = zip.windows(10).position(|window| window == b"0123456789").unwrap();
+    let mut zip = zip(&[
+        stored("paint.exe", &program),
+        stored("data.bin", b"0123456789"),
+    ]);
+    let data = zip
+        .windows(10)
+        .position(|window| window == b"0123456789")
+        .unwrap();
     zip[data] ^= 1;
     let mut files = host_with("/media/host/paint.zip", &zip);
     let plan = planned(&mut files, "/media/host/paint.zip", X86_64);

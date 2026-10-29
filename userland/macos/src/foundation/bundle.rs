@@ -5,8 +5,8 @@
 //! no identifier and an empty information dictionary.
 
 use super::{
-    Definition, NSBUNDLE, NSBUNDLE_META, NSMUTABLEDICTIONARY, class_pointer, define as define_class,
-    new_instance, string_from_utf8,
+    Definition, NSBUNDLE, NSBUNDLE_META, NSMUTABLEDICTIONARY, class_pointer,
+    define as define_class, new_instance, string_from_utf8,
 };
 use crate::info_plist;
 use crate::libsystem::heap;
@@ -94,11 +94,7 @@ fn read_info() -> &'static [u8] {
     let Some(length) = joined(bundle, INFO_PLIST, &mut path) else {
         return b"";
     };
-    let Ok(fd) = linux::open(
-        &path[..=length],
-        linux::O_RDONLY | linux::O_CLOEXEC,
-        0,
-    ) else {
+    let Ok(fd) = linux::open(&path[..=length], linux::O_RDONLY | linux::O_CLOEXEC, 0) else {
         return b"";
     };
     let buffer = heap::allocate(LARGEST_INFO, false);
@@ -199,8 +195,9 @@ extern "C" fn main_bundle(_: Id, _: Sel) -> Id {
     let folder = info_plist::bundle_path(path).unwrap_or_else(|| directory_of(path));
     let mut resources_path = [0u8; LONGEST_PATH];
     let resources = match info_plist::bundle_path(path) {
-        Some(bundle) => joined(bundle, RESOURCES, &mut resources_path)
-            .map(|length| &resources_path[..length]),
+        Some(bundle) => {
+            joined(bundle, RESOURCES, &mut resources_path).map(|length| &resources_path[..length])
+        }
         None => None,
     }
     .unwrap_or(folder);

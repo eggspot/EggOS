@@ -52,7 +52,13 @@ pub fn install_prompt(
             let _ = inside.write_str("Inside: ");
             inside.push_bytes(plan.run());
             let adds = "Adds: a launcher entry and a desktop icon";
-            let archive_lines = [kind.as_str(), from.as_str(), inside.as_str(), to.as_str(), adds];
+            let archive_lines = [
+                kind.as_str(),
+                from.as_str(),
+                inside.as_str(),
+                to.as_str(),
+                adds,
+            ];
             let program_lines = [kind.as_str(), from.as_str(), to.as_str(), adds];
             let lines: &[&str] = match plan.is_archive() {
                 true => &archive_lines[..],
