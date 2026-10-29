@@ -52,6 +52,8 @@
 pub mod agent_channel;
 pub mod credentials;
 pub mod descriptors;
+pub mod epoll;
+pub mod eventfd;
 pub mod exec;
 pub mod fault;
 pub mod file_changes;
@@ -71,6 +73,7 @@ pub mod process_table;
 pub mod random;
 pub mod reboot;
 pub mod signal_frame;
+pub mod signalfd;
 pub mod signals;
 pub mod socket;
 pub mod stat;
@@ -78,6 +81,7 @@ pub mod terminal;
 pub mod thread;
 pub mod thread_pointer;
 pub mod time;
+pub mod timerfd;
 pub mod trampoline;
 pub mod unix_socket;
 pub mod wait;
@@ -246,8 +250,23 @@ pub mod number {
         pub const READLINKAT: u64 = 267;
         pub const FACCESSAT: u64 = 269;
         pub const FACCESSAT2: u64 = 439;
+        pub const SELECT: u64 = 23;
+        pub const PSELECT6: u64 = 270;
+        pub const EPOLL_CREATE: u64 = 213;
+        pub const EPOLL_WAIT: u64 = 232;
+        pub const EPOLL_CTL: u64 = 233;
+        pub const EPOLL_PWAIT: u64 = 281;
+        pub const EPOLL_CREATE1: u64 = 291;
+        pub const EPOLL_PWAIT2: u64 = 441;
+        pub const SIGNALFD: u64 = 282;
+        pub const TIMERFD_CREATE: u64 = 283;
+        pub const EVENTFD: u64 = 284;
+        pub const TIMERFD_SETTIME: u64 = 286;
+        pub const TIMERFD_GETTIME: u64 = 287;
+        pub const SIGNALFD4: u64 = 289;
+        pub const EVENTFD2: u64 = 290;
         /// The highest number above.
-        pub const LAST: u64 = FACCESSAT2;
+        pub const LAST: u64 = EPOLL_PWAIT2;
     }
     #[cfg(not(target_arch = "x86_64"))]
     mod table {
@@ -380,8 +399,18 @@ pub mod number {
         pub const SETHOSTNAME: u64 = 161;
         pub const SETDOMAINNAME: u64 = 162;
         pub const FACCESSAT2: u64 = 439;
+        pub const EVENTFD2: u64 = 19;
+        pub const EPOLL_CREATE1: u64 = 20;
+        pub const EPOLL_CTL: u64 = 21;
+        pub const EPOLL_PWAIT: u64 = 22;
+        pub const PSELECT6: u64 = 72;
+        pub const SIGNALFD4: u64 = 74;
+        pub const TIMERFD_CREATE: u64 = 85;
+        pub const TIMERFD_SETTIME: u64 = 86;
+        pub const TIMERFD_GETTIME: u64 = 87;
+        pub const EPOLL_PWAIT2: u64 = 441;
         /// The highest number above.
-        pub const LAST: u64 = FACCESSAT2;
+        pub const LAST: u64 = EPOLL_PWAIT2;
     }
     pub use table::*;
 
@@ -540,6 +569,26 @@ pub mod number {
             FACCESSAT2,
             SETHOSTNAME,
             SETDOMAINNAME,
+            #[cfg(target_arch = "x86_64")]
+            SELECT,
+            PSELECT6,
+            #[cfg(target_arch = "x86_64")]
+            EPOLL_CREATE,
+            EPOLL_CREATE1,
+            EPOLL_CTL,
+            #[cfg(target_arch = "x86_64")]
+            EPOLL_WAIT,
+            EPOLL_PWAIT,
+            EPOLL_PWAIT2,
+            #[cfg(target_arch = "x86_64")]
+            EVENTFD,
+            EVENTFD2,
+            TIMERFD_CREATE,
+            TIMERFD_SETTIME,
+            TIMERFD_GETTIME,
+            #[cfg(target_arch = "x86_64")]
+            SIGNALFD,
+            SIGNALFD4,
         ];
         let mut i = 0;
         let mut highest = 0;
@@ -1016,6 +1065,22 @@ fn out_of_line_call<P: Platform>(
         | number::SHUTDOWN
         | number::SETSOCKOPT
         | number::GETSOCKOPT => socket::call(process, thread, number, context),
+        number::PSELECT6
+        | number::EPOLL_CREATE1
+        | number::EPOLL_CTL
+        | number::EPOLL_PWAIT
+        | number::EPOLL_PWAIT2
+        | number::EVENTFD2
+        | number::TIMERFD_CREATE
+        | number::TIMERFD_SETTIME
+        | number::TIMERFD_GETTIME
+        | number::SIGNALFD4 => poll::call(process, thread, number, context),
+        #[cfg(target_arch = "x86_64")]
+        number::SELECT
+        | number::EPOLL_CREATE
+        | number::EPOLL_WAIT
+        | number::EVENTFD
+        | number::SIGNALFD => poll::call(process, thread, number, context),
         _ => {
             let result = match number {
                 number::CLONE => {
@@ -1378,17 +1443,8 @@ fn write<P: Platform>(
     let count = count.min(MAX_RW_COUNT);
     let written = match file.kind() {
         FileKind::Console => write_to_console(process, buffer, count),
-        FileKind::Pipe(_)
-        | FileKind::Regular(_)
-        | FileKind::AgentChannel(_)
-        | FileKind::Socket(_)
-        | FileKind::InetSocket(_)
-        | FileKind::MemoryFile(_)
-        | FileKind::MemoryDevice(..) => {
-            return Err(NOT_THE_CONSOLE);
-        }
         FileKind::Window(_) => return Err(Errno::EINVAL),
-        _ => return Err(Errno::EBADF),
+        _ => return Err(NOT_THE_CONSOLE),
     };
     if written == 0 && count > 0 {
         Err(Errno::EFAULT)
@@ -1484,6 +1540,9 @@ fn write_out_of_line<P: Platform>(
             FileKind::InetSocket(socket) => {
                 socket::inet::write(process, thread, context, socket, iovecs)
             }
+            FileKind::Event(event) => {
+                poll::write_event(process, thread, context, &file, event, &iovecs)
+            }
             _ => {
                 context.set_syscall_result(Errno::EBADF.result());
                 ControlFlow::Continue(())
@@ -1548,6 +1607,9 @@ fn read<P: Platform>(
                 let result = memory_devices::read(process, *device, nonblocking, buffers);
                 context.set_syscall_result(result.unwrap_or_else(Errno::result));
                 ControlFlow::Continue(())
+            }
+            FileKind::Event(event) => {
+                poll::read_event(process, thread, context, &file, event, &iovecs)
             }
             kind => {
                 let result = match files::Contents::of(kind) {
@@ -1614,7 +1676,8 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::Window(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
-        | FileKind::InetSocket(_) => terminal::lseek(whence),
+        | FileKind::InetSocket(_)
+        | FileKind::Event(_) => terminal::lseek(whence),
         FileKind::MemoryDevice(..) => Ok(0),
         _ => files::lseek_node(&file, offset, whence),
     }
@@ -7940,5 +8003,430 @@ mod tests {
             .any(|(name, _, _)| name.as_bytes() == alloc::format!("{id}").as_bytes());
         assert!(listed);
         drop(current);
+    }
+
+    struct EventProcess {
+        process: Arc<Process<P>>,
+        writable: u64,
+    }
+
+    impl EventProcess {
+        fn call(&self, number: u64, arguments: [u64; 6]) -> u64 {
+            call(&self.process, number, arguments)
+        }
+
+        fn put(&self, offset: u64, bytes: &[u8]) {
+            self.process
+                .write_user_memory(self.writable + offset, bytes)
+                .unwrap();
+        }
+
+        fn get(&self, offset: u64, length: usize) -> alloc::vec::Vec<u8> {
+            read_bytes(&self.process, self.writable + offset, length)
+        }
+
+        fn word(&self, offset: u64) -> u64 {
+            u64::from_ne_bytes(self.get(offset, 8).try_into().unwrap())
+        }
+
+        fn read(&self, fd: u64, offset: u64, count: u64) -> u64 {
+            self.call(number::READ, [fd, self.writable + offset, count, 0, 0, 0])
+        }
+
+        fn write_word(&self, fd: u64, value: u64) -> u64 {
+            self.put(0, &value.to_ne_bytes());
+            self.call(number::WRITE, [fd, self.writable, 8, 0, 0, 0])
+        }
+
+        fn epoll_ctl(&self, epfd: u64, op: u32, fd: u64, events: u32, data: u64) -> u64 {
+            let mut event = [0u8; epoll::EVENT_SIZE];
+            event[..4].copy_from_slice(&events.to_ne_bytes());
+            event[epoll::EVENT_SIZE - 8..].copy_from_slice(&data.to_ne_bytes());
+            self.put(EPOLL_EVENT, &event);
+            let event = self.writable + EPOLL_EVENT;
+            self.call(number::EPOLL_CTL, [epfd, u64::from(op), fd, event, 0, 0])
+        }
+
+        fn epoll_pwait(&self, epfd: u64, max: u64, timeout: i32) -> u64 {
+            let events = self.writable + EVENTS_OUT;
+            let timeout = u64::from(timeout as u32);
+            self.call(number::EPOLL_PWAIT, [epfd, events, max, timeout, 0, 0])
+        }
+
+        fn reported(&self, index: u64) -> (u32, u64) {
+            let at = EVENTS_OUT + index * epoll::EVENT_SIZE as u64;
+            let event = self.get(at, epoll::EVENT_SIZE);
+            (
+                u32::from_ne_bytes(event[..4].try_into().unwrap()),
+                u64::from_ne_bytes(event[epoll::EVENT_SIZE - 8..].try_into().unwrap()),
+            )
+        }
+    }
+
+    const EPOLL_EVENT: u64 = 64;
+    const ITIMERSPEC: u64 = 128;
+    const SIGSET: u64 = 192;
+    const EVENTS_OUT: u64 = 256;
+    const PIPE_FDS: u64 = 512;
+    const FD_SETS: u64 = 528;
+    const TIMESPEC: u64 = 560;
+    const SIGSET_ARGUMENTS: u64 = 600;
+    const RECORD: u64 = 1024;
+
+    fn event_process(kernel: &PageTables<<P as Platform>::PageTableFormat>) -> EventProcess {
+        EventProcess {
+            process: process_with_iovecs(kernel, b"", &[]),
+            writable: DATA + 4096,
+        }
+    }
+
+    #[test]
+    fn eventfd_counts_writes_and_takes_them_whole_or_one_at_a_time() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert!(counter < 1024, "{counter:#x}");
+        assert_eq!(test.read(counter, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.write_word(counter, 3), 8);
+        assert_eq!(test.write_word(counter, 4), 8);
+        assert_eq!(test.write_word(counter, u64::MAX), Errno::EINVAL.result());
+        assert_eq!(
+            test.call(number::WRITE, [counter, test.writable, 7, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(test.read(counter, 8, 7), Errno::EINVAL.result());
+        assert_eq!(test.read(counter, 8, 64), 8);
+        assert_eq!(test.word(8), 7);
+        assert_eq!(test.read(counter, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.write_word(counter, eventfd::MAX_VALUE), 8);
+        assert_eq!(test.write_word(counter, 1), Errno::EAGAIN.result());
+        let semaphore = u64::from(eventfd::flag::SEMAPHORE | eventfd::flag::NONBLOCK);
+        let tokens = test.call(number::EVENTFD2, [2, semaphore, 0, 0, 0, 0]);
+        assert_eq!(test.read(tokens, 8, 8), 8);
+        assert_eq!(test.word(8), 1);
+        assert_eq!(test.read(tokens, 8, 8), 8);
+        assert_eq!(test.read(tokens, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(
+            test.call(number::EVENTFD2, [0, 4, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::LSEEK, [counter, 0, 0, 0, 0, 0]),
+            Errno::ESPIPE.result()
+        );
+    }
+
+    #[test]
+    fn epoll_reports_an_eventfd_level_and_edge_triggered_and_checks_its_arguments() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(
+            test.call(number::EPOLL_CREATE1, [1, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, counter, event::IN, 0x1234), 0);
+        let errors = [
+            (epfd, op::ADD, counter, event::IN, Errno::EEXIST),
+            (epfd, op::MOD, 1, event::IN, Errno::ENOENT),
+            (epfd, op::DEL, 1, 0, Errno::ENOENT),
+            (counter, op::ADD, 1, event::IN, Errno::EINVAL),
+            (epfd, op::ADD, epfd, event::IN, Errno::EINVAL),
+            (epfd, op::ADD, 99, event::IN, Errno::EBADF),
+            (99, op::ADD, counter, event::IN, Errno::EBADF),
+            (epfd, 7, counter, event::IN, Errno::EINVAL),
+            (
+                epfd,
+                op::ADD,
+                1,
+                event::EXCLUSIVE | event::ONESHOT,
+                Errno::EINVAL,
+            ),
+            (
+                epfd,
+                op::MOD,
+                counter,
+                event::EXCLUSIVE | event::IN,
+                Errno::EINVAL,
+            ),
+        ];
+        for (epoll, operation, fd, events, errno) in errors {
+            assert_eq!(
+                test.epoll_ctl(epoll, operation, fd, events, 0),
+                errno.result(),
+                "{operation} {fd} {events:#x}"
+            );
+        }
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 0x1234));
+        assert_eq!(test.epoll_pwait(epfd, 4, -1), 1);
+        assert_eq!(test.epoll_pwait(epfd, 0, 0), Errno::EINVAL.result());
+        assert_eq!(test.epoll_pwait(counter, 4, 0), Errno::EINVAL.result());
+        assert_eq!(test.epoll_pwait(99, 4, 0), Errno::EBADF.result());
+        let read_only = DATA;
+        assert_eq!(
+            test.call(number::EPOLL_PWAIT, [epfd, read_only, 4, 0, 0, 0]),
+            Errno::EFAULT.result()
+        );
+        let edge = event::IN | event::ET;
+        assert_eq!(test.epoll_ctl(epfd, op::MOD, counter, edge, 7), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 7));
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.epoll_ctl(epfd, op::DEL, counter, 0, 0), 0);
+        assert_eq!(test.write_word(counter, 1), 8);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        let started = <P as Platform>::clock_ticks();
+        assert_eq!(test.epoll_pwait(epfd, 4, 2), 0);
+        let waited = <P as Platform>::clock_ticks() - started;
+        assert!(
+            waited >= <P as Platform>::clock_frequency() / 500,
+            "{waited}"
+        );
+    }
+
+    #[test]
+    fn epoll_instances_nest_without_loops_and_poll_reports_them_readable() {
+        use epoll::{event, op};
+        use poll::event::IN;
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let outer = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let inner = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+        let counter = test.call(number::EVENTFD2, [0, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(inner, op::ADD, counter, event::IN, 1), 0);
+        assert_eq!(test.epoll_ctl(outer, op::ADD, inner, event::IN, 2), 0);
+        assert_eq!(
+            test.epoll_ctl(inner, op::ADD, outer, event::IN, 3),
+            Errno::ELOOP.result()
+        );
+        assert_eq!(
+            test.epoll_ctl(outer, op::ADD, inner, event::IN | event::EXCLUSIVE, 3),
+            Errno::EINVAL.result()
+        );
+        let fds = test.writable + 640;
+        test.put(640, &pollfds(&[(outer as i32, IN)]));
+        let timeout = test.writable + TIMESPEC;
+        test.put(TIMESPEC, &[0; 16]);
+        assert_eq!(test.call(number::PPOLL, [fds, 1, timeout, 0, 0, 0]), 0);
+        assert_eq!(test.write_word(counter, 5), 8);
+        assert_eq!(test.call(number::PPOLL, [fds, 1, timeout, 0, 0, 0]), 1);
+        assert_eq!(test.epoll_pwait(outer, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 2));
+        assert_eq!(test.epoll_pwait(inner, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 1));
+    }
+
+    #[test]
+    fn timerfd_expires_on_time_and_reports_its_setting() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let nonblocking = u64::from(timerfd::flag::NONBLOCK);
+        let monotonic = time::clock::MONOTONIC as u64;
+        let timer = test.call(number::TIMERFD_CREATE, [monotonic, nonblocking, 0, 0, 0, 0]);
+        assert_eq!(
+            test.call(number::TIMERFD_CREATE, [99, 0, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::TIMERFD_CREATE, [monotonic, 1, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        let two_milliseconds = 2_000_000u64;
+        let fifty_milliseconds = 50_000_000u64;
+        let mut setting = [0u8; 32];
+        setting[8..16].copy_from_slice(&two_milliseconds.to_ne_bytes());
+        setting[24..32].copy_from_slice(&fifty_milliseconds.to_ne_bytes());
+        test.put(ITIMERSPEC, &setting);
+        let new_value = test.writable + ITIMERSPEC;
+        let settime = |flags: u64, old: u64| {
+            test.call(
+                number::TIMERFD_SETTIME,
+                [timer, flags, new_value, old, 0, 0],
+            )
+        };
+        assert_eq!(settime(2, 0), Errno::EINVAL.result());
+        assert_eq!(settime(4, 0), Errno::EINVAL.result());
+        assert_eq!(settime(0, 0), 0);
+        assert_eq!(test.read(timer, 8, 8), Errno::EAGAIN.result());
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, timer, event::IN, 9), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 1000), 1);
+        assert_eq!(test.reported(0), (event::IN, 9));
+        assert_eq!(test.read(timer, 8, 8), 8);
+        assert!(test.word(8) >= 1);
+        let current = test.writable + ITIMERSPEC + 32;
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [timer, current, 0, 0, 0, 0]),
+            0
+        );
+        let reported = test.get(ITIMERSPEC + 32, 32);
+        assert_eq!(&reported[8..16], &two_milliseconds.to_ne_bytes());
+        test.put(ITIMERSPEC, &[0; 32]);
+        assert_eq!(settime(0, current), 0);
+        assert_eq!(
+            &test.get(ITIMERSPEC + 32, 16)[8..],
+            &two_milliseconds.to_ne_bytes()
+        );
+        assert_eq!(test.read(timer, 8, 8), Errno::EAGAIN.result());
+        assert_eq!(test.epoll_pwait(epfd, 4, 3), 0);
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [epfd, current, 0, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::TIMERFD_GETTIME, [99, current, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+    }
+
+    #[test]
+    fn signalfd_reads_a_blocked_signal_and_poll_and_epoll_see_it_pending() {
+        use epoll::{event, op};
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let sigusr1 = u64::from(signal::SIGUSR1);
+        test.put(SIGSET, &(1u64 << (sigusr1 - 1)).to_ne_bytes());
+        let set = test.writable + SIGSET;
+        assert_eq!(test.call(number::RT_SIGPROCMASK, [0, set, 0, 8, 0, 0]), 0);
+        let nonblocking = u64::from(signalfd::flag::NONBLOCK);
+        let minus_one = u64::from(u32::MAX);
+        let signal_file = test.call(number::SIGNALFD4, [minus_one, set, 8, nonblocking, 0, 0]);
+        assert!(signal_file < 1024, "{signal_file:#x}");
+        assert_eq!(
+            test.call(number::SIGNALFD4, [minus_one, set, 7, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [minus_one, set, 8, 1, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [1, set, 8, 0, 0, 0]),
+            Errno::EINVAL.result()
+        );
+        assert_eq!(
+            test.call(number::SIGNALFD4, [signal_file, set, 8, 0, 0, 0]),
+            signal_file
+        );
+        assert_eq!(test.read(signal_file, RECORD, 128), Errno::EAGAIN.result());
+        assert_eq!(test.read(signal_file, RECORD, 127), Errno::EINVAL.result());
+        let epfd = test.call(number::EPOLL_CREATE1, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(test.epoll_ctl(epfd, op::ADD, signal_file, event::IN, 3), 0);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+        let pid = u64::from(test.process.id().get());
+        assert_eq!(test.call(number::KILL, [pid, sigusr1, 0, 0, 0, 0]), 0);
+        assert_eq!(test.process.exit_status(), None);
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 1);
+        assert_eq!(test.reported(0), (event::IN, 3));
+        assert_eq!(test.read(signal_file, RECORD, 256), 128);
+        let record = test.get(RECORD, 128);
+        assert_eq!(&record[..4], &signal::SIGUSR1.to_ne_bytes());
+        assert_eq!(&record[8..12], &signals::code::USER.to_ne_bytes());
+        assert_eq!(&record[12..16], &test.process.id().get().to_ne_bytes());
+        assert_eq!(test.read(signal_file, RECORD, 128), Errno::EAGAIN.result());
+        assert_eq!(test.epoll_pwait(epfd, 4, 0), 0);
+    }
+
+    fn fd_set(fds: &[u64]) -> [u8; 8] {
+        fds.iter().fold(0u64, |set, fd| set | 1 << fd).to_ne_bytes()
+    }
+
+    #[test]
+    fn pselect6_reports_a_pipe_s_ends_and_writes_the_time_left_back() {
+        let _frames = frames_for_test();
+        let kernel = kernel_tables();
+        let test = event_process(&kernel);
+        let pipe_fds = test.writable + PIPE_FDS;
+        assert_eq!(test.call(number::PIPE2, [pipe_fds, 0, 0, 0, 0, 0]), 0);
+        let fds = test.get(PIPE_FDS, 8);
+        let reading = u64::from(u32::from_ne_bytes(fds[..4].try_into().unwrap()));
+        let writing = u64::from(u32::from_ne_bytes(fds[4..].try_into().unwrap()));
+        let nfds = reading.max(writing) + 1;
+        let (read_set, write_set) = (test.writable + FD_SETS, test.writable + FD_SETS + 8);
+        let timeout = test.writable + TIMESPEC;
+        let pselect6 = |read: &[u64], write: &[u64], seconds: i64, nanoseconds: i64| {
+            test.put(FD_SETS, &fd_set(read));
+            test.put(FD_SETS + 8, &fd_set(write));
+            let mut time = [0u8; 16];
+            time[..8].copy_from_slice(&seconds.to_ne_bytes());
+            time[8..].copy_from_slice(&nanoseconds.to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            let sets = [nfds, read_set, write_set, 0, timeout, 0];
+            (
+                test.call(number::PSELECT6, sets),
+                test.get(FD_SETS, 8),
+                test.get(FD_SETS + 8, 8),
+            )
+        };
+        let (ready, read, write) = pselect6(&[reading], &[writing], 0, 0);
+        assert_eq!(ready, 1);
+        assert_eq!(read, fd_set(&[]));
+        assert_eq!(write, fd_set(&[writing]));
+        assert_eq!(test.write_word(writing, 0x41), 8);
+        let (ready, read, write) = pselect6(&[reading], &[writing], 0, 0);
+        assert_eq!(ready, 2);
+        assert_eq!(read, fd_set(&[reading]));
+        assert_eq!(write, fd_set(&[writing]));
+        assert_eq!(test.read(reading, 8, 8), 8);
+        let (ready, read, _) = pselect6(&[reading], &[], 0, 2_000_000);
+        assert_eq!(ready, 0);
+        assert_eq!(read, fd_set(&[]));
+        assert_eq!(test.get(TIMESPEC, 16), [0u8; 16]);
+        let not_open = 50;
+        test.put(FD_SETS, &fd_set(&[not_open]));
+        assert_eq!(
+            test.call(number::PSELECT6, [not_open + 1, read_set, 0, 0, 0, 0]),
+            Errno::EBADF.result()
+        );
+        assert_eq!(
+            test.call(
+                number::PSELECT6,
+                [u64::from(u32::MAX), read_set, 0, 0, 0, 0]
+            ),
+            Errno::EINVAL.result()
+        );
+        let mut arguments = [0u8; 16];
+        arguments[..8].copy_from_slice(&(test.writable + SIGSET).to_ne_bytes());
+        arguments[8..].copy_from_slice(&7u64.to_ne_bytes());
+        test.put(SIGSET_ARGUMENTS, &arguments);
+        let sig = test.writable + SIGSET_ARGUMENTS;
+        assert_eq!(
+            test.call(number::PSELECT6, [nfds, read_set, 0, 0, timeout, sig]),
+            Errno::EINVAL.result()
+        );
+        #[cfg(target_arch = "x86_64")]
+        {
+            test.put(FD_SETS, &fd_set(&[reading]));
+            let mut time = [0u8; 16];
+            time[8..].copy_from_slice(&1_500i64.to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            assert_eq!(
+                test.call(number::SELECT, [nfds, read_set, 0, 0, timeout, 0]),
+                0
+            );
+            assert_eq!(test.get(TIMESPEC, 16), [0u8; 16]);
+            time[8..].copy_from_slice(&(-1i64).to_ne_bytes());
+            test.put(TIMESPEC, &time);
+            assert_eq!(
+                test.call(number::SELECT, [nfds, read_set, 0, 0, timeout, 0]),
+                Errno::EINVAL.result()
+            );
+        }
     }
 }

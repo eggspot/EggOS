@@ -2,8 +2,6 @@ use super::*;
 use crate::linux::descriptors::open_flag;
 use alloc::vec;
 
-fn no_wake() {}
-
 const ME: PeerCredentials = PeerCredentials {
     pid: 7,
     uid: 1000,
@@ -11,7 +9,7 @@ const ME: PeerCredentials = PeerCredentials {
 };
 
 fn pair() -> (Arc<UnixSocket>, Arc<UnixSocket>) {
-    UnixSocket::pair(ME, no_wake)
+    UnixSocket::pair(ME)
 }
 
 fn connection_of(socket: &UnixSocket) -> (Arc<Connection>, Side) {
@@ -207,7 +205,7 @@ fn shutting_down_ends_reads_on_one_side_and_writes_on_the_other() {
 fn poll_events_follow_the_state() {
     let _serial = tests_lock();
     let all = u16::MAX;
-    let open = UnixSocket::new(no_wake);
+    let open = UnixSocket::new();
     assert_eq!(open.events(all), event::OUT | event::WRNORM | event::HUP);
     let (first, second) = pair();
     assert_eq!(first.events(all), event::OUT | event::WRNORM);
@@ -219,7 +217,7 @@ fn poll_events_follow_the_state() {
 #[test]
 fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     assert_eq!(listener.listen(1, ME), Err(Errno::EINVAL));
     listener
         .set_bound(Address::Abstract(Arc::from(&b"queue"[..])))
@@ -245,9 +243,9 @@ fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order()
     assert_eq!(first.credentials(Side::Second), ME);
     assert!(Arc::ptr_eq(&listener.accept().unwrap().unwrap(), &two));
     assert!(listener.accept().unwrap().is_none());
-    assert!(UnixSocket::new(no_wake).accept().is_err());
+    assert!(UnixSocket::new().accept().is_err());
     assert_eq!(
-        UnixSocket::new(no_wake).queue(&connecting()),
+        UnixSocket::new().queue(&connecting()),
         Err(Errno::ECONNREFUSED)
     );
 }
@@ -255,12 +253,12 @@ fn a_listener_queues_connections_up_to_its_backlog_and_hands_them_out_in_order()
 #[test]
 fn connections_left_in_a_closed_listener_s_backlog_are_reset() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"closing"[..])))
         .unwrap();
     listener.listen(4, ME).unwrap();
-    let client = UnixSocket::new(no_wake);
+    let client = UnixSocket::new();
     let connection = Connection::new(client.begin_connect().unwrap(), ME);
     assert_eq!(listener.queue(&connection), Ok(true));
     client.finish_connect(&connection).unwrap();
@@ -276,12 +274,12 @@ fn connections_left_in_a_closed_listener_s_backlog_are_reset() {
 #[test]
 fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connection_resets() {
     let _serial = tests_lock();
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"race"[..])))
         .unwrap();
     listener.listen(4, ME).unwrap();
-    let racer = UnixSocket::new(no_wake);
+    let racer = UnixSocket::new();
     racer
         .set_bound(Address::Abstract(Arc::from(&b"racer"[..])))
         .unwrap();
@@ -303,7 +301,7 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
     assert_eq!(racer.finish_connect(&connection), Err(Errno::EINVAL));
     release_rights(connection.abort(Side::First));
     assert_eq!(racer.listen(1, ME), Ok(()));
-    let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap(), no_wake);
+    let accepted = UnixSocket::accepted(listener.accept().unwrap().unwrap());
     let (back, side) = connection_of(&accepted);
     let mut buffer = [0u8; 4];
     assert!(matches!(
@@ -311,7 +309,7 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
         Taken::Reset
     ));
     assert_eq!(send(&accepted, b"x"), Err(Errno::EPIPE));
-    let other = UnixSocket::new(no_wake);
+    let other = UnixSocket::new();
     let connection = Connection::new(other.begin_connect().unwrap(), ME);
     other.finish_connect(&connection).unwrap();
     assert_eq!(other.begin_connect(), Err(Errno::EISCONN));
@@ -321,8 +319,8 @@ fn a_connecting_socket_can_neither_listen_nor_be_passed_and_a_given_up_connectio
 #[test]
 fn two_sockets_connecting_to_each_other_at_once_both_get_refused() {
     let _serial = tests_lock();
-    let x = UnixSocket::new(no_wake);
-    let y = UnixSocket::new(no_wake);
+    let x = UnixSocket::new();
+    let y = UnixSocket::new();
     let names = [&b"cross-x"[..], &b"cross-y"[..]];
     for (socket, name) in [(&x, names[0]), (&y, names[1])] {
         let name: Arc<[u8]> = Arc::from(name);
@@ -351,11 +349,11 @@ fn two_sockets_connecting_to_each_other_at_once_both_get_refused() {
 fn the_registry_exists_only_while_something_is_bound_and_refuses_a_taken_name() {
     let _serial = tests_lock();
     assert!(!has_bindings());
-    let socket = UnixSocket::new(no_wake);
+    let socket = UnixSocket::new();
     let key = BindingKey::Abstract(Arc::from(&b"taken"[..]));
     register(key.clone(), &socket).unwrap();
     assert!(has_bindings());
-    let other = UnixSocket::new(no_wake);
+    let other = UnixSocket::new();
     assert_eq!(register(key.clone(), &other), Err(Errno::EADDRINUSE));
     assert!(Arc::ptr_eq(&find(&key).unwrap(), &socket));
     let first = register_autobound(&other).unwrap();
@@ -380,7 +378,7 @@ fn proc_net_unix_lists_bound_sockets_in_linux_s_format() {
         empty,
         b"Num       RefCount Protocol Flags    Type St Inode Path\n"
     );
-    let socket = UnixSocket::new(no_wake);
+    let socket = UnixSocket::new();
     let name: Arc<[u8]> = Arc::from(&b"listed"[..]);
     register(BindingKey::Abstract(Arc::clone(&name)), &socket).unwrap();
     socket.set_bound(Address::Abstract(name)).unwrap();
@@ -424,7 +422,7 @@ fn passing_a_socket_that_would_make_a_cycle_is_refused_and_every_socket_is_freed
         Err(Errno::ETOOMANYREFS)
     );
 
-    let listener = UnixSocket::new(no_wake);
+    let listener = UnixSocket::new();
     listener
         .set_bound(Address::Abstract(Arc::from(&b"passed"[..])))
         .unwrap();

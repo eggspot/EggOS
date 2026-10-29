@@ -153,6 +153,10 @@ name = "eggos-linux-dynamic"
 version = "0.2.0"
 
 [[package]]
+name = "eggos-linux-events"
+version = "0.2.0"
+
+[[package]]
 name = "eggos-linux-gui-tests"
 version = "0.2.0"
 dependencies = [

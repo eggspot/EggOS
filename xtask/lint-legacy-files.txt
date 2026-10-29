@@ -45,7 +45,6 @@ kernel/src/linux/futex.rs 7
 kernel/src/linux/identity.rs 2
 kernel/src/linux/limits.rs 30
 kernel/src/linux/memory.rs 12
-kernel/src/linux/poll.rs 27
 kernel/src/linux/random.rs 7
 kernel/src/linux/signal_frame.rs 22
 kernel/src/linux/signals.rs 118

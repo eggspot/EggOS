@@ -436,6 +436,7 @@ fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
         FileKind::Socket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,
         FileKind::InetSocket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,
         FileKind::MemoryFile(_) => text.bytes(b"/memfd: (deleted)")?,
+        FileKind::Event(event) => text.bytes(event.link_name())?,
     }
     Some(text.0)
 }

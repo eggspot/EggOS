@@ -127,6 +127,28 @@ pub const SOCKETS: Device = Device { major: 0, minor: 8 };
 /// The device memory files report (`st_dev`): the anonymous device of Linux's internal tmpfs.
 pub const MEMORY_FILES: Device = Device { major: 0, minor: 1 };
 
+/// The device of Linux's anonymous inodes, which event files report (`st_dev`).
+pub const ANONYMOUS_FILES: Device = Device {
+    major: 0,
+    minor: 15,
+};
+
+/// The status of an event file (`eventfd`, `timerfd`, `signalfd`, `epoll`): Linux's one
+/// anonymous inode, read and write for its owner, with no file type.
+pub const EVENT_FILE: Status = Status {
+    device: ANONYMOUS_FILES,
+    inode: 1,
+    mode: 0o600,
+    links: 1,
+    owner: 0,
+    group: 0,
+    represented_device: Device { major: 0, minor: 0 },
+    size: 0,
+    block_size: FRAME_SIZE as u32,
+    blocks: 0,
+    modified: 0,
+};
+
 /// The status of `node`: its attributes, on its file system's device, in blocks of the page
 /// size as a memory file system reports them.
 pub fn node_status(node: Node) -> Status {
@@ -357,6 +379,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             blocks: 0,
             ..CONSOLE
         }),
+        FileKind::Event(_) => Ok(EVENT_FILE),
     }
 }
 

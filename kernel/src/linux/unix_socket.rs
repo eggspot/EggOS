@@ -14,10 +14,15 @@
 //! [`release_rights`], outside every lock and without recursion. A socket may be passed only
 //! when it carries no sockets itself, so passed sockets never form a cycle, and at most
 //! [`MAX_IN_FLIGHT`] descriptors are in flight at once.
+//!
+//! Each socket has a wake list ([`WakeList`]) for its waiters (blocked calls, `poll`,
+//! `select`, `epoll`); a connection keeps its two sides' lists and wakes both after each
+//! change to it ([`Connection::changed`]), a listener's own list is woken when connections
+//! come and go. While nobody waits, a change costs the connection's lock and two relaxed loads.
 
 use super::Errno;
 use super::descriptors::{FileKind, OpenFile};
-use super::poll::event;
+use super::poll::{WakeList, event};
 use crate::sync::LeafSpinLock;
 use crate::vfs::Node;
 use alloc::boxed::Box;
@@ -278,6 +283,7 @@ struct ConnectionState {
     addresses: [Address; 2],
     credentials: [Option<PeerCredentials>; 2],
     sockets_carried: u32,
+    watchers: [Option<Arc<WakeList>>; 2],
 }
 
 impl ConnectionState {
@@ -346,6 +352,26 @@ impl Connection {
         let mut state = self.state.lock();
         state.addresses[side.index()] = address;
         state.credentials[side.index()] = Some(credentials);
+    }
+
+    fn attach(&self, side: Side, list: &Arc<WakeList>) {
+        self.state.lock().watchers[side.index()] = Some(Arc::clone(list));
+    }
+
+    /// Wakes the waiters of both sides' sockets: call it after every change, with no lock
+    /// held.
+    pub fn changed(&self) {
+        let watched = {
+            let state = self.state.lock();
+            state.watchers.each_ref().map(|list| {
+                list.as_ref()
+                    .filter(|list| list.is_watched())
+                    .map(Arc::clone)
+            })
+        };
+        for list in watched.iter().flatten() {
+            list.wake();
+        }
     }
 
     /// The address of `side`'s socket: its own name, as `getsockname` reports.
@@ -664,7 +690,7 @@ pub struct UnixSocket {
     state: LeafSpinLock<SocketState>,
     options: Options,
     inode: u64,
-    wake: fn(),
+    wake_list: Arc<WakeList>,
 }
 
 impl core::fmt::Debug for UnixSocket {
@@ -694,48 +720,43 @@ pub enum NotConnected {
 }
 
 impl UnixSocket {
-    fn with(state: SocketState, wake: fn()) -> Arc<Self> {
+    fn with(state: SocketState) -> Arc<Self> {
+        let wake_list = WakeList::shared();
+        if let SocketState::Connected { connection, side } = &state {
+            connection.attach(*side, &wake_list);
+        }
         Arc::new(Self {
             state: LeafSpinLock::new_leaf(state),
             options: Options::new(),
             inode: LAST_INODE.fetch_add(1, Ordering::Relaxed) + 1,
-            wake,
+            wake_list,
         })
     }
 
-    /// A new open socket, which wakes waiters with `wake` when it changes.
-    pub fn new(wake: fn()) -> Arc<Self> {
-        Self::with(
-            SocketState::Open {
-                address: Address::Unnamed,
-            },
-            wake,
-        )
+    /// A new open socket.
+    pub fn new() -> Arc<Self> {
+        Self::with(SocketState::Open {
+            address: Address::Unnamed,
+        })
     }
 
     /// The second side of `connection`, accepted.
-    pub fn accepted(connection: Arc<Connection>, wake: fn()) -> Arc<Self> {
-        Self::with(
-            SocketState::Connected {
-                connection,
-                side: Side::Second,
-            },
-            wake,
-        )
+    pub fn accepted(connection: Arc<Connection>) -> Arc<Self> {
+        Self::with(SocketState::Connected {
+            connection,
+            side: Side::Second,
+        })
     }
 
     /// A connected pair, both made by the process `credentials` names (`socketpair`).
-    pub fn pair(credentials: PeerCredentials, wake: fn()) -> (Arc<Self>, Arc<Self>) {
+    pub fn pair(credentials: PeerCredentials) -> (Arc<Self>, Arc<Self>) {
         let connection = Connection::new(Address::Unnamed, credentials);
         connection.set(Side::Second, Address::Unnamed, credentials);
-        let first = Self::with(
-            SocketState::Connected {
-                connection: Arc::clone(&connection),
-                side: Side::First,
-            },
-            wake,
-        );
-        (first, Self::accepted(connection, wake))
+        let first = Self::with(SocketState::Connected {
+            connection: Arc::clone(&connection),
+            side: Side::First,
+        });
+        (first, Self::accepted(connection))
     }
 
     /// Its number, as `fstat` reports it (`st_ino`).
@@ -748,10 +769,18 @@ impl UnixSocket {
         &self.options
     }
 
-    /// Wakes the threads that wait for sockets, pipes or the console to change: call it after
-    /// every change, with no lock held.
+    /// The threads and `epoll` instances that wait for it.
+    pub fn wake_list(&self) -> &Arc<WakeList> {
+        &self.wake_list
+    }
+
+    /// Wakes the threads that wait for it and, if it is connected, for its peer: call it
+    /// after every change, with no lock held.
     pub fn changed(&self) {
-        (self.wake)();
+        self.wake_list.wake();
+        if let Ok((connection, _)) = self.connected() {
+            connection.changed();
+        }
     }
 
     /// Its connection and side, if it is connected.
@@ -944,6 +973,7 @@ impl UnixSocket {
                 let address = core::mem::take(address);
                 let credentials = connection.credentials(Side::First);
                 connection.set(Side::First, address, credentials);
+                connection.attach(Side::First, &self.wake_list);
                 *state = SocketState::Connected {
                     connection: Arc::clone(connection),
                     side: Side::First,
@@ -1018,16 +1048,20 @@ impl Drop for UnixSocket {
             },
         );
         match state {
-            SocketState::Connected { connection, side } => release_rights(connection.close(side)),
+            SocketState::Connected { connection, side } => {
+                release_rights(connection.close(side));
+                connection.changed();
+            }
             SocketState::Listening(listening) => {
                 for connection in listening.backlog {
                     release_rights(connection.abort(Side::Second));
+                    connection.changed();
                 }
             }
             SocketState::Open { .. } | SocketState::Connecting { .. } => {}
         }
         unregister(&*self);
-        (self.wake)();
+        self.wake_list.wake();
     }
 }
 

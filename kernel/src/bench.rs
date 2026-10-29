@@ -53,7 +53,7 @@ const WARMUP_ITERATIONS: u64 = 100;
 pub type Benchmark<P> = (&'static str, fn(&mut Memory<P>, u64));
 
 /// Every benchmark for platform `P`, in run order.
-pub fn all<P: Platform>() -> [Benchmark<P>; 57] {
+pub fn all<P: Platform>() -> [Benchmark<P>; 58] {
     [
         ("empty_loop", |_, n| empty_loop(n)),
         ("clock_read", |_, n| clock_read::<P>(n)),
@@ -141,6 +141,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 57] {
         ("linux_file_read", linux_file_read::<P>),
         ("linux_fork", linux_fork::<P>),
         ("linux_vfork_exec", linux_vfork_exec::<P>),
+        ("linux_epoll_wake", linux_epoll_wake::<P>),
         ("gfx_glyph_cell", |_, n| gfx_glyph_cell(n)),
         ("gfx_terminal_line", |_, n| gfx_terminal_line(n)),
         ("term_feed_line", |_, n| term_feed_line(n)),
@@ -1396,6 +1397,36 @@ fn run_process_loop<P: Platform>(memory: &mut Memory<P>, mode: &[u8], n: u64) {
     );
 }
 
+fn linux_epoll_wake<P: Platform>(memory: &mut Memory<P>, n: u64) {
+    use linux::descriptors::{EventFile, FileKind};
+    use linux::{epoll, eventfd};
+    // SAFETY: as in `process_syscall_round_trip`.
+    let program = unsafe { Process::<P>::with_test_program(&memory.page_tables) }
+        .expect("the test program fits in memory");
+    let mut thread = linux::thread::LinuxThread::first(&program);
+    let nonblocking = u64::from(eventfd::flag::NONBLOCK);
+    let counter_fd =
+        eventfd::eventfd2(&program, &thread, 0, nonblocking).expect("a descriptor is free");
+    let epoll_fd = epoll::epoll_create1(&program, &thread, 0).expect("a descriptor is free");
+    let counter_file = thread.files().file(counter_fd).expect("it was just opened");
+    let epoll_file = thread.files().file(epoll_fd).expect("it was just opened");
+    let (FileKind::Event(EventFile::EventFd(counter)), FileKind::Event(EventFile::Epoll(epoll))) =
+        (counter_file.kind(), epoll_file.kind())
+    else {
+        unreachable!("eventfd2 and epoll_create1 open these")
+    };
+    epoll
+        .add(&counter_file, counter_fd as u32, epoll::event::IN, 1)
+        .expect("there is memory for the item");
+    let program = Arc::new(program);
+    let mut events = [(0u32, 0u64); 4];
+    for _ in 0..n {
+        black_box(counter.add(black_box(1)));
+        let polled = epoll::wait::<P>(&program, &mut thread, epoll, &mut events, None);
+        black_box((polled, counter.take()));
+    }
+}
+
 /// The pages a Linux program's page faults map, in chunks of this many per process.
 const PAGE_FAULT_CHUNK: u64 = 512;
 
@@ -1446,8 +1477,7 @@ fn linux_mmap_munmap<P: Platform>(memory: &mut Memory<P>, n: u64) {
 
 fn linux_unix_stream_send_recv(n: u64) {
     use linux::unix_socket::{PeerCredentials, Taken, UnixSocket};
-    fn no_wake() {}
-    let (first, second) = UnixSocket::pair(PeerCredentials::NONE, no_wake);
+    let (first, second) = UnixSocket::pair(PeerCredentials::NONE);
     let (sending, side) = first.connected().expect("a pair is connected");
     let (receiving, other) = second.connected().expect("a pair is connected");
     let message = [0x5a_u8; 64];
@@ -1860,8 +1890,8 @@ mod tests {
         let _scheduler = thread::host::lock_kernel_state_for_test();
         let mut out = String::new();
         let all = all::<CountingPlatform>();
-        let (machine_only, terminal) = all[all.len() - 24..].split_at(17);
-        let benchmarks = &[&all[..all.len() - 24], terminal].concat()[..];
+        let (machine_only, terminal) = all[all.len() - 25..].split_at(18);
+        let benchmarks = &[&all[..all.len() - 25], terminal].concat()[..];
         let [
             (syscall, _),
             (process_syscall, _),
@@ -1880,6 +1910,7 @@ mod tests {
             (linux_file_read, _),
             (linux_fork, _),
             (linux_vfork_exec, _),
+            (linux_epoll_wake, _),
         ] = machine_only
         else {
             unreachable!()
@@ -1914,7 +1945,8 @@ mod tests {
                 *linux_openat_close,
                 *linux_file_read,
                 *linux_fork,
-                *linux_vfork_exec
+                *linux_vfork_exec,
+                *linux_epoll_wake
             ],
             [
                 "syscall_round_trip",
@@ -1933,7 +1965,8 @@ mod tests {
                 "linux_openat_close",
                 "linux_file_read",
                 "linux_fork",
-                "linux_vfork_exec"
+                "linux_vfork_exec",
+                "linux_epoll_wake"
             ]
         );
         assert_eq!(

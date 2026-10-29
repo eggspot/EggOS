@@ -120,7 +120,7 @@ pub mod request {
 
 /// What an open file description names: the console, a node of the file system (D102), an
 /// end of a pipe (D125), a client of the window server (D127), the agent channel (D136), a
-/// socket (D138, D157), or a memory file (D139).
+/// socket (D138, D157), a memory file (D139), a memory device (D168) or an event file.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileKind {
     /// The console's terminal (D100), Linux's `/dev/console`.
@@ -147,7 +147,58 @@ pub enum FileKind {
     MemoryFile(Arc<super::memfd::MemoryFile>),
     /// A memory device (`/dev/null`, `/dev/zero`, ..., D168) and its node in `/dev`.
     MemoryDevice(super::memory_devices::MemoryDevice, Node),
+    /// An event file: an `eventfd`, a `timerfd`, a `signalfd` or an `epoll` instance.
+    Event(EventFile),
 }
+
+/// An event file, which has no node: Linux's anonymous inodes.
+#[derive(Debug)]
+pub enum EventFile {
+    /// A counter (`eventfd`, [`super::eventfd`]).
+    EventFd(Arc<super::eventfd::EventFd>),
+    /// A timer (`timerfd_create`, [`super::timerfd`]).
+    TimerFd(Arc<super::timerfd::TimerFd>),
+    /// Signals read as records (`signalfd`, [`super::signalfd`]).
+    SignalFd(Arc<super::signalfd::SignalFd>),
+    /// An `epoll` instance ([`super::epoll`]).
+    Epoll(Arc<super::epoll::Epoll>),
+}
+
+impl EventFile {
+    /// What `/proc/<pid>/fd/<fd>` names it as, Linux's anonymous inode names.
+    pub fn link_name(&self) -> &'static [u8] {
+        match self {
+            Self::EventFd(_) => b"anon_inode:[eventfd]",
+            Self::TimerFd(_) => b"anon_inode:[timerfd]",
+            Self::SignalFd(_) => b"anon_inode:[signalfd]",
+            Self::Epoll(_) => b"anon_inode:[eventpoll]",
+        }
+    }
+
+    /// The list of the threads and `epoll` instances that wait for it.
+    pub fn wake_list(&self) -> &Arc<super::poll::WakeList> {
+        match self {
+            Self::EventFd(counter) => counter.wake_list(),
+            Self::TimerFd(timer) => timer.wake_list(),
+            Self::SignalFd(signals) => signals.wake_list(),
+            Self::Epoll(epoll) => epoll.wake_list(),
+        }
+    }
+}
+
+impl PartialEq for EventFile {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::EventFd(this), Self::EventFd(that)) => Arc::ptr_eq(this, that),
+            (Self::TimerFd(this), Self::TimerFd(that)) => Arc::ptr_eq(this, that),
+            (Self::SignalFd(this), Self::SignalFd(that)) => Arc::ptr_eq(this, that),
+            (Self::Epoll(this), Self::Epoll(that)) => Arc::ptr_eq(this, that),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for EventFile {}
 
 /// A regular file's contents as they were made when it was opened ([`crate::vfs::Node::generate`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -169,7 +220,8 @@ impl FileKind {
             | Self::Socket(_)
             | Self::InetSocket(_)
             | Self::MemoryFile(_)
-            | Self::MemoryDevice(..) => None,
+            | Self::MemoryDevice(..)
+            | Self::Event(_) => None,
             Self::Regular(node) | Self::Directory(node) | Self::Path(node) => Some(*node),
             Self::Snapshot(snapshot) => Some(snapshot.node),
         }

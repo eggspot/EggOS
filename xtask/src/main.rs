@@ -282,6 +282,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-linux-sockets",
     "eggos-linux-memory",
     "eggos-linux-mappings",
+    "eggos-linux-events",
     "eggos-linux-dynamic",
     "eggos-linux-udp",
     "eggos-linux-tcp",
@@ -1521,6 +1522,10 @@ const LINUX_MAPPINGS_PACKAGE: &str = "eggos-linux-mappings";
 
 const LINUX_MAPPINGS_PATH: &str = "bin/linux-mappings";
 
+const LINUX_EVENTS_PACKAGE: &str = "eggos-linux-events";
+
+const LINUX_EVENTS_PATH: &str = "bin/linux-events";
+
 const LINUX_UDP_PACKAGE: &str = "eggos-linux-udp";
 
 const LINUX_TCP_PACKAGE: &str = "eggos-linux-tcp";
@@ -1595,6 +1600,10 @@ fn build_linux_programs_test_kernel(arch: &Arch) -> Result<std::path::PathBuf, S
     added.push(image::AddedFile {
         host: build_linux_test_program(arch, LINUX_MAPPINGS_PACKAGE, "static")?,
         path: LINUX_MAPPINGS_PATH.to_owned(),
+    });
+    added.push(image::AddedFile {
+        host: build_linux_test_program(arch, LINUX_EVENTS_PACKAGE, "static")?,
+        path: LINUX_EVENTS_PATH.to_owned(),
     });
     let mut extra = vec![(
         "etc/eggos/init.conf",

@@ -119,6 +119,12 @@ fn first_tick_at(nanoseconds: u64, per_tick: u64) -> u64 {
     mul_div_ceil(nanoseconds, 1 << 32, per_tick)
 }
 
+/// The first clock tick at which the monotonic clock reads `nanoseconds`: a deadline never
+/// early.
+pub fn tick_at<P: Platform>(nanoseconds: u64) -> u64 {
+    first_tick_at(nanoseconds, nanoseconds_per_tick::<P>())
+}
+
 /// The clock tick a wait for the `struct timespec` timeout at `address` ends at, measured
 /// from now: `u64::MAX` for one too long to count. Errors as [`poll::read_timeout`]'s.
 pub fn deadline_after<P: Platform>(process: &Process<P>, address: u64) -> Result<u64, Errno> {
@@ -282,15 +288,20 @@ pub fn clock_settime<P: Platform>(
 }
 
 fn may_set_the_clock<P: Platform>(process: &Process<P>) -> Result<(), Errno> {
-    let privileged = process
-        .credentials_and_limits()
-        .lock()
-        .credentials
-        .is_privileged();
-    match privileged {
+    match is_privileged(process) {
         true => Ok(()),
         false => Err(Errno::EPERM),
     }
+}
+
+/// Whether `process` is privileged (an effective user id of 0, D75): it may set the clock
+/// and use the alarm clocks.
+pub fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
+    process
+        .credentials_and_limits()
+        .lock()
+        .credentials
+        .is_privileged()
 }
 
 /// `settimeofday(tv, tz)`: sets the wall clock to the `struct timeval` at `tv` as

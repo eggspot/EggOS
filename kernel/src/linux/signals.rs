@@ -2212,6 +2212,33 @@ fn note_taken_in<P: Platform>(process: &Process<P>, signals: &Signals) {
     }
 }
 
+/// The signals of `set` pending to `thread`, of `process`, or sent to the process and not
+/// taken in by any thread yet, blocked or not: what a `signalfd` reads for it.
+pub fn pending_in<P: Platform>(process: &Process<P>, thread: &LinuxThread, set: u64) -> u64 {
+    let pending = thread.signal_state().pending;
+    let left = process.signals().lock().left_for_process();
+    (pending | left) & set
+}
+
+/// Takes the first signal of `wanted` pending to `thread`, of `process`, or sent to the
+/// process, blocked or not, as a `signalfd` read takes it: as [`rt_sigtimedwait`] takes it,
+/// without waiting.
+pub fn take_for_signalfd<P: Platform>(
+    process: &Process<P>,
+    thread: &mut LinuxThread,
+    wanted: u64,
+) -> Option<Info> {
+    take_in_sent(process, thread);
+    let wanted = wanted & !UNBLOCKABLE;
+    let mut guard = process.signals().lock();
+    let mut signals = thread.signals(&mut guard);
+    signals.set_waited(wanted);
+    let taken = signals.take_waited(wanted);
+    signals.set_waited(0);
+    note_taken_in(process, &guard);
+    taken
+}
+
 /// Whether a signal is pending and not blocked: due, so a wait that has not started yet does
 /// not start, as on Linux.
 pub fn is_due(thread: &LinuxThread) -> bool {

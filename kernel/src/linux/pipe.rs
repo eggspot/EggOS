@@ -9,16 +9,16 @@
 //! room, a longer one goes in as room appears, and a write with no reader left fails with
 //! `EPIPE` after `SIGPIPE` is sent to the writing thread. `O_NONBLOCK` turns every wait into
 //! `EAGAIN` (or what was done so far). User memory is copied through a buffer on the kernel
-//! stack, never under the lock. Waiters wait on the console's input key and are woken with
-//! its waiters ([`console::wake_input_waiters`]), so `poll` on the console and on pipes is one
-//! wait and a process's end wakes them all.
+//! stack, never under the lock. Waiters, blocked readers and writers and `poll`, `select` and
+//! `epoll`, are on the pipe's wake list ([`WakeList`]), which every transfer and the last
+//! close of an end wakes; nobody else is woken.
 
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
+use super::poll::{self, WakeList};
 use super::signals::{self, Interrupted};
-use super::terminal::{Waited, wait_for_input};
+use super::terminal::Waited;
 use super::thread::LinuxThread;
 use super::{Errno, Iovecs, MAX_RW_COUNT, iovec};
-use crate::console;
 use crate::process::Process;
 use crate::sync::LeafSpinLock;
 use alloc::sync::Arc;
@@ -80,7 +80,7 @@ impl Ring {
 pub struct Pipe {
     ring: LeafSpinLock<Ring>,
     inode: u64,
-    wake: fn(),
+    wake_list: Arc<WakeList>,
 }
 
 impl core::fmt::Debug for Pipe {
@@ -90,7 +90,7 @@ impl core::fmt::Debug for Pipe {
 }
 
 impl Pipe {
-    fn new(wake: fn()) -> Result<Arc<Self>, Errno> {
+    fn new() -> Result<Arc<Self>, Errno> {
         static NEXT_INODE: AtomicU64 = AtomicU64::new(1);
         if !crate::heap::may_grow_for_user(CAPACITY) {
             return Err(Errno::ENOMEM);
@@ -109,7 +109,7 @@ impl Pipe {
                 writers: 1,
             }),
             inode: NEXT_INODE.fetch_add(1, Ordering::Relaxed),
-            wake,
+            wake_list: WakeList::shared(),
         }))
     }
 }
@@ -125,6 +125,11 @@ impl PipeEnd {
     /// The pipe's number, as `fstat` reports it (`st_ino`).
     pub fn inode(&self) -> u64 {
         self.pipe.inode
+    }
+
+    /// The threads and `epoll` instances that wait for the pipe, either end.
+    pub fn wake_list(&self) -> &Arc<WakeList> {
+        &self.pipe.wake_list
     }
 
     /// The bytes waiting to be read.
@@ -162,7 +167,7 @@ impl Drop for PipeEnd {
                 false => ring.readers -= 1,
             }
         }
-        (self.pipe.wake)();
+        self.pipe.wake_list.wake();
     }
 }
 
@@ -188,8 +193,8 @@ const PIPE2_FLAGS: u32 = open_flag::CLOEXEC | open_flag::NONBLOCK;
 
 /// A new pipe's two open file descriptions, reading then writing, with `O_NONBLOCK` if
 /// `flags` has it.
-pub fn new_pair<P: Platform>(flags: u32) -> Result<(Arc<OpenFile>, Arc<OpenFile>), Errno> {
-    let pipe = Pipe::new(console::wake_input_waiters::<P>)?;
+pub fn new_pair(flags: u32) -> Result<(Arc<OpenFile>, Arc<OpenFile>), Errno> {
+    let pipe = Pipe::new()?;
     let status = flags & open_flag::NONBLOCK;
     let reading = PipeEnd {
         pipe: Arc::clone(&pipe),
@@ -223,7 +228,7 @@ pub fn pipe2<P: Platform>(
     if flags & !PIPE2_FLAGS != 0 {
         return Err(Errno::EINVAL);
     }
-    let (reading, writing) = new_pair::<P>(flags)?;
+    let (reading, writing) = new_pair(flags)?;
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let limit = open_file_limit(process);
     let files = thread.files();
@@ -301,7 +306,8 @@ fn read_or_wait<P: Platform>(
             let ring = end.pipe.ring.lock();
             ring.length > 0 || ring.writers == 0
         };
-        if wait_for_input(process, thread, u64::MAX, ready)? == Waited::Signalled {
+        let lists = [&end.pipe.wake_list];
+        if poll::wait_for(process, thread, &lists, u64::MAX, ready)? == Waited::Signalled {
             return ControlFlow::Continue(None);
         }
     }
@@ -344,7 +350,7 @@ fn take_into<P: Platform>(
                 Taken::Empty if copied == 0 => return None,
                 Taken::Empty | Taken::Ended => return Some(Ok(copied)),
             };
-            (end.pipe.wake)();
+            end.pipe.wake_list.wake();
             if process
                 .write_user_memory(base + done, &chunk[..taken])
                 .is_err()
@@ -438,7 +444,7 @@ fn write_or_wait<P: Platform>(
                     }
                 };
                 if pushed > 0 {
-                    (end.pipe.wake)();
+                    end.pipe.wake_list.wake();
                     sent += pushed;
                     written += pushed as u64;
                     continue;
@@ -450,7 +456,8 @@ fn write_or_wait<P: Platform>(
                     let ring = end.pipe.ring.lock();
                     ring.readers == 0 || ring.room() >= needed
                 };
-                if wait_for_input(process, thread, u64::MAX, ready)? == Waited::Signalled {
+                let lists = [&end.pipe.wake_list];
+                if poll::wait_for(process, thread, &lists, u64::MAX, ready)? == Waited::Signalled {
                     return ControlFlow::Continue(match written {
                         0 => None,
                         _ => Some(Ok(written)),
@@ -508,8 +515,7 @@ mod tests {
 
     #[test]
     fn an_empty_pipe_with_a_writer_says_wait_and_one_without_says_its_end() {
-        fn no_wake() {}
-        let pipe = Pipe::new(no_wake).unwrap();
+        let pipe = Pipe::new().unwrap();
         let reading = PipeEnd {
             pipe: Arc::clone(&pipe),
             writes: false,
@@ -532,8 +538,7 @@ mod tests {
     #[test]
     fn ends_report_poll_events_and_closing_one_end_is_seen_by_the_other() {
         use super::super::poll::event;
-        fn no_wake() {}
-        let pipe = Pipe::new(no_wake).unwrap();
+        let pipe = Pipe::new().unwrap();
         let reading = PipeEnd {
             pipe: Arc::clone(&pipe),
             writes: false,
@@ -560,7 +565,7 @@ mod tests {
         assert_ne!(
             writing,
             PipeEnd {
-                pipe: Pipe::new(no_wake).unwrap(),
+                pipe: Pipe::new().unwrap(),
                 writes: true
             }
         );

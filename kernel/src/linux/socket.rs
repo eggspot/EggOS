@@ -17,9 +17,9 @@
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::file_changes::{UMASK, now, parent_and_name, refused};
 use super::files::{starting_points, walk_error};
-use super::poll::deadline_in;
+use super::poll::{self, deadline_in};
 use super::signals::{self, Interrupted};
-use super::terminal::{Waited, wait_for_input};
+use super::terminal::Waited;
 use super::thread::LinuxThread;
 use super::unix_socket::{
     self, Address, BindingKey, Connection, NotConnected, OutgoingRights, PeerCredentials, Side,
@@ -28,7 +28,6 @@ use super::unix_socket::{
 use super::{
     Errno, Iovecs, MAX_IOVECS, MAX_RW_COUNT, credentials, ends_in_user_space, iovec, number,
 };
-use crate::console;
 use crate::process::Process;
 use crate::vfs::{self, Node, NodeKind, Refused};
 use alloc::sync::Arc;
@@ -124,10 +123,6 @@ const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
     target_arch = "x86_64"
 )))]
 compile_error!("check Linux's socket constants and struct msghdr for this architecture");
-
-fn wake<P: Platform>() {
-    console::wake_input_waiters::<P>();
-}
 
 fn credentials_of<P: Platform>(process: &Process<P>) -> PeerCredentials {
     use credentials::Kind::{Group, User};
@@ -271,7 +266,7 @@ pub fn socket<P: Platform>(
     protocol: u64,
 ) -> Result<u64, Errno> {
     let flags = checked_type(domain, kind, protocol)?;
-    let file = open_socket(UnixSocket::new(wake::<P>), flags);
+    let file = open_socket(UnixSocket::new(), flags);
     let limit = open_file_limit(process);
     let opened =
         thread
@@ -293,7 +288,7 @@ pub fn socketpair<P: Platform>(
     pair: u64,
 ) -> Result<u64, Errno> {
     let flags = checked_type(domain, kind, protocol)?;
-    let (first, second) = UnixSocket::pair(credentials_of(process), wake::<P>);
+    let (first, second) = UnixSocket::pair(credentials_of(process));
     let close_on_exec = flags & open_flag::CLOEXEC != 0;
     let limit = open_file_limit(process);
     let files = thread.files();
@@ -775,15 +770,19 @@ fn accept<P: Platform>(
                 );
             }
             Ok(None) if file.is_nonblocking() => break Err(Errno::EAGAIN),
-            Ok(None) => match wait_for_input(process, thread, deadline, || socket.can_accept())? {
-                Waited::Ready => {}
-                Waited::TimedOut => break Err(Errno::EAGAIN),
-                Waited::Signalled => {
-                    if signals::deliver_interrupting(process, thread, context, interrupted)? {
-                        return ControlFlow::Continue(());
+            Ok(None) => {
+                match poll::wait_for(process, thread, &[socket.wake_list()], deadline, || {
+                    socket.can_accept()
+                })? {
+                    Waited::Ready => {}
+                    Waited::TimedOut => break Err(Errno::EAGAIN),
+                    Waited::Signalled => {
+                        if signals::deliver_interrupting(process, thread, context, interrupted)? {
+                            return ControlFlow::Continue(());
+                        }
                     }
                 }
-            },
+            }
         }
     };
     finish(process, thread, context, result)
@@ -799,7 +798,7 @@ fn install_accepted<P: Platform>(
     flags: u32,
 ) -> Result<u64, Errno> {
     let peer = connection.address(Side::First);
-    let accepted = UnixSocket::accepted(connection, wake::<P>);
+    let accepted = UnixSocket::accepted(connection);
     let file = open_socket(Arc::clone(&accepted), flags);
     let limit = open_file_limit(process);
     let opened =
@@ -919,15 +918,19 @@ fn queue_connection<P: Platform>(
             Ok(false) if file.is_nonblocking() => {
                 return ControlFlow::Continue(Some(Err(Errno::EAGAIN)));
             }
-            Ok(false) => match wait_for_input(process, thread, deadline, || target.can_queue())? {
-                Waited::Ready => {}
-                Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
-                Waited::Signalled => {
-                    if signals::deliver_interrupting(process, thread, context, interrupted)? {
-                        return ControlFlow::Continue(None);
+            Ok(false) => {
+                match poll::wait_for(process, thread, &[target.wake_list()], deadline, || {
+                    target.can_queue()
+                })? {
+                    Waited::Ready => {}
+                    Waited::TimedOut => return ControlFlow::Continue(Some(Err(Errno::EAGAIN))),
+                    Waited::Signalled => {
+                        if signals::deliver_interrupting(process, thread, context, interrupted)? {
+                            return ControlFlow::Continue(None);
+                        }
                     }
                 }
-            },
+            }
         }
     }
 }
@@ -1204,7 +1207,7 @@ fn send_or_wait<P: Platform>(
                         Err(error) => return ControlFlow::Continue(Some(partial(written, error))),
                     };
                 if pushed > 0 {
-                    send.socket.changed();
+                    connection.changed();
                     sent += pushed;
                     written += pushed as u64;
                     continue;
@@ -1212,7 +1215,10 @@ fn send_or_wait<P: Platform>(
                 if nonblocking {
                     return ControlFlow::Continue(Some(partial(written, Errno::EAGAIN)));
                 }
-                match wait_for_input(process, thread, deadline, || connection.can_send(side))? {
+                let lists = [send.socket.wake_list()];
+                match poll::wait_for(process, thread, &lists, deadline, || {
+                    connection.can_send(side)
+                })? {
                     Waited::Ready => {}
                     Waited::TimedOut => {
                         return ControlFlow::Continue(Some(partial(written, Errno::EAGAIN)));
@@ -1561,7 +1567,7 @@ fn receive_or_wait<P: Platform>(
                         receive.rights = Some(rights);
                     }
                     if !peek {
-                        receive.socket.changed();
+                        connection.changed();
                     }
                     count
                 }
@@ -1577,7 +1583,8 @@ fn receive_or_wait<P: Platform>(
                             _ => Ok(copied),
                         }));
                     }
-                    match wait_for_input(process, thread, deadline, || {
+                    let lists = [receive.socket.wake_list()];
+                    match poll::wait_for(process, thread, &lists, deadline, || {
                         connection.can_receive(side)
                     })? {
                         Waited::Ready => continue,

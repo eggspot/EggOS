@@ -244,7 +244,7 @@ const SHELL_SESSION: [&[u8]; 17] = [
     b"exit 7\r",
 ];
 
-const LINUX_PROGRAM_SESSION: [&[u8]; 8] = [
+const LINUX_PROGRAM_SESSION: [&[u8]; 9] = [
     b"GREETING=hi linux-static a 'b c'; echo LINUX-STATIC status $?\r",
     b"GREETING=hi /bin/linux-static-pie a 'b c'; echo LINUX-STATIC status $?\r",
     b"linux-static exit 42; echo LINUX-STATIC status $?\r",
@@ -252,6 +252,7 @@ const LINUX_PROGRAM_SESSION: [&[u8]; 8] = [
     b"linux-sockets; echo LINUX-SOCKETS status $?\r",
     b"linux-memory; echo LINUX-MEMORY status $?\r",
     b"linux-mappings; echo LINUX-MAPPINGS status $?\r",
+    b"linux-events; echo LINUX-EVENTS status $?\r",
     b"exit 7\r",
 ];
 
@@ -289,6 +290,18 @@ const LINUX_MAPPINGS_LINES: [&str; 9] = [
     "LINUX-MAPPINGS mremap grows into the file",
     "LINUX-MAPPINGS msync 0 ENOMEM",
     "LINUX-MAPPINGS status 0",
+];
+
+const LINUX_EVENTS_LINES: [&str; 8] = [
+    "LINUX-EVENTS epoll: timerfd twice, eventfd 3, semaphore 1 1 EAGAIN, signalfd SIGUSR1, a pipe \
+     woken by a thread",
+    "LINUX-EVENTS select and pselect6 on a pipe: timeout 0, ready 1, woken 1",
+    "LINUX-EVENTS fork copies on write: the child saw 1 and wrote 2, the parent kept 1",
+    "LINUX-EVENTS fork keeps MAP_SHARED anonymous memory shared: the parent sees the child's 2",
+    "LINUX-EVENTS /dev/shm: a child's write through MAP_SHARED is the parent's, then unlinked",
+    "LINUX-EVENTS MAP_SHARED of a /tmp file: msync then pread sees it, a write is seen through it",
+    "LINUX-EVENTS MADV_DONTFORK: the child gets SIGSEGV; MADV_WIPEONFORK: the child reads zeros",
+    "LINUX-EVENTS status 0",
 ];
 
 const HOST_FOLDER_SESSION: [&[u8]; 7] = [
@@ -1039,6 +1052,10 @@ fn linux_program_output() -> [Vec<Line>; LINUX_PROGRAM_SESSION.len()] {
             .map(|line| Line::Whole((*line).into()))
             .collect(),
         LINUX_MAPPINGS_LINES
+            .iter()
+            .map(|line| Line::Whole((*line).into()))
+            .collect(),
+        LINUX_EVENTS_LINES
             .iter()
             .map(|line| Line::Whole((*line).into()))
             .collect(),

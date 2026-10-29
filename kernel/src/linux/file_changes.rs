@@ -231,7 +231,11 @@ pub fn pwrite64<P: Platform>(
         return Err(Errno::EBADF);
     }
     let node = match file.kind() {
-        FileKind::Console | FileKind::Pipe(_) | FileKind::Socket(_) | FileKind::InetSocket(_) => {
+        FileKind::Console
+        | FileKind::Pipe(_)
+        | FileKind::Socket(_)
+        | FileKind::InetSocket(_)
+        | FileKind::Event(_) => {
             return Err(Errno::ESPIPE);
         }
         FileKind::Regular(node) => *node,
