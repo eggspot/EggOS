@@ -851,3 +851,48 @@ fn a_superblock_with_a_valid_checksum_and_impossible_geometry_is_refused() {
         assert!(Volume::mount(MemoryDisk::from_image(image)).is_err());
     }
 }
+
+#[test]
+fn a_work_disk_is_told_apart_by_its_marker_and_keeps_its_folder_across_a_remount() {
+    let mut volume = mounted(1024);
+    assert_eq!(crate::is_work_disk(&mut volume), Ok(false));
+    assert_eq!(crate::work_folder(&mut volume), Err(Error::NotFound));
+    let root = volume.root();
+    volume
+        .create(root, b"home", Kind::Directory, 0o755, 2)
+        .unwrap();
+    assert_eq!(crate::is_work_disk(&mut volume), Ok(false));
+    let folder = crate::make_work_disk(&mut volume, 3).unwrap();
+    assert_eq!(crate::kind_of(folder), Kind::Directory);
+    assert_eq!(crate::make_work_disk(&mut volume, 4), Err(Error::Exists));
+    let file = volume
+        .create(folder, b"Cargo.toml", Kind::Regular, 0o644, 5)
+        .unwrap();
+    volume.write(file, Some(0), b"[package]\n", 5).unwrap();
+    volume.commit().unwrap();
+    let mut volume = remount(volume);
+    assert_eq!(crate::is_work_disk(&mut volume), Ok(true));
+    let folder = crate::work_folder(&mut volume).unwrap();
+    let file = volume.lookup(folder, b"Cargo.toml").unwrap().unwrap();
+    assert_eq!(read_all(&mut volume, file), b"[package]\n");
+    volume.check().unwrap();
+}
+
+#[test]
+fn a_directory_named_like_the_marker_does_not_make_a_work_disk() {
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    volume
+        .create(root, crate::WORK_DISK_MARKER, Kind::Directory, 0o755, 1)
+        .unwrap();
+    assert_eq!(crate::is_work_disk(&mut volume), Ok(false));
+    let mut volume = mounted(1024);
+    let root = volume.root();
+    volume
+        .create(root, crate::WORK_DISK_MARKER, Kind::Regular, 0o444, 1)
+        .unwrap();
+    volume
+        .create(root, crate::WORK_FOLDER, Kind::Regular, 0o644, 1)
+        .unwrap();
+    assert_eq!(crate::work_folder(&mut volume), Err(Error::NotDirectory));
+}

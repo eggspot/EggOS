@@ -18,6 +18,7 @@ pub mod text_editor;
 mod win_controls;
 mod windows_crt;
 mod windows_gui;
+pub mod work_disk;
 
 use crate::qmp::{self, InputEvent, Picture, Qmp};
 use crate::{Arch, elf};
@@ -356,6 +357,24 @@ pub fn disk_args(arch: &Arch, image: &str) -> Vec<String> {
         "driver=raw,node-name=eggfs,file=eggfs-file".into(),
         "-device".into(),
         format!("{},drive=eggfs", arch.disk_device),
+    ]
+}
+
+/// QEMU's arguments that attach the work disk image `image` (an absolute path, made by
+/// `cargo xtask work pack`) writable on another of `arch`'s virtio block devices, which EggOS
+/// mounts at `/work` (D166). EggOS tells it from the disk that holds `/home` by the marker in
+/// its root, not by the order the disks come in.
+pub fn work_disk_args(arch: &Arch, image: &str) -> Vec<String> {
+    vec![
+        "-blockdev".into(),
+        format!(
+            "driver=file,node-name=work-file,filename={}",
+            image.replace(',', ",,")
+        ),
+        "-blockdev".into(),
+        "driver=raw,node-name=work,file=work-file".into(),
+        "-device".into(),
+        format!("{},drive=work", arch.disk_device),
     ]
 }
 
@@ -1172,6 +1191,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
             "tmp",
             "usr",
             "var",
+            "work",
         ]),
         vec![
             Line::Around("-rwxr-xr-x 30 0 0 ", " /bin/ls"),
@@ -3336,6 +3356,28 @@ mod tests {
         assert!(!joined.contains("-no-reboot") && !serial.contains("-no-reboot"));
         let mcp = mcp_args(arch, false, "/tmp/serial.log").join(" ");
         assert!(mcp.contains("-smp 4 -no-reboot"), "{mcp}");
+    }
+
+    #[test]
+    fn a_work_disk_is_a_raw_block_device_of_its_own_beside_the_home_disk() {
+        for arch in crate::ARCHES {
+            let args = work_disk_args(arch, "/x/a,b.img");
+            assert_eq!(
+                args,
+                [
+                    "-blockdev".to_string(),
+                    "driver=file,node-name=work-file,filename=/x/a,,b.img".into(),
+                    "-blockdev".into(),
+                    "driver=raw,node-name=work,file=work-file".into(),
+                    "-device".into(),
+                    format!("{},drive=work", arch.disk_device),
+                ]
+            );
+            let home = disk_args(arch, "/x/home.img");
+            for name in ["node-name=work", "node-name=work-file", "drive=work"] {
+                assert!(home.iter().all(|arg| !arg.contains(name)), "{name}");
+            }
+        }
     }
 
     #[test]

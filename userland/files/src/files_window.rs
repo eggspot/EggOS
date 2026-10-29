@@ -44,8 +44,9 @@ use eggos_toolkit::widget::{
 pub const TITLE: &str = "Files";
 /// The content's size when it opens.
 pub const DEFAULT_SIZE: (u32, u32) = (720, 480);
-/// The smallest content.
-pub const MINIMUM_SIZE: (u32, u32) = (480, 300);
+/// The smallest content: tall enough for every place, the host share and the work disk
+/// included, above the status bar (docs/ux/files-work-place-v0.3.md).
+pub const MINIMUM_SIZE: (u32, u32) = (480, 324);
 pub use crate::trash::HOME;
 /// Where the home folders' file system is mounted: what is in it can be trashed.
 pub const HOMES: &[u8] = b"/home";
@@ -55,6 +56,8 @@ pub const HOST_SHARE: &[u8] = b"/media/host";
 pub const MEDIA: &[u8] = b"/media";
 /// The memory file system's folder, which has no Trash.
 pub const TMP: &[u8] = b"/tmp";
+/// Where the work disk the host attached is mounted (D166): writable, with no Trash.
+pub const WORK: &[u8] = b"/work";
 /// How long a notice shows.
 pub const NOTICE_MS: u32 = 3000;
 /// The largest text file opened in the Terminal, when the Text Editor is not installed.
@@ -90,7 +93,7 @@ const TYPE_AHEAD_MS: u32 = 1000;
 const HISTORY: usize = 16;
 const WHEEL_ROWS: i32 = 3;
 const MAX_REQUESTS: usize = 4;
-const MAX_PLACES: usize = 9;
+const MAX_PLACES: usize = 10;
 const PROPERTIES_LINES: usize = 5;
 
 mod code {
@@ -134,6 +137,7 @@ pub enum Place {
     Desktop,
     Tmp,
     HostShare,
+    WorkDisk,
     Apps,
     System,
     Trash,
@@ -149,6 +153,7 @@ impl Place {
             Self::Desktop => "Desktop",
             Self::Tmp => "tmp",
             Self::HostShare => "Host share",
+            Self::WorkDisk => "Work disk",
             Self::Apps => "Apps",
             Self::System => "System",
             Self::Trash if windows => "Recycle Bin",
@@ -172,6 +177,7 @@ impl Place {
             Self::Desktop => in_home(b"Desktop"),
             Self::Tmp => folder(TMP),
             Self::HostShare => folder(HOST_SHARE),
+            Self::WorkDisk => folder(WORK),
             Self::Apps => folder(APPLICATIONS),
             Self::System => folder(b"/"),
             Self::Trash => Location::Trash,
@@ -706,8 +712,16 @@ impl FilesWindow {
         }
     }
 
+    fn work_disk_attached(files: &mut impl Files) -> bool {
+        match (files.status(WORK), files.status(b"/")) {
+            (Ok(work), Ok(root)) => work.device != root.device,
+            _ => false,
+        }
+    }
+
     fn set_places(&mut self, files: &mut impl Files) {
         let mounted = Self::share_mounted(files);
+        let attached = Self::work_disk_attached(files);
         let all = [
             Place::Home,
             Place::Documents,
@@ -715,13 +729,19 @@ impl FilesWindow {
             Place::Desktop,
             Place::Tmp,
             Place::HostShare,
+            Place::WorkDisk,
             Place::Apps,
             Place::System,
             Place::Trash,
         ];
         self.place_count = 0;
         for place in all {
-            if place == Place::HostShare && !mounted {
+            let hidden = match place {
+                Place::HostShare => !mounted,
+                Place::WorkDisk => !attached,
+                _ => false,
+            };
+            if hidden {
                 continue;
             }
             self.places[self.place_count] = place;
@@ -2073,12 +2093,16 @@ impl FilesWindow {
         }
         let mut first = Line::new();
         let _ = write!(first, "Delete {} permanently?", Shown(name));
-        let second = match self
-            .folder()
-            .is_some_and(|folder| is_within(folder.as_bytes(), TMP))
-        {
-            true => "/tmp is not kept, so it has no Trash. This cannot be undone.",
-            false => "This cannot be undone.",
+        let within = |place: &[u8]| {
+            self.folder()
+                .is_some_and(|folder| is_within(folder.as_bytes(), place))
+        };
+        let second = if within(TMP) {
+            "/tmp is not kept, so it has no Trash. This cannot be undone."
+        } else if within(WORK) {
+            "/work is the host's folder, so it has no Trash. This cannot be undone."
+        } else {
+            "This cannot be undone."
         };
         let panel = Panel::new(&[first.as_str(), second], &["Cancel", "Delete"], Some(1), 0);
         self.panel = Some((panel, Asked::DeletePermanently(path)));

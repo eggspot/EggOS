@@ -187,17 +187,42 @@ const PERSISTENT_FOLDERS: [(&[u8], &[u8]); 3] = [
     (b"var", b"/var"),
 ];
 
+const WORK_FOLDER_PATH: &[u8] = b"/work";
+
+const WORK_DEVICE: (u32, u32) = (254, 2);
+
+type BlockVolume = eggos_eggfs::Volume<vfs::eggfs::BlockDisk>;
+
+type MountedEggFs = vfs::eggfs::EggFs<vfs::eggfs::BlockDisk>;
+
 fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut persistent = false;
+    let mut work = false;
     let mut host_folder = false;
     for device in block::take_all().into_iter().flatten() {
         let mut disk = vfs::eggfs::BlockDisk::new(device, devices::Deadline::after::<P>);
         let contents = eggos_eggfs::probe(&mut disk);
+        let eggfs = contents == Ok(eggos_eggfs::Contents::EggFs);
         let blank_writable = contents == Ok(eggos_eggfs::Contents::Blank) && !disk.is_read_only();
-        let ours = contents == Ok(eggos_eggfs::Contents::EggFs) || blank_writable;
-        if ours && !persistent {
-            match mount_persistent::<P, _>(disk, blank_writable, console)? {
-                Ok(()) => persistent = true,
+        let ours = eggfs || blank_writable;
+        let wanted = (eggfs && !(persistent && work)) || (blank_writable && !persistent);
+        if wanted {
+            match mount_eggfs::<P, _>(disk, blank_writable, console)? {
+                Ok(mut volume) => {
+                    let is_work = eggos_eggfs::is_work_disk(&mut volume) == Ok(true);
+                    let placed = match (is_work, work, persistent) {
+                        (true, false, _) => attach_work::<P, _>(volume, console)?,
+                        (false, _, false) => attach_persistent::<P, _>(volume, console)?,
+                        _ => Err(volume),
+                    };
+                    match placed {
+                        Ok(()) if is_work => work = true,
+                        Ok(()) => persistent = true,
+                        Err(volume) => {
+                            let _ = block::install(volume.into_disk().into_device());
+                        }
+                    }
+                }
                 Err(disk) => {
                     let _ = block::install(disk.into_device());
                 }
@@ -234,14 +259,13 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     Ok(())
 }
 
-fn mount_persistent<P: Platform, W: Write>(
+fn mount_eggfs<P: Platform, W: Write>(
     mut disk: vfs::eggfs::BlockDisk,
     blank: bool,
     console: &mut W,
-) -> Result<Result<(), vfs::eggfs::BlockDisk>, core::fmt::Error> {
-    use alloc::boxed::Box;
-    let now = linux::file_changes::now::<P>();
+) -> Result<Result<BlockVolume, vfs::eggfs::BlockDisk>, core::fmt::Error> {
     if blank {
+        let now = linux::file_changes::now::<P>();
         if let Err(error) = eggos_eggfs::format(&mut disk, now) {
             writeln!(
                 console,
@@ -269,11 +293,26 @@ fn mount_persistent<P: Platform, W: Write>(
             mounted.recovered_blocks
         )?;
     }
+    Ok(Ok(volume))
+}
+
+fn mebibytes(blocks: u64) -> u64 {
+    (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20
+}
+
+fn attach_persistent<P: Platform, W: Write>(
+    volume: BlockVolume,
+    console: &mut W,
+) -> Result<Result<(), BlockVolume>, core::fmt::Error> {
+    use alloc::boxed::Box;
+    let now = linux::file_changes::now::<P>();
     let (blocks, free) = volume.space();
     let sleeping = sync::Sleeping::on::<P>();
-    let eggfs: &'static vfs::eggfs::EggFs<vfs::eggfs::BlockDisk> = Box::leak(Box::new(
-        vfs::eggfs::EggFs::new(volume, PERSISTENT_DEVICE, sleeping),
-    ));
+    let eggfs: &'static MountedEggFs = Box::leak(Box::new(vfs::eggfs::EggFs::new(
+        volume,
+        PERSISTENT_DEVICE,
+        sleeping,
+    )));
     let root = vfs::root();
     for (name, path) in PERSISTENT_FOLDERS {
         if !vfs::resolve(root, root, path).is_ok_and(|node| node.is_directory()) {
@@ -290,19 +329,84 @@ fn mount_persistent<P: Platform, W: Write>(
             )?,
         }
     }
-    let mebibytes = |blocks: u64| (blocks * eggos_eggfs::BLOCK_SIZE as u64) >> 20;
     writeln!(
         console,
         "vfs: EggFS disk mounted at /home, /Applications and /var ({} MiB, {} MiB free)",
         mebibytes(blocks),
         mebibytes(free)
     )?;
+    start_committer::<P, _>(
+        eggfs,
+        "vfs: EggFS could not commit to the disk: changes are refused until the next boot",
+        console,
+    )?;
+    Ok(Ok(()))
+}
+
+fn attach_work<P: Platform, W: Write>(
+    mut volume: BlockVolume,
+    console: &mut W,
+) -> Result<Result<(), BlockVolume>, core::fmt::Error> {
+    use alloc::boxed::Box;
+    let root = vfs::root();
+    if !vfs::resolve(root, root, WORK_FOLDER_PATH).is_ok_and(|node| node.is_directory()) {
+        writeln!(
+            console,
+            "vfs: the work disk was not mounted: there is no /work to mount it on"
+        )?;
+        return Ok(Err(volume));
+    }
+    if let Err(error) = eggos_eggfs::work_folder(&mut volume) {
+        writeln!(
+            console,
+            "vfs: the work disk was not mounted: its work folder is missing ({error:?})"
+        )?;
+        return Ok(Err(volume));
+    }
+    let now = linux::file_changes::now::<P>();
+    let (blocks, free) = volume.space();
+    let sleeping = sync::Sleeping::on::<P>();
+    let eggfs: &'static MountedEggFs = Box::leak(Box::new(vfs::eggfs::EggFs::new(
+        volume,
+        WORK_DEVICE,
+        sleeping,
+    )));
+    match eggfs.folder(eggos_eggfs::WORK_FOLDER, now) {
+        Ok(folder) => {
+            if vfs::mount(WORK_FOLDER_PATH, Box::leak(Box::new(folder))).is_err() {
+                return writeln!(
+                    console,
+                    "vfs: the work disk was not mounted: no room for another mount"
+                )
+                .map(Ok);
+            }
+        }
+        Err(error) => {
+            return writeln!(console, "vfs: the work disk was not mounted: {error:?}").map(Ok);
+        }
+    }
+    writeln!(
+        console,
+        "vfs: work disk mounted at /work ({} MiB, {} MiB free)",
+        mebibytes(blocks),
+        mebibytes(free)
+    )?;
+    start_committer::<P, _>(
+        eggfs,
+        "vfs: the work disk could not commit: changes to /work are refused until the next boot",
+        console,
+    )?;
+    Ok(Ok(()))
+}
+
+fn start_committer<P: Platform, W: Write>(
+    eggfs: &'static MountedEggFs,
+    failure: &'static str,
+    console: &mut W,
+) -> core::fmt::Result {
     let committer = thread::spawn::<P, _>(move || {
         eggfs.commit_changes(&|| thread::sleep::<P>(vfs::eggfs::COMMIT_DELAY), &|| {
-            let _ = writeln!(
-                console::PlatformConsole::<P>::new(),
-                "vfs: EggFS could not commit to the disk: changes are refused until the next boot"
-            );
+            let _ = writeln!(console::PlatformConsole::<P>::new(), "{failure}");
         })
     });
     if committer.is_err() {
@@ -311,7 +415,7 @@ fn mount_persistent<P: Platform, W: Write>(
             "vfs: no committer for EggFS: changes reach the disk at sync and power-off"
         )?;
     }
-    Ok(Ok(()))
+    Ok(())
 }
 
 type Disk = alloc::boxed::Box<dyn block::BlockDevice>;

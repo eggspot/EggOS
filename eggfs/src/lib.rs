@@ -18,6 +18,8 @@
 //!   [`Volume::mount`] mounts one, and a [`Volume`]'s methods read and change it; changes are
 //!   committed by [`Volume::commit`] and, before an operation, when the journal would not hold
 //!   more. [`Volume::check`] verifies everything a mounted volume holds.
+//! - **Work disks** (D166): [`make_work_disk`] marks a volume as a host's folder for `/work`,
+//!   [`is_work_disk`] tells one apart and [`work_folder`] finds its folder.
 //!
 //! A `Volume` is not shared: whoever owns it serialises its use.
 
@@ -32,6 +34,7 @@ mod journal;
 mod layout;
 pub mod memory;
 mod volume;
+mod work_disk;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +43,7 @@ pub use check::{CheckReport, Inconsistency};
 pub use journal::{Contents, FormatError, format, probe};
 pub use layout::{BLOCK_SIZE, MAX_NAME};
 pub use volume::{Attributes, DirectoryEntry, Volume};
+pub use work_disk::{WORK_DISK_MARKER, WORK_FOLDER, is_work_disk, make_work_disk, work_folder};
 
 /// What a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

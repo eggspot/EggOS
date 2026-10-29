@@ -11,8 +11,9 @@
     clippy::panic
 )]
 
-/// The roots the read-only tools reach.
-pub const READ_ROOTS: [&str; 2] = ["/home", "/media/host"];
+/// The roots the read-only tools reach: the homes, the host's shared folder and the work disk
+/// the host attached (D166).
+pub const READ_ROOTS: [&str; 3] = ["/home", "/media/host", "/work"];
 
 /// The home folder, the one place the write tools reach in 0.3 (D137): its Trash is the one
 /// `trash` and Files use, so whatever is trashed can be restored.
@@ -178,6 +179,10 @@ mod tests {
             Ok("/media/host/readme.txt".into())
         );
         assert_eq!(resolved("//home"), Ok("/home".into()));
+        assert_eq!(
+            resolved("/work/target/../build.log"),
+            Ok("/work/build.log".into())
+        );
     }
 
     #[test]
@@ -189,6 +194,8 @@ mod tests {
             "/media/host/../../home/../etc",
             "/homework",
             "/media/hostile",
+            "/workshop",
+            "/work/..",
             "/",
             "/..",
             "/home/../../../..",

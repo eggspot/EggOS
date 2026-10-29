@@ -185,6 +185,8 @@ struct ScriptArch {
     powershell_folder: Vec<String>,
     shell_disk: Vec<String>,
     powershell_disk: Vec<String>,
+    shell_work: Vec<String>,
+    powershell_work: Vec<String>,
     shell_mcp: Vec<String>,
     shell_mcp_headless: Vec<String>,
     powershell_mcp: Vec<String>,
@@ -199,6 +201,10 @@ const POWERSHELL_FOLDER: &str = "$Folder";
 const SHELL_DISK: &str = "$disk_path";
 
 const POWERSHELL_DISK: &str = "$DiskPath";
+
+const SHELL_WORK: &str = "$work_path";
+
+const POWERSHELL_WORK: &str = "$WorkPath";
 
 const SHELL_CONSOLE_LOG: &str = "$console_log";
 
@@ -223,6 +229,8 @@ fn script_arches() -> Vec<ScriptArch> {
             powershell_folder: qemu::host_folder_args(arch, POWERSHELL_FOLDER),
             shell_disk: qemu::disk_args(arch, SHELL_DISK),
             powershell_disk: qemu::disk_args(arch, POWERSHELL_DISK),
+            shell_work: qemu::work_disk_args(arch, SHELL_WORK),
+            powershell_work: qemu::work_disk_args(arch, POWERSHELL_WORK),
             shell_mcp: qemu::mcp_args(arch, true, SHELL_CONSOLE_LOG),
             shell_mcp_headless: qemu::mcp_args(arch, false, SHELL_CONSOLE_LOG),
             powershell_mcp: qemu::mcp_args(arch, true, POWERSHELL_CONSOLE_LOG),
@@ -260,6 +268,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
     let mut cases = String::new();
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
+    let mut work_cases = String::new();
     let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
@@ -267,6 +276,12 @@ fn shell_script(arches: &[ScriptArch]) -> String {
             "    {}) set -- \"$@\" {} ;;",
             arch.name,
             double_quoted(&arch.shell_disk)
+        );
+        let _ = writeln!(
+            work_cases,
+            "    {}) set -- \"$@\" {} ;;",
+            arch.name,
+            double_quoted(&arch.shell_work)
         );
         let _ = writeln!(
             network_cases,
@@ -297,7 +312,7 @@ fn shell_script(arches: &[ScriptArch]) -> String {
         r#"#!/bin/sh
 set -eu
 version='{VERSION}'
-usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network]"
+usage="usage: run-eggos.sh [{choices}] [--serial | --mcp [--no-window] [--mcp-allow view,write,run,install]] [--apps <folder>] [--disk <image> | --no-disk] [--format-disk] [--no-network] [--work <image>]"
 case "$(uname -m)" in
   arm64 | aarch64) arch=aarch64 ;;
   riscv64) arch=riscv64 ;;
@@ -313,6 +328,7 @@ disk=''
 no_disk=''
 format_disk=''
 no_network=''
+work=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) mode=serial ;;
@@ -334,6 +350,10 @@ while [ "$#" -gt 0 ]; do
     --no-disk) no_disk=yes ;;
     --format-disk) format_disk=yes ;;
     --no-network) no_network=yes ;;
+    --work)
+      if [ "$#" -lt 2 ]; then echo "$usage" >&2; exit 2; fi
+      shift
+      work="$1" ;;
     {alternatives}) arch="$1" ;;
     -h | --help) echo "$usage"; exit 0 ;;
     *) echo "$usage" >&2; exit 2 ;;
@@ -453,6 +473,17 @@ if [ -z "$no_disk" ]; then
 {disk_cases}  esac
   say "run-eggos.sh: $disk holds /home, /Applications and /var in EggOS (--no-disk: none)."
 fi
+if [ -n "$work" ]; then
+  if [ ! -f "$work" ] || [ ! -s "$work" ]; then
+    echo "run-eggos.sh: $work is not a work disk image: make one with cargo xtask work pack <folder> <image>" >&2
+    exit 1
+  fi
+  work_path=$(CDPATH= cd -- "$(dirname -- "$work")" && pwd)/$(basename -- "$work")
+  work_path=$(printf '%s' "$work_path" | sed 's/,/,,/g')
+  case "$arch" in
+{work_cases}  esac
+  say "run-eggos.sh: $work is at /work in EggOS, writable; once EggOS powers off, cargo xtask work unpack <image> <folder> writes what it holds into a new folder."
+fi
 if [ -z "$no_network" ]; then
   case "$arch" in
 {network_cases}  esac
@@ -500,6 +531,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
     let mut cases = String::new();
     let mut folder_cases = String::new();
     let mut disk_cases = String::new();
+    let mut work_cases = String::new();
     let mut network_cases = String::new();
     for arch in arches {
         let _ = writeln!(
@@ -507,6 +539,12 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
             "        '{}' {{ @({}) }}",
             arch.name,
             double_quoted(&arch.powershell_disk).replace("\" \"", "\", \"")
+        );
+        let _ = writeln!(
+            work_cases,
+            "        '{}' {{ @({}) }}",
+            arch.name,
+            double_quoted(&arch.powershell_work).replace("\" \"", "\", \"")
         );
         let _ = writeln!(
             network_cases,
@@ -536,7 +574,7 @@ fn powershell_script(arches: &[ScriptArch]) -> String {
         r#"$ErrorActionPreference = 'Stop'
 $Version = '{VERSION}'
 $Arches = @({names})
-$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork]"
+$Usage = "usage: run-eggos.ps1 [-Arch] <{choices}> [-Serial | -Mcp [-NoWindow] [-McpAllow view,write,run,install]] [-Apps <folder>] [-Disk <image> | -NoDisk] [-FormatDisk] [-NoNetwork] [-Work <image>]"
 $Arch = ''
 $Serial = $false
 $Mcp = $false
@@ -547,6 +585,7 @@ $Disk = ''
 $NoDisk = $false
 $FormatDisk = $false
 $NoNetwork = $false
+$Work = ''
 $UsageError = $false
 $Words = @($args)
 for ($i = 0; $i -lt $Words.Count; $i++) {{
@@ -573,6 +612,9 @@ for ($i = 0; $i -lt $Words.Count; $i++) {{
         $i++
     }} elseif ($argument -in @('-Disk', '--disk') -and $null -ne $value) {{
         $Disk = $value
+        $i++
+    }} elseif ($argument -in @('-Work', '--work') -and $null -ne $value) {{
+        $Work = $value
         $i++
     }} elseif ($argument -in @('-Arch', '--arch') -and $null -ne $value -and -not $Arch) {{
         $Arch = $value
@@ -687,6 +729,16 @@ if (-not $NoDisk) {{
     $QemuArgs += switch ($Arch) {{
 {disk_cases}    }}
     Say "run-eggos.ps1: $Disk holds /home, /Applications and /var in EggOS (-NoDisk: none)."
+}}
+if ($Work) {{
+    if (-not (Test-Path -LiteralPath $Work -PathType Leaf) -or (Get-Item -LiteralPath $Work).Length -eq 0) {{
+        [Console]::Error.WriteLine("run-eggos.ps1: $Work is not a work disk image: make one with cargo xtask work pack <folder> <image>")
+        exit 1
+    }}
+    $WorkPath = (Resolve-Path -LiteralPath $Work).ProviderPath.Replace(',', ',,')
+    $QemuArgs += switch ($Arch) {{
+{work_cases}    }}
+    Say "run-eggos.ps1: $Work is at /work in EggOS, writable; once EggOS powers off, cargo xtask work unpack <image> <folder> writes what it holds into a new folder."
 }}
 if ($NoNetwork) {{
     $QemuArgs += @('-nic', 'none')
@@ -937,7 +989,7 @@ so apps still open for the agent, which sees and operates their windows as befor
 
 | Grant (`--mcp-allow`, `-McpAllow`) | Lets the agent |
 |-------|----------------|
-| none (the default) | list and read files in `/home` and `/media/host`, list processes, windows and installed apps, read the clock |
+| none (the default) | list and read files in `/home`, `/media/host` and `/work`, list processes, windows and installed apps, read the clock |
 | `view` | see what any app window shows, covered and minimised ones too, passwords and messages included |
 | `write` | write files below `/home/root` and move them to the Trash |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a file in the Text Editor |
@@ -1048,6 +1100,18 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(", ");
             assert!(powershell.contains(&format!("        '{}' {{ @({disk}) }}\n", arch.name)));
+            let work = qemu::work_disk_args(arch, "$work_path")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(shell.contains(&format!("    {}) set -- \"$@\" {work} ;;\n", arch.name)));
+            let work = qemu::work_disk_args(arch, "$WorkPath")
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert!(powershell.contains(&format!("        '{}' {{ @({work}) }}\n", arch.name)));
         }
         assert!(shell.starts_with("#!/bin/sh\n"));
         assert!(shell.contains(&format!("version='{VERSION}'")));
@@ -1211,12 +1275,50 @@ mod tests {
         );
         let parsed = powershell.find("$Arch = $Arch.ToLowerInvariant()").unwrap();
         assert!(parsed < powershell.find("function Say").unwrap());
-        for switch in ["Serial", "Mcp", "NoWindow", "NoDisk", "FormatDisk", "NoNetwork"] {
+        for switch in [
+            "Serial",
+            "Mcp",
+            "NoWindow",
+            "NoDisk",
+            "FormatDisk",
+            "NoNetwork",
+        ] {
             assert!(powershell.contains(&format!("$argument -in @('-{switch}', '--")));
         }
-        for option in ["McpAllow", "Apps", "Disk", "Arch"] {
+        for option in ["McpAllow", "Apps", "Disk", "Work", "Arch"] {
             assert!(powershell.contains(&format!("$argument -in @('-{option}', '--")));
         }
+    }
+
+    #[test]
+    fn the_scripts_attach_a_work_disk_image_only_when_one_is_named_and_exists() {
+        let arches = script_arches();
+        let shell = shell_script(&arches);
+        assert!(shell.contains("    --work)\n      if [ \"$#\" -lt 2 ]; then echo \"$usage\" >&2; exit 2; fi\n      shift\n      work=\"$1\" ;;\n"));
+        assert!(shell.contains(
+            "if [ -n \"$work\" ]; then\n  if [ ! -f \"$work\" ] || [ ! -s \"$work\" ]; then\n"
+        ));
+        assert!(
+            shell.contains(
+                "make one with cargo xtask work pack <folder> <image>\" >&2\n    exit 1\n"
+            )
+        );
+        assert!(shell.contains("work_path=$(printf '%s' \"$work_path\" | sed 's/,/,,/g')\n"));
+        assert!(
+            shell.find("if [ -n \"$work\" ]").unwrap()
+                > shell.find("if [ -z \"$no_disk\" ]").unwrap()
+        );
+        let powershell = powershell_script(&arches);
+        assert!(
+            powershell.contains(
+                "if ($Work) {\n    if (-not (Test-Path -LiteralPath $Work -PathType Leaf)"
+            )
+        );
+        assert!(powershell.contains(
+            "$WorkPath = (Resolve-Path -LiteralPath $Work).ProviderPath.Replace(',', ',,')\n"
+        ));
+        assert!(powershell.contains("[-NoNetwork] [-Work <image>]\""));
+        assert!(shell.contains("[--no-network] [--work <image>]\""));
     }
 
     #[test]

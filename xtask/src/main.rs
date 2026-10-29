@@ -17,6 +17,7 @@ mod qmp;
 mod release;
 mod sha256;
 mod windows;
+mod work_disk;
 mod zip;
 
 use std::process::{Command, ExitCode};
@@ -46,7 +47,8 @@ commands:
                          /bin/<file's name> or <path>, executable, and write it to
                          target/image/eggos-<arch>.elf (<arch> may be `all`)
   run   --arch <arch> [--nographic] [--apps <folder>] [--disk <image> | --no-disk]
-        [--format-disk] [--no-network] [--add <file> [--as <path>]]...
+        [--format-disk] [--no-network] [--work <folder> [--work-out <folder>]]
+        [--add <file> [--as <path>]]...
                          boot the kernel in QEMU interactively, its display in a window
                          with a keyboard and a pointer, and its console on this terminal
                          (quit: Ctrl-A then X); with --nographic, no window; with --apps,
@@ -56,7 +58,16 @@ commands:
                          boots (--no-disk: none, /home in memory); --format-disk empties
                          it first, erasing everything on it; EggOS is on the host's network
                          through QEMU's user networking (--no-network: no network adapter);
+                         with --work, the folder (without its top-level .git and target) on
+                         a work disk at /work, writable, unpacked after QEMU ends into
+                         --work-out's new folder (default: <folder>.out beside it);
                          with --add, the release image with those files, as `image` builds it
+  work pack <folder> <image>
+                         write the folder (without its top-level .git and target) into a
+                         new work disk image that EggOS mounts writable at /work, for the run
+                         scripts' --work
+  work unpack <image> <folder>
+                         write what /work holds on a work disk image into a new folder
   bench --arch <arch> [--update-baseline | --report-only]
                          boot the benchmark kernel in QEMU (deterministic instruction counts)
                          and fail on a regression against benchmarks/baseline.txt; with
@@ -338,6 +349,8 @@ const HOME_PATH: &str = "home";
 
 const APPLICATIONS_PATH: &str = "Applications";
 
+const WORK_PATH: &str = "work";
+
 const COREUTILS: [&str; 34] = [
     "agentlog", "cat", "cp", "date", "echo", "false", "fetch", "free", "grep", "halt", "head",
     "help", "hwclock", "ip", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "reboot",
@@ -493,9 +506,16 @@ fn run(args: &[String]) -> Result<(), String> {
             let (options, format_disk) = without_flag(&options, "--format-disk");
             let (options, disk) = with_value(&options, "--disk")?;
             let (options, no_network) = without_flag(&options, "--no-network");
+            let (options, work) = with_value(&options, "--work")?;
+            let (options, work_out) = with_value(&options, "--work-out")?;
             let arches = arch_option(&options)?;
             let [arch] = arches.as_slice() else {
                 return Err("`run` boots one architecture; pass a single --arch".into());
+            };
+            let work = match (work, work_out) {
+                (None, Some(_)) => return Err("`--work-out` needs `--work <folder>`".into()),
+                (None, None) => None,
+                (Some(folder), out) => Some(WorkRun::prepare(arch, &folder, out)?),
             };
             let mut extra_args = match folder {
                 Some(folder) => qemu::host_folder_args(arch, &host_folder(&folder)?),
@@ -519,9 +539,108 @@ fn run(args: &[String]) -> Result<(), String> {
             if let Some(disk) = disk {
                 extra_args.extend(prepare_disk_image(arch, &disk, format_disk)?);
             }
-            qemu::run_interactive(arch, &kernel, !nographic, &extra_args)
+            if let Some(work) = &work {
+                extra_args.extend(work.pack(arch)?);
+            }
+            let ran = qemu::run_interactive(arch, &kernel, !nographic, &extra_args);
+            match work {
+                Some(work) => {
+                    let unpacked = work.unpack();
+                    ran.and(unpacked)
+                }
+                None => ran,
+            }
         }
+        Some("work") => match &args[1..] {
+            [verb, folder, image] if verb == "pack" => {
+                let packed =
+                    work_disk::pack(std::path::Path::new(folder), std::path::Path::new(image))?;
+                eprintln!(
+                    "xtask: packed {} files ({} bytes) and {} folders into {} ({} MiB, sparse); \
+                     {} left out",
+                    packed.files,
+                    packed.bytes,
+                    packed.folders,
+                    image,
+                    packed.image_bytes >> 20,
+                    packed.skipped
+                );
+                Ok(())
+            }
+            [verb, image, folder] if verb == "unpack" => {
+                let unpacked =
+                    work_disk::unpack(std::path::Path::new(image), std::path::Path::new(folder))?;
+                eprintln!(
+                    "xtask: unpacked {} files ({} bytes) and {} folders into {folder}",
+                    unpacked.files, unpacked.bytes, unpacked.folders
+                );
+                Ok(())
+            }
+            _ => Err(USAGE.into()),
+        },
         _ => Err(USAGE.into()),
+    }
+}
+
+/// A folder `run --work` carries into EggOS: the image it is packed into and the new folder
+/// what EggOS wrote under `/work` is unpacked into after QEMU ends.
+#[derive(Debug)]
+struct WorkRun {
+    folder: std::path::PathBuf,
+    image: std::path::PathBuf,
+    out: std::path::PathBuf,
+}
+
+impl WorkRun {
+    fn prepare(arch: &Arch, folder: &str, out: Option<String>) -> Result<Self, String> {
+        let folder = std::path::PathBuf::from(host_folder(folder)?);
+        let out = match out {
+            Some(out) => std::path::PathBuf::from(out),
+            None => work_disk::default_output(&folder)?,
+        };
+        let unusable = out.exists()
+            && std::fs::read_dir(&out)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(true);
+        if unusable {
+            return Err(format!(
+                "`{}` is not an empty folder: remove it, or name a new one with --work-out",
+                out.display()
+            ));
+        }
+        let image = target_directory()
+            .join("image")
+            .join(format!("eggos-{}-work.img", arch.name));
+        Ok(Self { folder, image, out })
+    }
+
+    fn pack(&self, arch: &Arch) -> Result<Vec<String>, String> {
+        let packed = work_disk::pack(&self.folder, &self.image)?;
+        eprintln!(
+            "xtask: {} is at /work in EggOS, writable ({} files, {} MiB disk); what EggOS \
+             writes there is unpacked into {} when QEMU ends",
+            self.folder.display(),
+            packed.files,
+            packed.image_bytes >> 20,
+            self.out.display()
+        );
+        let image = std::path::absolute(&self.image)
+            .map_err(|e| format!("{}: {e}", self.image.display()))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| format!("`{}` is not valid Unicode", self.image.display()))?;
+        Ok(qemu::work_disk_args(arch, &image))
+    }
+
+    fn unpack(&self) -> Result<(), String> {
+        let unpacked = work_disk::unpack(&self.image, &self.out)?;
+        eprintln!(
+            "xtask: unpacked /work ({} files, {} bytes) into {}",
+            unpacked.files,
+            unpacked.bytes,
+            self.out.display()
+        );
+        Ok(())
     }
 }
 
@@ -746,6 +865,7 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
     }
     let kernel = build_kernel(arch, None)?;
     qemu::persistent::check(arch, &kernel)?;
+    qemu::work_disk::check(arch, &kernel)?;
     qemu::settings::check(arch, &kernel)?;
     qemu::shell::check(arch, &kernel)?;
     qemu::real_time::check(arch, &kernel)?;
@@ -1193,6 +1313,7 @@ fn release_initramfs(
         (HOME_PATH, initramfs::Content::Directory),
         (APPLICATIONS_PATH, initramfs::Content::Directory),
         (HOST_FOLDER_PATH, initramfs::Content::Directory),
+        (WORK_PATH, initramfs::Content::Directory),
         (VAR_PATH, initramfs::Content::Directory),
         (RUN_PATH, initramfs::Content::Directory),
     ];

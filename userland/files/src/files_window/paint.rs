@@ -1,7 +1,7 @@
 use super::{
     BACK_BUTTON, COLUMN_GAP, FilesWindow, Focus, HEADER_HEIGHT, HOST_SHARE, Hover, Location,
     NAME_X, Place, Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, SIZE_END_FROM_RIGHT, SIZE_WIDTH, TIME_WIDTH,
-    UP_BUTTON, text_of,
+    UP_BUTTON, WORK, text_of,
 };
 use crate::clock::list_time;
 use crate::kind::Kind;
@@ -266,6 +266,12 @@ impl FilesWindow {
                     && !self.places().contains(&Place::HostShare) =>
             {
                 "The host share is not mounted"
+            }
+            (None, Location::Folder(folder))
+                if names::is_within(folder.as_bytes(), WORK)
+                    && !self.places().contains(&Place::WorkDisk) =>
+            {
+                "The work disk is not attached"
             }
             (None, Location::Folder(_)) => "This folder is empty",
         };

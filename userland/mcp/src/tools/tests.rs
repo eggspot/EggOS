@@ -4,11 +4,11 @@ use crate::json::{self, Value};
 const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     (
         "ls",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home or /media/host.","default":"/home"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home, /media/host or /work.","default":"/home"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"At most this many items; when more follow, the result's structuredContent.next_cursor names where the next page starts: call again with it as after."},"after":{"type":"string","pattern":"^[A-Za-z0-9._~@+,=:%][A-Za-z0-9._~@+,=:%-]*$","minLength":1,"maxLength":765,"description":"The next_cursor a page ended with: the items after it."}},"additionalProperties":false}"#,
     ),
     (
         "cat",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home or /media/host."}},"required":["path"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"An absolute path in /home, /media/host or /work."}},"required":["path"],"additionalProperties":false}"#,
     ),
     (
         "ps",
@@ -72,7 +72,7 @@ const SHIPPED_SCHEMAS: [(&str, &str); 26] = [
     ),
     (
         "edit_open",
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"The text file's absolute path, in /home or /media/host."}},"required":["path"],"additionalProperties":false}"#,
+        r#"{"type":"object","properties":{"path":{"type":"string","description":"The text file's absolute path, in /home, /media/host or /work."}},"required":["path"],"additionalProperties":false}"#,
     ),
     (
         "app_uninstall",

@@ -38,7 +38,10 @@ struct Driver {
 
 impl Driver {
     fn new() -> Self {
-        let mut files = disk();
+        Self::on(disk())
+    }
+
+    fn on(mut files: MemoryFiles) -> Self {
         let window = window(&mut files);
         Self {
             files,
@@ -177,6 +180,55 @@ fn it_opens_at_home_making_it_and_lists_the_places_with_the_share_while_mounted(
     assert_eq!(driver.window.places().len(), 9);
     assert_eq!(driver.window.current_place(), Some(0));
     assert_eq!(Place::Trash.label(true), "Recycle Bin");
+}
+
+#[test]
+fn the_work_disk_is_a_place_after_the_share_only_while_attached() {
+    let mut files = disk();
+    files.folder("/work");
+    assert!(!window(&mut files).places().contains(&Place::WorkDisk));
+    let mut files = disk();
+    files
+        .file("/work/Cargo.toml", b"[package]\n", 5)
+        .device("/work", 4);
+    let mut window = window(&mut files);
+    let places = window.places().to_vec();
+    assert_eq!(places.len(), 10);
+    let share = places
+        .iter()
+        .position(|place| *place == Place::HostShare)
+        .unwrap();
+    assert_eq!(places[share + 1], Place::WorkDisk);
+    assert_eq!(places.last(), Some(&Place::Trash));
+    assert_eq!(Place::WorkDisk.label(true), "Work disk");
+    assert_eq!(Place::WorkDisk.label(false), "Work disk");
+    window.resize(MINIMUM_SIZE.0 as i32, MINIMUM_SIZE.1 as i32);
+    let last = window.place_rect(places.len() - 1);
+    assert_eq!(last.y + last.height, window.status_bar().y);
+}
+
+#[test]
+fn the_work_disk_has_no_trash_so_delete_asks_first() {
+    let mut files = disk();
+    files.file("/work/build.log", b"ok", 1).device("/work", 4);
+    let mut driver = Driver::on(files);
+    driver.place(Place::WorkDisk);
+    assert_eq!(driver.folder(), "/work");
+    assert_eq!(driver.names(), ["build.log"]);
+    driver.select("build.log");
+    driver.press(key::DELETE, 0, '\0');
+    assert_eq!(
+        driver.window.dialog_line(1),
+        Some("/work is the host's folder, so it has no Trash. This cannot be undone.")
+    );
+    driver.press(key::ENTER, 0, '\r');
+    assert!(driver.names().is_empty());
+    assert!(
+        driver
+            .files
+            .paths_under("/home/root/.local/share/Trash/files")
+            .is_empty()
+    );
 }
 
 #[test]

@@ -291,7 +291,7 @@ fn paths_outside_the_roots_are_refused_after_decoding_and_resolution() {
     ] {
         let answer = harness.call(id, "cat", &format!(r#"{{"path":{path}}}"#));
         assert!(is_error(&answer), "{path}");
-        assert!(texts(&answer)[0].contains("outside /home and /media/host"));
+        assert!(texts(&answer)[0].contains("outside /home, /media/host and /work"));
     }
     let answer = harness.call(5, "cat", r#"{"path":"/home/a\u0000b"}"#);
     assert!(is_error(&answer));

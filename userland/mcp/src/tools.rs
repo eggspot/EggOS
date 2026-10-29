@@ -254,7 +254,7 @@ const READ_PATH: PathArgument = PathArgument {
     roots: &READ_ROOTS,
     strictly: false,
     excluded: &[],
-    outside: "Refused: the path is outside /home and /media/host, the folders this tool may reach.",
+    outside: "Refused: the path is outside /home, /media/host and /work, the folders this tool may reach.",
 };
 
 const WRITE_PATH: PathArgument = PathArgument {

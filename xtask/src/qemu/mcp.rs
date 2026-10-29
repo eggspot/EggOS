@@ -675,7 +675,10 @@ fn session(client: &mut Client) -> Result<(), String> {
     for path in REFUSED_PATHS {
         let result = client.call("cat", &format!(r#"{{"path":{path}}}"#))?;
         expect(
-            result.is_error && result.all().contains("outside /home and /media/host"),
+            result.is_error
+                && result
+                    .all()
+                    .contains("outside /home, /media/host and /work"),
             arch,
             &format!("{path} was not refused: {}", result.all()),
         )?;
@@ -869,7 +872,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         client,
         "cat",
         r#"{"path":"/home/../etc/eggos/init.conf"}"#,
-        "outside /home and /media/host",
+        "outside /home, /media/host and /work",
     )?;
     for (path, wanted) in [
         ("/home/../etc/x", "outside /home/root"),
