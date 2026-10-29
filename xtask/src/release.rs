@@ -203,6 +203,10 @@ const POWERSHELL_GRANTS: &str = "$McpAllowList";
 
 const POWERSHELL_CONSOLE_LOG: &str = "$ConsoleLog";
 
+const SHELL_COMMAND_LINE: &str = "$command_line";
+
+const POWERSHELL_COMMAND_LINE: &str = "$CommandLine";
+
 fn script_arches() -> Vec<ScriptArch> {
     ARCHES
         .iter()
@@ -434,13 +438,21 @@ if [ -z "$no_disk" ]; then
 {disk_cases}  esac
   say "run-eggos.sh: $disk holds /home, /Applications and /var in EggOS (--no-disk: none)."
 fi
+command_line=''
+if [ "$mode" = mcp-headless ]; then
+  command_line='{offscreen_word}'
+fi
 if [ -n "$mcp_allow" ]; then
-  set -- "$@" {grant_args}
+  command_line="${{command_line:+$command_line }}{grant_word}"
   say "run-eggos.sh: the MCP client may also: $mcp_allow (run can do anything a program can)."
+fi
+if [ -n "$command_line" ]; then
+  set -- "$@" {command_line_args}
 fi
 case "$mode" in
   window) say "run-eggos.sh: booting EggOS $version ($arch) in a QEMU window; its console is here too. Quit: close the window, or Ctrl-A then X here." ;;
   serial) say "run-eggos.sh: booting EggOS $version ($arch) on this terminal. Quit: Ctrl-A then X." ;;
+  mcp-headless) say "run-eggos.sh: booting EggOS $version ($arch) with no screen for an MCP client on this script's standard input and output: EggOS draws its desktop in memory, where apps open for the agent; the console is in $dir/eggos-$arch-serial.log." ;;
   *) say "run-eggos.sh: booting EggOS $version ($arch) for an MCP client on this script's standard input and output; the console is in $dir/eggos-$arch-serial.log." ;;
 esac
 exec "$qemu" "$@" -kernel "$image"
@@ -448,7 +460,9 @@ exec "$qemu" "$@" -kernel "$image"
         choices = names.join("|"),
         alternatives = names.join(" | "),
         disk_bytes = qemu::DISK_IMAGE_BYTES,
-        grant_args = double_quoted(&qemu::grant_args(SHELL_GRANTS)),
+        offscreen_word = qemu::OFFSCREEN_WORD,
+        grant_word = qemu::grant_word(SHELL_GRANTS),
+        command_line_args = double_quoted(&qemu::command_line_args(SHELL_COMMAND_LINE)),
     )
 }
 
@@ -637,11 +651,21 @@ if (-not $NoDisk) {{
 {disk_cases}    }}
     Say "run-eggos.ps1: $Disk holds /home, /Applications and /var in EggOS (-NoDisk: none)."
 }}
+$CommandLineWords = @()
+if ($Mcp -and $NoWindow) {{
+    $CommandLineWords += '{offscreen_word}'
+}}
 if ($McpAllowList) {{
-    $QemuArgs += @({grant_args})
+    $CommandLineWords += "{grant_word}"
     Say "run-eggos.ps1: the MCP client may also: $McpAllowList (run can do anything a program can)."
 }}
-if ($Mcp) {{
+if ($CommandLineWords.Count -gt 0) {{
+    $CommandLine = $CommandLineWords -join ' '
+    $QemuArgs += @({command_line_args})
+}}
+if ($Mcp -and $NoWindow) {{
+    Say "run-eggos.ps1: booting EggOS $Version ($Arch) with no screen for an MCP client on this script's standard input and output: EggOS draws its desktop in memory, where apps open for the agent; the console is in $(Join-Path $PSScriptRoot "eggos-$Arch-serial.log")."
+}} elseif ($Mcp) {{
     Say "run-eggos.ps1: booting EggOS $Version ($Arch) for an MCP client on this script's standard input and output; the console is in $(Join-Path $PSScriptRoot "eggos-$Arch-serial.log")."
 }} elseif ($Serial) {{
     Say "run-eggos.ps1: booting EggOS $Version ($Arch) on this terminal. Quit: Ctrl-A then X."
@@ -653,7 +677,10 @@ exit $LASTEXITCODE
 "#,
         names = names.join(", "),
         disk_bytes = qemu::DISK_IMAGE_BYTES,
-        grant_args = double_quoted(&qemu::grant_args(POWERSHELL_GRANTS)).replace("\" \"", "\", \""),
+        offscreen_word = qemu::OFFSCREEN_WORD,
+        grant_word = qemu::grant_word(POWERSHELL_GRANTS),
+        command_line_args = double_quoted(&qemu::command_line_args(POWERSHELL_COMMAND_LINE))
+            .replace("\" \"", "\", \""),
         choices = arches
             .iter()
             .map(|arch| arch.name)
@@ -722,7 +749,9 @@ claude mcp add eggos -- /path/to/run-eggos.sh --mcp
 claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\run-eggos.ps1 -Mcp
 ```
 
-Claude Code, or any MCP client, then starts EggOS and talks to its built-in MCP server. Agents
+Claude Code, or any MCP client, then starts EggOS and talks to its built-in MCP server. Add
+`--no-window` (`-NoWindow`) to run EggOS with no screen at all: it draws its desktop in memory,
+so apps still open for the agent, which sees and operates their windows as before. Agents
 can list and read files in `/home` and `/media/host` and list processes, windows and installed
 apps. With grants you give when starting it (`--mcp-allow view,write,run,install`,
 `-McpAllow` in PowerShell), they can also see what app windows show (`view`), write files below
@@ -886,7 +915,7 @@ mod tests {
         assert!(shell.contains("      view | write | run | install) ;;\n"));
         assert!(shell.contains("set -f\n"));
         assert!(shell.contains(
-            "if [ -n \"$mcp_allow\" ]; then\n  set -- \"$@\" \"-append\" \"eggos.mcp_allow=$mcp_allow\"\n"
+            "if [ -n \"$mcp_allow\" ]; then\n  command_line=\"${command_line:+$command_line }eggos.mcp_allow=$mcp_allow\"\n"
         ));
         assert!(powershell.contains("    [string[]]$McpAllow,\n"));
         assert!(powershell.contains("$GrantNames = @(($McpAllow -join ',') -split ',')"));
@@ -895,7 +924,7 @@ mod tests {
         );
         assert!(powershell.contains("(($null -ne $McpAllow) -and -not $Mcp)"));
         assert!(powershell.contains(
-            "if ($McpAllowList) {\n    $QemuArgs += @(\"-append\", \"eggos.mcp_allow=$McpAllowList\")\n"
+            "if ($McpAllowList) {\n    $CommandLineWords += \"eggos.mcp_allow=$McpAllowList\"\n"
         ));
         assert!(
             powershell.contains(
@@ -904,10 +933,7 @@ mod tests {
                     .as_str()
             )
         );
-        assert_eq!(
-            qemu::grant_args("write,run"),
-            ["-append", "eggos.mcp_allow=write,run"]
-        );
+        assert_eq!(qemu::grant_word("write,run"), "eggos.mcp_allow=write,run");
         assert_eq!(qemu::check_grants("write,run,install"), Ok(()));
         assert_eq!(qemu::check_grants("view"), Ok(()));
         for wrong in [
@@ -920,6 +946,42 @@ mod tests {
             "write run",
         ] {
             assert!(qemu::check_grants(wrong).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn the_scripts_pass_one_command_line_with_the_offscreen_word_first_then_the_grants() {
+        let arches = script_arches();
+        let shell = shell_script(&arches);
+        let powershell = powershell_script(&arches);
+        assert_eq!(shell.matches("-append").count(), 1, "{shell}");
+        assert_eq!(powershell.matches("-append").count(), 1, "{powershell}");
+        let built = [
+            "command_line=''\n",
+            "if [ \"$mode\" = mcp-headless ]; then\n  command_line='eggos.display=offscreen'\nfi\n",
+            "  command_line=\"${command_line:+$command_line }eggos.mcp_allow=$mcp_allow\"\n",
+            "if [ -n \"$command_line\" ]; then\n  set -- \"$@\" \"-append\" \"$command_line\"\nfi\n",
+        ];
+        let mut from = shell.find("IFS=$old_ifs\n  set +f\n").unwrap();
+        for part in built {
+            let at = shell[from..].find(part).unwrap_or_else(|| panic!("{part}"));
+            from += at + part.len();
+        }
+        let modes = shell.find("case \"$arch:$mode\" in").unwrap();
+        assert!(modes < shell.find("command_line=''").unwrap());
+        assert!(shell.find("set -- \"$@\" \"-append\"").unwrap() < shell.find("exec \"$qemu\"").unwrap());
+        assert!(shell.contains("  mcp-headless) say \"run-eggos.sh: booting EggOS $version ($arch) with no screen"));
+        let built = [
+            "$CommandLineWords = @()\n",
+            "if ($Mcp -and $NoWindow) {\n    $CommandLineWords += 'eggos.display=offscreen'\n}\n",
+            "    $CommandLineWords += \"eggos.mcp_allow=$McpAllowList\"\n",
+            "if ($CommandLineWords.Count -gt 0) {\n    $CommandLine = $CommandLineWords -join ' '\n    $QemuArgs += @(\"-append\", \"$CommandLine\")\n}\n",
+            "& $Qemu @QemuArgs -kernel $Image\n",
+        ];
+        let mut from = powershell.find("$McpAllowList = $GrantNames -join ','").unwrap();
+        for part in built {
+            let at = powershell[from..].find(part).unwrap_or_else(|| panic!("{part}"));
+            from += at + part.len();
         }
     }
 

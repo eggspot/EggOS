@@ -2,7 +2,9 @@
 //! Windows hosts), written by `cargo xtask release`'s own writer, runs as a child with a host
 //! folder (holding `win-paint.exe` and the static Linux program) and a blank disk, and a
 //! scripted MCP client drives it through the script's standard input and output, checking that
-//! every line the script prints there is a JSON-RPC message. Two boots of the same disk:
+//! every line the script prints there is a JSON-RPC message. Both boots run with no screen
+//! (`--no-window`, D144): no display or input device, the desktop drawn in memory, which each
+//! boot's console must show. Two boots of the same disk:
 //!
 //! 1. No grants: the protocol probe and handshake, the tool list, each reading tool's CLI twin,
 //!    a large read with the client slow to drain it (QEMU must hold the output, not drop it),
@@ -402,6 +404,27 @@ fn prepare(
     Ok((script, apps, disk))
 }
 
+/// Checks that the boot the script just ran had no screen (D144): its console, in the file
+/// next to the script, shows the offscreen display at the default mode and no input device.
+fn shown_offscreen(arch: &Arch, script: &Path) -> Result<(), String> {
+    let log = script.with_file_name(format!("eggos-{}-serial.log", arch.name));
+    let console = std::fs::read(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let console = String::from_utf8_lossy(&console);
+    let lines: Vec<&str> = console.lines().map(str::trim_end).collect();
+    for line in [
+        super::OFFSCREEN_LINE_1280X800,
+        super::DISPLAY_LINE_1280X800,
+        super::NO_INPUT_LINE,
+    ] {
+        expect(
+            lines.contains(&line),
+            arch.name,
+            &format!("the console in {} has no `{line}`", log.display()),
+        )?;
+    }
+    Ok(())
+}
+
 fn expect(holds: bool, arch: &str, what: &str) -> Result<(), String> {
     match holds {
         true => Ok(()),
@@ -672,7 +695,7 @@ fn granted_session(client: &mut Client) -> Result<(), String> {
         client,
         "run",
         r#"{"program":"/bin/cat","arguments":["/proc/cmdline"]}"#,
-        &format!("eggos.mcp_allow={GRANTS}"),
+        &format!("{} {}", super::OFFSCREEN_WORD, super::grant_word(GRANTS)),
     )?;
     refused(client, "run", r#"{"program":"uname"}"#, "absolute path")?;
     let started = Instant::now();
@@ -1228,7 +1251,9 @@ pub fn check(
     let mut client = Client::start(arch, &script, &apps, &disk, None)?;
     let outcome = session(&mut client);
     client.stop();
+    let shown = shown_offscreen(arch, &script);
     outcome?;
+    shown?;
     eprintln!(
         "xtask: {}: running {} --mcp --mcp-allow {GRANTS}",
         arch.name,
@@ -1240,7 +1265,9 @@ pub fn check(
         .and_then(|()| client.receive(FIRST_ANSWER_TIMEOUT));
     let outcome = probe.and_then(|_| granted_session(&mut client));
     client.stop();
+    let shown = shown_offscreen(arch, &script);
     outcome?;
+    shown?;
     let mut volume = image_volume(&disk)?;
     let log = contents(&mut volume, "/var/log/agent-audit.log")?
         .ok_or_else(|| format!("{}: MCP check: the disk holds no audit log", arch.name))?;

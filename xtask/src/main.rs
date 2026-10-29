@@ -93,6 +93,9 @@ pub struct Arch {
     /// The input devices every boot with a display adds: a virtio keyboard, tablet and mouse
     /// (D113).
     pub input_args: &'static [&'static str],
+    /// What an offscreen boot (`run-eggos.sh --mcp --no-window`, D144) adds instead of the
+    /// display and input devices, so QEMU adds no display device of its own.
+    pub offscreen_args: &'static [&'static str],
     /// The virtio block device a host folder is attached as (D130).
     pub disk_device: &'static str,
     /// The virtio console device the agent channel's port sits on (D136).
@@ -118,6 +121,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
     },
@@ -138,6 +142,7 @@ pub const ARCHES: &[Arch] = &[
         ],
         display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
         input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
         disk_device: MMIO_DISK_DEVICE,
         agent_bus_device: "virtio-serial-device",
     },
@@ -168,6 +173,7 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-mouse-pci,disable-legacy=on",
         ],
+        offscreen_args: &["-vga", "none"],
         disk_device: "virtio-blk-pci,disable-legacy=on",
         agent_bus_device: "virtio-serial-pci,disable-legacy=on",
     },
@@ -668,13 +674,15 @@ fn boot_tests(arch: &Arch) -> Result<(), String> {
         &install_folder,
         std::path::Path::new(&linux_gui_program),
     )?;
+    let offscreen_asked = qemu::command_line_args(qemu::OFFSCREEN_WORD);
+    let offscreen_asked: Vec<&str> = offscreen_asked.iter().map(String::as_str).collect();
     qemu::boot_test(
         arch,
         &kernel,
         qemu::Expect::BootToPrompt,
         qemu::TEST_CPUS,
         qemu::Display::Attached,
-        &[],
+        &offscreen_asked,
     )?;
     Ok(())
 }

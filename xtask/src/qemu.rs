@@ -1200,6 +1200,18 @@ const TERMINAL_LINE_PREFIX: &str = "boot: terminal ";
 
 const TERMINAL_LINE_1280X800: &str = "boot: terminal 80x24";
 
+/// What the kernel says when it shows its display at 1280x800, the default mode.
+pub const DISPLAY_LINE_1280X800: &str = "boot: display 1280x800";
+
+/// How the kernel's line about an offscreen display it made starts (D144).
+pub const OFFSCREEN_LINE_PREFIX: &str = "boot: offscreen display ";
+
+/// What the kernel says when it made an offscreen display at the default mode (D144).
+pub const OFFSCREEN_LINE_1280X800: &str = "boot: offscreen display 1280x800";
+
+/// What the kernel says when it found no input device.
+pub const NO_INPUT_LINE: &str = "boot: no input";
+
 const TERMINAL_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 const TERMINAL_FRAME_RETRY: Duration = Duration::from_millis(50);
@@ -1943,6 +1955,19 @@ fn prompt_verdict(arch: &str, clean_exit: bool, console: &str) -> Result<(), Str
     if !lines.contains(&BOOT_INPUT_LINE) {
         return Err(format!(
             "{arch}: no `{BOOT_INPUT_LINE}`: the virtio keyboard and pointers were not found"
+        ));
+    }
+    if !lines.contains(&DISPLAY_LINE_1280X800) {
+        return Err(format!(
+            "{arch}: no `{DISPLAY_LINE_1280X800}`: the virtio GPU was not shown"
+        ));
+    }
+    if let Some(line) = lines
+        .iter()
+        .find(|line| line.starts_with(OFFSCREEN_LINE_PREFIX))
+    {
+        return Err(format!(
+            "{arch}: `{line}` with a virtio GPU: the GPU must win over eggos.display"
         ));
     }
     let mut from = 0;
@@ -2876,6 +2901,10 @@ pub fn agent_channel_args(arch: &Arch, chardev: &str) -> Vec<String> {
     ]
 }
 
+/// The kernel command line's word that asks for the offscreen display, which `--no-window`
+/// passes (D144).
+pub const OFFSCREEN_WORD: &str = "eggos.display=offscreen";
+
 /// The grants `--mcp-allow` takes (D137), as the kernel command line names them.
 pub const GRANT_NAMES: [&str; 4] = ["view", "write", "run", "install"];
 
@@ -2892,26 +2921,43 @@ pub fn check_grants(list: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// QEMU's arguments that hand the grants `list` (checked, or a script's variable holding it)
-/// to EggOS's built-in MCP server on the kernel command line, which only the host sets and the
-/// server reads in `/proc/cmdline` (D137). `-append` takes a plain string: commas stay single.
-pub fn grant_args(list: &str) -> Vec<String> {
-    vec!["-append".into(), format!("eggos.mcp_allow={list}")]
+/// The kernel command line's word that hands the grants `list` (checked, or a script's
+/// variable holding it) to EggOS's built-in MCP server, which only the host sets and the server
+/// reads in `/proc/cmdline` (D137).
+pub fn grant_word(list: &str) -> String {
+    format!("eggos.mcp_allow={list}")
+}
+
+/// QEMU's arguments that make `line` (words separated by spaces) the kernel command line. QEMU
+/// keeps only the last `-append`, so a boot passes every word in this one (D144). `-append`
+/// takes a plain string: commas stay single.
+pub fn command_line_args(line: &str) -> Vec<String> {
+    vec!["-append".into(), line.into()]
 }
 
 /// QEMU's arguments, but the kernel's, for an MCP boot of `arch` (`run-eggos.sh --mcp`): the
 /// agent channel on QEMU's standard input and output, which then carry nothing else, the
-/// console in the file `console_log` (commas doubled), no monitor, and the display in a window
-/// when `window` says so.
+/// console in the file `console_log` (commas doubled), no monitor, and the display and input
+/// devices with the display in a window when `window` says so; otherwise none of them
+/// ([`Arch::offscreen_args`]), for a boot whose command line asks for the offscreen display
+/// ([`OFFSCREEN_WORD`], D144).
 pub fn mcp_args(arch: &Arch, window: bool, console_log: &str) -> Vec<String> {
     let cpus = TEST_CPUS.to_string();
+    let devices: Vec<&str> = match window {
+        true => arch
+            .display_args
+            .iter()
+            .chain(arch.input_args)
+            .copied()
+            .collect(),
+        false => arch.offscreen_args.to_vec(),
+    };
     let mut args: Vec<String> = arch
         .machine_args
         .iter()
-        .chain(arch.display_args)
-        .chain(arch.input_args)
-        .chain(COMMON_ARGS)
         .copied()
+        .chain(devices)
+        .chain(COMMON_ARGS.iter().copied())
         .chain(["-smp", cpus.as_str(), "-no-reboot"])
         .map(str::to_owned)
         .collect();
@@ -3018,6 +3064,57 @@ fn screenshot_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_virtio_gpu_and_the_offscreen_display_share_the_default_mode() {
+        use eggos_drivers::display::DEFAULT_MODE;
+        let size = format!("xres={},yres={}", DEFAULT_MODE.width, DEFAULT_MODE.height);
+        for arch in crate::ARCHES {
+            assert!(
+                arch.display_args.iter().any(|arg| arg.ends_with(&size)),
+                "{}",
+                arch.name
+            );
+        }
+        let mode = format!("{}x{}", DEFAULT_MODE.width, DEFAULT_MODE.height);
+        assert_eq!(
+            OFFSCREEN_LINE_1280X800,
+            format!("{OFFSCREEN_LINE_PREFIX}{mode}")
+        );
+        assert_eq!(DISPLAY_LINE_1280X800, format!("boot: display {mode}"));
+    }
+
+    #[test]
+    fn an_offscreen_mcp_boot_has_no_display_or_input_device_but_keeps_its_channels() {
+        for arch in crate::ARCHES {
+            let args = mcp_args(arch, false, "/tmp/serial.log");
+            let joined = args.join(" ");
+            for device in ["virtio-gpu", "virtio-keyboard", "virtio-tablet", "virtio-mouse"] {
+                assert!(!joined.contains(device), "{}: {joined}", arch.name);
+            }
+            assert!(joined.contains("-display none"), "{joined}");
+            assert_eq!(joined.contains("-vga none"), arch.name == "x86_64", "{joined}");
+            assert!(joined.contains("-chardev file,id=console,path=/tmp/serial.log"));
+            assert!(joined.contains("-serial chardev:console"));
+            assert!(joined.contains("-chardev stdio,id=mcp,signal=off"));
+            assert!(joined.ends_with(&agent_channel_args(arch, "mcp").join(" ")));
+            assert!(!joined.contains("-append"));
+            let windowed = mcp_args(arch, true, "/tmp/serial.log").join(" ");
+            for part in arch.display_args.iter().chain(arch.input_args) {
+                assert!(windowed.contains(part), "{}: {part}", arch.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_command_line_is_one_append_with_the_words_as_given() {
+        assert_eq!(
+            command_line_args("eggos.display=offscreen eggos.mcp_allow=write,run"),
+            ["-append", "eggos.display=offscreen eggos.mcp_allow=write,run"]
+        );
+        assert_eq!(OFFSCREEN_WORD, "eggos.display=offscreen");
+        assert_eq!(grant_word("view,run"), "eggos.mcp_allow=view,run");
+    }
 
     #[test]
     fn interactive_args_are_the_machine_s_display_input_and_console() {
@@ -3536,7 +3633,7 @@ mod tests {
 
     fn prompt_console(arch: &str) -> String {
         let mut console = format!(
-            "EggOS 0.2.0 ({arch})\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
+            "EggOS 0.2.0 ({arch})\r\n{DISPLAY_LINE_1280X800}\r\n{BOOT_INPUT_LINE}\r\n{TERMINAL_LINE_1280X800}\r\n{INIT_BANNER}\r\n"
         );
         for (index, written) in prompt_session_output(arch).into_iter().enumerate() {
             let command = shown_command(&PROMPT_SESSION, index);
@@ -3585,6 +3682,13 @@ mod tests {
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &unshifted).is_err());
         let no_terminal = ok.replace(TERMINAL_LINE_1280X800, "boot: no display");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_terminal).is_err());
+        let no_display = ok.replace(DISPLAY_LINE_1280X800, "boot: no display");
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &no_display).is_err());
+        let offscreen = ok.replace(
+            DISPLAY_LINE_1280X800,
+            &format!("{OFFSCREEN_LINE_1280X800}\r\n{DISPLAY_LINE_1280X800}"),
+        );
+        assert!(verdict("riscv64", Expect::BootToPrompt, true, &offscreen).is_err());
     }
 
     #[test]
