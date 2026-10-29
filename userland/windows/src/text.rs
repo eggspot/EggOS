@@ -37,6 +37,53 @@ pub fn utf8_chars(bytes: &[u8]) -> impl Iterator<Item = char> + '_ {
     })
 }
 
+/// UTF-8 decoded a byte at a time, for text that arrives in pieces.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Utf8Decoder {
+    bytes: [u8; 4],
+    length: usize,
+    needed: usize,
+}
+
+impl Utf8Decoder {
+    /// Takes the next byte and returns the characters it completes, in order: U+FFFD first when
+    /// the byte cuts a sequence short, then the character the byte ends or is itself (none while
+    /// a sequence is still open).
+    pub fn push(&mut self, byte: u8) -> [Option<char>; 2] {
+        let mut cut_short = None;
+        if self.length > 0 && byte & 0xc0 != 0x80 {
+            self.length = 0;
+            cut_short = Some(REPLACEMENT);
+        }
+        [cut_short, self.take(byte)]
+    }
+
+    fn take(&mut self, byte: u8) -> Option<char> {
+        if self.length == 0 {
+            self.needed = match byte {
+                0x00..=0x7f => return Some(char::from(byte)),
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return Some(REPLACEMENT),
+            };
+        }
+        self.bytes[self.length] = byte;
+        self.length += 1;
+        if self.length < self.needed {
+            return None;
+        }
+        let complete = &self.bytes[..self.length];
+        self.length = 0;
+        Some(
+            core::str::from_utf8(complete)
+                .ok()
+                .and_then(|text| text.chars().next())
+                .unwrap_or(REPLACEMENT),
+        )
+    }
+}
+
 /// How many UTF-16 units `bytes` (UTF-8) takes.
 pub fn utf16_length(bytes: &[u8]) -> usize {
     utf8_chars(bytes).map(char::len_utf16).sum()
@@ -231,6 +278,24 @@ mod tests {
         let unpaired: String = utf16_chars(&[0x61, 0xd800, 0x62]).collect();
         assert_eq!(unpaired, "a\u{fffd}b");
         assert_eq!(write_utf8(&[0x61, 0xdc00], &mut bytes), (4, 2));
+    }
+
+    fn decoded(bytes: &[u8]) -> String {
+        let mut decoder = Utf8Decoder::default();
+        bytes
+            .iter()
+            .flat_map(|&byte| decoder.push(byte))
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn the_byte_decoder_keeps_the_byte_after_a_sequence_cut_short() {
+        assert_eq!(decoded(b"caf\xe9!"), "caf\u{fffd}!");
+        assert_eq!(decoded(b"\xe2\x82x\xc3"), "\u{fffd}x");
+        assert_eq!(decoded(b"a\xffb"), "a\u{fffd}b");
+        assert_eq!(decoded(b"\xe0\x80\x80z"), "\u{fffd}z");
+        assert_eq!(decoded("\u{e9}\u{1f95a}".as_bytes()), "\u{e9}\u{1f95a}");
     }
 
     #[test]

@@ -6,7 +6,8 @@
 //! a terminal's `stdout` is line buffered and `stderr` unbuffered. Paths are Windows paths
 //! (`C:\tmp\a.txt` is `/tmp/a.txt`). The `printf` family is the shared `eggos-c-format` crate's
 //! Windows dialect over the `va_list`, which on x64 and ARM64 alike is a pointer to 8-byte
-//! slots; the wide functions format UTF-8 and write it as UTF-16.
+//! slots; the wide functions format UTF-8, which `swprintf`'s family converts to UTF-16 in the
+//! caller's buffer and `fwprintf`'s writes to the stream as it is (streams are byte streams).
 
 use super::super::SpinLock;
 use super::super::console::standard_handle;
@@ -61,12 +62,44 @@ impl Backing for Descriptor {
 
 type File = Stream<Descriptor>;
 
-struct Streams([*mut File; MAX_STREAMS]);
+struct Streams {
+    open: [*mut File; MAX_STREAMS],
+    last_used: usize,
+}
+
+impl Streams {
+    fn holds(&mut self, stream: *mut File) -> bool {
+        if stream.is_null() {
+            return false;
+        }
+        if self.open[self.last_used] == stream {
+            return true;
+        }
+        match self.open.iter().position(|&open| open == stream) {
+            Some(index) => {
+                self.last_used = index;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn each_open(&mut self, mut work: impl FnMut(&mut File)) {
+        for &stream in self.open.iter().filter(|stream| !stream.is_null()) {
+            // SAFETY: an open stream of the table, used only under its lock.
+            work(unsafe { &mut *stream });
+        }
+    }
+}
 
 // SAFETY: the table holds addresses of heap blocks, which any thread may use under its lock.
 unsafe impl Send for Streams {}
 
-static STREAMS: SpinLock<Streams> = SpinLock::new(Streams([ptr::null_mut(); MAX_STREAMS]));
+static STREAMS: SpinLock<Streams> = SpinLock::new(Streams {
+    open: [ptr::null_mut(); MAX_STREAMS],
+    last_used: 0,
+});
+const EXIT_LOCK_ATTEMPTS: u32 = 1024;
 
 fn letters(text: &[u8]) -> impl Iterator<Item = u32> + Clone + '_ {
     text.iter().map(|&byte| u32::from(byte))
@@ -82,7 +115,7 @@ fn new_stream(stream: File) -> *mut File {
 }
 
 fn standard_stream(streams: &mut Streams, index: usize) -> *mut File {
-    if streams.0[index].is_null() {
+    if streams.open[index].is_null() {
         let fd = fd_of(standard_handle(index));
         let (letter, buffering) = match index {
             0 => (b"r", Buffering::Full),
@@ -93,14 +126,14 @@ fn standard_stream(streams: &mut Streams, index: usize) -> *mut File {
         let Some(mode) = Mode::parse(letters(letter)) else {
             return ptr::null_mut();
         };
-        streams.0[index] = new_stream(Stream::new(Descriptor { fd }, mode, buffering));
+        streams.open[index] = new_stream(Stream::new(Descriptor { fd }, mode, buffering));
     }
-    streams.0[index]
+    streams.open[index]
 }
 
 fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) -> R) -> R {
     STREAMS.with(|streams| {
-        if stream.is_null() || !streams.0.contains(&stream) {
+        if !streams.holds(stream) {
             set_errno(if stream.is_null() {
                 errno::EINVAL
             } else {
@@ -113,13 +146,32 @@ fn with_stream<R>(stream: *mut File, refused: R, work: impl FnOnce(&mut File) ->
     })
 }
 
-/// Writes out every stream's buffer, as `exit` and `fflush(NULL)` do.
+/// Writes out every stream's buffer and gives back what reading streams read ahead, as `exit`
+/// does.
 pub fn flush_all() {
     STREAMS.with(|streams| {
-        for &stream in streams.0.iter().filter(|stream| !stream.is_null()) {
-            // SAFETY: an open stream of the table, used only under its lock.
-            let _ = unsafe { &mut *stream }.flush();
-        }
+        streams.each_open(|file| {
+            let _ = file.flush();
+        })
+    });
+}
+
+/// Writes out every stream's buffer as [`flush_all`] does, for `ExitProcess`, unless another
+/// thread keeps the streams' lock past a short wait (blocked reading `stdin`, say): the process
+/// ends then rather than waiting for it.
+pub fn flush_all_at_process_exit() {
+    let _ = STREAMS.try_with(EXIT_LOCK_ATTEMPTS, |streams| {
+        streams.each_open(|file| {
+            let _ = file.flush();
+        })
+    });
+}
+
+fn flush_output_streams() {
+    STREAMS.with(|streams| {
+        streams.each_open(|file| {
+            let _ = file.flush_output();
+        })
     });
 }
 
@@ -171,6 +223,9 @@ fn open(
         let _ = linux::close(fd);
         return refuse_linux(LINUX_EACCES);
     }
+    if mode.temporary {
+        let _ = linux::remove(&eggos_path[..length], 0);
+    }
     let block = new_stream(Stream::new(
         Descriptor { fd: Some(fd) },
         mode,
@@ -182,7 +237,7 @@ fn open(
         return block;
     }
     let placed = STREAMS.with(|streams| {
-        let free = streams.0[STANDARD_STREAMS..]
+        let free = streams.open[STANDARD_STREAMS..]
             .iter_mut()
             .find(|slot| slot.is_null())?;
         *free = block;
@@ -270,7 +325,7 @@ unsafe extern "efiapi" fn wfopen_s(out: *mut *mut File, path: *const u16, mode: 
 unsafe extern "efiapi" fn fclose(stream: *mut File) -> i32 {
     let closed = STREAMS.with(|streams| {
         let slot = streams
-            .0
+            .open
             .iter_mut()
             .find(|slot| **slot == stream && !stream.is_null())?;
         *slot = ptr::null_mut();
@@ -313,7 +368,7 @@ unsafe extern "efiapi" fn fread(
     let Some(total) = byte_count(size, count).filter(|total| *total > 0) else {
         return 0;
     };
-    if buffer.is_null() {
+    if buffer.is_null() || total > isize::MAX as usize {
         set_errno(errno::EINVAL);
         return 0;
     }
@@ -331,7 +386,7 @@ unsafe extern "efiapi" fn fwrite(
     let Some(total) = byte_count(size, count).filter(|total| *total > 0) else {
         return 0;
     };
-    if buffer.is_null() {
+    if buffer.is_null() || total > isize::MAX as usize {
         set_errno(errno::EINVAL);
         return 0;
     }
@@ -426,7 +481,7 @@ unsafe extern "efiapi" fn puts(text: *const u8) -> i32 {
 
 unsafe extern "efiapi" fn fflush(stream: *mut File) -> i32 {
     if stream.is_null() {
-        flush_all();
+        flush_output_streams();
         return 0;
     }
     with_stream(stream, END_OF_FILE, |file| match file.flush() {
@@ -630,48 +685,11 @@ impl Output for StreamOutput<'_> {
     }
 }
 
-#[derive(Default)]
-struct Utf8Decoder {
-    bytes: [u8; 4],
-    length: usize,
-    needed: usize,
-}
-
-impl Utf8Decoder {
-    fn push(&mut self, byte: u8) -> Option<char> {
-        if self.length == 0 {
-            self.needed = match byte {
-                0x00..=0x7f => return Some(char::from(byte)),
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => return Some(char::REPLACEMENT_CHARACTER),
-            };
-        } else if byte & 0xc0 != 0x80 {
-            self.length = 0;
-            return Some(char::REPLACEMENT_CHARACTER);
-        }
-        self.bytes[self.length] = byte;
-        self.length += 1;
-        if self.length < self.needed {
-            return None;
-        }
-        let complete = &self.bytes[..self.length];
-        self.length = 0;
-        Some(
-            core::str::from_utf8(complete)
-                .ok()
-                .and_then(|text| text.chars().next())
-                .unwrap_or(char::REPLACEMENT_CHARACTER),
-        )
-    }
-}
-
 struct BufferOutput<T> {
     start: *mut T,
     capacity: usize,
     length: usize,
-    decoder: Utf8Decoder,
+    decoder: text::Utf8Decoder,
 }
 
 impl<T: Copy + Default> BufferOutput<T> {
@@ -680,7 +698,7 @@ impl<T: Copy + Default> BufferOutput<T> {
             start,
             capacity: if start.is_null() { 0 } else { capacity },
             length: 0,
-            decoder: Utf8Decoder::default(),
+            decoder: text::Utf8Decoder::default(),
         }
     }
 
@@ -711,7 +729,7 @@ impl Output for BufferOutput<u8> {
 impl Output for BufferOutput<u16> {
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
-            if let Some(character) = self.decoder.push(byte) {
+            for character in self.decoder.push(byte).into_iter().flatten() {
                 let mut units = [0u16; 2];
                 for &unit in character.encode_utf16(&mut units).iter() {
                     self.push(unit);

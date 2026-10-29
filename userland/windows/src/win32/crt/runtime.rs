@@ -26,9 +26,6 @@ pub mod errno {
     pub const ERANGE: i32 = 34;
 }
 
-const ERRNO_SLOT: usize = thread_environment::teb::THREAD_OBJECT + 8;
-const DOS_ERRNO_SLOT: usize = ERRNO_SLOT + 4;
-const _: () = assert!(DOS_ERRNO_SLOT + 4 <= thread_environment::TEB_SIZE);
 const LAST_LINUX_ERRNO_SHARED_WITH_WINDOWS: u16 = 34;
 const DISABLE_PER_THREAD_LOCALE: i32 = 2;
 const TEXT_MODE: i32 = 0x4000;
@@ -41,7 +38,7 @@ const STATUS_INVALID_CRUNTIME_PARAMETER: u32 = 0xc000_0417;
 const POINTER_SIZE: usize = core::mem::size_of::<usize>();
 
 fn errno_slot() -> *mut i32 {
-    (thread_environment::current() + ERRNO_SLOT) as *mut i32
+    (thread_environment::current() + thread_environment::teb::ERRNO) as *mut i32
 }
 
 /// Sets the calling thread's `errno`.
@@ -514,7 +511,7 @@ extern "efiapi" fn set_errno_value(value: i32) -> i32 {
 }
 
 extern "efiapi" fn dos_errno_location() -> *mut u32 {
-    (thread_environment::current() + DOS_ERRNO_SLOT) as *mut u32
+    (thread_environment::current() + thread_environment::teb::DOS_ERRNO) as *mut u32
 }
 
 pub(super) const EXPORTS: &[Export] = exports![

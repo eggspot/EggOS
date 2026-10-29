@@ -4,7 +4,8 @@
 //! at `gs:[0x60]`, an ARM64 program its TEB in `x18` (the layer keeps it in `tpidr_el0`, D124);
 //! the layout is the same on both. The last error and the TLS slots live in the TEB, so each thread has its own;
 //! past the documented TEB (0x1838 bytes) the layer keeps each thread's fiber-local storage
-//! slots and its thread object. Every thread gets a TEB and a copy of the image's static TLS.
+//! slots, its thread object and the C runtime's `errno` and `_doserrno`. Every thread gets a TEB
+//! and a copy of the image's static TLS.
 
 use super::{Bool, FALSE, TRUE, error, fail};
 use crate::library::Export;
@@ -30,6 +31,8 @@ pub mod teb {
     pub const FLS_SLOTS: usize = 0x1c00;
     pub const FLS_SLOT_COUNT: usize = 64;
     pub const THREAD_OBJECT: usize = 0x1e00;
+    pub const ERRNO: usize = 0x1e08;
+    pub const DOS_ERRNO: usize = 0x1e0c;
 }
 
 pub mod peb {
@@ -40,7 +43,9 @@ pub mod peb {
 const _: () = assert!(teb::TLS_SLOTS + teb::TLS_SLOT_COUNT * 8 <= teb::DOCUMENTED_END);
 const _: () = assert!(teb::DOCUMENTED_END <= teb::FLS_SLOTS);
 const _: () = assert!(teb::FLS_SLOTS + teb::FLS_SLOT_COUNT * 8 <= teb::THREAD_OBJECT);
-const _: () = assert!(teb::THREAD_OBJECT + 8 <= TEB_SIZE);
+const _: () = assert!(teb::THREAD_OBJECT + 8 <= teb::ERRNO);
+const _: () = assert!(teb::ERRNO + 4 <= teb::DOS_ERRNO);
+const _: () = assert!(teb::DOS_ERRNO + 4 <= TEB_SIZE);
 const TLS_OUT_OF_INDEXES: u32 = u32::MAX;
 const FLS_OUT_OF_INDEXES: u32 = u32::MAX;
 const DLL_THREAD_ATTACH: u32 = 2;

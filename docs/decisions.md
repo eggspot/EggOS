@@ -9225,8 +9225,7 @@ the license, by an explicit instruction recorded here.
   Windows until the close.
 - **`errno`** lives in each thread's TEB, past the documented part (after the thread object,
   at `teb::ERRNO`, with `_doserrno` at `teb::DOS_ERRNO`), so threads have their own without a
-  TLS slot. Linux's numbers up to `ERANGE` (34) are
-  Windows' too; others become `EINVAL`.
+  TLS slot. Linux's numbers up to `ERANGE` (34) are Windows' too; others become `EINVAL`.
 - **Invalid parameters.** Microsoft documents both the default handler, which ends the
   program, and what each function returns when a handler lets it go on. The
   layer's functions return that documented error (`EINVAL`, `ERANGE`, an emptied destination
@@ -9250,7 +9249,7 @@ the license, by an explicit instruction recorded here.
   foreign programs it runs. `cargo xtask windows-programs` builds it on a Windows host with
   `cl.exe /MD /O2 /W3 /WX` for x64 and ARM64, found through `vswhere` and set up by
   `vcvarsall.bat`; CI's new `windows-programs` job (windows-latest, pull requests only, like
-  `macos-programs`) uploads them and the QEMU jobs wait for them through
+  `macos-programs`) uploads them and the x86_64 and aarch64 QEMU jobs wait for them through
   `EGGOS_WINDOWS_PROGRAMS`; without them (a push to `main`, a host that is not Windows) the boot
   test is skipped and says so, and in CI a missing set fails.
 - **Check.** `WindowsCrt` boot test on x86_64 and aarch64: the shell writes

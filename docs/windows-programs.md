@@ -232,7 +232,8 @@ size needed, as each function documents.
   `setlocale`, `signal`, `setjmp`, the math library, wide streams, low-level I/O (`_open`),
   `rename`, `tmpfile` and `_set_invalid_parameter_handler` are missing (D146's "Not yet"); a
   function given an invalid parameter returns its documented error instead of ending the
-  program, and one lock serialises all of stdio.
+  program, and one lock serialises all of stdio (a thread blocked reading `stdin` holds up
+  the others' stdio calls).
 - **Other processes** (`CreateProcessW`, pipes) and **UTF-16 console polish** (line endings as
   `\r\n`, `ReadConsoleW` across multi-byte input): a later part.
 - **x64 programs on aarch64** (and ARM64 programs on x86_64): an x64 program on Arm needs its

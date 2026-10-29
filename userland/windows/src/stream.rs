@@ -40,14 +40,16 @@ pub struct Mode {
     pub append: bool,
     pub exclusive: bool,
     pub text: bool,
+    /// `D`: the file is deleted when the stream closes.
+    pub temporary: bool,
 }
 
 impl Mode {
     /// The mode `letters` (an `fopen` mode string, without its NUL) ask for: `r`, `w` or `a`,
-    /// then any of `+`, `b`, `t` and `x` (`x` only with `w`) and the letters Microsoft adds
-    /// for caching hints (`c`, `n`, `S`, `R`, `T`, `D`, `N`), which change nothing here; an
-    /// encoding after a comma (`, ccs=UTF-8`) is refused. Without `b` the stream is in text
-    /// mode, Windows' default.
+    /// then any of `+`, `b`, `t`, `x` (only with `w`) and `D` (a temporary file) and the
+    /// letters Microsoft adds for caching hints (`c`, `n`, `S`, `R`, `T`, `N`), which change
+    /// nothing here; an encoding after a comma (`, ccs=UTF-8`) is refused. Without `b` the
+    /// stream is in text mode, Windows' default.
     pub fn parse(letters: impl IntoIterator<Item = u32>) -> Option<Mode> {
         let mut letters = letters.into_iter();
         let mut mode = match char::from_u32(letters.next()?)? {
@@ -73,7 +75,8 @@ impl Mode {
                 'b' => mode.text = false,
                 't' => mode.text = true,
                 'x' if mode.truncate => mode.exclusive = true,
-                'c' | 'n' | 'S' | 'R' | 'T' | 'D' | 'N' => {}
+                'D' => mode.temporary = true,
+                'c' | 'n' | 'S' | 'R' | 'T' | 'N' => {}
                 _ => return None,
             }
         }
@@ -89,6 +92,7 @@ impl Mode {
             append: false,
             exclusive: false,
             text: true,
+            temporary: false,
         }
     }
 }
@@ -298,15 +302,35 @@ impl<B: Backing> Stream<B> {
         taken
     }
 
-    /// Writes out what the buffer holds, or gives back what it read ahead (`fflush`).
+    /// Writes out what the buffer holds, or gives back what it read ahead (`fflush`). Bytes read
+    /// ahead from a file that cannot seek back (a pipe, a terminal) stay buffered for the next
+    /// read, as Microsoft documents for a stream opened for reading; only a pushed-back byte
+    /// goes.
     pub fn flush(&mut self) -> Result<(), u16> {
-        let result = match self.direction {
-            Direction::Writing => self.write_pending(),
-            Direction::Reading => self.give_back_read_ahead(),
+        match self.direction {
+            Direction::Writing => {
+                self.direction = Direction::Idle;
+                self.write_pending()
+            }
+            Direction::Reading => {
+                if self.give_back_read_ahead().is_ok() {
+                    self.direction = Direction::Idle;
+                } else {
+                    self.pushed_back = None;
+                }
+                Ok(())
+            }
             Direction::Idle => Ok(()),
-        };
-        self.direction = Direction::Idle;
-        result
+        }
+    }
+
+    /// Writes out what the buffer holds if the last operation was a write, and leaves a stream
+    /// that is reading alone (`fflush(NULL)` on each stream, as C11 and Microsoft define it).
+    pub fn flush_output(&mut self) -> Result<(), u16> {
+        match self.direction {
+            Direction::Writing => self.flush(),
+            _ => Ok(()),
+        }
     }
 
     /// Moves to `offset` from `origin` (`fseek`), counting the file's own bytes.
@@ -372,12 +396,12 @@ impl<B: Backing> Stream<B> {
 
     fn give_back_read_ahead(&mut self) -> Result<(), u16> {
         let ahead = self.unread();
-        self.start = 0;
-        self.end = 0;
-        self.pushed_back = None;
         if ahead > 0 {
             self.backing.seek(-ahead, Origin::Current)?;
         }
+        self.start = 0;
+        self.end = 0;
+        self.pushed_back = None;
         Ok(())
     }
 
@@ -460,6 +484,7 @@ mod tests {
         bytes: Vec<u8>,
         at: usize,
         writes: usize,
+        pipe: bool,
     }
 
     impl Backing for Memory {
@@ -483,6 +508,9 @@ mod tests {
         }
 
         fn seek(&mut self, offset: i64, origin: Origin) -> Result<u64, u16> {
+            if self.pipe {
+                return Err(29);
+            }
             let base = match origin {
                 Origin::Start => 0,
                 Origin::Current => self.at as i64,
@@ -519,6 +547,7 @@ mod tests {
         assert!(append.append && append.read && append.write && append.text);
         assert!(mode("wx").exclusive);
         assert!(mode("rbS").read);
+        assert!(mode("w+D").temporary && !mode("w+").temporary);
         for refused in ["", "x", "rx", "q", "r?", "w, ccs=UTF-8"] {
             assert_eq!(
                 Mode::parse(refused.chars().map(u32::from)),
@@ -634,5 +663,45 @@ mod tests {
         let mut output = stream(b"", "w");
         assert_eq!(output.get_byte(), None);
         assert!(output.error() && !output.end_of_file());
+    }
+
+    #[test]
+    fn flushing_a_file_gives_back_what_was_read_ahead() {
+        let mut input = stream(b"abc", "rb");
+        assert_eq!(input.get_byte(), Some(b'a'));
+        assert_eq!(input.flush(), Ok(()));
+        assert_eq!(input.backing().at, 1);
+        assert_eq!(input.get_byte(), Some(b'b'));
+    }
+
+    #[test]
+    fn flushing_a_pipe_keeps_what_was_read_ahead() {
+        let memory = Memory {
+            bytes: b"one\ntwo\n".to_vec(),
+            pipe: true,
+            ..Memory::default()
+        };
+        let mut input = Stream::new(memory, mode("rb"), Buffering::Full);
+        assert_eq!(input.get_byte(), Some(b'o'));
+        assert!(input.unget(b'o'));
+        assert_eq!(input.flush(), Ok(()));
+        let mut read = [0u8; 16];
+        assert_eq!(input.read(&mut read), 7);
+        assert_eq!(&read[..7], b"ne\ntwo\n");
+        assert!(!input.error());
+    }
+
+    #[test]
+    fn flushing_output_leaves_a_reading_stream_alone() {
+        let mut input = stream(b"xyz", "rb");
+        assert_eq!(input.get_byte(), Some(b'x'));
+        assert!(input.unget(b'q'));
+        assert_eq!(input.flush_output(), Ok(()));
+        assert_eq!(input.get_byte(), Some(b'q'));
+        assert_eq!(input.get_byte(), Some(b'y'));
+        let mut output = stream(b"", "wb");
+        assert_eq!(output.write(b"out"), 3);
+        assert_eq!(output.flush_output(), Ok(()));
+        assert_eq!(output.backing().bytes, b"out");
     }
 }

@@ -156,7 +156,7 @@ jobs:
           echo "macos-programs: no artifact after 10 minutes"; exit 1
 
       - name: Wait for the MSVC test programs
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.arch != 'riscv64'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -178,7 +178,7 @@ jobs:
       - name: QEMU boot tests
         env:
           EGGOS_MACOS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/macos-programs' || '' }}
-          EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && 'target/windows-programs' || '' }}
+          EGGOS_WINDOWS_PROGRAMS: ${{ github.event_name == 'pull_request' && matrix.arch != 'riscv64' && 'target/windows-programs' || '' }}
         run: cargo xtask qemu --arch ${{ matrix.arch }}
 
       - uses: actions/cache/save@v6

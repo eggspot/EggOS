@@ -108,6 +108,32 @@ impl<T> SpinLock<T> {
         self.locked.store(false, Ordering::Release);
         result
     }
+
+    /// Runs `work` as [`SpinLock::with`] does, unless the lock is still held after `attempts`
+    /// tries (yielding as `with` does), when it returns `None` without running it.
+    pub fn try_with<R>(&self, attempts: u32, work: impl FnOnce(&mut T) -> R) -> Option<R> {
+        use core::sync::atomic::Ordering;
+        let mut spins = 0u32;
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spins += 1;
+            if spins >= attempts {
+                return None;
+            }
+            if spins.is_multiple_of(SPINS_BEFORE_YIELD) {
+                crate::linux::yield_now();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+        // SAFETY: the lock is held, so this is the only reference to the value.
+        let result = work(unsafe { &mut *self.value.get() });
+        self.locked.store(false, Ordering::Release);
+        Some(result)
+    }
 }
 
 /// Sets the calling thread's last error and returns `value`: how a failing function ends.

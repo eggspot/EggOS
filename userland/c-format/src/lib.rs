@@ -141,6 +141,7 @@ struct Spec {
 }
 
 const MAX_WIDTH: usize = 4096;
+const MAX_PRECISION: usize = i32::MAX as usize;
 
 impl Spec {
     fn parse(
@@ -181,16 +182,16 @@ impl Spec {
             spec.width = (width.unsigned_abs() as usize).min(MAX_WIDTH);
             at += 1;
         } else {
-            (spec.width, at) = number(format, at);
+            (spec.width, at) = number(format, at, MAX_WIDTH);
         }
         if format.get(at) == Some(&b'.') {
             at += 1;
             if format.get(at) == Some(&b'*') {
                 let precision = arguments.integer() as i32;
-                spec.precision = (precision >= 0).then_some((precision as usize).min(MAX_WIDTH));
+                spec.precision = (precision >= 0).then_some(precision as usize);
                 at += 1;
             } else {
-                let (precision, next) = number(format, at);
+                let (precision, next) = number(format, at, MAX_PRECISION);
                 spec.precision = Some(precision);
                 at = next;
             }
@@ -484,7 +485,9 @@ impl Spec {
         } else {
             digits
         };
-        let precision_zeros = self.precision.map_or(0, |p| p.saturating_sub(digits.len()));
+        let precision_zeros = self
+            .precision
+            .map_or(0, |p| p.min(MAX_WIDTH).saturating_sub(digits.len()));
         let body = sign.len() + prefix.len() + precision_zeros + digits.len();
         let fill = self.width.saturating_sub(body);
         let zero_fill = self.zero && !self.left && self.precision.is_none();
@@ -817,10 +820,13 @@ fn exponential(
     writer.push(text);
 }
 
-fn number(format: &[u8], mut at: usize) -> (usize, usize) {
+fn number(format: &[u8], mut at: usize, cap: usize) -> (usize, usize) {
     let mut value: usize = 0;
     while let Some(&digit) = format.get(at).filter(|b| b.is_ascii_digit()) {
-        value = (value * 10 + usize::from(digit - b'0')).min(MAX_WIDTH);
+        value = value
+            .saturating_mul(10)
+            .saturating_add(usize::from(digit - b'0'))
+            .min(cap);
         at += 1;
     }
     (value, at)
@@ -1101,6 +1107,24 @@ mod tests {
             formatted("%.*s", &[Int(-1i64 as u64), Int(c"ab".as_ptr() as u64)]),
             "ab"
         );
+    }
+
+    #[test]
+    fn a_string_s_precision_is_not_capped_like_a_width() {
+        let long = std::ffi::CString::new("s".repeat(6000)).unwrap();
+        let pointer = long.as_ptr() as u64;
+        assert_eq!(formatted("%.5000s", &[Int(pointer)]).len(), 5000);
+        assert_eq!(formatted("%.*s", &[Int(10_000), Int(pointer)]).len(), 6000);
+        assert_eq!(windows("%.5000s", false, &[Int(pointer)]).len(), 5000);
+        assert_eq!(
+            windows("%.*s", false, &[Int(10_000), Int(pointer)]).len(),
+            6000
+        );
+        let units = wide(&"w".repeat(6000));
+        let units = units.as_ptr() as u64;
+        assert_eq!(windows("%.5000ls", false, &[Int(units)]).len(), 5000);
+        assert_eq!(windows("%.5000s", true, &[Int(units)]).len(), 5000);
+        assert_eq!(formatted("%.5000d", &[Int(7)]).len(), MAX_WIDTH);
     }
 
     fn windows(text: &str, wide_strings: bool, values: &[Value]) -> String {

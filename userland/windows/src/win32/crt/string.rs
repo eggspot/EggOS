@@ -248,8 +248,13 @@ fn unsigned(parsed: Option<Integer>, bits: u32) -> u64 {
 }
 
 unsafe extern "efiapi" fn memchr(block: *const u8, value: i32, count: usize) -> *mut u8 {
-    // SAFETY: `memchr`'s contract: `count` readable bytes.
-    let bytes = unsafe { core::slice::from_raw_parts(block, count) };
+    if block.is_null() || count == 0 {
+        return ptr::null_mut();
+    }
+    let readable = count.min(isize::MAX as usize);
+    // SAFETY: `memchr`'s contract: `count` readable bytes, of which no block holds more than
+    // `isize::MAX`.
+    let bytes = unsafe { core::slice::from_raw_parts(block, readable) };
     bytes
         .iter()
         .position(|byte| *byte == value as u8)

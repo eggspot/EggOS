@@ -365,8 +365,8 @@ D16):
     comdlg32's `GetOpenFileNameW` and `GetSaveFileNameW` on EggOS's own picker, all in Claude
     Fable's design (docs/ux/windows-controls-v0.3.md). The Windows GUI boot test drives
     `win-controls.exe` through typing, clicks, the menu and both pickers on x86_64 and aarch64
-    and compares every frame with the host's render. Next: multi-line edits and the clipboard
-    (item 43's notepad), radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
+    and compares every frame with the host's render. Next: multi-line edits and the clipboard,
+    radio buttons, combo boxes, scroll bars, menu keys (D145's "Not yet").
 43. **done** — users can now run Windows programs built by Microsoft's compiler on its C
     runtime (D146, docs/windows-programs.md): C programs built with `/MD`, console or GUI, x64
     on x86_64 and ARM64 on aarch64, import `vcruntime140.dll` and the Universal C Runtime
