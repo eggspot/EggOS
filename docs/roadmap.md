@@ -367,7 +367,19 @@ D16):
     x86_64 and aarch64 runs `eggpad.exe`, our own C notepad built by MSVC in CI, opens a file,
     types, saves it with Ctrl+S and reads it back. Next: `scanf`, locales, the math library,
     C++ exceptions (D145's "Not yet").
-41. macOS GUI apps, part 1.
+41. **done** — users can now run macOS GUI apps (D146, docs/macos-programs.md): programmatic
+    Objective-C AppKit apps in an `.app` bundle install and open from the launcher, arm64 on
+    aarch64 and x86_64 on x86_64. The macOS layer's own AppKit runs NSApplication's event loop
+    and its delegate, NSWindow on the window server, NSView's `drawRect:` with NSColor,
+    `NSRectFill`, NSBezierPath and NSString's `drawAtPoint:`, and `mouseDown:` and `keyDown:`;
+    NSBundle reads the bundle's `Info.plist`. A QEMU test installs `mac-paint.app`, our own
+    source built by clang in CI, opens it from the launcher and compares every frame.
+44. **done** — users can now use macOS apps' buttons, text fields, alerts and menus (D146):
+    NSButton's target and action, editable NSTextField and labels drawn as the toolkit's
+    controls, NSAlert's `runModal` in a dialog, and the main menu in the macOS profile's top bar
+    (the window server's new `SET_MENU` and `MenuChosen`), with key equivalents and Cmd+Q. The
+    same test types into a field, presses buttons, answers an alert, opens the `File` menu and
+    quits with Cmd+Q. Next: nibs, Swift, scroll views, images, timers (D146's "Not yet").
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43
 Windows apps on the C runtime; 44 macOS GUI apps, part 2; 45 real icons and archives; 46 a Text

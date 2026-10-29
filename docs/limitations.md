@@ -95,12 +95,16 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   Android NDK and linked statically against bionic run natively through the Linux layer
   ([Android programs](android-programs.md), D119). No apps (`.apk`), no dynamic linking, no
   system properties (all read as unset), no `logd` or binder, no riscv64.
-- **macOS: console programs on aarch64 and x86_64 only.** Mach-O console programs (thin or
-  fat, built for macOS 13 or later) that link libSystem, and Objective-C programs that use the
-  core of Foundation, run natively, arm64 programs on aarch64 and x86_64 programs on x86_64,
-  added with `cargo xtask image --add` ([macOS programs](macos-programs.md), D120, D123, D142).
-  Swift, Objective-C blocks, `__weak` and exceptions, most of Foundation, signal handlers,
-  other libraries and frameworks, GUI apps, `.app` bundles and riscv64 do not run yet.
+- **macOS: console programs and programmatic AppKit apps, on aarch64 and x86_64 only.**
+  Mach-O console programs (thin or fat, built for macOS 13 or later) that link libSystem,
+  Objective-C programs that use the core of Foundation, and Objective-C GUI apps built in code
+  (no nib or storyboard) on AppKit's core run natively, arm64 programs on aarch64 and x86_64
+  programs on x86_64 ([macOS programs](macos-programs.md), D120, D123, D142, D146). AppKit
+  covers windows, views drawn with `drawRect:` (rects, lines and ovals 1 px wide, one font, no
+  alpha), push buttons, text fields, labels, alerts and the main menu in the macOS profile's
+  top bar; scroll views, tables, images, timers, panels, Auto Layout, Swift, Objective-C blocks,
+  `__weak` and exceptions, most of Foundation, signal handlers, other frameworks and riscv64
+  do not run yet.
 - **Seeing and operating windows from the command line, partly** (D141). `wm capture` reads any
   app window's content as a PNG and `wm click`, `type`, `press` and `scroll` operate it, but
   the terminal's window can't be captured, takes no pointer input, and drag, double-click,
@@ -158,8 +162,8 @@ habits (the controls' side and the shortcuts), kept on the disk across reboots. 
 - Settings, the installer's window (`app --window`, D134) and Files (`/bin/files`, D135),
   all served by the same program, are the programs with a window in the image (the window tests' `hello-window`
   and `win-paint.exe` are added only to their own images); Settings' Mouse and Components panes,
-  key repeat and 2x come later; Windows GUI programs open windows
-  (part 1, D129), macOS and Linux GUI apps do not yet (items 39 to 41);
+  key repeat and 2x come later; Windows GUI programs (D129), Linux Wayland apps (D140) and
+  macOS AppKit apps (D146) open windows;
 - 3D graphics;
 - a terminal on a display smaller than 658x530 (the macOS profile's top bar and dock take 100
   rows): the window does not fit every profile's work area, and the display then shows no

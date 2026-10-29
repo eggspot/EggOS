@@ -9158,3 +9158,88 @@ the license, by an explicit instruction recorded here.
   exceptions do not), `vcruntime140_1`'s functions, static CRT (`/MT`) programs' extra imports
   (most are the same kernel32 functions), MinGW's `msvcrt.dll`; per-stream locks (one lock
   serialises all stdio, so a thread blocked reading `stdin` holds up the others).
+
+## D146 macOS GUI apps: AppKit in the macOS layer on the window server, `.app` bundles, controls, alerts and the main menu in the top bar (v0.3.0 items 41 and 44; extends D120, D127, D133, D134, D142) — Decided by the build loop (design by Claude Fable, `docs/ux/macos-gui-v0.3.md`)
+- **What.** Item 41 (macOS GUI apps, part 1, moved after the release on 2026-10-28 and brought
+  back into the release batch on 2026-10-29 because item 44 builds on it): "`.app` bundles
+  (Info.plist), NSApplication run loop and delegate, NSWindow, NSView `drawRect:`, NSColor,
+  NSRectFill, NSBezierPath, NSString `drawAtPoint:`, mouseDown and keyDown; programmatic apps
+  (no nib files). Check: `mac-paint.app` installed and opened from the launcher." Item 44
+  (part 2): "NSButton target/action, NSTextField, NSAlert, NSMenu in the top bar with Cmd+Q."
+  Both land as one part: programmatic Objective-C AppKit apps, arm64 on aarch64 and x86_64 on
+  x86_64, open windows on the EggOS desktop, draw, take clicks and keys, use push buttons, text
+  fields and labels, show alerts, and put their main menu in the top bar.
+- **Where.** AppKit is Rust inside the macOS layer, `userland/macos/src/appkit/`, as classes of
+  the layer's own Objective-C runtime defined the way Foundation's are (D142): `application.rs`
+  (NSApplication, `NSApp`, the event loop, actions), `window.rs`, `view.rs` (NSResponder,
+  NSView), `control.rs` (NSControl, NSButton, NSTextField), `event.rs`, `drawing.rs` (the
+  drawing context, NSColor, NSFont, NSBezierPath, `NSRectFill` and its kin, NSString's drawing
+  methods, the attribute names), `alert.rs`, `menu.rs` and `server.rs` (the `/dev/window`
+  connection). The loader accepts `AppKit.framework` and sets AppKit up only for a program that
+  links it (D18): a console program pays nothing. What has no system in it is a new pure crate
+  with host tests, `userland/macos-gui` (`eggos-macos-gui`), as `eggos-windows-gui` is for the
+  Windows layer: AppKit's bottom-left coordinates as buffer pixels, the colours, the primitives
+  (1 px, no anti-aliasing), the push button, text field and label drawn by the toolkit
+  (`eggos-toolkit`) inside the app's frame, the alert as the toolkit's dialog panel, the menu
+  pool and key labels, and the key records as `NSEvent`'s key codes, characters and flags.
+- **Look.** Claude Fable's design (D16), `docs/ux/macos-gui-v0.3.md`: an AppKit app is a macOS
+  app in Dark Mode; semantic colours are the desktop's tokens; text is Egg Sans 16 (2x from 28
+  points); controls are the toolkit's, 28 px tall centred in the app's frame; an alert is the
+  toolkit's panel in a dialog window titled with the app's name, buttons in macOS's order.
+- **The window server shows the main menu.** A new request `SET_MENU` (`0x41007715`, 256 bytes:
+  window, pool length, a pool of `M<title>`, `I<label>\t<key>`, `D<label>\t<key>` and `-`
+  lines, at most 6 menus of 16 entries and 248 bytes) gives a Normal window its menu, and a new
+  event `MenuChosen` (kind 14: menu, entry) reports a choice (docs/windows.md). In the macOS
+  profile the top bar shows the focused window's menu after the system item, in the bar's font,
+  the first titled with the app's name; a click opens it in the popup chrome, Up, Down, Left,
+  Right, Enter and Esc work, and the titles dim while a dialog of the window is focused. The
+  Windows and Linux profiles show no menu in 0.3.0; key equivalents still work there.
+- **Events.** One connection, blocking reads; each record becomes an NSEvent sent through
+  `-[NSApplication sendEvent:]`: a key press first goes to the main menu's key equivalents
+  (exact modifiers; an upper-case key asks for Shift), and Cmd+Q (Super, which the server lets
+  through) quits even without a menu; then `-[NSWindow sendEvent:]` sends a click to the view
+  under it (made first responder when it accepts), the drags and release to that same view,
+  Tab and Shift+Tab between editable text fields, Enter to the focused text field or else to the
+  default button (key equivalent Return), and other keys to the first responder. Modifier keys
+  make `flagsChanged:`. Cmd+W stays the server's close shortcut: the window gets
+  `CloseRequest`, the layer runs `performClose:`. The last window closed ends the app.
+- **Drawing.** A window is drawn whole when anything in it changed, before the next read: its
+  background, then each view's `drawRect:` with its bounds, clipped to its frame (a control to
+  its 28 px too), superviews first and subviews in the order added, then one `COMMIT`.
+- **`.app` bundles.** A program at `X.app/Contents/MacOS/<name>` belongs to the bundle
+  `X.app`: NSBundle's `bundlePath`, `resourcePath` (`Contents/Resources`), `infoDictionary`
+  and `objectForInfoDictionaryKey:` read `Contents/Info.plist`'s string values (an XML property
+  list, `info_plist.rs`, host-tested), `bundleIdentifier` is `CFBundleIdentifier`, and the
+  app's name (`CFBundleName`, else the executable's) titles the first menu and untitled
+  windows. The installer already copies an `.app` whole and runs `Contents/MacOS/<stem>` or its
+  only program (D134); reading `CFBundleExecutable` there is left for later.
+- **Points decided by the build loop.** Buttons and fields draw no hover look (the toolkit's
+  pressed and focused looks stay): hover makes screen checks depend on where a test leaves the
+  pointer, and macOS controls barely show hover anyway. Enter in a focused text field sends the
+  field's action and does not also press the default button. `setDelegate:` retains the
+  delegate (Apple's is weak), so an app that drops its own reference after `setDelegate:`, as ARC
+  may in `main`, keeps working. Windows the app showed are kept until it ends. `drawInRect:`
+  draws one line at the rect's bottom-left, clipped (the design's rule), not from its top.
+  Notifications pass nil (no NSNotification yet).
+- **The test app is Objective-C and test data** (as D142): `tests/macos-gui/main.m`, our own
+  source with `tests/macos-gui/Info.plist`, built by clang on CI's macOS runner (`cargo xtask
+  macos-programs`, `-framework AppKit -framework Foundation`, arm64 and x86_64) and assembled as
+  `mac-paint.app`; its host model is `tests/macos-gui` (`eggos-macos-gui-tests`), drawn with
+  the same `eggos-macos-gui` functions, so every frame is compared exactly.
+- **Check.** The macOS GUI boot test (`xtask/src/qemu/macos_gui.rs`, aarch64 and x86_64): `app
+  install /media/host/mac-paint.app`, open it from the launcher (Cmd+Space, its name, Enter),
+  then compare each frame with the host's render: the window with its field focused and the
+  menu titles in the top bar; `Hello` typed and Enter renaming the window; a click painting a
+  square; `c` clearing it (keyDown); another square and the `Clear` button (target/action); the
+  `Info` button's alert and Esc; the `File` menu opened in the top bar and closed; Cmd+Q ending
+  the app with status 0. Skipped, as the console test is, without the macOS programs.
+- **Not yet.** Nib and storyboard files, Swift apps, views nested below the content view's
+  subviews are drawn but not tested, flipped views (`isFlipped` is NO), layers and Core
+  Animation, Auto Layout (constraints are ignored; frames are what the app sets), resizing a
+  window's content with its autoresizing mask, scroll views, tables, images (`NSImage`), cursors
+  (`NSCursor`), timers and run-loop sources (`NSTimer`, `performSelector:afterDelay:`), sheets,
+  panels (`NSOpenPanel`, `NSSavePanel`), checkboxes, radio buttons, pop-up buttons, sliders,
+  more than one line in a label or `drawInRect:`, selection and the clipboard in text fields,
+  submenus below the top level, a menu inside the window in the Windows and Linux profiles,
+  alpha blending, anti-aliasing, fonts other than Egg Sans, text beyond the font's glyphs,
+  `NSApplicationMain` loading a main nib, windowless apps, and NSNotification objects.
