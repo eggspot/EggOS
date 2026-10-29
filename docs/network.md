@@ -2,7 +2,7 @@
 
 EggOS's network: IPv4 over one wired adapter, with an address from DHCP, UDP and ping for
 programs, and DNS through `/etc/resolv.conf` (part 1, D157); TCP for programs and downloads over
-HTTP with `fetch` (part 2, D158). HTTPS and the network clock come next (part 3).
+HTTP with `fetch` (part 2, D158); HTTPS and the network clock (part 3, D159).
 
 ## Getting on the network
 
@@ -103,12 +103,34 @@ downloads a file from an HTTP stand-in on the host, and `linux-tcp` sends 300000
 over `lo`, sees a closed port refused and talks to a TCP echo server on the host. The MCP boot
 calls `net_ping`, `net_lookup` and `fetch`.
 
+## HTTPS and the network clock (D159)
+
+- `fetch https://...` (and MCP `fetch`) speaks TLS 1.3 with a client of our own (`tls/`, on
+  `crypto/`, both written from the RFCs and NIST specifications): X25519 key exchange,
+  ChaCha20-Poly1305, AES-128-GCM or AES-256-GCM records, and the server's certificates
+  checked: the host named in them, valid now, a path through the certificate authorities the
+  server sends to a trusted root, ECDSA (P-256, P-384) and RSA (PKCS #1 v1.5, PSS; 2048 to
+  4096 bits) signatures.
+- **The trusted roots are yours to give.** EggOS ships no root certificates (D159). `fetch`
+  reads PEM certificates from `/etc/ssl/roots.pem`, or else from `roots.pem` in the host folder
+  (`/media/host/roots.pem`). Copy your host's list there: on macOS `/etc/ssl/cert.pem`, on
+  Linux `/etc/ssl/certs/ca-certificates.crt`; on Windows export the trusted roots as Base-64
+  certificates into one file. Without roots, `https://` fails and says so; nothing is
+  downloaded unchecked.
+- `date --sync[=host[:port]]` sets the clock (and the hardware clock) from an NTP server by
+  SNTP (RFC 4330), `pool.ntp.org` by default, corrected by half the round trip, and says how far
+  the clock moved; MCP `clock_sync` is its twin (grant `run`). Certificates need a right clock:
+  a wrong one makes them look expired, and the error says to sync.
+
 ## Not yet
 
-HTTPS (part 3); IPv6; fragments; static addresses, a second adapter and their routes;
+IPv6; fragments; static addresses, a second adapter and their routes;
 multicast; reverse lookups; netlink (iproute2 itself and `getifaddrs`); the GUI front-end
 (Settings' Network pane, the bar's indicator, a window for downloads); TCP window scaling,
 selective acknowledgments, keep-alive, urgent data and Nagle's delay (`TCP_NODELAY` is always
 on), and keeping segments that arrive out of order (they are dropped and sent again); TCP
 timers on a machine without an adapter run only when a program makes a socket call; interrupts
-instead of polling. See D157 and D158.
+instead of polling; the Date & time pane's "Set automatically" and syncing at boot; TLS
+session resumption, client certificates, a second key exchange (X25519 is the only group
+offered, so a server that wants another fails), revocation (OCSP, CRLs) and name constraints
+(a certificate that makes them critical is refused). See D157 to D159.

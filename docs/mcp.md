@@ -73,7 +73,7 @@ run-eggos.sh` the script's own path works too.
 | `view` | see what any app window shows, covered and minimised ones too, as an image: **whatever is on screen or hidden behind it**, passwords and messages included; and list a window's main menu | `wm_capture`, `wm_menu_list` |
 | `write` | write files below `/home/root`, download files there, and move them to the Trash | `tee`, `fetch`, `trash` |
 | `install` | install apps from `/media/host`, open and uninstall installed apps, open a text file in the Text Editor | `app_install`, `app_open`, `edit_open`, `app_uninstall` |
-| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set` |
+| `run` | run any program and click, type, press keys and scroll in any window, the terminal (a root shell) included: programs and the GUI, which can do anything a program or a person can: **`run` is full control of the machine**, the audit log included, so it implies `view`, `write` and `install` | `run`, `wm_click`, `wm_type`, `wm_press`, `wm_scroll`, `wm_menu_choose`, `clock_set`, `clock_sync` |
 
 - **Set on the host, fixed for the boot.** `--mcp-allow` (`-McpAllow`) takes `view`, `write`,
   `run` and `install`, lowercase, separated by commas; the script refuses anything else. It hands them to
@@ -105,9 +105,10 @@ run-eggos.sh` the script's own path works too.
 | `net_lookup` | Looks a host name up (`host`) with the network's DNS servers and returns nslookup's report (D158) | `nslookup <host>` | |
 | `tee` | Writes a file (`path`, `content` or `content_base64`, `append`, `confirm`), at most 128 KiB a call | `tee [-a] -- <path>`, the content on its input | `write` |
 | `trash` | Moves a file or folder to the Trash (`path`, `confirm`); you can restore it | `trash -- <path>` | `write` |
-| `fetch` | Downloads an `http://` URL (`url`, at most 2048 bytes) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
+| `fetch` | Downloads an `http://` or `https://` URL (`url`, at most 2048 bytes; `https://` over TLS 1.3 with the server's certificate checked against the roots in `/etc/ssl/roots.pem`, D159) into a file below `/home/root` (`path`, `confirm`): up to 5 redirects, an error for a 4xx or 5xx status, 60 seconds at most; replacing a file asks the user first (D158) | `fetch <url> -- <path>` | `write` |
 | `run` | Runs a program (`program`, an absolute path; `arguments`; `timeout_seconds`, 1 to 60, 10 by default) and returns its output, errors and exit status | the program itself | `run` |
 | `clock_set` | Sets the machine's clock and its hardware clock (`time`, UTC as `YYYY-MM-DDTHH:MM:SSZ`, the years 2000 to 2099; `confirm`); asks the user first (D150) | `date -u -s <time>` | `run` |
+| `clock_sync` | Sets the machine's clock and its hardware clock from a time server (SNTP, `pool.ntp.org`) and says how far it moved; 15 seconds at most (D159) | `date -u --sync` | `run` |
 | `app_install` | Installs an app from `/media/host` (`path`); a `.zip` holding several programs needs `entry`, the path of one inside it (D148) | `app install [--entry <entry>] -- <path>` | `install` |
 | `app_open` | Opens an installed app, or the built-in `Terminal`, `Files`, `Settings` or `Text Editor`, by name (`name`) | `app open -- <name>` | `install` |
 | `edit_open` | Opens a text file in `/home` or `/media/host` (`path`) in a Text Editor window of its own and returns (D149); a path with nothing at it opens as a new file | `edit -- <path>` | `install` |

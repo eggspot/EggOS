@@ -10364,3 +10364,100 @@ the license, by an explicit instruction recorded here.
   machine without an adapter run only when a program makes a socket call (loopback needs none
   but `TIME-WAIT`'s end); `fetch` resuming a cut download, proxies, authentication, cookies,
   compression and IPv6 literals; a TCP benchmark; MCP over the network.
+
+## D159 EggOS is on the network, part 3: cryptography and a TLS 1.3 client of our own, `fetch https://` against the roots the user gives, and the network clock by SNTP with `date --sync` and `clock_sync` (networking part 3, M8; D150's "Next"; extends D21, D22, D56, D136, D137, D150, D157, D158) — Decided by the build loop (the root certificates' source decided by research)
+- **Why.** Almost all of the web is `https://`, so `fetch` (D158) reached little of it; and a
+  clock that drifts stayed off until someone set it by hand (D150), which also makes
+  certificates look expired. Both need code we write ourselves: no crates, nothing copied from
+  OpenSSL, BoringSSL, rustls or other TLS stacks.
+- **Cryptography** (new crate `crypto/`, `eggos-crypto`, `no_std`, no allocation, written from
+  FIPS 180-4, FIPS 197, NIST SP 800-38D, RFC 2104, 5869, 7748, 8017, 8439 and FIPS 186-5):
+  SHA-256, SHA-384, SHA-512 (`sha2`), HMAC and HKDF (`hmac`), AES-128/256 (`aes`) in GCM
+  (`gcm`), ChaCha20 (the kernel generator's block function, D56), Poly1305 and
+  ChaCha20-Poly1305, X25519, and signature checks: ECDSA on P-256 and P-384 (`ecdsa`, Jacobian
+  coordinates) and RSA PKCS #1 v1.5 and PSS (`rsa`, moduli of 2048 to 4096 bits) over
+  Montgomery arithmetic (`bignum`). Code that touches secrets runs in constant time: AES is
+  bitsliced (16 bytes as 8 planes of 16 bits, SubBytes as Boyar and Peralta's logic S-box
+  circuit, so no table is indexed by a secret), GHASH multiplies bit by bit with masks,
+  Poly1305 reduces with masks, X25519 swaps with masks in a ladder of fixed length, tags are
+  compared with `constant_time::equal`. Signature checks handle only public values and are not
+  constant-time.
+- **TLS 1.3** (new crate `tls/`, `eggos-tls`, `no_std`, no allocation; RFC 8446, 5280, 6125,
+  7468): `client::connect` runs one full handshake over a caller's `Transport` in caller's
+  `Buffers` (82 KiB: two incoming records, a 32 KiB handshake message, one outgoing record)
+  with randomness the caller draws (`getrandom`): ClientHello with SNI (not for IPv4
+  literals), ALPN `http/1.1`, X25519 the only group, ChaCha20-Poly1305 then AES-128-GCM then
+  AES-256-GCM, ECDSA P-256/P-384 and RSA-PSS for the handshake signature (PKCS #1 v1.5 for
+  certificates only); the key schedule, encrypted records with padding stripped, the
+  middlebox-compatible change-cipher-spec, the server's Certificate checked (`chain::verify`),
+  its CertificateVerify and Finished verified, an empty Certificate when the server asks for
+  one, then `Session::{read, write, close}` with KeyUpdate answered and session tickets
+  ignored. Certificates (`x509`, over `der`): version 3 fields, validity in UTCTime and
+  GeneralizedTime, RSA and EC keys, `basicConstraints`, `keyUsage`, `extKeyUsage`,
+  `subjectAltName` (DNS names with one leftmost wildcard label, IPv4 addresses; the common name
+  is not used), certificate policies accepted, any other critical extension refused. A path
+  goes from the server's certificate through the authorities it sent (CA, `keyCertSign`,
+  path length, valid now, signature) to a root whose subject is the issuer and whose key
+  signs it; names are compared as encoded. Roots are read from PEM as it streams
+  (`pem::Certificates`), one 8 KiB certificate at a time, so no file is held whole.
+- **`fetch https://`** (`net/src/http.rs`: `Url::secure`, port 443 by default, redirects to
+  `https://`; `userland/coreutils/src/fetch.rs`): after the TCP connection, the handshake for
+  the URL's host at the system's time, then the same HTTP over the session. Errors say what
+  failed: the TLS reason, the alert number, or the certificate's problem (with "try date
+  --sync" when it looks expired or not yet valid). MCP `fetch` takes `https://` too (its URL
+  check and schema pattern).
+- **Root certificates (decided by research).** EggOS commits and ships no root certificates.
+  Mozilla's list (`certdata.txt`) and curl's `cacert.pem` derived from it are MPL-2.0: file-level
+  copyleft that would put a file in the repository outside "MIT OR Apache-2.0" (CLAUDE.md,
+  License). The CCADB's export of the same roots is CDLA-Permissive-2.0 (webpki-roots ships it
+  so), which could be generated into images later with its licence text beside it, but a
+  committed bundle also goes stale. So `fetch` reads PEM roots from `/etc/ssl/roots.pem`, or
+  else `roots.pem` in the host folder (`/media/host/roots.pem`), and the user copies their
+  host's own store there (macOS `/etc/ssl/cert.pem`, Linux
+  `/etc/ssl/certs/ca-certificates.crt`, Windows' exported roots), which is what they already
+  trust and raises no licence question. With no roots, `https://` fails closed and says where
+  to put them. Sources: curl.se/docs/caextract.html, ccadb.org/rootstores/usage,
+  cdla.dev/permissive-2-0, github.com/rustls/webpki-roots.
+- **The network clock** (`net/src/sntp.rs`, RFC 4330 over RFC 5905's packet): the request with a
+  random transmit timestamp the reply must echo, the reply checked (server mode, version 3 or
+  4, not a kiss-o'-death, synchronized, stratum 1 to 15), timestamps across the 2036 era, and
+  the time at arrival: the server's transmit time plus half the round trip less the time it
+  held the request. `date --sync[=host[:port]]` (default `pool.ntp.org`, three tries of 3 s)
+  sets the clock and the hardware clock (D150's `clock_settime`) and says how far it moved.
+- **Front-ends (D22).** CLI: `fetch https://...`, `date --sync`. MCP (D136, D137): `fetch`
+  takes `https://`; new `clock_sync` (no arguments; twin `date -u --sync`; grant `run`, as
+  setting the clock is; no confirmation: it only moves the clock to the network's time;
+  15 s; TOOLS 26). GUI: not built (below).
+- **Checks.** Host tests: SHA-2, HMAC (RFC 4231), HKDF (RFC 5869), the S-box circuit against
+  the S-box computed from the field inverse for all 256 bytes, AES (FIPS 197 appendix C), GCM
+  (the GCM specification's test cases 1 to 4, forgeries refused and data left as it was),
+  ChaCha20, Poly1305 and the AEAD (RFC 8439), X25519 (RFC 7748), Montgomery arithmetic against
+  plain arithmetic, the curves' base points on their curves, ECDSA (RFC 6979's P-256 and P-384
+  signatures), RSA PKCS #1 v1.5 and PSS signatures made by OpenSSL; DER, PEM in any pieces,
+  times, a test root and server certificate made by OpenSSL (names, wildcards, IPv4,
+  signatures, validity, untrusted, no roots, wrong host), the key schedule's early and derived
+  secrets (RFC 8448), records both ways for each suite, the ClientHello, handshakes that fail
+  for each reason a server gives; SNTP packets both ways, eras, refusals and the delay; `fetch
+  https://` (refused at port 443, a server's alert named), `date --sync` (the time set, the
+  movement said, a port, no answer after three tries, bad servers, exclusive options, no
+  DNS); MCP `clock_sync` and `fetch https://`. QEMU (the network boot test): `date
+  --sync=10.0.2.2:<port>` against an NTP stand-in on the host. The MCP boot calls
+  `clock_sync`, which must name its server whether or not the host reaches the internet.
+- **Performance and size (D24).** No kernel path changes. The core utilities grow by the
+  cryptography, TLS and SNTP (to be measured by the build phase); `fetch` takes 82 KiB of stack
+  for TLS only on `https://`. AES is bitsliced rather than table-driven (constant time
+  first; ChaCha20-Poly1305 is offered first because it is faster in software).
+- **Decided without research.** X25519 is the only key-exchange group (every major server
+  supports it; HelloRetryRequest is not handled); ChaCha20-Poly1305 is offered first; RSA keys
+  below 2048 bits are refused; the common name is never used for the host; names are compared
+  as encoded rather than normalized; a root's own validity is not checked (as WebPKI clients
+  do); an end of the connection without `close_notify` ends the download as HTTP frames it;
+  `clock_sync` needs `run` but no confirmation. The owner can overrule any of these.
+- **Not yet.** The Date & time pane's "Set automatically" (needs a Fable addition to
+  docs/ux/date-time-v0.3.md first) and syncing at boot or periodically; a QEMU check of `fetch
+  https://` against a TLS test server on the host (the host tests cover the parts; a full
+  handshake is checked only against real servers, `fetch https://example.com` with roots in
+  the host folder); TLS session resumption, early data, client certificates, HelloRetryRequest
+  and P-256 key exchange, OCSP and CRLs, name constraints and policy checks; ECDSA P-521 and
+  Ed25519 certificates; generating a CCADB root bundle into release images; benchmarks of the
+  ciphers.

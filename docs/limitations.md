@@ -20,9 +20,11 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   kernels virtio-rng. Nothing else is driven: no Wi-Fi, no sound, no USB (D110-D113, D130).
 - **Network, parts 1 and 2** (D157, D158, [network.md](network.md)). IPv4 over one wired
   adapter with an address from DHCP, UDP, ping and TCP for programs, DNS through
-  `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://`) and
-  the MCP tools `net_status`, `net_ping`, `net_lookup` and `fetch`. No HTTPS yet (part 3), so
-  most of the web is out of reach; TCP has no window scaling (64 KiB windows), no selective
+  `/etc/resolv.conf`, `lo`; `ip`, `ping`, `nslookup`, `fetch` (downloads over `http://` and
+  `https://`, TLS 1.3 with certificates checked against the roots you give in
+  `/etc/ssl/roots.pem`: EggOS ships none, D159) and the MCP tools `net_status`, `net_ping`,
+  `net_lookup` and `fetch`; TLS offers only X25519, has no resumption, client certificates or
+  revocation checks; TCP has no window scaling (64 KiB windows), no selective
   acknowledgments, keep-alive or urgent data, drops segments that arrive out of order (they
   are sent again), and on a machine without an adapter its timers run only when a program
   makes a socket call. No downloads window in the GUI yet. No IPv6, no fragment reassembly, no static addresses or second adapter, no
@@ -72,9 +74,10 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   in it run and install there; the riscv64 image carries neither, as neither layer runs on
   riscv64 (D152).
 - **The clock is UTC, with no time zones** (D150). The kernel reads the real-time clock once
-  at boot (QEMU's follows the host's clock) and keeps time from it; there is no network time
-  (NTP), so a clock that drifts stays off until `date -s`, Settings or `clock_set` sets it,
-  which also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
+  at boot (QEMU's follows the host's clock) and keeps time from it; the network time is
+  set by hand (`date --sync`, MCP `clock_sync`; D159), not at boot or by Settings, so a clock
+  that drifts stays off until one of those, `date -s`, Settings or `clock_set` sets it, which
+  also sets the real-time clock. Local time is UTC everywhere: the desktop's clock,
   `date`, file times and the Windows and macOS layers' local-time calls; there is no time zone
   setting or database. Only a privileged process (root) may set the clock. An absolute sleep or
   wait on `CLOCK_REALTIME` ends at the time the clock pointed to when it started, even if the
