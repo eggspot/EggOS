@@ -249,18 +249,21 @@ pub fn flush_all(runtime: &mut Runtime) {
 
 fn refresh_flags(record: &ClassRecord) {
     let mut flags = 0;
-    if !record.has(BUILTIN) {
-        let custom = [
-            sel!("retain"),
-            sel!("release"),
-            sel!("autorelease"),
-            sel!("retainCount"),
-        ]
-        .into_iter()
-        .any(|sel| record.own_method(sel).is_some());
-        if custom {
-            flags |= CUSTOM_REFERENCE_COUNTING;
-        }
+    let defaults = super::root::default_reference_counting();
+    let custom = [
+        sel!("retain"),
+        sel!("release"),
+        sel!("autorelease"),
+        sel!("retainCount"),
+    ]
+    .into_iter()
+    .any(|sel| {
+        record
+            .own_method(sel)
+            .is_some_and(|imp| !defaults.contains(&imp))
+    });
+    if custom {
+        flags |= CUSTOM_REFERENCE_COUNTING;
     }
     if record
         .superclass()
@@ -541,6 +544,16 @@ pub fn initialize(record: &ClassRecord) {
             }
         }
     }
+}
+
+/// The IMP for `sel` on `class` and its superclasses, realizing but not initializing the class
+/// and filling no cache, as `class_getInstanceMethod` and `respondsToSelector:` look.
+pub fn find(class: *mut ClassObject, sel: Sel) -> Option<Imp> {
+    let record = record_of(class)?;
+    RUNTIME.with(|runtime| {
+        realize(runtime, record);
+        find_method(record, sel)
+    })
 }
 
 /// Realizes and initializes the class `class` (for `objc_alloc`, `objc_getClass` and their kin).

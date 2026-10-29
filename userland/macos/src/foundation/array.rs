@@ -594,13 +594,15 @@ extern "C" fn remove_last_object(this: Id, _: Sel) {
 }
 
 extern "C" fn remove_object(this: Id, _: Sel, object: Id) {
+    objc_retain(object);
     loop {
         let index = index_of(this, object);
         if index == NOT_FOUND {
-            return;
+            break;
         }
         remove_at(this, index);
     }
+    objc_release(object);
 }
 
 extern "C" fn remove_all_objects(this: Id, _: Sel) {

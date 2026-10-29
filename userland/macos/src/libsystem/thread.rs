@@ -304,14 +304,14 @@ pub fn set_finish_hook(hook: fn()) {
 }
 
 fn finish(result: usize) -> ! {
+    let thread = current();
+    run_exit_handlers(thread);
     let hook = FINISH_HOOK.load(Ordering::Acquire);
-    if hook != 0 && current() != &raw mut MAIN {
+    if hook != 0 && thread != &raw mut MAIN {
         // SAFETY: only `set_finish_hook` stores here, a `fn()`.
         let hook: fn() = unsafe { core::mem::transmute(hook) };
         hook();
     }
-    let thread = current();
-    run_exit_handlers(thread);
     // SAFETY: the calling thread's own control block.
     let block = unsafe { &mut *thread };
     heap::release(core::mem::take(&mut block.thread_locals) as *mut u8);

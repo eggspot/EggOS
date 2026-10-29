@@ -458,6 +458,8 @@ extern "C" fn utf8_string(this: Id, _: Sel) -> *const u8 {
     let bytes = heap::allocate(text.utf8_len() + 1, true);
     let holder = new_instance(class_pointer(&UTF8_BUFFER));
     if bytes.is_null() || holder.is_null() {
+        heap::release(bytes);
+        crate::objc::reference_count::objc_release(holder);
         return c"".as_ptr().cast::<u8>();
     }
     let mut at = 0;

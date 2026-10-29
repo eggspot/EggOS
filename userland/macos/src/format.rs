@@ -1,7 +1,7 @@
 //! `printf`'s formatting: flags, width, precision and length modifiers and the conversions
 //! `d i u o x X c s p f F e E g G %`, plus Foundation's `%@` (an object's description, which the
-//! [`Output`] writes) and `%C` (a UTF-16 unit), reading each argument from an [`Arguments`]
-//! source and writing to an [`Output`]. `%n` writes nothing: it is skipped with its argument, so
+//! [`Output`] writes) and `%C` (a character: a UTF-16 unit or a `wint_t`), reading each argument
+//! from an [`Arguments`] source and writing to an [`Output`]. `%n` writes nothing: it is skipped with its argument, so
 //! a format string cannot write to memory.
 
 /// Where the variadic arguments come from.
@@ -252,11 +252,11 @@ impl Spec {
                 out.count += out.output.object(object);
             }
             b'C' => {
-                let unit = arguments.integer() as u16 as u32;
-                let code = if (0xd800..0xe000).contains(&unit) {
+                let value = arguments.integer() as u32;
+                let code = if (0xd800..0xe000).contains(&value) || value > 0x10_ffff {
                     0xfffd
                 } else {
-                    unit
+                    value
                 };
                 let mut buffer = [0u8; 4];
                 self.pad(utf8(code, &mut buffer), out);
@@ -417,11 +417,17 @@ fn utf8(code: u32, buffer: &mut [u8; 4]) -> &[u8] {
         buffer[0] = 0xc0 | (code >> 6) as u8;
         buffer[1] = 0x80 | (code & 0x3f) as u8;
         &buffer[..2]
-    } else {
+    } else if code < 0x10000 {
         buffer[0] = 0xe0 | (code >> 12) as u8;
         buffer[1] = 0x80 | ((code >> 6) & 0x3f) as u8;
         buffer[2] = 0x80 | (code & 0x3f) as u8;
         &buffer[..3]
+    } else {
+        buffer[0] = 0xf0 | (code >> 18) as u8;
+        buffer[1] = 0x80 | ((code >> 12) & 0x3f) as u8;
+        buffer[2] = 0x80 | ((code >> 6) & 0x3f) as u8;
+        buffer[3] = 0x80 | (code & 0x3f) as u8;
+        &buffer[..4]
     }
 }
 
@@ -877,8 +883,14 @@ mod tests {
         }
         let mut out = Describing(Vec::new());
         // SAFETY: no `%s` conversion reads a pointer.
-        let count = unsafe { format(b"%@ %d %C|%@", &mut Words(vec![7, 42, 0xe9, 9]), &mut out) };
-        assert_eq!(out.0, "<object 7> 42 \u{e9}|<object 9>".as_bytes());
+        let count = unsafe {
+            format(
+                b"%@ %d %C|%@%C",
+                &mut Words(vec![7, 42, 0xe9, 9, 0x1f95a]),
+                &mut out,
+            )
+        };
+        assert_eq!(out.0, "<object 7> 42 \u{e9}|<object 9>\u{1f95a}".as_bytes());
         assert_eq!(count, out.0.len());
     }
 

@@ -90,6 +90,10 @@ fn collection(out: &mut Buffer<u8>, object: Id, level: usize) {
         pad(out, level + 1);
         leaf(out, super::dictionary::key(object, index));
         write(out, b" = ");
+        if index >= super::dictionary::count_of(object) {
+            write(out, b"(removed);\n");
+            continue;
+        }
         entry(out, super::dictionary::value(object, index), level + 1);
         write(out, b";\n");
     }

@@ -106,7 +106,18 @@ extern "C" fn is_member_of_class(this: Id, _: Sel, class: *mut ClassObject) -> u
 
 /// Whether instances of `class` (or the class itself, for a metaclass) respond to `sel`.
 pub fn responds(class: *mut ClassObject, sel: Sel) -> bool {
-    !sel.is_null() && class::lookup(class, sel).is_some()
+    !sel.is_null() && class::find(class, sel).is_some()
+}
+
+/// NSObject's own reference-counting methods, which a class may inherit without counting as
+/// one that defines its own.
+pub fn default_reference_counting() -> [usize; 4] {
+    [
+        retain as *const () as usize,
+        release as *const () as usize,
+        autorelease as *const () as usize,
+        retain_count as *const () as usize,
+    ]
 }
 
 extern "C" fn responds_to_selector(this: Id, _: Sel, sel: Sel) -> u8 {

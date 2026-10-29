@@ -131,7 +131,7 @@ fn handle(sel: Sel, imp: Imp) -> *mut MethodHandle {
 }
 
 extern "C" fn class_get_instance_method(class: *mut ClassObject, sel: Sel) -> *mut MethodHandle {
-    match class::lookup(class, sel) {
+    match class::find(class, sel) {
         Some(imp) if !class.is_null() => handle(sel, imp),
         _ => core::ptr::null_mut(),
     }

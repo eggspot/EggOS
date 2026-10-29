@@ -69,7 +69,13 @@ pub fn drain_thread() {
         return;
     }
     pop(0);
-    with_stack(|stack| stack.free());
+    let thread = thread::current();
+    // SAFETY: the calling thread's own control block.
+    let slot = unsafe { &mut (*thread).autorelease_pools };
+    let stack = core::mem::take(slot) as *mut Buffer<Id>;
+    // SAFETY: the thread's own stack, which nothing uses once its slot is cleared.
+    unsafe { &mut *stack }.free();
+    heap::release(stack.cast());
 }
 
 extern "C" fn objc_autorelease_pool_push() -> usize {
