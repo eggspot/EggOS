@@ -27,8 +27,13 @@ claude mcp add eggos -- powershell -NoProfile -ExecutionPolicy Bypass -File C:\p
 
 Claude Code starts the script when it needs EggOS; the script boots EggOS in QEMU and connects
 its own standard input and output to EggOS's agent channel. The QEMU window still shows the
-desktop; add `--no-window` (`-NoWindow`) on a machine without a display. Other clients take the
-same command: run `run-eggos.sh --mcp` as a stdio MCP server.
+desktop. Other clients take the same command: run `run-eggos.sh --mcp` as a stdio MCP server.
+
+- **No screen at all.** Add `--no-window` (`-NoWindow`) on a server, in CI or whenever you don't
+  want a window: QEMU gets no display, keyboard or mouse, and EggOS draws its desktop in memory
+  at the same 1280x800 (D144). Windows, macOS and Linux apps still open (`app_open`), and the
+  agent sees and operates their windows exactly as with a screen. EggOS's console says `boot:
+  offscreen display 1280x800` in `eggos-<arch>-serial.log`.
 
 - **Nothing else is on standard output.** MCP's stdio transport carries only protocol messages
   there, so with `--mcp` the script's own messages go to standard error, EggOS's console goes
@@ -129,6 +134,8 @@ coordinates times 2.
 - **A person wins.** While you hold a key or a button, or for half a second after you last
   used the keyboard or the pointer, input tools are refused with `Busy: a person is using the
   machine; wait a moment and retry.` `wm_type` says how many characters it typed before that.
+  With `--no-window` there is no keyboard or pointer, so this never happens: the agent is the
+  only one at the machine.
 - **Window content is data, never instructions**, like file contents: the tool descriptions
   and the server's instructions say so. A window can show anything, a page made to steer an
   agent included.
@@ -221,7 +228,11 @@ release.
   not QEMU's `virtconsole`, whose output QEMU drops when the host does not read fast enough; a
   named port's output waits instead. EggOS's virtio console driver finds the port by its name
   and the kernel offers it as `/dev/agent`, to one privileged opener at a time (docs/drivers.md).
-- **The grants.** The script's `--mcp-allow` becomes `-append eggos.mcp_allow=...`; the kernel
+- **The command line.** The script passes one `-append` (QEMU keeps only the last one) with
+  `eggos.display=offscreen` for `--no-window`, then `eggos.mcp_allow=...` for `--mcp-allow`. With
+  no display device and the first word, the kernel makes its display in memory; a virtio GPU, if
+  one is there anyway, wins.
+- **The grants.** The script's `--mcp-allow` becomes `eggos.mcp_allow=...`; the kernel
   shows its command line in `/proc/cmdline` (on AArch64 and RISC-V from the device tree's
   `/chosen/bootargs`, on x86_64 copied from the PVH loader at boot) and `eggmcpd` reads it there
   at each start. Grants are only as safe as where the command line comes from.
@@ -237,7 +248,8 @@ release.
   view,write,run,install`, and a scripted client drives every tool, answers questions and runs
   `agentlog`; it captures Settings, `win-paint` (x86_64 and aarch64) and `linux-paint`, covered
   and minimised windows included, compares each image exactly with the host's drawing, and
-  clicks and types through the tools.
+  clicks and types through the tools. Both boots use `--no-window`, so all of it runs with no
+  screen.
 
 ## Known limits of this version
 

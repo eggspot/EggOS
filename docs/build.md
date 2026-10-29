@@ -235,12 +235,15 @@ holds what used to be written in them.
   PowerShell), with the folder made absolute and its commas doubled, and `qemu::disk_args`
   for the disk image; with `--mcp` (`-Mcp`) `qemu::mcp_args`: the agent channel on the
   script's standard input and output (`qemu::agent_channel_args`), the console in
-  `eggos-<arch>-serial.log`, no monitor, and `-display none` with `--no-window`
-  (`-NoWindow`), every script message on standard error, and the disk image checked with
-  `qemu-io` for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>`
-  (`-McpAllow`, `--mcp` only) `qemu::grant_args`: `-append eggos.mcp_allow=<list>` once each
-  name is checked as `write`, `run` or `install` (D137); a host test checks they
-  match. Each script picks the host's architecture
+  `eggos-<arch>-serial.log`, no monitor, and with `--no-window` (`-NoWindow`) no display or
+  input device (`Arch::offscreen_args`, `-display none`) and the kernel command line word
+  `qemu::OFFSCREEN_WORD`, `eggos.display=offscreen`, so EggOS draws its desktop in memory
+  (D144), every script message on standard error, and the disk image checked with `qemu-io`
+  for another EggOS's lock (D136, docs/mcp.md); with `--mcp-allow <list>` (`-McpAllow`,
+  `--mcp` only) the word `qemu::grant_word`, `eggos.mcp_allow=<list>`, once each name is
+  checked as `view`, `write`, `run` or `install` (D137, D143). The words go in one `-append`
+  (`qemu::command_line_args`), since QEMU keeps only the last; host tests check the scripts'
+  text. Each script picks the host's architecture
   unless one is named, checks the image against `SHA256SUMS` with `sha256sum`, `shasum` or
   `Get-FileHash` (refusing a mismatch, warning when no tool or no `SHA256SUMS` is found), and looks for
   `qemu-system-<arch>` on `PATH` (and under `Program Files\qemu` on Windows). They are the one

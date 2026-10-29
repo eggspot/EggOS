@@ -307,7 +307,7 @@ D16):
     space (`statfs`), multiple selection, a shared clipboard, the Text Editor (item 46).
 28. **Done** — users can now connect Claude Code or any MCP client to EggOS and let it work
     with files, programs and apps under the grants they set (D136, D137, docs/mcp.md):
-    `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` for headless hosts) wires a named
+    `run-eggos.sh --mcp` (`run-eggos.ps1 -Mcp`, `--no-window` with no screen, D144) wires a named
     virtio console port to the script's stdio; init starts `eggmcpd` when `/dev/agent` exists;
     the tools `ls`, `cat`, `ps`, `wm_list` and `app_list` read; with `--mcp-allow
     write,run,install` (kernel command line, `/proc/cmdline`) `tee` and `trash` write below
@@ -351,6 +351,13 @@ D16):
     it as data; `wm_click`, `wm_type`, `wm_press` and `wm_scroll` under `run`; each call in the
     audit log (typed text included); the MCP boot check captures Settings, `win-paint` and
     `linux-paint` (covered and minimised) exactly and clicks and types through the tools.
+47b. **done** — users can now run EggOS with no screen at all and still open Windows, macOS and
+    Linux GUI apps for an AI agent (D144, docs/mcp.md): `run-eggos.sh --mcp --no-window`
+    (`-Mcp -NoWindow`) gives QEMU no display, keyboard or mouse and passes
+    `eggos.display=offscreen[:<width>x<height>]` in the one `-append` it builds with the grants;
+    with no display device the kernel draws the desktop into a framebuffer in memory, at
+    1280x800 by default, and ticks its clock without an input poller. The MCP check's boots run
+    that way on all three architectures.
 41. macOS GUI apps, part 1.
 
 Extras, in order, after those and before the freeze: 42 Windows controls, menus and dialogs; 43

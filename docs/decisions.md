@@ -9007,3 +9007,72 @@ the license, by an explicit instruction recorded here.
   capturing the terminal's window; drag, double-click, sideways scrolling and non-ASCII
   typing (D141). A window whose client stopped reading its events answers `EAGAIN` until
   `wm`'s 3-second retry budget runs out, then the tool fails.
+
+## D144 Running with no screen: `eggos.display=offscreen[:WxH]`, a framebuffer in memory, and one `-append` built by the run scripts (v0.3.0 item 47b; extends D112, D116, D136, D137, D141, D143) — Decided (owner, 2026-10-28: "our os could also run with no gui mode, but could open the windows/mac in gui mode then allow the ai work with it"); the design decided by the build loop and its two plan reviews
+- **What.** `run-eggos.sh --mcp --no-window` (`run-eggos.ps1 -Mcp -NoWindow`) boots EggOS with
+  no screen at all: QEMU gets no virtio GPU and no virtio keyboard, tablet or mouse
+  (`Arch::offscreen_args`: `-vga none` on q35, so it adds no standard VGA, nothing on the virt
+  machines; `-display none` stays), and the kernel draws the desktop into memory. Windows, macOS
+  and Linux apps still open, and D143's tools work unchanged at the same geometry. Before this,
+  `--no-window` only hid QEMU's window; it never shipped in a release (v0.1.0 and v0.2.0 have
+  none), so no user breaks. `--no-window` still needs `--mcp`; `--serial` and the windowed boot
+  are unchanged. This is D23's headless server or embedded machine, now able to open GUI apps
+  for an agent.
+- **The parameter.** `eggos.display=offscreen` asks for the offscreen display at
+  `eggos_drivers::display::DEFAULT_MODE`, 1280x800, the mode xtask asks the virtio GPU for (a
+  host test ties the two), so windows sit where they do with a screen;
+  `eggos.display=offscreen:<width>x<height>` names a size. The first word starting with
+  `eggos.display=` decides, words split on ASCII whitespace, as eggmcpd reads
+  `eggos.mcp_allow=` (D137). The value is strict: 1 to 5 digits each, no sign, no leading zero
+  (one spelling per size), else refused. Checked in this order, so the desktop's layout only
+  sees bounded sizes: parsing; more than `FRAME_SIZE << MAX_ORDER` bytes (4 MiB, the largest
+  block the kernel heap hands out and the virtio GPU framebuffer's ceiling too) is too large;
+  a screen the desktop does not fit on (`Desktop::fits`, the rule `Desktop::new` uses) is too
+  small. A refused value gives no display (fail closed, no fallback) and the console line
+  `boot: eggos.display refused: <reason>` with a fixed reason: the host's value is never
+  echoed, since the console is mirrored to the graphical terminal.
+- **The kernel** (`kernel/src/display/offscreen.rs`). `OffscreenScanout` implements D112's
+  `Scanout` over a `Box<[u32]>` allocated with `try_reserve_exact` (no panic when memory is
+  short); its flush shows nothing and reports every rectangle shown. `boot` reads the command
+  line only after device probing found no display, so a GPU wins over the word, and every boot
+  with a display (every windowed boot and every test and benchmark boot with the GPU) pays
+  nothing; then it says `boot: offscreen display 1280x800`, and the first frame, the desktop,
+  the terminal's window, `/dev/window` and eggway (D140) follow as with a GPU. No `unsafe`.
+- **No input, no person.** Without input devices no poller runs, `person_holds_input` and the
+  input queue stay empty and the desktop's 500 ms rule (D141) never starts: injected input is
+  never `EBUSY` because of a person, which is the point, since the agent is the only one at the
+  machine (with `--mcp` the console is a file, so the serial line has no keyboard either). Capture
+  reads a window's own buffer and `SEND_INPUT` goes to its queue, so neither needs a screen. The
+  input poller was also what ticked the desktop once a second (its clock, notices, tooltips and
+  the close timeout of a window that stopped answering): with a display and no input devices,
+  init now starts `terminal::start_clock`, a thread that does only that, waking at each second.
+- **One `-append`.** QEMU keeps only the last `-append`, so the scripts build one line at run
+  time: `eggos.display=offscreen` first (only in the `mcp-headless` mode, `$Mcp -and
+  $NoWindow` in PowerShell), then `eggos.mcp_allow=<list>`, after the list is checked and,
+  in sh, after `IFS` is restored; `set -- "$@" "-append" "$command_line"` stays where the grant's
+  `set --` was, after the mode's `set --`. The display word is a constant and the grant names are
+  checked lowercase words joined by commas, so no host input can add a word. xtask's helpers
+  are now `qemu::OFFSCREEN_WORD`, `qemu::grant_word` and `qemu::command_line_args`: **this
+  supersedes D137's sentence that `qemu::grant_args` is shared by the scripts and xtask.**
+  PowerShell joins the words with a space; the value has no quote or backslash, and both Windows
+  PowerShell 5.1 and PowerShell 7.3 and later wrap a native argument holding a space in double
+  quotes, so QEMU receives one argument. Both readers (the kernel's and eggmcpd's) are tested on
+  the combined line in either order.
+- **Why `offscreen_args` and not `-vga none` in x86_64's `machine_args`** (plan review 1
+  preferred the move). The move would change every x86_64 boot without a display, the gated
+  `boot_to_prompt` benchmark boot included, which this item otherwise leaves unchanged.
+- **Testing.** Host: the parser (no word, the default, sizes at and over the ceiling, too small
+  without a panic, every malformed spelling, the first word, the combined line both ways), the
+  scanout and a `Display` over it reaching `FIRST_FRAME_HASH_1280X800`, the console lines
+  (fixed reasons only), a display in use, `Desktop::fits` against `Desktop::new`, the clock's
+  next second, eggmcpd's grants on combined lines, `mcp_args` without a window (no GPU or input
+  device, `-vga none` on x86_64, the channel and console kept), and the scripts' text (one
+  `-append`, the order, the gates). QEMU on aarch64, riscv64 and x86_64: the MCP check's two
+  boots (already `--no-window`) now run offscreen, and each boot's console must show `boot:
+  offscreen display 1280x800`, `boot: display 1280x800` and `boot: no input`; the granted boot's
+  `/proc/cmdline` must hold `eggos.display=offscreen eggos.mcp_allow=view,write,run,install`;
+  the release boot-to-prompt test passes `-append eggos.display=offscreen` with its GPU and
+  must show `boot: display 1280x800` and no `boot: offscreen` line. No new boot.
+- **Not yet.** A size option in the scripts; `cargo xtask run` with no screen; showing an
+  offscreen desktop on demand; changing the size while EggOS runs; the PowerShell script run on
+  CI (D116's follow-up; its text is tested).
