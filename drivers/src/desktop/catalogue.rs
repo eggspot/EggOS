@@ -5,7 +5,7 @@
 //! (D134); and, while the share is mounted, the launcher's `Install from host share...` row.
 //! The launcher's search matches a name or one of its synonyms, case-insensitively.
 
-use super::icons::{Icon, Source};
+use super::icons::{Icon, IconPixels, Source};
 use alloc::vec::Vec;
 use eggos_app_manifest::{self as manifest, NAME_CAPACITY, SYNONYMS_CAPACITY};
 
@@ -121,7 +121,7 @@ impl Command {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct InstalledApp {
     name: [u8; NAME_CAPACITY],
     name_length: u8,
@@ -129,6 +129,7 @@ struct InstalledApp {
     program: Command,
     synonyms: [u8; SYNONYMS_CAPACITY],
     synonyms_length: u8,
+    icon: Option<IconPixels>,
 }
 
 impl InstalledApp {
@@ -232,11 +233,26 @@ impl Catalogue {
             program,
             synonyms: [0; SYNONYMS_CAPACITY],
             synonyms_length: app.synonyms.len() as u8,
+            icon: None,
         };
         entry.name[..app.name.len()].copy_from_slice(app.name.as_bytes());
         entry.synonyms[..app.synonyms.len()].copy_from_slice(app.synonyms.as_bytes());
         self.installed.insert(at, entry);
         true
+    }
+
+    /// Gives the installed app whose folder is `folder` its own icon, from its `app.icon` file
+    /// (D148); returns whether it took it (an app of that name, a file of the right length).
+    pub fn set_icon(&mut self, folder: &[u8], file: &[u8]) -> bool {
+        let Some(app) = self
+            .installed
+            .iter_mut()
+            .find(|app| app.name().as_bytes() == folder)
+        else {
+            return false;
+        };
+        app.icon = IconPixels::from_file(file);
+        app.icon.is_some()
     }
 
     /// Records whether the host's shared folder is mounted at `/media/host`.
@@ -315,13 +331,16 @@ impl Catalogue {
     }
 
     /// `app`'s icon.
-    pub fn icon(&self, app: AppId) -> Icon {
+    pub fn icon(&self, app: AppId) -> Icon<'_> {
         match app {
             AppId::Terminal => Icon::Terminal,
             AppId::Files => Icon::Files,
             AppId::Settings => Icon::Settings,
             AppId::HostShare | AppId::InstallFromHostShare => Icon::HostShare,
-            AppId::Installed(_) => Icon::named(self.name(app), self.source(app)),
+            AppId::Installed(index) => match self.installed(index).and_then(|app| app.icon.as_ref()) {
+                Some(pixels) => Icon::Own(pixels),
+                None => Icon::named(self.name(app), self.source(app)),
+            },
         }
     }
 
@@ -598,6 +617,29 @@ mod tests {
         assert_eq!(catalogue.source(paint).unwrap().label(), "Windows");
         assert_eq!(catalogue.source(AppId::Settings), None);
         assert_eq!(catalogue.icon(AppId::HostShare), Icon::HostShare);
+    }
+
+    #[test]
+    fn an_app_with_its_own_icon_shows_it_and_a_wrong_file_keeps_the_tile() {
+        use eggos_app_manifest::icon as icon_file;
+        let mut catalogue = catalogue();
+        let file = vec![0x7f; icon_file::FILE_BYTES];
+        assert!(catalogue.set_icon(b"Paint", &file));
+        let paint = catalogue.installed_named("Paint").unwrap();
+        let expected = IconPixels::from_file(&file).unwrap();
+        assert_eq!(catalogue.icon(paint), Icon::Own(&expected));
+        assert!(!catalogue.set_icon(b"Nobody", &file));
+        assert!(!catalogue.set_icon(b"zebra", &file[1..]));
+        let zebra = catalogue.installed_named("zebra").unwrap();
+        assert_eq!(
+            catalogue.icon(zebra),
+            Icon::App {
+                letter: b'Z',
+                badge: Some(Source::Linux)
+            }
+        );
+        catalogue.clear_installed();
+        assert!(!catalogue.set_icon(b"Paint", &file));
     }
 
     #[test]

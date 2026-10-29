@@ -5,9 +5,11 @@
 //! to the Linux job through `EGGOS_MACOS_PROGRAMS`. A fat file of both slices is written here.
 //! The Objective-C program, `tests/macos-objc/main.m`, is test data our own source and Apple's
 //! clang build the same way (D142); it is never shipped. So is the AppKit test app `mac-paint`,
-//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from the
-//! `mac-paint.app` bundle `assemble_app` writes.
+//! `tests/macos-gui/main.m` (D147), which the macOS GUI boot test installs from
+//! `mac-paint.zip` (D148), the `mac-paint.app` bundle `assemble_app` writes with the icon
+//! `test_icns` draws, archived by `archive_app`.
 
+use crate::qmp::Picture;
 use std::path::{Path, PathBuf};
 
 pub const LAYER_PACKAGE: &str = "eggos-macos";
@@ -51,6 +53,83 @@ pub const OBJC_PROGRAMS: [ObjcProgram; 2] = [
 const BUNDLE_SUFFIX: &str = ".app";
 /// The bundle's property list, beside an app's `main.m` and in its bundle's `Contents`.
 pub const INFO_PLIST: &str = "Info.plist";
+/// The test app's icon file in `Contents/Resources`, which its `Info.plist` names.
+pub const APP_ICON: &str = "AppIcon.icns";
+/// What the test app's archive is called after its name.
+pub const ARCHIVE_SUFFIX: &str = ".zip";
+
+const ICON_DESIGN_SIDE: u32 = 128;
+const ICON_SIDES: [(&[u8; 4], u32); 2] = [(b"ic07", 128), (b"icp5", 32)];
+const ICON_BACKGROUND: u32 = 0x0020_60c0;
+const ICON_DISC: u32 = 0x00f0_a020;
+const ICON_STRIPE: u32 = 0x00ff_ffff;
+const ICON_DISC_RADIUS: i64 = 40;
+const ICON_STRIPE_HALF_WIDTH: u32 = 10;
+
+fn test_icon_pixel(x: u32, y: u32) -> u32 {
+    let centre = i64::from(ICON_DESIGN_SIDE / 2);
+    let (dx, dy) = (i64::from(x) - centre, i64::from(y) - centre);
+    let in_disc = dx * dx + dy * dy < ICON_DISC_RADIUS * ICON_DISC_RADIUS;
+    match (x.abs_diff(y) < ICON_STRIPE_HALF_WIDTH, in_disc) {
+        (true, _) => ICON_STRIPE,
+        (false, true) => ICON_DISC,
+        (false, false) => ICON_BACKGROUND,
+    }
+}
+
+/// The test app's icon at `side` pixels as a PNG: a blue square, an amber disc and a white
+/// diagonal, drawn on a 128-pixel grid.
+pub fn test_icon_png(side: u32) -> Result<Vec<u8>, String> {
+    let pixels = (0..side * side)
+        .map(|index| {
+            let (x, y) = (index % side, index / side);
+            test_icon_pixel(x * ICON_DESIGN_SIDE / side, y * ICON_DESIGN_SIDE / side)
+        })
+        .collect();
+    crate::release::encode_png(&Picture {
+        width: side,
+        height: side,
+        pixels,
+    })
+}
+
+/// The test app's `AppIcon.icns`: a 128-pixel `ic07` and a 32-pixel `icp5`, both PNG.
+pub fn test_icns() -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    for (kind, side) in ICON_SIDES {
+        let png = test_icon_png(side)?;
+        body.extend_from_slice(kind);
+        body.extend_from_slice(&(png.len() as u32 + 8).to_be_bytes());
+        body.extend_from_slice(&png);
+    }
+    let mut file = b"icns".to_vec();
+    file.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    file.extend_from_slice(&body);
+    Ok(file)
+}
+
+/// Writes `test_icns` into the bundle at `bundle` as `Contents/Resources/AppIcon.icns`.
+pub fn add_test_icon(bundle: &Path) -> Result<(), String> {
+    let resources = bundle.join("Contents").join("Resources");
+    std::fs::create_dir_all(&resources).map_err(|e| format!("{}: {e}", resources.display()))?;
+    let path = resources.join(APP_ICON);
+    std::fs::write(&path, test_icns()?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Writes the bundle at `bundle` (`<name>.app`) into `<name>.zip` beside it, every file stored;
+/// returns the archive's path.
+pub fn archive_app(bundle: &Path) -> Result<PathBuf, String> {
+    let file_name = bundle
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no name", bundle.display()))?;
+    let stem = file_name.strip_suffix(BUNDLE_SUFFIX).unwrap_or(&file_name);
+    let archive = bundle.with_file_name(format!("{stem}{ARCHIVE_SUFFIX}"));
+    let members = crate::zip::folder_members(bundle, &file_name)?;
+    std::fs::write(&archive, crate::zip::stored(&members)?)
+        .map_err(|e| format!("{}: {e}", archive.display()))?;
+    Ok(archive)
+}
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 const FAT_MAGIC: u32 = 0xcafe_babe;

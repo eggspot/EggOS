@@ -1,9 +1,11 @@
-//! The macOS GUI boot test (D147): one boot of the release kernel with the macOS layer, on a
-//! blank disk, with a host folder holding `mac-paint.app` (our own AppKit app,
-//! `tests/macos-gui/main.m`), each frame compared with the desktop the host renders from the
-//! same input, the app's window content and alert painted by `eggos-macos-gui-tests`.
+//! The macOS GUI boot test (D147, D148): one boot of the release kernel with the macOS layer,
+//! on a blank disk, with a host folder holding `mac-paint.zip`, the `mac-paint.app` bundle (our
+//! own AppKit app, `tests/macos-gui/main.m`, with the icon xtask draws) archived, each frame
+//! compared with the desktop the host renders from the same input, the app's window content and
+//! alert painted by `eggos-macos-gui-tests`, its own icon made by the installer's own code.
 //!
-//! `app install /media/host/mac-paint.app` in the terminal installs the bundle; Cmd+Space,
+//! `app install /media/host/mac-paint.zip` in the terminal extracts and installs the bundle,
+//! whose own icon then shows on the desktop and in the launcher's row; Cmd+Space,
 //! `mac-paint` and Enter in the launcher open it: its fixed-size window, focused, with its main
 //! menu's titles in the top bar; `Hello` and Enter in its text field rename the window; a click
 //! in the paint view paints a square, `c` clears it; another click and the `Clear` button do the
@@ -15,6 +17,8 @@ use super::install::host_destroy;
 use super::settings::{Boot, Screen};
 use super::shell::Shell;
 use super::*;
+use eggos_app::icon::{self, OwnIcon, Workspace};
+use eggos_app::reader::Bytes;
 use eggos_app_manifest::{self as manifest, Manifest, Source};
 use eggos_drivers::desktop::protocol::flags;
 use eggos_drivers::desktop::{Action, Catalogue, Profile};
@@ -44,8 +48,8 @@ const LETTER_CODES: [u16; 26] = [
 
 const CHECKS: [&str; 14] = [
     "the first prompt with the host share",
-    "mac-paint.app installed from the terminal: its icon on the desktop",
-    "the launcher filtered by `mac-paint`",
+    "mac-paint.zip installed from the terminal: its own icon on the desktop",
+    "the launcher filtered by `mac-paint`, its own icon in the row",
     "mac-paint's window opened from the launcher, its menu in the top bar",
     "`Hello` typed and Enter: the window titled Hello",
     "a click in the paint view: a blue square",
@@ -59,9 +63,24 @@ const CHECKS: [&str; 14] = [
     "Cmd+Q: mac-paint quit, its window and menu gone",
 ];
 
-/// The `.app` bundle the host folder holds.
+/// The `.app` bundle the host folder's archive holds.
 pub fn bundle_name() -> String {
     format!("{NAME}.app")
+}
+
+/// The archive the host folder holds and the test installs.
+pub fn archive_name() -> String {
+    format!("{NAME}{}", crate::macos::ARCHIVE_SUFFIX)
+}
+
+fn expected_icon_file() -> Result<Vec<u8>, String> {
+    let icns = crate::macos::test_icns()?;
+    let mut work = Box::new(Workspace::new());
+    let mut icon = OwnIcon::new();
+    match icon::from_icns(&mut Bytes(&icns), &mut work, &mut icon) {
+        true => Ok(icon.file().to_vec()),
+        false => Err("the installer's code made no icon of the test app's .icns".to_owned()),
+    }
 }
 
 fn program_inside_the_bundle() -> String {
@@ -71,7 +90,7 @@ fn program_inside_the_bundle() -> String {
 fn install_line() -> String {
     format!(
         "app install /media/host/{}; echo EGGOS-APP status $?\r",
-        bundle_name()
+        archive_name()
     )
 }
 
@@ -94,19 +113,23 @@ fn manifest_of(arch: &Arch) -> Vec<u8> {
         run: &run,
         architecture: Some(arch.name),
         synonyms: "",
+        icon: Some(manifest::icon::FILE_NAME),
     };
     let mut file = [0u8; manifest::LARGEST];
     let length = manifest::write(&entry, &mut file).expect("mac-paint's manifest is valid");
     file[..length].to_vec()
 }
 
-fn catalogue(arch: &Arch, installed: bool) -> Catalogue {
+fn catalogue(arch: &Arch, installed: bool) -> Result<Catalogue, String> {
     let mut catalogue = Catalogue::new();
     catalogue.set_host_share(true);
     if installed {
         catalogue.add_installed(NAME.as_bytes(), &manifest_of(arch));
+        if !catalogue.set_icon(NAME.as_bytes(), &expected_icon_file()?) {
+            return Err(format!("{}: the host's catalogue refused mac-paint's icon", arch.name));
+        }
     }
-    catalogue
+    Ok(catalogue)
 }
 
 fn key_of(character: char) -> Option<(&'static str, u16)> {
@@ -308,7 +331,7 @@ impl MacGui<'_> {
         self.shell.wait_for_line(INSTALLED_LINE)?;
         self.shell.boot.wait_for_prompts(prompts + 1)?;
         self.shell.screen.desktop.set_catalogue(
-            catalogue(arch, true),
+            catalogue(arch, true)?,
             &mut Damage::new(),
             &mut DiscardEvents,
         );
@@ -450,7 +473,7 @@ impl MacGui<'_> {
 }
 
 /// Runs the macOS GUI boot test (see the module documentation) on `kernel`, a release kernel
-/// for `arch` with the macOS layer, with `folder` (the host folder holding `mac-paint.app`)
+/// for `arch` with the macOS layer, with `folder` (the host folder holding `mac-paint.zip`)
 /// attached.
 pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     let directory = crate::target_directory().join("qemu-disks");
@@ -470,8 +493,12 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
         Ok(screen) => screen,
         Err(error) => return Err(boot.fail(error)),
     };
+    let empty = match catalogue(arch, false) {
+        Ok(empty) => empty,
+        Err(error) => return Err(boot.fail(error)),
+    };
     screen.desktop.set_catalogue(
-        catalogue(arch, false),
+        empty,
         &mut Damage::new(),
         &mut DiscardEvents,
     );
@@ -520,17 +547,17 @@ mod tests {
         assert_eq!(
             manifest_of(arch("x86_64")),
             b"eggos-app 1\nname=mac-paint\nsource=macos\n\
-              run=mac-paint.app/Contents/MacOS/mac-paint\narchitecture=x86_64\n"
+              run=mac-paint.app/Contents/MacOS/mac-paint\narchitecture=x86_64\nicon=app.icon\n"
         );
         assert!(
             String::from_utf8(manifest_of(arch("aarch64")))
                 .unwrap()
-                .ends_with("architecture=aarch64\n")
+                .ends_with("architecture=aarch64\nicon=app.icon\n")
         );
-        let before = catalogue(arch("aarch64"), false);
+        let before = catalogue(arch("aarch64"), false).unwrap();
         assert!(before.host_share());
         assert_eq!(before.installed_count(), 0);
-        let after = catalogue(arch("aarch64"), true);
+        let after = catalogue(arch("aarch64"), true).unwrap();
         let id = after
             .installed_named(NAME)
             .expect("mac-paint is installed");
@@ -542,17 +569,22 @@ mod tests {
             b"\x15/Applications/mac-paint/mac-paint.app/Contents/MacOS/mac-paint\r"
         );
         assert!(launched_program().ends_with("Contents/MacOS/mac-paint"));
+        assert!(matches!(after.icon(id), eggos_drivers::desktop::Icon::Own(_)));
+        let icon = expected_icon_file().unwrap();
+        assert_eq!(icon.len(), manifest::icon::FILE_BYTES);
+        assert_ne!(icon[..4], icon[24 * 4..24 * 4 + 4]);
     }
 
     #[test]
     fn the_session_installs_the_bundle_and_the_verdict_needs_each_line_in_order() {
         assert_eq!(bundle_name(), "mac-paint.app");
+        assert_eq!(archive_name(), "mac-paint.zip");
         assert_eq!(
             install_line(),
-            "app install /media/host/mac-paint.app; echo EGGOS-APP status $?\r"
+            "app install /media/host/mac-paint.zip; echo EGGOS-APP status $?\r"
         );
         let ok = [
-            "eggsh:/# app install /media/host/mac-paint.app; echo EGGOS-APP status $?",
+            "eggsh:/# app install /media/host/mac-paint.zip; echo EGGOS-APP status $?",
             "Installed mac-paint in /Applications/mac-paint.",
             "EGGOS-APP status 0",
             "eggsh:/# /Applications/mac-paint/mac-paint.app/Contents/MacOS/mac-paint",

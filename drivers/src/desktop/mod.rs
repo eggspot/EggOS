@@ -50,7 +50,7 @@ pub use catalogue::{
 };
 pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
-pub use icons::{Icon, IconSize, Source};
+pub use icons::{Icon, IconPixels, IconSize, Source};
 pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
     TerminalInput,

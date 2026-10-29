@@ -48,15 +48,20 @@ pub fn install_prompt(
             let mut to = Line::new();
             let _ = to.write_str("To: ");
             to.push_bytes(plan.folder().as_bytes());
+            let mut inside = Line::new();
+            let _ = inside.write_str("Inside: ");
+            inside.push_bytes(plan.run());
+            let adds = "Adds: a launcher entry and a desktop icon";
+            let archive_lines = [kind.as_str(), from.as_str(), inside.as_str(), to.as_str(), adds];
+            let program_lines = [kind.as_str(), from.as_str(), to.as_str(), adds];
+            let lines: &[&str] = match plan.is_archive() {
+                true => &archive_lines[..],
+                false => &program_lines[..],
+            };
             let dialog = Dialog::prompt(
                 AppIcon::of(plan.name(), Some(plan.program().source)),
                 plan.name(),
-                &[
-                    kind.as_str(),
-                    from.as_str(),
-                    to.as_str(),
-                    "Adds: a launcher entry and a desktop icon",
-                ],
+                lines,
             );
             (dialog, Some(plan))
         }

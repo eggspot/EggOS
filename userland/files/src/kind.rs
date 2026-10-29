@@ -4,6 +4,7 @@
 
 use crate::names::{is_within, joined};
 use eggos_app::architecture::Architecture;
+use eggos_app::archive;
 use eggos_app::files::{self, Files, Path};
 use eggos_app::installer::{self, APPLICATIONS};
 use eggos_app::messages;
@@ -29,6 +30,8 @@ pub enum Kind {
     Bundle,
     /// A program of another system or of Linux.
     Program(Source),
+    /// A `.zip` archive, which the installer opens (D148).
+    Archive,
     /// A file of UTF-8 text.
     Text,
     /// Any other file.
@@ -52,9 +55,9 @@ impl Kind {
         }
     }
 
-    /// Whether `Install...` applies: a program or a bundle.
+    /// Whether `Install...` applies: a program, a bundle or a `.zip`.
     pub fn installs(self) -> bool {
-        matches!(self, Self::Program(_) | Self::Bundle)
+        matches!(self, Self::Program(_) | Self::Bundle | Self::Archive)
     }
 }
 
@@ -78,6 +81,9 @@ pub fn of_head(head: &[u8]) -> Kind {
         if magic == FAT && (1..=MOST_FAT_ARCHITECTURES).contains(&architectures) {
             return Kind::Program(Source::Macos);
         }
+    }
+    if archive::is_archive(head) {
+        return Kind::Archive;
     }
     if head.contains(&0) {
         return Kind::File;
@@ -157,6 +163,7 @@ pub fn describe(
             line.push_bytes(source.label().as_bytes());
         }
         Kind::Text => line.push_bytes(b"Text"),
+        Kind::Archive => line.push_bytes(b"Zip archive"),
         Kind::File | Kind::Other => line.push_bytes(b"File"),
         Kind::Program(source) => {
             let mut head = [0u8; program::HEAD_BYTES];
@@ -216,5 +223,8 @@ mod tests {
         assert!(!Kind::App(Source::Windows).installs());
         assert_eq!(Kind::Bundle.source(), Some(Source::Macos));
         assert_eq!(Kind::Text.source(), None);
+        assert!(Kind::Archive.installs());
+        assert_eq!(of_head(b"PK\x03\x04\x14\x00"), Kind::Archive);
+        assert_eq!(of_head(b"PK\x05\x06\x00\x00"), Kind::Archive);
     }
 }

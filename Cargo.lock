@@ -11,6 +11,7 @@ name = "eggos-app"
 version = "0.2.0"
 dependencies = [
  "eggos-app-manifest",
+ "eggos-png",
  "eggos-runtime",
  "eggos-toolkit",
 ]

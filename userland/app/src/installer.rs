@@ -3,12 +3,23 @@
 //! which is written last, through a temporary file renamed over it, so a half-installed app has
 //! no manifest and is not listed (D133); uninstall removes the manifest first, then the folder.
 //! An installation is a sequence of small steps so the installer's window stays responsive and
-//! can cancel between them.
+//! can cancel between them. A `.zip` (D148) is told by its first bytes; its one program (a
+//! `.exe`, the program of an `.app` bundle in it, or a static ELF), or the one `--entry` names,
+//! is the app's, and the whole archive, `__MACOSX` metadata left out, is extracted into the
+//! app's folder, one entry a step. After the copy the app's own icon (D148) is made from what
+//! was installed and written as `app.icon`, named by the manifest; an app without one installs
+//! all the same.
 
 use crate::architecture::Architecture;
+use crate::archive::{self, Archive, ArchiveError, Cursor, Entry};
 use crate::files::{self, Files, Handle, Kind, PATH_CAPACITY, Path};
+use crate::icon::{self, OwnIcon, Workspace};
 use crate::program::{self, NotRunnable, Program};
+use crate::reader::{self, FileReader, Reader};
+use core::cell::RefCell;
+use eggos_app_manifest::icon as icon_file;
 use eggos_app_manifest::{self as manifest, Manifest, Source};
+use eggos_png::inflate::{Sink, Window};
 use eggos_runtime::errno::Errno;
 
 /// Where apps are installed.
@@ -25,6 +36,11 @@ pub const MAX_DEPTH: usize = 16;
 const BUNDLE_SUFFIX: &[u8] = b".app";
 const BUNDLE_PROGRAMS: &[u8] = b"Contents/MacOS";
 const MANIFEST_PERMISSIONS: u32 = 0o644;
+const FILE_PERMISSIONS: u32 = 0o644;
+const PROGRAM_PERMISSIONS: u32 = 0o755;
+const WINDOWS_PROGRAM_SUFFIX: &[u8] = b".exe";
+const BUNDLE_PROGRAMS_INSIDE: &[u8] = b"/Contents/MacOS/";
+const ELF_MAGIC: &[u8] = b"\x7fELF";
 
 /// Why an app could not be installed or uninstalled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,8 +71,76 @@ pub enum Problem {
     TooDeep,
     /// A symbolic link, a device or anything else that is neither a file nor a folder.
     UnsupportedEntry,
+    /// A `.zip` that cannot be read or extracted.
+    Archive(ArchiveError),
+    /// A `.zip` holding no program this installer recognises.
+    NoProgramInArchive,
+    /// A `.zip` holding several programs, listed, and no `--entry` choosing one.
+    SeveralPrograms(Listing),
+    /// No program in the `.zip` is at the path `--entry` gives.
+    NoSuchEntry,
     /// Another error of the file system.
     Failed(Errno),
+}
+
+/// The programs a `.zip` holds, named in a short line for a message.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Listing {
+    bytes: [u8; Listing::CAPACITY],
+    length: usize,
+    cut: bool,
+}
+
+impl core::fmt::Debug for Listing {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self.as_str(), formatter)
+    }
+}
+
+impl Listing {
+    /// The longest listing, in bytes.
+    pub const CAPACITY: usize = 120;
+    const SEPARATOR: &[u8] = b", ";
+    const ELLIPSIS: &[u8] = b"...";
+
+    const fn new() -> Self {
+        Self {
+            bytes: [0; Self::CAPACITY],
+            length: 0,
+            cut: false,
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        let end = (self.length + bytes.len()).min(Self::CAPACITY);
+        self.bytes[self.length..end].copy_from_slice(&bytes[..end - self.length]);
+        self.length = end;
+    }
+
+    fn add(&mut self, name: &[u8]) {
+        if self.cut {
+            return;
+        }
+        let separator = match self.length {
+            0 => &b""[..],
+            _ => Self::SEPARATOR,
+        };
+        let printable = name.iter().all(|&byte| matches!(byte, b' '..=b'~'));
+        let needed = separator.len() + name.len() + Self::SEPARATOR.len() + Self::ELLIPSIS.len();
+        self.append(separator);
+        match printable && self.length + needed - separator.len() <= Self::CAPACITY {
+            true => self.append(name),
+            false => {
+                self.append(Self::ELLIPSIS);
+                self.cut = true;
+            }
+        }
+    }
+
+    /// The names, separated by commas.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.length]).unwrap_or("")
+    }
 }
 
 impl Problem {
@@ -159,6 +243,7 @@ pub struct Plan {
     program: Program,
     source: Path,
     bundle: bool,
+    archive: Option<Archive>,
     run: Path,
     leftover: bool,
     total_bytes: u64,
@@ -175,9 +260,14 @@ impl Plan {
         self.program
     }
 
-    /// The file or `.app` folder installed.
+    /// The file, `.app` folder or `.zip` installed.
     pub fn source(&self) -> &[u8] {
         self.source.as_bytes()
+    }
+
+    /// Whether it installs a `.zip`'s contents.
+    pub fn is_archive(&self) -> bool {
+        self.archive.is_some()
     }
 
     /// The program inside the app's folder: the manifest's `run=`.
@@ -281,17 +371,30 @@ fn without_trailing_slashes(path: &[u8]) -> &[u8] {
     &path[..end]
 }
 
-/// Checks that the file or `.app` folder at `source` can be installed on `machine` as `name`
-/// (else the name its file name gives) and works out how.
+/// Checks that the file, `.app` folder or `.zip` at `source` can be installed on `machine` as
+/// `name` (else the name its file name, or in a `.zip` its program's, gives) and works out how.
 pub fn plan(
     files: &mut impl Files,
     source: &[u8],
     name: Option<&[u8]>,
     machine: Architecture,
 ) -> Result<Plan, Refused> {
+    plan_entry(files, source, name, None, machine)
+}
+
+/// [`plan`], with the program a `.zip` holds chosen by `entry`, its path inside the archive (an
+/// `.app` bundle's own path also names its program); `entry` is ignored for anything else.
+pub fn plan_entry(
+    files: &mut impl Files,
+    source: &[u8],
+    name: Option<&[u8]>,
+    entry: Option<&[u8]>,
+    machine: Architecture,
+) -> Result<Plan, Refused> {
     let source = without_trailing_slashes(source);
     let file_name = files::file_name(source);
     let is_bundle_name = is_bundle_name(file_name);
+    let given = name;
     let name = name.map_or_else(|| derived_name(source), Name::new);
     let refused = |problem| Refused { name, problem };
     let source = Path::from(source).ok_or(refused(Problem::PathTooLong))?;
@@ -310,23 +413,13 @@ pub fn plan(
     let mut head = [0u8; program::HEAD_BYTES];
     let length = read_head(files, program_path.as_bytes(), &mut head)
         .map_err(|error| refused(Problem::Unreadable(error)))?;
+    if !bundle && archive::is_archive(&head[..length]) {
+        return plan_archive(files, source, given, entry, machine);
+    }
     let program = program::recognise(&head[..length], machine)
         .map_err(|reason| refused(Problem::NotRunnable(reason)))?;
     if bundle && program.source != Source::Macos {
         return Err(refused(Problem::NotRunnable(NotRunnable::NotAProgram)));
-    }
-    if let Some(layer) = layer_path(program.source) {
-        let installed = files
-            .status(layer)
-            .is_ok_and(|status| status.kind == Kind::File);
-        if !installed {
-            return Err(refused(Problem::NotRunnable(NotRunnable::LayerMissing(
-                program.source,
-            ))));
-        }
-    }
-    if !name.is_valid() {
-        return Err(refused(Problem::InvalidName));
     }
     let run = match bundle {
         true => {
@@ -339,23 +432,7 @@ pub fn plan(
         }
         false => Path::from(file_name).ok_or(refused(Problem::PathTooLong))?,
     };
-    if !manifest::is_run(run.as_bytes()) {
-        return Err(refused(Problem::InvalidProgramPath));
-    }
-    let folder = app_folder(name.as_bytes()).ok_or(refused(Problem::PathTooLong))?;
-    if folder.join(run.as_bytes()).is_none() {
-        return Err(refused(Problem::PathTooLong));
-    }
-    let leftover = match files.status(folder.as_bytes()) {
-        Ok(_) => {
-            let mut file = [0u8; manifest::LARGEST + 1];
-            if read_manifest(files, name.as_bytes(), &mut file).is_some() {
-                return Err(refused(Problem::AlreadyInstalled));
-            }
-            true
-        }
-        Err(_) => false,
-    };
+    let leftover = settle(files, program, &name, &run).map_err(refused)?;
     let total_bytes = match bundle {
         true => measure(files, &source).map_err(refused)?,
         false => status.size,
@@ -365,9 +442,189 @@ pub fn plan(
         program,
         source,
         bundle,
+        archive: None,
         run,
         leftover,
         total_bytes,
+    })
+}
+
+fn settle(
+    files: &mut impl Files,
+    program: Program,
+    name: &Name,
+    run: &Path,
+) -> Result<bool, Problem> {
+    if let Some(layer) = layer_path(program.source) {
+        let installed = files
+            .status(layer)
+            .is_ok_and(|status| status.kind == Kind::File);
+        if !installed {
+            return Err(Problem::NotRunnable(NotRunnable::LayerMissing(
+                program.source,
+            )));
+        }
+    }
+    if !name.is_valid() {
+        return Err(Problem::InvalidName);
+    }
+    if !manifest::is_run(run.as_bytes()) {
+        return Err(Problem::InvalidProgramPath);
+    }
+    let folder = app_folder(name.as_bytes()).ok_or(Problem::PathTooLong)?;
+    if folder.join(run.as_bytes()).is_none() {
+        return Err(Problem::PathTooLong);
+    }
+    match files.status(folder.as_bytes()) {
+        Ok(_) => {
+            let mut file = [0u8; manifest::LARGEST + 1];
+            match read_manifest(files, name.as_bytes(), &mut file) {
+                Some(_) => Err(Problem::AlreadyInstalled),
+                None => Ok(true),
+            }
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    BundleProgram { bundle_end: usize },
+    WindowsProgram,
+    MaybeLinuxProgram,
+    Other,
+}
+
+fn role(name: &[u8]) -> Role {
+    let mut start = 0;
+    for part in name.split(|&byte| byte == b'/') {
+        let end = start + part.len();
+        if is_bundle_name(part) {
+            let stem = &part[..part.len() - BUNDLE_SUFFIX.len()];
+            let inside = name[end..].strip_prefix(BUNDLE_PROGRAMS_INSIDE);
+            return match inside {
+                Some(file) if file == stem => Role::BundleProgram { bundle_end: end },
+                _ => Role::Other,
+            };
+        }
+        start = end + 1;
+    }
+    let file_name = files::file_name(name);
+    let windows = file_name.len() > WINDOWS_PROGRAM_SUFFIX.len()
+        && file_name[file_name.len() - WINDOWS_PROGRAM_SUFFIX.len()..]
+            .eq_ignore_ascii_case(WINDOWS_PROGRAM_SUFFIX);
+    match (windows, file_name.contains(&b'.')) {
+        (true, _) => Role::WindowsProgram,
+        (false, false) => Role::MaybeLinuxProgram,
+        (false, true) => Role::Other,
+    }
+}
+
+struct Scanned {
+    archive: Archive,
+    run: Path,
+    named_after: Path,
+    program: Program,
+    total: u64,
+}
+
+fn scan(
+    zip: &mut impl Reader,
+    wanted: Option<&[u8]>,
+    window: &mut Window,
+    machine: Architecture,
+) -> Result<Scanned, Problem> {
+    let archive = Archive::open(zip).map_err(Problem::Archive)?;
+    let mut cursor = archive.first();
+    let mut chosen: Option<(Entry, Role)> = None;
+    let mut found = 0;
+    let mut listing = Listing::new();
+    let mut total = 0u64;
+    while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
+        if entry.is_metadata() || entry.is_directory() {
+            continue;
+        }
+        total = total.saturating_add(entry.size());
+        let name = entry.name();
+        let role = role(name);
+        let shown = match role {
+            Role::BundleProgram { bundle_end } => &name[..bundle_end],
+            _ => name,
+        };
+        let is_program = match role {
+            Role::BundleProgram { .. } | Role::WindowsProgram => true,
+            Role::MaybeLinuxProgram => {
+                let mut head = [0u8; 4];
+                archive::head(zip, &entry, window, &mut head) == Ok(head.len())
+                    && head[..] == *ELF_MAGIC
+            }
+            Role::Other => false,
+        };
+        if !is_program || wanted.is_some_and(|wanted| wanted != name && wanted != shown) {
+            continue;
+        }
+        found += 1;
+        listing.add(shown);
+        if chosen.is_none() {
+            chosen = Some((entry, role));
+        }
+    }
+    let (entry, role) = match (found, chosen) {
+        (1, Some(chosen)) => chosen,
+        (0, _) if wanted.is_some() => return Err(Problem::NoSuchEntry),
+        (0, _) => return Err(Problem::NoProgramInArchive),
+        _ => return Err(Problem::SeveralPrograms(listing)),
+    };
+    let mut head = [0u8; program::HEAD_BYTES];
+    let length = archive::head(zip, &entry, window, &mut head).map_err(Problem::Archive)?;
+    let program = program::recognise(&head[..length], machine).map_err(Problem::NotRunnable)?;
+    let named_after = match role {
+        Role::BundleProgram { bundle_end } if program.source == Source::Macos => {
+            &entry.name()[..bundle_end]
+        }
+        Role::BundleProgram { .. } => {
+            return Err(Problem::NotRunnable(NotRunnable::NotAProgram));
+        }
+        _ => entry.name(),
+    };
+    Ok(Scanned {
+        archive,
+        run: Path::from(entry.name()).ok_or(Problem::PathTooLong)?,
+        named_after: Path::from(named_after).ok_or(Problem::PathTooLong)?,
+        program,
+        total,
+    })
+}
+
+fn plan_archive(
+    files: &mut impl Files,
+    source: Path,
+    name: Option<&[u8]>,
+    entry: Option<&[u8]>,
+    machine: Architecture,
+) -> Result<Plan, Refused> {
+    let fallback = name.map_or_else(|| derived_name(source.as_bytes()), Name::new);
+    let mut window = Window::new();
+    let scanned = reader::read_file(files, source.as_bytes(), |zip| {
+        scan(zip, entry, &mut window, machine)
+    })
+    .unwrap_or(Err(Problem::Unreadable(Errno::EIO)))
+    .map_err(|problem| Refused {
+        name: fallback,
+        problem,
+    })?;
+    let name = name.map_or_else(|| derived_name(scanned.named_after.as_bytes()), Name::new);
+    let leftover = settle(files, scanned.program, &name, &scanned.run)
+        .map_err(|problem| Refused { name, problem })?;
+    Ok(Plan {
+        name,
+        program: scanned.program,
+        source,
+        bundle: false,
+        archive: Some(scanned.archive),
+        run: scanned.run,
+        leftover,
+        total_bytes: scanned.total,
     })
 }
 
@@ -467,6 +724,7 @@ pub fn remove_tree(files: &mut impl Files, path: &[u8]) -> Result<(), Errno> {
 enum Stage {
     Preparing,
     Copying,
+    Icon,
     Registering,
     Finished,
 }
@@ -477,12 +735,18 @@ struct OpenCopy {
     to: Handle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenArchive {
+    file: Handle,
+    cursor: Cursor,
+}
+
 /// Where an installation is after a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
     /// Copying the program: this many of the plan's bytes are written.
     Copying(u64),
-    /// Writing the manifest next.
+    /// Making the app's icon and writing the manifest next.
     Registering,
     /// Done: the app is installed.
     Installed,
@@ -497,8 +761,90 @@ pub struct Installation {
     stage: Stage,
     walk: Walk,
     copy: Option<OpenCopy>,
+    extracting: Option<OpenArchive>,
     single_copied: bool,
     done_bytes: u64,
+    icon: bool,
+}
+
+struct SharedFile<'a, 'f, F: Files> {
+    files: &'a RefCell<&'f mut F>,
+    file: Handle,
+    size: u64,
+    error: Option<Errno>,
+}
+
+impl<F: Files> Reader for SharedFile<'_, '_, F> {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_at(&mut self, offset: u64, buffer: &mut [u8]) -> usize {
+        if offset >= self.size {
+            return 0;
+        }
+        let room = (self.size - offset).min(buffer.len() as u64) as usize;
+        self.files
+            .borrow_mut()
+            .read_at(self.file, offset, &mut buffer[..room])
+            .unwrap_or(0)
+    }
+}
+
+impl<F: Files> Sink for SharedFile<'_, '_, F> {
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        match self.files.borrow_mut().write(self.file, bytes) {
+            Ok(()) => true,
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
+        }
+    }
+}
+
+fn extract_to<F: Files>(
+    files: &mut F,
+    zip: Handle,
+    size: u64,
+    entry: &Entry,
+    target: Handle,
+) -> Result<(), Problem> {
+    let shared = RefCell::new(files);
+    let mut reader = SharedFile {
+        files: &shared,
+        file: zip,
+        size,
+        error: None,
+    };
+    let mut writer = SharedFile {
+        files: &shared,
+        file: target,
+        size: 0,
+        error: None,
+    };
+    let mut window = Window::new();
+    archive::extract(&mut reader, entry, &mut window, &mut writer).map_err(|error| {
+        match (error, writer.error) {
+            (ArchiveError::Stopped, Some(errno)) => Problem::from_errno(errno),
+            (error, _) => Problem::Archive(error),
+        }
+    })
+}
+
+fn make_directory_once(files: &mut impl Files, path: &[u8]) -> Result<(), Problem> {
+    match files.make_directory(path) {
+        Ok(()) | Err(Errno::EEXIST) => Ok(()),
+        Err(error) => Err(Problem::from_errno(error)),
+    }
+}
+
+fn make_parents(files: &mut impl Files, folder: &Path, name: &[u8]) -> Result<(), Problem> {
+    for (at, _) in name.iter().enumerate().filter(|&(_, &byte)| byte == b'/') {
+        let parent = folder.join(&name[..at]).ok_or(Problem::PathTooLong)?;
+        make_directory_once(files, parent.as_bytes())?;
+    }
+    Ok(())
 }
 
 impl Installation {
@@ -509,8 +855,10 @@ impl Installation {
             stage: Stage::Preparing,
             walk: Walk::new(),
             copy: None,
+            extracting: None,
             single_copied: false,
             done_bytes: 0,
+            icon: false,
         }
     }
 
@@ -521,15 +869,19 @@ impl Installation {
 
     /// Whether the copy is over, so cancelling no longer applies.
     pub fn is_past_copying(&self) -> bool {
-        matches!(self.stage, Stage::Registering | Stage::Finished)
+        matches!(
+            self.stage,
+            Stage::Icon | Stage::Registering | Stage::Finished
+        )
     }
 
-    /// Does the next small piece of the work: one folder or file made, or one `buffer` of
-    /// data copied, or the manifest written.
+    /// Does the next small piece of the work: one folder or file made, one `buffer` of data
+    /// copied or one archive entry extracted, the app's icon made, or the manifest written.
     pub fn step(&mut self, files: &mut impl Files, buffer: &mut [u8]) -> Progress {
         let result = match self.stage {
             Stage::Preparing => self.prepare(files),
             Stage::Copying => self.copy_some(files, buffer),
+            Stage::Icon => self.write_icon(files),
             Stage::Registering => self.register(files),
             Stage::Finished => Ok(Progress::Installed),
         };
@@ -568,6 +920,9 @@ impl Installation {
         if let Some(copy) = self.copy.take() {
             files.close(copy.from);
             files.close(copy.to);
+        }
+        if let Some(open) = self.extracting.take() {
+            files.close(open.file);
         }
         if self.stage != Stage::Preparing
             && let Ok(folder) = self.folder()
@@ -641,10 +996,13 @@ impl Installation {
             }
             return Ok(Progress::Copying(self.done_bytes));
         }
+        if let Some(archive) = self.plan.archive {
+            return self.extract_next(files, archive);
+        }
         let folder = self.folder()?;
         if !self.plan.bundle {
             if self.single_copied {
-                self.stage = Stage::Registering;
+                self.stage = Stage::Icon;
                 return Ok(Progress::Registering);
             }
             self.single_copied = true;
@@ -661,7 +1019,7 @@ impl Installation {
         }
         let source = self.plan.source;
         let Some((relative, status)) = self.walk.next(files, &source)? else {
-            self.stage = Stage::Registering;
+            self.stage = Stage::Icon;
             return Ok(Progress::Registering);
         };
         let to = folder
@@ -683,6 +1041,99 @@ impl Installation {
         Ok(Progress::Copying(self.done_bytes))
     }
 
+    fn extract_next(
+        &mut self,
+        files: &mut impl Files,
+        archive: Archive,
+    ) -> Result<Progress, Problem> {
+        let open = match self.extracting {
+            Some(open) => open,
+            None => {
+                let file = files
+                    .open(self.plan.source.as_bytes())
+                    .map_err(Problem::Unreadable)?;
+                let open = OpenArchive {
+                    file,
+                    cursor: archive.first(),
+                };
+                self.extracting = Some(open);
+                open
+            }
+        };
+        let mut cursor = open.cursor;
+        let next = archive.next(
+            &mut FileReader::new(files, open.file, archive.size()),
+            &mut cursor,
+        );
+        self.extracting = Some(OpenArchive { cursor, ..open });
+        let Some(entry) = next.map_err(Problem::Archive)? else {
+            self.extracting = None;
+            files.close(open.file);
+            self.stage = Stage::Icon;
+            return Ok(Progress::Registering);
+        };
+        if entry.is_metadata() {
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        let folder = self.folder()?;
+        make_parents(files, &folder, entry.name())?;
+        let to = folder.join(entry.name()).ok_or(Problem::PathTooLong)?;
+        if entry.is_directory() {
+            make_directory_once(files, to.as_bytes())?;
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        let permissions = match (entry.permissions(), entry.name() == self.plan.run.as_bytes()) {
+            (_, true) => PROGRAM_PERMISSIONS,
+            (Some(permissions), false) => permissions,
+            (None, false) => FILE_PERMISSIONS,
+        };
+        let target = files
+            .create(to.as_bytes(), permissions)
+            .map_err(Problem::from_errno)?;
+        let extracted = extract_to(files, open.file, archive.size(), &entry, target);
+        let synced = files.sync_file(target);
+        files.close(target);
+        extracted?;
+        synced.map_err(Problem::from_errno)?;
+        self.done_bytes = self.done_bytes.saturating_add(entry.size());
+        Ok(Progress::Copying(self.done_bytes))
+    }
+
+    fn write_icon(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
+        self.stage = Stage::Registering;
+        let folder = self.folder()?;
+        let program = folder
+            .join(self.plan.run.as_bytes())
+            .ok_or(Problem::PathTooLong)?;
+        let source = match self.plan.archive {
+            Some(_) => None,
+            None => Some(self.plan.source),
+        };
+        let mut work = Workspace::new();
+        let mut own = OwnIcon::new();
+        let source = source.as_ref().map(Path::as_bytes);
+        if !icon::find(files, program.as_bytes(), source, &mut work, &mut own) {
+            return Ok(Progress::Registering);
+        }
+        let path = folder
+            .join(icon_file::FILE_NAME.as_bytes())
+            .ok_or(Problem::PathTooLong)?;
+        let Ok(handle) = files.create(path.as_bytes(), MANIFEST_PERMISSIONS) else {
+            return Ok(Progress::Registering);
+        };
+        let written = files
+            .write(handle, &own.file())
+            .and_then(|()| files.sync_file(handle));
+        files.close(handle);
+        match written {
+            Ok(()) => self.icon = true,
+            Err(_) => {
+                let _ = files.remove_file(path.as_bytes());
+            }
+        }
+        Ok(Progress::Registering)
+    }
+
     fn register(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
         let folder = self.folder()?;
         let run = core::str::from_utf8(self.plan.run.as_bytes())
@@ -693,6 +1144,7 @@ impl Installation {
             run,
             architecture: Some(self.plan.program.architecture.name()),
             synonyms: "",
+            icon: self.icon.then_some(icon_file::FILE_NAME),
         };
         let mut file = [0u8; manifest::LARGEST];
         let length = manifest::write(&entry, &mut file).map_err(|refused| match refused {

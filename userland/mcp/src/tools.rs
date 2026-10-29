@@ -311,7 +311,8 @@ pub const TOOLS: [Tool; 16] = [
         name: "app_list",
         title: "List installed apps",
         description: "Lists the apps installed in /Applications, as `app list` shows them: \
-                      name, kind and source.",
+                      name, source, architecture, program and the app's own icon file \
+                      (`app.icon`, or `-` for none), one app a line.",
         input_schema: NO_ARGUMENTS,
         arguments: &[],
         kind: Kind::AppList,
@@ -395,9 +396,10 @@ pub const TOOLS: [Tool; 16] = [
         name: "app_install",
         title: "Install an app",
         description: "Installs an app from a file in /media/host (the host's shared folder) \
-                      into /Applications, as `app install` does: a Windows .exe, a macOS .app or \
-                      a Linux program. Needs the install grant.",
-        input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file or bundle in /media/host."}},"required":["path"],"additionalProperties":false}"#,
+                      into /Applications, as `app install` does: a Windows .exe, a macOS .app, \
+                      a Linux program, or a .zip holding one of them (extracted whole). \
+                      Needs the install grant.",
+        input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"The app's file, bundle or .zip in /media/host."}},"required":["path"],"additionalProperties":false}"#,
         arguments: &["path"],
         kind: Kind::AppInstall,
         grant: Some(Grant::Install),

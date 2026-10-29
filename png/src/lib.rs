@@ -1,17 +1,26 @@
-//! PNG images without an allocator (D141): a streaming encoder ([`Encoder`]) that takes one row
-//! of `0x00RRGGBB` pixels at a time and writes an 8-bit RGB PNG to a [`PngSink`] as it goes,
+//! PNG images without an allocator (D141, D148): a streaming encoder ([`Encoder`]) that takes one
+//! row of `0x00RRGGBB` pixels at a time and writes an 8-bit RGB PNG to a [`PngSink`] as it goes,
 //! each row filtered with PNG's Sub filter and compressed by DEFLATE with LZ77 matches over a
 //! 32 KiB window and the fixed Huffman codes (RFC 1951) in one zlib stream (RFC 1950), cut into
-//! IDAT chunks of [`IDAT_BYTES`]; a box downscaler for its rows ([`scale`]); and a decoder for
-//! the PNGs it writes ([`decode`]), for tests and the host's checks. The encoder's memory is a
-//! caller-owned [`EncoderWorkspace`], valid all zero, so it costs nothing until used. Matching
-//! probes one earlier position per byte, so encoding time grows linearly with the pixels.
+//! IDAT chunks of [`IDAT_BYTES`]; a box downscaler for its rows ([`scale`]); our own inflate
+//! for every DEFLATE block type ([`inflate`]), which the installer's `.zip` reader shares; a
+//! decoder for the 8-bit RGB PNGs the encoder writes ([`decode`]), for tests and the host's
+//! checks; and a decoder of any non-interlaced PNG a row at a time ([`rows`]), for app icons.
+//! The encoder's memory is a caller-owned [`EncoderWorkspace`], valid all zero, so it costs
+//! nothing until used. Matching probes one earlier position per byte, so encoding time grows
+//! linearly with the pixels.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 mod checksum;
 mod decode;
+pub mod inflate;
+#[cfg(test)]
+mod inflate_tests;
+pub mod rows;
+#[cfg(test)]
+mod rows_tests;
 pub mod scale;
 #[cfg(test)]
 mod tests;

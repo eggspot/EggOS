@@ -271,7 +271,7 @@ impl Desktop {
     }
 
     /// Window `slot`'s icon: its app's, else the generic tile of its title (6.4.1).
-    pub(super) fn window_icon(&self, slot: usize) -> Icon {
+    pub(super) fn window_icon(&self, slot: usize) -> Icon<'_> {
         match self.app_of(slot) {
             Some(app) => self.catalogue.icon(app),
             None => Icon::named(self.window_at(slot).title(), None),

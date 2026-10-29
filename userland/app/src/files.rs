@@ -50,6 +50,13 @@ pub trait Files {
     fn create(&mut self, path: &[u8], permissions: u32) -> Result<Handle, Errno>;
     /// Reads into `buffer`; 0 at the end.
     fn read(&mut self, file: Handle, buffer: &mut [u8]) -> Result<usize, Errno>;
+    /// Reads into `buffer` from byte `offset` of the file, leaving its position as it is; 0 at
+    /// or past the end. A file system that cannot says `EOPNOTSUPP`, so archives and icons are
+    /// not read from it.
+    fn read_at(&mut self, file: Handle, offset: u64, buffer: &mut [u8]) -> Result<usize, Errno> {
+        let _ = (file, offset, buffer);
+        Err(Errno::EOPNOTSUPP)
+    }
     /// Writes all of `bytes`.
     fn write(&mut self, file: Handle, bytes: &[u8]) -> Result<(), Errno>;
     /// Writes the file's data to its disk.

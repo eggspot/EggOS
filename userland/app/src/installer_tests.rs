@@ -2,6 +2,7 @@ use crate::architecture::Architecture::{self, Aarch64, Riscv64, X86_64};
 use crate::fake::{FakeFiles, Node, Operation};
 use crate::installer::*;
 use crate::program::NotRunnable;
+use crate::archive::samples::{deflate_fixed_literals, deflated, stored, zip};
 use crate::program::samples::{linux_program, mach_o, windows_program};
 use eggos_app_manifest::Source;
 
@@ -424,4 +425,174 @@ fn remove_tree_removes_nested_folders_and_single_files() {
     remove_tree(&mut files, b"/tmp/a").unwrap();
     remove_tree(&mut files, b"/tmp/e").unwrap();
     assert!(files.paths_under("/tmp/").is_empty());
+}
+
+fn icns_holding(png: &[u8]) -> Vec<u8> {
+    let mut file = b"icns".to_vec();
+    file.extend_from_slice(&(png.len() as u32 + 16).to_be_bytes());
+    file.extend_from_slice(b"ic07");
+    file.extend_from_slice(&(png.len() as u32 + 8).to_be_bytes());
+    file.extend_from_slice(png);
+    file
+}
+
+fn icon_of(files: &FakeFiles, name: &str) -> Vec<u8> {
+    match files.find(&format!("/Applications/{name}/app.icon")) {
+        Some(Node::File(bytes, _)) => bytes.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_zip_s_one_program_installs_with_everything_beside_it_and_no_mac_metadata() {
+    let program = windows_program(0x8664);
+    let readme = b"read me, deflated by hand";
+    let zip = zip(&[
+        stored("bin/win-paint.exe", &program),
+        deflated("bin/README.txt", readme, deflate_fixed_literals(readme)),
+        stored("__MACOSX/bin/._win-paint.exe", b"resource fork"),
+    ]);
+    let mut files = host_with("/media/host/Paint-1.2.zip", &zip);
+    let plan = planned(&mut files, "/media/host/Paint-1.2.zip", X86_64);
+    assert!(plan.is_archive());
+    assert_eq!(plan.name(), "win-paint");
+    assert_eq!(plan.run(), b"bin/win-paint.exe");
+    assert_eq!(plan.source(), b"/media/host/Paint-1.2.zip");
+    assert_eq!(
+        plan.total_bytes(),
+        (program.len() + readme.len()) as u64
+    );
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    assert_eq!(
+        files.paths_under("/Applications/"),
+        [
+            "/Applications/win-paint",
+            "/Applications/win-paint/bin",
+            "/Applications/win-paint/bin/win-paint.exe",
+            "/Applications/win-paint/bin/README.txt",
+            "/Applications/win-paint/app.manifest",
+        ]
+    );
+    assert_eq!(
+        files.find("/Applications/win-paint/bin/win-paint.exe"),
+        Some(&Node::File(program, 0o755))
+    );
+    assert_eq!(
+        files.find("/Applications/win-paint/bin/README.txt"),
+        Some(&Node::File(readme.to_vec(), 0o644))
+    );
+    assert!(manifest_of(&files, "win-paint").contains("run=bin/win-paint.exe\n"));
+    assert_eq!(files.open_count(), 0);
+}
+
+#[test]
+fn a_zipped_bundle_installs_with_its_own_icon() {
+    let png = crate::icon::tests::solid_png(64, 0x0012_3456);
+    let plist = b"<dict><key>CFBundleIconFile</key><string>AppIcon</string></dict>";
+    let zip = zip(&[
+        stored("mac-paint.app/", b""),
+        stored("mac-paint.app/Contents/Info.plist", plist),
+        stored("mac-paint.app/Contents/MacOS/mac-paint", &mach_o(0x0100_000c, 2)),
+        stored(
+            "mac-paint.app/Contents/Resources/AppIcon.icns",
+            &icns_holding(&png),
+        ),
+    ]);
+    let mut files = host_with("/media/host/mac-paint.zip", &zip);
+    let plan = planned(&mut files, "/media/host/mac-paint.zip", Aarch64);
+    assert_eq!(plan.name(), "mac-paint");
+    assert_eq!(plan.run(), b"mac-paint.app/Contents/MacOS/mac-paint");
+    assert_eq!(plan.program().source, Source::Macos);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let manifest = manifest_of(&files, "mac-paint");
+    assert!(manifest.ends_with("run=mac-paint.app/Contents/MacOS/mac-paint\narchitecture=aarch64\nicon=app.icon\n"));
+    let icon = icon_of(&files, "mac-paint");
+    assert_eq!(icon.len(), 13_312);
+    assert!(icon.chunks(4).all(|pixel| pixel == [0x56, 0x34, 0x12, 0xff]));
+    let mut listed = Vec::new();
+    for_each_installed(&mut files, |app| listed.push(app.icon.map(str::to_owned))).unwrap();
+    assert_eq!(listed, [Some("app.icon".to_owned())]);
+    uninstall(&mut files, b"mac-paint").unwrap();
+    assert!(files.paths_under("/Applications/").is_empty());
+}
+
+#[test]
+fn a_program_with_a_png_beside_it_gets_that_icon() {
+    let mut files = host_with("/media/host/tool", &linux_program(62));
+    files.file("/media/host/tool.png", &crate::icon::tests::solid_png(48, 0x00ab_cdef));
+    let plan = planned(&mut files, "/media/host/tool", X86_64);
+    install(&mut files, plan, &mut [0u8; 64]).unwrap();
+    let icon = icon_of(&files, "tool");
+    assert_eq!(icon[..4], [0xef, 0xcd, 0xab, 0xff]);
+    assert!(manifest_of(&files, "tool").ends_with("icon=app.icon\n"));
+    let mut broken = host_with("/media/host/tool", &linux_program(62));
+    broken.file("/media/host/tool.png", b"\x89PNG\r\n\x1a\n not really");
+    let plan = planned(&mut broken, "/media/host/tool", X86_64);
+    install(&mut broken, plan, &mut [0u8; 64]).unwrap();
+    assert!(broken.find("/Applications/tool/app.icon").is_none());
+    assert!(!manifest_of(&broken, "tool").contains("icon="));
+}
+
+#[test]
+fn a_zip_with_several_programs_needs_an_entry_and_one_with_none_is_refused() {
+    let program = windows_program(0x8664);
+    let two = zip(&[stored("bin/a.exe", &program), stored("bin/b.exe", &program)]);
+    let mut files = host_with("/media/host/tools.zip", &two);
+    let problem = refused(&mut files, "/media/host/tools.zip", X86_64);
+    let Problem::SeveralPrograms(listing) = problem else {
+        panic!("{problem:?}");
+    };
+    assert_eq!(listing.as_str(), "bin/a.exe, bin/b.exe");
+    assert_eq!(
+        crate::messages::reason(problem).as_str(),
+        "it holds several programs (bin/a.exe, bin/b.exe): choose one with --entry <path>"
+    );
+    let plan = plan_entry(
+        &mut files,
+        b"/media/host/tools.zip",
+        None,
+        Some(b"bin/b.exe"),
+        X86_64,
+    )
+    .unwrap();
+    assert_eq!(plan.name(), "b");
+    assert_eq!(
+        plan_entry(&mut files, b"/media/host/tools.zip", None, Some(b"c.exe"), X86_64)
+            .unwrap_err()
+            .problem,
+        Problem::NoSuchEntry
+    );
+    let notes = zip(&[stored("notes.txt", b"just text"), stored("LICENSE", b"MIT")]);
+    let mut files = host_with("/media/host/notes.zip", &notes);
+    let refusal = plan(&mut files, b"/media/host/notes.zip", None, X86_64).unwrap_err();
+    assert_eq!(refusal.problem, Problem::NoProgramInArchive);
+    assert_eq!(refusal.name.as_str(), "notes");
+    let escaping = zip(&[stored("../evil.exe", &program)]);
+    let mut files = host_with("/media/host/evil.zip", &escaping);
+    assert_eq!(
+        refused(&mut files, "/media/host/evil.zip", X86_64),
+        Problem::Archive(crate::archive::ArchiveError::UnsafeName)
+    );
+    let inside_bundle = zip(&[stored("X.app/Contents/Resources/helper.exe", &program)]);
+    let mut files = host_with("/media/host/x.zip", &inside_bundle);
+    assert_eq!(
+        refused(&mut files, "/media/host/x.zip", X86_64),
+        Problem::NoProgramInArchive
+    );
+}
+
+#[test]
+fn a_damaged_entry_fails_the_install_and_leaves_nothing() {
+    let program = windows_program(0x8664);
+    let mut zip = zip(&[stored("paint.exe", &program), stored("data.bin", b"0123456789")]);
+    let data = zip.windows(10).position(|window| window == b"0123456789").unwrap();
+    zip[data] ^= 1;
+    let mut files = host_with("/media/host/paint.zip", &zip);
+    let plan = planned(&mut files, "/media/host/paint.zip", X86_64);
+    assert_eq!(
+        install(&mut files, plan, &mut [0u8; 64]),
+        Err(Problem::Archive(crate::archive::ArchiveError::Corrupt))
+    );
+    assert!(files.paths_under("/Applications/").is_empty());
+    assert_eq!(files.open_count(), 0);
 }

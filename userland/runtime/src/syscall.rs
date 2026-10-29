@@ -66,6 +66,7 @@ pub mod number {
     pub const ACCEPT4: usize = 288;
     pub const MEMFD_CREATE: usize = 319;
     pub const FTRUNCATE: usize = 77;
+    pub const PREAD64: usize = 17;
 }
 
 /// Linux's system-call numbers: the generic table AArch64 and RISC-V share.
@@ -131,6 +132,7 @@ pub mod number {
     pub const ACCEPT4: usize = 242;
     pub const MEMFD_CREATE: usize = 279;
     pub const FTRUNCATE: usize = 46;
+    pub const PREAD64: usize = 67;
 }
 
 /// Makes Linux system call `number` with `arguments` and returns its result: a negative errno

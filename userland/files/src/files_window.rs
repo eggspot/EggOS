@@ -1923,7 +1923,9 @@ impl FilesWindow {
                     self.ask(Request::OpenApp(name));
                 }
             }
-            Kind::Bundle | Kind::Program(manifest::Source::Windows | manifest::Source::Macos) => {
+            Kind::Bundle
+            | Kind::Archive
+            | Kind::Program(manifest::Source::Windows | manifest::Source::Macos) => {
                 self.ask(Request::Install(path))
             }
             Kind::Program(manifest::Source::Linux) => self.type_in_terminal(b"", &path),

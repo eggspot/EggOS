@@ -16,6 +16,7 @@ mod qmp;
 mod release;
 mod sha256;
 mod windows;
+mod zip;
 
 use std::process::{Command, ExitCode};
 
@@ -1538,12 +1539,14 @@ fn build_macos_gui_test(
     let folder = target_directory().join(format!("macos-gui-folder-{}", arch.name));
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let program = programs.path(macos::GUI_APP, cpu);
-    macos::assemble_app(
+    let bundle = macos::assemble_app(
         &folder,
         macos::GUI_APP,
         &macos::source_folder(&app).join(macos::INFO_PLIST),
         &program,
     )?;
+    macos::add_test_icon(&bundle)?;
+    macos::archive_app(&bundle)?;
     let detected = [image::AddedFile {
         host: program.to_string_lossy().into_owned(),
         path: String::new(),

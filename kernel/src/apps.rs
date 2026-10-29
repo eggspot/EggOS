@@ -1,5 +1,7 @@
 //! The desktop shell's side in the kernel (D133, D134): the app catalogue read from the file
-//! systems, and the programs the launcher starts. The catalogue is read when the desktop
+//! systems, with each app's own icon its manifest names (D148, the installer's `app.icon`,
+//! taken only when it is exactly the size the format has), and the programs the launcher
+//! starts. The catalogue is read when the desktop
 //! starts, each time the launcher opens and when the installer says the apps changed, never
 //! otherwise; an app starts as a process of its own, beside init, as the user's.
 
@@ -65,7 +67,14 @@ pub fn catalogue() -> Catalogue {
         else {
             continue;
         };
-        catalogue.add_installed(name.as_bytes(), &file);
+        if catalogue.add_installed(name.as_bytes(), &file)
+            && let Some(icon) = manifest::parse(&file, name.as_bytes()).and_then(|app| app.icon)
+            && let Some(bytes) = vfs::resolve(root, node, icon.as_bytes())
+                .ok()
+                .and_then(|icon| read_small_file(icon, manifest::icon::FILE_BYTES))
+        {
+            catalogue.set_icon(name.as_bytes(), &bytes);
+        }
         if catalogue.installed_count() == eggos_drivers::desktop::MAX_INSTALLED {
             break;
         }
